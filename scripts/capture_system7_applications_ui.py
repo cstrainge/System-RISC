@@ -105,7 +105,7 @@ def open_textedit(endpoint, serial):
     """
     driver = Driver(endpoint, serial)
     driver.click(40, 95, double=True)
-    driver.wait('window=2 name=Applications')
+    driver.wait(' name=Applications\n')
     driver.application('TextEdit Exerciser')
     driver.wait('TEXTEDIT_EXERCISER_READY\n')
     return driver
@@ -209,7 +209,7 @@ def capture(output, remap_icon=False, windows=False):
         driver.button(False)
         clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
         driver.click(40, 95, double=True)
-        driver.wait('window=2 name=Applications')
+        driver.wait(' name=Applications\n')
         # Folder-open is logged before the second click's redraw completes.
         driver.wait('FINDER_CLICK_HANDLED\n', clicks + 1)
         frame('applications-folder')

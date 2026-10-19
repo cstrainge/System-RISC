@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Drive a private public-SDK close fixture; Rust owns every acceptance decision."""
-import argparse,hashlib,json,shutil,time
+import argparse,hashlib,json,re,shutil,time
 from pathlib import Path
 import system7_vm as vm
 from capture_system7_window_tracking import private_probe_disk
@@ -40,11 +40,13 @@ def capture(output):
         path=output/(name+'.ppm');vm.qmp('screendump',{'filename':str(path)},endpoint)
         observations.append({'name':name,'state':state,'frame':path.name})
     try:
-        wait(lambda:'DEFERRED_PAINT id=1 ' in text());move(16,444);snapshot('baseline')
+        wait(lambda:re.search(r'DEFERRED_PAINT id=\d+ ', text()));move(16,444);snapshot('baseline')
         move(113,91);button(True);move(16,444);button(False);snapshot('cancelled')
         move(113,91);button(True);button(False);move(16,444);snapshot('accepted')
         snapshot('accepted-again')
-        key('c');wait(lambda:'AUTOMATIC_READY id=2' in text() and 'DEFERRED_PAINT id=2 ' in text())
+        key('c');wait(lambda:re.search(r'AUTOMATIC_READY id=(\d+)\n', text()))
+        automatic_id=re.search(r'AUTOMATIC_READY id=(\d+)\n', text()).group(1)
+        wait(lambda:f'DEFERRED_PAINT id={automatic_id} ' in text())
         snapshot('explicit-close')
         move(113,91);button(True);button(False);move(16,444);snapshot('automatic-close')
         report={'observations':observations,'disk_sha256_before':before,'disk_sha256_after':hashlib.sha256(base.read_bytes()).hexdigest(),

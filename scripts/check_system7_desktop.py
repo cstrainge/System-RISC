@@ -96,16 +96,17 @@ def check_events(endpoint, serial_path, results):
 
     try:
         passed('mounted startup volume opens its real HFS root folder',
-               lambda s:s['windows']=='1' and s['front']=='1' and s['first']=='8,46,412,234' and int(s['updates'])>=1)
+               lambda s:s['windows']=='1' and int(s['front']) != 0 and s['first']=='8,46,412,234' and int(s['updates'])>=1)
         wait_log('FINDER_VOLUME id=')
-        wait_log('FINDER_FOLDER_READY window=1')
+        root_id = int(state()['front'])
+        wait_log(f'FINDER_FOLDER_READY window={root_id}')
         screenshot('finder-startup-volume.png')
         records.append({'check':'Finder enumerates mounted volumes through the resident filesystem',
                         'status':'passed','volumes':[line for line in logs().splitlines() if line.startswith('FINDER_VOLUME ')]})
         from check_wdef_pixels import check_guest_window
         volume_title=next(line.split(' name=',1)[1] for line in logs().splitlines() if line.startswith('FINDER_VOLUME '))
         click(600,50)
-        passed('desktop selection preserves front-window z order',window_count(1,1))
+        passed('desktop selection preserves front-window z order',window_count(1,root_id))
         # Wait for the application to process selection and commit its scene.
         time.sleep(.1)
         move(16,444)
@@ -113,14 +114,15 @@ def check_events(endpoint, serial_path, results):
         records.append(check_guest_window((results/'finder-desktop-focus.png').resolve(),results/'desktop-inactive-wdef',
                                           bounds=(8,46,412,234),title=volume_title,procedure=8,active=False,grow_clip=(389,173,404,188)))
         click(250,170)
-        passed('first content click reactivates the existing front folder',window_count(1,1))
+        passed('first content click reactivates the existing front folder',window_count(1,root_id))
         time.sleep(.1)
         move(16,444)
         screenshot('finder-desktop-reactivated.png')
         records.append(check_guest_window((results/'finder-desktop-reactivated.png').resolve(),results/'desktop-reactivated-wdef',
                                           bounds=(8,46,412,234),title=volume_title,procedure=8,active=True,grow_clip=(389,173,404,188)))
         key('a')
-        passed('A opens the separate About application window',window_count(2,2))
+        about = passed('A opens the separate About application window',window_count(2))
+        about_id = int(about['front'])
         # Keep the separately composited cursor outside all compared WDEF pixels.
         move(16,444)
         screenshot('finder-desktop.png')
@@ -128,7 +130,8 @@ def check_events(endpoint, serial_path, results):
         records.append(check_guest_window((results/'finder-desktop.png').resolve(),results,
                                           bounds=(250,150,550,345)))
         key('q')
-        passed('Q opens QuickDraw Exerciser as a separate window',window_count(3,3))
+        quickdraw = passed('Q opens QuickDraw Exerciser as a separate window',window_count(3))
+        quickdraw_id = int(quickdraw['front'])
         wait_log('QD_DEMO_READY page=1')
         screenshot('finder-quickdraw-shapes.png')
         previous=None
@@ -151,10 +154,10 @@ def check_events(endpoint, serial_path, results):
         assert ImageChops.difference(initial_icons.crop(icon_area),restored_icons.crop(icon_area)).getbbox() is None, 'icon browser did not restore its original families'
         records.append({'check':'QuickDraw icon browser advances and restores resource families','status':'passed'})
         drag(593,434,493,374)
-        passed('QuickDraw Exerciser resizes and repaints clipped content',window_count(3,3))
+        passed('QuickDraw Exerciser resizes and repaints clipped content',window_count(3,quickdraw_id))
         screenshot('finder-quickdraw-resized.png')
         drag(493,374,593,434)
-        passed('QuickDraw Exerciser restores its original size',window_count(3,3))
+        passed('QuickDraw Exerciser restores its original size',window_count(3,quickdraw_id))
         # Redraw completion follows the resize event and retained scene commit.
         deadline=time.monotonic()+5
         while True:
@@ -164,9 +167,9 @@ def check_events(endpoint, serial_path, results):
             time.sleep(.05)
         records.append({'check':'QuickDraw resize roundtrip restores resource-backed pixels','status':'passed'})
         key('w',('ctrl',))
-        passed('QuickDraw window closes and exposes About',window_count(2,2))
+        passed('QuickDraw window closes and exposes About',window_count(2,about_id))
         key('w',('ctrl',))
-        passed('About closes and exposes the real volume browser',window_count(1,1))
+        passed('About closes and exposes the real volume browser',window_count(1,root_id))
         move(100,440);move(540,440)
         passed('absolute mouse crosses screen midpoint',lambda s:s['mouse']=='540,440')
         drag(398,35,20,440)
@@ -187,27 +190,27 @@ def check_events(endpoint, serial_path, results):
         drag(210,66,150,33)
         passed('folder drag roundtrip restores position',lambda s:s['first']=='8,46,412,234')
         drag(21,36,20,440)
-        passed('close release outside its box cancels',window_count(1,1))
+        passed('close release outside its box cancels',window_count(1,root_id))
         # Actual HFS catalog folders replace the old canned new-window button.
         click(40,92);click(40,92)
-        applications=passed('double-click Applications opens its HFS catalog folder',lambda s:s['windows']=='2' and int(s['front'])>3)
+        applications=passed('double-click Applications opens its HFS catalog folder',lambda s:s['windows']=='2' and int(s['front']) not in (root_id, about_id, quickdraw_id))
         applications_id=int(applications['front'])
         wait_log('name=Applications')
         wait_log(f'FINDER_FOLDER_READY window={applications_id}')
         screenshot('finder-applications-folder.png')
         key('up',('ctrl',))
-        passed('Command-Up activates the existing parent folder',window_count(2,1))
+        passed('Command-Up activates the existing parent folder',window_count(2,root_id))
         key('n')
-        passed('N selects the existing startup root without duplicates',window_count(2,1))
+        passed('N selects the existing startup root without duplicates',window_count(2,root_id))
         click(104,92)
         key('o',('ctrl',))
-        documents=passed('Command-O opens selected Documents catalog folder',lambda s:s['windows']=='3' and int(s['front'])>applications_id)
+        documents=passed('Command-O opens selected Documents catalog folder',lambda s:s['windows']=='3' and int(s['front']) not in (root_id, applications_id))
         documents_id=int(documents['front'])
         wait_log('name=Documents')
         wait_log(f'FINDER_FOLDER_READY window={documents_id}')
         screenshot('finder-documents-folder.png')
         key('w',('ctrl_r',))
-        passed('right Ctrl-W produces guest Command-W',window_count(2,1))
+        passed('right Ctrl-W produces guest Command-W',window_count(2,root_id))
         click(21,36)
         passed('close box removes the root and activates remaining folder',window_count(1,applications_id))
         key('w',('ctrl',))
@@ -215,7 +218,7 @@ def check_events(endpoint, serial_path, results):
         move(16,444)
         empty=screenshot('finder-empty-desktop.png')
         key('n')
-        fresh=passed('N reopens the mounted startup folder with a fresh ID',lambda s:s['windows']=='1' and int(s['front'])>documents_id)
+        fresh=passed('N reopens the mounted startup folder with a fresh ID',lambda s:s['windows']=='1' and int(s['front']) not in (root_id, about_id, quickdraw_id, applications_id, documents_id))
         fresh_id=int(fresh['front'])
         key('w',('ctrl',))
         passed('fresh root folder closes back to the desktop',window_count(0,0))
@@ -224,7 +227,7 @@ def check_events(endpoint, serial_path, results):
         assert ImageChops.difference(empty.crop((0,21,640,480)),roundtrip.crop((0,21,640,480))).getbbox() is None,'folder new/close left stale desktop pixels'
         records.append({'check':'retained desktop is restored exactly after folder open/close', 'status':'passed'})
         click(600,50);click(600,50)
-        passed('double-click mounted volume desktop icon reopens its real root',lambda s:s['windows']=='1' and int(s['front'])>fresh_id)
+        passed('double-click mounted volume desktop icon reopens its real root',lambda s:s['windows']=='1' and int(s['front']) != fresh_id)
         screenshot('finder-desktop-volume-open.png')
         key('w',('ctrl',))
         passed('desktop volume root closes cleanly',window_count(0,0))

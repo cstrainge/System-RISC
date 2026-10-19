@@ -66,7 +66,7 @@ def capture(output, windows=False):
     try:
         driver.wait('DESKTOP_READY: Finder and native Window Manager')
         driver.click(40, 95, double=True)
-        driver.wait('window=2 name=Applications')
+        driver.wait(' name=Applications\n')
         launch()
         frame('panic-app-ready')
         previous = driver.log().count('CRASH_REPORT_READY ')

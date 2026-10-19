@@ -8,6 +8,7 @@ pub mod controls;
 pub mod resources;
 pub mod files;
 pub mod memory;
+pub(crate) mod handles;
 pub mod menus;
 pub mod crashes;
 pub mod dialogs;

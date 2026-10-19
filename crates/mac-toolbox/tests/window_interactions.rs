@@ -105,11 +105,13 @@ fn real_userspace_window_tracking_commits_on_release_and_cancels_cleanly()
                     .unwrap_or_else(|| panic!("missing observation {name}"))
     };
     let frame = |name: &str| Frame::read(&output.join(get(name)["frame"].as_str().unwrap()));
+    let original_id = get("baseline")["state"]["front"].clone();
+    let background_id = get("background-baseline")["state"]["front"].clone();
     let bounds = |name: &str, expected: &str| {
         let state = &get(name)["state"];
         assert_eq!(state["first"], expected, "{name} window bounds");
         assert_eq!(state["windows"], "1", "{name} window count");
-        assert_eq!(state["front"], "1", "{name} z order");
+        assert_eq!(state["front"], original_id, "{name} z order");
     };
     for name in ["baseline", "drag-held", "drag-outside-held", "drag-cancelled", "drag-reentered"]
     {
@@ -145,19 +147,19 @@ fn real_userspace_window_tracking_commits_on_release_and_cancels_cleanly()
     bounds("zoom-committed", "1,44,638,457");
     bounds("zoom-restored", "8,46,412,234");
     baseline.assert_same(&frame("zoom-restored"), "zoom roundtrip changed pixels");
-    for (name, bounds, front) in [("background-baseline", "8,46,412,234", "2"),
-                                  ("command-drag-held", "8,46,412,234", "2"),
-                                  ("command-drag-committed", "68,79,472,267", "2"),
-                                  ("background-drag-cancelled", "68,79,472,267", "2"),
-                                  ("background-drag-held", "68,79,472,267", "2"),
-                                  ("background-drag-activated", "8,46,412,234", "1")]
+    for (name, bounds, front) in [("background-baseline", "8,46,412,234", &background_id),
+                                  ("command-drag-held", "8,46,412,234", &background_id),
+                                  ("command-drag-committed", "68,79,472,267", &background_id),
+                                  ("background-drag-cancelled", "68,79,472,267", &background_id),
+                                  ("background-drag-held", "68,79,472,267", &background_id),
+                                  ("background-drag-activated", "8,46,412,234", &original_id)]
     {
         assert_eq!(get(name)["state"]["windows"], "2", "{name} count");
-        assert_eq!(get(name)["state"]["front"], front, "{name} activation/z order");
+        assert_eq!(&get(name)["state"]["front"], front, "{name} activation/z order");
         assert_eq!(get(name)["state"]["first"], bounds, "{name} bounds");
     }
     assert_eq!(get("close-accepted")["state"]["windows"], "1");
-    assert_eq!(get("close-accepted")["state"]["front"], "2");
+    assert_eq!(get("close-accepted")["state"]["front"], background_id);
     assert_eq!(get("close-accepted")["state"]["first"], "0,0,0,0");
     assert_eq!(get("last-close-accepted")["state"]["windows"], "0");
     assert_eq!(get("last-close-accepted")["state"]["front"], "0");

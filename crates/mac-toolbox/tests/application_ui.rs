@@ -112,7 +112,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
                     .parse::<u32>()
                     .unwrap()
     };
-    assert!(prefix("applications-folder").contains("window=2 name=Applications\n"));
+    assert!(prefix("applications-folder").contains(" name=Applications\n"));
     let fixture: Value =
         serde_json::from_slice(&fs::read(output.join("icon-fixture.json")).unwrap()).unwrap();
     assert_eq!(fixture["icon_id"], 9433, "non-128 loaded-image icon fixture");
@@ -207,7 +207,9 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     for stage in ["background-command-drag-held", "background-command-drag-released",
                   "background-ordinary-drag-held"]
     {
-        assert_eq!(front(stage), 4, "background drag changed the front window at{stage}");
+        assert_eq!(front(stage),
+                   front("editor-caret-restored"),
+                   "background drag changed the front window at{stage}");
         assert!(region(&image(stage), 0, 0, 145, 20)
                 == region(&image("editor-caret-restored"), 0, 0, 145, 20),
                 "background drag changed the foreground app menus at{stage}");
@@ -221,7 +223,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     assert!(between("background-ordinary-drag-held", "background-ordinary-drag-released")
             .contains("PROCESS_ACTIVE app=2\n"),
             "ordinary DragWindow must activate its application after accepted release");
-    assert_eq!(front("background-ordinary-drag-released"), 3);
+    assert_eq!(front("background-ordinary-drag-released"), front("quickdraw-page-two"));
     assert!(region(&image("background-ordinary-drag-released"), 0, 0, 145, 20)
             == region(&image("quickdraw-page-two"), 0, 0, 145, 20),
             "accepted background drag did not restore the owning application's menu bar");

@@ -140,7 +140,7 @@ def capture(output, probe=False, menus=False):
             move(16,444); snapshot('grow-restored')
             move(537,397); button(True); button(False); move(16,444); snapshot('grow-no-motion')
         else:
-            wait(lambda _: 'FINDER_FOLDER_READY window=1' in serial.read_text(errors='replace'))
+            wait(lambda _: 'FINDER_FOLDER_READY window=' in serial.read_text(errors='replace'))
             move(16,444); snapshot('baseline')
             move(150,33); button(True); move(210,66); snapshot('drag-held')
             move(150,10); snapshot('drag-outside-held')

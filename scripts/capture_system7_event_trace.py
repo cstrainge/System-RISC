@@ -162,7 +162,7 @@ def capture(output, windows=False):
 
         stage('idle-finder', lambda: None, 1)
         stage('open-folder', lambda: (driver.click(40, 95, double=True),
-                                      driver.wait('window=2 name=Applications')))
+                                      driver.wait(' name=Applications\n')))
         stage('launch-textedit', lambda: (driver.application('TextEdit Exerciser'),
                                           driver.wait('TEXTEDIT_EXERCISER_READY\n')))
         stage('idle-editor', lambda: None, 1)

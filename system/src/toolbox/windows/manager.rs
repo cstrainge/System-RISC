@@ -8,10 +8,11 @@ use mac_abi::{DefinitionCall, DefinitionEntry, Header, Surface};
 
 use super::definition::{self, WindowDefinitionState};
 use crate::toolbox::{events::*,
+                     handles::{Kind, Table},
                      quickdraw::{Canvas, Point, Rect, SurfaceExt,
                                  geometry::{sect_rect, union_rect}}};
 
-pub const MAX_WINDOWS: usize = 32;
+pub const MAX_WINDOWS: usize = Kind::Windows.capacity();
 pub use mac_abi::WindowId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i16)]
@@ -249,10 +250,11 @@ pub enum Action
 
 pub struct WindowManager
 {
-    windows:  [Option<Window>; MAX_WINDOWS],
+    // Close notifications carry24 bits. Retire at255 instead of letting a
+    // generation overwrite their message kind or a QuickDraw target namespace.
+    windows:  Table<Window>,
     order:    [WindowId; MAX_WINDOWS],
     len:      usize,
-    next_id:  u32,
     active:   Option<WindowId>,
     gate:     mac_abi::TrapGate,
     tracking: Option<Tracking>
@@ -274,10 +276,9 @@ impl WindowManager
 
     pub fn new() -> Self
     {
-        Self { windows:  [None; MAX_WINDOWS],
+        Self { windows:  Table::new(Kind::Windows),
                order:    [WindowId(0); MAX_WINDOWS],
                len:      0,
-               next_id:  1,
                active:   None,
                gate:     crate::toolbox::quickdraw::surface_gate,
                tracking: None }
@@ -304,12 +305,12 @@ impl WindowManager
 
     pub fn window(&self, id: WindowId) -> Option<&Window>
     {
-        self.windows.iter().flatten().find(|w| w.id == id)
+        self.windows.get(id.0)
     }
 
     fn window_mut(&mut self, id: WindowId) -> Option<&mut Window>
     {
-        self.windows.iter_mut().flatten().find(|w| w.id == id)
+        self.windows.get_mut(id.0)
     }
 
     pub fn back_to_front(&self) -> impl Iterator<Item = &Window>
@@ -365,16 +366,9 @@ impl WindowManager
         {
             return None;
         }
-        // Onscreen windows cannot collide with the reserved desktop or worlds.
-        if self.next_id >= mac_abi::quickdraw::DESKTOP_TARGET
-        {
-            return None;
-        }
-        let slot = self.windows.iter().position(Option::is_none)?;
+        self.windows.reserve().ok()?;
         let previous = self.active;
-        let id = WindowId(self.next_id);
-        self.next_id = self.next_id.checked_add(1)?;
-        let mut window = Window { id,
+        let mut window = Window { id: WindowId(0),
                                   bounds,
                                   refcon,
                                   min_width,
@@ -406,7 +400,12 @@ impl WindowManager
             window.call(definition::DISPOSE, 0, core::ptr::null_mut());
             return None;
         }
-        self.windows[slot] = Some(window);
+        let id = WindowId(self.windows
+                              .insert_with(|id| {
+                                  window.id = WindowId(id);
+                                  window
+                              })
+                              .ok()?);
         self.order[self.len] = id;
         self.len += 1;
         if activate
@@ -423,7 +422,7 @@ impl WindowManager
     fn refresh_active(&mut self)
     {
         let active = self.active;
-        for window in self.windows.iter_mut().flatten()
+        for window in self.windows.values_mut()
         {
             window.state.active = u32::from(active == Some(window.id));
         }
@@ -582,7 +581,7 @@ impl WindowManager
         {
             window.call(definition::DISPOSE, 0, core::ptr::null_mut());
         }
-        self.windows.iter_mut().find(|w| w.as_ref().is_some_and(|w| w.id == id)).unwrap().take();
+        self.windows.remove(id.0);
         self.order.copy_within(index + 1..self.len, index);
         self.len -= 1;
         if active
@@ -639,7 +638,7 @@ impl WindowManager
 
     pub fn invalidate_all(&mut self)
     {
-        for window in self.windows.iter_mut().flatten()
+        for window in self.windows.values_mut()
         {
             window.damage = Some(window.local_bounds());
         }
@@ -1255,22 +1254,6 @@ mod tests
         assert_eq!(manager.window(a).unwrap().state.active, 0);
         manager.select_window(a, &mut events, 6);
         assert_eq!(manager.active_window(), Some(a));
-    }
-
-    #[test]
-    fn window_ids_cannot_enter_desktop_or_offscreen_namespaces()
-    {
-        let mut manager = WindowManager::new();
-        let mut events = EventManager::new();
-        manager.next_id = mac_abi::quickdraw::DESKTOP_TARGET;
-        assert!(manager.new_window(Rect::new(80, 80, 280, 200),
-                                   "Reserved",
-                                   0,
-                                   (80, 60),
-                                   &mut events,
-                                   0)
-                       .is_none());
-        assert_eq!(manager.count(), 0);
     }
 
     #[test]

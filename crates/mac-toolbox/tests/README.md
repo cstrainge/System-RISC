@@ -224,3 +224,14 @@ source information, a report over 20 KiB, Home/End scrolling, lossless copy into
 a separate TextEdit process, and application-only termination with a usable
 desktop afterward. Set `SYSTEM7_PANIC_WINDOWS=1` to use private native Windows
 QEMU instead of Linux.
+
+
+Shared handle storage is accepted through the public SDK in
+`conformance/ownership.rs` (actual RV64 windows) and `memory_boundaries.rs`.
+The window cases repeatedly reuse a slot while rejecting the old ID across
+queries, mutation, drawing and disposal, including the legacy Pascal trap.
+They also exhaust the24-bit event-safe generation range, verify retirement,
+and reject live foreign memory/window IDs in both directions.
+Memory acceptance checks all65535 generations without wrap, the unchanged16/16
+wire encoding, stale byte access/disposal, and generation preservation on app
+cleanup. Owner/access-denied coverage remains in the process conformance suite.

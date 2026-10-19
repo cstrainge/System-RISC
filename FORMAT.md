@@ -285,3 +285,15 @@ Reports are scoped to the trusted calling application and retained in System,
 with a1MiB limit; the shared client handler additionally logs the full formatted
 stream. No original Macintosh system-error trap is repurposed. See
 [panic report ownership and failure behavior](docs/PANIC-REPORTS.md).
+
+
+Resident memory and window identities use the shared `toolbox::handles::Table`.
+The high16 bits hold a nonzero generation; the low16 bits hold a registered,
+one-based slot. Memory retains slots1..512 and all65535 generations, exactly as
+before. Windows use the disjoint range513..544 and generations1..255 so their
+IDs remain representable in the existing24-bit close-event payload. These are
+opaque service-scoped IDs; applications must not infer allocation order or
+construct IDs from slot numbers. Removal/clear invalidates the old generation;
+an exhausted slot is permanently retired rather than wrapped. Existing owner
+checks and Pascal/68k adapter contracts are unchanged. Other resident managers
+must register and adopt this facility when their implementation is next touched.

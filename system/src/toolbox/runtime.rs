@@ -40,6 +40,7 @@ pub struct Desktop
     classic_font:    mac_abi::quickdraw::FontSelection,
     legacy:          crate::context::LegacyGlobals,
     pub windows:     WindowManager,
+    first_window:    WindowId,
     events:          Box<EventManager>,
     textedit:        super::textedit::Manager,
     definitions:     Definitions,
@@ -129,7 +130,8 @@ impl Desktop
             &crate::kernel::resources().ok_or(NOT_SUPPORTED)?
                 .get(mac_abi::resources::SYSTEM, ResourceKey { kind: *b"CURS", id: 1 })?.1.data)?;
         serial!("VIRTIO_INPUT=READY devices={}", devices);
-        Ok(Self { crash: Default::default(),
+        Ok(Self { first_window: WindowId(0),
+                  crash: Default::default(),
                   dialogs: Default::default(),
                   menus: super::menus::Manager::new(mdef, crate::machine::traps::gateway),
                   desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
@@ -268,6 +270,10 @@ impl Desktop
                     return BAD_ARGUMENT;
                 };
                 request.id = id.0;
+                if self.first_window.0 == 0
+                {
+                    self.first_window = id;
+                }
                 self.window_owners.push((id, self.owner));
                 if self.owner != self.foreground
                 {
@@ -1328,7 +1334,7 @@ impl Desktop
         if self.last_logged != self.revision
         {
             self.last_logged = self.revision;
-            let r = self.windows.window(WindowId(1)).map_or(Rect::ZERO, |w| w.bounds);
+            let r = self.windows.window(self.first_window).map_or(Rect::ZERO, |w| w.bounds);
             serial!("WM_STATE rev={} action={} windows={} front={} key={} mouse={},{} \
                      first={},{},{},{} updates={} dropped={}",
                     self.revision,

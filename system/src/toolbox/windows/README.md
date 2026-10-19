@@ -1,9 +1,18 @@
 # Window Manager first cut
 
-`WindowManager` owns eight stable window IDs, z order, activation, outline-based
-drag/resize, close and zoom tracking with cancellation, local update damage and
-rectangular visibility clipping. Closing or moving a front window invalidates
-the exposed windows. Closed IDs are never reused during the manager's lifetime.
+`WindowManager` owns up to 32 live windows with stable IDs, z order, activation,
+outline-based drag/resize, close and zoom tracking with cancellation, local
+update damage and rectangular visibility clipping. Closing or moving a front
+window invalidates the exposed windows. Closed IDs are never reused during the
+manager's lifetime.
+
+The shared resident `handles::Table` supplies 16/16 generation/slot identities
+and validates every lookup. Memory and windows have disjoint registered slot
+ranges; a live memory handle is rejected by the Window Manager and vice versa.
+Slots are reused with a new generation; stale IDs remain invalid. Window
+generations stop at 255 to preserve the 24-bit native close-event payload and
+disjoint desktop/offscreen target ranges. Exhausted slots are retired, never
+wrapped; the current 32-slot table has a bounded lifetime allocation budget.
 
 `new_window` uses a source-reused standard definition only in host tests.
 `new_window_with_definition` instead records the loaded resource's `DefinitionEntry`

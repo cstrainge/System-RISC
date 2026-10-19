@@ -38,11 +38,15 @@ fn deferred_close_acceptance_preserves_window_until_explicit_application_close()
     let observations = report["observations"].as_array().unwrap();
     let get = |name: &str| observations.iter().find(|row| row["name"] == name).unwrap();
     let baseline = &get("baseline")["state"];
+    let deferred_id = baseline["front"].as_u64().unwrap();
+    let automatic_id = get("explicit-close")["state"]["front"].as_u64().unwrap();
+    assert_ne!(deferred_id, automatic_id);
+    assert_eq!(deferred_id & 0xffff, automatic_id & 0xffff, "force slot reuse");
     for name in ["baseline", "cancelled", "accepted", "accepted-again"]
     {
         let state = &get(name)["state"];
         assert_eq!(state["deferred"], 1, "{name} lost the live window");
-        assert_eq!(state["front"], 1);
+        assert_eq!(state["front"], deferred_id);
         assert_eq!(state["updates"], baseline["updates"],
                    "{name} emitted an unnecessary application Update");
         assert_eq!(content(&output.join(get(name)["frame"].as_str().unwrap())),
@@ -53,14 +57,15 @@ fn deferred_close_acceptance_preserves_window_until_explicit_application_close()
     assert_eq!(get("accepted")["state"]["requests"], 1);
     assert_eq!(get("accepted-again")["state"]["requests"], 1);
     assert_eq!(report["requests"].as_array().unwrap().len(), 1);
-    assert_eq!(report["requests"][0], "DEFERRED_REQUEST id=1 alive=1 count=1");
-    assert_eq!(report["disposals"][0], "DEFERRED_DISPOSE id=1 alive=0");
+    assert_eq!(report["requests"][0], format!("DEFERRED_REQUEST id={deferred_id} alive=1 count=1"));
+    assert_eq!(report["disposals"][0], format!("DEFERRED_DISPOSE id={deferred_id} alive=0"));
     assert_eq!(get("explicit-close")["state"]["deferred"], 0);
     assert_eq!(get("explicit-close")["state"]["automatic"], 1);
     assert_eq!(get("automatic-close")["state"]["automatic"], 0);
     assert_eq!(get("automatic-close")["state"]["requests"], 1);
     assert_eq!(get("automatic-close")["state"]["notices"], 1);
-    assert_eq!(report["automatic_notices"][0], "AUTOMATIC_NOTICE id=2 count=1");
+    assert_eq!(report["automatic_notices"][0],
+               format!("AUTOMATIC_NOTICE id={automatic_id} count=1"));
     assert!(!output.join("vm/system7.qcow2").exists());
     let summary = serde_json::json!({"passed":true,"requests":1,"cancelled_requests":0,"retained_content_pixels":440*300,"unnecessary_updates":0,"explicit_dispose":true,"default_automatic_close":true});
     fs::write(root.join("results/system7/deferred-close-checks.json"),

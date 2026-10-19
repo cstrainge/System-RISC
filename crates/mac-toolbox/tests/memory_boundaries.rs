@@ -47,6 +47,8 @@ fn disposed_ids_never_alias_reused_slots_and_borrowed_pointers_are_cleared()
         client.memory(&mut call, &[], &mut []).unwrap();
         let current = call.handle;
         assert_ne!(current, old);
+        assert_eq!(current & 0xffff, old & 0xffff, "force the same slot");
+        assert_eq!(current >> 16, (old >> 16) + 1);
         call.operation = SIZE;
         call.handle = old;
         assert_eq!(client.memory(&mut call, &[], &mut []), Err(Error(NIL_HANDLE_ERR)));
@@ -102,5 +104,45 @@ fn application_cleanup_reclaims_zone_without_reusing_old_handle_generations()
             clear_memory_services().unwrap();
             assert_eq!(handle.len(), Err(Error(NIL_HANDLE_ERR)));
         }
+    });
+}
+
+#[test]
+fn full_u16_generation_range_retires_the_slot_without_reissuing_an_old_id()
+{
+    support::with_system(|system| {
+        let client = system.client();
+        let mut call = MemoryCall { operation: NEW_EMPTY,
+                                    ..Default::default() };
+        let mut first = 0;
+        for generation in 1..=u16::MAX
+        {
+            call.operation = NEW_EMPTY;
+            client.memory(&mut call, &[], &mut []).unwrap();
+            assert_eq!(call.handle, (u32::from(generation) << 16) | 1);
+            if generation == 1
+            {
+                first = call.handle;
+            }
+            call.operation = DISPOSE;
+            client.memory(&mut call, &[], &mut []).unwrap();
+        }
+        call.operation = NEW_CLEAR;
+        call.size = 4;
+        client.memory(&mut call, &[], &mut []).unwrap();
+        let current = call.handle;
+        assert_eq!(current, (1 << 16) | 2, "retire rather than wrap generation");
+        for stale in [first, 0xffff0001, 1, 0, u32::MAX]
+        {
+            call.operation = DISPOSE;
+            call.handle = stale;
+            assert_eq!(client.memory(&mut call, &[], &mut []), Err(Error(NIL_HANDLE_ERR)));
+        }
+        call.operation = SIZE;
+        call.handle = current;
+        client.memory(&mut call, &[], &mut []).unwrap();
+        assert_eq!(call.size, 4);
+        call.operation = DISPOSE;
+        client.memory(&mut call, &[], &mut []).unwrap();
     });
 }

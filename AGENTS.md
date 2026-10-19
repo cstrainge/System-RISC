@@ -23,6 +23,12 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   RISC-V is current, x86 is a future target. See THREADING.md for unmet gates.
 - All system preferences use versioned JSON with typed access and safe concurrent
   transactions. Persistence requires writable storage; do not fake success.
+- Every resident Toolbox manager must issue and validate object IDs through
+  `system/src/toolbox/handles.rs`; no manager may introduce its own ID scheme.
+  Migrate existing ID storage when touching that manager. Preserve generation
+  history across clears and retire exhausted slots; register disjoint service
+  namespaces centrally and keep ownership checks separate. Keep validation in
+  resident storage for both native Rust and legacy trap callers.
 - Generate application vers resources from Cargo's resolved package version.
 - Use the supplied rustfmt.toml. Run checks appropriate to the change and report
   actual coverage and remaining gaps. A passing subset is not full Toolbox or
