@@ -73,6 +73,93 @@
           "Unclipped keyless label"
         ]
       }
+    },
+    {
+      "type": "MENU",
+      "id": 31000,
+      "symbol": "SIZING_0",
+      "payload": {
+        "format": "file",
+        "path": "../../data/menu-sizing/31000.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 31001,
+      "symbol": "SIZING_1",
+      "payload": {
+        "format": "file",
+        "path": "../../data/menu-sizing/31001.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 31002,
+      "symbol": "SIZING_2",
+      "payload": {
+        "format": "file",
+        "path": "../../data/menu-sizing/31002.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 31003,
+      "symbol": "SIZING_3",
+      "payload": {
+        "format": "file",
+        "path": "../../data/menu-sizing/31003.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 31004,
+      "symbol": "SIZING_4",
+      "payload": {
+        "format": "file",
+        "path": "../../data/menu-sizing/31004.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 31005,
+      "symbol": "SIZING_5",
+      "payload": {
+        "format": "file",
+        "path": "../../data/menu-sizing/31005.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 31006,
+      "symbol": "SIZING_6",
+      "payload": {
+        "format": "file",
+        "path": "../../data/menu-sizing/31006.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 31007,
+      "symbol": "SIZING_7",
+      "payload": {
+        "format": "file",
+        "path": "../../data/menu-sizing/31007.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 30001,
+      "symbol": "KEYED_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "Test",
+        "items": [
+          {
+            "text": "Close Window",
+            "key": "W"
+          }
+        ]
+      }
     }
   ]
 }

@@ -4,6 +4,14 @@ Finder links only `mac-toolbox`. The SDK marshals calls; System owns manager
 state and device access. Unique menu geometry, drawing and hit code lives in the
 independently loaded MDEF0 resource alongside WDEF0 and CDEF0/1.
 
+Uncached sizing is checked against eight executed original CalcMenuSize cases.
+Standard MDEF reserves24 pixels beyond the label for keyless items and48 for
+items with shortcuts. The latter preserves a10-pixel gap between the label and
+command column. This makes Finder's generated File menu139 pixels wide, matching
+the original sizing operation; the former127-pixel result overlapped Close Window
+with Command-W. Host and RV64 public-API tests share the captured sizes, with
+additional complete-label/gap/shortcut pixel checks.
+
 ## Resource ownership
 
 Finder's MENU1251..1256 preserve the original English Finder7.6.1 fmnu command

@@ -121,6 +121,10 @@ def capture(output, probe=False, menus=False):
             wait(lambda _: 'MENU_LABEL width=' in serial.read_text(errors='replace'))
             move(20,10);button(True);snapshot('menu-keyless')
             move(16,444);button(False)
+            key_transition('h',True);key_transition('h',False)
+            wait(lambda _: 'MENU_KEYED_READY' in serial.read_text(errors='replace'))
+            move(20,10);button(True);snapshot('menu-keyed')
+            move(16,444);button(False)
         elif probe:
             wait(lambda _: 'WINDOW_PROBE_READY' in serial.read_text(errors='replace'))
             move(16,444); snapshot('baseline')
@@ -171,6 +175,7 @@ def capture(output, probe=False, menus=False):
                   'disk_sha256_before': disk_before,
                   'disk_sha256_after': hashlib.sha256(disk.read_bytes()).hexdigest(),
                   'launch': json.loads((output / 'vm/command.json').read_text()),
+                  'menu_sizing_pass': 'MENU_SIZING_PASS cases=8' in serial.read_text(errors='replace'),
                   'menu_events':[line for line in serial.read_text(errors='replace').splitlines() if line.startswith('MENU_PROBE ')],
                   'menu_label_width': next((int(line.split('=')[1]) for line in serial.read_text(errors='replace').splitlines() if line.startswith('MENU_LABEL width=')),None)}
         (output / 'capture.json').write_text(json.dumps(report, indent=2) + '\n')

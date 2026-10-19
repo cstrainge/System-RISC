@@ -6,6 +6,9 @@ use mac_toolbox::{System,
                   quickdraw::Rect,
                   windows::WindowSpec};
 #[cfg(feature = "menus")]
+#[path = "../../../conformance/menu_sizing.rs"]
+mod menu_sizing;
+#[cfg(feature = "menus")]
 const KEYLESS_LABEL: &str = "Unclipped keyless label";
 
 fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
@@ -25,6 +28,8 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
         #[cfg(feature = "menus")]
         if event.kind == EventKind::KeyDown && event.character() == b'g'
         {
+            menu_sizing::run(system)?;
+            system.log("MENU_SIZING_PASS cases=8\n").map_err(mac_toolbox::Error)?;
             system.menus().clear()?;
             system.menus().install_menu_resource(1, 30000)?;
             use core::fmt::Write;
@@ -34,6 +39,13 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
             let _ = writeln!(&mut line, "MENU_LABEL width={width}");
             system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())
                   .map_err(mac_toolbox::Error)?;
+        }
+        #[cfg(feature = "menus")]
+        if event.kind == EventKind::KeyDown && event.character() == b'h'
+        {
+            system.menus().clear()?;
+            system.menus().install_menu_resource(1, 30001)?;
+            system.log("MENU_KEYED_READY\n").map_err(mac_toolbox::Error)?;
         }
         #[cfg(feature = "menus")]
         if let Some(selection) = system.menus().selection(&event)?
@@ -63,6 +75,19 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
                                            v: 40 },
                       KEYLESS_LABEL,
                       0)?;
+            #[cfg(feature = "menus")]
+            {
+                port.text(Default::default(),
+                          mac_toolbox::Point { h: 16,
+                                               v: 65 },
+                          "Close Window",
+                          0)?;
+                port.text(Default::default(),
+                          mac_toolbox::Point { h: 16,
+                                               v: 90 },
+                          "\u{11}W",
+                          0)?;
+            }
             system.windows().end_update(window)?;
             system.log("WINDOW_PROBE_READY\n").map_err(mac_toolbox::Error)?;
         }

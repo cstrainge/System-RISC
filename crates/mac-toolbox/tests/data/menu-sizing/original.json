@@ -1,0 +1,42 @@
+[
+  {
+    "case": "keyless_close",
+    "width": 115,
+    "height": 16
+  },
+  {
+    "case": "close_W",
+    "width": 139,
+    "height": 16
+  },
+  {
+    "case": "folder_N",
+    "width": 122,
+    "height": 16
+  },
+  {
+    "case": "short_I",
+    "width": 52,
+    "height": 16
+  },
+  {
+    "case": "short_W",
+    "width": 52,
+    "height": 16
+  },
+  {
+    "case": "finder_window",
+    "width": 139,
+    "height": 32
+  },
+  {
+    "case": "finder_desktop",
+    "width": 139,
+    "height": 32
+  },
+  {
+    "case": "long_keyless",
+    "width": 177,
+    "height": 16
+  }
+]

@@ -161,3 +161,11 @@ Additional host tests check byte/record limits, failure preservation, cleared
 transport borrows and eight concurrent OS threads sharing one resident clipboard.
 These are memory clipboard contracts. Disk Scrap.dat, original counted-MacRoman
 A-line adapters, TextEdit and scheduler/application ownership remain separate.
+
+
+Uncached menu sizing now has eight executed original CalcMenuSize observations
+in `data/menu-sizing`. Both host services and the loaded RV64 MDEF run those
+cases through the public Menu Manager. The graphical probe also checks a full
+Close Window label, its10-pixel gap, and Command-W against public QuickDraw text
+rendering. This covers generated Finder menus whose resource width is zero;
+cached original popup pixel comparisons remain in the same test.

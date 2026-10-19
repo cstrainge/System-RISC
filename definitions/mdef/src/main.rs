@@ -149,7 +149,10 @@ fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_tra
         {
             canvas.styled_width(u16::from(item.style), label)?
         };
-        width = width.max(label_width + 24 + if item.key != 0 { 12 } else { 0 });
+        // Original CalcMenuSize reserves 24 extra pixels for a shortcut.
+        // Combined with the keyless margins this leaves 10 pixels between the
+        // label (left+14) and the command column (right-24).
+        width = width.max(label_width + 24 + if item.key != 0 { 24 } else { 0 });
     }
     let left = state.title_bounds.left.min(638 - width);
     let mut y = 20;

@@ -1,6 +1,43 @@
 //! Menu Manager compatibility through public SDK and real resource handlers.
 #![cfg(not(target_arch = "riscv64"))]
 use mac_toolbox::{Event, EventKind, System};
+#[path = "conformance/menu_sizing.rs"]
+mod menu_sizing;
+#[test]
+fn uncached_menu_sizes_match_original_calc_menu_size()
+{
+    use mac_formats::resource::{Resource, encode};
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("data/menu-sizing/original.json")).unwrap();
+    let bytes = [include_bytes!("data/menu-sizing/31000.bin").as_slice(),
+                 include_bytes!("data/menu-sizing/31001.bin").as_slice(),
+                 include_bytes!("data/menu-sizing/31002.bin").as_slice(),
+                 include_bytes!("data/menu-sizing/31003.bin").as_slice(),
+                 include_bytes!("data/menu-sizing/31004.bin").as_slice(),
+                 include_bytes!("data/menu-sizing/31005.bin").as_slice(),
+                 include_bytes!("data/menu-sizing/31006.bin").as_slice(),
+                 include_bytes!("data/menu-sizing/31007.bin").as_slice()];
+    let resources: Vec<_> =
+        menu_sizing::CASES.iter()
+                          .zip(bytes)
+                          .zip(expected.as_array().unwrap())
+                          .map(|((&(id, name, width, height), bytes), captured)| {
+                              assert_eq!(captured["case"], name);
+                              assert_eq!(captured["width"], width);
+                              assert_eq!(captured["height"], height);
+                              Resource { kind: *b"MENU",
+                                         id,
+                                         name: None,
+                                         attributes: 0,
+                                         data: bytes.to_vec() }
+                          })
+                          .collect();
+    let fork = encode(&resources).unwrap();
+    mac_system::testing::menus::with_resources(&fork, &fork, |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        menu_sizing::run(&system).unwrap();
+    });
+}
 #[test]
 fn malformed_menu_resources_fail_without_installing_partial_objects()
 {
@@ -163,6 +200,36 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
                        "authored longest keyless label pixel ({x},{y})");
         }
     }
+    assert_eq!(report["menu_sizing_pass"], true,
+               "uncached original sizes failed through RV64 ECALL");
+    let keyed = frame(&output.join("menu-keyed.ppm"));
+    // Original CalcMenuSize makes this139px wide: a91px label,10px gap,
+    //24px command column and14px left inset. Compare both complete strings
+    // against independent public QuickDraw rendering in the probe window.
+    for y in 20..36
+    {
+        for x in 24..115
+        {
+            let actual = (y * 640 + x) * 3;
+            let reference = ((y + 133) * 640 + x + 92) * 3;
+            assert_eq!(&keyed[actual..actual + 3],
+                       &baseline[reference..reference + 3],
+                       "keyed label ({x},{y})");
+        }
+        for x in 115..125
+        {
+            let actual = (y * 640 + x) * 3;
+            assert_eq!(&keyed[actual..actual + 3], &[255, 255, 255], "shortcut gap ({x},{y})");
+        }
+        for x in 125..149
+        {
+            let actual = (y * 640 + x) * 3;
+            let reference = ((y + 158) * 640 + x - 9) * 3;
+            assert_eq!(&keyed[actual..actual + 3],
+                       &baseline[reference..reference + 3],
+                       "command shortcut ({x},{y})");
+        }
+    }
     let apple = include_bytes!("data/original-menu-apple-title.rgb");
     for y in 0..19
     {
@@ -211,5 +278,5 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
                 different.len(),
                 &different[..different.len().min(20)]);
     }
-    std::fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","transport":"public SDK-only guest / loaded MDEF / real virtio input", "commands":2,"frames":13,"original_exact_rgb_pixels":111184,"native_keyless_label_pixels":width*16,"scope":"click/key selection, disabled key/item/cancel/barswitch, exact restoration, three original File popup crops, original normal Apple title and selected File title; native authored label matches public font rendering"})).unwrap()).unwrap();
+    std::fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","transport":"public SDK-only guest / loaded MDEF / real virtio input", "commands":2,"frames":14,"original_uncached_sizes":8,"native_keyed_pixels":2000,"original_exact_rgb_pixels":111184,"native_keyless_label_pixels":width*16,"scope":"click/key selection, disabled key/item/cancel/barswitch, exact restoration, three original File popup crops, original normal Apple title and selected File title; native authored label matches public font rendering"})).unwrap()).unwrap();
 }
