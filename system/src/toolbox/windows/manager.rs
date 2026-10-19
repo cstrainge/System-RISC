@@ -32,23 +32,33 @@ pub struct Hit
     pub window: Option<WindowId>
 }
 
+/// Focus requested while moving a whole application window plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupFocus
+{
+    Front,
+    Window(WindowId),
+    Desktop,
+    Preserve
+}
+
 #[derive(Clone, Copy)]
 pub struct Window
 {
-    pub id:         WindowId,
-    pub bounds:     Rect,
-    pub refcon:     u32,
-    pub min_width:  i16,
-    pub min_height: i16,
-    state:          WindowDefinitionState,
-    procedure:      i16,
-    entry:          DefinitionEntry,
-    gate:           mac_abi::TrapGate,
-    user_bounds:    Option<Rect>,
-    grow_icon_clip: Option<Rect>,
-    damage:         Option<Rect>,
-    hidden:         bool,
-    updating:       bool
+    pub id:              WindowId,
+    pub bounds:          Rect,
+    pub refcon:          u32,
+    pub min_width:       i16,
+    pub min_height:      i16,
+    state:               WindowDefinitionState,
+    procedure:           i16,
+    entry:               DefinitionEntry,
+    gate:                mac_abi::TrapGate,
+    user_bounds:         Option<Rect>,
+    grow_icon_clip:      Option<Rect>,
+    damage:              Option<Rect>,
+    hidden:              bool,
+    pub(crate) updating: bool
 }
 impl Window
 {
@@ -279,6 +289,17 @@ impl WindowManager
                                       events: &mut EventManager, when: u32)
                                       -> Option<WindowId>
     {
+        self.new_window_with_activation(bounds, title, refcon, minimum, procedure, entry, events,
+                                        when, true)
+    }
+
+    /// Background application windows enter the z order without transient focus.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_window_with_activation(&mut self, bounds: Rect, title: &str, refcon: u32,
+                                      minimum: (i16, i16), procedure: i16, entry: DefinitionEntry,
+                                      events: &mut EventManager, when: u32, activate: bool)
+                                      -> Option<WindowId>
+    {
         let (min_width, min_height) = minimum;
         if min_width < 1 || min_height < 1
         {
@@ -337,10 +358,13 @@ impl WindowManager
         self.windows[slot] = Some(window);
         self.order[self.len] = id;
         self.len += 1;
-        self.active = Some(id);
-        self.refresh_active();
-        Self::activation(previous, false, events, when);
-        Self::activation(Some(id), true, events, when);
+        if activate
+        {
+            self.active = Some(id);
+            self.refresh_active();
+            Self::activation(previous, false, events, when);
+            Self::activation(Some(id), true, events, when);
+        }
         self.invalidate_all();
         Some(id)
     }
@@ -388,6 +412,83 @@ impl WindowManager
         self.invalidate_all();
     }
 
+    /// Raise an application's complete window plane in one transition. The
+    /// relative order of both groups stays intact; only the final focus changes.
+    pub fn select_group(&mut self, ids: &[WindowId], events: &mut EventManager, when: u32)
+    {
+        self.order_group(ids, events, when, GroupFocus::Front);
+    }
+
+    /// Selecting a background application's nonfront window raises its plane
+    /// and chosen window together, without activating the old front in between.
+    pub fn select_group_focus(&mut self, ids: &[WindowId], focus: GroupFocus,
+                              events: &mut EventManager, when: u32)
+    {
+        self.order_group(ids, events, when, focus);
+    }
+
+    /// Restore a foreground plane without changing its current window or
+    /// desktop focus after another application creates a background window.
+    pub fn restore_group(&mut self, ids: &[WindowId], events: &mut EventManager, when: u32)
+    {
+        self.order_group(ids, events, when, GroupFocus::Preserve);
+    }
+
+    fn order_group(&mut self, ids: &[WindowId], events: &mut EventManager, when: u32,
+                   focus: GroupFocus)
+    {
+        let mut order = [WindowId(0); MAX_WINDOWS];
+        let mut count = 0;
+        for selected in [false, true]
+        {
+            for id in self.order[..self.len].iter().copied()
+            {
+                if ids.contains(&id) == selected
+                {
+                    order[count] = id;
+                    count += 1;
+                }
+            }
+        }
+        if let GroupFocus::Window(front) = focus
+           && ids.contains(&front)
+           && let Some(index) = order[..self.len].iter().position(|id| *id == front)
+        {
+            order.copy_within(index + 1..self.len, index);
+            order[self.len - 1] = front;
+        }
+        let active = match focus
+        {
+            GroupFocus::Front | GroupFocus::Window(_) =>
+            {
+                order[..self.len].iter().rev().copied().find(|id| {
+                                                           ids.contains(id)
+                                                               && self.window(*id)
+                                                                      .is_some_and(|window| {
+                                                                          !window.hidden
+                                                                      })
+                                                       })
+            }
+            GroupFocus::Desktop => None,
+            GroupFocus::Preserve => self.active
+        };
+        let reordered = self.order[..self.len] != order[..self.len];
+        let previous = self.active;
+        if !reordered && previous == active
+        {
+            return;
+        }
+        self.order = order;
+        self.active = active;
+        self.refresh_active();
+        if previous != active
+        {
+            Self::activation(previous, false, events, when);
+            Self::activation(active, true, events, when);
+        }
+        self.invalidate_all();
+    }
+
     pub fn deactivate_all(&mut self, events: &mut EventManager, when: u32)
     {
         let Some(previous) = self.active.take()
@@ -402,6 +503,23 @@ impl WindowManager
     }
 
     pub fn dispose_window(&mut self, id: WindowId, events: &mut EventManager, when: u32) -> bool
+    {
+        self.dispose_with_focus(id, events, when, true)
+    }
+
+    /// Process teardown chooses its surviving application's final focus after
+    /// all departing windows are gone, rather than activating each intermediate.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn dispose_without_activation(&mut self, id: WindowId, events: &mut EventManager,
+                                             when: u32)
+                                             -> bool
+    {
+        self.dispose_with_focus(id, events, when, false)
+    }
+
+    fn dispose_with_focus(&mut self, id: WindowId, events: &mut EventManager, when: u32,
+                          select_next: bool)
+                          -> bool
     {
         let Some(index) = self.order[..self.len].iter().position(|other| *other == id)
         else
@@ -418,10 +536,10 @@ impl WindowManager
         self.len -= 1;
         if active
         {
-            self.active = self.front_window();
+            self.active = if select_next { self.front_window() } else { None };
         }
         self.refresh_active();
-        if active
+        if active && select_next
         {
             Self::activation(self.front_window(), true, events, when);
         }
@@ -432,10 +550,16 @@ impl WindowManager
 
     pub fn set_hidden(&mut self, id: WindowId, hidden: bool)
     {
-        if let Some(window) = self.window_mut(id)
+        let Some(window) = self.window_mut(id)
+        else
         {
-            window.hidden = hidden;
+            return;
+        };
+        if window.hidden == hidden
+        {
+            return;
         }
+        window.hidden = hidden;
         self.invalidate_all();
     }
 

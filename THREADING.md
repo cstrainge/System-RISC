@@ -24,6 +24,15 @@ The consolidated regression gate also passes the paired Pascal process traps,
 eight caller-posted foreign-window event-isolation cases, and actual Finder/two-
 app graphical launch, focus, hide/restore, quit and relaunch tests.
 
+Window BeginUpdate now stages commands and port state until EndUpdate. Another
+application can poll/present while that update is preempted and still sees the
+previous complete scene. Application activation raises the window plane and
+selects its final window or desktop in one transition. Idle polling avoids
+unnecessary foreground-state swaps; event queues are boxed so real swaps exchange
+ownership without copying the arrays. These improvements do not provide blocking
+waits or reduce a full composition's interrupt-masked service duration. See
+[event tracing](docs/EVENT-TRACING.md) for the measured scenarios and limits.
+
 This is a trusted shared M-mode address space without an MMU or protection
 boundary. Owner checks prevent accidental cross-application object access through
 services; they cannot constrain arbitrary application pointers or machine code.

@@ -47,12 +47,30 @@ def capture(output):
             {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': name}, 'down': down}}
             for down in [True, False]]}, endpoint)
 
+    def move(x, y):
+        vm.qmp('input-send-event', {'events': [
+            {'type': 'abs', 'data': {'axis': 'x', 'value': (x * 32767 + 638) // 639}},
+            {'type': 'abs', 'data': {'axis': 'y', 'value': (y * 32767 + 478) // 479}}]}, endpoint)
+
+    def button(down):
+        vm.qmp('input-send-event', {'events': [
+            {'type': 'btn', 'data': {'button': 'left', 'down': down}}]}, endpoint)
+
     try:
         frame('empty', 'CLIPBOARD_PROBE_EMPTY\n')
         key('t')
         frame('text', 'CLIPBOARD_PROBE_TEXT\n')
         key('e')
         frame('empty-again', 'CLIPBOARD_PROBE_EMPTY_AGAIN\n')
+        key('s')
+        frame('scroll-start', 'CLIPBOARD_PROBE_SCROLL\n')
+        move(421, 420)
+        button(True)
+        frame('scroll-held', 'CLIPBOARD_SCROLL_STATIONARY_PASS nulls=100 commits=0\n')
+        move(421, 435)
+        frame('scroll-moved', 'CLIPBOARD_SCROLL_MOVED_PASS\n')
+        button(False)
+        frame('scroll-released', 'CLIPBOARD_SCROLL_RELEASE_PASS commits=0\n')
         report = {
             'transport': 'Finder clipboard source -> public SDK -> real RV64 ECALL',
             'assertion_owner': 'mac-toolbox/tests/clipboard.rs',

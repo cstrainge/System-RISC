@@ -56,7 +56,15 @@ fn independent_applications_use_timer_preemption_and_private_toolbox_state()
                    "both {actor} lifecycles must retain and flush foreign-window synthetic \
                     events:\n{serial}");
     }
-    let acceptance = serde_json::json!({"status":"passed","acceptance":"mac-toolbox/tests/process_cases.rs plus process_pascal_cases.rs and conformance/application_menu.rs","single_hart_timer_preemption":true,"worker_launches":2,"invalid_launches":3,"pascal_conversion_cases":5,"caller_posted_foreign_window_events":8,"resource_and_memory_partitions":"passed","window_ownership":"passed","private_and_physical_events":"passed","hide_focus_and_exit":"passed","capture":report,"limits":["fixed nonoverlapping ELF regions","one OS thread per app","shared address space; no MMU process isolation claim","bounded worker window/handle exit cleanup exercised twice","native UTF8 process services, no 68k Process Manager adapter"]});
+    assert_eq!(serial.matches("PROCESS_ATOMIC_ACTIVATION_PASS cases=5\n").count(),
+               2,
+               "both lifecycles must preserve atomic multiwindow activation and no-op visibility");
+    for marker in
+        ["PROCESS_BACKGROUND_CREATE_PASS cases=2\n", "PROCESS_MULTIWINDOW_EXIT_PASS cases=2\n"]
+    {
+        assert_eq!(serial.matches(marker).count(), 2, "missing multiwindow scenario {marker}");
+    }
+    let acceptance = serde_json::json!({"status":"passed","acceptance":"mac-toolbox/tests/process_cases.rs plus process_pascal_cases.rs and conformance/application_menu.rs","single_hart_timer_preemption":true,"worker_launches":2,"invalid_launches":3,"pascal_conversion_cases":5,"caller_posted_foreign_window_events":8,"atomic_activation_cases":10,"background_creation_cases":4,"background_selection_cases":4,"background_desktop_cases":6,"multiwindow_exit_cases":4,"resource_and_memory_partitions":"passed","window_ownership":"passed","private_and_physical_events":"passed","hide_focus_and_exit":"passed","capture":report,"limits":["fixed nonoverlapping ELF regions","one OS thread per app","shared address space; no MMU process isolation claim","bounded worker window/handle exit cleanup exercised twice","native UTF8 process services, no 68k Process Manager adapter"]});
     fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join("results/system7/process-checks.json"),
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();

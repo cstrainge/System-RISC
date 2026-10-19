@@ -126,7 +126,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
         }
         if try_action(system, &mut alerts, clipboard.event(system, event))?.unwrap_or(false)
         {
-            menus::update(system, &browser)?;
+            menus::update_after_event(system, &browser, event)?;
             continue;
         }
         if alerts.window != 0
@@ -185,7 +185,9 @@ fn finder(system: &System<'_>) -> Result<(), Status>
             EventKind::Activate =>
             {
                 browser.activate(event);
-                browser.redraw_all(system)?;
+                // Window Manager paints activation chrome and queues damage for
+                // affected content. Redraw each window when its Update arrives,
+                // rather than rebuilding every folder on both Activate edges.
             }
             EventKind::KeyDown | EventKind::AutoKey =>
             {

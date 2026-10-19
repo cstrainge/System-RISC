@@ -11,6 +11,8 @@ pub mod kernel;
 #[cfg(target_arch = "riscv64")]
 mod machine;
 #[cfg(target_arch = "riscv64")]
+mod trace;
+#[cfg(target_arch = "riscv64")]
 use machine::{display as platform, input as virtio_input};
 #[cfg(target_arch = "riscv64")]
 use toolbox::resources::loader;

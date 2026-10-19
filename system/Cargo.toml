@@ -6,6 +6,7 @@ publish.workspace = true
 
 [features]
 guest = []
+event-trace = []
 test-support = ["dep:mac-traps", "dep:toolbox-quickdraw"]
 
 [[bin]]

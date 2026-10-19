@@ -33,7 +33,7 @@ fn run(system: &System<'_>) -> Result<(), Status>
                 editor.close(system)?;
                 return Ok(());
             }
-            editor.command(system, selection.command)?;
+            editor.command(system, selection.command, event.when)?;
             menus::update(system, &editor)?;
             continue;
         }

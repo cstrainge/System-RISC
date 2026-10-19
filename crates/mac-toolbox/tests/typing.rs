@@ -45,6 +45,12 @@ fn finder_typing_avoids_disk_work_and_preserves_navigation_selection()
     assert_eq!(field("file_calls="),
                0,
                "typing/release must not query disk-backed browser policy: {fields}");
+    assert_eq!(field("updates="),
+               20,
+               "each isolated edit commits once; its first idle must not redraw: {fields}");
+    assert_eq!(field("grow_clip_calls="),
+               0,
+               "unchanged window geometry must not reset the grow clip: {fields}");
     let states = profile.lines()
                         .filter(|line| line.starts_with("FINDER_TEXTEDIT_STATE "))
                         .collect::<Vec<_>>();

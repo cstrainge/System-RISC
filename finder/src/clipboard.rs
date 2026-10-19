@@ -338,10 +338,6 @@ impl Viewer
             self.draw(system)?;
             return Ok(true);
         }
-        if event.kind == EventKind::Activate
-        {
-            self.draw(system)?;
-        }
         let window = system.window(self.window)?;
         let width = window.bounds.right - window.bounds.left;
         let height = window.bounds.bottom - window.bounds.top;
@@ -359,6 +355,7 @@ impl Viewer
                                                      track.anchor,
                                                      point)
                               .map_err(error)?;
+            let previous = if track.horizontal { self.scroll.h } else { self.scroll.v };
             if track.horizontal
             {
                 self.scroll.h = value;
@@ -371,7 +368,10 @@ impl Viewer
             {
                 self.tracking = None;
             }
-            self.draw(system)?;
+            if value != previous
+            {
+                self.draw(system)?;
+            }
             return Ok(true);
         }
         if event.kind == EventKind::MouseDown && event.message == self.window

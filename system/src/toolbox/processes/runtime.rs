@@ -1,14 +1,14 @@
 //! App-local state is swapped only at the interrupt-masked service boundary.
 //! The compositor/window registry are shared; applications never select identity.
 #![forbid(unsafe_code)]
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 
 use mac_abi::{processes::*, *};
 
 use crate::toolbox::{events::EventManager,
                      processes::menu::{Action, Entry},
                      runtime::Desktop,
-                     windows::WindowId};
+                     windows::{GroupFocus, WindowId}};
 
 pub(super) struct Saved
 {
@@ -18,7 +18,7 @@ pub(super) struct Saved
     cursors:      crate::toolbox::quickdraw::cursors::Cursors,
     worlds:       crate::toolbox::quickdraw::worlds::Worlds,
     classic_font: mac_abi::quickdraw::FontSelection,
-    events:       EventManager,
+    events:       Box<EventManager>,
     textedit:     crate::toolbox::textedit::Manager,
     legacy:       crate::context::LegacyGlobals
 }
@@ -32,7 +32,7 @@ impl Saved
                cursors: Default::default(),
                worlds: Default::default(),
                classic_font: Default::default(),
-               events: EventManager::new(),
+               events: Box::new(EventManager::new()),
                textedit: Default::default(),
                legacy: Default::default() }
     }
@@ -125,6 +125,12 @@ impl Desktop
                 _ => None
             };
             let target = id.and_then(|id| self.window_owner(id)).unwrap_or(self.owner);
+            crate::trace::record(crate::trace::ROUTE,
+                                 self.owner,
+                                 target,
+                                 event.kind as u64,
+                                 event.message as u64,
+                                 event.modifiers as u64);
             if target == self.owner
             {
                 retained.push(event);
@@ -189,6 +195,30 @@ impl Desktop
 
     pub fn activate_process(&mut self, id: u64) -> Result<(), Status>
     {
+        self.activate_process_focus(id, GroupFocus::Front)
+    }
+
+    pub fn activate_process_window(&mut self, id: u64, front: Option<WindowId>)
+                                   -> Result<(), Status>
+    {
+        self.activate_process_focus(id, front.map_or(GroupFocus::Desktop, GroupFocus::Window))
+    }
+
+    fn activate_process_focus(&mut self, id: u64, focus: GroupFocus) -> Result<(), Status>
+    {
+        if let GroupFocus::Window(window) = focus
+           && self.window_owner(window) != Some(id)
+        {
+            return Err(NOT_FOUND);
+        }
+        crate::trace::record(crate::trace::ACTIVATE, self.owner, id, self.foreground, 0, 0);
+        self.processes.get(id)?;
+        if self.foreground == id
+           && self.processes.get(id)?.info.hidden == 0
+           && focus == GroupFocus::Front
+        {
+            return Ok(());
+        }
         self.processes.activate(id)?;
         self.foreground = id;
         for (window, owner) in &self.window_owners
@@ -203,14 +233,7 @@ impl Desktop
                               .filter(|w| self.window_owner(w.id) == Some(id))
                               .map(|w| w.id)
                               .collect();
-        for window in ids
-        {
-            self.windows.select_window(window, &mut self.events, Self::when());
-        }
-        if self.window_owners.iter().all(|(_, owner)| *owner != id)
-        {
-            self.windows.deactivate_all(&mut self.events, Self::when());
-        }
+        self.windows.select_group_focus(&ids, focus, &mut self.events, Self::when());
         self.route_events();
         self.sync_input_state();
         self.enter(id);
@@ -221,7 +244,10 @@ impl Desktop
 
     fn hide_process(&mut self, id: u64) -> Result<(), Status>
     {
-        self.processes.get(id)?;
+        if self.processes.get(id)?.info.hidden != 0
+        {
+            return Ok(());
+        }
         if !self.processes.entries.iter().any(|p| p.info.id != id && p.info.hidden == 0)
         {
             return Err(ACCESS_DENIED);
@@ -265,6 +291,7 @@ impl Desktop
             }
             Action::ShowAll =>
             {
+                let changed = self.processes.entries.iter().any(|p| p.info.hidden != 0);
                 for p in &mut self.processes.entries
                 {
                     p.info.hidden = 0;
@@ -273,7 +300,10 @@ impl Desktop
                 {
                     self.windows.set_hidden(*window, false);
                 }
-                self.refresh_app_menu();
+                if changed
+                {
+                    self.refresh_app_menu();
+                }
                 Ok(())
             }
         };
@@ -355,8 +385,9 @@ impl Desktop
                                       .collect();
                 for window in ids
                 {
-                    self.windows.dispose_window(window, &mut self.events, Self::when());
+                    self.windows.dispose_without_activation(window, &mut self.events, Self::when());
                     self.content.retain(|c| c.id != window);
+                    self.pending_content.retain(|c| c.id != window);
                 }
                 self.route_events();
                 self.window_owners.retain(|(_, id)| *id != caller);

@@ -16,6 +16,8 @@ use ui::{Text, text};
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 static FILES: AtomicUsize = AtomicUsize::new(0);
 static MENUS: AtomicUsize = AtomicUsize::new(0);
+static UPDATES: AtomicUsize = AtomicUsize::new(0);
+static GROW_CLIPS: AtomicUsize = AtomicUsize::new(0);
 unsafe extern "C" fn trace(number: u32, pointer: *mut (), size: usize) -> i64
 {
     if number == mac_abi::traps::FILE
@@ -25,6 +27,20 @@ unsafe extern "C" fn trace(number: u32, pointer: *mut (), size: usize) -> i64
     if number == mac_abi::traps::MENU
     {
         MENUS.fetch_add(1, Ordering::Relaxed);
+    }
+    if number == mac_abi::traps::WINDOW
+       && size == core::mem::size_of::<mac_abi::traps::WindowCall>()
+    {
+        // SAFETY: the public SDK supplied this synchronous typed window request.
+        let call = unsafe { &*pointer.cast::<mac_abi::traps::WindowCall>() };
+        if call.operation == mac_abi::END_UPDATE
+        {
+            UPDATES.fetch_add(1, Ordering::Relaxed);
+        }
+        if call.operation == mac_abi::SET_GROW_ICON_CLIP
+        {
+            GROW_CLIPS.fetch_add(1, Ordering::Relaxed);
+        }
     }
     // SAFETY: forwards each original synchronous borrowed request unchanged.
     unsafe { ((*SERVICES.load(Ordering::Acquire)).trap)(number, pointer, size) }
@@ -40,12 +56,15 @@ fn run(system: &System<'_>) -> Result<(), Status>
     let mut menu_ticks = 0;
     FILES.store(0, Ordering::Relaxed);
     MENUS.store(0, Ordering::Relaxed);
+    UPDATES.store(0, Ordering::Relaxed);
+    GROW_CLIPS.store(0, Ordering::Relaxed);
     for _ in 0..20
     {
         let start = system.events().uptime_ticks().map_err(|e| e.0)?;
         if !editor.event(system,
                          Event { kind: EventKind::KeyDown,
                                  message: u32::from(b'a'),
+                                 when: start as u32,
                                  ..Default::default() })?
         {
             return Err(BAD_ARGUMENT);
@@ -64,6 +83,12 @@ fn run(system: &System<'_>) -> Result<(), Status>
         {
             menus::update(system, &editor)?;
         }
+        // Service the first idle iteration after every isolated edit. It must
+        // not require a second scene commit merely to show the reset caret.
+        editor.event(system,
+                     Event { kind: EventKind::Null,
+                             when: start as u32,
+                             ..Default::default() })?;
         let end = system.events().uptime_ticks().map_err(|e| e.0)?;
         edit_ticks += edited - start;
         menu_ticks += end - edited;
@@ -71,11 +96,13 @@ fn run(system: &System<'_>) -> Result<(), Status>
     let mut line = Text::<192>::default();
     let _ = writeln!(&mut line,
                      "TYPING_PROFILE chars=20 edit_ticks={} menu_ticks={} file_calls={} \
-                      menu_calls={}",
+                      menu_calls={} updates={} grow_clip_calls={}",
                      edit_ticks,
                      menu_ticks,
                      FILES.load(Ordering::Relaxed),
-                     MENUS.load(Ordering::Relaxed));
+                     MENUS.load(Ordering::Relaxed),
+                     UPDATES.load(Ordering::Relaxed),
+                     GROW_CLIPS.load(Ordering::Relaxed));
     system.log(line.as_str())?;
     // Getters and idempotent writes must not induce expensive stale frames.
     let start = system.events().uptime_ticks().map_err(|e| e.0)?;

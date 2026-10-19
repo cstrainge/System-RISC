@@ -20,6 +20,18 @@ pub fn install(system: &System<'_>) -> Result<(), Status>
     }
     Ok(())
 }
+/// Idle scrollbar tracking changes neither selection nor file command policy.
+/// Consumed clipboard events still pass through this shared policy guard.
+pub fn update_after_event(system: &System<'_>, browser: &Browser, event: Event)
+                          -> Result<(), Status>
+{
+    if event.kind == EventKind::Null
+    {
+        return Ok(());
+    }
+    update(system, browser)
+}
+
 pub fn update(system: &System<'_>, browser: &Browser) -> Result<(), Status>
 {
     let menus = system.menus();

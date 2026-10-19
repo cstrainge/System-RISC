@@ -42,6 +42,13 @@ fn resource_based_finder_clipboard_matches_original_empty_and_text_pixels()
     {
         assert!(serial.contains(definition), "definition absent: {definition}\n{serial}");
     }
+    for marker in ["CLIPBOARD_UNRELATED_ACTIVATE_PASS commits=0",
+                   "CLIPBOARD_SCROLL_STATIONARY_PASS nulls=100 commits=0",
+                   "CLIPBOARD_SCROLL_MOVED_PASS", "CLIPBOARD_SCROLL_RELEASE_PASS commits=0"]
+    {
+        assert!(serial.contains(marker),
+                "missing canonical input/render assertion {marker}:\n{serial}");
+    }
     let finder_serial = fs::read_to_string(output.join("finder-vm/serial.log")).unwrap();
     assert!(finder_serial.contains("FINDER_MENU menu=1253 item=9 command=7368636c"),
             "Show Clipboard resource command was not dispatched:\n{finder_serial}");
@@ -92,7 +99,7 @@ fn resource_based_finder_clipboard_matches_original_empty_and_text_pixels()
     }
     assert_eq!(image("empty"), image("empty-again"), "clearing text left stale drawing");
     let acceptance = serde_json::json!({"status":"passed", "transport":"same Finder source and real public SDK ECALL",
-        "original_pixels":pixels,"pixel_differences":0,"clear_roundtrip":"passed","capture":report,"output":output});
+        "original_pixels":pixels,"pixel_differences":0,"clear_roundtrip":"passed","stationary_thumb_nulls":100,"idle_policy_file_calls":0,"idle_policy_menu_calls":0,"stationary_and_release_commits":0,"unrelated_activation_commits":0,"scroll_movement":"passed","capture":report,"output":output});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join("results/system7/clipboard-checks.json"),
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();

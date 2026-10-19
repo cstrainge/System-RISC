@@ -105,9 +105,52 @@ fn state(system: &System<'_>, id: u64) -> Result<ProcessInfo>
 {
     find(system, id)?.ok_or(Failure::Contract("missing live process"))
 }
-fn pulse(system: &System<'_>) -> Result<()>
+/// Multiwindow application activation is a single focus transition, not a
+/// sequence of selections through every window in the application's plane.
+fn atomic_activation(system: &System<'_>, own: u64, other: u64, front: WindowId) -> Result<()>
 {
-    let event = system.next_event(EVERY_EVENT & !(1 << EventKind::Application1 as u16))?;
+    let events = system.events();
+    let activate = 1 << EventKind::Activate as u16;
+    system.processes().activate(own)?;
+    events.flush(activate, 0)?;
+    system.processes().activate(other)?;
+    system.processes().activate(own)?;
+    for active in [false, true]
+    {
+        let event =
+            events.next(activate)?.ok_or(Failure::Contract("missing atomic activation edge"))?;
+        require(event.message == front.0
+                && (event.modifiers & mac_toolbox::ACTIVE_FLAG != 0) == active,
+                "application activation selected an intermediate window")?;
+    }
+    require(events.next(activate)?.is_none(), "extra application activation edge")?;
+    // Acknowledge pending damage, then no-op activation/visibility requests
+    // must not manufacture additional Update events.
+    for _ in 0..32
+    {
+        let Some(event) = events.next(1 << EventKind::Update as u16)?
+        else
+        {
+            break;
+        };
+        system.begin_update(event.message)?;
+        system.end_update(event.message)?;
+    }
+    for _ in 0..3
+    {
+        system.processes().activate(own)?;
+        system.processes().show_all()?;
+    }
+    require(events.next(activate)?.is_none(), "repeated activation generated events")?;
+    require(events.next(1 << EventKind::Update as u16)?.is_none(),
+            "unchanged visibility generated damage")?;
+    require(system.window(0)?.id == front.0, "application window order changed")?;
+    system.log("PROCESS_ATOMIC_ACTIVATION_PASS cases=5\n")?;
+    Ok(())
+}
+fn pulse(system: &System<'_>, mask: u16) -> Result<()>
+{
+    let event = system.next_event(mask)?;
     require(event.when != WORKER_SYNTHETIC, "worker synthetic event reached foreign observer")?;
     require(event.kind != EventKind::KeyDown || event.character() != b'x',
             "foreground child's physical key leaked to observer")?;
@@ -118,7 +161,12 @@ fn pulse(system: &System<'_>) -> Result<()>
     }
     Ok(())
 }
-fn wait(system: &System<'_>, mut condition: impl FnMut() -> Result<bool>) -> Result<()>
+fn wait(system: &System<'_>, condition: impl FnMut() -> Result<bool>) -> Result<()>
+{
+    wait_mask(system, condition, EVERY_EVENT & !(1 << EventKind::Application1 as u16))
+}
+fn wait_mask(system: &System<'_>, mut condition: impl FnMut() -> Result<bool>, mask: u16)
+             -> Result<()>
 {
     let start = system.events().uptime_ticks()?;
     loop
@@ -129,7 +177,7 @@ fn wait(system: &System<'_>, mut condition: impl FnMut() -> Result<bool>) -> Res
         }
         require(system.events().uptime_ticks()?.wrapping_sub(start) < 900,
                 "bounded process wait expired")?;
-        pulse(system)?;
+        pulse(system, mask)?;
     }
 }
 fn parse_window(text: &str, prefix: &str) -> Option<WindowId>
@@ -159,6 +207,8 @@ pub fn observer(system: &System<'_>) -> Result<()>
     let own_window =
         system.windows()
               .create(WindowSpec::new(Rect::new(30, 60, 320, 170), "Process Observer"))?;
+    let own_front =
+        system.windows().create(WindowSpec::new(Rect::new(45, 80, 335, 190), "Observer Front"))?;
     let volume = system.files().volume_at(0)?.id;
     for (disk, cnid) in [(volume, 2), (volume, u32::MAX), (u32::MAX, 2)]
     {
@@ -221,6 +271,48 @@ pub fn observer(system: &System<'_>) -> Result<()>
                           .ok_or(Failure::Contract("observer private event missing"))?;
         require(event.message == 0x1111aaaa, "worker private event leaked to observer")?;
         synthetic_private(system, child_window, OBSERVER_SYNTHETIC)?;
+        let activation_mask = 1 << EventKind::Activate as u16;
+        system.events().flush(activation_mask, 0)?;
+        let background =
+            system.windows()
+                  .create(WindowSpec::new(Rect::new(65, 100, 355, 210), "Background Create"))?;
+        require(system.events().next(activation_mask)?.is_none(),
+                "background creation transiently activated its own window")?;
+        require(state(system, child.id)?.foreground != 0 && processes.current()?.foreground == 0,
+                "background creation changed foreground application")?;
+        system.windows().close(background)?;
+        system.log("PROCESS_BACKGROUND_CREATE_PASS cases=2\n")?;
+        system.events().flush(activation_mask, 0)?;
+        system.windows().select_desktop()?;
+        require(processes.current()?.foreground != 0,
+                "background desktop selection did not activate Finder")?;
+        require(system.events().next(activation_mask)?.is_none(),
+                "background desktop selection transiently activated a Finder window")?;
+        system.windows().select_desktop()?;
+        require(system.events().next(activation_mask)?.is_none()
+                && system.window(0)?.id == own_front.0,
+                "repeated desktop selection changed activation or window order")?;
+        system.log("PROCESS_BACKGROUND_DESKTOP_PASS cases=3\n")?;
+        // Selecting a nonfront window from a background app must activate only
+        // that final window, rather than first selecting its former front.
+        for selected in [own_window, own_front]
+        {
+            processes.activate(child.id)?;
+            system.events().flush(activation_mask, 0)?;
+            system.windows().select(selected)?;
+            let event = system.events()
+                              .next(activation_mask)?
+                              .ok_or(Failure::Contract("missing requested window activation"))?;
+            require(event.message == selected.0
+                    && event.modifiers & mac_toolbox::ACTIVE_FLAG != 0,
+                    "background select activated the previous front window")?;
+            require(system.events().next(activation_mask)?.is_none(),
+                    "background select emitted intermediate activation")?;
+            require(system.window(0)?.id == selected.0 && processes.current()?.foreground != 0,
+                    "background requested window did not become foreground")?;
+        }
+        system.log("PROCESS_BACKGROUND_SELECT_PASS cases=2\n")?;
+        atomic_activation(system, me.id, child.id, own_front)?;
         processes.activate(me.id)?;
         menu(system)?;
         require(state(system, me.id)?.foreground != 0 && state(system, child.id)?.foreground == 0,
@@ -246,6 +338,7 @@ pub fn observer(system: &System<'_>) -> Result<()>
         resource(system, "process-observer")?;
         require(system.windows().info(own_window)?.id == own_window.0,
                 "observer window ownership survived switching")?;
+        system.events().flush(activation_mask, 0)?;
         system.log(if round == 0
                    {
                        "PROCESS_READY_FOR_INPUT_1\n"
@@ -254,7 +347,20 @@ pub fn observer(system: &System<'_>) -> Result<()>
                    {
                        "PROCESS_READY_FOR_INPUT_2\n"
                    })?;
-        wait(system, || Ok(find(system, child.id)?.is_none()))?;
+        // Process-list queries and event polling are separate ECALLs. Preserve
+        // Activate if exit occurs between a live-process check and the next poll.
+        wait_mask(system,
+                  || Ok(find(system, child.id)?.is_none()),
+                  EVERY_EVENT & !(activation_mask | (1 << EventKind::Application1 as u16)))?;
+        let final_activation = system.events()
+                                     .next(activation_mask)?
+                                     .ok_or(Failure::Contract("missing final exit activation"))?;
+        require(final_activation.message == own_front.0
+                && final_activation.modifiers & mac_toolbox::ACTIVE_FLAG != 0,
+                "multiwindow exit activated an intermediate window")?;
+        require(system.events().next(activation_mask)?.is_none(),
+                "multiwindow exit emitted extra activation")?;
+        system.log("PROCESS_MULTIWINDOW_EXIT_PASS cases=2\n")?;
         menu(system)?;
         require(processes.count()? == 1 && processes.current()?.foreground != 0,
                 "worker exit/focus cleanup")?;
@@ -263,6 +369,7 @@ pub fn observer(system: &System<'_>) -> Result<()>
         prior = Some((child.id, child.thread));
     }
     handle.dispose()?;
+    system.windows().close(own_front)?;
     system.windows().close(own_window)?;
     system.log("PROCESS_USERSPACE_PASS preemption=passed launch=passed invalid=3 \
                 relaunch=passed windows=passed resources=passed memory=passed events=passed \
@@ -281,6 +388,8 @@ pub fn worker(system: &System<'_>) -> Result<()>
     let handle = system.memory().handle_from_bytes(b"worker-owned memory")?;
     let window = system.windows()
                        .create(WindowSpec::new(Rect::new(100, 180, 400, 310), "Process Worker"))?;
+    let second_window =
+        system.windows().create(WindowSpec::new(Rect::new(120, 200, 420, 330), "Worker Front"))?;
     let mut announcement = [0; 64];
     let parent_window = parse_window(system.scrap().text(&mut announcement)?, "process-observer-window:")
         .ok_or(Failure::Contract("observer window publication"))?;
@@ -308,10 +417,10 @@ pub fn worker(system: &System<'_>) -> Result<()>
                 "observer synthetic event reached foreign worker")?;
         require(system.events().uptime_ticks()?.wrapping_sub(start) < 1800,
                 "worker input timeout")?;
-        if event.kind == EventKind::Update && event.message == window.0
+        if event.kind == EventKind::Update && [window.0, second_window.0].contains(&event.message)
         {
-            system.windows().begin_update(window)?;
-            system.windows().end_update(window)?;
+            system.begin_update(event.message)?;
+            system.end_update(event.message)?;
         }
         if event.kind == EventKind::KeyDown && event.character() == b'x'
         {

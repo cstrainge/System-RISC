@@ -1,6 +1,6 @@
 //! System-owned event routing, retained application drawing and compositing.
 #![forbid(unsafe_code)]
-use alloc::{string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 use mac_abi::*;
 
@@ -28,40 +28,42 @@ mod local;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
-    dialogs:       super::dialogs::DialogState,
-    desktop:       DesktopLayer,
-    menus:         super::menus::Manager,
-    cursors:       super::quickdraw::cursors::Cursors,
-    worlds:        super::quickdraw::worlds::Worlds,
-    classic_font:  mac_abi::quickdraw::FontSelection,
-    legacy:        crate::context::LegacyGlobals,
-    pub windows:   WindowManager,
-    events:        EventManager,
-    textedit:      super::textedit::Manager,
-    definitions:   Definitions,
-    content:       Vec<Content>,
-    decoders:      [Decoder; 2],
-    pub revision:  u32,
-    pub updates:   u32,
-    last_key:      u8,
-    last_action:   &'static str,
-    redraw:        bool,
-    last_logged:   u32,
-    cdef:          DefinitionEntry,
-    mdef:          DefinitionEntry,
-    owner:         u64,
-    foreground:    u64,
-    locals:        Vec<local::Saved>,
-    window_owners: Vec<(WindowId, u64)>,
-    processes:     super::processes::Manager,
-    app_menu:      super::processes::menu::ApplicationMenu
+    dialogs:         super::dialogs::DialogState,
+    desktop:         DesktopLayer,
+    menus:           super::menus::Manager,
+    cursors:         super::quickdraw::cursors::Cursors,
+    worlds:          super::quickdraw::worlds::Worlds,
+    classic_font:    mac_abi::quickdraw::FontSelection,
+    legacy:          crate::context::LegacyGlobals,
+    pub windows:     WindowManager,
+    events:          Box<EventManager>,
+    textedit:        super::textedit::Manager,
+    definitions:     Definitions,
+    content:         Vec<Content>,
+    pending_content: Vec<Content>,
+    decoders:        [Decoder; 2],
+    pub revision:    u32,
+    pub updates:     u32,
+    last_key:        u8,
+    last_action:     &'static str,
+    redraw:          bool,
+    last_logged:     u32,
+    cdef:            DefinitionEntry,
+    mdef:            DefinitionEntry,
+    owner:           u64,
+    foreground:      u64,
+    locals:          Vec<local::Saved>,
+    window_owners:   Vec<(WindowId, u64)>,
+    processes:       super::processes::Manager,
+    app_menu:        super::processes::menu::ApplicationMenu
 }
 
 impl Desktop
 {
     fn retained_bytes(&self) -> usize
     {
-        self.desktop.storage() + self.content.iter().map(Content::storage).sum::<usize>()
+        self.desktop.storage()
+        + self.content.iter().chain(&self.pending_content).map(Content::storage).sum::<usize>()
     }
 
     fn content_mut(&mut self, id: u32) -> Result<&mut Content, Status>
@@ -87,7 +89,22 @@ impl Desktop
                                NOT_FOUND
                            });
             }
-            self.content.iter_mut().find(|content| content.id.0 == id).ok_or(NOT_FOUND)
+            self.pending_content
+                .iter_mut()
+                .chain(&mut self.content)
+                .find(|content| content.id.0 == id)
+                .ok_or(NOT_FOUND)
+        }
+    }
+
+    /// A retained update is private until EndUpdate. Other threads can poll,
+    /// move the pointer and present the previously committed scene meanwhile.
+    fn content_changed(&mut self, id: u32)
+    {
+        if id != mac_abi::quickdraw::DESKTOP_TARGET
+           && !self.pending_content.iter().any(|content| content.id.0 == id)
+        {
+            self.redraw = true;
         }
     }
 
@@ -111,10 +128,11 @@ impl Desktop
                   classic_font: Default::default(),
                   legacy:Default::default(),
                   windows: WindowManager::with_gate(crate::machine::traps::gateway),
-                  events: EventManager::new(),
+                  events: Box::new(EventManager::new()),
                   textedit: Default::default(),
                   definitions,
                   content: Vec::new(),
+                  pending_content: Vec::new(),
                   decoders: [Decoder::new(), Decoder::new()],
                   revision: 0,
                   updates: 0,
@@ -170,6 +188,15 @@ impl Desktop
 
     pub fn window(&mut self, operation: u32, request: &mut WindowRequest) -> Status
     {
+        if operation != GET_WINDOW
+        {
+            crate::trace::record(crate::trace::WINDOW,
+                                 self.owner,
+                                 operation as u64,
+                                 request.id as u64,
+                                 0,
+                                 0);
+        }
         let when = Self::when();
         if request.id == 0 && operation == GET_WINDOW
         {
@@ -213,7 +240,7 @@ impl Desktop
                     Ok(entry) => entry,
                     Err(error) => return crate::loader::status(error)
                 };
-                let Some(id) = self.windows.new_window_with_definition(request.bounds,
+                let Some(id) = self.windows.new_window_with_activation(request.bounds,
                                                                        title,
                                                                        self.owner as u32,
                                                                        (request.minimum_width,
@@ -221,7 +248,9 @@ impl Desktop
                                                                        request.procedure,
                                                                        entry,
                                                                        &mut self.events,
-                                                                       when)
+                                                                       when,
+                                                                       self.owner
+                                                                       == self.foreground)
                 else
                 {
                     return BAD_ARGUMENT;
@@ -240,17 +269,7 @@ impl Desktop
                             .filter(|w| self.window_owner(w.id) == Some(self.foreground))
                             .map(|w| w.id)
                             .collect();
-                    if foreground.is_empty()
-                    {
-                        self.windows.deactivate_all(&mut self.events, when);
-                    }
-                    else
-                    {
-                        for front in foreground
-                        {
-                            self.windows.select_window(front, &mut self.events, when);
-                        }
-                    }
+                    self.windows.restore_group(&foreground, &mut self.events, when);
                 }
                 self.content.push(Content { id,
                                             commands: Vec::new(),
@@ -264,13 +283,14 @@ impl Desktop
                     return NOT_FOUND;
                 }
                 self.content.retain(|content| content.id != id);
+                self.pending_content.retain(|content| content.id != id);
                 self.window_owners.retain(|(window, _)| *window != id);
                 self.last_action = "CLOSE";
             }
             SELECT_WINDOW =>
             {
                 if self.owner != self.foreground
-                   && let Err(status) = self.activate_process(self.owner)
+                   && let Err(status) = self.activate_process_window(self.owner, Some(id))
                 {
                     return status;
                 }
@@ -288,7 +308,7 @@ impl Desktop
                     return ACCESS_DENIED;
                 }
                 if self.foreground != 1
-                   && let Err(status) = self.activate_process(1)
+                   && let Err(status) = self.activate_process_window(1, None)
                 {
                     return status;
                 }
@@ -336,6 +356,26 @@ impl Desktop
                 {
                     return NOT_FOUND;
                 };
+                if window.updating
+                {
+                    return BAD_ARGUMENT;
+                }
+                if self.pending_content.try_reserve(1).is_err()
+                {
+                    return NO_MEMORY;
+                }
+                let Some(content) = self.content.iter().find(|content| content.id == id)
+                else
+                {
+                    return NOT_FOUND;
+                };
+                if self.retained_bytes().saturating_add(content.port.storage()) > MAX_RETAINED_BYTES
+                {
+                    return NO_MEMORY;
+                }
+                let pending = Content { id,
+                                        commands: Vec::new(),
+                                        port: content.port.clone() };
                 // First cut repaints each complete rectangular content port.
                 let local = window.local_bounds();
                 self.windows.invalidate(id, local);
@@ -345,19 +385,33 @@ impl Desktop
                     return NOT_FOUND;
                 };
                 request.bounds = damage;
-                if let Some(content) = self.content.iter_mut().find(|c| c.id == id)
-                {
-                    content.commands.clear();
-                }
+                self.pending_content.push(pending);
                 self.updates += 1;
             }
-            END_UPDATE => self.windows.end_update(id),
+            END_UPDATE =>
+            {
+                let Some(index) = self.pending_content.iter().position(|content| content.id == id)
+                else
+                {
+                    return BAD_ARGUMENT;
+                };
+                let Some(content) = self.content.iter_mut().find(|content| content.id == id)
+                else
+                {
+                    return NOT_FOUND;
+                };
+                *content = self.pending_content.swap_remove(index);
+                self.windows.end_update(id);
+            }
             _ => return NOT_SUPPORTED
         }
         self.route_events();
         self.window_owners.retain(|(id, _)| self.windows.window(*id).is_some());
         self.revision = self.revision.wrapping_add(1);
-        self.redraw = true;
+        if operation != BEGIN_UPDATE
+        {
+            self.redraw = true;
+        }
         // Retained drawing is committed before EndUpdate returns. Applications
         // can report readiness only after the corresponding pixels are visible.
         if operation == END_UPDATE
@@ -412,7 +466,7 @@ impl Desktop
             Err(e) => return e
         };
         content.commands.push(RenderCommand::Control(drawing));
-        self.redraw = true;
+        self.content_changed(call.window);
         OK
     }
 
@@ -437,7 +491,7 @@ impl Desktop
             return NO_MEMORY;
         }
         content.commands.push(RenderCommand::Legacy(alloc::boxed::Box::new(command)));
-        self.redraw = true;
+        self.content_changed(id);
         OK
     }
 
@@ -488,7 +542,7 @@ impl Desktop
                 return Err(NO_MEMORY);
             }
             content.commands.push(RenderCommand::Graphics(drawing));
-            self.redraw = true;
+            self.content_changed(call.window);
         }
         Ok(())
     }
@@ -524,7 +578,7 @@ impl Desktop
             return Err(NO_MEMORY);
         }
         content.commands.push(RenderCommand::Bitmap(drawing));
-        self.redraw = true;
+        self.content_changed(call.window);
         Ok(())
     }
 
@@ -625,7 +679,7 @@ impl Desktop
                                                     text:     String::from(text),
                                                     color:    call.color,
                                                     port:     content.port.clone() });
-        self.redraw = true;
+        self.content_changed(call.window);
         Ok(())
     }
 
@@ -648,7 +702,7 @@ impl Desktop
             return Err(NO_MEMORY);
         }
         content.commands.push(RenderCommand::Picture(drawing));
-        self.redraw = true;
+        self.content_changed(call.window);
         Ok(())
     }
 
@@ -672,7 +726,7 @@ impl Desktop
         }
         content.commands.try_reserve(1).map_err(|_| NO_MEMORY)?;
         content.commands.push(RenderCommand::Image(drawing));
-        self.redraw = true;
+        self.content_changed(call.window);
         Ok(())
     }
 
@@ -694,7 +748,7 @@ impl Desktop
             return Err(NO_MEMORY);
         }
         content.commands.push(RenderCommand::Icon(drawing));
-        self.redraw = true;
+        self.content_changed(call.window);
         Ok(())
     }
 
@@ -727,7 +781,7 @@ impl Desktop
                    && let Some(owner) = self.window_owner(id)
                    && owner != self.foreground
                 {
-                    let _ = self.activate_process(owner);
+                    let _ = self.activate_process_window(owner, Some(id));
                 }
                 "DRAG"
             }
@@ -735,6 +789,7 @@ impl Desktop
             Action::Close(id) =>
             {
                 self.content.retain(|content| content.id != id);
+                self.pending_content.retain(|content| content.id != id);
                 self.events.post_system(Event { kind: EventKind::OsEvent,
                                                 message: 0x02000000 | id.0,
                                                 when,
@@ -746,6 +801,24 @@ impl Desktop
 
     fn input(&mut self, input: Input, when: u32)
     {
+        let (kind, a, b, c) = match input
+        {
+            Input::Move(point) => (1, point.h as u64, point.v as u64, 0),
+            Input::Button { point,
+                            down } => (2, point.h as u64, point.v as u64, down as u64),
+            Input::Key { mac_code,
+                         character,
+                         down,
+                         repeat,
+                         modifiers } =>
+            {
+                (3,
+                 ((mac_code as u64) << 8) | character as u64,
+                 down as u64 | ((repeat as u64) << 1),
+                 modifiers as u64)
+            }
+        };
+        crate::trace::record(crate::trace::INPUT, self.owner, kind, a, b, c);
         self.events.observe_input(input, when);
         self.revision = self.revision.wrapping_add(1);
         // Key delivery does not change window pixels. Repainting here stalls
@@ -807,7 +880,7 @@ impl Desktop
                     let owner = hit.window.and_then(|id| self.window_owner(id)).unwrap_or(1);
                     if owner != self.foreground && hit.part != WindowPart::Drag
                     {
-                        let _ = self.activate_process(owner);
+                        let _ = self.activate_process_window(owner, hit.window);
                     }
 
                     if let Some(id) = hit.window
@@ -947,7 +1020,7 @@ impl Desktop
 
     fn poll_inputs(&mut self)
     {
-        let when = Self::when();
+        crate::trace::record(crate::trace::POLL, self.owner, 0, 0, 0, 0);
         let mut pending = [None; 128];
         let mut count = 0;
         virtio_input::poll(|device, kind, code, value| {
@@ -959,6 +1032,14 @@ impl Desktop
                                      }
                                  })
         });
+        // Idle polling must not copy every application's menus and event queues
+        // into and out of the foreground context. Decoder state changes that
+        // affect applications (including modifiers) always produce an Input.
+        if count == 0
+        {
+            return;
+        }
+        let when = Self::when();
         let caller = self.owner;
         self.enter(self.foreground);
         for input in pending[..count].iter().flatten()
@@ -986,28 +1067,69 @@ impl Desktop
         let when = Self::when();
         self.present();
         self.route_events();
-        (if remove { self.events.next_matching(mask) } else {self.events.peek_matching(mask)})
-            .or_else(|| {
-                if mask & (1 << EventKind::Update as u16) != 0
-                {
-                    if self.dialogs.active() {
-                        self.windows.next_update_for(WindowId(self.dialogs.window),&self.events,when)
-                    } else {self.windows.next_update_matching(&self.events, when,|id|self.owns(id))}
-                }
-                else
-                {
-                    None
-                }
-            })
-            .unwrap_or_else(|| self.events.null_event(when))
+        let mut synthetic = false;
+        let event =
+            (if remove
+            {
+                self.events.next_matching(mask)
+            }
+            else
+            {
+                self.events.peek_matching(mask)
+            }).or_else(|| {
+                  synthetic = true;
+                  if mask & (1 << EventKind::Update as u16) != 0
+                  {
+                      if self.dialogs.active()
+                      {
+                          self.windows
+                              .next_update_for(WindowId(self.dialogs.window), &self.events, when)
+                      }
+                      else
+                      {
+                          self.windows.next_update_matching(&self.events, when, |id| self.owns(id))
+                      }
+                  }
+                  else
+                  {
+                      None
+                  }
+              })
+              .unwrap_or_else(|| self.events.null_event(when));
+        let code = if event.kind == EventKind::Null
+        {
+            crate::trace::NULL
+        }
+        else if !remove
+        {
+            crate::trace::PEEK
+        }
+        else if synthetic
+        {
+            crate::trace::SYNTH_UPDATE
+        }
+        else
+        {
+            crate::trace::DELIVERY
+        };
+        crate::trace::record(code, self.owner, event.kind as u64, event.message as u64,
+                             event.when as u64, event.modifiers as u64);
+        event
     }
 
     pub fn present(&mut self)
     {
+        crate::trace::record(crate::trace::PRESENT, self.owner, 0, 0, 0, 0);
+        if !self.redraw && self.last_logged == self.revision
+        {
+            return;
+        }
         let caller = self.owner;
         self.enter(self.foreground);
         if self.redraw
         {
+            let started = crate::trace::clock();
+            let updating = self.windows.back_to_front().filter(|w| w.updating).count();
             let back = platform::back_buffer();
             let mut canvas = Canvas::new(back, 640, 480);
             background(&mut canvas);
@@ -1033,6 +1155,12 @@ impl Desktop
             self.cursors.draw(&mut canvas, self.events.mouse);
             platform::present(back);
             self.redraw = false;
+            crate::trace::record(crate::trace::RENDER,
+                                 caller,
+                                 started,
+                                 crate::trace::clock().wrapping_sub(started),
+                                 updating as u64,
+                                 self.revision as u64);
         }
         if self.last_logged != self.revision
         {
@@ -1140,15 +1268,16 @@ impl super::classic::Services for Desktop
     fn text(&mut self, text: &str) -> Result<(), Status>
     {
         let id = self.windows.front_window().ok_or(NOT_FOUND)?;
-        let content = self.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
+        let selection = self.classic_font;
+        let content = self.content_mut(id.0)?;
         let mut call = mac_abi::quickdraw::FontCall { operation: mac_abi::quickdraw::FONT_DRAW,
                                                       window: id.0,
-                                                      selection: self.classic_font,
+                                                      selection,
                                                       baseline: content.port.state.pen_location,
                                                       color: content.port.state.foreground,
                                                       ..Default::default() };
         self.font_draw(&mut call, text, crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)?;
-        let content = self.content.iter_mut().find(|c| c.id == id).ok_or(NOT_FOUND)?;
+        let content = self.content_mut(id.0)?;
         content.port.state.pen_location.h =
             content.port.state.pen_location.h.wrapping_add(call.width);
         Ok(())

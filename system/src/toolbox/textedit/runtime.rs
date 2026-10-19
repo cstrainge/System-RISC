@@ -127,7 +127,7 @@ impl super::Desktop
         }
         content.commands.try_reserve(commands.len()).map_err(|_| NO_MEMORY)?;
         content.commands.extend(commands);
-        self.redraw = true;
+        self.content_changed(call.window.0);
         call.info = info;
         Ok(())
     }

@@ -27,6 +27,7 @@ pub(crate) fn install()
         asm!("csrw mtvec, {}",in(reg)__system_trap_vector as *const() as usize);
     }
     serial!("TRAPS_READY: resident ecall dispatcher ABI={}", ABI_VERSION);
+    crate::trace::initialize();
 }
 
 #[unsafe(no_mangle)]
@@ -59,7 +60,14 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
     let number = frame.registers[15] as u32;
     let request = frame.registers[8] as *mut ();
     let size = frame.registers[9];
+    #[cfg(feature = "event-trace")]
+    let started = crate::platform::ticks();
     let result = unsafe { dispatch(number, request, size) };
+    #[cfg(feature = "event-trace")]
+    crate::trace::service(thread.identity().app.0,
+                          number,
+                          depth,
+                          crate::platform::ticks().wrapping_sub(started));
     frame.registers[8] = result as usize;
     frame.pc = frame.pc.wrapping_add(4);
     drop(scope);

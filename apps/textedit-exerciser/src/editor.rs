@@ -17,7 +17,8 @@ pub struct Editor
     editor:     EditorId,
     size:       Point,
     tracking:   bool,
-    last_mouse: Point
+    last_mouse: Point,
+    ticks:      u32
 }
 impl Editor
 {
@@ -107,6 +108,7 @@ impl Editor
         }
         system.select_window(self.window)?;
         system.textedit().activate(self.editor, true).map_err(error)?;
+        self.ticks = system.events().ticks().map_err(error)?;
         self.draw(system)?;
         system.log("FINDER_TEXTEDIT_READY\n")?;
         self.report(system)
@@ -141,16 +143,20 @@ impl Editor
         {
             let view = Rect::new(8, 8, size.h - 8, size.v - 24);
             system.textedit().set_rects(self.editor, view, view).map_err(error)?;
+            system.windows()
+                  .set_grow_icon_clip(WindowId(self.window),
+                                      Some(Rect::new(size.h - 15, size.v - 15, size.h, size.v)))
+                  .map_err(error)?;
             self.size = size;
             let mut line = crate::Text::<96>::default();
             let _ =
                 writeln!(&mut line, "FINDER_TEXTEDIT_LAYOUT width={} height={}", size.h, size.v);
             system.log(line.as_str())?;
         }
-        system.windows()
-              .set_grow_icon_clip(WindowId(self.window),
-                                  Some(Rect::new(size.h - 15, size.v - 15, size.h, size.v)))
-              .map_err(error)?;
+        // TE edits reset the blink state. Prime the caret before committing the
+        // new scene, rather than presenting a hidden caret and repainting the
+        // entire window again on the following null event.
+        system.textedit().idle(self.editor, self.ticks).map_err(error)?;
         system.begin_update(self.window)?;
         let result = (|| {
             let port = system.quickdraw().graphics(WindowId(self.window));
@@ -176,8 +182,10 @@ impl Editor
         result
     }
 
-    pub fn command(&mut self, system: &System<'_>, command: u32) -> Result<bool, Status>
+    pub fn command(&mut self, system: &System<'_>, command: u32, ticks: u32)
+                   -> Result<bool, Status>
     {
+        self.ticks = ticks;
         if !self.active(system)
         {
             return Ok(false);
@@ -215,6 +223,7 @@ impl Editor
 
     pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Status>
     {
+        self.ticks = event.when;
         self.prune(system)?;
         if self.window == 0
         {
@@ -236,17 +245,18 @@ impl Editor
             self.tracking = false;
             return Ok(false);
         }
-        let bounds = system.window(self.window)?.bounds;
-        let local = |p: Point| {
-            Point { h: p.h - bounds.left,
-                    v: p.v - bounds.top }
+        let window = self.window;
+        let local = |p: Point| -> Result<Point, Status> {
+            let bounds = system.window(window)?.bounds;
+            Ok(Point { h: p.h - bounds.left,
+                       v: p.v - bounds.top })
         };
         match event.kind
         {
             EventKind::MouseDown if event.message == self.window =>
             {
                 self.last_mouse = event.where_;
-                edit.click(self.editor, local(event.where_), event.modifiers & SHIFT_KEY != 0)
+                edit.click(self.editor, local(event.where_)?, event.modifiers & SHIFT_KEY != 0)
                     .map_err(error)?;
                 self.tracking = true;
                 self.draw(system)?;
@@ -318,15 +328,14 @@ impl Editor
             }
             EventKind::Null =>
             {
-                let state = system.events().input_state().map_err(error)?;
                 let before = edit.info(self.editor).map_err(error)?;
-                if self.tracking && state.mouse != self.last_mouse
+                if self.tracking && event.where_ != self.last_mouse
                 {
-                    edit.click(self.editor, local(state.mouse), true).map_err(error)?;
-                    self.last_mouse = state.mouse;
+                    edit.click(self.editor, local(event.where_)?, true).map_err(error)?;
+                    self.last_mouse = event.where_;
                 }
-                edit.idle(self.editor, state.ticks).map_err(error)?;
-                if before != edit.info(self.editor).map_err(error)?
+                let after = edit.idle(self.editor, event.when).map_err(error)?;
+                if before != after
                 {
                     self.draw(system)?;
                 }
