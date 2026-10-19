@@ -33,7 +33,7 @@ fn run(system: &System<'_>) -> Result<(), Status>
     system.log("QUICKDRAW_TEST_READY\n")?;
     loop
     {
-        let event = system.next_event(EVERY_EVENT)?;
+        let event = system.wait_event(EVERY_EVENT, 30)?;
         if let Some(selection) = system.menus().selection(&event).map_err(|e| e.0)?
         {
             if [CLOSE, QUIT].contains(&selection.command)

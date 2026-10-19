@@ -11,10 +11,17 @@ physical Space input advances the fixture only after capture. The guest verifies
 that the background thread continues to receive timer slices.
 
 `capture_system7_retained_update.py` packages only a private cloned boot disk,
-transports Space input and records seven screenshots. The canonical host Rust
-test checks 122,500 exact pixels in the window's content interior, excluding the
+transports Space input and records seventeen screenshots. The canonical host Rust
+test checks exact pixels in the window's content interior, excluding the
 standard definition's reserved scrollbar and grow strips. Pending scenes must
 retain the previous committed image; EndUpdate publishes the complete new image.
+Four additional checkpoints exercise a diagonal pattern at an unaligned window
+origin, drawing appended outside BeginUpdate, temporary window occlusion, and
+the complete scene exposed after closing the covering window. Repeated input
+polling and cursor presentation must preserve pattern phase and current pixels.
+Six desktop checkpoints hide the other application's window, commit cyan,
+cancel a pending red replacement, commit magenta, then cover and reveal the
+desktop. Rust checks both desktop pixels and the retained patterned window.
 This is the native retained-rendering/preemption contract, not a claim that
 classic immediate QuickDraw drawing had transaction semantics.
 

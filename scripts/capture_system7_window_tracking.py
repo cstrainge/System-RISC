@@ -116,6 +116,7 @@ def capture(output, probe=False, menus=False):
             key_transition('ctrl',True);key_transition('n',True);key_transition('n',False);key_transition('ctrl',False)
             move(16,444);snapshot('menu-key')
             key_transition('ctrl',True);key_transition('o',True);key_transition('o',False);key_transition('ctrl',False)
+            key_transition('ctrl',True);key_transition('w',True);key_transition('w',False);key_transition('ctrl',False)
             move(16,444);snapshot('menu-disabled-key')
             key_transition('g',True);key_transition('g',False)
             wait(lambda _: 'MENU_LABEL width=' in serial.read_text(errors='replace'))
@@ -177,6 +178,7 @@ def capture(output, probe=False, menus=False):
                   'launch': json.loads((output / 'vm/command.json').read_text()),
                   'menu_sizing_pass': 'MENU_SIZING_PASS cases=8' in serial.read_text(errors='replace'),
                   'menu_events':[line for line in serial.read_text(errors='replace').splitlines() if line.startswith('MENU_PROBE ')],
+                  'native_menu_keys':[line for line in serial.read_text(errors='replace').splitlines() if line.startswith('MENU_NATIVE_KEY ')],
                   'menu_label_width': next((int(line.split('=')[1]) for line in serial.read_text(errors='replace').splitlines() if line.startswith('MENU_LABEL width=')),None)}
         (output / 'capture.json').write_text(json.dumps(report, indent=2) + '\n')
     finally:

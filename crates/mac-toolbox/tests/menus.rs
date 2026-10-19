@@ -164,6 +164,22 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
     assert_eq!(events.len(), 2, "disabled or cancelled menu produced a command");
     assert_eq!(events[0], "MENU_PROBE menu=257 item=1 command=00000000");
     assert_eq!(events[0], events[1], "Ctrl-N used a different command path from File>New Folder");
+    let native_keys = report["native_menu_keys"].as_array().unwrap();
+    assert_eq!(native_keys.len(), 2, "disabled Ctrl-O/Ctrl-W must reach the app exactly once each");
+    for (event, character) in native_keys.iter().zip(*b"ow")
+    {
+        let fields: std::collections::HashMap<_, _> =
+            event.as_str()
+                 .unwrap()
+                 .split_whitespace()
+                 .skip(1)
+                 .map(|field| field.split_once('=').unwrap())
+                 .collect();
+        assert_eq!(fields["kind"], "3", "disabled equivalent must remain KeyDown");
+        assert_eq!(fields["character"].parse::<u8>().unwrap(), character);
+        assert_ne!(fields["modifiers"].parse::<u16>().unwrap() & mac_toolbox::events::CMD_KEY, 0);
+        assert_eq!(fields["selection"], "false", "disabled equivalent became menu selection");
+    }
     let baseline = frame(&output.join("menu-baseline.ppm"));
     for name in ["menu-selected", "menu-disabled-release", "menu-cancelled", "menu-key",
                  "menu-disabled-key"]
@@ -278,5 +294,5 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
                 different.len(),
                 &different[..different.len().min(20)]);
     }
-    std::fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","transport":"public SDK-only guest / loaded MDEF / real virtio input", "commands":2,"frames":14,"original_uncached_sizes":8,"native_keyed_pixels":2000,"original_exact_rgb_pixels":111184,"native_keyless_label_pixels":width*16,"scope":"click/key selection, disabled key/item/cancel/barswitch, exact restoration, three original File popup crops, original normal Apple title and selected File title; native authored label matches public font rendering"})).unwrap()).unwrap();
+    std::fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","transport":"public SDK-only guest / loaded MDEF / real virtio input", "commands":2,"disabled_native_keys_exactly_once":2,"frames":14,"original_uncached_sizes":8,"native_keyed_pixels":2000,"original_exact_rgb_pixels":111184,"native_keyless_label_pixels":width*16,"scope":"click/key selection, disabled key/item/cancel/barswitch, exact restoration, three original File popup crops, original normal Apple title and selected File title; native authored label matches public font rendering"})).unwrap()).unwrap();
 }

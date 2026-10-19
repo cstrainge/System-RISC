@@ -62,18 +62,38 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
     let size = frame.registers[9];
     #[cfg(feature = "event-trace")]
     let started = crate::platform::ticks();
-    let result = unsafe { dispatch(number, request, size) };
+    let result = if number == WAIT_EVENT && depth != 1
+    {
+        WRONG_THREAD as i64
+    }
+    else
+    {
+        unsafe { dispatch(number, request, size) }
+    };
     #[cfg(feature = "event-trace")]
-    crate::trace::service(thread.identity().app.0,
-                          number,
-                          depth,
-                          crate::platform::ticks().wrapping_sub(started));
+    {
+        let elapsed = crate::platform::ticks().wrapping_sub(started);
+        crate::trace::service(thread.identity().app.0, number, depth, elapsed);
+        if depth == 1 && elapsed > 5_000
+        {
+            crate::trace::record(crate::trace::SLOW_SERVICE,
+                                 thread.identity().app.0,
+                                 number as u64,
+                                 elapsed,
+                                 depth as u64,
+                                 0);
+        }
+    }
     frame.registers[8] = result as usize;
     frame.pc = frame.pc.wrapping_add(4);
     drop(scope);
     if matches!(number, PROCESS | PSTRING_PROCESS)
        && result == OK as i64
        && super::scheduler::retired()
+    {
+        return super::scheduler::schedule(frame);
+    }
+    if number == WAIT_EVENT && result == OK as i64 && super::scheduler::blocked()
     {
         return super::scheduler::schedule(frame);
     }
@@ -145,6 +165,12 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 }
                 Err(status) => status as i64
             }
+        }
+        MONOTONIC_CLOCK =>
+        {
+            let call = read_request!(events::MonotonicCall);
+            call.nanoseconds = crate::platform::ticks().saturating_mul(100);
+            OK as i64
         }
         TEXTEDIT =>
         {
@@ -244,6 +270,26 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             let call = read_request!(NextEventCall);
             crate::kernel::with_desktop(|runtime| {
                 call.event = runtime.next(call.mask);
+                OK
+            }).unwrap_or_else(|error| error.status()) as i64
+        }
+        WAIT_EVENT =>
+        {
+            let call = read_request!(WaitEventCall);
+            crate::kernel::with_desktop(|runtime| {
+                let (event, available) = runtime.next_available(call.mask);
+                call.event = event;
+                call.waited = u32::from(!available && call.timeout_ticks != 0);
+                if call.waited != 0
+                {
+                    crate::trace::record(crate::trace::WAIT,
+                                         crate::context::current_thread_context().identity().app.0,
+                                         call.mask as u64,
+                                         call.timeout_ticks as u64,
+                                         0,
+                                         0);
+                    super::scheduler::wait_current(call.mask, call.timeout_ticks);
+                }
                 OK
             }).unwrap_or_else(|error| error.status()) as i64
         }

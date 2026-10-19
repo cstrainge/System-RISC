@@ -5,3 +5,8 @@ the SDK and paints white retained content. The capture helper builds and package
 it as Finder only on a private disk clone. `src/package.rs` is a host packaging
 tool and is never linked into the guest. Behavioral and pixel assertions remain
 in the aggregate `window_interactions.rs` integration test.
+
+With the `menus` feature, the public SDK loop also observes disabled Command-O
+and Command-W as native KeyDown events. `tests/menus.rs` requires each to arrive
+exactly once with the Command modifier and no menu selection, while retaining the
+two expected enabled menu commands and all existing pixel comparisons.

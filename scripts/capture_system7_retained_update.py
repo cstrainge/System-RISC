@@ -39,7 +39,11 @@ def capture(output):
 
     try:
         for stage in ['committed-red', 'pending-empty', 'pending-half', 'pending-full',
-                      'committed-split', 'pending-yellow', 'committed-yellow']:
+                      'committed-split', 'pending-yellow', 'committed-yellow',
+                      'committed-pattern', 'appended-black', 'pattern-occluded',
+                      'pattern-revealed', 'desktop-cyan', 'desktop-pending',
+                      'desktop-cancelled', 'desktop-magenta', 'desktop-covered',
+                      'desktop-revealed']:
             wait('RETAINED_UPDATE_STAGE ' + stage + '\n')
             # Leave both actual app threads running across multiple timer
             # slices before capture, including event polling and presentation.
@@ -50,7 +54,7 @@ def capture(output):
             vm.qmp('input-send-event', {'events': [
                 {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'spc'},
                                          'down': down}} for down in [True, False]]}, endpoint)
-        wait('RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=7\n')
+        wait('RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=17\n')
         report = {'transport': 'private blessed disk -> live System -> two native SDK app threads',
                   'assertion_owner': 'mac-toolbox/tests/retained_update{,_cases}.rs',
                   'termination': 'guest-outcome',

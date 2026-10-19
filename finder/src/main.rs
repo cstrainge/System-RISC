@@ -98,7 +98,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
     system.log("DESKTOP_READY: Finder and native Window Manager\n")?;
     loop
     {
-        let event = system.next_event(EVERY_EVENT)?;
+        let event = system.wait_event(EVERY_EVENT, 30)?;
         if alerts.window != 0
         {
             let confirm = alerts.event(system, event)?;

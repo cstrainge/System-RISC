@@ -1,11 +1,12 @@
 //! Rust Toolbox facade over the resident System trap gate.
 #![no_std]
 pub use mac_abi::{ACCESS_DENIED, ACTIVE_FLAG, ALREADY_EXISTS, ApplicationEntry, BAD_ABI,
-                  BAD_ARGUMENT, CAP_GRAPHICS, DIRECTORY_NOT_EMPTY, DISK_FULL, DRAW_BUTTON,
-                  DRAW_TEXT, Event, EventKind, FRAME_RECT, IO_ERROR, NO_MEMORY, NOT_FOUND,
-                  NOT_SUPPORTED, OK, PAINT_RECT, Point, READ_ONLY, ROLLBACK_FAILED, Rect,
-                  ResourceKey, SERVICE_BUSY, Status, SystemServices, TRANSLATION_REQUIRED,
-                  WRONG_THREAD, WindowId, WindowRequest, dates::Timestamp};
+                  BAD_ARGUMENT, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK,
+                  DIRECTORY_NOT_EMPTY, DISK_FULL, DRAW_BUTTON, DRAW_TEXT, Event, EventKind,
+                  FRAME_RECT, IO_ERROR, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, OK, PAINT_RECT,
+                  Point, READ_ONLY, ROLLBACK_FAILED, Rect, ResourceKey, SERVICE_BUSY, Status,
+                  SystemServices, TRANSLATION_REQUIRED, WRONG_THREAD, WindowId, WindowRequest,
+                  dates::Timestamp};
 pub use mac_traps::{Client, Error, Result as ToolboxResult};
 pub use toolbox_controls as controls;
 pub use toolbox_dialogs as dialogs;
@@ -164,6 +165,11 @@ impl<'a> System<'a>
     pub fn next_event(&self, mask: u16) -> core::result::Result<Event, Status>
     {
         self.events().next_event(mask).map_err(|e| e.0)
+    }
+
+    pub fn wait_event(&self, mask: u16, timeout_ticks: u32) -> core::result::Result<Event, Status>
+    {
+        self.events().wait_event(mask, timeout_ticks).map_err(|e| e.0)
     }
 }
 #[cfg(test)]

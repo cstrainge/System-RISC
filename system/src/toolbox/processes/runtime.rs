@@ -39,6 +39,65 @@ impl Saved
 }
 impl Desktop
 {
+    /// Read waiting queues in place. A timer tick must not swap each app's UI
+    /// state just to find out whether its thread can remain asleep.
+    pub fn wake_waiters(&mut self, waiting: &[(u64, u16); 8]) -> ([bool; 8], u64)
+    {
+        let pointer_activity = self.poll_inputs();
+        self.route_events();
+        let pointer_consumer = if waiting.iter().any(|(app, _)| *app == self.foreground)
+        {
+            self.foreground
+        }
+        else
+        {
+            waiting.iter().find(|(app, _)| *app != 0).map_or(0, |(app, _)| *app)
+        };
+        let when = Self::when();
+        let ready = core::array::from_fn(|index| {
+            let (app, mask) = waiting[index];
+            if app == 0
+            {
+                return false;
+            }
+            if pointer_activity && app == pointer_consumer
+            {
+                return true;
+            }
+            let (events, dialogs) = if app == self.owner
+            {
+                (&*self.events, &self.dialogs)
+            }
+            else if let Some(local) = self.locals.iter().find(|local| local.id == app)
+            {
+                (&*local.events, &local.dialogs)
+            }
+            else
+            {
+                return false;
+            };
+            if events.peek_matching(mask).is_some()
+            {
+                return true;
+            }
+            if mask & (1 << EventKind::Update as u16) == 0
+            {
+                return false;
+            }
+            if dialogs.active()
+            {
+                self.windows.next_update_for(WindowId(dialogs.window), events, when).is_some()
+            }
+            else
+            {
+                self.windows
+                    .next_update_matching(events, when, |id| self.window_owner(id) == Some(app))
+                    .is_some()
+            }
+        });
+        (ready, self.foreground)
+    }
+
     pub fn started(&mut self, id: u64, thread: u64)
     {
         if self.processes.entries.is_empty()

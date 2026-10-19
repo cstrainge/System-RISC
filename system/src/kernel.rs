@@ -88,13 +88,14 @@ pub(crate) fn services() -> *const SystemServices
 }
 static STARTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-static SERVICES: SystemServices = SystemServices { header:       Header::for_type::<SystemServices>(),
-                                                   trap:         crate::machine::traps::gateway,
-                                                   capabilities: CAP_GRAPHICS };
+static SERVICES: SystemServices =
+    SystemServices { header:       Header::for_type::<SystemServices>(),
+                     trap:         crate::machine::traps::gateway,
+                     capabilities: CAP_GRAPHICS | CAP_EVENT_WAIT | CAP_MONOTONIC_CLOCK };
 static HEADLESS_SERVICES: SystemServices =
     SystemServices { header:       Header::for_type::<SystemServices>(),
                      trap:         crate::machine::traps::gateway,
-                     capabilities: 0 };
+                     capabilities: CAP_MONOTONIC_CLOCK };
 
 pub(crate) unsafe extern "C" fn log(bytes: *const u8, length: usize) -> Status
 {
@@ -119,6 +120,35 @@ pub(crate) fn with_desktop<R>(call: impl FnOnce(&mut crate::toolbox::runtime::De
                desktop.enter_caller();
                call(desktop)
            })
+}
+
+/// Timer/idle input pump. Never hold the scheduler lock while input routing may
+/// invoke definitions or load an application. The desktop guard remains bounded
+/// to this service, and no caller identity is borrowed across scheduling.
+pub(crate) fn poll_waiting_events()
+{
+    let waiting = crate::machine::scheduler::waiting();
+    let _scope = crate::context::current_thread_context().traps.enter();
+    let Ok((ready, foreground)) = DESKTOP.with(|desktop| desktop.wake_waiters(&waiting))
+    else
+    {
+        return;
+    };
+    for ((app, _), ready) in waiting.iter().zip(ready)
+    {
+        if ready
+        {
+            crate::trace::record(crate::trace::WAKE, *app, foreground, 0, 0, 0);
+            if *app == foreground
+            {
+                crate::machine::scheduler::wake_interactive(*app);
+            }
+            else
+            {
+                crate::machine::scheduler::wake(*app);
+            }
+        }
+    }
 }
 pub(crate) fn with_files<R>(call: impl FnOnce(&mut crate::toolbox::files::Manager) -> R)
                             -> Result<R, AccessError>

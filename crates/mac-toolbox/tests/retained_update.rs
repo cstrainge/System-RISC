@@ -25,10 +25,10 @@ fn staged_window_drawing_stays_private_until_end_update()
     assert_eq!(report["owned_vm_exited"], true);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert!(!serial.contains("RETAINED_UPDATE_FAIL"), "{serial}");
-    assert!(serial.contains("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=7\n"),
+    assert!(serial.contains("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=17\n"),
             "{serial}");
     let stages = report["stages"].as_array().unwrap();
-    assert_eq!(stages.len(), 7);
+    assert_eq!(stages.len(), 17);
     let header = b"P6\n640 480\n255\n";
     let mut checked = 0;
     for stage in stages
@@ -42,6 +42,12 @@ fn staged_window_drawing_stays_private_until_end_update()
         {
             for x in 360..610
             {
+                // Exclude the temporary cover window including its definition
+                // chrome; the following stage checks the complete exposed area.
+                if name == "pattern-occluded" && (385..550).contains(&x)
+                {
+                    continue;
+                }
                 let expected = match name
                 {
                     "committed-red" | "pending-empty" | "pending-half" | "pending-full" =>
@@ -53,6 +59,26 @@ fn staged_window_drawing_stays_private_until_end_update()
                         if x < 490 { [0, 255, 0] } else { [0, 0, 255] }
                     }
                     "committed-yellow" => [255, 255, 0],
+                    "committed-pattern" | "appended-black" | "pattern-occluded"
+                    | "pattern-revealed" | "desktop-cyan" | "desktop-pending"
+                    | "desktop-cancelled" | "desktop-magenta" | "desktop-covered"
+                    | "desktop-revealed" =>
+                    {
+                        if name != "committed-pattern"
+                           && (390..450).contains(&x)
+                           && (370..410).contains(&y)
+                        {
+                            [0, 0, 0]
+                        }
+                        else if (x - 350) & 7 == (y - 350) & 7
+                        {
+                            [0x12, 0x34, 0x56]
+                        }
+                        else
+                        {
+                            [0xfe, 0xdc, 0xba]
+                        }
+                    }
                     _ => panic!("unexpected checkpoint {name}")
                 };
                 let offset = header.len() + (y * 640 + x) * 3;
@@ -64,10 +90,33 @@ fn staged_window_drawing_stays_private_until_end_update()
                 checked += 1;
             }
         }
+        if name.starts_with("desktop-")
+        {
+            let expected = match name
+            {
+                "desktop-cyan" | "desktop-pending" | "desktop-cancelled" => [0, 255, 255],
+                "desktop-magenta" | "desktop-revealed" => [255, 0, 255],
+                "desktop-covered" => [0x12, 0x34, 0x56],
+                _ => unreachable!()
+            };
+            for y in 205..250
+            {
+                for x in 100..270
+                {
+                    let offset = header.len() + (y * 640 + x) * 3;
+                    assert_eq!(&frame[offset..offset + 3],
+                               expected,
+                               "{name}: incorrect desktop commit/cache/exposure at ({x},{y})");
+                    checked += 1;
+                }
+            }
+        }
     }
-    let acceptance = serde_json::json!({"status":"passed","stages":7,"native_app_threads":2,
+    let acceptance = serde_json::json!({"status":"passed","stages":17,"native_app_threads":2,
         "pixels":checked,"pending_frames_retain_last_commit":true,
-        "end_update_publishes_complete_scene":true,"capture":report});
+        "end_update_publishes_complete_scene":true,
+        "pattern_phase_append_and_exposure":true,
+        "desktop_commit_pending_cancel_and_exposure":true,"capture":report});
     fs::write(output.join("rust-acceptance.json"),
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join("results/system7/retained-update-checks.json"),

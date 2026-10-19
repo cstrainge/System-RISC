@@ -1,6 +1,7 @@
 //! Rectangular document windows with stable IDs, z order, damage and tracking.
 //! Rust APIs implement a documented subset; no WindowRecord guest ABI is implied.
 #![cfg_attr(not(test), forbid(unsafe_code))]
+#[cfg(test)]
 use alloc::vec;
 
 use mac_abi::{DefinitionCall, DefinitionEntry, Header, Surface};
@@ -150,6 +151,53 @@ impl Window
     {
         Point { h: point.h - self.bounds.left,
                 v: point.v - self.bounds.top }
+    }
+}
+
+/// A union boundary can occur only on a constituent rectangle's perimeter.
+/// Keep the original neighbour predicate so shared/overlapping edges disappear.
+fn drag_mask(mask: &mut [u32], width: usize, height: usize, pieces: &[Rect], dx: i16, dy: i16)
+{
+    let contains = |x: i32, y: i32| {
+        let x = x - i32::from(dx);
+        let y = y - i32::from(dy);
+        pieces.iter().any(|rect| {
+                         x >= i32::from(rect.left)
+                         && x < i32::from(rect.right)
+                         && y >= i32::from(rect.top)
+                         && y < i32::from(rect.bottom)
+                     })
+    };
+    let mut mark = |x: i32, y: i32| {
+        if x >= 0
+           && x < width as i32
+           && y >= 21
+           && y < height as i32
+           && contains(x, y)
+           && (!contains(x - 1, y)
+               || !contains(x + 1, y)
+               || !contains(x, y - 1)
+               || !contains(x, y + 1))
+        {
+            mask[y as usize * width + x as usize] = 0;
+        }
+    };
+    for piece in pieces.iter().filter(|piece| !piece.is_empty())
+    {
+        let left = i32::from(piece.left) + i32::from(dx);
+        let right = i32::from(piece.right) + i32::from(dx);
+        let top = i32::from(piece.top) + i32::from(dy);
+        let bottom = i32::from(piece.bottom) + i32::from(dy);
+        for x in left.max(0)..right.min(width as i32)
+        {
+            mark(x, top);
+            mark(x, bottom - 1);
+        }
+        for y in top.max(21)..bottom.min(height as i32)
+        {
+            mark(left, y);
+            mark(right - 1, y);
+        }
     }
 }
 
@@ -872,6 +920,14 @@ impl WindowManager
     /// than once per window. Retained application content makes these paints cheap.
     pub fn draw(&self, c: &mut Canvas, mut paint: impl FnMut(&Window, &mut Canvas))
     {
+        self.draw_with_scratch(c, None, &mut paint);
+    }
+
+    /// The resident compositor supplies a reusable mask. Other renderers can
+    /// omit scratch and retain the ordinary independently owned drawing path.
+    pub fn draw_with_scratch(&self, c: &mut Canvas, scratch: Option<&mut [u32]>,
+                             mut paint: impl FnMut(&Window, &mut Canvas))
+    {
         for window in self.back_to_front()
         {
             c.reset_port();
@@ -900,12 +956,12 @@ impl WindowManager
             copy.call(definition::DRAW_GROW_ICON, 0, &mut surface);
         }
         c.reset_port();
-        self.draw_tracking(c);
+        self.draw_tracking(c, scratch);
     }
 
     /// Tracking overlays never mutate window geometry, retained content or damage.
     /// Grow geometry belongs to the loaded definition, not to the manager.
-    fn draw_tracking(&self, canvas: &mut Canvas)
+    fn draw_tracking(&self, canvas: &mut Canvas, scratch: Option<&mut [u32]>)
     {
         let Some(tracking @ (Tracking::Grow { .. }
                  | Tracking::Drag { preview: Some(_),
@@ -914,7 +970,22 @@ impl WindowManager
         {
             return;
         };
-        let mut mask = vec![0xffffff; canvas.width * canvas.height];
+        let count = canvas.width * canvas.height;
+        let mut owned = alloc::vec::Vec::new();
+        let mask = if let Some(scratch) = scratch.filter(|scratch| scratch.len() >= count)
+        {
+            &mut scratch[..count]
+        }
+        else
+        {
+            if owned.try_reserve_exact(count).is_err()
+            {
+                return;
+            }
+            owned.resize(count, 0);
+            &mut owned
+        };
+        mask.fill(0xffffff);
         match tracking
         {
             Tracking::Grow { window,
@@ -926,7 +997,7 @@ impl WindowManager
                 {
                     return;
                 };
-                let mut target = Canvas::new(&mut mask, canvas.width, canvas.height);
+                let mut target = Canvas::new(mask, canvas.width, canvas.height);
                 let mut surface = Surface::from_canvas(&mut target);
                 if window.call(definition::GROW, (&preview as *const Rect) as i64, &mut surface) < 0
                 {
@@ -945,26 +1016,7 @@ impl WindowManager
                 };
                 let dx = preview.left - bounds.left;
                 let dy = preview.top - bounds.top;
-                let contains = |x: i16, y: i16| {
-                    window.structure_pieces().iter().any(|r| {
-                                                        r.contains(Point { h: x - dx,
-                                                                           v: y - dy })
-                                                    })
-                };
-                for y in 21..canvas.height as i16
-                {
-                    for x in 0..canvas.width as i16
-                    {
-                        if contains(x, y)
-                           && (!contains(x - 1, y)
-                               || !contains(x + 1, y)
-                               || !contains(x, y - 1)
-                               || !contains(x, y + 1))
-                        {
-                            mask[y as usize * canvas.width + x as usize] = 0;
-                        }
-                    }
-                }
+                drag_mask(mask, canvas.width, canvas.height, window.structure_pieces(), dx, dy);
             }
             _ => return
         }
@@ -1046,6 +1098,79 @@ impl WindowManager
 mod tests
 {
     use super::*;
+
+    #[test]
+    fn perimeter_tracking_matches_full_screen_union_reference()
+    {
+        let shapes = [&[Rect::new(12, 25, 80, 70)][..],
+                      &[Rect::new(12, 25, 70, 60), Rect::new(30, 40, 80, 70)][..],
+                      &[Rect::new(12, 25, 40, 70), Rect::new(40, 25, 80, 70)][..],
+                      &[Rect::new(12, 25, 13, 70), Rect::new(20, 30, 80, 31)][..]];
+        for pieces in shapes
+        {
+            for (dx, dy) in
+                [(-100, 0), (-40, -35), (-5, -8), (0, 0), (5, 3), (50, 40), (100, 0), (0, 100)]
+            {
+                let mut actual = vec![0xffffff; 96 * 80];
+                let mut expected = actual.clone();
+                let contains = |x: i16, y: i16| {
+                    pieces.iter().any(|piece| {
+                                     piece.contains(Point { h: x - dx,
+                                                            v: y - dy })
+                                 })
+                };
+                for y in 21..80
+                {
+                    for x in 0..96
+                    {
+                        if contains(x, y)
+                           && (!contains(x - 1, y)
+                               || !contains(x + 1, y)
+                               || !contains(x, y - 1)
+                               || !contains(x, y + 1))
+                        {
+                            expected[y as usize * 96 + x as usize] = 0;
+                        }
+                    }
+                }
+                drag_mask(&mut actual, 96, 80, pieces, dx, dy);
+                assert_eq!(actual, expected, "translated structure {pieces:?} by {dx},{dy}");
+            }
+        }
+    }
+
+    #[test]
+    fn supplied_tracking_scratch_matches_owned_mask_across_drag_and_grow()
+    {
+        let (mut wm, _, window, _) = make();
+        let bounds = wm.window(window).unwrap().bounds;
+        let mut preview = bounds;
+        preview.offset(20, 10);
+        let mut scratch = vec![0x123456; 640 * 480];
+        for tracking in [Tracking::Drag { window,
+                                          start: Point::default(),
+                                          bounds,
+                                          preview: Some(preview),
+                                          activate: true },
+                         Tracking::Grow { window,
+                                          start: Point::default(),
+                                          bounds,
+                                          preview }]
+        {
+            wm.tracking = Some(tracking);
+            let mut owned = vec![0x878787; 640 * 480];
+            let mut supplied = owned.clone();
+            let paint = |window: &Window, canvas: &mut Canvas<'_>| {
+                canvas.paint_rect(window.local_bounds(), 0xffffff);
+            };
+            wm.draw(&mut Canvas::new(&mut owned, 640, 480), paint);
+            wm.draw_with_scratch(&mut Canvas::new(&mut supplied, 640, 480),
+                                 Some(&mut scratch),
+                                 paint);
+            assert_eq!(owned, supplied);
+        }
+    }
+
     fn make() -> (WindowManager, EventManager, WindowId, WindowId)
     {
         let mut wm = WindowManager::new();

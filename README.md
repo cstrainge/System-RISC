@@ -68,9 +68,10 @@ The launcher opens a separate native Windows GTK window at 2× when available,
 otherwise Linux GTK. It copies the generated ROM and disk into
 `working/system7-vm`. The ROM stays read-only; the private desktop disk is
 writable and retained across starts of the same OS build. A changed base build
-archives the previous working disk before copying the new image; archives are
-never deleted automatically. Isolated test launches default to fresh read-only
-disks. Its QMP port is4447;
+replaces the previous working disk without retaining old images. Isolated test
+launches default to fresh read-only disks. `cargo xtask check` removes obsolete generated test disks and ROM copies
+before and after the gate; reports, screenshots and original reference media
+remain. Its QMP port is4447;
 the classic Mac and old QuickDraw machines keep their own state and ports.
 Click a window to activate it, drag its title, resize from the lower-right,
 close from the upper-left, and zoom the volume window from the upper-right.

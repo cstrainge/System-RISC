@@ -53,6 +53,28 @@ pub fn run(system: &System<'_>) -> Result<(), i32>
     checkpoint(system, "RETAINED_UPDATE_STAGE pending-yellow\n")?;
     system.end_update(window)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE committed-yellow\n")?;
+    // Exercise repeated presentations of an unchanged, clipped pattern at an
+    // origin which is not aligned to its eight-pixel phase. Then append drawing
+    // outside BeginUpdate and expose a previously obscured fragment.
+    let graphics = system.quickdraw().graphics(WindowId(window));
+    system.begin_update(window)?;
+    graphics.colors(0x123456, 0xfedcba).map_err(|e| e.0)?;
+    graphics.pen_pattern([0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01]).map_err(|e| e.0)?;
+    graphics.paint_rect(bounds).map_err(|e| e.0)?;
+    system.end_update(window)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE committed-pattern\n")?;
+    port.paint_rect(Rect::new(40, 20, 100, 60), 0).map_err(|e| e.0)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE appended-black\n")?;
+    let cover = system.new_window(Rect::new(400, 375, 530, 420), "Cover", (80, 30), 0)?;
+    system.begin_update(cover)?;
+    system.quickdraw()
+          .port(WindowId(cover))
+          .paint_rect(Rect::new(0, 0, 130, 45), 0x00ffff)
+          .map_err(|e| e.0)?;
+    system.end_update(cover)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE pattern-occluded\n")?;
+    system.close_window(cover)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE pattern-revealed\n")?;
     let background =
         (0..system.processes().count().map_err(|e| e.0)?).filter_map(|i| {
                                                              system.processes().at(i).ok()
@@ -62,7 +84,36 @@ pub fn run(system: &System<'_>) -> Result<(), i32>
                                                                   exited");
     assert!(background.switches > child.switches + 4,
             "background presenter must run across staged updates");
-    system.log("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=7\n")?;
+    system.processes().hide(child.id).map_err(|e| e.0)?;
+    let desktop = system.quickdraw().desktop();
+    let desktop_bounds = Rect::new(80, 180, 300, 280);
+    desktop.begin_update().map_err(|e| e.0)?;
+    desktop.graphics().colors(0x00ffff, 0).map_err(|e| e.0)?;
+    desktop.graphics().paint_rect(desktop_bounds).map_err(|e| e.0)?;
+    desktop.end_update().map_err(|e| e.0)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-cyan\n")?;
+    desktop.begin_update().map_err(|e| e.0)?;
+    desktop.graphics().colors(0xff0000, 0).map_err(|e| e.0)?;
+    desktop.graphics().paint_rect(desktop_bounds).map_err(|e| e.0)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-pending\n")?;
+    desktop.cancel_update().map_err(|e| e.0)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-cancelled\n")?;
+    desktop.begin_update().map_err(|e| e.0)?;
+    desktop.graphics().colors(0xff00ff, 0).map_err(|e| e.0)?;
+    desktop.graphics().paint_rect(desktop_bounds).map_err(|e| e.0)?;
+    desktop.end_update().map_err(|e| e.0)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-magenta\n")?;
+    let cover = system.new_window(Rect::new(90, 195, 290, 275), "Desktop Cover", (100, 40), 0)?;
+    system.begin_update(cover)?;
+    system.quickdraw()
+          .port(WindowId(cover))
+          .paint_rect(Rect::new(0, 0, 200, 80), 0x123456)
+          .map_err(|e| e.0)?;
+    system.end_update(cover)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-covered\n")?;
+    system.close_window(cover)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-revealed\n")?;
+    system.log("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=17\n")?;
     // Keep the last committed scene available until the owned VM is stopped.
     loop
     {

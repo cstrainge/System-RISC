@@ -130,6 +130,8 @@ pub struct SystemServices
 }
 pub type TrapGate = unsafe extern "C" fn(number: u32, request: *mut (), size: usize) -> i64;
 pub const CAP_GRAPHICS: u64 = 1;
+pub const CAP_EVENT_WAIT: u64 = 2;
+pub const CAP_MONOTONIC_CLOCK: u64 = 4;
 
 pub const NEW_WINDOW: u32 = 0;
 pub const CLOSE_WINDOW: u32 = 1;

@@ -66,6 +66,13 @@ impl<'a> Client<'a>
         Ok(dates::Timestamp::from_unix_seconds(call.unix_seconds))
     }
 
+    pub fn monotonic_nanoseconds(self) -> Result<u64>
+    {
+        let mut call = events::MonotonicCall::default();
+        status(self.invoke(MONOTONIC_CLOCK, &mut call))?;
+        Ok(call.nanoseconds)
+    }
+
     pub fn menu(self, call: &mut mac_abi::menus::MenuCall) -> Result<()>
     {
         status(unsafe {
@@ -140,6 +147,15 @@ impl<'a> Client<'a>
                                        event: Event::default() };
         status(self.invoke(NEXT_EVENT, &mut call))?;
         Ok(call.event)
+    }
+
+    pub fn wait_event(self, mask: u16, timeout_ticks: u32) -> Result<Event>
+    {
+        let mut call = WaitEventCall { mask,
+                                       timeout_ticks,
+                                       ..Default::default() };
+        status(self.invoke(WAIT_EVENT, &mut call))?;
+        if call.waited != 0 { self.next_event(mask) } else { Ok(call.event) }
     }
 
     pub fn event(self, call: &mut events::EventCall) -> Result<()>

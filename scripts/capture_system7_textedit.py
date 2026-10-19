@@ -106,10 +106,15 @@ def capture(output):
         vm.qmp('input-send-event', {'events': [
             {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'ctrl'}, 'down': False}}]}, endpoint)
 
-    def step(name, action, reports=1, marker='FINDER_TEXTEDIT_STATE '):
+    def step(name, action, reports=1, marker='FINDER_TEXTEDIT_STATE ', state=None):
         before = serial.read_text(errors='replace')
         action()
-        wait(marker, before.count(marker) + reports)
+        if state is None:
+            wait(marker, before.count(marker) + reports)
+        else:
+            # Keyboard batching reports the committed result once per batch.
+            # Wait for that exact final state instead of one log per key.
+            wait(state, before.count(state) + 1)
         time.sleep(.05)
         after = serial.read_text(errors='replace')
         steps.append({'name': name, 'log': after[len(before):]})
@@ -122,7 +127,8 @@ def capture(output):
         wait('FINDER_TEXTEDIT_STATE ')
         vm.qmp('screendump', {'filename': str(output / 'finder-open.ppm')}, endpoint)
         step('select-all', lambda: command('a'))
-        step('type-hello', lambda: [key(c) for c in 'hello'], reports=5)
+        step('type-hello', lambda: [key(c) for c in 'hello'],
+             state='FINDER_TEXTEDIT_STATE length=5 selection=5..5\n')
         step('select-hello', lambda: command('a'))
         step('copy', lambda: command('c'))
         step('cut', lambda: command('x'))

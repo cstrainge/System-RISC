@@ -13,12 +13,15 @@ fn error(error: Error) -> Status
 #[derive(Default)]
 pub struct Editor
 {
-    pub window: u32,
-    editor:     EditorId,
-    size:       Point,
-    tracking:   bool,
-    last_mouse: Point,
-    ticks:      u32
+    pub window:     u32,
+    editor:         EditorId,
+    size:           Point,
+    tracking:       bool,
+    last_mouse:     Point,
+    ticks:          u32,
+    defer_drawing:  bool,
+    draw_pending:   bool,
+    report_pending: bool
 }
 impl Editor
 {
@@ -33,14 +36,39 @@ impl Editor
         Ok(())
     }
 
-    fn report(&self, system: &System<'_>) -> Result<(), Status>
+    fn report(&mut self, system: &System<'_>) -> Result<(), Status>
     {
+        if self.defer_drawing
+        {
+            self.report_pending = true;
+            return Ok(());
+        }
         let info = system.textedit().info(self.editor).map_err(error)?;
         let mut line = crate::Text::<128>::default();
         let _ = writeln!(&mut line,
                          "FINDER_TEXTEDIT_STATE length={} selection={}..{}",
                          info.text_length, info.selection_start, info.selection_end);
         system.log(line.as_str())
+    }
+
+    /// Apply queued edits immediately, committing their final drawing together.
+    pub fn defer_drawing(&mut self)
+    {
+        self.defer_drawing = true;
+    }
+
+    pub fn flush_drawing(&mut self, system: &System<'_>) -> Result<(), Status>
+    {
+        self.defer_drawing = false;
+        if core::mem::take(&mut self.draw_pending)
+        {
+            self.draw(system)?;
+        }
+        if core::mem::take(&mut self.report_pending)
+        {
+            self.report(system)?;
+        }
+        Ok(())
     }
 
     pub fn active(&self, system: &System<'_>) -> bool
@@ -136,6 +164,11 @@ impl Editor
 
     pub fn draw(&mut self, system: &System<'_>) -> Result<(), Status>
     {
+        if self.defer_drawing
+        {
+            self.draw_pending = true;
+            return Ok(());
+        }
         let window = system.window(self.window)?;
         let size = Point { h: window.bounds.right - window.bounds.left,
                            v: window.bounds.bottom - window.bounds.top };

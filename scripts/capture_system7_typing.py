@@ -70,13 +70,16 @@ def capture(output, windows_headless=False):
         send([{'type': 'btn', 'data': {'button': 'left', 'down': down}}])
         time.sleep(.05)
 
-    def step(name, action, reports=1):
+    def step(name, action, reports=1, state=None):
         start = len(serial.read_text(errors='replace'))
         action()
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             delta = serial.read_text(errors='replace')[start:]
-            if len(re.findall(r'FINDER_TEXTEDIT_STATE [^\n]*\n', delta)) >= reports:
+            complete = (f'FINDER_TEXTEDIT_STATE length={state[0]} '
+                        f'selection={state[1]}..{state[2]}\n' in delta) if state else (
+                        len(re.findall(r'FINDER_TEXTEDIT_STATE [^\n]*\n', delta)) >= reports)
+            if complete:
                 steps.append({'name': name, 'log': delta})
                 return
             time.sleep(.002)
@@ -95,12 +98,16 @@ def capture(output, windows_headless=False):
         text = 'abcdefghijklmnopqrst'
         start = time.monotonic()
         step('burst', lambda: send([event for c in text for event in key_events(c)]),
-             reports=20)
+             state=(20, 20, 20))
         burst = time.monotonic() - start
         step('select-burst', lambda: chord('a', ['ctrl']))
+        step('copy-all', lambda: chord('c', ['ctrl']))
+        step('cut-all', lambda: chord('x', ['ctrl']))
+        step('paste-all', lambda: chord('v', ['ctrl']))
+        step('select-pasted', lambda: chord('a', ['ctrl']))
         step('multiline', lambda: send([event for c in 'abc\rdef\rghi'
                                        for event in key_events('ret' if c == '\r' else c)]),
-             reports=11)
+             state=(11, 11, 11))
         for name, key, modifiers in [
             ('home', 'home', []),
             ('shift-end', 'end', ['shift']),
@@ -127,6 +134,8 @@ def capture(output, windows_headless=False):
         ]:
             step(name, lambda k=key, m=modifiers: chord(k, m))
         vm.qmp('screendump', {'filename': str(output / 'finder.ppm')}, endpoint)
+        chord('w', ['ctrl'])
+        wait('PROCESS_EXIT app=2\n')
         report = {'original_before': before,
                   'original_after': {name: packaging.sha(original / name) for name in before},
                   'fixture_elf_sha256': packaging.sha(binary),

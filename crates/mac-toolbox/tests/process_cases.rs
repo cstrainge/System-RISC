@@ -91,15 +91,31 @@ fn memory(handle: &Handle<'_>, expected: &[u8]) -> Result<()>
 fn find(system: &System<'_>, id: u64) -> Result<Option<ProcessInfo>>
 {
     let processes = system.processes();
-    for i in 0..processes.count()?
+    // Count and indexed lookup are separate ECALLs, not an atomic snapshot.
+    // A child can retire between them and remove the final catalog slot.
+    // Restart that invalidated enumeration; all other service errors still fail.
+    'snapshot: for _ in 0..8
     {
-        let info = processes.at(i)?;
-        if info.id == id
+        let count = processes.count()?;
+        for i in 0..count
         {
-            return Ok(Some(info));
+            let info = match processes.at(i)
+            {
+                Ok(info) => info,
+                Err(error) if error.0 == mac_toolbox::NOT_FOUND => continue 'snapshot,
+                Err(error) => return Err(error.into())
+            };
+            if info.id == id
+            {
+                return Ok(Some(info));
+            }
+        }
+        if processes.count()? == count
+        {
+            return Ok(None);
         }
     }
-    Ok(None)
+    Err(Failure::Contract("process enumeration kept changing"))
 }
 fn state(system: &System<'_>, id: u64) -> Result<ProcessInfo>
 {

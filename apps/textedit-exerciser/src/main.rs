@@ -7,6 +7,7 @@ use core::panic::PanicInfo;
 use mac_toolbox::{events::EVERY_EVENT, *};
 
 mod editor;
+mod batch;
 mod resources
 {
     use mac_toolbox as mac_abi;
@@ -25,7 +26,7 @@ fn run(system: &System<'_>) -> Result<(), Status>
     system.log("TEXTEDIT_EXERCISER_READY\n")?;
     loop
     {
-        let event = system.next_event(EVERY_EVENT)?;
+        let event = system.wait_event(EVERY_EVENT, 30)?;
         if let Some(selection) = system.menus().selection(&event).map_err(|e| e.0)?
         {
             if [u32::from_be_bytes(*b"clos"), u32::from_be_bytes(*b"quit")].contains(&selection.command)
@@ -35,6 +36,15 @@ fn run(system: &System<'_>) -> Result<(), Status>
             }
             editor.command(system, selection.command, event.when)?;
             menus::update(system, &editor)?;
+            continue;
+        }
+        if batch::is_keyboard(event.kind)
+        {
+            batch::keyboard(system, &mut editor, event)?;
+            if editor.window == 0
+            {
+                return Ok(());
+            }
             continue;
         }
         editor.event(system, event)?;

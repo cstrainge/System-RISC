@@ -1,6 +1,7 @@
 //! QEMU virt display and clock; System owns the framebuffers.
 use core::{arch::asm,
-           ptr::{addr_of_mut, read_volatile, write_volatile}};
+           ptr::{addr_of_mut, read_volatile, write_volatile},
+           sync::atomic::{AtomicBool, Ordering}};
 pub const WIDTH: usize = 640;
 pub const HEIGHT: usize = 480;
 pub const PIXELS: usize = WIDTH * HEIGHT;
@@ -10,6 +11,33 @@ const MTIME: usize = 0x0200bff8;
 struct Pixels([u32; PIXELS]);
 static mut FRAMEBUFFER: Pixels = Pixels([0; PIXELS]);
 static mut BACKBUFFER: Pixels = Pixels([0; PIXELS]);
+static mut TRACKING_MASK: Pixels = Pixels([0; PIXELS]);
+static TRACKING_BORROWED: AtomicBool = AtomicBool::new(false);
+
+/// Scratch belongs to the serialized compositor and cannot escape this call.
+/// A future/reentrant caller receives None instead of aliasing the active mask.
+pub fn with_tracking_mask<R>(call: impl FnOnce(Option<&mut [u32]>) -> R) -> R
+{
+    if TRACKING_BORROWED.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                        .is_err()
+    {
+        return call(None);
+    }
+    struct Borrow;
+    impl Drop for Borrow
+    {
+        fn drop(&mut self)
+        {
+            TRACKING_BORROWED.store(false, Ordering::Release);
+        }
+    }
+    let _borrow = Borrow;
+    // The guard excludes all other borrows until the closure returns, the
+    // storage is initialized/aligned, and its lifetime cannot escape R.
+    call(Some(unsafe {
+             core::slice::from_raw_parts_mut(addr_of_mut!(TRACKING_MASK).cast::<u32>(), PIXELS)
+         }))
+}
 
 pub fn back_buffer() -> &'static mut [u32]
 {
@@ -120,14 +148,20 @@ pub fn ticks() -> u64
 }
 pub fn present(back: &[u32])
 {
+    assert_eq!(back.len(), PIXELS);
+    let started = crate::trace::clock();
     let front = addr_of_mut!(FRAMEBUFFER) as *mut u32;
-    for (index, pixel) in back.iter().enumerate()
-    {
-        unsafe {
-            write_volatile(front.add(index), *pixel);
-        }
-    }
+    // RAMFB is ordinary guest RAM, not a register aperture. The compositor is
+    // its sole writer; back and front are distinct, equally sized allocations.
+    // Copy in bulk and publish through the compiler/hardware fence below.
     unsafe {
+        core::ptr::copy_nonoverlapping(back.as_ptr(), front, PIXELS);
         asm!("fence iorw, iorw", options(nostack));
     }
+    crate::trace::record(crate::trace::FRAME_COPY,
+                         crate::context::current_thread_context().identity().app.0,
+                         crate::trace::clock().wrapping_sub(started),
+                         PIXELS as u64,
+                         0,
+                         0);
 }

@@ -16,11 +16,13 @@ import capture_system7_conformance as packaging
 import system7_vm as vm
 
 KINDS = {1: 'input', 2: 'delivery', 3: 'peek', 4: 'update', 5: 'window',
-         6: 'activate', 7: 'render', 8: 'route', 9: 'null', 10: 'poll', 11: 'present'}
+         6: 'activate', 7: 'render', 8: 'route', 9: 'null', 10: 'poll', 11: 'present',
+         12: 'wake', 13: 'wait', 14: 'frame_copy', 15: 'slow_service'}
 SERVICES = ['log', 'window', 'draw', 'next_event', 'definition', 'classic', 'geometry',
             'surface', 'quickdraw', 'font', 'region', 'copy_bits', 'world', 'picture',
             'cursor', 'mapping', 'resource', 'icon', 'file', 'control', 'memory',
-            'image', 'menu', 'dialog', 'clock', 'scrap', 'events', 'textedit', 'process']
+            'image', 'menu', 'dialog', 'clock', 'scrap', 'events', 'textedit', 'process',
+            'wait_event', 'monotonic_clock']
 
 
 def decode(path):
@@ -144,11 +146,19 @@ def capture(output, windows=False):
             driver.wait('FINDER_TEXTEDIT_STATE ', count)
 
         def burst():
-            count = driver.log().count('FINDER_TEXTEDIT_STATE ')
+            start = len(driver.log())
             events = [{'type': 'key', 'data': {'key': {'type': 'qcode', 'data': c}, 'down': down}}
                       for c in 'abcdefghijklmnopqrst' for down in (True, False)]
             driver.send(events)
-            driver.wait('FINDER_TEXTEDIT_STATE ', count + 19)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                delta = driver.log()[start:]
+                # One physical burst can span several virtio input polls. Wait
+                # for all edits to commit, independent of frame batching.
+                if sum(map(int, re.findall(r'TEXTEDIT_BATCH keys=(\d+)\n', delta))) >= 20:
+                    return
+                time.sleep(.002)
+            raise TimeoutError('typing batch completion\n' + delta[-3000:])
 
         stage('idle-finder', lambda: None, 1)
         stage('open-folder', lambda: (driver.click(40, 95, double=True),

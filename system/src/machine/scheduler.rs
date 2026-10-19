@@ -11,6 +11,9 @@ use super::traps::TrapFrame;
 use crate::context::ThreadContext;
 pub const MAX_THREADS: usize = 8;
 const STACK_WORDS: usize = 16384; // 256KiB, including nested service/definition frames.
+// The CLINT runs at 10 MHz. Sampling input every 500 us avoids the old 10 ms
+// event-polling floor; a freshly woken event consumer takes the next timeslice.
+const TIMER_INTERVAL: u64 = 5_000;
 static CONTEXTS: [ThreadContext; MAX_THREADS] = [const { ThreadContext::new() }; MAX_THREADS];
 static CURRENT: AtomicUsize = AtomicUsize::new(MAX_THREADS);
 static IO: AtomicBool = AtomicBool::new(false);
@@ -21,14 +24,24 @@ struct Thread
     live:     bool,
     retired:  bool,
     image:    usize,
-    switches: u64
+    switches: u64,
+    waiting:  Option<Wait>,
+    woken:    u8
+}
+#[derive(Clone, Copy)]
+struct Wait
+{
+    mask:     u16,
+    deadline: u64
 }
 struct Scheduler
 {
     threads: [Option<Thread>; MAX_THREADS],
+    idle:    Option<Thread>,
     ticks:   u64
 }
 static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler { threads: [const { None }; MAX_THREADS],
+                                                            idle:    None,
                                                             ticks:   0 });
 unsafe extern "C" {
     fn __system_start_frame(frame: *mut TrapFrame) -> !;
@@ -87,7 +100,9 @@ pub fn spawn(app: u64, image: usize, entry: usize) -> Result<u64, mac_abi::Statu
                                             live: true,
                                             retired: false,
                                             image,
-                                            switches: 0 });
+                                            switches: 0,
+                                            waiting: None,
+                                            woken: 0 });
     serial!("PROCESS_THREAD app={} thread={} stack=0x{:x}", app, thread, top);
     Ok(thread)
 }
@@ -111,12 +126,29 @@ fn arm()
 {
     unsafe {
         core::ptr::write_volatile(0x02004000 as *mut u64,
-                                  crate::platform::ticks().wrapping_add(100_000));
+                                  crate::platform::ticks().wrapping_add(TIMER_INTERVAL));
     }
 }
 pub fn start() -> !
 {
     let mut scheduler = SCHEDULER.lock();
+    let mut stack = vec![0u128; STACK_WORDS].into_boxed_slice();
+    let top = unsafe { stack.as_mut_ptr().add(stack.len()) } as usize;
+    let idle_frame = (top - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
+    let mut initial = TrapFrame::default();
+    initial.pc = idle as *const () as usize;
+    initial.status = 0x1880;
+    unsafe {
+        idle_frame.write(initial);
+    }
+    scheduler.idle = Some(Thread { _stack:   stack,
+                                   frame:    idle_frame as usize,
+                                   live:     true,
+                                   retired:  false,
+                                   image:    0,
+                                   switches: 0,
+                                   waiting:  None,
+                                   woken:    0 });
     let t = scheduler.threads[0].as_mut().expect("Finder thread");
     let frame = t.frame as *mut TrapFrame;
     t.switches += 1;
@@ -126,6 +158,85 @@ pub fn start() -> !
     unsafe {
         asm!("csrs mie, {}",in(reg)128usize,options(nomem,nostack));
         __system_start_frame(frame)
+    }
+}
+extern "C" fn idle() -> !
+{
+    loop
+    {
+        // No application is runnable. Only this dedicated stack executes WFI;
+        // an application can never suspend while holding a resident guard.
+        unsafe {
+            asm!("wfi", options(nomem, nostack));
+        }
+    }
+}
+
+/// Called only by the outermost native wait trap, with interrupts masked.
+pub fn wait_current(mask: u16, timeout_ticks: u32)
+{
+    if timeout_ticks == 0
+    {
+        return;
+    }
+    let deadline = crate::platform::ticks()
+        .saturating_add((u64::from(timeout_ticks) * 10_000_000).div_ceil(60));
+    let index = CURRENT.load(Ordering::Relaxed);
+    if let Some(thread) = SCHEDULER.lock().threads.get_mut(index).and_then(Option::as_mut)
+    {
+        thread.waiting = Some(Wait { mask,
+                                     deadline });
+        thread.woken = 0;
+    }
+}
+
+pub fn blocked() -> bool
+{
+    let index = CURRENT.load(Ordering::Relaxed);
+    SCHEDULER.lock()
+             .threads
+             .get(index)
+             .and_then(Option::as_ref)
+             .is_some_and(|thread| thread.waiting.is_some())
+}
+
+/// Copy identities and masks before inspecting the resident Event Manager. No
+/// scheduler lock may remain held while a service enters application resources.
+pub fn waiting() -> [(u64, u16); MAX_THREADS]
+{
+    let scheduler = SCHEDULER.lock();
+    core::array::from_fn(|index| {
+        scheduler.threads[index].as_ref()
+                                .and_then(|thread| thread.waiting.filter(|_| thread.live))
+                                .map_or((0, 0), |wait| {
+                                    (CONTEXTS[index].identity().app.0, wait.mask)
+                                })
+    })
+}
+
+pub fn wake(app: u64)
+{
+    wake_with_priority(app, 1);
+}
+
+/// Foreground input outranks background activation/update notifications.
+pub fn wake_interactive(app: u64)
+{
+    wake_with_priority(app, 2);
+}
+
+fn wake_with_priority(app: u64, priority: u8)
+{
+    let mut scheduler = SCHEDULER.lock();
+    for (index, thread) in scheduler.threads.iter_mut().enumerate()
+    {
+        if CONTEXTS[index].identity().app.0 == app
+           && let Some(thread) = thread.as_mut().filter(|thread| thread.live)
+           && thread.waiting.take().is_some()
+        {
+            thread.woken = priority;
+            break;
+        }
     }
 }
 pub fn retire_current()
@@ -139,7 +250,7 @@ pub fn retire_current()
 }
 pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
 {
-    arm();
+    crate::kernel::poll_waiting_events();
     let current = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();
     scheduler.ticks += 1;
@@ -155,19 +266,62 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
     {
         thread.frame = frame as usize;
     }
+    else if current == MAX_THREADS
+    {
+        scheduler.idle.as_mut().expect("idle thread").frame = frame as usize;
+    }
+    let now = crate::platform::ticks();
+    for thread in scheduler.threads.iter_mut().flatten()
+    {
+        if thread.waiting.is_some_and(|wait| now >= wait.deadline)
+        {
+            thread.waiting = None;
+        }
+    }
+    // An event consumer must not wait behind every CPU-bound application. Only
+    // real event readiness gets this boost; periodic idle timeouts use normal RR.
+    let priority = scheduler.threads
+                            .iter()
+                            .flatten()
+                            .filter(|thread| thread.live)
+                            .map(|thread| thread.woken)
+                            .max()
+                            .unwrap_or(0);
+    if priority != 0
+    {
+        for offset in 1..=MAX_THREADS
+        {
+            let index = (current + offset) % MAX_THREADS;
+            if let Some(thread) =
+                scheduler.threads[index].as_mut()
+                                        .filter(|thread| thread.live && thread.woken == priority)
+            {
+                thread.woken = 0;
+                thread.switches += 1;
+                let next = thread.frame as *mut TrapFrame;
+                CURRENT.store(index, Ordering::Relaxed);
+                arm();
+                return next;
+            }
+        }
+    }
     for offset in 1..=MAX_THREADS
     {
         let index = (current + offset) % MAX_THREADS;
-        if let Some(thread) = scheduler.threads[index].as_mut().filter(|t| t.live)
+        if let Some(thread) =
+            scheduler.threads[index].as_mut().filter(|t| t.live && t.waiting.is_none())
         {
             thread.switches += 1;
             let next = thread.frame as *mut TrapFrame;
             CURRENT.store(index, Ordering::Relaxed);
+            arm();
             return next;
         }
     }
-    // Finder is protected from quitting; it is always a runnable fallback.
-    frame
+    let next = scheduler.idle.as_ref().expect("idle thread").frame as *mut TrapFrame;
+    CURRENT.store(MAX_THREADS, Ordering::Relaxed);
+    arm();
+    next
 }
 
 pub fn slot() -> usize

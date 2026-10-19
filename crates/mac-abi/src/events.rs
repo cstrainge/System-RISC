@@ -134,3 +134,10 @@ pub struct EventCall
     /// Native extension: unwrapped 60-Hz ticks since machine startup.
     pub uptime_ticks: u64
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MonotonicCall
+{
+    pub nanoseconds: u64
+}

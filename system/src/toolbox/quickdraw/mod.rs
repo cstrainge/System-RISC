@@ -36,4 +36,5 @@ pub mod icons_service;
 pub mod pictures_service;
 
 pub mod retained;
+pub mod content_cache;
 pub mod png;

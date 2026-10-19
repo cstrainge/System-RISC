@@ -5,6 +5,8 @@ pub const SCRAP: u32 = 0x10019;
 pub const EVENTS: u32 = 0x1001a;
 pub const TEXTEDIT: u32 = 0x1001b;
 pub const CLOCK: u32 = 0x10018;
+/// Native monotonic boot clock; independent of wall-clock dates and 60-Hz TickCount.
+pub const MONOTONIC_CLOCK: u32 = 0x1001e;
 pub const DIALOG: u32 = 0x10017;
 pub const MENU: u32 = 0x10016;
 pub const LOG: u32 = 0x10000;
@@ -12,6 +14,8 @@ pub const IMAGE: u32 = 0x10015;
 pub const WINDOW: u32 = 0x10001;
 pub const DRAW: u32 = 0x10002;
 pub const NEXT_EVENT: u32 = 0x10003;
+/// Native scheduler-backed Event Manager wait; existing NEXT_EVENT stays nonblocking.
+pub const WAIT_EVENT: u32 = 0x1001d;
 pub const DEFINITION: u32 = 0x10004;
 pub const CLASSIC: u32 = 0x10005;
 pub const GEOMETRY: u32 = 0x10006;
@@ -49,6 +53,17 @@ pub struct NextEventCall
 {
     pub mask:  u16,
     pub event: Event
+}
+#[repr(C)]
+#[derive(Default)]
+pub struct WaitEventCall
+{
+    pub mask:          u16,
+    /// Maximum wait in 60-Hz uptime ticks; zero performs a nonblocking poll.
+    pub timeout_ticks: u32,
+    pub event:         Event,
+    /// Resident transport flag: the caller slept and must poll after resumption.
+    pub waited:        u32
 }
 #[repr(C)]
 #[derive(Default)]

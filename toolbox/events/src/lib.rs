@@ -15,6 +15,13 @@ impl<'a> Events<'a>
         Self { client }
     }
 
+    /// Nanoseconds since machine startup, independent of the wall clock.
+    /// Current RV64 hardware precision is100ns; the value saturates at u64::MAX.
+    pub fn monotonic_nanoseconds(self) -> Result<u64>
+    {
+        self.client.monotonic_nanoseconds()
+    }
+
     pub fn next(self, mask: u16) -> Result<Option<Event>>
     {
         let event = self.client.next_event(mask)?;
@@ -24,6 +31,15 @@ impl<'a> Events<'a>
     pub fn next_event(self, mask: u16) -> Result<Event>
     {
         self.client.next_event(mask)
+    }
+
+    /// Sleep this OS thread until a matching event is ready or the maximum
+    /// number of 60-Hz uptime ticks elapses. Zero polls without sleeping.
+    /// Physical pointer motion may also return a null event for drag tracking.
+    /// Other application threads remain runnable while this thread waits.
+    pub fn wait_event(self, mask: u16, timeout_ticks: u32) -> Result<Event>
+    {
+        self.client.wait_event(mask, timeout_ticks)
     }
 
     /// Post to the native application queue consumed by `next_event`.

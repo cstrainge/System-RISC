@@ -177,7 +177,7 @@ The accepted profile includes:
 Validation is `cargo xtask check` plus host/RV64 Clippy with warnings denied.
 Original media and the user's visible VM are excluded from test input injection.
 The desktop runs from a persistent private writable copy; a changed OS build
-archives the previous working disk before installing its new image.
+replaces the previous working disk when installing its new image.
 
 This is bounded native functionality. General fork writes, catalog growth,
 crash-atomic journaling, collision renaming/Option locked-item policy, full

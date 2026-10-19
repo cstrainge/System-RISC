@@ -51,15 +51,27 @@ fn finder_typing_avoids_disk_work_and_preserves_navigation_selection()
     assert_eq!(field("grow_clip_calls="),
                0,
                "unchanged window geometry must not reset the grow clip: {fields}");
-    let states = profile.lines()
+    let states = profile.split("TYPING_ISOLATED_DONE\n")
+                        .next()
+                        .unwrap()
+                        .lines()
                         .filter(|line| line.starts_with("FINDER_TEXTEDIT_STATE "))
                         .collect::<Vec<_>>();
     assert_eq!(states.last().unwrap(), &"FINDER_TEXTEDIT_STATE length=149 selection=149..149");
     assert_eq!(states.len(), 21, "each keyDown edits once; keyUp must not edit");
+    assert!(profile.contains("TYPING_BATCH chars=20 text_match=1 updates=1 key_calls=20 \
+                              menu_calls=5 file_calls=0 ordered_boundary=1\n"),
+            "{profile}");
+    assert!(profile.contains("TYPING_BATCH_BOUND events=129 consumed=128 remaining=1 updates=0 \
+                              key_calls=0\n"),
+            "{profile}");
+    assert!(profile.contains("TYPING_BATCH_COMMAND ordered=1 selection_applied=1 final_text=q\n"),
+            "{profile}");
     let finder = fs::read_to_string(output.join("finder-vm/serial.log")).unwrap();
     assert!(!finder.contains("FINDER_ACTION_FAILED"), "{finder}");
     assert!(finder.contains("PROCESS_LAUNCHED app=2 thread=3 name=TextEdit Exerciser"));
     assert!(finder.contains("TEXTEDIT_EXERCISER_READY"));
+    assert!(finder.contains("PROCESS_EXIT app=2\n"), "Ctrl+W must close the editor application");
     assert!(!finder.lines().filter_map(|line| line.split("dropped=").nth(1)).any(|n| {
                                                                                 n.parse::<u64>()
                                                                                  .unwrap()
@@ -68,6 +80,9 @@ fn finder_typing_avoids_disk_work_and_preserves_navigation_selection()
             "{finder}");
     let steps = report["steps"].as_array().unwrap();
     for (name, length, a, b) in [("burst", 20, 20, 20),
+                                 ("copy-all", 20, 0, 20),
+                                 ("cut-all", 0, 0, 0),
+                                 ("paste-all", 20, 20, 20),
                                  ("multiline", 11, 11, 11),
                                  ("home", 11, 8, 8),
                                  ("shift-end", 11, 8, 11),

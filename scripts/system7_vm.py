@@ -31,7 +31,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     """Launch a private disk copy. Tests default to read-only and fresh copies.
 
     Persistent desktop starts retain their writable copy while the build is unchanged.
-    A new OS build archives that copy before installing the new boot disk.
+    A new OS build replaces that copy; obsolete boot disks are not retained.
     """
     state = Path(state).resolve()
     state.mkdir(parents=True, exist_ok=True)
@@ -44,10 +44,6 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     stamp = state / 'base-disk.sha256'
     same_base = stamp.exists() and stamp.read_text().strip() == base_hash
     if not preserve or not disk.exists() or not same_base:
-        if preserve and disk.exists():
-            archive = state / ('system7-previous-' + str(time.time_ns()) + '.qcow2')
-            disk.rename(archive)
-            print('Archived previous working disk:', archive)
         shutil.copyfile(DIST / 'system7.qcow2', disk)
         stamp.write_text(base_hash + '\n')
     executable = str(native_executable()) if native else 'qemu-system-riscv64'

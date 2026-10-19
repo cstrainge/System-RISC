@@ -41,6 +41,7 @@ pub struct Desktop
     definitions:     Definitions,
     content:         Vec<Content>,
     pending_content: Vec<Content>,
+    content_cache:   super::quickdraw::content_cache::ContentCache,
     decoders:        [Decoder; 2],
     pub revision:    u32,
     pub updates:     u32,
@@ -104,6 +105,7 @@ impl Desktop
         if id != mac_abi::quickdraw::DESKTOP_TARGET
            && !self.pending_content.iter().any(|content| content.id.0 == id)
         {
+            self.content_cache.invalidate(id);
             self.redraw = true;
         }
     }
@@ -133,6 +135,7 @@ impl Desktop
                   definitions,
                   content: Vec::new(),
                   pending_content: Vec::new(),
+                  content_cache: Default::default(),
                   decoders: [Decoder::new(), Decoder::new()],
                   revision: 0,
                   updates: 0,
@@ -401,6 +404,7 @@ impl Desktop
                     return NOT_FOUND;
                 };
                 *content = self.pending_content.swap_remove(index);
+                self.content_cache.invalidate(id.0);
                 self.windows.end_update(id);
             }
             _ => return NOT_SUPPORTED
@@ -511,6 +515,7 @@ impl Desktop
             let committed = self.desktop.request(call)?;
             if committed
             {
+                self.content_cache.invalidate(DESKTOP_TARGET);
                 self.revision = self.revision.wrapping_add(1);
                 self.last_action = "DESKTOP";
                 self.redraw = true;
@@ -977,14 +982,17 @@ impl Desktop
                          modifiers } =>
             {
                 self.events.modifiers = modifiers | (self.events.modifiers & BTN_STATE);
-                if down && modifiers & CMD_KEY != 0 && self.menus.has_key(character)
+                if down
+                   && modifiers & CMD_KEY != 0
+                   && self.menus.has_key(character)
+                   && let Some(selection) = self.menus.key(character)
                 {
-                    if let Some(selection) = self.menus.key(character)
-                    {
-                        self.menu_selection(selection, when);
-                    }
+                    self.menu_selection(selection, when);
                     return;
                 }
+                // Menu policy can still reflect the previous frame while the
+                // application opens or closes a window. Disabled shortcuts stay
+                // available as keyboard input; only a real selection consumes it.
                 if mac_code != 0xff
                 {
                     if down
@@ -1018,7 +1026,14 @@ impl Desktop
         self.next_with_remove(mask, true)
     }
 
-    fn poll_inputs(&mut self)
+    /// A posted null event is a real queued record, distinct from idle. Keep
+    /// availability separate so a native wait cannot consume it and then sleep.
+    pub fn next_available(&mut self, mask: u16) -> (Event, bool)
+    {
+        self.next_with_presence(mask, true)
+    }
+
+    fn poll_inputs(&mut self) -> bool
     {
         crate::trace::record(crate::trace::POLL, self.owner, 0, 0, 0, 0);
         let mut pending = [None; 128];
@@ -1037,7 +1052,7 @@ impl Desktop
         // affect applications (including modifiers) always produce an Input.
         if count == 0
         {
-            return;
+            return false;
         }
         let when = Self::when();
         let caller = self.owner;
@@ -1059,13 +1074,20 @@ impl Desktop
         }
         self.events.keys = keys;
         self.sync_input_state();
+        pending[..count].iter()
+                        .flatten()
+                        .any(|input| matches!(input, Input::Move(_) | Input::Button { .. }))
     }
 
     fn next_with_remove(&mut self, mask: u16, remove: bool) -> Event
     {
+        self.next_with_presence(mask, remove).0
+    }
+
+    fn next_with_presence(&mut self, mask: u16, remove: bool) -> (Event, bool)
+    {
         self.poll_inputs();
         let when = Self::when();
-        self.present();
         self.route_events();
         let mut synthetic = false;
         let event =
@@ -1094,9 +1116,16 @@ impl Desktop
                   {
                       None
                   }
-              })
-              .unwrap_or_else(|| self.events.null_event(when));
-        let code = if event.kind == EventKind::Null
+              });
+        let available = event.is_some();
+        let event = event.unwrap_or_else(|| self.events.null_event(when));
+        // Input delivery must not wait for painting. EndUpdate commits drawing;
+        // an idle poll also presents pointer/menu changes and legacy drawing.
+        if !available
+        {
+            self.present();
+        }
+        let code = if !available
         {
             crate::trace::NULL
         }
@@ -1114,7 +1143,7 @@ impl Desktop
         };
         crate::trace::record(code, self.owner, event.kind as u64, event.message as u64,
                              event.when as u64, event.modifiers as u64);
-        event
+        (event, available)
     }
 
     pub fn present(&mut self)
@@ -1135,20 +1164,47 @@ impl Desktop
             background(&mut canvas);
             let cdef = self.cdef;
             let fonts = crate::kernel::fonts();
-            if self.processes.get(1).is_ok_and(|p| p.info.hidden == 0)
+            let desktop_visible = self.processes.get(1).is_ok_and(|p| p.info.hidden == 0);
+            self.content_cache.begin_frame();
+            self.content_cache.retain(|id| {
+                                  if id == mac_abi::quickdraw::DESKTOP_TARGET
+                                  {
+                                      desktop_visible
+                                  }
+                                  else
+                                  {
+                                      self.windows.window(WindowId(id)).is_some()
+                                  }
+                              });
+            if desktop_visible
             {
-                self.desktop
-                    .paint(&mut canvas, fonts, |canvas, command| paint(canvas, command, cdef));
+                self.content_cache.paint(mac_abi::quickdraw::DESKTOP_TARGET,
+                                         self.desktop.bounds(),
+                                         &mut canvas,
+                                         |canvas| {
+                                             crate::kernel::with_resource_owner(1, || {
+                                                 self.desktop.paint(canvas,
+                                                                    fonts,
+                                                                    |canvas, command| {
+                                                                        paint(canvas, command, cdef)
+                                                                    });
+                                             });
+                                         });
             }
             let content = &self.content;
+            let cache = &mut self.content_cache;
             let cdef = self.cdef;
-            self.windows.draw(&mut canvas, |window, canvas| {
-                            canvas.paint_rect(window.local_bounds(), WHITE);
-                            if let Some(content) = content.iter().find(|c| c.id == window.id)
-                            {
-                                crate::kernel::with_resource_owner(u64::from(window.refcon),||content.paint(canvas,fonts,|canvas,command|paint(canvas,command,cdef)));
-                            }
-                        });
+            platform::with_tracking_mask(|scratch| {
+                self.windows.draw_with_scratch(&mut canvas, scratch, |window, canvas| {
+                            cache.paint(window.id.0, window.bounds, canvas, |canvas| {
+                                canvas.paint_rect(window.local_bounds(), WHITE);
+                                if let Some(content) = content.iter().find(|c| c.id == window.id)
+                                {
+                                    crate::kernel::with_resource_owner(u64::from(window.refcon),||content.paint(canvas,fonts,|canvas,command|paint(canvas,command,cdef)));
+                                }
+                            });
+                        })
+            });
             self.menus.draw(&mut canvas);
             self.app_menu.draw_bar(&mut canvas);
             self.app_menu.draw_popup(&mut canvas);
@@ -1224,10 +1280,22 @@ fn control(command: &DrawCommand) -> crate::toolbox::controls::ControlDefinition
 
 fn background(canvas: &mut Canvas)
 {
-    canvas.fill_rect(Rect::new(0, 0, 640, 480),
-                     [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55],
-                     0x878787,
-                     0xc0c0c0);
+    // This compositor starts with a fresh, full-screen canvas. Its fixed
+    // checkerboard repeats every two rows; copy those rows instead of evaluating
+    // the pattern independently for every background pixel on every frame.
+    let width = canvas.width;
+    for y in 0..2
+    {
+        for x in 0..width
+        {
+            canvas.pixels[y * width + x] = if (x + y) & 1 == 0 { 0x878787 } else { 0xc0c0c0 };
+        }
+    }
+    for y in 2..canvas.height
+    {
+        let start = (y & 1) * width;
+        canvas.pixels.copy_within(start..start + width, y * width);
+    }
 }
 
 impl super::classic::Services for Desktop

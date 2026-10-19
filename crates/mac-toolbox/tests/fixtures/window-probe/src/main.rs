@@ -25,6 +25,26 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
     loop
     {
         let event = system.events().next_event(EVERY_EVENT)?;
+        // Disabled command equivalents remain ordinary application key events.
+        // Observe them through the public SDK; canonical host Rust assertions
+        // verify exact-once delivery, Command modifiers and absent selection.
+        #[cfg(feature = "menus")]
+        if event.kind == EventKind::KeyDown
+           && matches!(event.character(), b'o' | b'w')
+           && event.modifiers & mac_toolbox::events::CMD_KEY != 0
+        {
+            use core::fmt::Write;
+            let mut line = Line { bytes: [0; 128],
+                                  len:   0 };
+            let _ = writeln!(&mut line,
+                             "MENU_NATIVE_KEY kind={} character={} modifiers={} selection={}",
+                             event.kind as u16,
+                             event.character(),
+                             event.modifiers,
+                             system.menus().selection(&event)?.is_some());
+            system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())
+                  .map_err(mac_toolbox::Error)?;
+        }
         #[cfg(feature = "menus")]
         if event.kind == EventKind::KeyDown && event.character() == b'g'
         {

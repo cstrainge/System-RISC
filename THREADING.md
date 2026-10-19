@@ -17,8 +17,13 @@ on one RV64 hart. CLINT timer interrupts preempt application code independently
 of Toolbox calls. Up to eight application threads have independent 256 KiB stacks,
 saved register frames and trusted AppId/ThreadId contexts. Kernel traps mask
 interrupts, including nested definition calls, so allocator and manager guards
-cannot be preempted by another application on this hart. Blocking queues, worker
-thread APIs, migration and multiple harts remain future work. A private RV64 SDK gate has demonstrated another app progressing during a
+cannot be preempted by another application on this hart. Native event waits now
+block the actual application thread, with a separate idle WFI context and 500 us
+timer sampling. Readiness is inspected before taking the scheduler lock; a fresh
+foreground input wake takes priority over background and timeout wakes. No manager
+guard or borrowed request crosses the context switch. Worker thread APIs, general
+blocking primitives, migration and multiple harts remain future work. A private
+RV64 SDK gate has demonstrated another app progressing during a
 no-trap/no-yield interval, plus launch, relaunch, ownership, input, hide and exit.
 The consolidated regression gate also passes the paired Pascal process traps,
 eight caller-posted foreign-window event-isolation cases, and actual Finder/two-
@@ -29,8 +34,11 @@ application can poll/present while that update is preempted and still sees the
 previous complete scene. Application activation raises the window plane and
 selects its final window or desktop in one transition. Idle polling avoids
 unnecessary foreground-state swaps; event queues are boxed so real swaps exchange
-ownership without copying the arrays. These improvements do not provide blocking
-waits or reduce a full composition's interrupt-masked service duration. See
+ownership without copying the arrays. Native apps use `wait_event(mask, ticks)`;
+nonblocking NextEvent and legacy interfaces retain their existing behavior. A
+bounded 2 MiB pixel cache accelerates committed desktop/window scenes while
+preserving original replay on misses. Cold composition and other synchronous
+services still mask interrupts. See
 [event tracing](docs/EVENT-TRACING.md) for the measured scenarios and limits.
 
 This is a trusted shared M-mode address space without an MMU or protection
@@ -130,7 +138,7 @@ address-space/object translation rather than access to resident Rust addresses.
 | Gate | Current implementation and required evidence |
 | --- | --- |
 | Boundary hardening | One-shot publication, bounded guards, owner-tagged file marks and trusted context routing exist. Shared real-service host tests establish the captured exclusion/cleanup contracts, not hardware scheduling. |
-| Scheduler foundation | One-hart CLINT preemption, eight independent stacks/register frames, trusted identities and deferred retired-stack reclamation exist. A private RV64 observer progresses during a child's no-trap/no-yield loop on one hart; the canonical process acceptance passes. Blocking/sleep/wakeup queues, worker APIs and cancellation remain open. |
+| Scheduler foundation | One-hart CLINT preemption, eight independent stacks/register frames, trusted identities and deferred retired-stack reclamation exist. A private RV64 observer progresses during a child's no-trap/no-yield loop on one hart; the canonical process acceptance passes. Native event wait deadlines, readiness wakes and a separate idle stack now exist; the SDK latency fixture verifies physical input during contention and that blocked apps leave the runnable rotation. General blocking primitives, worker APIs and cancellation remain open. |
 | Application launch | Finder and disk-loaded native APPLs have independent application threads, app-local UI/resource/memory state and exit cleanup. Host SDK ownership tests cover file denial/cleanup and memory generation retention; the real RV64 launch/quit/relaunch, partition/ownership, Pascal and private synthetic-event gates pass. |
 | Application switching | Resident right-hand menu and Process Manager activation/hide/restore paths exist. Private SDK and actual Finder/two-app activation/hide/input/exit tests pass, including first-click activation and background dragging. The original popup comparison passes with explicit icon/cursor masks; this establishes the captured profile, not all application behavior. |
 | Reentrant service work | Existing definition-to-Surface/font/resource nesting remains supported. Stateful recursive manager calls still return Busy. General app callbacks require snapshot/callback/commit and cancellation tests. |

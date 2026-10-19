@@ -11,7 +11,9 @@ The baseline is commit `bb2306b` with opt-in tracing added, before the behaviora
 changes. Captures run private Linux QEMU and Windows QEMU instances with cloned
 disks; the interactive desktop receives no test input. Artifact hashes, launch
 commands, serial logs, bounded binary snapshots and decoded records accompany
-each capture under `../results/system7/events-*`.
+each capture under `../results/system7/events-*`. Obsolete generated disks and
+ROM copies are pruned by `cargo xtask check`; logs, pixels, hashes and reports
+remain. Rerunning a capture regenerates its private boot media.
 
 The completed baselines are `events-baseline-linux-2/capture.json` and
 `events-baseline-windows/capture.json`; reviewed captures are
@@ -35,10 +37,14 @@ rendering/polling costs below still need work.
 | Activating a multiwindow app selected each window in turn, emitting intermediate activation pairs. Background creation, desktop selection and exit had related paths. | Raise the window plane and select its final window or desktop atomically. Preserve relative order and do not activate background windows temporarily. | `processes.rs` / `process_cases.rs`: 28 additional contracts across two child lifecycles. |
 | Repeated foreground activation and unchanged window visibility invalidated every window. | No-op activation, hide/show and visibility changes preserve damage and event state. | Process acceptance acknowledges damage, repeats requests, then checks that no extra Activate or Update appears. |
 | Finder rebuilt its desktop and every folder for each activation notification. | Retain existing content; service Window Manager damage through Update. | Actual Finder application UI and original pixel gates. |
-| A thread could present another window after BeginUpdate cleared its live drawing list and before EndUpdate finished it. | Stage replacement commands and port state separately; EndUpdate publishes the entire scene. Pending commands do not dirty committed pixels. | `retained_update.rs`: two actual OS threads, seven checkpoints, 122,500 exact interior pixels. |
+| A thread could present another window after BeginUpdate cleared its live drawing list and before EndUpdate finished it. | Stage replacement commands and port state separately; EndUpdate publishes the entire scene. Pending commands do not dirty committed pixels. | `retained_update.rs`: two actual OS threads, 17 checkpoints and 331,850 exact pixels covering partial exposure, movement and atomic window/desktop replacement. |
 | An editor key drew the hidden reset caret, then the first Null/TEIdle drew again to show it. | Prime TEIdle before the app commits drawing; retain original TextEdit pre-idle semantics. Avoid unchanged grow-clip writes and redundant idle state queries. | `typing.rs`: 20 isolated edits plus first idle passes require exactly 20 commits and zero repeated grow-clip calls; original caret and navigation gates remain. |
 | Stationary clipboard thumb tracking redrew on every Null; unrelated window activation also redrew the viewer. Consumed Nulls also queried disk-backed menu policy. | Draw only when the scroll value changes; Window Manager Update owns activation damage. Skip menu policy for consumed Nulls. | `clipboard.rs`: 100 physically held stationary tracking polls require zero commits, File Manager calls and menu calls; unchanged release and unrelated activation require zero commits; physical movement must change scrolling. |
 | Idle event queries copied foreground state into/out of the caller, even without input or presentation work. | Return early when no decoded input or presentation work exists. Box each app's EventManager so real switches exchange pointers instead of copying its inline queues. | Real physical modifier/key/selection checks, process isolation, preemption and graphical regressions. |
+
+Known disabled menu shortcuts retain their native KeyDown instead of being
+swallowed during a window/menu-policy transition. The menu SDK fixture verifies
+exactly-once physical Ctrl-O and Ctrl-W with no menu selection.
 
 Application-posted synthetic events retain private provenance. A foreign window
 number in a posted event does not authorize routing it into that window owner's
@@ -58,8 +64,9 @@ shortcuts; modal dialog behavior; raw/native event masks, peek and flush; Scrap
 changes; and a non-yielding application preempted by the OS timer. These are
 bounded scenarios, not an exhaustive proof for every event producer or future
 application. Host-generated autorepeat cadence, queue saturation under prolonged
-load, additional hardware devices, SMP and future blocking waits remain outside
-this trace campaign.
+load, additional hardware devices and SMP remain outside this trace campaign.
+The separate `event_latency` SDK fixture covers native blocking waits, masks,
+timeouts, pointer wakeup and progress alongside a non-yielding app.
 
 ## Reproduce
 
@@ -119,21 +126,43 @@ caret blinks. The summarizer reports input-to-final-key-frame timestamps and wor
 counts separately. Instrumented timings are observations, not portable latency
 thresholds.
 
-## Remaining performance work
+## Native waits and input latency
 
-The final default-image `cargo xtask check` passes, as do host/RV64 Clippy,
-trace-feature Clippy and the separate Windows typing/navigation acceptance.
-The latter observed a20-character burst of2.27 seconds,84 guest60Hz ticks for
-the isolated edit/draw profile and1 tick for its menu-policy work. These timings
-do not establish that typing throughput is fixed; they locate substantial work
-outside menu policy and duplicate key delivery. Reports are
-`../results/system7/toolchain-checks.json` and
-`../results/system7/typing-windows-checks.json`.
+Native applications now block with `wait_event(mask, timeout_ticks)` rather than
+busy polling. The timeout uses classic 60-Hz units; zero polls. Input readiness is
+sampled every 500 us, with a dedicated idle thread and priority for freshly woken
+foreground input. Waiting consumes no runnable application timeslices. Queued
+masked events remain queued; a physical pointer change can return updated Null
+state early. The posted-Null case is distinguished from an empty queue.
 
-Applications still busy-poll nonblocking NextEvent. Fast paths reduce the cost
-but do not implement a blocking WaitNextEvent or an idle scheduler thread.
-Full-scene composition replays visible retained content and copies the entire
-640 x480 framebuffer inside an interrupt-masked service. Those long services and
-per-key diagnostic serial output can still delay input and other apps. Scheduler
-wait/wakeup and measured damage/caching work are separate next steps; a cache
-must preserve global pattern phase, clipping, resource ownership and heap limits.
+NextEvent returns a ready event before painting. EndUpdate still commits pixels
+synchronously; an empty poll also presents pending pointer/menu work. A 2 MiB
+cache retains actual clipped desktop/window pixels, preserving pattern origin,
+resource ownership and pending/committed scenes. Oversized or uncovered regions
+replay normally. TextEdit batches consecutive keyboard events (at most 128),
+preserves nonkeyboard FIFO boundaries and commits the final selection once.
+RAMFB presentation copies ordinary guest RAM in bulk before its existing fence.
+
+Trace kinds 12..15 add event wake, event wait, framebuffer-copy duration and outer
+services longer than 500 us. The summarizer separately reports decoded key to
+application delivery and input to final committed key frame. These intervals
+exclude host/device time before the driver observes an input packet. A fast
+queued-event microbenchmark alone does not establish responsive pixels.
+
+```sh
+SYSTEM7_EVENT_TRACE=1 CARGO_INCREMENTAL=0 cargo xtask image
+SYSTEM7_STRICT_EVENT_LATENCY=1 cargo test --locked -p mac-toolbox --test event_latency -- --ignored
+SYSTEM7_EVENT_LATENCY_WINDOWS=1 SYSTEM7_STRICT_EVENT_LATENCY=1 \
+  cargo test --locked -p mac-toolbox --test event_latency -- --ignored
+```
+
+The strict opt-in requires every sampled queued and decoded physical key delivery
+below 1 ms. Normal `cargo xtask check` enforces wait/ordering/progress contracts,
+not host-dependent deadlines. The additive native monotonic clock reports ns
+independent of wall-clock dates. Capture reports retain clock scope, image hashes,
+physical samples, scheduler-switch counts and distribution maxima.
+
+This remains a single-hart implementation with interrupt-masked synchronous
+kernel services. Cold rendering, loading and other long services can postpone
+input observation. Host scheduling and display refresh are additional costs;
+there is no hard worst-case submillisecond guarantee for arbitrary workloads.
