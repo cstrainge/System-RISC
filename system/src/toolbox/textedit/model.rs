@@ -6,6 +6,7 @@ use super::layout;
 
 pub struct Editor
 {
+    font:        layout::Font,
     text:        String,
     lines:       Vec<LineInfo>,
     info:        EditorInfo,
@@ -22,8 +23,10 @@ impl Editor
         {
             return Err(BAD_ARGUMENT);
         }
-        let lines = layout::lines("", i32::from(dest.right) - i32::from(dest.left))?;
-        Ok(Self { text: String::new(),
+        let font = layout::Font::default();
+        let lines = layout::lines("", i32::from(dest.right) - i32::from(dest.left), &font)?;
+        Ok(Self { font,
+                  text: String::new(),
                   lines,
                   info: EditorInfo { dest,
                                      view,
@@ -35,6 +38,36 @@ impl Editor
                   blink: None,
                   preferred_x: None,
                   affinity: None })
+    }
+
+    pub fn font(&self) -> quickdraw::FontSelection
+    {
+        self.font.selection()
+    }
+
+    pub fn prepare_font_input(&mut self, input: &str,
+                              fonts: &crate::toolbox::quickdraw::fonts::FontManager)
+                              -> Result<(), Status>
+    {
+        self.font.prepare(input, fonts)
+    }
+
+    pub fn set_font(&mut self, selection: quickdraw::FontSelection,
+                    fonts: &crate::toolbox::quickdraw::fonts::FontManager)
+                    -> Result<(), Status>
+    {
+        let font = layout::Font::new(selection, &self.text, fonts)?;
+        let lines = layout::lines(&self.text,
+                                  i32::from(self.info.dest.right)
+                                  - i32::from(self.info.dest.left),
+                                  &font)?;
+        self.info.ascent = font.ascent();
+        self.info.line_height = font.line_height();
+        self.info.line_count = lines.len() as u32;
+        self.lines = lines;
+        self.font = font;
+        self.changed();
+        Ok(())
     }
 
     pub fn text(&self) -> &str
@@ -105,8 +138,10 @@ impl Editor
         text.push_str(&self.text[..start]);
         text.push_str(input);
         text.push_str(&self.text[end..]);
-        let lines =
-            layout::lines(&text, i32::from(self.info.dest.right) - i32::from(self.info.dest.left))?;
+        let lines = layout::lines(&text,
+                                  i32::from(self.info.dest.right)
+                                  - i32::from(self.info.dest.left),
+                                  &self.font)?;
         self.text = text;
         self.lines = lines;
         self.info.text_length = length as u32;
@@ -120,7 +155,15 @@ impl Editor
 
     pub fn prepared_replace(&self, input: &str) -> Result<Self, Status>
     {
-        let mut next = Self { text:        String::new(),
+        self.prepared_replace_with_fonts(input, None)
+    }
+
+    pub fn prepared_replace_with_fonts(&self, input: &str,
+                                       fonts: Option<&crate::toolbox::quickdraw::fonts::FontManager>)
+                                       -> Result<Self, Status>
+    {
+        let mut next = Self { font:        self.font.try_clone()?,
+                              text:        String::new(),
                               lines:       Vec::new(),
                               info:        self.info,
                               anchor:      self.anchor,
@@ -129,6 +172,10 @@ impl Editor
                               affinity:    self.affinity };
         next.text.try_reserve_exact(self.text.len()).map_err(|_| NO_MEMORY)?;
         next.text.push_str(&self.text);
+        if let Some(fonts) = fonts
+        {
+            next.prepare_font_input(input, fonts)?;
+        }
         next.replace(self.info.selection_start, self.info.selection_end, input)?;
         Ok(next)
     }
@@ -139,7 +186,8 @@ impl Editor
         {
             return Err(BAD_ARGUMENT);
         }
-        let lines = layout::lines(&self.text, i32::from(dest.right) - i32::from(dest.left))?;
+        let lines =
+            layout::lines(&self.text, i32::from(dest.right) - i32::from(dest.left), &self.font)?;
         self.lines = lines;
         self.info.dest = dest;
         self.info.view = view;
@@ -192,7 +240,7 @@ impl Editor
         let line = self.lines[row];
         let text = &self.text[line.start as usize..at];
         let text = if text.ends_with('\r') { "" } else { text };
-        Ok(Point { h: clamp(i32::from(self.info.dest.left) + 1 + i32::from(layout::width(text))),
+        Ok(Point { h: clamp(i32::from(self.info.dest.left) + 1 + i32::from(self.font.width(text))),
                    v: clamp(i32::from(self.info.dest.top)
                             + (row as i32 + 1) * i32::from(self.info.line_height)) })
     }
@@ -218,7 +266,7 @@ impl Editor
             {
                 return at;
             }
-            let width = i32::from(layout::width(c.encode_utf8(&mut [0; 4])));
+            let width = i32::from(self.font.width(c.encode_utf8(&mut [0; 4])));
             if i32::from(point.h) <= x + width / 2
             {
                 return at;
@@ -315,8 +363,8 @@ impl Editor
         let (start, end) = self.row_bounds(row);
         Point { h: clamp(i32::from(self.info.dest.left)
                          + 1
-                         + i32::from(layout::width(&self.text[start as usize
-                                                              ..at.clamp(start, end) as usize]))),
+                         + i32::from(self.font.width(&self.text[start as usize
+                                                                ..at.clamp(start, end) as usize]))),
                 v: clamp(i32::from(self.info.dest.top)
                          + (row as i32 + 1) * i32::from(self.info.line_height)) }
     }
@@ -327,7 +375,7 @@ impl Editor
         let mut x = i32::from(self.info.dest.left) + 1;
         for (relative, c) in self.text[start as usize..end as usize].char_indices()
         {
-            let width = i32::from(layout::width(c.encode_utf8(&mut [0; 4])));
+            let width = i32::from(self.font.width(c.encode_utf8(&mut [0; 4])));
             if i32::from(horizontal) <= x + width / 2
             {
                 return start + relative as u32;
@@ -482,7 +530,7 @@ impl Editor
             let b = end.min(line.end);
             let left = i32::from(self.info.dest.left)
                        + 1
-                       + i32::from(layout::width(&self.text[line.start as usize..a as usize]));
+                       + i32::from(self.font.width(&self.text[line.start as usize..a as usize]));
             let includes_cr =
                 self.text.as_bytes().get(b.saturating_sub(1) as usize) == Some(&b'\r');
             let right = if includes_cr || (end >= line.end && line.end < self.text.len() as u32)
@@ -493,7 +541,7 @@ impl Editor
             {
                 i32::from(self.info.dest.left)
                 + 1
-                + i32::from(layout::width(&self.text[line.start as usize..b as usize]))
+                + i32::from(self.font.width(&self.text[line.start as usize..b as usize]))
             };
             let top = i32::from(self.info.dest.top) + row as i32 * i32::from(self.info.line_height);
             emit(Rect::new(clamp(left),

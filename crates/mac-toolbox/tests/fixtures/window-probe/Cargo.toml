@@ -7,6 +7,7 @@ build = "build.rs"
 
 [features]
 menus = []
+deferred-close = []
 
 [workspace]
 

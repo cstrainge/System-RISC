@@ -10,3 +10,11 @@ With the `menus` feature, the public SDK loop also observes disabled Command-O
 and Command-W as native KeyDown events. `tests/menus.rs` requires each to arrive
 exactly once with the Command modifier and no menu selection, while retaining the
 two expected enabled menu commands and all existing pixel comparisons.
+
+With `deferred-close`, a separate loop uses `Windows::set_close_deferred` and
+reports public SDK window liveness, updates and close notifications. The capture
+helper drives real close-box cancellation/acceptance, explicit application close,
+and a second window retaining default automatic disposal. Canonical assertions
+in `tests/deferred_close.rs` compare retained content pixels and require accepted
+deferred closes to produce exactly one request and no extra Update. The helper
+removes its obsolete private boot disks after capture and retains logs/frames.

@@ -1,0 +1,59 @@
+{
+  "source": "results/finder-get-info-reference/Desktop-DB-data.bin",
+  "source_sha256": "eaa0213d68a4b0f57536bafb823efb891f8997ef8667674d8c070882e491aa6b",
+  "header": {
+    "tree_depth": 4,
+    "root_node": 114,
+    "leaf_record_count": 2318,
+    "first_leaf": 133,
+    "last_leaf": 1,
+    "node_size": 512,
+    "max_key_length": 37,
+    "total_nodes": 192,
+    "free_nodes": 16,
+    "header_node_sha256": "dca7cf5335d06cbf06452474fcc46cc1c97218a5ee7d626eeb5352a9ab090117",
+    "header_node_hex": "00000000000000000100000300000004000000720000090e000000850000000102000025000000c000000010000000008000ff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020a010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001f800f80078000e"
+  },
+  "walked_leaves": 153,
+  "walked_records": 2318,
+  "comments": [
+    {
+      "node": 1,
+      "node_record_index": 8,
+      "node_offset": 398,
+      "absolute_offset": 910,
+      "key_hex": "0503000001cc",
+      "key_length_excluding_length_byte": 5,
+      "record_type": 3,
+      "cnid": 460,
+      "catalog_path": "REA Fixtures:Get Info Cases:Plain Folder",
+      "value_pascal_hex": "1a466f6c64657220636f6d6d656e740d5365636f6e64206c696e65",
+      "comment_macroman": "Folder comment\rSecond line",
+      "raw_record_hex": "0503000001cc1a466f6c64657220636f6d6d656e740d5365636f6e64206c696e6550",
+      "trailing_padding_hex": "50",
+      "node_sha256": "5cec490bfddb0718108d1e7969a1a9bb15fab15bbe378964ea45a507d2ab79c5"
+    },
+    {
+      "node": 1,
+      "node_record_index": 9,
+      "node_offset": 432,
+      "absolute_offset": 944,
+      "key_hex": "0503000001cf",
+      "key_length_excluding_length_byte": 5,
+      "record_type": 3,
+      "cnid": 463,
+      "catalog_path": "REA Fixtures:Get Info Cases:Plain File",
+      "value_pascal_hex": "0c52656e616d65642046696c65",
+      "comment_macroman": "Renamed File",
+      "raw_record_hex": "0503000001cf0c52656e616d65642046696c65be",
+      "trailing_padding_hex": "be",
+      "node_sha256": "5cec490bfddb0718108d1e7969a1a9bb15fab15bbe378964ea45a507d2ab79c5"
+    }
+  ],
+  "observed_key_layout": "u8 keyLength=5, u8 recordType=3, u32 big-endian catalog CNID",
+  "observed_value_layout": "u8 byteLength followed by MacRoman bytes; remainder is record padding, not comment data",
+  "limits": [
+    "Read-only decode establishes this observed Desktop DB layout, not all Desktop Manager fallback formats.",
+    "No insertion, deletion, or leaf splitting algorithm inferred from this snapshot."
+  ]
+}

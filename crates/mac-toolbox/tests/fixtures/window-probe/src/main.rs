@@ -1,8 +1,9 @@
 //! Test application uses only the aggregate userspace SDK, no resident code.
 #![no_std]
 #![no_main]
-use mac_toolbox::{System,
-                  events::{EVERY_EVENT, EventKind},
+use mac_toolbox::System;
+#[cfg(not(feature = "deferred-close"))]
+use mac_toolbox::{events::{EVERY_EVENT, EventKind},
                   quickdraw::Rect,
                   windows::WindowSpec};
 #[cfg(feature = "menus")]
@@ -11,6 +12,12 @@ mod menu_sizing;
 #[cfg(feature = "menus")]
 const KEYLESS_LABEL: &str = "Unclipped keyless label";
 
+#[cfg(feature = "deferred-close")]
+mod deferred_close;
+#[cfg(feature = "deferred-close")]
+use deferred_close::run;
+
+#[cfg(not(feature = "deferred-close"))]
 fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
 {
     let window = system.windows().create(WindowSpec::new(Rect::new(100,100,540,400), "TRACKING TEST")

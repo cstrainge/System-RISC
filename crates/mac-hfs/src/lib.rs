@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 pub use mac_formats::{Error, Result};
 pub use volume::{CatalogEntry, File, Folder, Fork, Volume,
                  mutation::{MutationError, MutationResult},
-                 names_equal};
+                 names_equal, scan};
 
 pub trait BlockDevice
 {

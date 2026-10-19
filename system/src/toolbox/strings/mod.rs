@@ -141,14 +141,14 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
             {
                 let original = get!(WindowCall);
                 let mut call = *original;
-                if call.operation == NEW_WINDOW
+                if matches!(call.operation, NEW_WINDOW | SET_WINDOW_TITLE)
                 {
                     inline_input(&mut call.request.title, &mut call.request.title_length)?;
                 }
                 let status = invoke!(call);
                 if status == OK as i64
                 {
-                    if matches!(call.operation, NEW_WINDOW | GET_WINDOW)
+                    if matches!(call.operation, NEW_WINDOW | GET_WINDOW | SET_WINDOW_TITLE)
                     {
                         inline_output(&mut call.request.title, &mut call.request.title_length)?;
                     }
@@ -212,6 +212,19 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
             }
             RESOURCE =>
             {
+                if size == size_of::<resources::FileVersionCall>()
+                {
+                    let original = get!(resources::FileVersionCall);
+                    let mut call = *original;
+                    let status = invoke!(call);
+                    if status == OK as i64
+                    {
+                        inline_output(&mut call.info.short, &mut call.info.short_length)?;
+                        inline_output(&mut call.info.long, &mut call.info.long_length)?;
+                        *original = call;
+                    }
+                    return Ok(status);
+                }
                 let original = get!(ResourceCall);
                 let mut call = *original;
                 let text = if call.operation == resources::NAMED
@@ -278,9 +291,28 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
             }
             FILE =>
             {
+                if size == size_of::<files::FileScanCall>()
+                {
+                    let original = get!(files::FileScanCall);
+                    let mut call = *original;
+                    let status = invoke!(call);
+                    if status == OK as i64
+                    {
+                        if call.step == files::SCAN_ENTRY
+                        {
+                            inline_output(&mut call.entry.name, &mut call.entry.name_length)?;
+                        }
+                        *original = call;
+                    }
+                    return Ok(status);
+                }
                 let original = get!(FileCall);
                 let mut call = *original;
-                let text = if matches!(call.operation, files::LOOKUP | files::NEW_FOLDER)
+                let text = if matches!(call.operation,
+                                       files::LOOKUP
+                                       | files::NEW_FOLDER
+                                       | files::RENAME
+                                       | files::SET_COMMENT)
                 {
                     unsafe { input(call.name, call.name_length) }?
                 }
@@ -290,9 +322,15 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                 };
                 call.name = text.as_ptr();
                 call.name_length = text.len();
-                let mut path =
-                    if call.operation == files::PATH { vec![0; 4096] } else { Vec::new() };
-                if call.operation == files::PATH
+                let mut path = if matches!(call.operation, files::PATH | files::COMMENT)
+                {
+                    vec![0; 4096]
+                }
+                else
+                {
+                    Vec::new()
+                };
+                if matches!(call.operation, files::PATH | files::COMMENT)
                 {
                     call.output = path.as_mut_ptr();
                     call.capacity = path.len();
@@ -314,11 +352,14 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                         | files::NEW_FOLDER
                         | files::TRASH_DIRECTORY
                         | files::MOVE_TO_TRASH
-                        | files::PUT_AWAY =>
+                        | files::PUT_AWAY
+                        | files::RENAME
+                        | files::SET_LOCKED
+                        | files::SET_STATIONERY =>
                         {
                             inline_output(&mut call.entry.name, &mut call.entry.name_length)?
                         }
-                        files::PATH =>
+                        files::PATH | files::COMMENT =>
                         {
                             let text =
                                 core::str::from_utf8(path.get(..call.transferred)

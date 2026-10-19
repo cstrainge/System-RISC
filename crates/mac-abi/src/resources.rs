@@ -18,6 +18,58 @@ pub const RELEASE: u32 = 8;
 /// Decode STR / zero-based STR# element to native UTF8 in output.
 pub const STRING: u32 = 10;
 pub const LOAD: u32 = 9;
+pub const FILE_VERSION: u32 = 11;
+/// Decoded vers strings. The disk resource remains a classic NumVersion and
+/// two MacRoman Pascal strings; native clients receive checked UTF8.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VersionInfo
+{
+    pub number:       [u8; 4],
+    pub country:      u16,
+    pub reserved:     u16,
+    pub short_length: u32,
+    pub long_length:  u32,
+    pub short:        [u8; crate::INLINE_STRING_BYTES],
+    pub long:         [u8; crate::INLINE_STRING_BYTES]
+}
+impl Default for VersionInfo
+{
+    fn default() -> Self
+    {
+        Self { number:       [0; 4],
+               country:      0,
+               reserved:     0,
+               short_length: 0,
+               long_length:  0,
+               short:        [0; crate::INLINE_STRING_BYTES],
+               long:         [0; crate::INLINE_STRING_BYTES] }
+    }
+}
+impl VersionInfo
+{
+    pub fn short(&self) -> &str
+    {
+        core::str::from_utf8(&self.short[..(self.short_length as usize).min(self.short.len())]).unwrap_or("")
+    }
+
+    pub fn long(&self) -> &str
+    {
+        core::str::from_utf8(&self.long[..(self.long_length as usize).min(self.long.len())]).unwrap_or("")
+    }
+}
+/// Distinct size preserves the existing ResourceCall ABI and scope semantics.
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct FileVersionCall
+{
+    pub operation: u32,
+    pub volume:    u32,
+    pub cnid:      u32,
+    pub id:        i16,
+    pub reserved:  u16,
+    pub info:      VersionInfo
+}
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ResourceInfo

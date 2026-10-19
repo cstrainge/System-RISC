@@ -108,3 +108,135 @@ fn native_vertical_movement_works_beyond_quickdraw_coordinate_range()
         te.dispose(id).unwrap();
     });
 }
+
+fn with_editor_fonts(run: impl FnOnce(&mac_toolbox::System<'_>))
+{
+    use mac_formats::resource::{Resource, encode};
+    let resources: Vec<_> = [
+        (*b"FOND", 0, include_bytes!("../../../system/assets/fonts/FOND-0.bin").as_slice()),
+        (*b"FONT", 12, include_bytes!("../../../system/assets/fonts/FONT-12.bin").as_slice()),
+        (*b"FOND", 3, include_bytes!("../../../system/assets/fonts/FOND-3.bin").as_slice()),
+        (*b"FONT", 393, include_bytes!("../../../system/assets/fonts/FONT-393.bin").as_slice())
+    ].into_iter().map(|(kind,id,data)|Resource {kind,id,data:data.to_vec(),name:None,attributes:0}).collect();
+    mac_system::testing::with_resource_forks(&encode(&resources).unwrap(),
+                                             &encode(&[]).unwrap(),
+                                             |services| {
+                                                 let system =
+                                                     unsafe {
+                                                         mac_toolbox::System::from_raw(services)
+                                                     }.unwrap();
+                                                 run(&system);
+                                             }).unwrap();
+}
+
+#[test]
+fn native_editor_font_geometry_matches_resident_quickdraw_and_is_per_instance()
+{
+    with_editor_fonts(|system| {
+        use mac_toolbox::{Point, Rect,
+                          textedit::{CursorMovement, FontSelection}};
+        let te = system.textedit();
+        let fonts = system.quickdraw().fonts();
+        let font = FontSelection { family: 1,
+                                   size:   9,
+                                   face:   0 };
+        let metrics = fonts.metrics(font).unwrap();
+        let r = Rect::new(10, 20, 310, 200);
+        let id = te.create(r, r).unwrap();
+        let other = te.create(r, r).unwrap();
+        let text = "Wiim é\rWiim é";
+        te.set_text(id, text).unwrap();
+        te.set_text(other, text).unwrap();
+        let original = te.info(other).unwrap();
+        let info = te.set_font(id, font).unwrap();
+        assert_eq!(info.ascent, metrics.ascent);
+        assert_eq!(info.line_height, metrics.ascent + metrics.descent + metrics.leading);
+        assert_eq!(fonts.metrics(FontSelection { family: 3,
+                                                 ..font })
+                        .unwrap(),
+                   metrics);
+        let line = te.line(id, 0).unwrap();
+        assert_eq!(line.width, fonts.text_width(font, "Wiim é").unwrap());
+        for at in "Wiim é".char_indices().map(|(at, _)| at).chain(["Wiim é".len()])
+        {
+            let point = te.point(id, at as u32).unwrap();
+            assert_eq!(point.h, 11 + fonts.text_width(font, &text[..at]).unwrap());
+            assert_eq!(point.v, 20 + info.line_height);
+            assert_eq!(te.offset(id,
+                                 Point { v: 20 + info.line_height / 2,
+                                         ..point })
+                         .unwrap(),
+                       at as u32);
+        }
+        te.select(id, 3, 3).unwrap();
+        let moved = te.move_cursor(id, CursorMovement::Down, true).unwrap();
+        assert_eq!((moved.selection_start, moved.selection_end), (3, 11));
+        let before = te.info(id).unwrap();
+        let changed = te.set_font(id,
+                                  FontSelection { face: 1,
+                                                  ..font })
+                        .unwrap();
+        assert_eq!((changed.selection_start, changed.selection_end),
+                   (before.selection_start, before.selection_end));
+        assert_eq!(te.line(id, 0).unwrap().width,
+                   fonts.text_width(FontSelection { face: 1,
+                                                    ..font },
+                                    "Wiim é")
+                        .unwrap());
+        assert_eq!(te.info(other).unwrap(), original);
+        te.dispose(id).unwrap();
+        te.dispose(other).unwrap();
+    });
+}
+
+#[test]
+fn native_editor_font_reflow_new_characters_paste_and_failure_are_consistent()
+{
+    with_editor_fonts(|system| {
+        use mac_toolbox::{BAD_ARGUMENT, Error, NOT_FOUND, Rect, textedit::FontSelection};
+        let te = system.textedit();
+        let fonts = system.quickdraw().fonts();
+        let font = FontSelection { family: 1,
+                                   size:   9,
+                                   face:   0 };
+        let r = Rect::new(0, 0, 40, 200);
+        let id = te.create(r, r).unwrap();
+        te.set_text(id, "WWWWWWWWWWWWWWWW").unwrap();
+        let before = te.info(id).unwrap();
+        let info = te.set_font(id, font).unwrap();
+        assert!(info.line_count < before.line_count);
+        let mut bytes = [0; 128];
+        let text = te.text(id, &mut bytes).unwrap().to_owned();
+        for row in 0..info.line_count
+        {
+            let line = te.line(id, row).unwrap();
+            assert_eq!(line.width,
+                       fonts.text_width(font, &text[line.start as usize..line.end as usize])
+                            .unwrap());
+        }
+        let wide = Rect::new(0, 0, 300, 200);
+        te.set_rects(id, wide, wide).unwrap();
+        te.set_text(id, "a").unwrap();
+        te.key(id, 'é').unwrap();
+        system.scrap().clear().unwrap();
+        system.scrap().put_text("Ω日本").unwrap();
+        te.paste(id).unwrap();
+        let text = te.text(id, &mut bytes).unwrap().to_owned();
+        assert_eq!(text, "aéΩ日本");
+        assert_eq!(te.line(id, 0).unwrap().width, fonts.text_width(font, &text).unwrap());
+        let before = te.info(id).unwrap();
+        let point = te.point(id, before.text_length).unwrap();
+        assert_eq!(te.set_font(id,
+                               FontSelection { family: 12345,
+                                               ..font }),
+                   Err(Error(NOT_FOUND)));
+        assert_eq!(te.set_font(id,
+                               FontSelection { size: -1,
+                                               ..font }),
+                   Err(Error(BAD_ARGUMENT)));
+        assert_eq!(te.info(id).unwrap(), before);
+        assert_eq!(te.point(id, before.text_length).unwrap(), point);
+        assert_eq!(te.text(id, &mut bytes).unwrap(), text);
+        te.dispose(id).unwrap();
+    });
+}

@@ -6,12 +6,13 @@ use mac_abi::{textedit::*, *};
 use super::Manager;
 
 pub fn request(editors: &mut Manager, scrap: &mut crate::toolbox::scrap::Manager,
-               call: &mut TextEditCall, input: &str, output: &mut [u8])
+               call: &mut TextEditCall, input: &str, output: &mut [u8],
+               fonts: &crate::toolbox::quickdraw::fonts::FontManager)
                -> Status
 {
     if !matches!(call.operation, COPY | CUT | PASTE)
     {
-        return editors.request(call, input, output);
+        return editors.request_with_fonts(call, input, output, fonts);
     }
     call.transferred = 0;
     let result = (|| -> Result<(), Status> {
@@ -45,7 +46,7 @@ pub fn request(editors: &mut Manager, scrap: &mut crate::toolbox::scrap::Manager
             PASTE =>
             {
                 let text = scrap.text()?;
-                let next = editors.prepare_replace_selection(call.id, text)?;
+                let next = editors.prepare_replace_with_fonts(call.id, text, fonts)?;
                 editors.apply(next)?;
                 call.transferred = text.len();
             }

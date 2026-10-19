@@ -339,6 +339,34 @@ impl Desktop
                 return OK;
             }
             INVALIDATE_WINDOW => self.windows.invalidate(id, request.bounds),
+            SET_WINDOW_TITLE =>
+            {
+                let Some(bytes) = request.title.get(..request.title_length as usize)
+                else
+                {
+                    return BAD_ARGUMENT;
+                };
+                let Ok(title) = core::str::from_utf8(bytes)
+                else
+                {
+                    return BAD_ARGUMENT;
+                };
+                if !self.windows.set_title(id, title)
+                {
+                    return NOT_FOUND;
+                }
+            }
+            SET_CLOSE_DEFERRED =>
+            {
+                if !matches!(request.reserved, 0 | 1)
+                {
+                    return BAD_ARGUMENT;
+                }
+                if !self.windows.set_close_deferred(id, request.reserved == 1)
+                {
+                    return NOT_FOUND;
+                }
+            }
             SET_GROW_ICON_CLIP =>
             {
                 let clip = match request.reserved
@@ -791,6 +819,14 @@ impl Desktop
                 "DRAG"
             }
             Action::Resize(_) => "RESIZE",
+            Action::CloseRequest(id) =>
+            {
+                self.events.post_system(Event { kind: EventKind::OsEvent,
+                                                message: WINDOW_CLOSE_REQUEST | id.0,
+                                                when,
+                                                ..self.events.null_event(when) });
+                "CLOSE_REQUEST"
+            }
             Action::Close(id) =>
             {
                 self.content.retain(|content| content.id != id);

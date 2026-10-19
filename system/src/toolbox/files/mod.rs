@@ -1,6 +1,9 @@
 //! Resident File Manager with catalog/Trash writes on live firmware block devices.
 //! No file contents or catalog listings are fabricated or cached in applications.
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+mod resource;
 use alloc::{string::String, vec::Vec};
+mod scan;
 
 use mac_abi::{files::*, *};
 pub use mac_formats::macbinary::MacFile;
@@ -114,10 +117,12 @@ impl WritableBlockDevice for Device
 }
 struct Mounted
 {
-    device:    Device,
-    partition: Partition,
-    info:      VolumeInfo,
-    poisoned:  bool
+    device:           Device,
+    partition:        Partition,
+    info:             VolumeInfo,
+    poisoned:         bool,
+    scanner:          Option<mac_hfs::scan::CatalogScanner>,
+    catalog_revision: u64
 }
 struct OpenFile
 {
@@ -216,7 +221,7 @@ impl Manager
             };
             for partition in partitions
             {
-                let volume = match Volume::mount(&mut device, partition)
+                let mut volume = match Volume::mount(&mut device, partition)
                 {
                     Ok(v) => v,
                     Err(_) =>
@@ -255,7 +260,9 @@ impl Manager
                                                                info },
                                               partition,
                                               info: summary,
-                                              poisoned: false });
+                                              poisoned: false,
+                                              scanner: volume.catalog_scanner().ok(),
+                                              catalog_revision: scan::next_revision()? });
             }
         }
         Err(NO_MEMORY)
@@ -426,10 +433,11 @@ impl Manager
         Ok(((slot.generation << 8) | (index as u32 + 1), length))
     }
 
-    fn mutation(&mut self, call: &mut FileCall, name: &str) -> Result<(), Status>
+    fn mutation(&mut self, call: &mut FileCall, name: &str, output: &mut [u8])
+                -> Result<(), Status>
     {
         let when = u32::try_from(call.position).map_err(|_| BAD_ARGUMENT)?;
-        if call.operation == TRASH_DIRECTORY && call.index > 1
+        if matches!(call.operation, TRASH_DIRECTORY | SET_LOCKED | SET_STATIONERY) && call.index > 1
         {
             return Err(BAD_ARGUMENT);
         }
@@ -449,6 +457,11 @@ impl Manager
         {
             return Err(ROLLBACK_FAILED);
         }
+        let changes_catalog = scan::writes_catalog(call.operation, call.index);
+        if changes_catalog
+        {
+            mounted.catalog_revision = scan::next_revision()?;
+        }
         let mut volume = io(Volume::mount(&mut mounted.device, mounted.partition))?;
         let result = match call.operation
         {
@@ -462,6 +475,21 @@ impl Manager
                 volume.trash_directory(call.index != 0,
                                        if when == 0 { volume.modified } else { when })
                       .map(Some)
+            }
+            COMMENT => volume.comment(call.cnid).and_then(|bytes| {
+                let comment = text::decode(&bytes);
+                call.length = comment.len() as u64;
+                if output.len() < comment.len() { return Err(MutationError::NoMemory); }
+                output[..comment.len()].copy_from_slice(comment.as_bytes());
+                call.transferred = comment.len();
+                Ok(None)
+            }),
+            SET_COMMENT => volume.set_comment(call.cnid, &name, when, &protected).map(|()| None),
+            RENAME => volume.rename(call.cnid, &name, when, &protected).map(Some),
+            SET_LOCKED => volume.set_locked(call.cnid, call.index != 0, when, &protected).map(Some),
+            SET_STATIONERY =>
+            {
+                volume.set_stationery(call.cnid, call.index != 0, when, &protected).map(Some)
             }
             MOVE_TO_TRASH => volume.move_to_trash(call.cnid, when, &protected).map(Some),
             PUT_AWAY => volume.put_away(call.cnid, when, &protected).map(Some),
@@ -482,6 +510,10 @@ impl Manager
             }
             _ => return Err(NOT_SUPPORTED)
         };
+        if changes_catalog
+        {
+            mounted.scanner = volume.catalog_scanner().ok();
+        }
         match result
         {
             Ok(entry) =>
@@ -555,9 +587,14 @@ impl Manager
                     | MOVE_TO_TRASH
                     | PUT_AWAY
                     | EMPTY_TRASH
-                    | TRASH_USAGE)
+                    | TRASH_USAGE
+                    | RENAME
+                    | SET_LOCKED
+                    | SET_STATIONERY
+                    | COMMENT
+                    | SET_COMMENT)
         {
-            return self.mutation(call, name);
+            return self.mutation(call, name, output);
         }
         match call.operation
         {
@@ -568,6 +605,14 @@ impl Manager
             }
             VOLUME_INFO => call.volume_info = self.mounted(call.volume)?.info,
             CATALOG => call.entry = metadata(call.volume, &self.entry(call.volume, call.cnid)?),
+            ALLOCATION_INFO =>
+            {
+                let (data, resource) = self.with_volume(call.volume, |volume| {
+                                           io(volume.allocation_info(call.cnid))?.ok_or(NOT_FOUND)
+                                       })?;
+                call.position = data;
+                call.length = resource;
+            }
             DIRECTORY_ENTRY =>
             {
                 if !self.entry(call.volume, call.cnid)?.directory

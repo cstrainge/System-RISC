@@ -4,6 +4,52 @@
 pub use mac_abi::definitions::{CDEF, ControlDefinitionState};
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, DefinitionCall, NOT_SUPPORTED};
 use toolbox_quickdraw::{Point, SurfacePort, WHITE, font::CHICAGO_12};
+#[derive(Clone, Copy)]
+enum CaptionFont
+{
+    Classic(u32),
+    GenevaBold(mac_abi::quickdraw::FontSelection)
+}
+impl CaptionFont
+{
+    fn width(self, canvas: &mut SurfacePort<'_>, text: &str) -> mac_traps::Result<i16>
+    {
+        match self
+        {
+            Self::Classic(font) => canvas.text_width(font, text),
+            Self::GenevaBold(font) => canvas.font_width(font, text)
+        }
+    }
+
+    fn metrics(self, canvas: &mut SurfacePort<'_>)
+               -> mac_traps::Result<toolbox_quickdraw::FontMetrics>
+    {
+        // The original Geneva9 strike has no bold face. Resident synthetic
+        // bold changes advance/ink horizontally; its vertical metrics match.
+        canvas.font_metrics(match self
+                            {
+                                Self::Classic(font) => font,
+                                Self::GenevaBold(_) => toolbox_quickdraw::font::GENEVA_9
+                            })
+    }
+
+    fn draw(self, canvas: &mut SurfacePort<'_>, baseline: Point, text: &str, limit: i16,
+            color: u32)
+            -> mac_traps::Result<()>
+    {
+        match self
+        {
+            Self::Classic(font) =>
+            {
+                canvas.draw_text(font, baseline.h, baseline.v, text, limit, color)
+            }
+            Self::GenevaBold(font) =>
+            {
+                canvas.font_text_clipped(font, baseline, text, limit, color).map(|_| ())
+            }
+        }
+    }
+}
 /// Standard CDEF0 push/check/radio definitions. Native message signatures are
 /// explicit adapters; they are not the original Pascal CDEF calling convention.
 /// # Safety
@@ -87,6 +133,10 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
     let font = validate(state, variation)?;
     let r = state.bounds;
     let title=core::str::from_utf8(&state.title[..state.title_length as usize]).map_err(|_|mac_traps::Error(BAD_ARGUMENT))?;
+    if matches!(font, CaptionFont::GenevaBold(_))
+    {
+        font.width(canvas, "")?;
+    }
     let style = variation & 7;
     let disabled = state.enabled == 0 || state.highlighted >= 254;
     let pressed = !disabled && state.highlighted != 0;
@@ -151,7 +201,7 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
             }
         }
     }
-    let metrics = canvas.font_metrics(font)?;
+    let metrics = font.metrics(canvas)?;
     let lines = title.split('\r').count() as i32;
     let line_height =
         i32::from(metrics.ascent) + i32::from(metrics.descent) + i32::from(metrics.leading);
@@ -161,7 +211,7 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
                        - i32::from(metrics.descent);
     for line in title.split('\r')
     {
-        let width = canvas.text_width(font, line)?;
+        let width = font.width(canvas, line)?;
         let x = if style == 0
         {
             i32::from(r.left) + ((i32::from(r.right) - i32::from(r.left) - i32::from(width)) >> 1)
@@ -171,28 +221,28 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
             i32::from(r.left) + 18
         };
         let limit = (i32::from(r.right) - x).clamp(0, i16::MAX as i32) as i16;
-        canvas.draw_text(font,
-                         x as i16,
-                         baseline as i16,
-                         line,
-                         limit,
-                         if disabled
-                         {
-                             0xa5a5a5
-                         }
-                         else if pressed && style == 0
-                         {
-                             WHITE
-                         }
-                         else
-                         {
-                             0
-                         })?;
+        font.draw(canvas,
+                  Point { h: x as i16,
+                          v: baseline as i16 },
+                  line,
+                  limit,
+                  if disabled
+                  {
+                      0xa5a5a5
+                  }
+                  else if pressed && style == 0
+                  {
+                      WHITE
+                  }
+                  else
+                  {
+                      0
+                  })?;
         baseline += line_height;
     }
     Ok(())
 }
-fn validate(state: &ControlDefinitionState, variation: i16) -> mac_traps::Result<u32>
+fn validate(state: &ControlDefinitionState, variation: i16) -> mac_traps::Result<CaptionFont>
 {
     use toolbox_quickdraw::font::GENEVA_9;
     if !matches!(variation,0..=2|8..=10)
@@ -209,11 +259,15 @@ fn validate(state: &ControlDefinitionState, variation: i16) -> mac_traps::Result
     let font = if variation & 8 == 0
                   || (state.font.family == 0 && state.font.size == 12 && state.font.face == 0)
     {
-        CHICAGO_12
+        CaptionFont::Classic(CHICAGO_12)
     }
-    else if state.font.family == 3 && state.font.size == 9 && state.font.face == 0
+    else if matches!(state.font.family, 1 | 3) && state.font.size == 9 && state.font.face == 0
     {
-        GENEVA_9
+        CaptionFont::Classic(GENEVA_9)
+    }
+    else if matches!(state.font.family, 1 | 3) && state.font.size == 9 && state.font.face == 1
+    {
+        CaptionFont::GenevaBold(state.font)
     }
     else
     {

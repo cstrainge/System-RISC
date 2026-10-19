@@ -4,9 +4,9 @@ pub use mac_abi::{ACCESS_DENIED, ACTIVE_FLAG, ALREADY_EXISTS, ApplicationEntry, 
                   BAD_ARGUMENT, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK,
                   DIRECTORY_NOT_EMPTY, DISK_FULL, DRAW_BUTTON, DRAW_TEXT, Event, EventKind,
                   FRAME_RECT, IO_ERROR, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, OK, PAINT_RECT,
-                  Point, READ_ONLY, ROLLBACK_FAILED, Rect, ResourceKey, SERVICE_BUSY, Status,
-                  SystemServices, TRANSLATION_REQUIRED, WRONG_THREAD, WindowId, WindowRequest,
-                  dates::Timestamp};
+                  Point, READ_ONLY, ROLLBACK_FAILED, Rect, ResourceKey, SCAN_STALE, SERVICE_BUSY,
+                  Status, SystemServices, TRANSLATION_REQUIRED, WRONG_THREAD, WindowId,
+                  WindowRequest, dates::Timestamp};
 pub use mac_traps::{Client, Error, Result as ToolboxResult};
 pub use toolbox_controls as controls;
 pub use toolbox_dialogs as dialogs;

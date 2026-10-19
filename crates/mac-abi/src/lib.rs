@@ -22,6 +22,8 @@ pub const ACCESS_DENIED: Status = -12;
 pub const DISK_FULL: Status = -13;
 pub const ROLLBACK_FAILED: Status = -14;
 pub const DIRECTORY_NOT_EMPTY: Status = -15;
+/// A catalog mutation invalidated an incremental directory scan; restart totals.
+pub const SCAN_STALE: Status = -16;
 
 pub mod dates;
 pub mod geometry;
@@ -145,6 +147,12 @@ pub const SELECT_DESKTOP: u32 = 7;
 /// Restrict automatic WDEF grow drawing to a window-local rectangle. A reserved
 /// value of1 restores the default unrestricted drawing;0 applies bounds.
 pub const SET_GROW_ICON_CLIP: u32 = 8;
+/// Change a window's UTF8 title without disturbing its contents or position.
+pub const SET_WINDOW_TITLE: u32 = 9;
+/// Set reserved to0 for automatic close,1 for an application close request.
+pub const SET_CLOSE_DEFERRED: u32 = 10;
+/// OsEvent message prefix; low24 bits contain the WindowId.
+pub const WINDOW_CLOSE_REQUEST: u32 = 0x03000000;
 /// A classic 31-byte MacRoman catalog name may occupy up to93 UTF8 bytes.
 pub const INLINE_STRING_BYTES: usize = 768;
 pub const WINDOW_TITLE_BYTES: usize = INLINE_STRING_BYTES;

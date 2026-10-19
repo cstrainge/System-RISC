@@ -346,4 +346,16 @@ impl crate::SurfacePort<'_>
     {
         self.connection.font_draw(font, baseline, text, color)
     }
+
+    pub fn font_width(&mut self, font: FontSelection, text: &str) -> Result<i16>
+    {
+        self.connection.font_width(font, text)
+    }
+
+    pub fn font_text_clipped(&mut self, font: FontSelection, baseline: Point, text: &str,
+                             limit: i16, color: u32)
+                             -> Result<i16>
+    {
+        self.connection.font_draw_clipped(font, baseline, text, limit, color)
+    }
 }

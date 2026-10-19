@@ -194,6 +194,16 @@ impl<'a> Client<'a>
         status(result)
     }
 
+    pub fn file_scan(self, call: &mut mac_abi::files::FileScanCall) -> Result<()>
+    {
+        status(self.invoke(FILE, call))
+    }
+
+    pub fn textedit_font(self, call: &mut textedit::TextEditFontCall) -> Result<()>
+    {
+        status(self.invoke(TEXTEDIT, call))
+    }
+
     pub fn geometry(self, call: &mut GeometryCall) -> Result<()>
     {
         status(self.invoke(GEOMETRY, call))
@@ -498,6 +508,24 @@ impl SurfaceConnection<'_>
         })?;
         Ok(call.width)
     }
+
+    /// Preserve the borrowed surface's global clip while limiting font ink to
+    /// the requested horizontal span, including partially visible glyphs.
+    pub fn font_draw_clipped(&mut self, selection: quickdraw::FontSelection, baseline: Point,
+                             text: &str, limit: i16, color: u32)
+                             -> Result<i16>
+    {
+        let saved = self.surface.clip;
+        let left = i32::from(baseline.h) + i32::from(self.surface.origin.h);
+        let right = left + i32::from(limit.max(0));
+        self.surface.clip.left =
+            saved.left.max(left.clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+        self.surface.clip.right =
+            saved.right.min(right.clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+        let result = self.font_draw(selection, baseline, text, color);
+        self.surface.clip = saved;
+        result
+    }
 }
 
 pub enum BitmapData<'a>
@@ -678,6 +706,17 @@ pub struct ResourceReply
 }
 impl Client<'_>
 {
+    pub fn file_version(self, volume: u32, cnid: u32, id: i16) -> Result<resources::VersionInfo>
+    {
+        let mut call = resources::FileVersionCall { operation: resources::FILE_VERSION,
+                                                    volume,
+                                                    cnid,
+                                                    id,
+                                                    ..Default::default() };
+        status(self.invoke(RESOURCE, &mut call))?;
+        Ok(call.info)
+    }
+
     pub fn resource(self, request: ResourceRequest<'_>, output: &mut [u8])
                     -> Result<ResourceReply>
     {

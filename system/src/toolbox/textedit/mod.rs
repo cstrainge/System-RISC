@@ -27,6 +27,61 @@ pub struct PreparedEdit
 }
 impl Manager
 {
+    pub fn font_request(&mut self, call: &mut TextEditFontCall,
+                        fonts: &crate::toolbox::quickdraw::fonts::FontManager)
+                        -> Status
+    {
+        let result = (|| {
+            if call.operation != SET_FONT
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let editor = self.inspect_mut(call.id).ok_or(NOT_FOUND)?;
+            editor.set_font(call.font, fonts)?;
+            call.info = editor.info();
+            Ok(())
+        })();
+        result.map_or_else(|status| status, |()| OK)
+    }
+
+    pub fn request_with_fonts(&mut self, call: &mut TextEditCall, input: &str, output: &mut [u8],
+                              fonts: &crate::toolbox::quickdraw::fonts::FontManager)
+                              -> Status
+    {
+        let prepared = (|| {
+            match call.operation
+            {
+                SET_TEXT | INSERT =>
+                {
+                    self.inspect_mut(call.id).ok_or(NOT_FOUND)?.prepare_font_input(input, fonts)
+                }
+                KEY =>
+                {
+                    let character = char::from_u32(call.key).ok_or(BAD_ARGUMENT)?;
+                    self.inspect_mut(call.id)
+                        .ok_or(NOT_FOUND)?
+                        .prepare_font_input(character.encode_utf8(&mut [0; 4]), fonts)
+                }
+                _ => Ok(())
+            }
+        })();
+        if let Err(status) = prepared
+        {
+            return status;
+        }
+        self.request(call, input, output)
+    }
+
+    pub fn prepare_replace_with_fonts(&self, id: EditorId, input: &str,
+                                      fonts: &crate::toolbox::quickdraw::fonts::FontManager)
+                                      -> Result<PreparedEdit, Status>
+    {
+        Ok(PreparedEdit { id,
+                          editor: self.inspect(id)
+                                      .ok_or(NOT_FOUND)?
+                                      .prepared_replace_with_fonts(input, Some(fonts))? })
+    }
+
     pub fn selected_text(&self, id: EditorId) -> Result<&str, Status>
     {
         Ok(self.inspect(id).ok_or(NOT_FOUND)?.selection())

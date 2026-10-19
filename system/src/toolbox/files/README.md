@@ -67,8 +67,8 @@ by internal `request` calls, rather than an application bypass.
 Open forks support reads, not byte writes. Writable volumes additionally support
 bounded durable folder creation and Trash/Put Away/Empty Trash catalog mutations
 through the firmware write/flush boundary. All applications' open forks protect
-their files from these mutations. There are no general fork writes or arbitrary
-rename/delete services.
+their files from these mutations. There are no general fork writes or arbitrary delete services; the additive
+Get Info metadata operations are described below.
 HFS+ and non-512-byte APMs are unsupported. Existing HFS B-tree/overflow checks
 still apply: scans are bounded, normal file/data/resource overflow extents are
 supported, but growth of the extents-overflow tree itself beyond its inline
@@ -115,3 +115,100 @@ cargo test --manifest-path System7/Cargo.toml -p mac-system --lib \
 This was also run against the isolated original System 7.6.1 HFS reference image,
 comparing its complete 5,373,687-byte System resource fork with its independently
 extracted MacBinary fork. No VM was stopped or disk modified for these checks.
+
+## Get Info metadata services
+
+Additive native FileCall operations19..22 expose exact allocated data/resource
+fork lengths, rename, file locking and file stationery. Existing ABI6 request and
+catalog layouts remain unchanged. `Files::allocation_info` returns typed physical
+byte counts; directory allocation is zero and does not imply a recursive total.
+The reader validates physical lengths against logical EOF and allocation-block
+geometry, including allocation reserved beyond logical EOF.
+
+`Files::rename` accepts a Rust UTF8 string, converts it losslessly to1..31 MacRoman
+bytes and updates the catalog key and any existing file/folder thread. Folder
+threads are mandatory; optional file threads remain optional. Case-only renames
+retain the same CNID. Fork payloads, extents, creation/modification/backup dates
+and unrelated Finder metadata are preserved. The parent modification date and
+volume write date advance. Duplicate HFS names, colon/NUL, empty names, dot
+components and unrepresentable Unicode fail explicitly. Literal slash remains
+addressable by CNID but cannot be returned as a native slash path.
+
+`set_locked` changes only the file catalog lock bit and permits unlocking.
+`set_stationery` changes only Finder flag0x0800; Apple's
+[TN1150 Finder Info](https://developer.apple.com/library/archive/technotes/tn/tn1150.html#FinderInfo)
+identifies that bit as file-only. Both controls reject directories in this native
+profile. Repeating an unchanged setting or unchanged name writes no sectors.
+
+These services retain the current conservative mutation policy: root/blessed
+System Folder/active System and Finder and open items or their ancestors are
+protected. Rename additionally rejects the catalog lock and Finder name-lock;
+stationery changes reject catalog-locked files. This policy is explicit and is
+not a claim that every original File Manager operation has identical restrictions.
+Volume read-only/dirty checks, bounded transaction capacity, rollback and poisoned
+volume handling are shared with existing durable mutations. No general fork
+writes or volume renaming is implied.
+
+Canonical public SDK tests in `file_mutations.rs` cover independent HFS remounts,
+file/folder and case-only/31-byte Unicode renames, both fork payloads and exact
+allocation, unrelated metadata preservation, no-op writes, rejected mutations and
+partial-write rollback/failed-rollback poisoning for all three mutation services.
+The shared `file_write_cases.rs` additionally checks renamed files/folders,
+stationery and lock persistence across three actual guest boots when that ignored
+RV64 gate is run.
+
+### Incremental enumeration design (not yet implemented)
+
+Existing indexed `child` rescans catalog leaf nodes and must not back a synchronous
+whole-volume recursive Get Info call. The next service should expose an opaque,
+application-owned cursor containing a leaf node/record position and MDB write
+revision. Each operation scans at most a bounded number of leaf records, returns
+entries plus continuation, and verifies its revision on resume. Catalog mutation
+invalidates the cursor explicitly; callers restart rather than silently combining
+snapshots. Retired applications must release resident cursor slots. Per-entry
+logical/physical metadata should travel together to avoid separate CNID rescans.
+A Finder-owned cancellable walker can then update folder totals between event
+waits, with bounded memory and checked ancestry/cycle handling. No API should hold
+the File Manager guard across user code or recursively scan the whole disk in one
+interrupt-masked ECALL. Existing synchronous metadata mutation transactions still
+need a future resumable storage-worker path for strict input-latency guarantees.
+
+
+## Persistent Desktop DB comments
+
+`Files::comment(volume, cnid, &mut impl fmt::Write)` returns a UTF8 file/folder
+comment. `Files::set_comment(volume, cnid, &str, Timestamp)` commits it; empty text
+removes only that comment record. Both require a live catalog identity. The public
+`COMMENT_MAX_BYTES` limit is255 losslessly encoded MacRoman storage bytes. These
+use additive FileCall operations23/24 and leave existing ABI6 layouts unchanged.
+
+The format follows the original captured System7.6.1 Desktop DB: type3, five-byte
+key payload containing a big-endian CNID, followed by Pascal MacRoman value and
+record padding. The read-only original98,304-byte B-tree and decoded observations
+are frozen under `mac-toolbox/tests/data/desktop-comments`; its provenance lists
+the original source and the two explicit CNID remaps used only for test transport.
+The native writer preserves all opaque unknown leaf records byte-for-byte and
+in their existing relative order, and retains header user data while rebuilding
+node links, indexes and allocation maps. A full existing data fork returns
+`DISK_FULL`; this slice does not silently grow it or alter its resource fork.
+
+A missing database is created as an invisible root `Desktop DB`, typeBTFL,
+creatorDMGR, with an empty resource fork and64KiB logical data capacity. It
+allocates at most three inline runs, validates bitmap free counts against every
+referenced live fork before allocation, and stages new payload, bitmap, catalog
+and both MDBs in the same bounded rollback transaction. Reserved allocation beyond
+logical EOF is zeroed on creation. Insufficient space, unsupported fragmentation,
+malformed databases or conflicting root objects fail before any write. Target
+file/folder creation/modification dates, CNID, forks and unrelated metadata stay
+unchanged; only database/volume metadata reflects the comment commit. Locked
+files and read-only volumes reject changes. Applications commit at edit completion,
+not per keystroke.
+
+Canonical tests additionally compare all2,316 unrelated records in the captured
+original database after native comment replacement/insertion/deletion, verify
+creation/remount/255-byte Unicode/update/delete, check target-date preservation,
+and inject partial-write and flush failures across new-file allocation and
+existing-database writes. Failed rollback poisons the mounted volume. Comments
+also participate in the shared three-boot real guest persistence case. No
+Desktop DF support, old FCMT fallback, complete Desktop Manager API or power-loss
+journal is claimed.

@@ -29,10 +29,24 @@ fn durable_file_manager_operations_survive_three_actual_disk_boots()
         assert!(!serial.contains("FILE_WRITE_FAIL"), "boot {boot}: {serial}");
         assert!(serial.contains(&format!("FILE_WRITE_STAGE {boot}")),
                 "incorrect stage after remount {boot}: {serial}");
+        let comment_marker = match boot
+        {
+            1 => "FILE_COMMENTS_COMMITTED",
+            2 => "FILE_COMMENTS_PERSISTED",
+            _ => "FILE_COMMENTS_UPDATED_PERSISTED"
+        };
+        assert!(serial.contains(comment_marker),
+                "comment create/update/remount evidence missing: {serial}");
+        if boot <= 2
+        {
+            let marker =
+                if boot == 1 { "FILE_INFO_EDITS_COMMITTED" } else { "FILE_INFO_EDITS_PERSISTED" };
+            assert!(serial.contains(marker), "metadata edit/remount evidence missing: {serial}");
+        }
         assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=6"),
                 "actual gate missing: {serial}");
     }
-    let acceptance = serde_json::json!({"status":"passed","boots":3,"acceptance":"mac-toolbox/tests/file_write_cases.rs","capture":report,"limits":["read-only volumes rejected","bounded existing catalog/overflow capacity","no power-loss atomicity without journal","Trash name conflicts return ALREADY_EXISTS rather than renaming older original Finder item","locked-item Option override not implemented"]});
+    let acceptance = serde_json::json!({"status":"passed","boots":3,"rename_file_and_folder":"passed","stationery_and_lock_persistence":"passed","exact_physical_fork_sizes":"passed","desktop_comments_persistence":"passed","acceptance":"mac-toolbox/tests/file_write_cases.rs","capture":report,"limits":["read-only volumes rejected","bounded existing catalog/overflow capacity","no power-loss atomicity without journal","Trash name conflicts return ALREADY_EXISTS rather than renaming older original Finder item","locked-item Option override not implemented"]});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join("results/system7/filesystem-write-checks.json"),
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();

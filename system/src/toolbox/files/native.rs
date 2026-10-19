@@ -7,6 +7,16 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
                                     size: usize)
                                     -> i64
 {
+    if size == size_of::<mac_abi::files::FileScanCall>()
+    {
+        if pointer.is_null()
+           || !(pointer as usize).is_multiple_of(align_of::<mac_abi::files::FileScanCall>())
+        {
+            return BAD_ARGUMENT as i64;
+        }
+        let call = unsafe { &mut *pointer.cast::<mac_abi::files::FileScanCall>() };
+        return manager.scan_request(call).map_or_else(|status| status, |()| OK) as i64;
+    }
     if pointer.is_null()
        || size != size_of::<FileCall>()
        || !(pointer as usize).is_multiple_of(align_of::<FileCall>())

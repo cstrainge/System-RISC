@@ -57,6 +57,7 @@ pub struct Window
     gate:                mac_abi::TrapGate,
     user_bounds:         Option<Rect>,
     grow_icon_clip:      Option<Rect>,
+    close_deferred:      bool,
     damage:              Option<Rect>,
     hidden:              bool,
     pub(crate) updating: bool
@@ -242,7 +243,8 @@ pub enum Action
 {
     Drag(WindowId),
     Resize(WindowId),
-    Close(WindowId)
+    Close(WindowId),
+    CloseRequest(WindowId)
 }
 
 pub struct WindowManager
@@ -383,6 +385,7 @@ impl WindowManager
                                   gate: self.gate,
                                   user_bounds: None,
                                   grow_icon_clip: None,
+                                  close_deferred: false,
                                   damage: Some(Rect::new(0,
                                                          0,
                                                          bounds.right - bounds.left,
@@ -889,8 +892,15 @@ impl WindowManager
                                                        armed });
                 if released && armed
                 {
-                    self.dispose_window(window, events, when);
-                    action = Some(Action::Close(window));
+                    if self.window(window).is_some_and(|w| w.close_deferred)
+                    {
+                        action = Some(Action::CloseRequest(window));
+                    }
+                    else
+                    {
+                        self.dispose_window(window, events, when);
+                        action = Some(Action::Close(window));
+                    }
                 }
             }
         }
@@ -898,11 +908,39 @@ impl WindowManager
         {
             self.tracking = None;
         }
-        if action.is_some()
+        if action.is_some() && !matches!(action, Some(Action::CloseRequest(_)))
         {
             self.invalidate_all();
         }
         action
+    }
+
+    pub fn set_title(&mut self, id: WindowId, title: &str) -> bool
+    {
+        let Some(window) = self.window_mut(id)
+        else
+        {
+            return false;
+        };
+        if title.len() > window.state.title.len()
+        {
+            return false;
+        }
+        window.state.title.fill(0);
+        window.state.title[..title.len()].copy_from_slice(title.as_bytes());
+        window.state.title_length = title.len() as u32;
+        true
+    }
+
+    pub fn set_close_deferred(&mut self, id: WindowId, deferred: bool) -> bool
+    {
+        let Some(window) = self.window_mut(id)
+        else
+        {
+            return false;
+        };
+        window.close_deferred = deferred;
+        true
     }
 
     pub fn set_grow_icon_clip(&mut self, id: WindowId, clip: Option<Rect>) -> bool

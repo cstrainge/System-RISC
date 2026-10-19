@@ -6,6 +6,8 @@ pub(crate) mod definitions;
 pub(crate) mod loader;
 
 pub mod manager;
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+pub(crate) mod file;
 
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
 pub(crate) mod native;

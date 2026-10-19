@@ -19,6 +19,49 @@ pub const MOVE_TO_TRASH: u32 = 15;
 pub const PUT_AWAY: u32 = 16;
 pub const EMPTY_TRASH: u32 = 17;
 pub const TRASH_USAGE: u32 = 18;
+/// Exact catalog physical fork lengths; position=data, length=resource.
+pub const ALLOCATION_INFO: u32 = 19;
+pub const RENAME: u32 = 20;
+pub const SET_LOCKED: u32 = 21;
+pub const SET_STATIONERY: u32 = 22;
+pub const COMMENT: u32 = 23;
+pub const SET_COMMENT: u32 = 24;
+/// Size-distinct incremental request; the existing FileCall remains unchanged.
+pub const SCAN_DIRECTORY: u32 = 25;
+pub const SCAN_ENTRY: u32 = 0;
+pub const SCAN_PENDING: u32 = 1;
+pub const SCAN_DONE: u32 = 2;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DirectoryScanCursor
+{
+    pub revision:  u64,
+    pub volume:    u32,
+    pub directory: u32,
+    pub node:      u32,
+    pub previous:  u32,
+    pub index:     u32,
+    pub traversed: u32,
+    pub state:     u32,
+    pub reserved:  u32
+}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FileScanCall
+{
+    pub operation:          u32,
+    pub volume:             u32,
+    pub directory:          u32,
+    pub step:               u32,
+    pub cursor:             DirectoryScanCursor,
+    pub entry:              CatalogInfo,
+    pub data_allocated:     u64,
+    pub resource_allocated: u64
+}
+pub const COMMENT_MAX_BYTES: usize = 255;
+pub const FILE_LOCKED: u16 = 0x0001;
+pub const FINDER_STATIONERY: u16 = 0x0800;
+pub const FINDER_NAME_LOCKED: u16 = 0x1000;
 pub const DATA_FORK: u32 = 0;
 pub const RESOURCE_FORK: u32 = 1;
 pub const SEEK_START: u32 = 0;
@@ -156,6 +199,22 @@ impl CatalogInfo
     pub fn is_directory(&self) -> bool
     {
         self.kind == DIRECTORY
+    }
+
+    /// The catalog's file lock is independent of Finder flag bits.
+    pub fn is_locked(&self) -> bool
+    {
+        !self.is_directory() && self.flags & FILE_LOCKED != 0
+    }
+
+    pub fn is_stationery(&self) -> bool
+    {
+        !self.is_directory() && self.finder_flags() & FINDER_STATIONERY != 0
+    }
+
+    pub fn is_name_locked(&self) -> bool
+    {
+        self.finder_flags() & FINDER_NAME_LOCKED != 0
     }
 
     /// Finder visibility, custom-icon and saved-position flags. `flags` above

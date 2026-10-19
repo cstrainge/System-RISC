@@ -2,7 +2,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::*;
-pub use mac_abi::{Point, Rect, WindowId, WindowRequest};
+pub use mac_abi::{Point, Rect, WINDOW_CLOSE_REQUEST, WindowId, WindowRequest};
 pub use mac_traps::{Client, Error, Result};
 
 pub struct WindowSpec<'a>
@@ -66,6 +66,27 @@ impl<'a> Windows<'a>
     pub fn close(self, id: WindowId) -> Result<()>
     {
         self.client.window(CLOSE_WINDOW, request(id)).map(|_| ())
+    }
+
+    pub fn set_title(self, id: WindowId, title: &str) -> Result<()>
+    {
+        let mut r = request(id);
+        if title.len() > r.title.len()
+        {
+            return Err(Error(BAD_ARGUMENT));
+        }
+        r.title[..title.len()].copy_from_slice(title.as_bytes());
+        r.title_length = title.len() as u32;
+        self.client.window(SET_WINDOW_TITLE, r).map(|_| ())
+    }
+
+    /// Let the application save or reject a close before disposing its window.
+    /// Accepted close-box tracking produces an OsEvent with WINDOW_CLOSE_REQUEST.
+    pub fn set_close_deferred(self, id: WindowId, deferred: bool) -> Result<()>
+    {
+        let mut r = request(id);
+        r.reserved = i16::from(deferred);
+        self.client.window(SET_CLOSE_DEFERRED, r).map(|_| ())
     }
 
     pub fn select(self, id: WindowId) -> Result<()>

@@ -212,8 +212,11 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                         };
                         unsafe {
                             crate::toolbox::textedit::native::dispatch_with(number, pointer, size,
-                        |call, input, output| crate::toolbox::textedit::clipboard::request(
-                            &mut session.textedit, &mut session.scrap, call, input, output))
+                        |request| match request {
+                            crate::toolbox::textedit::native::Request::Edit(call, input, output) => crate::toolbox::textedit::clipboard::request(
+                                &mut session.textedit, &mut session.scrap, call, input, output, &session.fonts),
+                            crate::toolbox::textedit::native::Request::Font(call) => session.textedit.font_request(call, &session.fonts)
+                        })
                         }
                     }),
         EVENTS | NEXT_EVENT | SCRAP =>
@@ -283,6 +286,13 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
 
         RESOURCE =>
         {
+            if size == size_of::<resources::FileVersionCall>()
+            {
+                return SESSION.with(|slot| {
+                    let mut session = slot.borrow_mut();
+                    unsafe {crate::toolbox::resources::file::dispatch(&mut session.as_mut().unwrap().files,pointer,size)}
+                });
+            }
             SESSION.with(|slot| {
                        let session = slot.borrow();
                        let session = session.as_ref().unwrap();
@@ -429,6 +439,7 @@ pub struct DiskFaults
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DiskActivity
 {
+    pub reads:   usize,
     pub writes:  usize,
     pub flushes: usize
 }
@@ -470,6 +481,7 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
             return BAD_ARGUMENT;
         }
         let output = unsafe { core::slice::from_raw_parts_mut(output, 512) };
+        d.activity.reads += 1;
         d.file
          .seek(SeekFrom::Start(sector * 512))
          .and_then(|_| d.file.read_exact(output))

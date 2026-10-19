@@ -24,6 +24,17 @@ pub const PASTE: u32 = 20;
 pub const SET_RECTS: u32 = 21;
 /// Native cursor movement; `key` is CursorMovement and `index` is extend (0/1).
 pub const NAVIGATE: u32 = 22;
+/// Size-distinct native font request; the existing TextEditCall stays ABI-stable.
+pub const SET_FONT: u32 = 23;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TextEditFontCall
+{
+    pub operation: u32,
+    pub id:        EditorId,
+    pub font:      crate::quickdraw::FontSelection,
+    pub info:      EditorInfo
+}
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorMovement

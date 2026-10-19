@@ -1,4 +1,5 @@
 pub mod mutation;
+pub mod scan;
 use alloc::{vec, vec::Vec};
 
 use crate::{BlockDevice, Error, Partition, Result, be16, be32, bytes, read_at};
@@ -72,18 +73,21 @@ pub struct File
 #[derive(Clone, Debug)]
 pub struct CatalogEntry
 {
-    pub id:          u32,
-    pub parent:      u32,
-    pub name:        Vec<u8>,
-    pub directory:   bool,
-    pub flags:       u16,
-    pub finder_info: [u8; 32],
-    pub created:     u32,
-    pub modified:    u32,
-    pub backup:      u32,
-    pub child_count: u16,
-    pub data:        Option<Fork>,
-    pub resources:   Option<Fork>
+    pub id:                 u32,
+    pub parent:             u32,
+    pub name:               Vec<u8>,
+    pub directory:          bool,
+    pub flags:              u16,
+    pub finder_info:        [u8; 32],
+    pub created:            u32,
+    pub modified:           u32,
+    pub backup:             u32,
+    pub child_count:        u16,
+    pub data:               Option<Fork>,
+    pub resources:          Option<Fork>,
+    /// Exact physical lengths stored in the catalog, including preallocation.
+    pub data_allocated:     u64,
+    pub resource_allocated: u64
 }
 
 pub struct Volume<'a, D: BlockDevice>
@@ -337,6 +341,29 @@ impl<'a, D: BlockDevice> Volume<'a, D>
             })
     }
 
+    /// Exact physical fork lengths, including allocation beyond logical EOF.
+    /// Directories themselves have no data/resource fork allocation.
+    pub fn allocation_info(&mut self, id: u32) -> Result<Option<(u64, u64)>>
+    {
+        let Some(entry) = self.entry(id)?
+        else
+        {
+            return Ok(None);
+        };
+        for (physical, fork) in
+            [(entry.data_allocated, &entry.data), (entry.resource_allocated, &entry.resources)]
+        {
+            if let Some(fork) = fork
+               && (physical < fork.length
+                   || !physical.is_multiple_of(self.allocation_size)
+                   || physical > self.allocation_bytes)
+            {
+                return Err(Error("invalid HFS physical fork length"));
+            }
+        }
+        Ok(Some((entry.data_allocated, entry.resource_allocated)))
+    }
+
     /// Enumerate direct children in native catalog order without collecting the directory.
     pub fn child(&mut self, parent: u32, index: u32) -> Result<Option<CatalogEntry>>
     {
@@ -513,7 +540,23 @@ fn parse_entry(record: &[u8]) -> Result<Option<CatalogEntry>>
                            backup: be32(data, dates + 8)?,
                            child_count,
                            data: data_fork,
-                           resources: resource_fork }))
+                           resources: resource_fork,
+                           data_allocated: if kind == 2
+                           {
+                               u64::from(be32(data, 30)?)
+                           }
+                           else
+                           {
+                               0
+                           },
+                           resource_allocated: if kind == 2
+                           {
+                               u64::from(be32(data, 40)?)
+                           }
+                           else
+                           {
+                               0
+                           } }))
 }
 
 /// Classic HFS is case insensitive and accent sensitive. Mac Roman's upper/lower

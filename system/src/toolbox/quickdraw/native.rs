@@ -281,6 +281,14 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
             RESOURCE =>
             {
                 #[cfg(target_arch = "riscv64")]
+                if size == size_of::<mac_abi::resources::FileVersionCall>()
+                {
+                    let status = crate::kernel::with_files(|files| unsafe {
+                                     crate::toolbox::resources::file::dispatch(files, pointer, size)
+                                 }).unwrap_or_else(|error| error.status() as i64);
+                    return if status == 0 { Ok(()) } else { Err(status as Status) };
+                }
+                #[cfg(target_arch = "riscv64")]
                 return crate::kernel::resources().map(|manager| unsafe {
                            crate::toolbox::resources::native::dispatch(manager, pointer, size)
                        })

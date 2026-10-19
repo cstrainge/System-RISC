@@ -9,19 +9,26 @@ use crate::toolbox::quickdraw::{region::{BooleanOp, Region},
 
 impl super::Desktop
 {
+    pub fn textedit_font_request(&mut self, call: &mut TextEditFontCall) -> Status
+    {
+        crate::kernel::fonts().map_or(NOT_FOUND, |fonts| self.textedit.font_request(call, fonts))
+    }
+
     pub fn textedit_request(&mut self, call: &mut TextEditCall, input: &str, output: &mut [u8])
                             -> Status
     {
+        let fallback = crate::toolbox::quickdraw::fonts::FontManager::default();
+        let fonts = crate::kernel::fonts().unwrap_or(&fallback);
         if matches!(call.operation, COPY | CUT | PASTE)
         {
             return crate::kernel::with_scrap(|scrap| {
                        crate::toolbox::textedit::clipboard::request(&mut self.textedit, scrap,
-                                                                    call, input, output)
+                                                                    call, input, output, fonts)
                    }).unwrap_or_else(|error| error.status());
         }
         if call.operation != DRAW
         {
-            return self.textedit.request(call, input, output);
+            return self.textedit.request_with_fonts(call, input, output, fonts);
         }
         self.draw_textedit(call).map_or_else(|status| status, |()| OK)
     }
@@ -59,9 +66,7 @@ impl super::Desktop
             let mut text = String::new();
             text.try_reserve_exact(source.len()).map_err(|_| NO_MEMORY)?;
             text.push_str(source);
-            commands.push(RenderCommand::Text { font: FontSelection { family: 0,
-                                                                      size:   12,
-                                                                      face:   0 },
+            commands.push(RenderCommand::Text { font: editor.font(),
                                                 baseline: Point { h: info.dest
                                                                          .left
                                                                          .saturating_add(1),

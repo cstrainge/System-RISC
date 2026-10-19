@@ -145,6 +145,31 @@ pub fn shared(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
 /// Manager adapter; this runs on the actual resident System in the ECALL runner.
 pub fn graphical(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
 {
+    let mut startup = None;
+    for index in 0..system.files().volume_count()?
+    {
+        let volume = system.files().volume_at(index)?;
+        if volume.startup != 0
+        {
+            startup = Some(volume.id);
+            break;
+        }
+    }
+    let startup = startup.ok_or(Failure::Mismatch("missing startup volume"))?;
+    let finder = system.files().lookup(startup, 2, "System Folder/Finder")?;
+    let version = system.resources().file_version(startup, finder.id, 1)?;
+    require(version.short() == env!("CARGO_PKG_VERSION"), "disk file version through ECALL")?;
+    let mut version_call = FileVersionCall { operation: FILE_VERSION,
+                                             volume: startup,
+                                             cnid: finder.id,
+                                             id: 1,
+                                             ..Default::default() };
+    require(call(gate, PSTRING_RESOURCE, &mut version_call) == 0,
+            "legacy disk version through ECALL")?;
+    require(version_call.info.short[0] as usize == env!("CARGO_PKG_VERSION").len()
+            && &version_call.info.short[1..version_call.info.short_length as usize]
+               == env!("CARGO_PKG_VERSION").as_bytes(),
+            "legacy disk version Pascal output")?;
     let mut log = LogCall { bytes:  b"\x07LEGACY\n".as_ptr(),
                             length: 8 };
     require(call(gate, PSTRING_LOG, &mut log) == 0, "Pascal log")?;
@@ -162,6 +187,21 @@ pub fn graphical(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
     request.request.title[1..256].fill(0xdb);
     require(call(gate, PSTRING_WINDOW, &mut request) == 0, "255-byte Pascal window creation")?;
     let id = request.request.id;
+    system.windows().set_title(mac_abi::WindowId(id), "Native café")?;
+    require(system.window(id).map_err(Failure::Service)?.title_length == 12,
+            "native title setter")?;
+    request.operation = SET_WINDOW_TITLE;
+    request.request.title.fill(0);
+    request.request.title[..5].copy_from_slice(b"\x04Caf\x8e");
+    request.request.title_length = 5;
+    require(call(gate, PSTRING_WINDOW, &mut request) == 0, "legacy title setter")?;
+    let native_title = system.window(id).map_err(Failure::Service)?;
+    require(&native_title.title[..native_title.title_length as usize] == "Café".as_bytes(),
+            "legacy title UTF8")?;
+    request.request.title[0] = 255;
+    request.request.title[1..256].fill(0xdb);
+    request.request.title_length = 256;
+    require(call(gate, PSTRING_WINDOW, &mut request) == 0, "restore legacy title")?;
     let native = system.window(id).map_err(Failure::Service)?;
     require(native.title_length == 510, "Pascal window title expanded without truncation")?;
     require(core::str::from_utf8(&native.title[..510]).is_ok_and(|s| {

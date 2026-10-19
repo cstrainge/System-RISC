@@ -3,6 +3,7 @@ use core::cmp::Ordering;
 
 use super::*;
 use crate::WritableBlockDevice;
+mod comments;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MutationError
 {
@@ -304,11 +305,25 @@ struct Level
     id:  u32,
     key: Vec<u8>
 }
-fn build_tree(tree: &mut Tree, catalog: bool) -> MutationResult<Vec<[u8; 512]>>
+fn desktop_key_span(record: &[u8]) -> MutationResult<usize>
+{
+    let length = usize::from(*record.first().ok_or(MutationError::Io)?);
+    let span = (length + 2) & !1;
+    if length == 0 || length > 37 || span > record.len()
+    {
+        return Err(MutationError::Unsupported);
+    }
+    Ok(span)
+}
+fn build_tree(tree: &mut Tree, catalog: bool, desktop: bool) -> MutationResult<Vec<[u8; 512]>>
 {
     for r in &tree.records
     {
-        if catalog
+        if desktop
+        {
+            desktop_key_span(r)?;
+        }
+        else if catalog
         {
             key(r)?;
         }
@@ -317,8 +332,11 @@ fn build_tree(tree: &mut Tree, catalog: bool) -> MutationResult<Vec<[u8; 512]>>
             return Err(MutationError::Io);
         }
     }
-    tree.records.sort_unstable_by(|a, b| order(a, b, catalog));
-    if tree.records.windows(2).any(|r| order(&r[0], &r[1], catalog) == Ordering::Equal)
+    if !desktop
+    {
+        tree.records.sort_unstable_by(|a, b| order(a, b, catalog));
+    }
+    if !desktop && tree.records.windows(2).any(|r| order(&r[0], &r[1], catalog) == Ordering::Equal)
     {
         return Err(MutationError::Exists);
     }
@@ -367,7 +385,18 @@ fn build_tree(tree: &mut Tree, catalog: bool) -> MutationResult<Vec<[u8; 512]>>
             offset += r.len();
         }
         put16(&mut node, 512 - (end - at + 1) * 2, offset as u16);
-        let key_bytes = if catalog { key(&tree.records[at])?.2 } else { 8 };
+        let key_bytes = if desktop
+        {
+            desktop_key_span(&tree.records[at])?
+        }
+        else if catalog
+        {
+            key(&tree.records[at])?.2
+        }
+        else
+        {
+            8
+        };
         reserve(&mut level, 1)?;
         level.push(Level { id,
                            key: copy(&tree.records[at][..key_bytes])? });
@@ -657,6 +686,47 @@ impl Catalog
         Ok(())
     }
 
+    fn rename_entry(&mut self, id: u32, name: &[u8]) -> MutationResult<()>
+    {
+        validate_name(name)?;
+        let index = self.index(id)?;
+        let parent = self.entries[index].parent;
+        let directory = self.entries[index].directory;
+        if self.child(parent, name).is_some_and(|other| other.id != id)
+        {
+            return Err(MutationError::Exists);
+        }
+        let (record_index, start) = self.record_index(id)?;
+        let data = copy(&self.tree.records[record_index][start..])?;
+        self.tree.records[record_index] = record(parent, name, &data)?;
+        let mut found_thread = false;
+        for thread in &mut self.tree.records
+        {
+            let (thread_id, thread_name, start) = key(thread)?;
+            if thread_id == id && thread_name.is_empty()
+            {
+                if found_thread
+                   || thread.len() < start + 46
+                   || thread[start] != if directory { 3 } else { 4 }
+                {
+                    return Err(MutationError::Io);
+                }
+                found_thread = true;
+                put32(thread, start + 10, parent);
+                thread[start + 14] = name.len() as u8;
+                thread[start + 15..start + 46].fill(0);
+                thread[start + 15..start + 15 + name.len()].copy_from_slice(name);
+            }
+        }
+        // Folder threads are required by classic HFS; file threads are optional.
+        if directory && !found_thread
+        {
+            return Err(MutationError::Io);
+        }
+        self.entries[index].name = copy(name)?;
+        Ok(())
+    }
+
     fn counts(&mut self, when: u32, touched: &[u32]) -> MutationResult<()>
     {
         for i in 0..self.entries.len()
@@ -726,7 +796,7 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
     fn stage_tree(&mut self, tx: &mut Transaction, fork: &Fork, tree: &mut Tree, catalog: bool)
                   -> MutationResult<()>
     {
-        let nodes = build_tree(tree, catalog)?;
+        let nodes = build_tree(tree, catalog, false)?;
         for (i, node) in nodes.into_iter().enumerate()
         {
             let sector = self.mutation_sector(fork, i * 512)?;
@@ -735,13 +805,25 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         Ok(())
     }
 
-    fn finish_mutation(&mut self, mut cat: Catalog, when: u32, touched: &[u32], freed: &[u16],
+    fn finish_mutation(&mut self, cat: Catalog, when: u32, touched: &[u32], freed: &[u16],
                        overflow: Option<Tree>)
                        -> MutationResult<()>
+    {
+        self.finish_mutation_staged(cat, when, touched, freed, overflow, &[])
+    }
+
+    fn finish_mutation_staged(&mut self, mut cat: Catalog, when: u32, touched: &[u32],
+                              freed: &[u16], overflow: Option<Tree>,
+                              additional: &[(u64, [u8; 512], u8)])
+                              -> MutationResult<()>
     {
         self.writable()?;
         cat.counts(when, touched)?;
         let mut tx = Transaction::new();
+        for (sector, bytes, phase) in additional
+        {
+            tx.stage(self.disk, *sector, *bytes, *phase)?;
+        }
         let fork = self.catalog.clone();
         self.stage_tree(&mut tx, &fork, &mut cat.tree, true)?;
         if let Some(mut tree) = overflow
@@ -854,6 +936,91 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         let id = cat.add_folder(2, b"Trash", when, 0x1000)?;
         let entry = cat.entries[cat.index(id)?].clone();
         self.finish_mutation(cat, when, &[2], &[], None)?;
+        Ok(entry)
+    }
+
+    /// Rename the catalog key and any existing thread, preserving CNID, raw
+    /// metadata, dates and both forks. The parent directory's change date advances.
+    pub fn rename(&mut self, id: u32, name: &[u8], when: u32, protected: &[u32])
+                  -> MutationResult<CatalogEntry>
+    {
+        self.writable()?;
+        validate_name(name)?;
+        let mut cat = self.mutation_catalog()?;
+        self.protection(&cat, id, protected)?;
+        let index = cat.index(id)?;
+        let entry = &cat.entries[index];
+        if entry.flags & 1 != 0 || word(&entry.finder_info, 8)? & 0x1000 != 0
+        {
+            return Err(MutationError::Protected);
+        }
+        if entry.name == name
+        {
+            return Ok(entry.clone());
+        }
+        let parent = entry.parent;
+        cat.rename_entry(id, name)?;
+        let entry = cat.entries[index].clone();
+        self.finish_mutation(cat, when, &[parent], &[], None)?;
+        Ok(entry)
+    }
+
+    /// File catalog lock, independent of Finder flags. Clearing a lock is allowed.
+    pub fn set_locked(&mut self, id: u32, locked: bool, when: u32, protected: &[u32])
+                      -> MutationResult<CatalogEntry>
+    {
+        self.set_file_flag(id, locked, false, when, protected)
+    }
+
+    /// kIsStationery is a file-only Finder flag; unrelated metadata is retained.
+    /// Source: Apple TN1150 Finder Info, kIsStationery0x0800.
+    pub fn set_stationery(&mut self, id: u32, stationery: bool, when: u32, protected: &[u32])
+                          -> MutationResult<CatalogEntry>
+    {
+        self.set_file_flag(id, stationery, true, when, protected)
+    }
+
+    fn set_file_flag(&mut self, id: u32, value: bool, stationery: bool, when: u32,
+                     protected: &[u32])
+                     -> MutationResult<CatalogEntry>
+    {
+        self.writable()?;
+        let mut cat = self.mutation_catalog()?;
+        self.protection(&cat, id, protected)?;
+        let index = cat.index(id)?;
+        if cat.entries[index].directory
+        {
+            return Err(MutationError::Invalid);
+        }
+        let (record_index, start) = cat.record_index(id)?;
+        if stationery
+        {
+            if cat.entries[index].flags & 1 != 0
+            {
+                return Err(MutationError::Protected);
+            }
+            let old = word(&cat.entries[index].finder_info, 8)?;
+            let updated = if value { old | 0x0800 } else { old & !0x0800 };
+            if old == updated
+            {
+                return Ok(cat.entries[index].clone());
+            }
+            put16(&mut cat.entries[index].finder_info, 8, updated);
+            put16(&mut cat.tree.records[record_index], start + 12, updated);
+        }
+        else
+        {
+            let old = cat.entries[index].flags;
+            let updated = if value { old | 1 } else { old & !1 };
+            if old == updated
+            {
+                return Ok(cat.entries[index].clone());
+            }
+            cat.entries[index].flags = updated;
+            cat.tree.records[record_index][start + 2] = updated as u8;
+        }
+        let entry = cat.entries[index].clone();
+        self.finish_mutation(cat, when, &[], &[], None)?;
         Ok(entry)
     }
 

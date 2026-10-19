@@ -2,9 +2,11 @@
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::files::*;
+mod scan;
 pub use mac_abi::{dates::Timestamp,
-                  files::{CatalogInfo, ROOT_ID, VolumeInfo}};
+                  files::{COMMENT_MAX_BYTES, CatalogInfo, ROOT_ID, VolumeInfo}};
 pub use mac_traps::{Client, Error, Result};
+pub use scan::{DirectoryCursor, SCAN_STALE, ScanStep};
 #[derive(Clone, Copy)]
 pub struct Files<'a>
 {
@@ -58,6 +60,79 @@ impl<'a> Files<'a>
                                 ..Default::default() },
                      "")?
                .entry)
+    }
+
+    /// Exact bytes allocated to each fork, including preallocation. Directories
+    /// return zero; this does not recursively total their descendants.
+    pub fn allocation_info(self, volume: u32, cnid: u32) -> Result<AllocationInfo>
+    {
+        let call = self.call(FileCall { operation: ALLOCATION_INFO,
+                                        volume,
+                                        cnid,
+                                        ..Default::default() },
+                             "")?;
+        Ok(AllocationInfo { data_bytes:     call.position,
+                            resource_bytes: call.length })
+    }
+
+    /// Rename one catalog item without changing its identity or fork contents.
+    /// Classic HFS requires1..31 representable MacRoman bytes, without colon/NUL.
+    /// Locked/protected items and items with open forks are rejected explicitly.
+    pub fn rename(self, volume: u32, cnid: u32, name: &str, when: Timestamp)
+                  -> Result<CatalogInfo>
+    {
+        Ok(self.mutation(RENAME, volume, cnid, name, when)?.entry)
+    }
+
+    /// Change a file's catalog lock while preserving all other catalog flags.
+    /// Directories have no file-lock control in this native profile.
+    pub fn set_locked(self, volume: u32, cnid: u32, locked: bool, when: Timestamp)
+                      -> Result<CatalogInfo>
+    {
+        self.set_flag(SET_LOCKED, volume, cnid, locked, when)
+    }
+
+    /// Change only the file-only Finder stationery flag0x0800.
+    pub fn set_stationery(self, volume: u32, cnid: u32, stationery: bool, when: Timestamp)
+                          -> Result<CatalogInfo>
+    {
+        self.set_flag(SET_STATIONERY, volume, cnid, stationery, when)
+    }
+
+    fn set_flag(self, operation: u32, volume: u32, cnid: u32, value: bool, when: Timestamp)
+                -> Result<CatalogInfo>
+    {
+        let time = when.mac_seconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        Ok(self.call(FileCall { operation,
+                                volume,
+                                cnid,
+                                index: u32::from(value),
+                                position: u64::from(time),
+                                ..Default::default() },
+                     "")?
+               .entry)
+    }
+
+    /// Write the file/folder's Desktop DB comment as UTF8 to an application
+    /// string writer. Missing comment records return an empty string.
+    pub fn comment(self, volume: u32, cnid: u32, output: &mut impl core::fmt::Write) -> Result<()>
+    {
+        let mut call = FileCall { operation: COMMENT,
+                                  volume,
+                                  cnid,
+                                  ..Default::default() };
+        let mut bytes = [0; 768];
+        self.client.file(&mut call, "", &mut bytes)?;
+        let text = core::str::from_utf8(bytes.get(..call.transferred).ok_or(Error(mac_abi::BAD_ARGUMENT))?)
+            .map_err(|_| Error(mac_abi::BAD_ARGUMENT))?;
+        output.write_str(text).map_err(|_| Error(mac_abi::NO_MEMORY))
+    }
+
+    /// Persist a Desktop DB comment. Empty text deletes only that comment key.
+    /// Storage is limited to255 losslessly representable MacRoman bytes.
+    pub fn set_comment(self, volume: u32, cnid: u32, comment: &str, when: Timestamp) -> Result<()>
+    {
+        self.mutation(SET_COMMENT, volume, cnid, comment, when).map(|_| ())
     }
 
     pub fn child(self, volume: u32, directory: u32, index: u32) -> Result<CatalogInfo>
@@ -290,4 +365,12 @@ pub struct TrashUsage
 {
     pub items:           u32,
     pub allocated_bytes: u64
+}
+
+/// Exact HFS physical fork lengths, distinct from CatalogInfo logical lengths.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AllocationInfo
+{
+    pub data_bytes:     u64,
+    pub resource_bytes: u64
 }

@@ -15,12 +15,12 @@ import subprocess
 import system7_vm as vm
 
 
-def private_probe_disk(output, menus=False):
+def private_probe_disk(output, menus=False, deferred=False):
     fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures/window-probe'
     target = vm.ROOT / 'build/system7/window-probe-target'
     subprocess.run(['cargo','build','--manifest-path',str(fixture/'Cargo.toml'),'--locked',
                     '--release','--target','riscv64imac-unknown-none-elf','--bin','Finder',
-                    '--target-dir',str(target),*(['--features','menus'] if menus else [])],cwd=vm.ROOT,check=True)
+                    '--target-dir',str(target),*(['--features','deferred-close'] if deferred else ['--features','menus'] if menus else [])],cwd=vm.ROOT,check=True)
     packaged = output / 'package'
     subprocess.run(['cargo','run','--manifest-path',str(fixture/'Cargo.toml'),'--locked',
                     '--bin','package','--target-dir',str(target),'--',
@@ -46,6 +46,7 @@ def private_probe_disk(output, menus=False):
     shutil.copyfile(vm.DIST/'bootrom.bin',private/'bootrom.bin')
     subprocess.run(['qemu-img','convert','-f','raw','-O','qcow2',str(raw),
                     str(private/'system7.qcow2')],check=True)
+    raw.unlink()
     return private
 
 def capture(output, probe=False, menus=False):

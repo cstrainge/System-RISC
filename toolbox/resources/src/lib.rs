@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 use mac_abi::resources::*;
 pub use mac_abi::{ResourceKey,
-                  resources::{APPLICATION, CHAIN, ResourceInfo, SYSTEM}};
+                  resources::{APPLICATION, CHAIN, ResourceInfo, SYSTEM, VersionInfo}};
 use mac_traps::ResourceRequest;
 pub use mac_traps::{Client, Error, Result};
 #[derive(Clone, Copy)]
@@ -36,6 +36,13 @@ impl<'a> Resources<'a>
     {
         Self { scope: CHAIN,
                ..self }
+    }
+
+    /// Read vers from an arbitrary catalog file without changing the current
+    /// application/resource chain or loading its executable resources.
+    pub fn file_version(self, volume: u32, cnid: u32, id: i16) -> Result<VersionInfo>
+    {
+        self.client.file_version(volume, cnid, id)
     }
 
     fn request(self, operation: u32, key: ResourceKey, index: u32, name: &str)

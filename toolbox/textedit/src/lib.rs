@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 use mac_abi::{BAD_ARGUMENT, textedit::*};
 pub use mac_abi::{Point, Rect, WindowId,
+                  quickdraw::FontSelection,
                   textedit::{CursorMovement, EditorId, EditorInfo, LineInfo, MAX_BYTES,
                              MAX_EDITORS}};
 pub use mac_traps::{Client, Error, Result};
@@ -84,6 +85,18 @@ impl<'a> TextEdit<'a>
     pub fn info(self, id: EditorId) -> Result<EditorInfo>
     {
         self.simple(id, INFO)
+    }
+
+    /// Select the resident font for layout, hit testing and subsequent drawing.
+    /// A failed selection leaves the editor unchanged.
+    pub fn set_font(self, id: EditorId, font: FontSelection) -> Result<EditorInfo>
+    {
+        let mut call = TextEditFontCall { operation: SET_FONT,
+                                          id,
+                                          font,
+                                          ..Default::default() };
+        self.client.textedit_font(&mut call)?;
+        Ok(call.info)
     }
 
     pub fn set_text(self, id: EditorId, text: &str) -> Result<EditorInfo>

@@ -175,13 +175,19 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         TEXTEDIT =>
         {
             crate::kernel::with_desktop(|runtime| unsafe {
-                toolbox::textedit::native::dispatch_with(number,
-                                                         pointer,
-                                                         size,
-                                                         |call, input, output| {
-                                                             runtime.textedit_request(call, input,
-                                                                                      output)
-                                                         })
+                toolbox::textedit::native::dispatch_with(number, pointer, size, |request| {
+                    match request
+                    {
+                        toolbox::textedit::native::Request::Edit(call, input, output) =>
+                        {
+                            runtime.textedit_request(call, input, output)
+                        }
+                        toolbox::textedit::native::Request::Font(call) =>
+                        {
+                            runtime.textedit_font_request(call)
+                        }
+                    }
+                })
             }).unwrap_or_else(|error| error.status() as i64)
         }
         DIALOG =>
