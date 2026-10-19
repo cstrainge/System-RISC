@@ -1,4 +1,4 @@
-# RISCy System boot ROM
+# System RISC boot ROM
 
 Native RV64IMAC firmware for QEMU `virt`, executing from a read-only parallel
 flash bank at **0x20000000**. QEMU's reset stub transfers control directly to

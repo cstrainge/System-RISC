@@ -1,4 +1,4 @@
-//! Resident RISCy System code. This crate is not an application dependency.
+//! Resident System RISC code. This crate is not an application dependency.
 #![no_std]
 extern crate alloc;
 #[cfg(target_arch = "riscv64")]

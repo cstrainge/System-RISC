@@ -254,7 +254,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                               &directory,
                               "raw-hfs",
                               &[(&raw, "raw")],
-                              &["RISCy System Boot ROM v1 at 0x200", "CNID=16",
+                              &["System RISC Boot ROM v1 at 0x200", "CNID=16",
                                 "System: native service table ready", "BOOT_SYSTEM_READY:"],
                               true)?,
                          case(workspace,

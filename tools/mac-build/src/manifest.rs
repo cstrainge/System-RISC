@@ -601,7 +601,7 @@ mod tests
     #[test]
     fn cargo_resolves_inherited_and_explicit_package_versions()
     {
-        let dir = std::env::temp_dir().join(format!("riscy-vers-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("system-risc-vers-{}", std::process::id()));
         let package = dir.join("app");
         fs::create_dir_all(package.join("src")).unwrap();
         fs::write(

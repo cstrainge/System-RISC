@@ -2,7 +2,7 @@
 """Capture original System 7 application-menu behavior in a private q800 clone.
 
 Interactive stages remain explicit so menu decisions never depend on opaque sleeps.
-This script never addresses the visible reference or RISCy System VM endpoints.
+This script never addresses the visible reference or System RISC VM endpoints.
 """
 import argparse
 import json

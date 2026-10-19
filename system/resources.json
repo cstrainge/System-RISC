@@ -6,7 +6,7 @@
   "abi_version": 6,
   "load_base": "0x80200000",
   "load_limit": "0x81000000",
-  "description": "RISCy System native operating system",
+  "description": "System RISC native operating system",
   "resources": [
     {
       "type": "STR#",
@@ -29,7 +29,7 @@
       "name": "Product name",
       "payload": {
         "format": "pstring",
-        "text": "RISCy System"
+        "text": "System RISC"
       }
     },
     {
@@ -39,7 +39,7 @@
       "payload": {
         "format": "strings",
         "strings": [
-          "Starting RISCy System...",
+          "Starting System RISC...",
           "Starting Finder..."
         ]
       }

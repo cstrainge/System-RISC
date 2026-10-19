@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remove obsolete generated RISCy disks/ROM copies; retain reports and references."""
+"""Remove obsolete generated System RISC disks/ROM copies; retain reports and references."""
 import json
 import os
 from pathlib import Path

@@ -361,7 +361,7 @@ extern "C" fn boot_main() -> !
         HEAP.lock().init(addr_of_mut!(__heap_start),
                          addr_of_mut!(__heap_end) as usize - addr_of_mut!(__heap_start) as usize);
     }
-    serial!("RISCy System Boot ROM v1 at 0x{:x}", boot_main as *const () as usize);
+    serial!("System RISC Boot ROM v1 at 0x{:x}", boot_main as *const () as usize);
     serial!("Searching virtio disks for a blessed HFS System Folder...");
     let mut disks = Vec::new();
     for slot in 1..=8

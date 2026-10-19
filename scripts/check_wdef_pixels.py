@@ -19,7 +19,7 @@ def build_renderer():
                     '--target-dir',str(BUILD),'-p','mac-system','--example','wdef_render'],check=True)
 
 
-def check_guest_window(screenshot_path, results, bounds=None, title="About RISCy System", procedure=0, active=True, grow_clip=None):
+def check_guest_window(screenshot_path, results, bounds=None, title="About System RISC", procedure=0, active=True, grow_clip=None):
     """Verify the production About window's loaded native WDEF against the host.
 
     The host renderer is separately checked against original Mac goldens. Its

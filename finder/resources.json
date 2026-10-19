@@ -6,7 +6,7 @@
   "abi_version": 6,
   "load_base": "0x81000000",
   "load_limit": "0x82000000",
-  "description": "RISCy System Finder",
+  "description": "System RISC Finder",
   "resources": [
     {
       "type": "WIND",
@@ -28,7 +28,7 @@
         "title": "\u0014",
         "items": [
           {
-            "text": "About RISCy System\u2026",
+            "text": "About System RISC\u2026",
             "enabled": true,
             "command": "abou"
           },
@@ -343,8 +343,8 @@
           "Trash",
           "untitled folder",
           "Are you sure you want to permanently remove all items in the Trash? You cannot undo this action.",
-          "About RISCy System",
-          "RISCy System",
+          "About System RISC",
+          "System RISC",
           "Finder running in Rust",
           "Mounted HFS volumes and both forks",
           "Double-click: open folders",
@@ -408,7 +408,7 @@
       "payload": {
         "format": "strings",
         "strings": [
-          "RISCy System",
+          "System RISC",
           "Trash"
         ]
       }

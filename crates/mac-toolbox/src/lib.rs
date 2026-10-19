@@ -194,7 +194,7 @@ mod tests
                 assert_eq!(size, core::mem::size_of::<traps::WindowCall>());
                 let r = unsafe { &mut *request.cast::<traps::WindowCall>() };
                 assert_eq!(r.operation, NEW_WINDOW);
-                assert_eq!(&r.request.title[..r.request.title_length as usize], b"RISCy System");
+                assert_eq!(&r.request.title[..r.request.title_length as usize], b"System RISC");
                 r.request.id = 7;
                 OK as i64
             }
@@ -220,7 +220,7 @@ mod tests
         system.log("Finder").unwrap();
         assert_eq!(system.windows()
                          .create(windows::WindowSpec::new(Rect::new(20, 60, 300, 300),
-                                                          "RISCy System"))
+                                                          "System RISC"))
                          .unwrap(),
                    WindowId(7));
         assert_eq!(system.events().next(mac_abi::EVERY_EVENT).unwrap().unwrap().character(), 65);

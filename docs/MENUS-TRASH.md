@@ -18,7 +18,7 @@ Finder's MENU1251..1256 preserve the original English Finder7.6.1 fmnu command
 identities and shortcuts. The original fmnu resources are retained unchanged.
 MENU/MCMD are resolved native resources: placeholders for About, Print Window,
 Shut Down and dynamic View/Label names are expanded at packaging time. About
-uses this OS's RISCy System branding. Unsupported commands remain disabled.
+uses this OS's System RISC branding. Unsupported commands remain disabled.
 The structured menu compiler accepts text/key/mark/style/enabled/checked/command
 fields; command fields produce a same-ID MCMD companion automatically.
 

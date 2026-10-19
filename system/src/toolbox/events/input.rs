@@ -53,7 +53,7 @@ impl Decoder
     {
         (if self.keys[42] || self.keys[54] { SHIFT_KEY } else { 0 })
         | (if self.keys[56] || self.keys[100] { OPTION_KEY } else { 0 })
-        // RISCy System's temporary host layout: either Ctrl is Mac Command.
+        // System RISC's temporary host layout: either Ctrl is Mac Command.
         | (if self.keys[29] || self.keys[97] || self.keys[125] || self.keys[126] { CMD_KEY } else { 0 })
         | (if self.caps { ALPHA_LOCK } else { 0 })
     }

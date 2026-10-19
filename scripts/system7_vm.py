@@ -61,7 +61,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                'native-headless': 'none'}[frontend]
     serial = state / 'serial.log'
     serial.write_text('')
-    args = [executable, '-name', 'RISCy System - Finder', '-machine', 'virt', '-cpu', 'rv64',
+    args = [executable, '-name', 'System RISC - Finder', '-machine', 'virt', '-cpu', 'rv64',
             '-m', '128M', '-smp', '1', '-bios', 'none',
             '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + host_path(state / 'bootrom.bin'),
             '-drive', 'if=none,id=startup,format=qcow2,readonly=' + ('off' if writable else 'on') + ',file=' + host_path(disk),
@@ -100,7 +100,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                 return process, endpoint
             if any(marker in log for marker in ['BOOT_NO_SYSTEM:', 'BOOT_TRAP:', 'BOOT_PANIC:',
                                                'SYSTEM_PANIC:', 'SYSTEM_TRAP:']):
-                raise RuntimeError('RISCy System startup failed:\n' + log)
+                raise RuntimeError('System RISC startup failed:\n' + log)
             time.sleep(.05)
         raise TimeoutError('Desktop did not finish boot:\n' + serial.read_text(errors='replace')
                            + '\n' + (state / 'qemu.log').read_text())

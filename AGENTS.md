@@ -1,4 +1,4 @@
-# RISCy System development
+# System RISC development
 
 This repository contains only the OS project. Keep the Rust workspace under this
 root and the public Toolbox facade in `crates/mac-toolbox`. Finder depends only

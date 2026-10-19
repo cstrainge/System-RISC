@@ -1,6 +1,6 @@
-# RISCy System
+# System RISC
 
-RISCy System's Rust workspace lives under `System7/`. It contains build tools
+System RISC's Rust workspace lives under `System7/`. It contains build tools
 and independently linked native RISC-V **System** and **Finder**
 prototypes, packaged as Macintosh files with real resource forks.
 

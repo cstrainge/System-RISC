@@ -267,7 +267,7 @@ mod tests
                              leading: 1 });
         assert_eq!(CHICAGO_12.width("TEST"), 26);
         assert!(CHICAGO_12.width("iii") < CHICAGO_12.width("WWW"));
-        assert_ne!(CHICAGO_12.width("RISCy System"), CHICAGO_12.width("RISCY SYSTEM"));
+        assert_ne!(CHICAGO_12.width("System RISC"), CHICAGO_12.width("SYSTEM RISC"));
         assert_eq!(roman('é'), Some(0x8e));
     }
 

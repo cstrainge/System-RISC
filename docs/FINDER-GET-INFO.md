@@ -2,7 +2,7 @@
 
 This implementation targets ordinary files and folders from Finder 7.6.1 on
 System 7.6.1. Editable names are an intentional native extension requested for
-RISCy System. Original Finder's name view remained static during the recorded
+System RISC. Original Finder's name view remained static during the recorded
 click, double-click, Select All and typing observations.
 
 ## Reference and evidence boundary

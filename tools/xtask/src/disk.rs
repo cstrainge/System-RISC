@@ -113,7 +113,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     fs::create_dir(&home)?;
     let hfs = Hfs { tools,
                     home };
-    hfs.call("hformat", &["-l".as_ref(), "RISCy System".as_ref(), raw.as_os_str()])?;
+    hfs.call("hformat", &["-l".as_ref(), "System RISC".as_ref(), raw.as_os_str()])?;
     for directory in [":System Folder", ":Applications", ":Documents", ":System Folder:Preferences"]
     {
         hfs.call("hmkdir", &[directory.as_ref()])?;
@@ -181,7 +181,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     // live separately as overlays when a real disk bootstrap is introduced.
     fs::rename(&raw, dist.join("system7.hfs"))?;
     fs::rename(&qcow, dist.join("system7.qcow2"))?;
-    let report = json!({"raw": "build/system7/dist/system7.hfs", "qcow2": "build/system7/dist/system7.qcow2", "virtual_size": DISK_SIZE, "layout": "unpartitioned HFS", "volume_name": "RISCy System", "blessed_system_folder_id": blessed_id, "files": verified, "listing": listing, "qcow2_check": "passed", "raw_qcow2_comparison": "passed", "riscv_disk_boot_available": true, "boot_rom": "build/system7/dist/bootrom.bin"});
+    let report = json!({"raw": "build/system7/dist/system7.hfs", "qcow2": "build/system7/dist/system7.qcow2", "virtual_size": DISK_SIZE, "layout": "unpartitioned HFS", "volume_name": "System RISC", "blessed_system_folder_id": blessed_id, "files": verified, "listing": listing, "qcow2_check": "passed", "raw_qcow2_comparison": "passed", "riscv_disk_boot_available": true, "boot_rom": "build/system7/dist/bootrom.bin"});
     write_json(&dist.join("disk.json"), &report)?;
     println!("Built 500 MiB HFS/qcow2; System, Finder and Applications fork roundtrips passed.");
     Ok(report)

@@ -13,7 +13,7 @@ unsafe extern "C" fn unavailable(number: u32, _: *mut (), _: usize) -> i64
 #[test]
 fn resource_owns_geometry_and_propagates_primitive_service_failures()
 {
-    let mut state = WindowDefinitionState::new(Rect::new(20, 60, 120, 140), "RISCy");
+    let mut state = WindowDefinitionState::new(Rect::new(20, 60, 120, 140), "System RISC");
     let mut pixels = [0xffffff; 160 * 160];
     let mut canvas = Canvas::new(&mut pixels, 160, 160);
     let mut surface = Surface::from_canvas(&mut canvas);

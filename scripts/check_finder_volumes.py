@@ -90,7 +90,7 @@ def main():
   result={'case':name,'compared_pixels':actual.width*actual.height,'different_pixels':different,'masked_pixels':0,'native_rect':list(rect),'original_rect':list(expected_rect),'original':str(expected_path.relative_to(ROOT)),'original_sha256':sha(expected_path)};report['comparisons'].append(result)
   assert different==0,f'{name}: {different} pixel differences'
  try:
-  assert 'FINDER_VOLUME id=1 name=RISCy System'in log()and'FINDER_VOLUME id=2 name=Second Volume'in log(),log()
+  assert 'FINDER_VOLUME id=1 name=System RISC'in log()and'FINDER_VOLUME id=2 name=Second Volume'in log(),log()
   report['checks'].append('Both actual attached HFS volumes enumerated through resident File Manager')
   click(600,104,True);click(600,104,True)
   wait(lambda s:s.get('windows')=='2'and s.get('front')=='2','second volume opens')
