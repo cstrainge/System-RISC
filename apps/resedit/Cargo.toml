@@ -14,5 +14,7 @@ bench = false
 mac-toolbox.workspace = true
 mac-text = { path = "../../crates/mac-text" }
 
+disc-v = { version = "=0.1.3", default-features = false }
+
 [build-dependencies]
 mac-build.workspace = true

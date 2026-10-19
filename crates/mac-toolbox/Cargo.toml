@@ -28,3 +28,4 @@ serde_json.workspace = true
 mac-formats.workspace = true
 mac-build.workspace = true
 mac-text = { path = "../mac-text" }
+disc-v = { version = "=0.1.3", default-features = false }

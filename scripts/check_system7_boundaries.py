@@ -111,7 +111,7 @@ def check(args):
     for name in ['mac-finder', 'quickdraw-test', 'textedit-exerciser', 'cursor-test', 'panic-test', 'resedit']:
         direct = sorted(packages[dep['pkg']]['name'] for dep in nodes[by_name[name]]['deps']
                         if any(kind['kind'] is None for kind in dep['dep_kinds']))
-        expected = ['mac-text', 'mac-toolbox'] if name == 'resedit' else ['mac-toolbox']
+        expected = ['disc-v', 'mac-text', 'mac-toolbox'] if name == 'resedit' else ['mac-toolbox']
         assert direct == expected, (name, 'runtime must use only the aggregate Toolbox', direct)
         manifest = Path(packages[by_name[name]]['manifest_path'])
         source = (manifest.parent / 'src/main.rs').read_text()

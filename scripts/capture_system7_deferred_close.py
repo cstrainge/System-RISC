@@ -11,6 +11,8 @@ def capture(output):
     private=private_probe_disk(output,deferred=True);vm.DIST=private
     process,endpoint=vm.launch(output/'vm');serial=output/'vm/serial.log'
     def text():return serial.read_text(errors='replace')
+    # The UART file can end halfway through a record while the guest writes.
+    def lines():return text().split('\n')[:-1]
     def wait(predicate):
         deadline=time.monotonic()+12
         while time.monotonic()<deadline:
@@ -22,20 +24,20 @@ def capture(output):
     def move(x,y):
         send([{'type':'abs','data':{'axis':'x','value':(x*32767+638)//639}},
               {'type':'abs','data':{'axis':'y','value':(y*32767+478)//479}}])
-        wait(lambda:any(line.startswith('WM_STATE ') and f'mouse={x},{y} ' in line+' ' for line in text().splitlines()[-12:]))
+        wait(lambda:any(line.startswith('WM_STATE ') and f'mouse={x},{y} ' in line+' ' for line in lines()[-12:]))
     def button(down):
-        states=[line for line in text().splitlines() if line.startswith('WM_STATE ')]
+        states=[line for line in lines() if line.startswith('WM_STATE ')]
         previous=int(dict(part.split('=',1)for part in states[-1].split()[1:])['rev'])
         send([{'type':'btn','data':{'button':'left','down':down}}])
-        wait(lambda:any(line.startswith('WM_STATE ') and int(dict(part.split('=',1)for part in line.split()[1:])['rev'])>previous for line in text().splitlines()[-12:]))
+        wait(lambda:any(line.startswith('WM_STATE ') and int(dict(part.split('=',1)for part in line.split()[1:])['rev'])>previous for line in lines()[-12:]))
     def key(code):
         send([{'type':'key','data':{'key':{'type':'qcode','data':code},'down':True}},
               {'type':'key','data':{'key':{'type':'qcode','data':code},'down':False}}])
     observations=[]
     def snapshot(name):
         seq=len(observations)+1;key('p')
-        wait(lambda:any(line.startswith(f'DEFERRED_STATE query={seq} ')for line in text().splitlines()))
-        line=next(line for line in text().splitlines()if line.startswith(f'DEFERRED_STATE query={seq} '))
+        wait(lambda:any(line.startswith(f'DEFERRED_STATE query={seq} ')for line in lines()))
+        line=next(line for line in lines()if line.startswith(f'DEFERRED_STATE query={seq} '))
         state={name:int(value)for name,value in (part.split('=',1)for part in line.split()[1:])}
         path=output/(name+'.ppm');vm.qmp('screendump',{'filename':str(path)},endpoint)
         observations.append({'name':name,'state':state,'frame':path.name})
@@ -50,9 +52,9 @@ def capture(output):
         snapshot('explicit-close')
         move(113,91);button(True);button(False);move(16,444);snapshot('automatic-close')
         report={'observations':observations,'disk_sha256_before':before,'disk_sha256_after':hashlib.sha256(base.read_bytes()).hexdigest(),
-                'requests':[line for line in text().splitlines()if line.startswith('DEFERRED_REQUEST ')],
-                'disposals':[line for line in text().splitlines()if line.startswith('DEFERRED_DISPOSE ')],
-                'automatic_notices':[line for line in text().splitlines()if line.startswith('AUTOMATIC_NOTICE ')],
+                'requests':[line for line in lines()if line.startswith('DEFERRED_REQUEST ')],
+                'disposals':[line for line in lines()if line.startswith('DEFERRED_DISPOSE ')],
+                'automatic_notices':[line for line in lines()if line.startswith('AUTOMATIC_NOTICE ')],
                 'launch':json.loads((output/'vm/command.json').read_text())}
         (output/'capture.json').write_text(json.dumps(report,indent=2)+'\n')
     finally:

@@ -24,6 +24,37 @@ pub fn structured(kind: [u8; 4], data: &[u8], mut line: impl FnMut(&str)) -> Res
     let mut at = 0;
     match &kind
     {
+        b"NABI" =>
+        {
+            if data.len() != 32
+               || &data[..4] != b"RVN1"
+               || word(data, 4)? != 1
+               || data[12..16] != [0; 4]
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let role = match word(data, 6)?
+            {
+                1 => "System",
+                2 => "Application",
+                3 => "Code resource",
+                _ => return Err(BAD_ARGUMENT)
+            };
+            let mut text = Text::<128>::new();
+            let _ = write!(text,
+                           "Native ABI: {} ({role})",
+                           u32::from_be_bytes(data[8..12].try_into().map_err(|_| BAD_ARGUMENT)?));
+            line(text.as_str());
+            for (label, at) in [("Load base", 16), ("Load limit", 24)]
+            {
+                let mut text = Text::<128>::new();
+                let _ = write!(text,
+                               "{label}: 0x{:08x}",
+                               u64::from_be_bytes(data[at..at + 8].try_into()
+                                                                  .map_err(|_| BAD_ARGUMENT)?));
+                line(text.as_str());
+            }
+        }
         b"STR " =>
         {
             let mut text = Text::<1024>::new();

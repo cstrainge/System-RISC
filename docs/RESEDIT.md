@@ -17,15 +17,42 @@ for StandardGetFile, filtered lists omit invisible items, while -1/all types
 includes them. ResEdit opens all types because resource forks are not limited
 to applications.
 
-Select a resource type in the left column, then a resource in the next. Both
-columns have independent Prev/Next paging. The information panel shows type,
-signed ID, name, exact byte length and attributes. Previews decode MENU headers
-and items (enable/mark/key/style/icon fields), STR/STR# MacRoman strings, and
-vers numbers, stage, country and strings. ICON/ICN#/cicn use resident Icon
-Utilities. CODE, RV64 and unknown binary resources use paged hex. Page Up/Down
-scrolls the preview; Home returns to its start. Structured/icon previews have a
-32 KiB display limit; larger resources remain available as hex and export
-completely. Inspection never loads executable resources.
+Open and export are File menu commands. The document window title is the
+inspected filename. Select a resource type in the left column, then a resource
+in the next. Types, resources and the preview each have a standard CDEF
+scrollbar with arrows, page tracking and thumb dragging. The information panel
+shows type, signed ID, name, exact byte length and attributes. Resizing adjusts
+the visible row counts. Page Up/Down, arrows, Home and End scroll the preview.
+
+Previews decode MENU headers and items (enable/mark/key/style/icon fields),
+STR/STR# MacRoman strings, vers numbers, stage, country and strings. ICON/ICN#/cicn
+use resident Icon Utilities. Binary resources use a full-range hex view in
+Monaco 9. Row positions exceeding the classic scrollbar's 32767 maximum are
+scaled to the whole resource; the first and last rows remain reachable.
+Structured/icon previews have a 32 KiB display limit; larger resources remain
+available as hex and export completely. Inspection never executes code.
+
+The native System executable is **RV64 resource 0**, containing a little-endian
+RISC-V ELF64 image, rather than a classic CODE resource. Native RV64 (and CODE
+containing a valid RV64 ELF) defaults to disassembly in Monaco 9. View > Hex Dump
+(Ctrl-H) and View > Disassembly (Ctrl-D) switch views and return to the top.
+Classic 68k CODE remains hex; this is an RV64 decoder, not a 68k translator.
+
+The instruction viewer decodes only file-backed executable PT_LOAD segments,
+using linked virtual addresses and skipping data segments and the ELF header.
+It supports compressed and regular instructions, discontinuous executable
+segments, unknown encodings and truncated final instructions. A bounded sparse
+index and 4 KiB read cache support arbitrary scrolling without decoding from
+the beginning on every repaint. The allocation-free parser accepts up to 256
+program headers; malformed or unsupported images fall back to hex. The decoder
+is [disc-v 0.1.3](https://github.com/swenson/disc-v), `no_std`, with vector and
+vendor table features disabled; it requires no application allocator.
+
+The code preview starts with the entry point, NABI version/role/load range and
+RLOC patch count. These are linked addresses, not an attached running process's
+relocated addresses. Select NABI for its descriptor or RLOC for a separately
+scrollable list of offsets and 32/64-bit pointer widths. System has no RLOC:
+it is fixed-linked. Relocatable applications carry RLOC alongside RV64/NABI.
 
 `Resources::open_file(volume, cnid)` returns an owned read-only `ResourceFile`.
 Enumeration, lookup, metadata and partial reads borrow an owner-checked File
@@ -108,12 +135,14 @@ cargo xtask check
 
 Coverage includes all resource fields and both forks, malformed maps, invalid
 code that must never execute, unusual type/name bytes, payloads over 1 MiB,
-original icon hashes, actual icon pixels, native saves extracted from a stopped
+original icon hashes, actual icon pixels, Monaco hex/disassembly pixels,
+compressed instruction/checkpoint boundaries, malformed ELF and full-range
+scrolling through native CDEFs, native saves extracted from a stopped
 private QEMU disk, archive rebuild, running-app inspection, filters, modal
 cancellation/replacement, New Folder, stale/foreign IDs, ownership, legacy string
 conversion, remounts, and injected write/flush failures. Python supplies transport;
 Rust makes acceptance decisions. The visible desktop is not used for test input.
 
-Phase 2 adds RV64 disassembly and NABI/RLOC loader views. Phase 3 adds editing
+Phase 2 provides RV64 disassembly and NABI/RLOC loader views. Phase 3 adds editing
 only when Resource Manager writing exists. No resource-fork write path is added
 by this application.

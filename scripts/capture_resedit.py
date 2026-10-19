@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 import time
@@ -39,35 +40,47 @@ def capture(output):
             if matching and text.rfind('RESEDIT_DRAW_READY\n')>text.rfind(matching[-1]):return
             time.sleep(.01)
         raise TimeoutError('ResEdit did not finish opening '+name)
+    def view():
+        line=[line for line in driver.log().splitlines() if line.startswith('RESEDIT_VIEW ')][-1]
+        return {k:int(v) for k,v in re.findall(r'(\w+)=(\d+)',line)}
+    def draw_key(name,modifiers=()):
+        before=driver.log().count('RESEDIT_DRAW_READY\n');driver.key(name,modifiers)
+        driver.wait('RESEDIT_DRAW_READY\n',before)
     def choose_type(package,kind):
         kinds=sorted(set(item[0] for item in resources((vm.DIST/(package+'.rsrc')).read_bytes())))
         index=kinds.index(kind)
-        for _ in range(index//16):click(92,48+412-47)
+        deadline=time.monotonic()+20
+        while index < view()['types_top']:
+            if time.monotonic()>deadline:raise TimeoutError('types scrollbar did not reach '+kind.hex())
+            click(113,48+32)
+        while index >= view()['types_top']+view()['types_rows']:
+            if time.monotonic()>deadline:raise TimeoutError('types scrollbar did not reach '+kind.hex())
+            click(113,48+412-42)
         marker=f'RESEDIT_RESOURCE kind={int.from_bytes(kind,"big")} '
         before=driver.log().count(marker)
-        click(50,48+70+(index%16)*16)
+        click(50,48+37+(index-view()['types_top'])*16)
         driver.wait(marker,before)
-        deadline=time.monotonic()+20
-        while driver.log().rfind('RESEDIT_DRAW_READY\n')<driver.log().rfind(marker):
-            if time.monotonic()>deadline:raise TimeoutError('resource drawing did not finish')
-            time.sleep(.01)
         frame(package+'-'+kind.hex())
-        # Return the types list to its first page for the next selection.
-        for _ in range(index//16):click(38,48+412-47)
+        if kind==b'RV64':
+            draw_key('end');frame(package+'-disassembly-end')
+            draw_key('home');draw_key('h',('ctrl',));frame(package+'-hex')
+            # Drag the actual CDEF thumb across its full track. No virtual row
+            # positions are injected; Rust checks the resulting viewport.
+            driver.move(604,153);driver.button(True);frame(package+'-hex-thumb-held',False)
+            driver.move(604,402);before=driver.log().count('RESEDIT_DRAW_READY\n');driver.button(False)
+            driver.wait('RESEDIT_DRAW_READY\n',before)
+            frame(package+'-hex-end')
+            draw_key('home');click(604,418);frame(package+'-hex-down')
+            draw_key('d',('ctrl',));frame(package+'-disassembly-restored')
     try:
         driver.click(40,95,double=True);driver.wait(' name=Applications\n')
         driver.application('QuickDraw Test');driver.wait('QUICKDRAW_TEST_READY\n')
         driver.menu(618,93,popup_x=580);driver.wait('PROCESS_ACTIVE app=1\n')
         frame('finder-icons')
         driver.application('ResEdit');driver.wait('RESEDIT_READY\n');frame('picker')
-        # Standard CDEF button tracking: release outside must cancel Open.
-        driver.move(40,68);driver.button(True);frame('open-held',False)
-        driver.move(16,444);frame('open-left',False)
-        previous=driver.log().count('RESEDIT_DRAW_READY\n');driver.button(False)
-        driver.wait('RESEDIT_DRAW_READY\n',previous);frame('open-cancelled')
         open_dialog();frame('system-open')
         pick('QuickDraw Test');opened('QuickDraw Test');frame('running-app-open')
-        for kind in [b'ICN#',b'MENU',b'STR ',b'STR#',b'vers',b'RV64']:
+        for kind in [b'ICN#',b'MENU',b'STR ',b'STR#',b'vers',b'RV64',b'NABI',b'RLOC']:
             choose_type('QuickDraw Test',kind)
         n=driver.log().count('STANDARD_FILE_BEGIN ');driver.key('s',('ctrl',));driver.wait('STANDARD_FILE_BEGIN ',n);frame('system-save')
         driver.key('ret');driver.wait('RESEDIT_SAVED ');frame('exported')
@@ -89,8 +102,15 @@ def capture(output):
         if not candidates:raise RuntimeError('No complete ResEdit export')
         token,data,_=candidates[-1];(output/'resources.json').write_bytes(data)
         open_dialog();driver.key('up',('ctrl',));pick('System Folder');pick('System');opened('System')
-        for kind in [b'ICON',b'cicn']:
+        for kind in [b'ICON',b'cicn',b'RV64',b'NABI',b'WDEF',b'NFNT']:
             choose_type('System',kind)
+        click(276,418);frame('System-resources-down')
+        def resize(anchor,target,name):
+            driver.move(*anchor);driver.button(True);driver.move(*target)
+            before=driver.log().count('RESEDIT_DRAW_READY\n');driver.button(False)
+            driver.wait('RESEDIT_DRAW_READY\n',before);frame(name)
+        resize((618,450),(602,438),'resized')
+        resize((602,438),(618,450),'resize-restored')
         # The running app is still usable after its file was inspected/exported.
         driver.menu(618,111,popup_x=580);driver.wait('PROCESS_ACTIVE app=2\n')
         driver.key('2');driver.wait('QD_DEMO_READY page=2 transfer\n');frame('running-app-still-usable')
