@@ -2,7 +2,7 @@
 use core::fmt::Write;
 
 use mac_toolbox::{events::{CMD_KEY, SHIFT_KEY},
-                  textedit::EditorId,
+                  textedit::{CursorMovement, EditorId},
                   *};
 
 fn error(error: Error) -> Status
@@ -244,20 +244,54 @@ impl Editor
                 self.tracking = false;
                 Ok(true)
             }
+            // A key release does not change browser policy or the filesystem.
+            EventKind::KeyUp => Ok(true),
             EventKind::KeyDown | EventKind::AutoKey =>
             {
-                if event.modifiers & CMD_KEY != 0
+                let command = event.modifiers & CMD_KEY != 0;
+                let movement = match (event.message >> 8) as u8
+                {
+                    0x7b => Some(CursorMovement::Left),
+                    0x7c => Some(CursorMovement::Right),
+                    0x7e => Some(CursorMovement::Up),
+                    0x7d => Some(CursorMovement::Down),
+                    0x73 =>
+                    {
+                        Some(if command
+                             {
+                                 CursorMovement::DocumentStart
+                             }
+                             else
+                             {
+                                 CursorMovement::LineStart
+                             })
+                    }
+                    0x77 =>
+                    {
+                        Some(if command
+                             {
+                                 CursorMovement::DocumentEnd
+                             }
+                             else
+                             {
+                                 CursorMovement::LineEnd
+                             })
+                    }
+                    _ => None
+                };
+                if let Some(movement) = movement
+                {
+                    edit.move_cursor(self.editor, movement, event.modifiers & SHIFT_KEY != 0)
+                        .map_err(error)?;
+                    self.draw(system)?;
+                    self.report(system)?;
+                    return Ok(true);
+                }
+                if command
                 {
                     return Ok(true);
                 }
-                let key = match (event.message >> 8) as u8
-                {
-                    0x7b => '\u{1c}',
-                    0x7c => '\u{1d}',
-                    0x7e => '\u{1e}',
-                    0x7d => '\u{1f}',
-                    _ => char::from(event.character())
-                };
+                let key = char::from(event.character());
                 if key == '\r'
                    || key == '\u{8}'
                    || ('\u{1c}'..='\u{1f}').contains(&key)

@@ -112,7 +112,7 @@ impl Workspace
         run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", "finder_png",
                                "--", "--ignored"]))?;
         for test in ["menus", "finder_trash", "file_writes_guest", "events", "clipboard",
-                     "textedit_graphical"]
+                     "textedit_graphical", "typing"]
         {
             run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", test,
                                    "--", "--ignored"]))?;
@@ -186,8 +186,11 @@ impl Workspace
         let textedit: Value =
             serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
                                                              textedit-graphical-checks.json"))?)?;
+        let typing: Value = serde_json::from_slice(&fs::read(self.repo
+                                                                 .join("results/system7/\
+                                                                        typing-checks.json"))?)?;
         let report = json!({
-            "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
+            "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
             "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, resource menus/alerts, captured Event/Scrap and monochrome TextEdit services with Finder exercisers, bounded durable HFS catalog/Trash writes and read-only Resource Manager. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
         });
         let path = self.repo.join("results/system7/toolchain-checks.json");

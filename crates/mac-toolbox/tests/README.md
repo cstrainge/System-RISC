@@ -186,3 +186,21 @@ Rust owns pixel acceptance and actual Finder keyboard/menu/resize assertions
 in a second private VM. Original probes, small fixtures and provenance are
 under `fixtures/textedit-original` and `data/textedit`. Styled text, other
 font/alignment profiles, hooks and original TEHandle adapters remain open.
+
+## Typing and native navigation
+
+The shared TextEdit suite adds49 native cursor/anchor cases on host and RV64,
+covering UTF8, direction reversal, soft wraps, CR boundaries and preferred
+vertical column. A host case also moves through document rows beyond signed
+QuickDraw coordinates.
+
+`typing.rs` boots two private guests. `fixtures/typing-probe` includes actual
+Finder sources, counts public service calls while forwarding the real gate, and
+checks that text keyDown/keyUp handling makes no File Manager calls. Its timing
+observations use public60-Hz uptime. A second guest runs the actual Finder with
+QMP key input and asserts burst delivery and23 physical navigation/selection
+sequences. Capture Python transports acknowledgements; Rust checks all expected
+values. Timing data is reported without host-dependent pass thresholds.
+
+Set `SYSTEM7_TYPING_WINDOWS=1` for the same assertions against headless Windows
+QEMU guests using a private monitor port. The default gate uses Linux QEMU.

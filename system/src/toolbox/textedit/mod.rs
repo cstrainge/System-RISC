@@ -126,6 +126,15 @@ impl Manager
             INSERT => editor.insert(input)?,
             DELETE => editor.delete()?,
             KEY => editor.key(char::from_u32(call.key).ok_or(BAD_ARGUMENT)?)?,
+            NAVIGATE =>
+            {
+                if call.index > 1
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                editor.navigate(CursorMovement::from_raw(call.key).ok_or(BAD_ARGUMENT)?,
+                                call.index != 0)?;
+            }
             SELECT => editor.select(call.info.selection_start, call.info.selection_end)?,
             LINE => call.line = *editor.lines().get(call.index as usize).ok_or(NOT_FOUND)?,
             OFFSET => call.index = editor.offset(call.point),

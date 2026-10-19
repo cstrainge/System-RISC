@@ -57,7 +57,10 @@ impl Manager
         if status < 0 { Err(status as Status) } else { Ok(()) }
     }
 
-    pub fn request(&mut self, call: &mut MenuCall, resources: Resources<'_>) -> Result<(), Status>
+    /// Return whether visible menu state changed. Queries and idempotent writes
+    /// do not invalidate the compositor.
+    pub fn request(&mut self, call: &mut MenuCall, resources: Resources<'_>)
+                   -> Result<bool, Status>
     {
         match call.operation
         {
@@ -104,15 +107,16 @@ impl Manager
                     self.menus.last().map_or(10, |m| m.state.title_bounds.right);
                 self.measure(&mut state)?;
                 self.menus.push(Menu { state: Box::new(state) });
-                Ok(())
+                Ok(true)
             }
             CLEAR =>
             {
+                let changed = !self.menus.is_empty() || self.tracking;
                 self.menus.clear();
                 self.tracking = false;
                 self.active = None;
                 self.highlighted = 0;
-                Ok(())
+                Ok(changed)
             }
             LAYOUT =>
             {
@@ -120,7 +124,7 @@ impl Manager
                     self.menus.iter().find(|m| m.state.menu_id == call.menu_id).ok_or(NOT_FOUND)?;
                 call.title_bounds = menu.state.title_bounds;
                 call.popup_bounds = menu.state.popup_bounds;
-                Ok(())
+                Ok(false)
             }
             SET_ENABLED | SET_CHECKED | COMMAND =>
             {
@@ -134,32 +138,47 @@ impl Manager
                     {
                         call.value = menu.state.item_count;
                         call.command = 0;
-                        return Ok(());
+                        return Ok(false);
                     }
                     if call.operation != SET_ENABLED
                     {
                         return Err(BAD_ARGUMENT);
                     }
-                    menu.state.enabled = u32::from(call.value != 0);
-                    return Ok(());
+                    let enabled = u32::from(call.value != 0);
+                    let changed = menu.state.enabled != enabled;
+                    menu.state.enabled = enabled;
+                    return Ok(changed);
                 }
                 let item = menu.state
                                .items
                                .get_mut(call.item as usize - 1)
                                .filter(|_| call.item <= menu.state.item_count as u16)
                                .ok_or(NOT_FOUND)?;
-                match call.operation
+                let changed = match call.operation
                 {
-                    SET_ENABLED => item.enabled = u32::from(call.value != 0 && item.separator == 0),
-                    SET_CHECKED => item.checked = u32::from(call.value != 0),
+                    SET_ENABLED =>
+                    {
+                        let enabled = u32::from(call.value != 0 && item.separator == 0);
+                        let changed = item.enabled != enabled;
+                        item.enabled = enabled;
+                        changed
+                    }
+                    SET_CHECKED =>
+                    {
+                        let checked = u32::from(call.value != 0);
+                        let changed = item.checked != checked;
+                        item.checked = checked;
+                        changed
+                    }
                     _ =>
                     {
                         call.command = item.command;
                         call.value = u32::from(item.enabled != 0 && menu.state.enabled != 0)
                                      | (u32::from(item.checked != 0) << 1);
+                        false
                     }
                 };
-                Ok(())
+                Ok(changed)
             }
             _ => Err(NOT_SUPPORTED)
         }

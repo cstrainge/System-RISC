@@ -26,7 +26,8 @@ def build():
     subprocess.run(['cargo', 'xtask', 'image'], cwd=ROOT / 'System7', check=True)
 
 
-def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False):
+def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
+           qmp_port=4447):
     """Launch a private disk copy. Tests default to read-only and fresh copies.
 
     Persistent desktop starts retain their writable copy while the build is unchanged.
@@ -34,7 +35,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     """
     state = Path(state).resolve()
     state.mkdir(parents=True, exist_ok=True)
-    native = frontend == 'native'
+    native = frontend in ('native', 'native-headless')
     if native and not native_executable():
         raise FileNotFoundError('Portable qemu-system-riscv64.exe missing; use --frontend gtk')
     shutil.copyfile(DIST / 'bootrom.bin', state / 'bootrom.bin')
@@ -51,16 +52,17 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
         stamp.write_text(base_hash + '\n')
     executable = str(native_executable()) if native else 'qemu-system-riscv64'
     host_path = windows_path if native else str
-    endpoint = ({'transport': 'tcp', 'host': '127.0.0.1', 'port': 4447, 'platform': 'windows'}
+    endpoint = ({'transport': 'tcp', 'host': '127.0.0.1', 'port': qmp_port, 'platform': 'windows'}
                 if native else {'transport': 'unix', 'path': str(state / 'qmp.sock')})
     socket_path = state / 'qmp.sock'
     if not native and socket_path.exists():
         socket_path.unlink()
-    monitor = ('tcp:127.0.0.1:4447,server=on,wait=off' if native
+    monitor = (f'tcp:127.0.0.1:{qmp_port},server=on,wait=off' if native
                else f'unix:{socket_path},server=on,wait=off')
     # GTK keeps host absolute input and the 2x guest viewport in the same space.
     display = {'native': 'gtk,zoom-to-fit=off,scale=2,show-menubar=off',
-               'gtk': 'gtk,zoom-to-fit=off,scale=2', 'headless': 'none'}[frontend]
+               'gtk': 'gtk,zoom-to-fit=off,scale=2', 'headless': 'none',
+               'native-headless': 'none'}[frontend]
     serial = state / 'serial.log'
     serial.write_text('')
     args = [executable, '-name', 'RISCy System - Finder', '-machine', 'virt', '-cpu', 'rv64',

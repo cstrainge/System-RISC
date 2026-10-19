@@ -131,7 +131,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
         browser.prune(system)?;
         if try_action(system, &mut alerts, editor.event(system, event))?.unwrap_or(false)
         {
-            menus::update(system, &browser, &editor)?;
+            menus::update_edit(system, &editor)?;
             continue;
         }
         let _ = try_action(system, &mut alerts, clipboard.refresh(system))?;

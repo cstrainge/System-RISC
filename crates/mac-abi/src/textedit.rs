@@ -22,6 +22,39 @@ pub const COPY: u32 = 18;
 pub const CUT: u32 = 19;
 pub const PASTE: u32 = 20;
 pub const SET_RECTS: u32 = 21;
+/// Native cursor movement; `key` is CursorMovement and `index` is extend (0/1).
+pub const NAVIGATE: u32 = 22;
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorMovement
+{
+    Left          = 0,
+    Right         = 1,
+    Up            = 2,
+    Down          = 3,
+    LineStart     = 4,
+    LineEnd       = 5,
+    DocumentStart = 6,
+    DocumentEnd   = 7
+}
+impl CursorMovement
+{
+    pub const fn from_raw(value: u32) -> Option<Self>
+    {
+        match value
+        {
+            0 => Some(Self::Left),
+            1 => Some(Self::Right),
+            2 => Some(Self::Up),
+            3 => Some(Self::Down),
+            4 => Some(Self::LineStart),
+            5 => Some(Self::LineEnd),
+            6 => Some(Self::DocumentStart),
+            7 => Some(Self::DocumentEnd),
+            _ => None
+        }
+    }
+}
 pub const MAX_BYTES: usize = 32767;
 pub const MAX_EDITORS: usize = 64;
 #[repr(transparent)]
@@ -65,7 +98,8 @@ pub struct TextEditCall
     pub index:        u32,
     pub point:        Point,
     pub delta:        Point,
-    /// Unicode scalar for KEY; 8 backspace, 28..31 cursor directions.
+    /// Unicode scalar for KEY; 8 backspace, 28..31 classic cursor directions.
+    /// CursorMovement discriminant for NAVIGATE.
     pub key:          u32,
     /// Wrapping 60 Hz tick count for IDLE.
     pub ticks:        u32,

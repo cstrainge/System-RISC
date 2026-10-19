@@ -118,7 +118,7 @@ impl Desktop
             return NOT_SUPPORTED;
         };
         let result = self.menus.request(call, resources);
-        if result.is_ok()
+        if matches!(result, Ok(true))
         {
             self.redraw = true;
         }
@@ -637,7 +637,13 @@ impl Desktop
     {
         self.events.observe_input(input, when);
         self.revision = self.revision.wrapping_add(1);
-        self.redraw = true;
+        // Key delivery does not change window pixels. Repainting here stalls
+        // dispatch on an obsolete frame before the application handles the key.
+        // Pointer input can change the cursor, menu or window tracking state.
+        if !matches!(input, Input::Key { .. })
+        {
+            self.redraw = true;
+        }
         if self.dialogs.active()
         {
             self.dialog_input(input, when);

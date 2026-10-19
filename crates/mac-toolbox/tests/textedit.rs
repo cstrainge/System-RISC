@@ -82,3 +82,29 @@ fn frozen_layout_and_edit_oracle_matches_original_capture()
         assert_eq!(row["selection"], serde_json::json!(case.selection));
     }
 }
+
+#[test]
+fn native_navigation_extends_reverses_and_preserves_vertical_column()
+{
+    support::with_system(|system| {
+        assert_eq!(cases::navigation(system).unwrap(), 49);
+    });
+}
+
+#[test]
+fn native_vertical_movement_works_beyond_quickdraw_coordinate_range()
+{
+    support::with_system(|system| {
+        use mac_toolbox::textedit::CursorMovement::{Down, Up};
+        let te = system.textedit();
+        let r = mac_toolbox::Rect::new(0, 0, 100, 100);
+        let id = te.create(r, r).unwrap();
+        te.set_text(id, &"abc\r".repeat(3000)).unwrap();
+        te.select(id, 4 * 2500 + 2, 4 * 2500 + 2).unwrap();
+        let info = te.move_cursor(id, Down, true).unwrap();
+        assert_eq!((info.selection_start, info.selection_end), (10002, 10006));
+        let info = te.move_cursor(id, Up, true).unwrap();
+        assert_eq!((info.selection_start, info.selection_end), (10002, 10002));
+        te.dispose(id).unwrap();
+    });
+}

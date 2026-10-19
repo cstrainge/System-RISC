@@ -209,6 +209,7 @@ pub fn run_all(system: &System<'_>) -> Result<(), Failure>
     events::run(system)?;
     textedit::original(system)?;
     textedit::native(system)?;
+    textedit::navigation(system)?;
     dates::values()?;
     run_core(system)?;
     require(png::run(system)? == 23, "PNG conformance count")?;

@@ -6,11 +6,13 @@ use super::layout;
 
 pub struct Editor
 {
-    text:   String,
-    lines:  Vec<LineInfo>,
-    info:   EditorInfo,
-    anchor: u32,
-    blink:  Option<u32>
+    text:        String,
+    lines:       Vec<LineInfo>,
+    info:        EditorInfo,
+    anchor:      u32,
+    blink:       Option<u32>,
+    preferred_x: Option<i16>,
+    affinity:    Option<usize>
 }
 impl Editor
 {
@@ -30,7 +32,9 @@ impl Editor
                                      line_count: 0,
                                      ..Default::default() },
                   anchor: 0,
-                  blink: None })
+                  blink: None,
+                  preferred_x: None,
+                  affinity: None })
     }
 
     pub fn text(&self) -> &str
@@ -66,6 +70,8 @@ impl Editor
         self.info.revision = self.info.revision.wrapping_add(1);
         self.info.caret_visible = 0;
         self.blink = None;
+        self.preferred_x = None;
+        self.affinity = None;
     }
 
     pub fn select(&mut self, start: u32, end: u32) -> Result<(), Status>
@@ -114,11 +120,13 @@ impl Editor
 
     pub fn prepared_replace(&self, input: &str) -> Result<Self, Status>
     {
-        let mut next = Self { text:   String::new(),
-                              lines:  Vec::new(),
-                              info:   self.info,
-                              anchor: self.anchor,
-                              blink:  self.blink };
+        let mut next = Self { text:        String::new(),
+                              lines:       Vec::new(),
+                              info:        self.info,
+                              anchor:      self.anchor,
+                              blink:       self.blink,
+                              preferred_x: self.preferred_x,
+                              affinity:    self.affinity };
         next.text.try_reserve_exact(self.text.len()).map_err(|_| NO_MEMORY)?;
         next.text.push_str(&self.text);
         next.replace(self.info.selection_start, self.info.selection_end, input)?;
@@ -278,6 +286,114 @@ impl Editor
         }
     }
 
+    fn native_row(&self, at: u32) -> usize
+    {
+        if at as usize == self.text.len() && self.text.ends_with('\r')
+        {
+            return self.lines.len();
+        }
+        self.lines
+            .iter()
+            .position(|line| at < line.end)
+            .unwrap_or(self.lines.len().saturating_sub(1))
+    }
+
+    fn row_bounds(&self, row: usize) -> (u32, u32)
+    {
+        self.lines.get(row).map_or((self.info.text_length, self.info.text_length), |line| {
+                               let end = line.end
+                                         - u32::from(self.text
+                                                         .as_bytes()
+                                                         .get(line.end.saturating_sub(1) as usize)
+                                                     == Some(&b'\r'));
+                               (line.start, end)
+                           })
+    }
+
+    fn native_point(&self, at: u32, row: usize) -> Point
+    {
+        let (start, end) = self.row_bounds(row);
+        Point { h: clamp(i32::from(self.info.dest.left)
+                         + 1
+                         + i32::from(layout::width(&self.text[start as usize
+                                                              ..at.clamp(start, end) as usize]))),
+                v: clamp(i32::from(self.info.dest.top)
+                         + (row as i32 + 1) * i32::from(self.info.line_height)) }
+    }
+
+    fn native_offset(&self, row: usize, horizontal: i16) -> u32
+    {
+        let (start, end) = self.row_bounds(row);
+        let mut x = i32::from(self.info.dest.left) + 1;
+        for (relative, c) in self.text[start as usize..end as usize].char_indices()
+        {
+            let width = i32::from(layout::width(c.encode_utf8(&mut [0; 4])));
+            if i32::from(horizontal) <= x + width / 2
+            {
+                return start + relative as u32;
+            }
+            x += width;
+        }
+        end
+    }
+
+    /// Native navigation keeps a fixed anchor, soft-wrap affinity and desired
+    /// horizontal position across vertical movement. Classic TEKey is separate.
+    pub fn navigate(&mut self, movement: CursorMovement, extend: bool) -> Result<(), Status>
+    {
+        use CursorMovement::*;
+        let start = self.info.selection_start;
+        let end = self.info.selection_end;
+        let focus = if self.anchor == end { start } else { end };
+        let row = self.affinity.unwrap_or_else(|| self.native_row(focus));
+        let mut goal = None;
+        let mut affinity = None;
+        let target = match movement
+        {
+            Left if !extend && start != end => start,
+            Right if !extend && start != end => end,
+            Left =>
+            {
+                self.text[..focus as usize].char_indices().last().map_or(0, |(at, _)| at as u32)
+            }
+            Right =>
+            {
+                focus
+                + self.text[focus as usize..].chars().next().map_or(0, |c| c.len_utf8() as u32)
+            }
+            DocumentStart => 0,
+            DocumentEnd => self.info.text_length,
+            LineStart =>
+            {
+                affinity = Some(row);
+                self.row_bounds(row).0
+            }
+            LineEnd =>
+            {
+                affinity = Some(row);
+                self.row_bounds(row).1
+            }
+            Up | Down =>
+            {
+                let x = self.preferred_x.unwrap_or_else(|| self.native_point(focus, row).h);
+                goal = Some(x);
+                let last = self.lines.len().saturating_sub(usize::from(!self.text.ends_with('\r')));
+                let target_row =
+                    if movement == Up { row.saturating_sub(1) } else { (row + 1).min(last) };
+                affinity = Some(target_row);
+                // Hit the line directly; document row numbers can exceed the
+                // signed16-bit QuickDraw coordinate range before scrolling.
+                self.native_offset(target_row, x)
+            }
+        };
+        let anchor = if extend { self.anchor } else { target };
+        self.select(anchor.min(target), anchor.max(target))?;
+        self.anchor = anchor;
+        self.preferred_x = goal;
+        self.affinity = Some(affinity.unwrap_or_else(|| self.native_row(target)));
+        Ok(())
+    }
+
     pub fn scroll(&mut self, delta: Point) -> Result<(), Status>
     {
         let d = self.info.dest;
@@ -332,7 +448,16 @@ impl Editor
 
     pub fn caret_rect(&self) -> Rect
     {
-        let p = self.point(self.info.selection_end).unwrap_or_default();
+        let focus = if self.anchor == self.info.selection_end
+        {
+            self.info.selection_start
+        }
+        else
+        {
+            self.info.selection_end
+        };
+        let p = self.affinity.map_or_else(|| self.point(focus).unwrap_or_default(),
+                                          |row| self.native_point(focus, row));
         Rect::new(p.h.saturating_sub(1), p.v.saturating_sub(self.info.line_height), p.h, p.v)
     }
 

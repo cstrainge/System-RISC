@@ -4,7 +4,8 @@
 #![forbid(unsafe_code)]
 use mac_abi::{BAD_ARGUMENT, textedit::*};
 pub use mac_abi::{Point, Rect, WindowId,
-                  textedit::{EditorId, EditorInfo, LineInfo, MAX_BYTES, MAX_EDITORS}};
+                  textedit::{CursorMovement, EditorId, EditorInfo, LineInfo, MAX_BYTES,
+                             MAX_EDITORS}};
 pub use mac_traps::{Client, Error, Result};
 #[derive(Clone, Copy)]
 pub struct TextEdit<'a>
@@ -148,6 +149,21 @@ impl<'a> TextEdit<'a>
         Ok(self.request(TextEditCall { id,
                                        operation: KEY,
                                        key: key as u32,
+                                       ..Default::default() },
+                        "",
+                        &mut [])?
+               .info)
+    }
+
+    /// Native movement with an optional fixed selection anchor. Unlike classic
+    /// TEKey, unmodified left/right collapse a selection without an extra step.
+    pub fn move_cursor(self, id: EditorId, movement: CursorMovement, extend: bool)
+                       -> Result<EditorInfo>
+    {
+        Ok(self.request(TextEditCall { id,
+                                       operation: NAVIGATE,
+                                       key: movement as u32,
+                                       index: u32::from(extend),
                                        ..Default::default() },
                         "",
                         &mut [])?

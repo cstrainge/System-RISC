@@ -23,6 +23,14 @@ Original details preserved include:
   is one pixel after the drawing pen, and the vertical coordinate is the line
   bottom. It is deliberately not the inverse of mouse `offset` at a line edge.
 
+Native `move_cursor` adds Left/Right/Up/Down, visual LineStart/LineEnd and
+DocumentStart/DocumentEnd, with an optional fixed selection anchor. Shift moves
+the focus while preserving that anchor, including direction reversal. Vertical
+movement remembers the desired horizontal position across short lines. Wrapped
+line ends keep caret affinity; a trailing CR has a native empty final line.
+Original `key`/TEKey arrow behavior remains unchanged. Finder maps Shift+arrows,
+Home/End, Shift+Home/End, Ctrl+Home/End and Ctrl+Shift+Home/End onto this API.
+
 Native Rust strings contain UTF-8, and native selection/line/point offsets count
 UTF-8 bytes. Every supplied offset must fall on a character boundary. Full
 Unicode storage is supported, while the initial original bitmap strike draws

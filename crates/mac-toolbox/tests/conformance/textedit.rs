@@ -230,3 +230,78 @@ pub fn legacy(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<usize, Fai
     te.dispose(id)?;
     Ok(6)
 }
+
+/// Native editor navigation is intentionally distinct from original TEKey.
+pub fn navigation(system: &System<'_>) -> Result<usize, Failure>
+{
+    use mac_toolbox::textedit::CursorMovement::*;
+    let te = system.textedit();
+    let id = create(system, 100)?;
+    let mut count = 0;
+    macro_rules! movement {
+        ($direction:expr,$extend:expr,$range:expr) => {{
+            let info = te.move_cursor(id, $direction, $extend)?;
+            require((info.selection_start, info.selection_end) == $range, "native cursor/anchor")?;
+            count += 1;
+        }};
+    }
+    te.set_text(id, "abc\rdef\rghi")?;
+    te.select(id, 6, 6)?;
+    movement!(LineStart, false, (4, 4));
+    movement!(LineEnd, false, (7, 7));
+    movement!(LineStart, true, (4, 7));
+    movement!(Right, true, (5, 7));
+    movement!(Right, true, (6, 7));
+    movement!(Right, true, (7, 7));
+    movement!(Right, true, (7, 8));
+    movement!(Left, true, (7, 7));
+    movement!(Left, true, (6, 7));
+    movement!(DocumentStart, false, (0, 0));
+    movement!(Right, false, (1, 1));
+    movement!(Down, true, (1, 5));
+    movement!(Up, true, (1, 1));
+    movement!(DocumentEnd, true, (1, 11));
+    movement!(DocumentStart, true, (0, 1));
+    te.key(id, 'X')?;
+    text(system, id, "Xbc\rdef\rghi")?;
+    te.set_text(id, "Aé水🙂B")?;
+    movement!(Left, false, (10, 10));
+    movement!(Left, true, (6, 10));
+    movement!(Left, true, (3, 10));
+    movement!(Right, true, (6, 10));
+    movement!(DocumentStart, true, (0, 10));
+    movement!(DocumentEnd, true, (10, 11));
+    movement!(Left, false, (10, 10));
+    te.set_text(id, "aaaa\raa\raaaa")?;
+    te.select(id, 3, 3)?;
+    movement!(Down, false, (7, 7));
+    movement!(Down, false, (11, 11));
+    movement!(Up, false, (7, 7));
+    movement!(Up, false, (3, 3));
+    movement!(Down, true, (3, 7));
+    movement!(Down, true, (3, 11));
+    movement!(Up, true, (3, 7));
+    movement!(Up, true, (3, 3));
+    te.set_rects(id, Rect::new(6, 4, 30, 90), Rect::new(6, 4, 106, 90))?;
+    te.set_text(id, "aaaaaa")?;
+    te.select(id, 1, 1)?;
+    movement!(LineEnd, false, (3, 3));
+    movement!(LineStart, false, (0, 0));
+    movement!(LineEnd, false, (3, 3));
+    movement!(LineStart, true, (0, 3));
+    movement!(LineEnd, true, (3, 3));
+    movement!(Down, false, (6, 6));
+    movement!(LineStart, false, (3, 3));
+    te.set_text(id, "ab\r")?;
+    movement!(LineStart, false, (3, 3));
+    movement!(LineEnd, false, (3, 3));
+    movement!(Up, false, (0, 0));
+    movement!(Down, false, (3, 3));
+    te.set_text(id, "")?;
+    for direction in [Left, Right, Up, Down, LineStart, LineEnd, DocumentStart, DocumentEnd]
+    {
+        movement!(direction, true, (0, 0));
+    }
+    te.dispose(id)?;
+    Ok(count)
+}

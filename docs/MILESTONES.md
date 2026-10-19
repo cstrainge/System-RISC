@@ -1,5 +1,22 @@
 # Verified milestones
 
+## Responsive typing and native navigation
+
+Finder's text-edit path updates Edit-menu policy without synchronous browser or
+Trash queries. Key releases stay on this path. Resident menu getters and
+idempotent enabled/checked writes leave the compositor clean, and keyboard
+arrival no longer forces a stale-screen repaint before event delivery.
+
+The thin TextEdit SDK adds native anchored cursor movement, with Shift+arrows,
+Home/End and their Shift/Ctrl combinations in Finder. Original TEKey semantics
+remain separately tested. Shared host/RV64 coverage adds49 navigation cases;
+private Finder input tests exercise23 physical chord/selection sequences and a
+20-character burst. The live profiling fixture verifies zero filesystem calls
+while handling text keyDown/keyUp pairs. See [input performance](INPUT-PERFORMANCE.md)
+for measured costs and reproduction details. Validation includes the full
+`cargo xtask check` gate, host/RV64 Clippy with warnings denied, and the same
+canonical typing/selection assertions on headless Windows QEMU.
+
 ## Monochrome TextEdit — ABI5 service extension
 
 TEXTEDIT and its paired Pascal conversion trap add a resident editor behind the

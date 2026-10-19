@@ -28,6 +28,28 @@ pub fn install(system: &System<'_>) -> Result<(), Status>
 pub fn update(system: &System<'_>, browser: &Browser, editor: &crate::textedit_demo::Editor)
               -> Result<(), Status>
 {
+    update_edit(system, editor)?;
+    let menus = system.menus();
+    let editing = editor.active(system);
+    for (id, item, enabled) in
+        [(1252, 1, browser.can_new_folder(system)),
+         (1252, 2, browser.can_open(system)),
+         (1252, 4, system.window(0).is_ok()),
+         (1252, 10, browser.can_put_away(system)),
+         (1253, 6, if editing { editor.selected(system) } else { browser.can_trash(system) }),
+         (1253, 9, true),
+         (1255, 2, browser.trash_count(system)? > 0)]
+    {
+        menus.set_item_enabled(id, item, enabled).map_err(|e| e.0)?;
+    }
+    Ok(())
+}
+
+/// Text edits do not change the filesystem or folder selection. Keep their
+/// menu updates independent of disk-backed browser and Trash policy.
+pub fn update_edit(system: &System<'_>, editor: &crate::textedit_demo::Editor)
+                   -> Result<(), Status>
+{
     let menus = system.menus();
     let editing = editor.active(system);
     let selected = editor.selected(system);
@@ -42,20 +64,13 @@ pub fn update(system: &System<'_>, browser: &Browser, editor: &crate::textedit_d
                                                                        })
                                                              })
                                         });
-    for (id, item, enabled) in
-        [(1252, 1, browser.can_new_folder(system)),
-         (1252, 2, browser.can_open(system)),
-         (1252, 4, system.window(0).is_ok()),
-         (1252, 10, browser.can_put_away(system)),
-         (1253, 3, selected),
-         (1253, 4, selected),
-         (1253, 5, paste),
-         (1253, 6, if editing { selected } else { browser.can_trash(system) }),
-         (1253, 7, editing),
-         (1253, 9, true),
-         (1255, 2, browser.trash_count(system)? > 0)]
+    for (item, enabled) in [(3, selected), (4, selected), (5, paste), (7, editing)]
     {
-        menus.set_item_enabled(id, item, enabled).map_err(|e| e.0)?;
+        menus.set_item_enabled(1253, item, enabled).map_err(|e| e.0)?;
+    }
+    if editing
+    {
+        menus.set_item_enabled(1253, 6, selected).map_err(|e| e.0)?;
     }
     Ok(())
 }
