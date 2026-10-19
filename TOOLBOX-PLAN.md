@@ -5,10 +5,10 @@ the public Rust SDK. It covers the remaining managers as well as unfinished
 contracts in existing managers. It does not describe a complete Macintosh OS,
 complete Finder, or a working general-purpose 68k application translator.
 
-The first implementation slice is the **Memory Manager**, driven by new original
-Mac probes. Memory implementation and the aggregate test harness are separate
-work streams. This document is an inventory and dependency plan; proposed APIs,
-fixtures and milestones below are not claims of implemented functionality.
+The Memory Manager foundation and aggregate host/RV64 harness are established.
+The current slice extends Events and adds Scrap, using original Mac probes and
+public SDK contracts. This remains an inventory and dependency plan: entries in
+the remaining-work column and milestone exit criteria are not completion claims.
 
 ## Compatibility profiles
 
@@ -21,7 +21,7 @@ not establish that an API exists in the installed reference system.
 | Machine | Existing isolated QEMU `q800`, `m68040`, 128 MiB, pinned Quadra-650 ROM; exact launch command in `working/quickdraw-reference/command.json` | QEMU `virt`, RV64IMAC, one hart, 128 MiB; the actual platform backends and capability bits |
 | Display | One 640×480 indexed-eight-bit screen with captured CLUT/gamma projection; separate original 32-bit GWorld cases where appropriate | One 640×480 RGB32 framebuffer; explicit original-device presentation profile where required, not an assumed gamma formula |
 | Input/text | Pinned US keyboard map, Roman script/Mac Roman resources and original installed fonts; record VM/extensions, original mouse/event semantics | Virtio keyboard and absolute tablet, Mac event codes; host Ctrl-to-Command mapping is a documented host adapter |
-| Storage | Disposable clone of the reference HFS disk; record blessing, Finder metadata, forks and installed resource files | Read-only mounted classic HFS, native block callbacks, generated 500 MiB boot image; no implied HFS write support |
+| Storage | Disposable clone of the reference HFS disk; record blessing, Finder metadata, forks and installed resource files | Mounted classic HFS, native read/write/flush callbacks and a generated 500 MiB boot image; bounded transactional catalog/Trash writes, with general fork writes still absent |
 | Execution | Actual original 68k manager calls and original application-defined procedures | One foreground native application today; native definition resources use the public SDK; no general 68k execution |
 | Unavailable devices | Record the actual reference device/extension capabilities, rather than assuming them | No general sound, printer, network, serial, ADB/NuBus/SCSI or power-management API promised by the initial machine profile |
 
@@ -142,33 +142,32 @@ unimplemented and excluded portions of the target inventory.
 
 ## Current inventory and remaining work
 
-This survey was taken at the start of the Memory Manager work on 2026-10-18.
-Source is changing in parallel; the linked ledgers and generated reports retain
-more precise evidence boundaries. In particular, the Memory namespace inspected
-here was a scaffold and must not be described as finished while its first slice
-is being built.
+Updated after the resource menus/Trash milestone and during the Events/Scrap
+slice. Linked ledgers and current verification reports define the accepted
+profile; this inventory distinguishes the implemented foundation from each
+manager's remaining contracts.
 
 | Area | Present foundation | Remaining application-visible contracts |
 | --- | --- | --- |
-| Memory | System allocator; empty public manager namespace at survey time | Pointer/handle lifecycle, resize/clear/copy, state bits, locks, relocation, purge/compact/pressure, zones, grow/purge procedures, temporary/system heaps, queries and errors |
+| Memory | Resident pointer/handle lifecycle, resize/clear/copy, state/lock operations, bounded native allocation and public host/RV64 conformance | Classic address/zone/master-pointer ABI, relocation, purge/compact/controlled pressure, zones, grow/purge procedures, temporary/system heaps and further queries/errors |
 | Virtual memory/cache utilities | No application VM/MMU compatibility service | Hold/lock/logical-to-physical/cache operations and feature queries; explicitly pin original VM state. Native shared-address M-mode execution is not protected memory or a VM Manager. Add a separate backend/profile when these contracts are implemented. |
 | Resources | Shared read-only application→System/font search; names/IDs, enumeration, attributes, partial reads, pinned load/release | Resource-file lifecycle/current file/search-chain mutation; resource handles, loading/purging/detach; add/change/remove/write/update; failure and file/heap interactions |
 | QuickDraw | Stateful shapes, regions, polygons, Boolean bitmaps, masks/scroll/fill helpers, direct-RGB worlds, retained replay | Complete port/recording lifecycle, custom grafProcs, text state, coordinate extremes, indexed conversions, PixPat, arithmetic/hilite/dither modes, full masks/damage/GWorld options and handle semantics |
 | Color/Palette/Display | RGB rasterization and measured original palette presentation | RGB16 precision, Color2Index/Index2Color, search/complement procedures, GDevice lists/depth/DeviceLoop, gamma, CLUT ownership, Palette Manager reservation/animation and multiple devices |
 | Fonts/QuickDraw text | Original bitmap and sfnt resources, family associations, metrics, native hint-aware drawing | Remaining scaler/style pixel differences, fractional widths/spacing/kerning, policy and fallback, font-cache memory behavior, complete original text procedures and callback semantics |
 | Scripts/text utilities | Mac Roman conversion in existing paths | Script Manager, international resources, word/line boundaries, collation/case, number/date formatting, keyboard layout switching, non-Roman scripts, Text Services/input methods and dictionary services |
-| Events/time input | Resident queue, masks/peek, activation/update input, key mapping and ticks; thin next-event API | Full public posting/peeking/flushing, key maps, double-click/caret policy, WaitNextEvent sleep/mouse regions, suspend/resume, event ownership, high-level events and timer/task interactions |
+| Events/time input | Separate native128 and original-profile OS20 queues; public post/peek/get/flush/masks, physical key/mouse/button state and60-Hz ticks | Double-click/caret policy, WaitNextEvent sleep/mouse regions, suspend/resume, per-app event ownership, high-level events, timer/task interactions and expanded classic A-line adapters |
 | Windows | Standard loaded WDEF0 variations, z order versus active focus, tracking, damage/exposure and retained content | Broader lifecycle/query/hilite/visibility/refcon/behind semantics, Window Manager port/regions, custom WDEF contracts, picture/color windows and classic records |
 | Controls | Loaded button CDEF0 and scrollbar CDEF1, typed scrollbar draw/hit/value tracking | General control objects/lists, lifecycle, bounds/value/range/refcon/title, check/radio/popup/user controls, keyboard focus, action procedures, resource creation and complete tracking semantics |
 | Menus | Resource-installed MENU/fmnu objects, loaded native MDEF0 layout/drawing/hit, enable/check state, captured pointer tracking and keyboard command routing through the public SDK | Dynamic insertion/deletion, all item icons/marks/styles, arbitrary MDEF lifecycle, hierarchical/scrolling/pop-up variants, original flashing, per-app menu ownership and classic trap adaptation |
 | Lists | No List Manager public service | Cells/data/selection/scrolling, LDEF, click/double-click, drawing modes, resource/procedure lifetimes and control integration |
 | TextEdit | No public manager | Mono/styled edit records, classic text limits, CR handling, selection/caret/hit testing, line layout/scroll, edit operations, style scraps, hooks and drawing/activation integration |
-| Scrap | No public manager | Multiple scrap flavors, clear/append/read, private/system scrap conversion, memory/disk state, suspend/resume and TextEdit/dialog clipboard behavior |
-| Dialogs/alerts | Extracted visual resources; public namespace scaffold | DLOG/DITL/ALRT creation, item state/text, editable/static/user items, defaults/cancel/tab focus, modal/modeless filters, events, alert stages/sounds and disposal |
-| Files | Mounted HFS volumes, catalog/CNID/path operations, read-only data/resource forks, seek/close | Create/delete/rename/move, write/truncate/extend, allocation/extents/catalog persistence, metadata/locks/permissions, flush/unmount/eject, working directories, async parameter blocks and exact failures |
+| Scrap | Resident shared memory clipboard with clear/append/first-match reads, ordered binary flavors, Rust UTF8 text and paired Pascal conversion trap | Disk-backed Scrap.dat, original counted-MacRoman A-line adapter, process suspend/resume, private scrap conversion and TextEdit/dialog clipboard integration |
+| Dialogs/alerts | Resource-backed ALRT/DITL alerts, static substitutions/icons/buttons, modal pointer tracking/default/cancel and focus restoration through public SDK | General DLOG lifecycle, item mutation, editable/user items, tab focus, modal/modeless filters, alert stages/sounds and broader classic records |
+| Files | Mounted HFS volumes, catalog/CNID/path and read-only fork reads, bounded persistent create-folder/move/rename/delete/Trash and Finder metadata, block flush/rollback | General file creation, fork write/truncate/extend, catalog/extents growth, crash recovery, full metadata/lock policy, unmount/eject, working directories and async parameter blocks |
 | Aliases/Standard File | No public managers | Alias records/resolution/update under move/rename; original open/save dialogs, filters/hooks, replies, directory selection and resource ownership |
-| Disk tools | Host image builder and guest read path | Writable block contract, disk initialization/verification, partition/volume operations, formatting/blessing and a native disk utility using the SDK |
-| Desktop/Finder services | Application-owned retained desktop layer; real read-only volume/folder browser | Desktop Manager database versus compositor distinction; file associations/comments/icon caches, saved Finder state, writable desktop metadata, drag/drop, alias/application/document launch and integration |
+| Disk tools | Host image builder and guest read/write/flush block callbacks | Disk initialization/verification, partition/volume operations, formatting/blessing and a native disk utility using the SDK |
+| Desktop/Finder services | Retained desktop layer, mounted-volume/folder browser, persisted icon/window metadata, resource menus and working persistent Trash | Desktop Manager database versus compositor distinction; file associations/comments/icon caches, full drag/drop, aliases, application/document launch and broader saved-state contracts |
 | Processes/segments | Boot loader starts one native Finder; loaded native definition resources | Process identity/partitions, cooperative scheduling, foreground/background ownership, launch/quit/document parameters, suspend/resume, desk accessories, segment/code-resource lifecycle and cleanup |
 | Apple events/IPC | No public manager | Descriptor ownership/coercion, handlers, core open/print/quit events, sending/replies/timeouts, object model, PPC/interapplication services and Edition Manager |
 | Utilities | Geometry helpers and narrow classic trap dispatch | Gestalt truthfulness, fixed/fract/SANE/decimal/bit/string utilities, queues, date/time/measurement, PRAM/settings, packages, shutdown/restart, system errors and trap-table APIs |
@@ -186,6 +185,13 @@ coverage detail: [QuickDraw](../analysis/quickdraw-coverage.md),
 [File Manager](system/src/toolbox/files/README.md), and
 [architecture/classic adapter](ARCHITECTURE.md).
 
+The next tranche is mono TextEdit: original line layout, hit/selection, caret,
+CR text and edit/Scrap operations through the same public test harness. Editable
+dialog items can then use that service. Resource-file/handle lifecycle and native
+control objects remain separate prerequisites for broader applications; general
+fork writes precede Standard File and persistent preferences. Scheduler and
+per-app ownership work stays on the THREADING.md gates throughout.
+
 ## Dependency milestones and exit criteria
 
 These are dependency milestones, not calendar estimates. Independent branches
@@ -195,7 +201,7 @@ The current raster/UI prototypes need not be discarded while foundations mature.
 | Milestone | Depends on | Deliverable and exit criteria |
 | --- | --- | --- |
 | **M0 — Oracle and aggregate harness** | Current boot/service gate | Freeze profiles; capture manifests and feature ledger; public SDK host/RV64 harness works; migrate the existing accepted comparisons below. Reports distinguish missing, partial, platform-excluded and passed contracts. Runs do not alter the user's visible VM or original golden disk. |
-| **M1 — Memory Manager, first active slice** | M0 acceptance seam | Original probes and public SDK tests for pointer/handle basics, clear/resize/data preservation, flags/locking, errors and copies pass on host and RV64. Then controlled pressure, relocation/purge/compact, zones and callbacks in separately captured sub-slices. No full-Memory claim after allocation basics alone. |
+| **M1 — Memory Manager foundation** | M0 acceptance seam | Original probes and public SDK tests for pointer/handle basics, clear/resize/data preservation, flags/locking, errors and copies pass on host and RV64. Then controlled pressure, relocation/purge/compact, zones and callbacks in separately captured sub-slices. No full-Memory claim after allocation basics alone. |
 | **M2 — Resource ownership and procedure contracts** | M1 basics; existing fork reads | Real resource-file/chain lifecycle, current-file behavior, resource handle loading/pinning/purge/detach and memory interaction; native callback/definition lifetime rules. Mutable resource writes wait for M7. Custom definitions run through SDK callbacks with tested nesting/errors. |
 | **M3 — Events, clocks and core utilities** | M0; M1 where objects/tasks allocate | Queue ordering/filtering/removal, event state, sleep/wake and controlled ticks; fixed/fract/date/epoch/queue/Gestalt basics. Timer/deferred/notification ownership expands with M9. Exact event traces and errors pass through the SDK before UI relies on them. |
 | **M4 — Graphics, color, fonts and Roman text contracts** | M1–M3 as applicable | Finish port/recording/bitmap/device/color/font obligations; resolve recorded glyph/style differences and text state. Add Roman Script/Text Utilities primitives needed by editors. Exact accepted pixels, record bytes, widths and callbacks pass in indexed and direct-color profiles. Non-Roman coverage is a named follow-on profile, not an implicit success. |

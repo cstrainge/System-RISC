@@ -1,0 +1,266 @@
+[
+  {
+    "case": "empty",
+    "pixels": "empty.rgb",
+    "sha256": "69308090ac18533f49f5e48e618b194633517c023f7cb8775a40c550b208cba3",
+    "format": "RGB8 rowmajor",
+    "width": 427,
+    "height": 117,
+    "crop": {
+      "left": 3,
+      "top": 359,
+      "right": 430,
+      "bottom": 476
+    },
+    "regions": {
+      "structure": {
+        "left": 3,
+        "top": 359,
+        "right": 430,
+        "bottom": 476
+      },
+      "content": {
+        "left": 4,
+        "top": 378,
+        "right": 428,
+        "bottom": 474
+      }
+    },
+    "port_rect": [
+      0,
+      0,
+      96,
+      424
+    ],
+    "port_font": 1,
+    "port_face": 0,
+    "port_text_mode": 1,
+    "port_text_size": 9,
+    "controls": [
+      {
+        "rect": {
+          "left": 409,
+          "top": 19,
+          "right": 425,
+          "bottom": 82
+        },
+        "visible": true,
+        "hilite": 0,
+        "value": 0,
+        "min": 0,
+        "max": 0
+      },
+      {
+        "rect": {
+          "left": -1,
+          "top": 81,
+          "right": 410,
+          "bottom": 97
+        },
+        "visible": true,
+        "hilite": 0,
+        "value": 0,
+        "min": 0,
+        "max": 0
+      }
+    ],
+    "header_label": "Clipboard contents:  none",
+    "header_text_origin": {
+      "x": 5,
+      "baseline": 14
+    },
+    "body_text": "",
+    "body_text_origin": {
+      "x": 5,
+      "baseline": 33
+    },
+    "header_value_origin": {
+      "x": 99,
+      "baseline": 14
+    },
+    "text_geometry_evidence": {
+      "header_baseline": {
+        "source": "Frozen original empty Clipboard CGrafPort.pnLoc.v at window+48",
+        "empty_window_address": "0x07f6e4b0",
+        "empty_pnLoc": {
+          "v": 14,
+          "h": 119
+        },
+        "original_baseline": 14
+      },
+      "this_window_final_pen": {
+        "v": 14,
+        "h": 119
+      },
+      "value_spacing": {
+        "source": "Original fvew10501/10502 separate prefix/value rectangles with one pixel text inset",
+        "prefix_left": 4,
+        "prefix_right": 98,
+        "value_left": 98,
+        "text_inset": 1,
+        "value_text_x": 99
+      },
+      "body_first_baseline": {
+        "source": "Original FONT393 ascent10 and glyph b ink rows3..9, hence ink top = baseline-7; screenshot b ink topglobal404 givesglobalbaseline411/local33",
+        "font_resource_type": "FONT",
+        "font_resource_id": 393,
+        "font_sha256": "b2bbba4a4cd1e78320c6a4256bd5d08e01326349804905a1e5d577521f03c754",
+        "font_header_13_i16": [
+          -28672,
+          0,
+          217,
+          10,
+          0,
+          -10,
+          10,
+          12,
+          849,
+          10,
+          2,
+          0,
+          52
+        ],
+        "glyph_b_ink_y_min_relative_baseline": -7,
+        "glyph_b_ink_y_max_relative_baseline": -1,
+        "screenshot_b_ink_y_min_global": 404,
+        "original_baseline": 33
+      },
+      "limits": [
+        "Only first-line baseline and resource view spacing established; final text pen47 alone does not establish multiline lineheight.",
+        "Earlier baseline13/32 metadata inferred from glyph bottom was offbyone; PNG/RGB files are unchanged."
+      ]
+    }
+  },
+  {
+    "case": "text-abc",
+    "pixels": "text-abc.rgb",
+    "sha256": "b399eb3590b415750e1cddc851f637c6e4e4fdcde70847a586d35b47ada06311",
+    "format": "RGB8 rowmajor",
+    "width": 427,
+    "height": 117,
+    "crop": {
+      "left": 3,
+      "top": 359,
+      "right": 430,
+      "bottom": 476
+    },
+    "regions": {
+      "structure": {
+        "left": 3,
+        "top": 359,
+        "right": 430,
+        "bottom": 476
+      },
+      "content": {
+        "left": 4,
+        "top": 378,
+        "right": 428,
+        "bottom": 474
+      }
+    },
+    "port_rect": [
+      0,
+      0,
+      96,
+      424
+    ],
+    "port_font": 1,
+    "port_face": 0,
+    "port_text_mode": 1,
+    "port_text_size": 9,
+    "controls": [
+      {
+        "rect": {
+          "left": 409,
+          "top": 19,
+          "right": 425,
+          "bottom": 82
+        },
+        "visible": true,
+        "hilite": 0,
+        "value": 0,
+        "min": 0,
+        "max": 0
+      },
+      {
+        "rect": {
+          "left": -1,
+          "top": 81,
+          "right": 410,
+          "bottom": 97
+        },
+        "visible": true,
+        "hilite": 0,
+        "value": 0,
+        "min": 0,
+        "max": 0
+      }
+    ],
+    "header_label": "Clipboard contents:  text",
+    "header_text_origin": {
+      "x": 5,
+      "baseline": 14
+    },
+    "body_text": "abc",
+    "body_text_origin": {
+      "x": 5,
+      "baseline": 33
+    },
+    "header_value_origin": {
+      "x": 99,
+      "baseline": 14
+    },
+    "text_geometry_evidence": {
+      "header_baseline": {
+        "source": "Frozen original empty Clipboard CGrafPort.pnLoc.v at window+48",
+        "empty_window_address": "0x07f6e4b0",
+        "empty_pnLoc": {
+          "v": 14,
+          "h": 119
+        },
+        "original_baseline": 14
+      },
+      "this_window_final_pen": {
+        "v": 47,
+        "h": 5
+      },
+      "value_spacing": {
+        "source": "Original fvew10501/10502 separate prefix/value rectangles with one pixel text inset",
+        "prefix_left": 4,
+        "prefix_right": 98,
+        "value_left": 98,
+        "text_inset": 1,
+        "value_text_x": 99
+      },
+      "body_first_baseline": {
+        "source": "Original FONT393 ascent10 and glyph b ink rows3..9, hence ink top = baseline-7; screenshot b ink topglobal404 givesglobalbaseline411/local33",
+        "font_resource_type": "FONT",
+        "font_resource_id": 393,
+        "font_sha256": "b2bbba4a4cd1e78320c6a4256bd5d08e01326349804905a1e5d577521f03c754",
+        "font_header_13_i16": [
+          -28672,
+          0,
+          217,
+          10,
+          0,
+          -10,
+          10,
+          12,
+          849,
+          10,
+          2,
+          0,
+          52
+        ],
+        "glyph_b_ink_y_min_relative_baseline": -7,
+        "glyph_b_ink_y_max_relative_baseline": -1,
+        "screenshot_b_ink_y_min_global": 404,
+        "original_baseline": 33
+      },
+      "limits": [
+        "Only first-line baseline and resource view spacing established; final text pen47 alone does not establish multiline lineheight.",
+        "Earlier baseline13/32 metadata inferred from glyph bottom was offbyone; PNG/RGB files are unchanged."
+      ]
+    }
+  }
+]

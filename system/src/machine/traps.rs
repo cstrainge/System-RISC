@@ -144,6 +144,18 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 toolbox::files::native::dispatch(files, pointer, size)
             }).unwrap_or_else(|error| error.status() as i64)
         }
+        EVENTS =>
+        {
+            let call = read_request!(events::EventCall);
+            crate::kernel::with_desktop(|runtime| runtime.event_service(call))
+                .unwrap_or_else(|error| error.status()) as i64
+        }
+        SCRAP =>
+        {
+            crate::kernel::with_scrap(|manager| unsafe {
+                toolbox::scrap::native::dispatch(manager, number, pointer, size)
+            }).unwrap_or_else(|error| error.status() as i64)
+        }
         MEMORY =>
         {
             crate::kernel::with_memory(|manager| unsafe {

@@ -25,4 +25,168 @@ impl<'a> Events<'a>
     {
         self.client.next_event(mask)
     }
+
+    /// Post to the native application queue consumed by `next_event`.
+    /// This queue retains 128 events and drops its oldest event on overflow.
+    /// It is a native service, separate from the classic OS-level queue.
+    pub fn post(self, event: Event) -> Result<()>
+    {
+        self.call(EventCall { operation: NATIVE_POST,
+                              event,
+                              ..Default::default() })
+            .map(|_| ())
+    }
+
+    /// Inspect the native queue without removing its first matching event.
+    pub fn peek(self, mask: u16) -> Result<Option<Event>>
+    {
+        self.selected(NATIVE_PEEK, mask)
+    }
+
+    /// Remove matching native queued events before the first stop-mask event.
+    pub fn flush(self, mask: u16, stop_mask: u16) -> Result<()>
+    {
+        self.call(EventCall { operation: NATIVE_FLUSH,
+                              mask,
+                              stop_mask,
+                              ..Default::default() })
+            .map(|_| ())
+    }
+
+    /// Post a kind and message to the classic low-level OS event queue.
+    /// Time, position and modifiers come from current physical input state.
+    pub fn os_post(self, kind: EventKind, message: u32) -> Result<()>
+    {
+        self.call(EventCall { operation: OS_POST,
+                              event: Event { kind,
+                                             message,
+                                             ..Default::default() },
+                              ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn os_peek(self, mask: u16) -> Result<Option<Event>>
+    {
+        self.selected(OS_PEEK, mask)
+    }
+
+    pub fn os_get(self, mask: u16) -> Result<Option<Event>>
+    {
+        self.selected(OS_GET, mask)
+    }
+
+    /// Low-level polling keeps the complete null record when no event matches.
+    /// A queued event with kindNull still reports `available = true`.
+    pub fn os_event(self, mask: u16, remove: bool) -> Result<EventRead>
+    {
+        let call = self.call(EventCall { operation: if remove { OS_GET } else { OS_PEEK },
+                                         mask,
+                                         ..Default::default() })?;
+        Ok(EventRead { available: call.present != 0,
+                       event:     call.event })
+    }
+
+    pub fn os_flush(self, mask: u16, stop_mask: u16) -> Result<()>
+    {
+        self.call(EventCall { operation: OS_FLUSH,
+                              mask,
+                              stop_mask,
+                              ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn set_os_mask(self, mask: u16) -> Result<()>
+    {
+        self.call(EventCall { operation: OS_SET_MASK,
+                              mask,
+                              ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn os_mask(self) -> Result<u16>
+    {
+        self.call(EventCall { operation: OS_GET_MASK,
+                              ..Default::default() })
+            .map(|call| call.mask)
+    }
+
+    pub fn input_state(self) -> Result<InputState>
+    {
+        let call = self.call(EventCall { operation: INPUT_STATE,
+                                         ..Default::default() })?;
+        Ok(InputState { mouse:        call.event.where_,
+                        modifiers:    call.event.modifiers,
+                        keys:         call.keys,
+                        ticks:        call.ticks,
+                        uptime_ticks: call.uptime_ticks })
+    }
+
+    pub fn keys(self) -> Result<KeyMap>
+    {
+        self.input_state().map(|state| state.keys)
+    }
+
+    pub fn mouse(self) -> Result<Point>
+    {
+        self.input_state().map(|state| state.mouse)
+    }
+
+    pub fn button(self) -> Result<bool>
+    {
+        self.input_state().map(|state| state.modifiers & BTN_STATE == 0)
+    }
+
+    /// Inspect the first queued low-level mouse event without removing it.
+    /// A released physical button always reports false. While it is held, the
+    /// first queued mouse-up reports false; a mouse-down or no mouse event
+    /// reports true.
+    pub fn still_down(self) -> Result<bool>
+    {
+        self.call(EventCall { operation: OS_STILL_DOWN,
+                              ..Default::default() })
+            .map(|call| call.present != 0)
+    }
+
+    pub fn ticks(self) -> Result<u32>
+    {
+        self.input_state().map(|state| state.ticks)
+    }
+
+    pub fn uptime_ticks(self) -> Result<u64>
+    {
+        self.input_state().map(|state| state.uptime_ticks)
+    }
+
+    fn selected(self, operation: u32, mask: u16) -> Result<Option<Event>>
+    {
+        let call = self.call(EventCall { operation,
+                                         mask,
+                                         ..Default::default() })?;
+        Ok(if call.present != 0 { Some(call.event) } else { None })
+    }
+
+    fn call(self, mut call: EventCall) -> Result<EventCall>
+    {
+        self.client.event(&mut call)?;
+        Ok(call)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputState
+{
+    /// Global screen coordinates, independent of the current graphics port.
+    pub mouse:        Point,
+    pub modifiers:    u16,
+    pub keys:         KeyMap,
+    pub ticks:        u32,
+    /// Native extension: nonwrapping 60 Hz ticks, independent of the wall clock.
+    pub uptime_ticks: u64
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventRead
+{
+    pub available: bool,
+    pub event:     Event
 }

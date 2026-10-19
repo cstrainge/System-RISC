@@ -26,6 +26,7 @@ pub const DIRECTORY_NOT_EMPTY: Status = -15;
 pub mod dates;
 pub mod geometry;
 pub mod events;
+pub mod scrap;
 pub mod menus;
 pub mod memory;
 pub mod images;

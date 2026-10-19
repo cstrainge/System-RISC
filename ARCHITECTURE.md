@@ -36,13 +36,17 @@ audit, synchronization rules and scheduler/application-thread exit criteria.
 ## Resident implementation
 
 `system/src/toolbox` contains QuickDraw, windows, controls, events, resources,
-files, menus, dialogs and memory modules. The implemented managers own the
+files, menus, dialogs, memory and scrap modules. The implemented managers own the
 rasterizer, bitmap/TrueType font manager, window state, retained drawing lists,
 offscreen worlds, cursors, icon and PICT decoders, event queue and shared read-only
 resource search, HFS catalog/Trash mutations and bounded handle Memory Manager.
 The resident Menu Manager tracks resource-defined menus and invokes MDEF0 for
 sizing, drawing and hits. The initial Dialog Manager interprets ALRT/DITL and
-calls WDEF1/CDEF0, with modal input routing. Full classic managers remain incomplete.
+calls WDEF1/CDEF0, with modal input routing. The shared Scrap Manager owns bounded
+binary-flavor records and native UTF8 text behind a separate nonwaiting guard.
+The Event Manager separates its128-entry native application queue from the
+captured20-entry low-level OS queue; physical input state is observed before
+window/menu/dialog routing. Full classic managers remain incomplete.
 
 The Window Manager controls lifecycle, z-order, exposure and interaction. Each
 loaded WDEF supplies its own frame drawing, hit testing and geometry. The

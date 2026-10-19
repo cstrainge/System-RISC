@@ -14,6 +14,7 @@ mod resources
 }
 
 mod ui;
+mod clipboard;
 mod menus;
 mod browser;
 mod icon_view;
@@ -83,6 +84,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
     menus::update(system, &browser)?;
     let mut demo = 0;
     let mut about_id = 0;
+    let mut clipboard = clipboard::Viewer::default();
     let mut demo_page = 0;
     let mut icon_offset = 0u32;
     for _ in 0..32
@@ -107,6 +109,10 @@ fn finder(system: &System<'_>) -> Result<(), Status>
             if alerts.window == 0
             {
                 browser.redraw_all(system)?;
+                if clipboard.window != 0
+                {
+                    let _ = try_action(system, &mut alerts, clipboard.draw(system))?;
+                }
                 menus::update(system, &browser)?;
             }
             if confirm
@@ -117,6 +123,20 @@ fn finder(system: &System<'_>) -> Result<(), Status>
             continue;
         }
         browser.prune(system)?;
+        let _ = try_action(system, &mut alerts, clipboard.refresh(system))?;
+        if alerts.window != 0
+        {
+            continue;
+        }
+        if try_action(system, &mut alerts, clipboard.event(system, event))?.unwrap_or(false)
+        {
+            menus::update(system, &browser)?;
+            continue;
+        }
+        if alerts.window != 0
+        {
+            continue;
+        }
         let _ = try_action(system, &mut alerts, browser.track(system, event))?;
         if alerts.window != 0
         {
@@ -146,6 +166,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                 menus::CLEAR => browser.trash_selection(system),
                 menus::EMPTY => alerts.confirm_empty(system, &browser),
                 menus::ABOUT => open_about(system, &mut about_id),
+                menus::SHOW_CLIPBOARD => clipboard.open(system),
                 _ => Ok(())
             };
             let _ = try_action(system, &mut alerts, action)?;

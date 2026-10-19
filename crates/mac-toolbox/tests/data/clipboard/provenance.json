@@ -1,0 +1,219 @@
+{
+  "target": "Original Mac OS7.6.1 Finder Show Clipboard",
+  "captures": [
+    {
+      "case": "empty",
+      "seed_binary": {
+        "path": "build/events-scrap-reference-68k/ClipboardEmpty.bin",
+        "length": 17280,
+        "sha256": "248d4430dcd9721f75ac99324ae4238b7c83ccb392046402a2b15a25f07aba9c"
+      },
+      "screenshot": {
+        "path": "results/clipboard-reference/empty-clipboard.png",
+        "length": 6540,
+        "sha256": "41e974dade5fb7ca70ac443cc3dc2034265516837cb3c84c2e5acdcf8b437268"
+      },
+      "menu": {
+        "path": "results/clipboard-reference/empty-edit-menu.png",
+        "length": 7007,
+        "sha256": "574b7090367bc6aa9044efc046bda6e0606f620d7c3c9ce9e0ee1744e59c8d27"
+      },
+      "runtime_ram": {
+        "path": "working/clipboard-reference/empty-ram.bin",
+        "length": 134217728,
+        "sha256": "2ba4f65a340591080000d6b50d1bca0969855cc529af289b5b1c451148c8dd3b"
+      },
+      "system": {
+        "path": "working/clipboard-reference/System.bin",
+        "length": 5667584,
+        "sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea"
+      },
+      "finder": {
+        "path": "working/clipboard-reference/Finder.bin",
+        "length": 515200,
+        "sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f"
+      }
+    },
+    {
+      "case": "text-abc",
+      "seed_binary": {
+        "path": "build/events-scrap-reference-68k/ClipboardSeed.bin",
+        "length": 17280,
+        "sha256": "4d05ea943989f5f0a7f3eb1363d7a4b0ababccd698c27ad4e47ed74603e52c75"
+      },
+      "screenshot": {
+        "path": "results/clipboard-reference/text-abc-clipboard.png",
+        "length": 6615,
+        "sha256": "e378a975663ff63dcb64cf1f56589becac8885b2bd408a93b67446b84d9a1ba1"
+      },
+      "menu": {
+        "path": "results/clipboard-reference/text-abc-edit-menu.png",
+        "length": 7012,
+        "sha256": "07045da14866fed7341b5abf529e674da7ab26c644c8185d8b6d2b4d0eca04a1"
+      },
+      "runtime_ram": {
+        "path": "working/clipboard-reference/text-abc-ram.bin",
+        "length": 134217728,
+        "sha256": "a854199ac949bf31cd058caa95b118ccc1171897a849da41a3e87f3580ae07ce"
+      },
+      "system": {
+        "path": "working/clipboard-reference/System.bin",
+        "length": 5667584,
+        "sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea"
+      },
+      "finder": {
+        "path": "working/clipboard-reference/Finder.bin",
+        "length": 515200,
+        "sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f"
+      }
+    }
+  ],
+  "source_disk": {
+    "path": "working/vm/system-before-apps.qcow2",
+    "length": 47316992,
+    "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+  },
+  "rom": {
+    "path": "downloads/roms/Quadra-650.ROM",
+    "length": 1048576,
+    "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+  },
+  "fixture_sources": [
+    {
+      "path": "fixtures/events-scrap-reference/CMakeLists.txt",
+      "length": 598,
+      "sha256": "1615fe316724bee6e1a392df81dd8d54d1993f5652ff9eb97b96709a9da4d5a0"
+    },
+    {
+      "path": "fixtures/events-scrap-reference/ClipboardSeed.cc",
+      "length": 401,
+      "sha256": "2d9ac85d367c687ad7f944075a9eb068442b1f91005c8594eccacddc9c1a8a6c"
+    },
+    {
+      "path": "fixtures/events-scrap-reference/EventsScrapProbe.cc",
+      "length": 6377,
+      "sha256": "760a46be2cc0247f476ea78e873f9b765e2b31ec9aca5f21d9bd43f86df261ee"
+    },
+    {
+      "path": "fixtures/events-scrap-reference/InputProbe.cc",
+      "length": 2219,
+      "sha256": "181472d99354899ef09943b4cf04af8212aeb73aa1ad1ab41e726c1c12bea6cf"
+    },
+    {
+      "path": "fixtures/events-scrap-reference/application.r",
+      "length": 4621,
+      "sha256": "e3915e1abee5df4b4e8cce9b2258ac6a5dfabc18e19a1f8e885da22e93cce8c6"
+    }
+  ],
+  "scripts": [
+    {
+      "path": "scripts/capture_clipboard_reference.py",
+      "length": 3072,
+      "sha256": "18bba362fc13952b0f20ffb36053d7cd8402811e725c78fe6254489225c6b1a6"
+    },
+    {
+      "path": "scripts/capture_finder_reference.py",
+      "length": 7613,
+      "sha256": "e5572c14140c35ee712f898014e4c55eccb669ab1499fa1b8e4a634b6a78de2e"
+    }
+  ],
+  "tool_identities": [
+    {
+      "path": ".toolchains/retro68/rootfs/Retro68-build/toolchain/bin/m68k-apple-macos-g++",
+      "length": 18616552,
+      "sha256": "ef990adb1a2b9c4d5b8734d9c67a579c12327eb3baf4de0fa5ede578b7e550b4"
+    },
+    {
+      "path": ".toolchains/retro68/rootfs/Retro68-build/toolchain/multiversal/CIncludes/Multiverse.h",
+      "length": 437113,
+      "sha256": "bdd1eca59dcc4df745018b1ab25180e082926c93af25c109e8140dd6482ec626"
+    },
+    {
+      "path": "/usr/bin/qemu-system-m68k",
+      "length": 10601496,
+      "sha256": "7350ac7cc54161918e8855d744bfa3d30cdc73ed2800795e9020cec8c1b15d38"
+    }
+  ],
+  "verification": {
+    "originals_before": [
+      {
+        "path": "working/vm/system-before-apps.qcow2",
+        "length": 47316992,
+        "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+      },
+      {
+        "path": "downloads/roms/Quadra-650.ROM",
+        "length": 1048576,
+        "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+      }
+    ],
+    "originals_after": [
+      {
+        "path": "working/vm/system-before-apps.qcow2",
+        "length": 47316992,
+        "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+      },
+      {
+        "path": "downloads/roms/Quadra-650.ROM",
+        "length": 1048576,
+        "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+      }
+    ],
+    "originals_unchanged": true,
+    "owned_vms_exited": true
+  },
+  "limits": [
+    "Only empty and ASCII TEXTabc; PICT, long text, resizing and Copy/Paste not tested."
+  ],
+  "canonical": {
+    "cases": "original.json",
+    "sha256": "fae25b0fdbc862a8aa29cf89a8d3923c9d11eb78d8dab5bca6d30bd678912c53",
+    "crop_encoding": "RGB8 rowmajor, exactly [3,359,430,476] original screenshotpixels; cursor parkedoutsidecrop beforepause."
+  },
+  "finding_ledger": {
+    "path": "analysis/events-scrap-manager-reference.md in enclosing rea-work",
+    "sha256": "ad79b1f70603c99eb93f1d693cf5e8e0c7f2235155bc2d0cdd72e6e1e22ee2ba"
+  },
+  "text_geometry_metadata_correction": {
+    "reason": "Original last ink row is baseline-1; earlier13/32 glyphbottominference correctedto14/33. Capturedpixeldataunchanged.",
+    "header": "Empty original CGrafPort.pnLoc.v=14 from frozen RAM",
+    "body": "Original FONT393 b ink-relative-baseline-7 and screenshotinktop404 implylocalbaseline33",
+    "fvew_resources": {
+      "10501": {
+        "sha256": "af1556f3772ea9e2305752e31843e3e00f636346cd19178da568531e69dd5e63",
+        "prefix_rect": {
+          "top": 4,
+          "left": 4,
+          "bottom": 16,
+          "right": 98
+        },
+        "value_rect": {
+          "top": 4,
+          "left": 98,
+          "bottom": 16,
+          "right": -1
+        },
+        "prefix_rect_file_offset": 42,
+        "value_rect_file_offset": 94
+      },
+      "10502": {
+        "sha256": "4182b930ff86191da1277e99f40b0194572124d26760008b8592300fee8d621f",
+        "prefix_rect": {
+          "top": 4,
+          "left": 4,
+          "bottom": 16,
+          "right": 98
+        },
+        "value_rect": {
+          "top": 4,
+          "left": 98,
+          "bottom": 16,
+          "right": -1
+        },
+        "prefix_rect_file_offset": 42,
+        "value_rect_file_offset": 94
+      }
+    },
+    "no_claim": "No multiline lineheight derived."
+  }
+}

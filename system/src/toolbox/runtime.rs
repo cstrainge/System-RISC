@@ -19,6 +19,8 @@ use crate::{loader::Definitions,
 
 #[path = "dialogs/runtime.rs"]
 mod dialog_runtime;
+#[path = "events/runtime.rs"]
+mod event_runtime;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
@@ -93,9 +95,15 @@ impl Desktop
                   cdef })
     }
 
+    fn uptime() -> u64
+    {
+        let raw = platform::ticks();
+        (raw / 10_000_000) * 60 + (raw % 10_000_000) * 60 / 10_000_000
+    }
+
     fn when() -> u32
     {
-        (platform::ticks() * 60 / 10_000_000) as u32
+        Self::uptime() as u32
     }
 
     pub fn menu(&mut self, call: &mut mac_abi::menus::MenuCall) -> Status
@@ -623,6 +631,7 @@ impl Desktop
 
     fn input(&mut self, input: Input, when: u32)
     {
+        self.events.observe_input(input, when);
         self.revision = self.revision.wrapping_add(1);
         self.redraw = true;
         if self.dialogs.active()
@@ -789,7 +798,7 @@ impl Desktop
         self.next_with_remove(mask, true)
     }
 
-    fn next_with_remove(&mut self, mask: u16, remove: bool) -> Event
+    fn poll_inputs(&mut self)
     {
         let when = Self::when();
         let mut pending = [None; 128];
@@ -807,6 +816,21 @@ impl Desktop
         {
             self.input(*input, when);
         }
+        let mut keys = events::KeyMap::default();
+        for decoder in &self.decoders
+        {
+            for (target, source) in keys.0.iter_mut().zip(decoder.key_map().0)
+            {
+                *target |= source;
+            }
+        }
+        self.events.keys = keys;
+    }
+
+    fn next_with_remove(&mut self, mask: u16, remove: bool) -> Event
+    {
+        self.poll_inputs();
+        let when = Self::when();
         self.present();
         (if remove { self.events.next_matching(mask) } else {self.events.peek_matching(mask)})
             .or_else(|| {

@@ -1,6 +1,7 @@
 //! Legacy text conversion belongs to the resident trap boundary, never the SDK.
 //! System 7 MacRoman (including the pre-8.5 currency sign at byte DB).
 #![cfg_attr(not(any(target_arch = "riscv64", feature = "test-support")), allow(dead_code))]
+mod scrap;
 use alloc::{string::String, vec, vec::Vec};
 
 use mac_abi::{files::FileCall, quickdraw::*, resources::ResourceCall, traps::*, *};
@@ -89,6 +90,8 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
         }
         match number
         {
+            SCRAP =>
+            unsafe { scrap::dispatch(pointer, size, &mut native) },
             LOG =>
             {
                 let original = get!(LogCall);

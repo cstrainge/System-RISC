@@ -111,7 +111,7 @@ impl Workspace
                                "window_interactions", "--", "--ignored"]))?;
         run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", "finder_png",
                                "--", "--ignored"]))?;
-        for test in ["menus", "finder_trash", "file_writes_guest"]
+        for test in ["menus", "finder_trash", "file_writes_guest", "events", "clipboard"]
         {
             run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", test,
                                    "--", "--ignored"]))?;
@@ -176,9 +176,15 @@ impl Workspace
         let filesystem: Value =
             serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
                                                              filesystem-checks.json"))?)?;
+        let event_manager: Value =
+            serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
+                                                             event-manager-checks.json"))?)?;
+        let clipboard: Value =
+            serde_json::from_slice(&fs::read(self.repo
+                                                 .join("results/system7/clipboard-checks.json"))?)?;
         let report = json!({
-            "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
-            "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, resource menus/alerts, bounded durable HFS catalog/Trash writes and read-only Resource Manager. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
+            "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
+            "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, resource menus/alerts, captured Event/Scrap services and Finder clipboard views, bounded durable HFS catalog/Trash writes and read-only Resource Manager. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
         });
         let path = self.repo.join("results/system7/toolchain-checks.json");
         write_json(&path, &report)?;

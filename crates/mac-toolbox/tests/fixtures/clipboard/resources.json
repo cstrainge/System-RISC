@@ -1,0 +1,61 @@
+{
+  "name": "Finder",
+  "file_type": "FNDR",
+  "creator": "MACS",
+  "role": "application",
+  "abi_version": 5,
+  "load_base": "0x81000000",
+  "load_limit": "0x82000000",
+  "description": "Original Finder Clipboard viewer through public SDK",
+  "resources": [
+    {
+      "type": "WIND",
+      "id": 2002,
+      "symbol": "CLIPBOARD_LAYOUT",
+      "name": "Clipboard native Finder layout",
+      "payload": {
+        "format": "hex",
+        "hex": "017a000401da01ac000801000100000000000000"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 2000,
+      "symbol": "UI_TEXT",
+      "name": "Native Finder interface strings",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Trash",
+          "untitled folder",
+          "Are you sure you want to permanently remove all items in the Trash? You cannot undo this action.",
+          "About RISCy System",
+          "RISCy System",
+          "Finder running in Rust",
+          "Mounted HFS volumes and both forks",
+          "Double-click: open folders",
+          "Ctrl-O / Return: open selection",
+          "Ctrl-Up: parent; Ctrl-W: close",
+          "Q: QuickDraw; A: About",
+          "The volume is locked. This item cannot be changed.",
+          "An item with that name already exists.",
+          "This item is locked or belongs to the active System Folder.",
+          "The operation could not be completed.",
+          "The disk could not complete the operation.",
+          "The disk has no room for more catalog entries.",
+          "This item is open. Close it and try again.",
+          "item",
+          "items",
+          " in disk",
+          " available",
+          "Clipboard",
+          "Clipboard contents:  ",
+          "none",
+          "text",
+          "This clipboard format cannot be displayed.",
+          "This clipboard text is too large to display."
+        ]
+      }
+    }
+  ]
+}

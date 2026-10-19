@@ -1,6 +1,7 @@
 //! Resident Toolbox implementations. Applications use the client crates.
 pub mod quickdraw;
 pub mod events;
+pub mod scrap;
 pub mod windows;
 pub mod controls;
 pub mod resources;

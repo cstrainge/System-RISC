@@ -1,0 +1,180 @@
+{
+  "target": "Installed original Mac OS 7.6.1 Event and Scrap Managers",
+  "source_disk": {
+    "path": "working/vm/system-before-apps.qcow2",
+    "length": 47316992,
+    "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+  },
+  "system": {
+    "path": "working/events-scrap-reference/System.bin",
+    "length": 5667584,
+    "sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea"
+  },
+  "finder": {
+    "path": "working/events-scrap-reference/Finder.bin",
+    "length": 515200,
+    "sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f"
+  },
+  "rom": {
+    "path": "downloads/roms/Quadra-650.ROM",
+    "length": 1048576,
+    "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+  },
+  "system_versions": [
+    {
+      "id": 2,
+      "major": 7,
+      "minor": 6,
+      "patch": 1,
+      "stage": 128,
+      "revision": 0,
+      "region": 0,
+      "short_version": "7.6.1",
+      "resource_sha256": "d5e6b936cfccac33fb1dbf5dc233b8d4f3651dd1a9736ea2f5b0c65e84d5c478"
+    },
+    {
+      "id": 1,
+      "major": 7,
+      "minor": 6,
+      "patch": 1,
+      "stage": 128,
+      "revision": 0,
+      "region": 0,
+      "short_version": "7.6.1",
+      "resource_sha256": "f79f7303d492cb231cf521240d1977cef4445e5cae44fbe633995ca3e231c103"
+    }
+  ],
+  "fixture_sources": [
+    {
+      "path": "fixtures/events-scrap-reference/CMakeLists.txt",
+      "length": 384,
+      "sha256": "e9f520ea8ddb031b9b6eebf5988b146a0810a9a9525943ec0c8e32d36d8786fd"
+    },
+    {
+      "path": "fixtures/events-scrap-reference/EventsScrapProbe.cc",
+      "length": 6377,
+      "sha256": "760a46be2cc0247f476ea78e873f9b765e2b31ec9aca5f21d9bd43f86df261ee"
+    },
+    {
+      "path": "fixtures/events-scrap-reference/InputProbe.cc",
+      "length": 1953,
+      "sha256": "a85be4d004bb9e911e52393e9b9136b9409c094c312d4471d15ca560628bf389"
+    },
+    {
+      "path": "fixtures/events-scrap-reference/application.r",
+      "length": 4621,
+      "sha256": "e3915e1abee5df4b4e8cce9b2258ac6a5dfabc18e19a1f8e885da22e93cce8c6"
+    }
+  ],
+  "fixture_binary": {
+    "path": "build/events-scrap-reference-68k/EventsScrapProbe.bin",
+    "length": 65152,
+    "sha256": "f87d2e23f99671376422231391217b8728ae14ab9c7cb6b648c1ad3fafb7e289"
+  },
+  "scripts": [
+    {
+      "path": "scripts/capture_events_scrap_reference.py",
+      "length": 5302,
+      "sha256": "a3a50bf7ae09a3f6f5b5e9304d209cdd646005b67bb5bdf702b354d56808183e"
+    },
+    {
+      "path": "scripts/capture_finder_reference.py",
+      "length": 7613,
+      "sha256": "e5572c14140c35ee712f898014e4c55eccb669ab1499fa1b8e4a634b6a78de2e"
+    },
+    {
+      "path": "scripts/retro68.py",
+      "length": 1088,
+      "sha256": "d74f0b45bbe06bb50cfea09141b328d881736a44eee28fdd403ab701abb19bcf"
+    }
+  ],
+  "runtime": {
+    "path": "results/events-scrap-reference/runtime.jsonl",
+    "length": 27724,
+    "sha256": "d1c08dbf8a45173b849db2ba9c11af0fc4705fde0469dd64f3c863fd951a1078"
+  },
+  "cases": {
+    "path": "results/events-scrap-reference/cases.json",
+    "length": 39937,
+    "sha256": "63446cdc530fc33e6dc40da152bae91cbfce3507d00ef94119b91d68b2d27cec"
+  },
+  "screenshot": {
+    "path": "results/events-scrap-reference/probe-finished.png",
+    "length": 4856,
+    "sha256": "518b618b7872264ea25122383054d5ebdb6d01cb57bfdd684cc64c8e6fc8e9a4"
+  },
+  "qemu": {
+    "path": "working/events-scrap-reference/command.json",
+    "length": 875,
+    "sha256": "a578f78d8a48abe6ff4865a0dc60eb64690d6481d3d6b5fec65a265fd1c74545"
+  },
+  "qemu_version": "QEMU emulator version 10.1.0 (Debian 1:10.1.0+ds-5ubuntu2.7)",
+  "tool_identities": [
+    {
+      "path": ".toolchains/retro68/rootfs/Retro68-build/toolchain/bin/m68k-apple-macos-g++",
+      "length": 18616552,
+      "sha256": "ef990adb1a2b9c4d5b8734d9c67a579c12327eb3baf4de0fa5ede578b7e550b4"
+    },
+    {
+      "path": ".toolchains/retro68/rootfs/Retro68-build/toolchain/multiversal/CIncludes/Multiverse.h",
+      "length": 437113,
+      "sha256": "bdd1eca59dcc4df745018b1ab25180e082926c93af25c109e8140dd6482ec626"
+    },
+    {
+      "path": "/usr/bin/qemu-system-m68k",
+      "length": 10601496,
+      "sha256": "7350ac7cc54161918e8855d744bfa3d30cdc73ed2800795e9020cec8c1b15d38"
+    }
+  ],
+  "case_count": 147,
+  "isolation": "Owned fresh raw clone, unique Unix QMP endpoint, headless QEMU; original and visible VMs untouched.",
+  "verification": {
+    "originals_before": [
+      {
+        "path": "working/vm/system-before-apps.qcow2",
+        "length": 47316992,
+        "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+      },
+      {
+        "path": "downloads/roms/Quadra-650.ROM",
+        "length": 1048576,
+        "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+      }
+    ],
+    "originals_after": [
+      {
+        "path": "working/vm/system-before-apps.qcow2",
+        "length": 47316992,
+        "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+      },
+      {
+        "path": "downloads/roms/Quadra-650.ROM",
+        "length": 1048576,
+        "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+      }
+    ],
+    "originals_unchanged": true,
+    "owned_vm_exited": true
+  },
+  "limits": [
+    "Only explicit cases captured; no invalid pointers, negative lengths or memory exhaustion.",
+    "Event posting uses original A12F with A0 kind D0 message and A0 returned queue pointer; SysEvtMask modified at documented low memory because Retro68 lacked PPostEvent and SetEventMask glue.",
+    "Idle input only in this capture; GetKeys held-key and mouse-button interactions require follow-up.",
+    "Raw scrap bytes contain alignment bytes whose values are not guaranteed; assert structure and payload only."
+  ],
+  "subset": {
+    "file": "original.json",
+    "sha256": "64898304e06044d4a6fcbf69aca5d313d0ad381995defd250bb770d2569aaae0",
+    "row_count": 19,
+    "selection": "scrap group"
+  },
+  "primary_documentation": [
+    "https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-130.html",
+    "https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-131.html",
+    "https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-133.html"
+  ],
+  "finding_ledger": {
+    "path": "analysis/events-scrap-manager-reference.md in enclosing rea-work",
+    "sha256": "ad79b1f70603c99eb93f1d693cf5e8e0c7f2235155bc2d0cdd72e6e1e22ee2ba"
+  }
+}

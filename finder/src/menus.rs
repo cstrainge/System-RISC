@@ -8,6 +8,7 @@ pub const OPEN: u32 = u32::from_be_bytes(*b"sope");
 pub const CLOSE: u32 = u32::from_be_bytes(*b"clos");
 pub const PUT_AWAY: u32 = u32::from_be_bytes(*b"sput");
 pub const CLEAR: u32 = u32::from_be_bytes(*b"cler");
+pub const SHOW_CLIPBOARD: u32 = u32::from_be_bytes(*b"shcl");
 pub const EMPTY: u32 = u32::from_be_bytes(*b"empt");
 pub fn install(system: &System<'_>) -> Result<(), Status>
 {
@@ -27,6 +28,7 @@ pub fn update(system: &System<'_>, browser: &Browser) -> Result<(), Status>
                                 (1252, 4, system.window(0).is_ok()),
                                 (1252, 10, browser.can_put_away(system)),
                                 (1253, 6, browser.can_trash(system)),
+                                (1253, 9, true),
                                 (1255, 2, browser.trash_count(system)? > 0)]
     {
         menus.set_item_enabled(id, item, enabled).map_err(|e| e.0)?;

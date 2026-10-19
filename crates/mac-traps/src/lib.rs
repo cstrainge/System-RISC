@@ -28,6 +28,8 @@ impl core::fmt::Display for Error
                         NOT_SUPPORTED => "service not supported",
                         NO_MEMORY => "out of memory",
                         TRANSLATION_REQUIRED => "68k translation required",
+                        events::EVENT_NOT_ENABLED => "event type is disabled by the OS event mask",
+                        scrap::NO_TYPE_ERR => "clipboard flavor is unavailable",
                         memory::MEM_FULL_ERR => "Memory Manager allocation failed",
                         memory::NIL_HANDLE_ERR => "invalid or empty memory handle",
                         memory::MEM_WZ_ERR => "invalid memory zone",
@@ -138,6 +140,26 @@ impl<'a> Client<'a>
                                        event: Event::default() };
         status(self.invoke(NEXT_EVENT, &mut call))?;
         Ok(call.event)
+    }
+
+    pub fn event(self, call: &mut events::EventCall) -> Result<()>
+    {
+        status(self.invoke(EVENTS, call))
+    }
+
+    /// Borrow clipboard buffers for one synchronous service call.
+    pub fn scrap(self, call: &mut scrap::ScrapCall, input: &[u8], output: &mut [u8]) -> Result<()>
+    {
+        call.input = input.as_ptr();
+        call.input_length = input.len();
+        call.output = output.as_mut_ptr();
+        call.capacity = output.len();
+        let result = self.invoke(SCRAP, call);
+        call.input = core::ptr::null();
+        call.input_length = 0;
+        call.output = core::ptr::null_mut();
+        call.capacity = 0;
+        status(result)
     }
 
     pub fn geometry(self, call: &mut GeometryCall) -> Result<()>

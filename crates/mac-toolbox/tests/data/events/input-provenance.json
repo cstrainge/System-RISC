@@ -1,0 +1,157 @@
+{
+  "target": "Original Mac OS7.6.1 Event Manager hardware input in owned q800",
+  "source_disk": {
+    "path": "working/vm/system-before-apps.qcow2",
+    "length": 47316992,
+    "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+  },
+  "system": {
+    "path": "working/event-input-reference/System.bin",
+    "length": 5667584,
+    "sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea"
+  },
+  "finder": {
+    "path": "working/event-input-reference/Finder.bin",
+    "length": 515200,
+    "sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f"
+  },
+  "rom": {
+    "path": "downloads/roms/Quadra-650.ROM",
+    "length": 1048576,
+    "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+  },
+  "fixture_sources": [
+    {
+      "path": "fixtures/events-scrap-reference/CMakeLists.txt",
+      "length": 598,
+      "sha256": "1615fe316724bee6e1a392df81dd8d54d1993f5652ff9eb97b96709a9da4d5a0"
+    },
+    {
+      "path": "fixtures/events-scrap-reference/ClipboardSeed.cc",
+      "length": 401,
+      "sha256": "2d9ac85d367c687ad7f944075a9eb068442b1f91005c8594eccacddc9c1a8a6c"
+    },
+    {
+      "path": "fixtures/events-scrap-reference/EventsScrapProbe.cc",
+      "length": 6377,
+      "sha256": "760a46be2cc0247f476ea78e873f9b765e2b31ec9aca5f21d9bd43f86df261ee"
+    },
+    {
+      "path": "fixtures/events-scrap-reference/InputProbe.cc",
+      "length": 2219,
+      "sha256": "181472d99354899ef09943b4cf04af8212aeb73aa1ad1ab41e726c1c12bea6cf"
+    },
+    {
+      "path": "fixtures/events-scrap-reference/application.r",
+      "length": 4621,
+      "sha256": "e3915e1abee5df4b4e8cce9b2258ac6a5dfabc18e19a1f8e885da22e93cce8c6"
+    }
+  ],
+  "fixture_binary": {
+    "path": "build/events-scrap-reference-68k/InputProbe.bin",
+    "length": 60800,
+    "sha256": "05f13c83cff3229e8390f64d18cb13a8b74a423fe636a60f03b990edee547996"
+  },
+  "scripts": [
+    {
+      "path": "scripts/capture_event_input_reference.py",
+      "length": 4763,
+      "sha256": "f9149cb4cdbbb7bb955087e688ba46dfbf5c603ad25846c1fe3b17cee1e411a2"
+    },
+    {
+      "path": "scripts/capture_finder_reference.py",
+      "length": 7613,
+      "sha256": "e5572c14140c35ee712f898014e4c55eccb669ab1499fa1b8e4a634b6a78de2e"
+    }
+  ],
+  "runtime": {
+    "path": "results/event-input-reference/runtime.jsonl",
+    "length": 94340,
+    "sha256": "ec972f48bb7afe5b112595f4d71d7a03e4c87f679c8b2045cdecbaab7463d2a0"
+  },
+  "samples": {
+    "path": "results/event-input-reference/samples.json",
+    "length": 132821,
+    "sha256": "5ae1fcc26b5a7f76f597fc4340c683151b1b830fd71f614dce273a8bb0b1a480"
+  },
+  "actions": {
+    "path": "results/event-input-reference/actions.json",
+    "length": 1102,
+    "sha256": "09051f13350fd15bfa816fc54f6352ac81d23b182c0a56f9b66d4389dc42ebd1"
+  },
+  "screenshot": {
+    "path": "results/event-input-reference/completed.png",
+    "length": 5039,
+    "sha256": "ad707cc746e46a80b27346b5484cde587c429821535ff4239fc050c777261239"
+  },
+  "qemu": {
+    "path": "working/event-input-reference/command.json",
+    "length": 871,
+    "sha256": "50d98d61251daaa87a7c6ebc6dc3234f8c9e2b56a08503b1a88a2ea39429deb4"
+  },
+  "tool_identities": [
+    {
+      "path": ".toolchains/retro68/rootfs/Retro68-build/toolchain/bin/m68k-apple-macos-g++",
+      "length": 18616552,
+      "sha256": "ef990adb1a2b9c4d5b8734d9c67a579c12327eb3baf4de0fa5ede578b7e550b4"
+    },
+    {
+      "path": ".toolchains/retro68/rootfs/Retro68-build/toolchain/multiversal/CIncludes/Multiverse.h",
+      "length": 437113,
+      "sha256": "bdd1eca59dcc4df745018b1ab25180e082926c93af25c109e8140dd6482ec626"
+    },
+    {
+      "path": "/usr/bin/qemu-system-m68k",
+      "length": 10601496,
+      "sha256": "7350ac7cc54161918e8855d744bfa3d30cdc73ed2800795e9020cec8c1b15d38"
+    }
+  ],
+  "verification": {
+    "originals_before": [
+      {
+        "path": "working/vm/system-before-apps.qcow2",
+        "length": 47316992,
+        "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+      },
+      {
+        "path": "downloads/roms/Quadra-650.ROM",
+        "length": 1048576,
+        "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+      }
+    ],
+    "originals_after": [
+      {
+        "path": "working/vm/system-before-apps.qcow2",
+        "length": 47316992,
+        "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+      },
+      {
+        "path": "downloads/roms/Quadra-650.ROM",
+        "length": 1048576,
+        "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+      }
+    ],
+    "originals_unchanged": true,
+    "owned_vm_exited": true
+  },
+  "limits": [
+    "Samples every3ticks; action wall times only approximately align to guestticks. Use observed keymap bits and edge states, not one-to-one sample ordinals.",
+    "Mouse starts outside local window then moves inside; local coordinates relative current port tested.",
+    "Only declared qcode keys and one mouse button; CapsLock system state implementation may be hardware-dependent."
+  ],
+  "synthetic_mouse_up": "InputProbe posts A12F mouseUp once on first physicaldown sample; StillDown read occurs before GetOSEvent consumes the first queued event.",
+  "canonical_copies": [
+    {
+      "file": "original-input.json",
+      "sha256": "5ae1fcc26b5a7f76f597fc4340c683151b1b830fd71f614dce273a8bb0b1a480"
+    },
+    {
+      "file": "original-input-actions.json",
+      "sha256": "09051f13350fd15bfa816fc54f6352ac81d23b182c0a56f9b66d4389dc42ebd1"
+    }
+  ],
+  "finding_ledger": {
+    "path": "analysis/events-scrap-manager-reference.md in enclosing rea-work",
+    "sha256": "ad79b1f70603c99eb93f1d693cf5e8e0c7f2235155bc2d0cdd72e6e1e22ee2ba"
+  }
+}

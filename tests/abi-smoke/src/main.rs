@@ -153,7 +153,8 @@ extern "C" fn main() -> !
     {
         failed();
     }
-    let compatibility = b"TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48\n";
+    let compatibility = b"SCRAP_USERSPACE_PASS original=18 native=17\n\
+                          TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48\n";
     unsafe {
         log(compatibility.as_ptr(), compatibility.len());
     }

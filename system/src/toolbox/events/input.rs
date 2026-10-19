@@ -58,6 +58,33 @@ impl Decoder
         | (if self.caps { ALPHA_LOCK } else { 0 })
     }
 
+    /// Physical keys after the host's temporary Ctrl-to-Command remapping.
+    /// Combining decoder snapshots, rather than clearing individual bits on a
+    /// release, preserves a modifier held on another input device/key.
+    pub fn key_map(&self) -> KeyMap
+    {
+        let mut map = KeyMap::default();
+        for (code, &down) in self.keys.iter().enumerate()
+        {
+            if !down
+            {
+                continue;
+            }
+            let mac_code = match code
+            {
+                29 | 97 | 125 | 126 => 0x37,
+                42 => 0x38,
+                54 => 0x3c,
+                56 => 0x3a,
+                100 => 0x3d,
+                58 => 0x39,
+                _ => key(code as u16).0
+            };
+            map.set(mac_code, true);
+        }
+        map
+    }
+
     pub fn feed(&mut self, kind: u16, code: u16, value: u32, mut emit: impl FnMut(Input))
     {
         match (kind, code)

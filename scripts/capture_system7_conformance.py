@@ -20,9 +20,9 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def private_disk(output):
-    fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures/conformance'
-    target = vm.ROOT / 'build/system7/conformance-probe-target'
+def private_disk(output, fixture_name='conformance'):
+    fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture_name
+    target = vm.ROOT / 'build/system7' / (fixture_name + '-probe-target')
     manifest = fixture / 'Cargo.toml'
     subprocess.run(['cargo', 'build', '--manifest-path', str(manifest), '--locked',
                     '--release', '--target', 'riscv64imac-unknown-none-elf',

@@ -100,6 +100,7 @@ dependencies = [
  "toolbox-menus",
  "toolbox-quickdraw",
  "toolbox-resources",
+ "toolbox-scrap",
  "toolbox-windows",
 ]
 
@@ -266,6 +267,14 @@ dependencies = [
 
 [[package]]
 name = "toolbox-resources"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
+]
+
+[[package]]
+name = "toolbox-scrap"
 version = "0.1.0"
 dependencies = [
  "mac-abi",

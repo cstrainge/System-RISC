@@ -15,17 +15,25 @@ pub const CONTROL_KEY: u16 = 4096;
 pub enum EventKind
 {
     #[default]
-    Null        = 0,
-    MouseDown   = 1,
-    MouseUp     = 2,
-    KeyDown     = 3,
-    KeyUp       = 4,
-    AutoKey     = 5,
-    Update      = 6,
-    Activate    = 8,
+    Null         = 0,
+    MouseDown    = 1,
+    MouseUp      = 2,
+    KeyDown      = 3,
+    KeyUp        = 4,
+    AutoKey      = 5,
+    Update       = 6,
+    Disk         = 7,
+    Activate     = 8,
+    /// Captured low-level OS queue accepts this otherwise reserved event code.
+    Reserved9    = 9,
+    Network      = 10,
+    Driver       = 11,
+    Application1 = 12,
+    Application2 = 13,
     /// Native menu command: high16 menu ID, low16 one-based item.
-    MenuCommand = 14,
-    OsEvent     = 15
+    /// In the separate classic OS queue14 remains an application-defined event.
+    MenuCommand  = 14,
+    OsEvent      = 15
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -62,4 +70,67 @@ impl Event
         bytes[14..16].copy_from_slice(&self.modifiers.to_be_bytes());
         bytes
     }
+}
+
+/// Physical Macintosh virtual-key state. Bit `code % 8` of byte `code / 8`
+/// corresponds to that virtual key; character encoding and keyboard layout do
+/// not change the bit index.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct KeyMap(pub [u8; 16]);
+impl KeyMap
+{
+    pub fn is_down(self, code: u8) -> bool
+    {
+        code < 128 && self.0[code as usize / 8] & (1 << (code % 8)) != 0
+    }
+
+    pub fn set(&mut self, code: u8, down: bool)
+    {
+        if code < 128
+        {
+            let byte = &mut self.0[code as usize / 8];
+            let mask = 1 << (code % 8);
+            if down
+            {
+                *byte |= mask;
+            }
+            else
+            {
+                *byte &= !mask;
+            }
+        }
+    }
+}
+
+pub const NATIVE_POST: u32 = 0;
+pub const NATIVE_PEEK: u32 = 1;
+pub const NATIVE_FLUSH: u32 = 2;
+pub const OS_POST: u32 = 3;
+pub const OS_PEEK: u32 = 4;
+pub const OS_GET: u32 = 5;
+pub const OS_FLUSH: u32 = 6;
+pub const INPUT_STATE: u32 = 7;
+pub const OS_SET_MASK: u32 = 8;
+pub const OS_GET_MASK: u32 = 9;
+pub const OS_STILL_DOWN: u32 = 10;
+/// Original `evtNotEnb`: posting is disabled by the low-level event mask.
+pub const EVENT_NOT_ENABLED: i32 = 1;
+
+/// Pointer-free Event Manager request. Native application events and the
+/// classic low-level OS queue are deliberately distinct services.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct EventCall
+{
+    pub operation:    u32,
+    pub mask:         u16,
+    pub stop_mask:    u16,
+    pub event:        Event,
+    pub present:      u32,
+    pub queued:       u32,
+    pub keys:         KeyMap,
+    pub ticks:        u32,
+    /// Native extension: unwrapped 60-Hz ticks since machine startup.
+    pub uptime_ticks: u64
 }

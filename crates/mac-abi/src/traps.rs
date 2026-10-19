@@ -1,6 +1,8 @@
 //! Native transport numbers. Classic A-line numbers occupy their original u16 range.
 use crate::*;
 
+pub const SCRAP: u32 = 0x10019;
+pub const EVENTS: u32 = 0x1001a;
 pub const CLOCK: u32 = 0x10018;
 pub const DIALOG: u32 = 0x10017;
 pub const MENU: u32 = 0x10016;
@@ -128,6 +130,7 @@ pub const PSTRING_SURFACE: u32 = SURFACE | PSTRING_BIT;
 pub const PSTRING_FONT: u32 = FONT | PSTRING_BIT;
 pub const PSTRING_RESOURCE: u32 = RESOURCE | PSTRING_BIT;
 pub const PSTRING_FILE: u32 = FILE | PSTRING_BIT;
+pub const PSTRING_SCRAP: u32 = SCRAP | PSTRING_BIT;
 pub const PSTRING_DIALOG: u32 = DIALOG | PSTRING_BIT;
 pub const PSTRING_CONTROL: u32 = CONTROL | PSTRING_BIT;
 pub const fn native_string_trap(number: u32) -> Option<u32>
@@ -135,7 +138,7 @@ pub const fn native_string_trap(number: u32) -> Option<u32>
     match number
     {
         PSTRING_LOG | PSTRING_WINDOW | PSTRING_DRAW | PSTRING_SURFACE | PSTRING_FONT
-        | PSTRING_RESOURCE | PSTRING_FILE | PSTRING_CONTROL | PSTRING_DIALOG =>
+        | PSTRING_RESOURCE | PSTRING_FILE | PSTRING_CONTROL | PSTRING_DIALOG | PSTRING_SCRAP =>
         {
             Some(number & !PSTRING_BIT)
         }

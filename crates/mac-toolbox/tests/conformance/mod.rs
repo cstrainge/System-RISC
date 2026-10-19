@@ -198,12 +198,15 @@ pub fn run_core(system: &System<'_>) -> Result<(), Failure>
     require(original_oval_corpus(system)? == 267, "original oval conformance count")?;
     require(memory_new_clear(system)? == 3, "original clear allocation count")?;
     require(memory_handles(system)? == 48, "original handle observation count")?;
+    require(scrap::original_scrap(system)? == 18, "original scrap observation count")?;
+    require(scrap::native_scrap(system)? == 17, "native scrap contract count")?;
     Ok(())
 }
 
 /// Graphical profile requires real loaded definitions and resident resources.
 pub fn run_all(system: &System<'_>) -> Result<(), Failure>
 {
+    events::run(system)?;
     dates::values()?;
     run_core(system)?;
     require(png::run(system)? == 23, "PNG conformance count")?;
@@ -222,3 +225,7 @@ pub mod strings;
 pub mod dates;
 
 pub mod png;
+pub mod events;
+
+#[allow(dead_code)] // Legacy gate checks are called only by string/guest runners.
+pub mod scrap;

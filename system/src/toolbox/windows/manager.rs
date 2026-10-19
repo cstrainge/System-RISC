@@ -275,7 +275,7 @@ impl WindowManager
            || bounds.left < 1
            || bounds.top < 25
            || bounds.right > 638
-           || bounds.bottom > 457
+           || bounds.bottom > 478
            || bounds.right - bounds.left < min_width
            || bounds.bottom - bounds.top < min_height
         {
@@ -315,7 +315,7 @@ impl WindowManager
            || structure.left < 0
            || structure.top < 25
            || structure.right > 640
-           || structure.bottom > 459
+           || structure.bottom > 480
         {
             window.call(definition::DISPOSE, 0, core::ptr::null_mut());
             return None;

@@ -30,6 +30,7 @@ static BOOT_LOG: Once<Option<LogFn>> = Once::new();
 static RESOURCE_FILES: Once<crate::toolbox::resources::manager::Files> = Once::new();
 static FONTS: Once<crate::toolbox::quickdraw::fonts::FontManager> = Once::new();
 static DESKTOP: TryState<crate::toolbox::runtime::Desktop> = TryState::new();
+static SCRAP: TryState<crate::toolbox::scrap::Manager> = TryState::new();
 static MEMORY: TryState<crate::toolbox::memory::Manager> = TryState::new();
 // SAFETY: firmware runs only bootstrap OS thread1 on hart0. Before scheduling
 // starts, this provider must be replaced by the scheduler's genuine ThreadId.
@@ -76,6 +77,11 @@ pub(crate) fn with_memory<R>(call: impl FnOnce(&mut crate::toolbox::memory::Mana
                              -> Result<R, AccessError>
 {
     MEMORY.with(call)
+}
+pub(crate) fn with_scrap<R>(call: impl FnOnce(&mut crate::toolbox::scrap::Manager) -> R)
+                            -> Result<R, AccessError>
+{
+    SCRAP.with(call)
 }
 pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontManager>
 {
@@ -167,6 +173,7 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
         None => crate::toolbox::files::Manager::default()
     };
     if FILES.publish(files).is_err()
+       || SCRAP.publish(crate::toolbox::scrap::Manager::default()).is_err()
        || MEMORY.publish(crate::toolbox::memory::Manager::default()).is_err()
     {
         return ptr::null();

@@ -1,0 +1,47 @@
+{
+  "sources": [
+    {
+      "file": "CMakeLists.txt",
+      "sha256": "bf636ff2037745508e13ec09360a0bb382a6f5c824dceae513b6d930eb018737"
+    },
+    {
+      "file": "ClipboardSeed.cc",
+      "sha256": "2d9ac85d367c687ad7f944075a9eb068442b1f91005c8594eccacddc9c1a8a6c"
+    },
+    {
+      "file": "EventsScrapProbe.cc",
+      "sha256": "760a46be2cc0247f476ea78e873f9b765e2b31ec9aca5f21d9bd43f86df261ee"
+    },
+    {
+      "file": "InputProbe.cc",
+      "sha256": "181472d99354899ef09943b4cf04af8212aeb73aa1ad1ab41e726c1c12bea6cf"
+    },
+    {
+      "file": "MouseQueueProbe.cc",
+      "sha256": "65f1af4d8b5d02b39509fc9d8721ea788e65983644b10867cc8d33535ef48915"
+    },
+    {
+      "file": "README.md",
+      "sha256": "d75d248b8bd0f045502e42bf01f27bb3a6fd621e683f0ed745529d61940f34dd"
+    },
+    {
+      "file": "application.r",
+      "sha256": "e3915e1abee5df4b4e8cce9b2258ac6a5dfabc18e19a1f8e885da22e93cce8c6"
+    },
+    {
+      "file": "captured-main-CMakeLists.txt",
+      "sha256": "e9f520ea8ddb031b9b6eebf5988b146a0810a9a9525943ec0c8e32d36d8786fd"
+    },
+    {
+      "file": "captured-main-InputProbe.cc.txt",
+      "sha256": "a85be4d004bb9e911e52393e9b9136b9409c094c312d4471d15ca560628bf389"
+    }
+  ],
+  "origin": "fixtures/events-scrap-reference in enclosing rea-work",
+  "captures": [
+    "provenance/events-scrap-manager-reference.json",
+    "provenance/event-input-reference.json",
+    "provenance/clipboard-reference.json",
+    "provenance/mouse-queue-reference.json"
+  ]
+}

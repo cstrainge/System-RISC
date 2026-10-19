@@ -1,0 +1,32 @@
+[
+  {
+    "case": "idle_empty",
+    "button": false,
+    "still_down": false,
+    "queue_count": 0
+  },
+  {
+    "case": "idle_synthetic_down",
+    "button": false,
+    "still_down": false,
+    "queue_count": 1
+  },
+  {
+    "case": "idle_down_then_up",
+    "button": false,
+    "still_down": false,
+    "queue_count": 2
+  },
+  {
+    "case": "idle_synthetic_up",
+    "button": false,
+    "still_down": false,
+    "queue_count": 1
+  },
+  {
+    "case": "idle_empty_after",
+    "button": false,
+    "still_down": false,
+    "queue_count": 0
+  }
+]

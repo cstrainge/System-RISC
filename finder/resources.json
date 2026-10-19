@@ -9,6 +9,16 @@
   "description": "RISCy System Finder",
   "resources": [
     {
+      "type": "WIND",
+      "id": 2002,
+      "symbol": "CLIPBOARD_LAYOUT",
+      "name": "Clipboard native Finder layout",
+      "payload": {
+        "format": "hex",
+        "hex": "017a000401da01ac000801000100000000000000"
+      }
+    },
+    {
       "type": "MENU",
       "id": 1251,
       "symbol": "APPLE_MENU",
@@ -164,7 +174,7 @@
           "-",
           {
             "text": "Show Clipboard",
-            "enabled": false,
+            "enabled": true,
             "command": "shcl"
           }
         ]
@@ -351,7 +361,13 @@
           "item",
           "items",
           " in disk",
-          " available"
+          " available",
+          "Clipboard",
+          "Clipboard contents:  ",
+          "none",
+          "text",
+          "This clipboard format cannot be displayed.",
+          "This clipboard text is too large to display."
         ]
       }
     },

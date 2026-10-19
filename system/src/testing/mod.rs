@@ -3,12 +3,16 @@
 //! module supplies lifetime/scoping and the host adapter, never canned results.
 pub mod shared;
 pub mod menus;
+pub mod scrap;
 use core::cell::RefCell;
 
 use mac_abi::{traps::*, *};
 
 struct Session
 {
+    events:      crate::toolbox::events::EventManager,
+    scrap:       crate::toolbox::scrap::Manager,
+    started:     std::time::Instant,
     memory:      crate::toolbox::memory::Manager,
     files:       crate::toolbox::files::Manager,
     fonts:       crate::toolbox::quickdraw::fonts::FontManager,
@@ -37,7 +41,10 @@ impl Default for Session
                                                              data: data.to_vec() });
         }
         let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources);
-        Self { memory: Default::default(),
+        Self { events: crate::toolbox::events::EventManager::new(),
+               scrap: Default::default(),
+               started: std::time::Instant::now(),
+               memory: Default::default(),
                files: Default::default(),
                fonts,
                resources,
@@ -98,6 +105,36 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
     }
     match number
     {
+        LOG =>
+        {
+            let call = match unsafe { request::<LogCall>(pointer, size) }
+            {
+                Ok(call) => call,
+                Err(status) => return status as i64
+            };
+            if call.length > 1024 * 1024 || (call.length != 0 && call.bytes.is_null())
+            {
+                return BAD_ARGUMENT as i64;
+            }
+            let bytes = if call.length == 0
+            {
+                &[][..]
+            }
+            else
+            {
+                unsafe { core::slice::from_raw_parts(call.bytes, call.length) }
+            };
+            if core::str::from_utf8(bytes).is_err()
+            {
+                return BAD_ARGUMENT as i64;
+            }
+            use std::io::Write;
+            match std::io::sink().write_all(bytes)
+            {
+                Ok(()) => OK as i64,
+                Err(_) => IO_ERROR as i64
+            }
+        }
         DIALOG =>
         {
             let call = match unsafe { request::<dialogs::DialogCall>(pointer, size) }
@@ -155,6 +192,51 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        unsafe {
                            crate::toolbox::files::native::dispatch(&mut session.files, pointer,
                                                                    size)
+                       }
+                   })
+        }
+        EVENTS | NEXT_EVENT | SCRAP =>
+        {
+            SESSION.with(|slot| {
+                       let Ok(mut session) = slot.try_borrow_mut()
+                       else
+                       {
+                           return SERVICE_BUSY as i64;
+                       };
+                       let Some(session) = session.as_mut()
+                       else
+                       {
+                           return NOT_SUPPORTED as i64;
+                       };
+                       if number == SCRAP
+                       {
+                           return unsafe {
+                               crate::toolbox::scrap::native::dispatch(&mut session.scrap, number,
+                                                                       pointer, size)
+                           };
+                       }
+                       let ticks =
+                           (session.started.elapsed().as_nanos() * 60 / 1_000_000_000) as u64;
+                       if number == NEXT_EVENT
+                       {
+                           return match unsafe { request::<NextEventCall>(pointer, size) }
+                           {
+                               Ok(call) =>
+                               {
+                                   call.event = session.events
+                                                       .next_matching(call.mask)
+                                                       .unwrap_or_else(|| {
+                                                           session.events.null_event(ticks as u32)
+                                                       });
+                                   OK as i64
+                               }
+                               Err(status) => status as i64
+                           };
+                       }
+                       match unsafe { request::<events::EventCall>(pointer, size) }
+                       {
+                           Ok(call) => session.events.service(call, ticks as u32, ticks) as i64,
+                           Err(status) => status as i64
                        }
                    })
         }

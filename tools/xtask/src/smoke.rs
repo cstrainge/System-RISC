@@ -67,7 +67,8 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
     for marker in ["System: native service table ready",
                    "Finder: native application entry reached", "NATIVE_TRAP_ABI_PASS",
                    "CLASSIC_TRAP_ABI_PASS", "QUICKDRAW_TRAP_ABI_PASS", "FILE_TRAP_ABI_PASS",
-                   "TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48", "ABI_SMOKE_PASS"]
+                   "TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48",
+                   "SCRAP_USERSPACE_PASS original=18 native=17", "ABI_SMOKE_PASS"]
     {
         if !status.success() || !log.contains(marker)
         {
@@ -77,5 +78,5 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
         }
     }
     print!("{log}");
-    Ok(json!({"status": "passed", "method": "RV64 ELF payloads extracted from MacBinary resource forks; QEMU generic loader plus a small ABI test harness", "qemu": output(Command::new("qemu-system-riscv64").arg("--version"))?, "serial": "build/system7/abi-smoke/serial.log", "harness_sha256": package::sha256(&fs::read(kernel)?), "checks": ["System entry publishes service table", "Finder calls System log service", "Finder rejects null and incompatible service tables", "System rejects incompatible BootInfo"], "disk_boot_tested": false, "userspace_conformance": {"source": "System7/crates/mac-toolbox/tests/conformance", "geometry_contracts": 20, "original_oval_records": 267, "original_handle_observations": 48, "original_pointer_observations": 3,  "transport": "public SDK through actual RV64 ECALL"}}))
+    Ok(json!({"status": "passed", "method": "RV64 ELF payloads extracted from MacBinary resource forks; QEMU generic loader plus a small ABI test harness", "qemu": output(Command::new("qemu-system-riscv64").arg("--version"))?, "serial": "build/system7/abi-smoke/serial.log", "harness_sha256": package::sha256(&fs::read(kernel)?), "checks": ["System entry publishes service table", "Finder calls System log service", "Finder rejects null and incompatible service tables", "System rejects incompatible BootInfo"], "disk_boot_tested": false, "userspace_conformance": {"source": "System7/crates/mac-toolbox/tests/conformance", "geometry_contracts": 20, "original_oval_records": 267, "original_handle_observations": 48, "original_pointer_observations": 3, "original_scrap_contracts": 18, "native_scrap_contracts": 17,  "transport": "public SDK through actual RV64 ECALL"}}))
 }

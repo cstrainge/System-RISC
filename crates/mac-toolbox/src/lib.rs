@@ -15,6 +15,7 @@ pub use toolbox_memory as memory;
 pub use toolbox_menus as menus;
 pub use toolbox_quickdraw as quickdraw;
 pub use toolbox_resources as resources;
+pub use toolbox_scrap as scrap;
 pub use toolbox_windows as windows;
 
 
@@ -50,6 +51,11 @@ impl<'a> System<'a>
     pub fn events(&self) -> events::Events<'a>
     {
         events::Events::new(self.client)
+    }
+
+    pub fn scrap(&self) -> scrap::Scrap<'a>
+    {
+        scrap::Scrap::new(self.client)
     }
 
     pub fn resources(&self) -> resources::Resources<'a>

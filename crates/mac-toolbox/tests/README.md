@@ -144,3 +144,20 @@ cargo test --manifest-path System7/Cargo.toml -p mac-toolbox --test menus -- --i
 The Python helper under `System7/scripts` only packages, boots, sends input and
 records observations. Apple/Label icon rows, all custom MDEF protocols and
 continuous flashing animation remain outside this captured menu subset.
+
+
+`events.rs` freezes low-level queue observations from original System7.6.1 and
+checks both that20-entry OS queue and the separate128-entry native application
+queue through the aggregate SDK. The same `conformance/events.rs` contract runs
+in the graphical RV64 fixture. Posting, masks, peek/remove order, stopping flush,
+overflow, null records and physical-state timestamps have distinct cases.
+The ignored input test uses a separate SDK application and private VM to check
+physical key/button transitions through actual virtio input and ECALLs.
+
+`scrap.rs` uses the original ordered records and provenance in `data/scrap`.
+Shared no-std cases cover18 original observations and17 native buffer/Unicode
+contracts;12 paired Pascal trap cases test conversion at the actual boundary.
+Additional host tests check byte/record limits, failure preservation, cleared
+transport borrows and eight concurrent OS threads sharing one resident clipboard.
+These are memory clipboard contracts. Disk Scrap.dat, original counted-MacRoman
+A-line adapters, TextEdit and scheduler/application ownership remain separate.

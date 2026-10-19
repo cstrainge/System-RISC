@@ -1,5 +1,43 @@
 # Verified milestones
 
+## Events, Scrap and Finder Clipboard — ABI5 service extension
+
+New independent EVENTS and SCRAP traps preserve the existing ABI5 payloads.
+Bindings stay thin, Finder uses only `mac-toolbox`, and resident services own
+queues, input state and clipboard storage.
+
+- The captured20-entry OS queue supports posting, masked peek/get, stopping
+  flush and event masks; native application posting remains a separate128-entry
+  queue. Physical keys, mouse/button, StillDown, wrapping60-Hz ticks and native
+  uptime run through public SDK calls. A private RV64 input guest checks raw
+  key/button transitions, resource menu interception and queued mouse-up behavior.
+- Shared Scrap preserves append/first-match flavor ordering, zero/odd lengths,
+  logical padding, clear generations and missing-flavor failures from original
+  captures.18 original contracts,17 native Unicode/buffer contracts and12 paired
+  Pascal/MacRoman conversion contracts run through host and RV64 services.
+  Additional host tests cover byte/record limits, failure preservation, transport
+  borrow cleanup and eight OS threads sharing one real guarded clipboard.
+- Finder's Edit > Show Clipboard uses MENU/MCMD, WIND2002, resource strings,
+  WDEF0 procedure8 and loaded CDEF1 scrollbars. It displays empty or bounded UTF8
+  text and reports unsupported formats/oversized content explicitly. Changes are
+  observed while the window is open. This read-only viewer is not TextEdit.
+- 149,877 strict RGB comparisons match original empty/text windows and the actual
+  Finder command path; empty-to-text-to-empty restores the full framebuffer.
+  Creation now permits the original window's bottom474 instead of reserving an
+  arbitrary lower strip of the native screen.
+
+Validation is `cargo xtask check` plus host/RV64 Clippy with warnings denied.
+Original executable probe sources and small captured fixtures/provenance live
+under the aggregate test tree; original media and the visible guest are excluded
+from test input injection.
+
+Original A-line adapters for the new services, event waits/timers/autorepeat,
+process ownership, disk-backed Scrap, TextEdit/editable dialogs and full native
+scheduling remain open. Device-profile differences and the native clipboard
+limits are documented in [Events](../EVENTS.md) and
+[Scrap](../system/src/toolbox/scrap/README.md). The remaining manager sequence is
+tracked in the [Toolbox plan](../TOOLBOX-PLAN.md).
+
 ## Resource menus and durable Trash — ABI5
 
 Finder uses only the main Toolbox facade. MENU/MCMD resources own labels,
