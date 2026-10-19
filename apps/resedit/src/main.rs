@@ -142,6 +142,11 @@ impl<'a> Browser<'a>
         let bounds = system.windows().info(window)?.bounds;
         let width = bounds.right - bounds.left;
         let height = bounds.bottom - bounds.top;
+        system.windows().set_grow_icon_clip(window,
+                                             Some(Rect::new(width - 15,
+                                                            height - 15,
+                                                            width,
+                                                            height)))?;
         system.windows().begin_update(window)?;
         let port = system.quickdraw().graphics(window);
         port.reset()?;

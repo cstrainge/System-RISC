@@ -378,6 +378,37 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
             for y in 0..16 {for col in 0..width {assert_eq!(actual[((30+y)*640+x+col)*3..((30+y)*640+x+col)*3+3]==[0;3],expected[y*width+col]==0,"filename title {title} at {col},{y}");}}
         }
     }).unwrap();
+    // No window-level bottom scrollbar: the WDEF may draw only the size
+    // handle, leaving the status text and the rest of the footer unobstructed.
+    for (name, width, height) in [("System-disassembly-restored", 616, 412),
+                                  ("resized", 600, 400),
+                                  ("resize-restored", 616, 412)]
+    {
+        let image = pixels(&output.join(observation(name)["frame"].as_str().unwrap()));
+        let y = 48 + height - 15;
+        for x in 12 + 100..12 + width - 16
+        {
+            assert_eq!(&image[(y * 640 + x) * 3..(y * 640 + x) * 3 + 3],
+                       &[255; 3],
+                       "{name}: stray horizontal grow separator");
+        }
+        // The classic size handle must remain visible and usable.
+        assert!((48 + height - 15..48 + height).any(|row| {
+                                                   (12 + width - 15..12 + width).any(|col| {
+                                                                                    image[(row
+                                                                                           * 640
+                                                                                           + col)
+                                                                                          * 3
+                                                                                          ..(row
+                                                                                             * 640
+                                                                                             + col)
+                                                                                            * 3
+                                                                                            + 3]
+                                                                                    == [0; 3]
+                                                                                })
+                                               }),
+                "{name}: size handle disappeared");
+    }
     let viewport = |name: &str, key: &str| -> u32 {
         observation(name)["log"].as_str()
                                 .unwrap()
