@@ -99,6 +99,15 @@
       }
     },
     {
+      "type": "ics#",
+      "id": 128,
+      "symbol": "APPLICATION_SMALL_ICON",
+      "payload": {
+        "format": "file",
+        "path": "assets/application-small.icn"
+      }
+    },
+    {
       "type": "BNDL",
       "id": 128,
       "symbol": "APPLICATION_BUNDLE",
@@ -152,7 +161,7 @@
       "symbol": "WINDOW_LAYOUT",
       "payload": {
         "format": "hex",
-        "hex": "0046003c01b80258000801000100000000000000"
+        "hex": "0046003c01b80258000401000100000000000000"
       }
     }
   ]

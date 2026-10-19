@@ -34,7 +34,9 @@ data. User-facing window names, menu commands, tab labels and editor text come
 from each application's resources. These are test applications, not a document
 editor or a claim of original 68k application compatibility.
 
-Cursor Test provides labeled hover areas for Arrow, I-beam, Crosshair, Plus,
+Cursor Test uses a fixed-size window and its own arrow icon. The large icon is
+an exact 2× expansion of the bundled ROM arrow; the small icon uses its native
+16×16 bitmap and mask. It provides labeled hover areas for Arrow, I-beam, Crosshair, Plus,
 Watch, animated watch, and the original ring and RAM-disk cursor resources.
 Its editable text box exercises automatic I-beam switching and typing obscures
 the pointer until it moves. The Cursor menu has Hide, Show, Obscure, Reset,

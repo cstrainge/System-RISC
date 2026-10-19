@@ -64,7 +64,7 @@ fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Status>
     if bounds.is_empty()
        || bounds.right.checked_sub(bounds.left).is_none_or(|width| width < 500)
        || bounds.bottom.checked_sub(bounds.top).is_none_or(|height| height < 320)
-       || procedure != 8
+       || procedure != 4
     {
         return Err(BAD_ARGUMENT);
     }
@@ -160,6 +160,7 @@ fn run(system: &System<'_>) -> Result<(), Status>
               .create(windows::WindowSpec::new(bounds, title).procedure(procedure)
                                                              .minimum(500, 320))
               .map_err(|e| e.0)?;
+    system.windows().set_grow_icon_clip(window, Some(Rect::ZERO)).map_err(|e| e.0)?;
     let view = editor_view(bounds.right - bounds.left, bounds.bottom - bounds.top);
     let editor = system.textedit().create(view, view).map_err(|e| e.0)?;
     system.textedit()
