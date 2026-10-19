@@ -1,0 +1,123 @@
+{
+  "name": "Panic Test",
+  "binary_name": "PanicTest",
+  "file_type": "APPL",
+  "creator": "PNCT",
+  "role": "application",
+  "abi_version": 6,
+  "load_base": "0x86000000",
+  "load_limit": "0x87000000",
+  "description": "System RISC Panic Test",
+  "resources": [
+    {
+      "type": "MENU",
+      "id": 128,
+      "symbol": "FILE_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "File",
+        "items": [
+          {
+            "text": "Panic Now",
+            "command": "pnow",
+            "enabled": true,
+            "key": "P"
+          },
+          {
+            "text": "Long Panic",
+            "command": "plng",
+            "enabled": true,
+            "key": "L"
+          },
+          "-",
+          {
+            "text": "Quit",
+            "command": "quit",
+            "enabled": true,
+            "key": "Q"
+          }
+        ]
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 128,
+      "symbol": "PRODUCT_NAME",
+      "payload": {
+        "format": "pstring",
+        "text": "Panic Test"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 128,
+      "symbol": "APPLICATION_ICON",
+      "payload": {
+        "format": "file",
+        "path": "assets/application.icn"
+      }
+    },
+    {
+      "type": "ics#",
+      "id": 128,
+      "symbol": "APPLICATION_SMALL_ICON",
+      "payload": {
+        "format": "file",
+        "path": "assets/application-small.icn"
+      }
+    },
+    {
+      "type": "BNDL",
+      "id": 128,
+      "symbol": "APPLICATION_BUNDLE",
+      "payload": {
+        "format": "hex",
+        "hex": "504e43540000000149434e2300000000008046524546000000000080"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 128,
+      "symbol": "APPLICATION_REFERENCE",
+      "payload": {
+        "format": "hex",
+        "hex": "4150504c000000"
+      }
+    },
+    {
+      "type": "SIZE",
+      "id": -1,
+      "symbol": "MEMORY_REQUIREMENTS",
+      "payload": {
+        "format": "hex",
+        "hex": "00000010000000040000"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 2000,
+      "symbol": "UI_TEXT",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Deliberately panic to test the shared Toolbox handler.",
+          "Panic Now",
+          "Long Panic",
+          "Quit",
+          "Panic Now reports a formatted message and source location.",
+          "Long Panic reports over 20 KiB; scroll to the final marker.",
+          "Only this application should stop. Other apps keep running."
+        ]
+      }
+    },
+    {
+      "type": "WIND",
+      "id": 2003,
+      "symbol": "WINDOW_LAYOUT",
+      "payload": {
+        "format": "hex",
+        "hex": "0050005a01400226000401000100000000000000"
+      }
+    }
+  ]
+}

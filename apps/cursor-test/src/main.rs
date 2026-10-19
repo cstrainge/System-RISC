@@ -2,7 +2,6 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
 
 use mac_toolbox::{events::{BTN_STATE, CMD_KEY, EVERY_EVENT, SHIFT_KEY},
                   quickdraw::{cursors::StandardCursor, fonts::FontSelection},
@@ -355,6 +354,10 @@ fn run(system: &System<'_>) -> Result<(), Status>
 #[unsafe(link_section = ".text.entry")]
 pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
 {
+    if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
+    {
+        return status;
+    }
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(system) => system,
@@ -371,11 +374,4 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     }
 }
 
-#[panic_handler]
-fn panic(_: &PanicInfo<'_>) -> !
-{
-    loop
-    {
-        core::hint::spin_loop();
-    }
-}
+mac_toolbox::panic_handler!();

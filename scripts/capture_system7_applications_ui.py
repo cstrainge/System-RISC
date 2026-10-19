@@ -17,6 +17,17 @@ import capture_system7_conformance as packaging
 import system7_vm as vm
 
 
+# Fresh 404px Finder folder, resource-backed Geneva names and 64px icon cells.
+# Wide captions reserve cells; a copied fifth app wraps to the next row.
+APPLICATION_POINTS = {
+    'Cursor Test': (56, 106),
+    'Panic Test': (120, 106),
+    'QuickDraw Test': (184, 106),
+    'TextEdit Exerciser': (312, 106),
+    'Z QuickDraw Copy': (56, 158),
+}
+
+
 class Driver:
     def __init__(self, endpoint, serial):
         self.endpoint = endpoint
@@ -62,6 +73,9 @@ class Driver:
             self.button(True)
             self.button(False)
 
+    def application(self, name, double=True):
+        self.click(*APPLICATION_POINTS[name], double=double)
+
     def key(self, name, modifiers=()):
         def event(code, down):
             return {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': code}, 'down': down}}
@@ -92,7 +106,7 @@ def open_textedit(endpoint, serial):
     driver = Driver(endpoint, serial)
     driver.click(40, 95, double=True)
     driver.wait('window=2 name=Applications')
-    driver.click(312, 106, double=True)
+    driver.application('TextEdit Exerciser')
     driver.wait('TEXTEDIT_EXERCISER_READY\n')
     return driver
 
@@ -200,7 +214,7 @@ def capture(output, remap_icon=False, windows=False):
         driver.wait('FINDER_CLICK_HANDLED\n', clicks + 1)
         frame('applications-folder')
         clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
-        driver.click(184, 106)
+        driver.application('QuickDraw Test', double=False)
         driver.wait('FINDER_CLICK_HANDLED\n', clicks)
         driver.menu(52, 44, popup_x=80)  # Actual Finder File > Open resource item.
         driver.wait('QUICKDRAW_TEST_READY\n')
@@ -214,7 +228,7 @@ def capture(output, remap_icon=False, windows=False):
         driver.click(320, 200)
         driver.wait('FINDER_CLICK_HANDLED\n', clicks)
         frame('running-file-icons')
-        driver.click(312, 106, double=True)
+        driver.application('TextEdit Exerciser')
         driver.wait('TEXTEDIT_EXERCISER_READY\n')
         driver.key('a', ('ctrl',))
         driver.key('a')
@@ -288,7 +302,7 @@ def capture(output, remap_icon=False, windows=False):
         driver.wait('FINDER_CLICK_HANDLED\n', clicks)
         frame('closed-file-icons')
         previous = driver.log().count('TEXTEDIT_EXERCISER_READY\n')
-        driver.click(312, 106, double=True)
+        driver.application('TextEdit Exerciser')
         driver.wait('TEXTEDIT_EXERCISER_READY\n', previous)
         frame('textedit-relaunched')
         previous = driver.log().count('FINDER_TEXTEDIT_STATE length=1 selection=1..1\n')

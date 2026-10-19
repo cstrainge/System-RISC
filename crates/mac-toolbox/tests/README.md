@@ -217,3 +217,10 @@ TextEdit graphical acceptance also compares eight native caret-on/off pairs
 Backspace, deleting the CR, an empty document, a wrapped line and resizing.
 Each pair must differ at exactly the expected1×16 caret rectangle; the same
 test preserves the seven original pixel snapshots.
+
+`panic_graphical` launches the installed Panic Test through Finder in a private
+QEMU guest. It checks the exact original DSAT bomb pixels, formatted panic and
+source information, a report over 20 KiB, Home/End scrolling, lossless copy into
+a separate TextEdit process, and application-only termination with a usable
+desktop afterward. Set `SYSTEM7_PANIC_WINDOWS=1` to use private native Windows
+QEMU instead of Linux.

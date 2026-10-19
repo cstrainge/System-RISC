@@ -115,8 +115,9 @@ WDEF/CDEF while the Window Manager is dispatching that definition.
 
 Finder opens its startup-volume catalog window and runs its event loop when graphics is available;
 it logs and returns zero for the headless ABI harness. There is one foreground
-caller. All code currently runs in M-mode with shared memory, without an
-application scheduler or memory isolation. Payload pointers must obey their
+application; independently scheduled application OS threads enter services with
+trusted app/thread identities and virtualized legacy globals. All code currently
+runs in M-mode with shared memory and without memory isolation. Payload pointers must obey their
 trusted native ABI contracts; size/alignment checks do not establish memory
 protection. Public request/event structures use their declared `repr(C)` layout,
 without an implicit header.
@@ -273,3 +274,14 @@ A-line conventions. Native Copy/Cut/Paste use the shared System clipboard.
 Drawing appends a clipped snapshot to the window's retained update; clients
 erase and redraw inside BeginUpdate/EndUpdate after edits or caret transitions.
 See `system/src/toolbox/textedit/README.md` for the captured profile and gaps.
+
+CRASH0x1001f is a new System RISC native service, outside every classic16-bit
+trap number. `mac-abi/src/crashes.rs::CrashCall` carries BEGIN, APPEND, SHOW,
+INFO, READ, SCROLL or DISMISS. Borrowed UTF-8 and output buffers are validated
+at the trap boundary; READ returns its transferred byte count in `length`.
+`CrashInfo` reports System-owned window/application/thread IDs, byte length,
+wrapped line count, viewport position, dismissal and explicit failure flags.
+Reports are scoped to the trusted calling application and retained in System,
+with a1MiB limit; the shared client handler additionally logs the full formatted
+stream. No original Macintosh system-error trap is repurposed. See
+[panic report ownership and failure behavior](docs/PANIC-REPORTS.md).

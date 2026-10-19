@@ -25,6 +25,7 @@ pub const DIRECTORY_NOT_EMPTY: Status = -15;
 /// A catalog mutation invalidated an incremental directory scan; restart totals.
 pub const SCAN_STALE: Status = -16;
 
+pub mod crashes;
 pub mod dates;
 pub mod geometry;
 pub mod events;

@@ -8,7 +8,9 @@ pub use mac_abi::{ACCESS_DENIED, ACTIVE_FLAG, ALREADY_EXISTS, ApplicationEntry, 
                   Status, SystemServices, TRANSLATION_REQUIRED, WRONG_THREAD, WindowId,
                   WindowRequest, dates::Timestamp};
 pub use mac_traps::{Client, Error, Result as ToolboxResult};
+pub mod panic;
 pub use toolbox_controls as controls;
+pub use toolbox_crashes as crashes;
 pub use toolbox_dialogs as dialogs;
 pub use toolbox_events as events;
 pub use toolbox_files as files;
@@ -99,6 +101,11 @@ impl<'a> System<'a>
     pub fn dialogs(&self) -> dialogs::Dialogs<'a>
     {
         dialogs::Dialogs::new(self.client)
+    }
+
+    pub fn crashes(&self) -> crashes::Crashes<'a>
+    {
+        crashes::Crashes::new(self.client)
     }
 
     pub fn memory(&self) -> memory::Memory<'a>

@@ -10,6 +10,7 @@ use mac_abi::{traps::*, *};
 
 struct Session
 {
+    crashes:     crate::toolbox::crashes::Manager,
     events:      crate::toolbox::events::EventManager,
     scrap:       crate::toolbox::scrap::Manager,
     textedit:    crate::toolbox::textedit::Manager,
@@ -43,7 +44,8 @@ impl Default for Session
                                                              data: data.to_vec() });
         }
         let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources);
-        Self { events: crate::toolbox::events::EventManager::new(),
+        Self { crashes: Default::default(),
+               events: crate::toolbox::events::EventManager::new(),
                scrap: Default::default(),
                textedit: Default::default(),
                cursors: Default::default(),
@@ -265,6 +267,29 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                            Err(status) => status as i64
                        }
                    })
+        }
+        CRASH =>
+        {
+            let call = match unsafe { request::<mac_abi::crashes::CrashCall>(pointer, size) } {
+                Ok(call) => call, Err(status) => return status as i64
+            };
+            if call.length > mac_abi::crashes::MAX_REPORT_BYTES
+               || call.capacity > mac_abi::crashes::MAX_REPORT_BYTES
+               || (call.length != 0 && call.data.is_null())
+               || (call.capacity != 0 && call.output.is_null())
+            { return BAD_ARGUMENT as i64; }
+            let bytes = if call.length == 0 { &[][..] } else {
+                unsafe { core::slice::from_raw_parts(call.data, call.length) }
+            };
+            let Ok(input) = core::str::from_utf8(bytes) else { return BAD_ARGUMENT as i64; };
+            let output = if call.capacity == 0 { &mut [][..] } else {
+                unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
+            };
+            SESSION.with(|slot| {
+                let Ok(mut session) = slot.try_borrow_mut() else { return SERVICE_BUSY as i64; };
+                let Some(session) = session.as_mut() else { return NOT_SUPPORTED as i64; };
+                session.crashes.request(call, input, output).map_or_else(|status| status, |_| OK) as i64
+            })
         }
         MEMORY =>
         {

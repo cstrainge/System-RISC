@@ -9,6 +9,7 @@ pub mod resources;
 pub mod files;
 pub mod memory;
 pub mod menus;
+pub mod crashes;
 pub mod dialogs;
 pub mod classic;
 #[cfg(target_arch = "riscv64")]

@@ -17,6 +17,8 @@ use crate::{loader::Definitions,
                       windows::{Action, WindowId, WindowManager, WindowPart}},
             virtio_input};
 
+#[path = "crashes/runtime.rs"]
+mod crash_runtime;
 #[path = "dialogs/runtime.rs"]
 mod dialog_runtime;
 #[path = "events/runtime.rs"]
@@ -28,6 +30,7 @@ mod local;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
+    crash:           super::crashes::Manager,
     dialogs:         super::dialogs::DialogState,
     desktop:         DesktopLayer,
     menus:           super::menus::Manager,
@@ -126,7 +129,8 @@ impl Desktop
             &crate::kernel::resources().ok_or(NOT_SUPPORTED)?
                 .get(mac_abi::resources::SYSTEM, ResourceKey { kind: *b"CURS", id: 1 })?.1.data)?;
         serial!("VIRTIO_INPUT=READY devices={}", devices);
-        Ok(Self { dialogs: Default::default(),
+        Ok(Self { crash: Default::default(),
+                  dialogs: Default::default(),
                   menus: super::menus::Manager::new(mdef, crate::machine::traps::gateway),
                   desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
                   cursors: Default::default(),
@@ -929,6 +933,10 @@ impl Desktop
         if !matches!(input, Input::Key { .. })
         {
             self.redraw = true;
+        }
+        if self.crash_input(input, when)
+        {
+            return;
         }
         if self.dialogs.active()
         {

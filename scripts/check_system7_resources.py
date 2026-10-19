@@ -22,7 +22,7 @@ def main():
     visual=json.loads((ROOT/'provenance/system7-visual-resource-bundle.json').read_text())
     fonts=json.loads((ROOT/'provenance/system7-font-bundle.json').read_text())
     reports=[]
-    app_manifests={'QuickDraw Test':'apps/quickdraw-test', 'TextEdit Exerciser':'apps/textedit-exerciser', 'Cursor Test':'apps/cursor-test'}
+    app_manifests={'QuickDraw Test':'apps/quickdraw-test', 'TextEdit Exerciser':'apps/textedit-exerciser', 'Cursor Test':'apps/cursor-test', 'Panic Test':'apps/panic-test'}
     forks={}
     for name in ['System','Finder',*app_manifests]:
         path=ROOT/'build/system7/dist'/(name+'.rsrc');blob=path.read_bytes()
@@ -104,6 +104,7 @@ def main():
     assert ('PNG ',128) in forks['QuickDraw Test'], 'PNG exercise belongs to QuickDraw Test'
     assert ('WIND',2003) in forks['TextEdit Exerciser'], 'editor layout belongs to TextEdit Exerciser'
     assert ('WIND',2003) in forks['Cursor Test'], 'cursor window layout belongs to Cursor Test'
+    assert ('WIND',2003) in forks['Panic Test'], 'panic window layout belongs to Panic Test'
     for key in [('PICT',24000),('PNG ',128),('WIND',2003),('MENU',1257)]:
         assert key not in forks['Finder'], f'embedded development resource remains in Finder: {key}'
     report={'status':'passed','method':'Read actual generated System/Finder and native app resource forks; verify every imported visual/font payload and attributes, all FOND association targets, and separate application assets/commands/ABI/code/version/metadata',

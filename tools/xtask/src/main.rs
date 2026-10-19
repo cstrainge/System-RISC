@@ -70,7 +70,7 @@ impl Workspace
     {
         self.guest_build(&["native-wdef", "native-cdef", "native-scrollbar-cdef", "native-mdef"])?;
         self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "textedit-exerciser",
-                           "cursor-test", "bootrom"])?;
+                           "cursor-test", "panic-test", "bootrom"])?;
         boot::package_rom(self)?;
         let mut reports = Vec::new();
         for (directory, name, binary) in
@@ -78,7 +78,8 @@ impl Workspace
              ("finder", "Finder", "Finder"),
              ("apps/quickdraw-test", "QuickDraw Test", "QuickDrawTest"),
              ("apps/textedit-exerciser", "TextEdit Exerciser", "TextEditExerciser"),
-             ("apps/cursor-test", "Cursor Test", "CursorTest")]
+             ("apps/cursor-test", "Cursor Test", "CursorTest"),
+             ("apps/panic-test", "Panic Test", "PanicTest")]
         {
             let report = package::build(&self.root.join(directory).join("resources.json"),
                                         &self.build
@@ -116,8 +117,9 @@ impl Workspace
         run(self.cargo().args(["test", "--locked", "--workspace", "--exclude", "mac-finder",
                                "--exclude", "quickdraw-test", "--exclude",
                                "textedit-exerciser", "--exclude", "cursor-test", "--exclude",
-                               "abi-smoke", "--exclude", "bootrom", "--exclude", "native-wdef",
-                               "--exclude", "native-cdef", "--exclude", "native-mdef"]))?;
+                               "panic-test", "--exclude", "abi-smoke", "--exclude", "bootrom",
+                               "--exclude", "native-wdef", "--exclude", "native-cdef",
+                               "--exclude", "native-mdef"]))?;
         let reports = self.build()?;
         run(Command::new("python3").current_dir(&self.repo)
                                    .arg("System7/scripts/check_system7_boundaries.py"))?;
@@ -134,7 +136,8 @@ impl Workspace
                                "--", "--ignored"]))?;
         for test in ["menus", "finder_trash", "file_writes_guest", "deferred_close", "get_info_ui",
                      "events", "clipboard", "textedit_graphical", "typing", "processes",
-                     "application_ui", "retained_update", "event_latency", "cursor_graphical"]
+                     "application_ui", "retained_update", "event_latency", "cursor_graphical",
+                     "panic_graphical"]
         {
             run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", test,
                                    "--", "--ignored"]))?;
@@ -226,8 +229,11 @@ impl Workspace
         let cursors: Value = serde_json::from_slice(&fs::read(self.repo
                                                                   .join("results/system7/\
                                                                          cursor-checks.json"))?)?;
+        let panics: Value = serde_json::from_slice(&fs::read(self.repo
+                                                                 .join("results/system7/\
+                                                                        panic-checks.json"))?)?;
         let report = json!({
-            "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"processes":processes,"application_ui":application_ui,"retained_update":retained_update,"event_latency":event_latency,"cursors":cursors,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
+            "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"processes":processes,"application_ui":application_ui,"retained_update":retained_update,"event_latency":event_latency,"cursors":cursors,"panics":panics,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
             "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, resource menus/alerts, captured Event/Scrap and monochrome TextEdit services with Finder exercisers, bounded durable HFS catalog/Trash writes and read-only Resource Manager. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
         });
         let path = self.repo.join("results/system7/toolchain-checks.json");

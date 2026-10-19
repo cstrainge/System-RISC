@@ -48,6 +48,12 @@ impl Layout
         {
             self.column += 1;
         }
+        if self.column > 0 && self.column * GRID_WIDTH + 32 - (name_width + 1) / 2 - 2 < self.right
+        {
+            self.column = 0;
+            self.row += 1;
+            self.right = -8;
+        }
         let center = self.column * GRID_WIDTH + 32;
         let top = INFO_HEIGHT + 8 + self.row * GRID_HEIGHT;
         self.right = center - (name_width + 1) / 2 + name_width + 2;

@@ -43,6 +43,10 @@ original icon families and the shared Resource Manager. Keys **1–9** select pa
 Original 68k execution, complete Toolbox coverage and full Finder rendering
 remain future work. The earlier `riscv-quickdraw` demo remains separate.
 
+Native applications share the [System-owned panic report API](docs/PANIC-REPORTS.md),
+with the original bomb icon, scrollable diagnostics and clipboard copying.
+**Panic Test** in Applications deliberately triggers short or long reports.
+
 ## Build and check
 
 Run from this directory:
@@ -102,6 +106,20 @@ differences are quantified separately from the strict bitmap/metric checks;
 passing does not imply full font scaler parity. `scripts/capture_wdef_reference.py` reproduces the
 original captures using a private clone of the historical classic-Mac disk.
 `test` is an alias for `check`.
+
+The boundary check can also run directly after `cargo xtask build`:
+
+```sh
+python3 scripts/check_system7_boundaries.py
+```
+
+It locates the checkout from the script, regardless of its directory name or the
+caller's working directory. It discovers LLVM tools (including versioned and
+Rust-toolchain copies) or a compatible GNU `nm`; it probes real RV64 Rust symbols
+before accepting a reader. Use `--nm PATH` or `SYSTEM7_NM` to select a tool,
+`--release-dir PATH` for binaries outside the default build directory, and
+`--output PATH` for the report. Missing binaries/tools produce setup instructions
+and a failed check, rather than skipping symbol validation.
 
 The separate ABI check extracts executable resource 0 from each MacBinary package and
 loads those ELF files using QEMU's generic loader. A small RV64 harness calls

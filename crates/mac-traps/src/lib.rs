@@ -54,6 +54,21 @@ pub struct Client<'a>
 }
 impl<'a> Client<'a>
 {
+    /// Borrow UTF-8 and output storage for one resident panic-report request.
+    pub fn crash(self, call: &mut crashes::CrashCall, input: &str, output: &mut [u8])
+                 -> Result<()>
+    {
+        call.data = input.as_ptr();
+        call.length = input.len();
+        call.output = output.as_mut_ptr();
+        call.capacity = output.len();
+        let result = self.invoke(CRASH, call);
+        call.data = core::ptr::null();
+        call.output = core::ptr::null_mut();
+        call.capacity = 0;
+        status(result)
+    }
+
     pub fn dialog(self, call: &mut mac_abi::dialogs::DialogCall) -> Result<()>
     {
         status(self.invoke(DIALOG, call))

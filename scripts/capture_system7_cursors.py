@@ -47,7 +47,7 @@ def capture(output, windows=False):
         driver.wait('DESKTOP_READY: Finder and native Window Manager')
         driver.click(40, 95, double=True)
         driver.wait('window=2 name=Applications')
-        driver.click(56, 106, double=True)
+        driver.application('Cursor Test')
         driver.wait('CURSOR_TEST_READY\n')
         for name, x, y in [('arrow', 142, 126), ('ibeam', 271, 126),
                            ('crosshair', 400, 126), ('plus', 529, 126),

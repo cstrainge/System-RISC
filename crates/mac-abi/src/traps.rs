@@ -1,6 +1,8 @@
 //! Native transport numbers. Classic A-line numbers occupy their original u16 range.
 use crate::*;
 
+/// System-owned panic reports; native range beyond every classic 16-bit trap.
+pub const CRASH: u32 = 0x1001f;
 pub const SCRAP: u32 = 0x10019;
 pub const EVENTS: u32 = 0x1001a;
 pub const TEXTEDIT: u32 = 0x1001b;

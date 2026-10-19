@@ -9,6 +9,55 @@
   "description": "System RISC native operating system",
   "resources": [
     {
+      "type": "ICON",
+      "id": -16400,
+      "symbol": "PANIC_BOMB",
+      "name": "Original System error bomb",
+      "payload": {
+        "format": "file",
+        "path": "assets/crashes/classic-bomb.icon"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": -16400,
+      "symbol": "PANIC_LABELS",
+      "name": "Native panic viewer labels",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Application panic",
+          "Close Application",
+          "Copy Report",
+          "Top",
+          "Up",
+          "Down",
+          "Bottom",
+          "Restart required",
+          "Finder stopped. Restart System RISC.",
+          "Report truncated",
+          "Report formatting failed",
+          "The application stopped. You can inspect or copy the complete report.",
+          "Application",
+          "Thread",
+          "Lines",
+          "of",
+          "bytes",
+          "Copy failed"
+        ]
+      }
+    },
+    {
+      "type": "WIND",
+      "id": -16400,
+      "symbol": "PANIC_WINDOW",
+      "name": "System panic report window",
+      "payload": {
+        "format": "file",
+        "path": "assets/crashes/report.wind"
+      }
+    },
+    {
       "type": "STR#",
       "id": 32760,
       "symbol": "APPLICATION_MENU_LABELS",

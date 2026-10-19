@@ -18,6 +18,7 @@ toolbox-files = { path = "../../toolbox/files" }
 toolbox-memory = { path = "../../toolbox/memory" }
 toolbox-menus = { path = "../../toolbox/menus" }
 toolbox-controls = { path = "../../toolbox/controls" }
+toolbox-crashes = { path = "../../toolbox/crashes" }
 toolbox-dialogs = { path = "../../toolbox/dialogs" }
 
 [target.'cfg(not(target_arch = "riscv64"))'.dev-dependencies]

@@ -163,7 +163,7 @@ def capture(output, windows=False):
         stage('idle-finder', lambda: None, 1)
         stage('open-folder', lambda: (driver.click(40, 95, double=True),
                                       driver.wait('window=2 name=Applications')))
-        stage('launch-textedit', lambda: (driver.click(312, 106, double=True),
+        stage('launch-textedit', lambda: (driver.application('TextEdit Exerciser'),
                                           driver.wait('TEXTEDIT_EXERCISER_READY\n')))
         stage('idle-editor', lambda: None, 1)
         stage('select-all', lambda: key('a', ('ctrl',)))
@@ -183,7 +183,7 @@ def capture(output, windows=False):
                                       driver.move(625, 432), driver.button(False)))
         stage('switch-finder', lambda: activate(0, 1))
         stage('same-app-finder', lambda: activate(0, 1))
-        stage('launch-quickdraw', lambda: (driver.click(184, 106, double=True),
+        stage('launch-quickdraw', lambda: (driver.application('QuickDraw Test'),
                                            driver.wait('QUICKDRAW_TEST_READY\n')))
         stage('idle-three-apps', lambda: None, 1)
         stage('same-app-quickdraw', lambda: activate(1, 3))
@@ -198,7 +198,7 @@ def capture(output, windows=False):
                                       driver.wait('PROCESS_EXIT app=2\n')))
         stage('quit-quickdraw', lambda: (driver.menu(28, 60, popup_x=65),
                                          driver.wait('PROCESS_EXIT app=3\n')))
-        stage('relaunch-editor', lambda: (driver.click(312, 106, double=True),
+        stage('relaunch-editor', lambda: (driver.application('TextEdit Exerciser'),
                                           driver.wait('TEXTEDIT_EXERCISER_READY\n', 1)))
         stage('relaunch-input', lambda: key('z'))
         stage('final-idle', lambda: None, 1)

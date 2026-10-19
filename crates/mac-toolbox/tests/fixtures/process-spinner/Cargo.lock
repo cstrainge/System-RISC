@@ -93,6 +93,7 @@ dependencies = [
  "mac-abi",
  "mac-traps",
  "toolbox-controls",
+ "toolbox-crashes",
  "toolbox-dialogs",
  "toolbox-events",
  "toolbox-files",
@@ -209,6 +210,14 @@ dependencies = [
  "mac-abi",
  "mac-traps",
  "toolbox-quickdraw",
+]
+
+[[package]]
+name = "toolbox-crashes"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
 ]
 
 [[package]]

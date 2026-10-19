@@ -11,6 +11,7 @@ the implementation of Toolbox services remains in System.
 | QuickDraw Test | `quickdraw-test` / `QuickDrawTest` | `0x83000000..0x84000000` |
 | TextEdit Exerciser | `textedit-exerciser` / `TextEditExerciser` | `0x84000000..0x85000000` |
 | Cursor Test | `cursor-test` / `CursorTest` | `0x85000000..0x86000000` |
+| Panic Test | `panic-test` / `PanicTest` | `0x86000000..0x87000000` |
 
 Open `Applications` in Finder and double-click an application, or select it
 and use File > Open. The menu at the right edge of the menu bar switches running
@@ -62,3 +63,10 @@ nonoverlapping physical spans. Supported RV64 relocations are checked before any
 write; old fixed packages without `RLOC` cannot be moved to another link address.
 This remains trusted shared memory without MMU protection. Original 68k execution,
 document-open parameters and general dynamic linking remain later work.
+
+Panic Test deliberately calls Rust `panic!` through Panic Now (Ctrl-P) and
+Long Panic (Ctrl-L), with equivalent buttons and a normal Quit (Ctrl-Q).
+The short case exercises formatted values, Unicode, and automatic source
+location capture. The long case includes over 20 KiB of numbered Unicode
+diagnostics and `END_OF_LONG_PANIC` at its end, to exercise complete reporting
+and scrolling. It uses the shared Toolbox panic handler, as do the other apps.

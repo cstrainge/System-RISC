@@ -13,6 +13,7 @@ use crate::toolbox::{events::EventManager,
 pub(super) struct Saved
 {
     id:           u64,
+    crash:        crate::toolbox::crashes::Manager,
     dialogs:      crate::toolbox::dialogs::DialogState,
     menus:        crate::toolbox::menus::Manager,
     cursors:      crate::toolbox::quickdraw::cursors::Cursors,
@@ -27,6 +28,7 @@ impl Saved
     pub fn new(id: u64, mdef: DefinitionEntry) -> Self
     {
         Self { id,
+               crash: Default::default(),
                dialogs: Default::default(),
                menus: crate::toolbox::menus::Manager::new(mdef, crate::machine::traps::gateway),
                cursors: Default::default(),
@@ -103,18 +105,24 @@ impl Desktop
             {
                 return true;
             }
-            let (events, dialogs) = if app == self.owner
+            let (events, dialogs, crash) = if app == self.owner
             {
-                (&*self.events, &self.dialogs)
+                (&*self.events, &self.dialogs, &self.crash)
             }
             else if let Some(local) = self.locals.iter().find(|local| local.id == app)
             {
-                (&*local.events, &local.dialogs)
+                (&*local.events, &local.dialogs, &local.crash)
             }
             else
             {
                 return false;
             };
+            // A dismissed System-owned report wakes the parked application
+            // even though its handler deliberately waits with an empty event mask.
+            if crash.info().dismissed != 0
+            {
+                return true;
+            }
             if events.peek_matching(mask).is_some()
             {
                 return true;
@@ -174,6 +182,7 @@ impl Desktop
             };
         }
         swap!(legacy);
+        swap!(crash);
         swap!(dialogs);
         swap!(menus);
         swap!(cursors);

@@ -1,0 +1,38 @@
+{
+  "asset": "classic-bomb.icon",
+  "format": "Classic ICON:32x32,1 bit per pixel, four bytes per row, MSB left;1 paints black,0 paints white; no mask in original item",
+  "length": 128,
+  "sha256": "2fb9435fea3c42af185d791c415fb26b1529e5763dab47637dc469adc06e60b4",
+  "source": {
+    "path": "working/icon-reference/System.bin",
+    "sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+    "resource_type": "DSAT",
+    "resource_id": 0,
+    "resource_attributes": 80,
+    "resource_fork_payload_offset": 5185520,
+    "resource_payload_sha256": "dca1ae97edde7016f0399fc8fe2a6f2f1e623bda35f2939cc46d29b0b63bb105",
+    "internal_item_id": -16397,
+    "internal_item_offset": 742,
+    "internal_item_payload_bytes": 136,
+    "original_rect": [
+      81,
+      60,
+      113,
+      92
+    ],
+    "bitmap_offset_in_resource": 754,
+    "bitmap_offset_in_resource_fork": 5186274,
+    "bitmap_offset_in_source_file": 5480162
+  },
+  "identification": "Default system-error DSAT entry32767 references internal icon item-16397; the rendered bitmap is the classic black bomb with lit fuse. Preserved exact bitmap bytes; no redraw or approximation.",
+  "rea_evidence": {
+    "id": "ev_d57acd5c4cbc403f1d619817a2ce3bccf66a5fe1615e79f4682ee12636dc9818",
+    "operation": "read_bytes",
+    "provider": "Ghidra12.1.2",
+    "subject_sha256": "dca1ae97edde7016f0399fc8fe2a6f2f1e623bda35f2939cc46d29b0b63bb105",
+    "address": "0x2e6",
+    "length": 140,
+    "complete": true,
+    "scope": "Readback of DSAT internal itemheader,Rect andbitmap; no SysError execution claim."
+  }
+}

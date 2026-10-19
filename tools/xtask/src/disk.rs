@@ -123,7 +123,8 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                               ("System Folder", "Finder"),
                               ("Applications", "QuickDraw Test"),
                               ("Applications", "TextEdit Exerciser"),
-                              ("Applications", "Cursor Test")]
+                              ("Applications", "Cursor Test"),
+                              ("Applications", "Panic Test")]
     {
         let source = workspace.build.join("dist").join(format!("{name}.bin"));
         let original = macbinary::decode(&fs::read(&source)?)?;

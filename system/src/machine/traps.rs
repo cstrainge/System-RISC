@@ -153,6 +153,41 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             let bytes = if call.length == 0 { b"".as_ptr() } else { call.bytes };
             (unsafe { crate::kernel::log(bytes, call.length) }) as i64
         }
+        CRASH =>
+        {
+            let call = read_request!(mac_abi::crashes::CrashCall);
+            if call.length > mac_abi::crashes::MAX_REPORT_BYTES
+               || call.capacity > mac_abi::crashes::MAX_REPORT_BYTES
+               || (call.length != 0 && call.data.is_null())
+               || (call.capacity != 0 && call.output.is_null())
+            {
+                return BAD_ARGUMENT as i64;
+            }
+            let bytes = if call.length == 0
+            {
+                &[][..]
+            }
+            else
+            {
+                unsafe { core::slice::from_raw_parts(call.data, call.length) }
+            };
+            let Ok(input) = core::str::from_utf8(bytes)
+            else
+            {
+                return BAD_ARGUMENT as i64;
+            };
+            let output = if call.capacity == 0
+            {
+                &mut [][..]
+            }
+            else
+            {
+                unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
+            };
+            crate::kernel::with_desktop(|runtime| {
+                runtime.crash_request(call, input, output).map_or_else(|status| status, |()| OK)
+            }).unwrap_or_else(|error| error.status()) as i64
+        }
         CLOCK =>
         {
             let call = read_request!(dates::ClockCall);
