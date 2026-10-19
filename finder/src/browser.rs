@@ -179,11 +179,17 @@ fn folder_icon(volume: &VolumeInfo, entry: &CatalogInfo) -> i16
     }
     standard::FOLDER
 }
-fn entry_icon(system: &System<'_>, volume: &VolumeInfo, entry: &CatalogInfo) -> i16
+pub(crate) fn entry_icon(system: &System<'_>, volume: &VolumeInfo, entry: &CatalogInfo) -> i16
 {
     if entry.is_directory()
     {
         return folder_icon(volume, entry);
+    }
+    // Original System generic stationery family: stacked paper with the
+    // lower-right fold. App-specific document/pad compositing is separate.
+    if entry.is_stationery()
+    {
+        return -3985;
     }
     system.quickdraw()
           .icons()
@@ -460,6 +466,13 @@ impl Browser
         {
             return Err(NOT_FOUND);
         };
+        if window.location.volume != 0 && window.location.folder != ROOT_ID
+        {
+            let entry = system.files()
+                              .catalog(window.location.volume, window.location.folder)
+                              .map_err(error)?;
+            system.windows().set_title(WindowId(id), entry.name()).map_err(error)?;
+        }
         let bounds = system.window(id)?.bounds;
         let width = bounds.right - bounds.left;
         let height = bounds.bottom - bounds.top;

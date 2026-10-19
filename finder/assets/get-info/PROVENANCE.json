@@ -1,0 +1,96 @@
+{
+  "source": "working/finder-reference/Finder.bin",
+  "source_sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f",
+  "resources": [
+    {
+      "kind": "STR ",
+      "id": 11252,
+      "attrs": 32,
+      "resource_fork_offset": 207349,
+      "macbinary_file_offset": 207477,
+      "bytes": 7,
+      "sha256": "b5a94496a5624da4ef9f6eb0c57452010cdbba90a53524fa7e61b7e285a459a6",
+      "path": "working/finder-get-info-reference/53545220-11252.bin"
+    },
+    {
+      "kind": "STR ",
+      "id": 17252,
+      "attrs": 32,
+      "resource_fork_offset": 231400,
+      "macbinary_file_offset": 231528,
+      "bytes": 20,
+      "sha256": "3b2ab8a8ed9de7d3938ffef41a3b3f0321b64697baaa7c6f2a71bd1e65c919ac",
+      "path": "working/finder-get-info-reference/53545220-17252.bin"
+    },
+    {
+      "kind": "STR ",
+      "id": 12752,
+      "attrs": 32,
+      "resource_fork_offset": 247287,
+      "macbinary_file_offset": 247415,
+      "bytes": 5,
+      "sha256": "3786e41f8929c0881426ee00a81a475845cc449b30ee728f01b763859a2a2a47",
+      "path": "working/finder-get-info-reference/53545220-12752.bin"
+    },
+    {
+      "kind": "STR ",
+      "id": 3091,
+      "attrs": 32,
+      "resource_fork_offset": 292852,
+      "macbinary_file_offset": 292980,
+      "bytes": 8,
+      "sha256": "7eea84da7c991639cbce97a6655c0b94ee31b3dc5d0b1dff384af3099c97a713",
+      "path": "working/finder-get-info-reference/53545220-3091.bin"
+    },
+    {
+      "kind": "fvew",
+      "id": 17011,
+      "attrs": 32,
+      "resource_fork_offset": 489523,
+      "macbinary_file_offset": 489651,
+      "bytes": 706,
+      "sha256": "445787fa2945faa0fb5c4fd7a19b84821ed1cbbb57cff661284922e40c69f71e",
+      "path": "working/finder-get-info-reference/66766577-17011.bin"
+    },
+    {
+      "kind": "fvew",
+      "id": 12761,
+      "attrs": 32,
+      "resource_fork_offset": 490839,
+      "macbinary_file_offset": 490967,
+      "bytes": 656,
+      "sha256": "02269b88a01968da9be6e4acec3cd3c9d1e9150b929e47de21da1ab9c4067371",
+      "path": "working/finder-get-info-reference/66766577-12761.bin"
+    },
+    {
+      "kind": "fvew",
+      "id": 11261,
+      "attrs": 32,
+      "resource_fork_offset": 494061,
+      "macbinary_file_offset": 494189,
+      "bytes": 514,
+      "sha256": "d5cd43a10c84b68e2a83c946ed5e9165921b4d75188d5b665bd2eca3996b8198",
+      "path": "working/finder-get-info-reference/66766577-11261.bin"
+    }
+  ],
+  "native_projection": {
+    "magic": "GIn1",
+    "width_height": "two big-endian i16 words",
+    "rectangle_order_item_ids": [
+      20816,
+      12803,
+      3051,
+      3054,
+      3056,
+      20803,
+      20805,
+      12801,
+      20807,
+      "icon class9250",
+      20806,
+      17050
+    ],
+    "rectangle_layout": "top,left,bottom,right big-endian i16; absent child is all zero",
+    "font": "original fvew font1,size9; source label stylesbold/rightjustified"
+  }
+}

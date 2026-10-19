@@ -2121,6 +2121,158 @@
         "format": "file",
         "path": "assets/visual/53545223-11750.bin"
       }
+    },
+    {
+      "type": "fvew",
+      "id": 11261,
+      "symbol": "ORIGINAL_GET_INFO_VIEW_11261",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/fvew-11261.bin"
+      }
+    },
+    {
+      "type": "gInf",
+      "id": 11261,
+      "symbol": "GET_INFO_LAYOUT_11261",
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/layout-11261.bin"
+      }
+    },
+    {
+      "type": "fvew",
+      "id": 12761,
+      "symbol": "ORIGINAL_GET_INFO_VIEW_12761",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/fvew-12761.bin"
+      }
+    },
+    {
+      "type": "gInf",
+      "id": 12761,
+      "symbol": "GET_INFO_LAYOUT_12761",
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/layout-12761.bin"
+      }
+    },
+    {
+      "type": "fvew",
+      "id": 17011,
+      "symbol": "ORIGINAL_GET_INFO_VIEW_17011",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/fvew-17011.bin"
+      }
+    },
+    {
+      "type": "gInf",
+      "id": 17011,
+      "symbol": "GET_INFO_LAYOUT_17011",
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/layout-17011.bin"
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 11252,
+      "symbol": "ORIGINAL_GET_INFO_TEXT_11252",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/STR-11252.bin"
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 12752,
+      "symbol": "ORIGINAL_GET_INFO_TEXT_12752",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/STR-12752.bin"
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 17252,
+      "symbol": "ORIGINAL_GET_INFO_TEXT_17252",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/STR-17252.bin"
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 3091,
+      "symbol": "ORIGINAL_GET_INFO_TEXT_3091",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/STR-3091.bin"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 2003,
+      "symbol": "GET_INFO_STRINGS",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Where:",
+          "Kind:",
+          "Size:",
+          "Created:",
+          "Modified:",
+          "Version:",
+          "Comments:",
+          "Locked",
+          "Stationery pad",
+          "Calculating\u2026",
+          "n/a",
+          "Operation failed (^0)",
+          "zero K",
+          "^0 on disk (^1 bytes used)",
+          "^0 on disk (^1 bytes used), for ^2 items",
+          "Sun",
+          "Mon",
+          "Tue",
+          "Wed",
+          "Thu",
+          "Fri",
+          "Sat",
+          "Jan",
+          "Feb",
+          "Mar",
+          "Apr",
+          "May",
+          "Jun",
+          "Jul",
+          "Aug",
+          "Sep",
+          "Oct",
+          "Nov",
+          "Dec",
+          "AM",
+          "PM",
+          "Folder is too deeply nested",
+          "Unavailable (^0)",
+          "^0 on disk (^1 bytes used), for 1 item",
+          "That name already exists.",
+          "Invalid name or comment.",
+          "This disk is read-only.",
+          "This item is locked or in use.",
+          "The disk is full.",
+          "The item couldn't be saved."
+        ]
+      }
     }
   ]
 }

@@ -1,0 +1,88 @@
+{
+  "source": "Original Finder7.5.6 / System Software7.6, privateq800,640x480x8, immutable baseline",
+  "capture_provenance": {
+    "baseline": "working/vm/system-before-apps.qcow2",
+    "baseline_sha256_before": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c",
+    "rom_sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca",
+    "finder_macbinary_sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f",
+    "system_macbinary_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+    "private_disk": "working/finder-get-info-reference/reference.raw",
+    "fixtures": "fixture-list.txt",
+    "baseline_unchanged_after_prepare": true,
+    "baseline_sha256_after": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c",
+    "baseline_unchanged": true,
+    "private_final_disk_sha256": "9550be0325d71369097b50a2d96c02daf01dc7694b3d00b6922b5731d2f39e9f",
+    "private_disk_logical_bytes": 524288000,
+    "private_disk_deleted": true,
+    "cold_reboot_comments_verified": "21-folder-comment-cold-reboot.png",
+    "evidence_actions_file": "actions.jsonl"
+  },
+  "frames": [
+    {
+      "file": "02-plain-file.png",
+      "sha256": "b8cf48dfed36f12f6789397d2479a474ac72a1be780ed3f841bda0a2f7305329",
+      "source_capture": "results/finder-get-info-reference/02-plain-file.png",
+      "content_origin": [
+        8,
+        46
+      ],
+      "content_size": [
+        242,
+        261
+      ]
+    },
+    {
+      "file": "05-lock-on.png",
+      "sha256": "8c26758ebf33fe394bf638965799cec3e250282fb9ceaa271bd52c36fbd7aadb",
+      "source_capture": "results/finder-get-info-reference/05-lock-on.png",
+      "content_origin": [
+        8,
+        46
+      ],
+      "content_size": [
+        242,
+        261
+      ]
+    },
+    {
+      "file": "07-empty-folder.png",
+      "sha256": "aa3be374e2ee178824e50257e2f4a4664f16cf1053b05eb11e21283bb0213e21",
+      "source_capture": "results/finder-get-info-reference/07-empty-folder.png",
+      "content_origin": [
+        8,
+        46
+      ],
+      "content_size": [
+        242,
+        217
+      ]
+    },
+    {
+      "file": "08-nested-folder.png",
+      "sha256": "bd1a93ed56edfc028016b98b9e42ce1d28c1572c7e484719c08445e384992181",
+      "source_capture": "results/finder-get-info-reference/08-nested-folder.png",
+      "content_origin": [
+        8,
+        46
+      ],
+      "content_size": [
+        242,
+        217
+      ]
+    },
+    {
+      "file": "16-stationery-enabled.png",
+      "sha256": "fafe1328cd8ddb2e286eac9f0f6759b7615ec555ba7f1581335aa933d1d78a01",
+      "source_capture": "results/finder-get-info-reference/16-stationery-enabled.png",
+      "content_origin": [
+        8,
+        46
+      ],
+      "content_size": [
+        242,
+        261
+      ]
+    }
+  ],
+  "comparison_scope": "Fixedlabels/fontgeometry/commentsborder/checkcontrols; runtime metadata values and nativefilenameediting excluded"
+}

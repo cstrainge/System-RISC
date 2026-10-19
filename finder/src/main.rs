@@ -17,6 +17,14 @@ mod clipboard;
 mod menus;
 mod browser;
 mod icon_view;
+mod get_info;
+
+fn update_menus(system: &System<'_>, browser: &browser::Browser, info: &get_info::Controller)
+                -> Result<(), Status>
+{
+    menus::update(system, browser)?;
+    info.update_menus(system)
+}
 
 fn try_action<T>(system: &System<'_>, alerts: &mut ui::Alerts, result: Result<T, Status>)
                  -> Result<Option<T>, Status>
@@ -77,10 +85,11 @@ fn open_about(system: &System<'_>, id: &mut u32) -> Result<(), Status>
 fn finder(system: &System<'_>) -> Result<(), Status>
 {
     let mut browser = browser::Browser::default();
+    let mut info = get_info::Controller::default();
     menus::install(system)?;
     browser.initialize(system)?;
     let mut alerts = ui::Alerts::default();
-    menus::update(system, &browser)?;
+    update_menus(system, &browser, &info)?;
     let mut about_id = 0;
     let mut clipboard = clipboard::Viewer::default();
     for _ in 0..32
@@ -98,23 +107,24 @@ fn finder(system: &System<'_>) -> Result<(), Status>
     system.log("DESKTOP_READY: Finder and native Window Manager\n")?;
     loop
     {
-        let event = system.wait_event(EVERY_EVENT, 30)?;
+        let event = system.wait_event(EVERY_EVENT, if info.pending() { 0 } else { 30 })?;
         if alerts.window != 0
         {
             let confirm = alerts.event(system, event)?;
             if alerts.window == 0
             {
                 browser.redraw_all(system)?;
+                info.redraw_all(system)?;
                 if clipboard.window != 0
                 {
                     let _ = try_action(system, &mut alerts, clipboard.draw(system))?;
                 }
-                menus::update(system, &browser)?;
+                update_menus(system, &browser, &info)?;
             }
             if confirm
             {
                 let _ = try_action(system, &mut alerts, browser.empty_trash(system))?;
-                menus::update(system, &browser)?;
+                update_menus(system, &browser, &info)?;
             }
             continue;
         }
@@ -124,9 +134,42 @@ fn finder(system: &System<'_>) -> Result<(), Status>
         {
             continue;
         }
+        let info_handled =
+            try_action(system, &mut alerts, info.event(system, event))?.unwrap_or(false);
+        if info.take_changed()
+        {
+            browser.redraw_all(system)?;
+        }
+        if info_handled
+        {
+            // Typing/selection only changes Info's edit policy. The broader
+            // Finder policy enumerates Trash and must not run per keystroke.
+            if matches!(event.kind,
+                        EventKind::KeyDown
+                        | EventKind::AutoKey
+                        | EventKind::KeyUp
+                        | EventKind::Null)
+               || event.kind == EventKind::MenuCommand && event.message >> 16 == 1253
+            {
+                info.update_menus(system)?;
+            }
+            else
+            {
+                update_menus(system, &browser, &info)?;
+            }
+            continue;
+        }
+        if alerts.window != 0
+        {
+            continue;
+        }
         if try_action(system, &mut alerts, clipboard.event(system, event))?.unwrap_or(false)
         {
             menus::update_after_event(system, &browser, event)?;
+            if event.kind != EventKind::Null
+            {
+                info.update_menus(system)?;
+            };
             continue;
         }
         if alerts.window != 0
@@ -150,6 +193,14 @@ fn finder(system: &System<'_>) -> Result<(), Status>
             {
                 menus::NEW_FOLDER => browser.new_folder(system),
                 menus::OPEN => browser.open_selection(system),
+                menus::GET_INFO =>
+                {
+                    match browser.selection(system)
+                    {
+                        Some(identity) => info.open(system, identity),
+                        None => Ok(())
+                    }
+                }
                 menus::CLOSE =>
                 {
                     if let Ok(front) = system.window(0)
@@ -166,7 +217,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                 _ => Ok(())
             };
             let _ = try_action(system, &mut alerts, action)?;
-            menus::update(system, &browser)?;
+            update_menus(system, &browser, &info)?;
             continue;
         }
         match event.kind
@@ -209,6 +260,15 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                 else if key == b'a' && event.modifiers & CMD_KEY == 0
                 {
                     let _ = try_action(system, &mut alerts, open_about(system, &mut about_id))?;
+                }
+                else if key == b'i' && event.modifiers & CMD_KEY != 0
+                {
+                    // A shortcut captured before the selection's menu policy
+                    // updates arrives as KeyDown. Resolve it from current state.
+                    if let Some(identity) = browser.selection(system)
+                    {
+                        let _ = try_action(system, &mut alerts, info.open(system, identity))?;
+                    }
                 }
                 else if key == b'w' && event.modifiers & CMD_KEY != 0
                 {
@@ -258,7 +318,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
         }
         if event.kind != EventKind::Null
         {
-            menus::update(system, &browser)?;
+            update_menus(system, &browser, &info)?;
         }
     }
 }
