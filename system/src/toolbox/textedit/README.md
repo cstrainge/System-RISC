@@ -22,6 +22,8 @@ Original details preserved include:
 - `point` uses the original `TEGetPoint` coordinates: the horizontal coordinate
   is one pixel after the drawing pen, and the vertical coordinate is the line
   bottom. It is deliberately not the inverse of mouse `offset` at a line edge.
+  Visible caret drawing uses the insertion row, including the empty final line
+  after CR; it does not reuse the classic point query for that case.
 
 Native `move_cursor` adds Left/Right/Up/Down, visual LineStart/LineEnd and
 DocumentStart/DocumentEnd, with an optional fixed selection anchor. Shift moves

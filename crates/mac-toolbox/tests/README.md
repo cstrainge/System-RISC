@@ -204,3 +204,9 @@ values. Timing data is reported without host-dependent pass thresholds.
 
 Set `SYSTEM7_TYPING_WINDOWS=1` for the same assertions against headless Windows
 QEMU guests using a private monitor port. The default gate uses Linux QEMU.
+
+TextEdit graphical acceptance also compares eight native caret-on/off pairs
+(98,304 pixel positions) after Return, repeated Return, subsequent typing,
+Backspace, deleting the CR, an empty document, a wrapped line and resizing.
+Each pair must differ at exactly the expected1×16 caret rectangle; the same
+test preserves the seven original pixel snapshots.

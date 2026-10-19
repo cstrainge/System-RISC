@@ -50,10 +50,25 @@ def capture(output):
             vm.qmp('screendump', {'filename': str(path)}, endpoint)
             snapshots.append({'name': name, 'frame': path.name,
                               'crop': [100, 100, 228, 196]})
+        native_carets = []
+        for index, (name, command) in enumerate([
+                ('return', 'r'), ('multiple_returns', 'm'), ('typed_after_return', 'n'),
+                ('backspace_after_return', 'b'), ('delete_return', 'x'),
+                ('empty_return', 'e'), ('wrapped_return', 'w'), ('resize_after_return', 'z')], 1):
+            frames = {}
+            for phase, command, marker in [('base', command, 'TEXTEDIT_NATIVE_BASE\n'),
+                                            ('caret', 'v', 'TEXTEDIT_NATIVE_CARET\n')]:
+                key(command)
+                wait(marker, index)
+                path = output / f'native-{name}-{phase}.ppm'
+                vm.qmp('screendump', {'filename': str(path)}, endpoint)
+                frames[phase] = path.name
+            native_carets.append({'name': name, **frames})
         report = {
             'transport': 'private disk -> real resident RV64 TextEdit -> public SDK',
             'assertion_owner': 'mac-toolbox/tests/textedit_graphical.rs',
             'snapshots': snapshots,
+            'native_carets': native_carets,
             'original_before': before,
             'original_after': {name: packaging.sha(original / name) for name in before},
             'fixture_elf_sha256': packaging.sha(binary),

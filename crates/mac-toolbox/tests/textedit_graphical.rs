@@ -94,7 +94,45 @@ fn resident_textedit_matches_original_text_selection_clipping_caret_and_scroll()
     }
     assert_eq!(cases, 7);
     assert_eq!(pixels, 7 * 128 * 96);
-    let acceptance = serde_json::json!({"status":"passed","cases":cases,"original_pixels":pixels,"pixel_differences":0,"capture":report,"output":output});
+    // The visible native caret belongs on the insertion line after Return,
+    // even though classic TEGetPoint excludes a final empty recorded line.
+    let native = report["native_carets"].as_array().unwrap();
+    assert_eq!(native.len(), 8);
+    for (name, left, top) in [("return", 6, 20),
+                              ("multiple_returns", 6, 36),
+                              ("typed_after_return", 14, 20),
+                              ("backspace_after_return", 6, 20),
+                              ("delete_return", 29, 4),
+                              ("empty_return", 6, 20),
+                              ("wrapped_return", 6, 36),
+                              ("resize_after_return", 6, 20)]
+    {
+        let pair = native.iter().find(|pair| pair["name"] == name).unwrap();
+        let base = fs::read(output.join(pair["base"].as_str().unwrap())).unwrap();
+        let caret = fs::read(output.join(pair["caret"].as_str().unwrap())).unwrap();
+        let header = b"P6\n640 480\n255\n";
+        assert!(base.starts_with(header) && caret.starts_with(header));
+        assert_eq!(base.len(), header.len() + 640 * 480 * 3);
+        assert_eq!(caret.len(), base.len());
+        let mut differences = Vec::new();
+        for y in 0..96
+        {
+            for x in 0..128
+            {
+                let at = header.len() + ((100 + y) * 640 + 100 + x) * 3;
+                let expected = if x == left && (top..top + 16).contains(&y) { 255 } else { 0 };
+                if (0..3).any(|channel| base[at + channel] ^ caret[at + channel] != expected)
+                {
+                    differences.push((x, y));
+                }
+            }
+        }
+        assert!(differences.is_empty(),
+                "native {name}: caret pixel differences {:?}; capture {}",
+                differences,
+                output.display());
+    }
+    let acceptance = serde_json::json!({"status":"passed","cases":cases,"original_pixels":pixels,"pixel_differences":0,"native_caret_cases":8,"native_caret_pixels":8*128*96,"capture":report,"output":output});
     fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join("results/system7/textedit-graphical-checks.json"),
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();

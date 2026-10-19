@@ -75,6 +75,63 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
         if event.kind == EventKind::KeyDown
         {
             let key = event.character();
+            if key == b'v'
+            {
+                system.textedit().activate(editor, true)?;
+                system.textedit().idle(editor, 100)?;
+                draw(system, window, editor)?;
+                system.log("TEXTEDIT_NATIVE_CARET\n").map_err(Error)?;
+                continue;
+            }
+            if [b'r', b'm', b'n', b'b', b'x', b'e', b'w', b'z'].contains(&key)
+            {
+                let edit = system.textedit();
+                let dest = Rect::new(6, 4, if key == b'w' { 30 } else { 86 }, 90);
+                edit.set_rects(editor, dest, Rect::new(0, 0, 128, 96))?;
+                edit.set_text(editor,
+                              if key == b'e'
+                              {
+                                  ""
+                              }
+                              else if key == b'w'
+                              {
+                                  "aaaaaa"
+                              }
+                              else
+                              {
+                                  "abc"
+                              })?;
+                edit.key(editor, '\r')?;
+                match key
+                {
+                    b'm' =>
+                    {
+                        edit.key(editor, '\r')?;
+                    }
+                    b'n' | b'b' =>
+                    {
+                        edit.key(editor, 'd')?;
+                        if key == b'b'
+                        {
+                            edit.key(editor, '\u{8}')?;
+                        }
+                    }
+                    b'x' =>
+                    {
+                        edit.key(editor, '\u{8}')?;
+                    }
+                    b'z' =>
+                    {
+                        edit.set_rects(editor, Rect::new(6, 4, 96, 90), Rect::new(0, 0, 128, 96))?;
+                    }
+                    _ =>
+                    {}
+                }
+                edit.activate(editor, false)?;
+                draw(system, window, editor)?;
+                system.log("TEXTEDIT_NATIVE_BASE\n").map_err(Error)?;
+                continue;
+            }
             if [b't', b's', b'c', b'd', b'i', b'o', b'u'].contains(&key)
             {
                 state(system, editor, key)?;

@@ -456,8 +456,11 @@ impl Editor
         {
             self.info.selection_end
         };
-        let p = self.affinity.map_or_else(|| self.point(focus).unwrap_or_default(),
-                                          |row| self.native_point(focus, row));
+        // A final CR adds an empty insertion line even though the classic
+        // TEGetPoint/line-count profile excludes that line. Draw the caret at
+        // the visual insertion point, preserving explicit soft-wrap affinity.
+        let row = self.affinity.unwrap_or_else(|| self.native_row(focus));
+        let p = self.native_point(focus, row);
         Rect::new(p.h.saturating_sub(1), p.v.saturating_sub(self.info.line_height), p.h, p.v)
     }
 
