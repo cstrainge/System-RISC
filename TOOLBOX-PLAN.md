@@ -6,8 +6,9 @@ contracts in existing managers. It does not describe a complete Macintosh OS,
 complete Finder, or a working general-purpose 68k application translator.
 
 The Memory Manager foundation and aggregate host/RV64 harness are established.
-The current slice extends Events and adds Scrap, using original Mac probes and
-public SDK contracts. This remains an inventory and dependency plan: entries in
+ABI6 now includes native application launching, preemptive application threads,
+app-owned services and the system application menu. The current remaining-work
+summary is [the core roadmap](docs/CORE-TOOLBOX-ROADMAP.md). This remains an inventory and dependency plan: entries in
 the remaining-work column and milestone exit criteria are not completion claims.
 
 ## Compatibility profiles
@@ -22,7 +23,7 @@ not establish that an API exists in the installed reference system.
 | Display | One 640×480 indexed-eight-bit screen with captured CLUT/gamma projection; separate original 32-bit GWorld cases where appropriate | One 640×480 RGB32 framebuffer; explicit original-device presentation profile where required, not an assumed gamma formula |
 | Input/text | Pinned US keyboard map, Roman script/Mac Roman resources and original installed fonts; record VM/extensions, original mouse/event semantics | Virtio keyboard and absolute tablet, Mac event codes; host Ctrl-to-Command mapping is a documented host adapter |
 | Storage | Disposable clone of the reference HFS disk; record blessing, Finder metadata, forks and installed resource files | Mounted classic HFS, native read/write/flush callbacks and a generated 500 MiB boot image; bounded transactional catalog/Trash writes, with general fork writes still absent |
-| Execution | Actual original 68k manager calls and original application-defined procedures | One foreground native application today; native definition resources use the public SDK; no general 68k execution |
+| Execution | Actual original 68k manager calls and original application-defined procedures | Multiple native applications on separate preemptive OS threads, one foreground app; native definitions use the SDK; no general 68k execution |
 | Unavailable devices | Record the actual reference device/extension capabilities, rather than assuming them | No general sound, printer, network, serial, ADB/NuBus/SCSI or power-management API promised by the initial machine profile |
 
 The original display profile is specifically an indexed-device oracle. It cannot
@@ -42,8 +43,8 @@ representations.
 Native scheduling is an explicit architecture requirement: every application
 runs in its own OS-scheduled thread, independently of event-loop yields. Classic
 Thread Manager cooperative contexts are confined to one application's OS thread.
-The direct-call bootstrap is a current gap, not an acceptable final scheduling
-model. [THREADING.md](THREADING.md) defines context ownership, synchronization and
+The ABI6 scheduler now supplies timer preemption on one hart; blocking/wakeup,
+worker threads and multi-hart support remain distinct gates. [THREADING.md](THREADING.md) defines context ownership, synchronization and
 the scheduler, application-launch and multi-hart acceptance gates; foundational
 manager changes must preserve that path from M1 onward, not defer all ownership
 work until M9.
@@ -142,14 +143,13 @@ unimplemented and excluded portions of the target inventory.
 
 ## Current inventory and remaining work
 
-Updated after the resource menus/Trash milestone and during the Events/Scrap
-slice. Linked ledgers and current verification reports define the accepted
+Reviewed after the ABI6 native application-launch milestone. Linked ledgers and current verification reports define the accepted
 profile; this inventory distinguishes the implemented foundation from each
 manager's remaining contracts.
 
 | Area | Present foundation | Remaining application-visible contracts |
 | --- | --- | --- |
-| Memory | Resident pointer/handle lifecycle, resize/clear/copy, state/lock operations, bounded native allocation and public host/RV64 conformance | Classic address/zone/master-pointer ABI, relocation, purge/compact/controlled pressure, zones, grow/purge procedures, temporary/system heaps and further queries/errors |
+| Memory | Resident handle lifecycle, resize/clear/copy, state/lock operations, bounded native allocation and public host/RV64 conformance | Classic address/zone/master-pointer ABI, relocation, purge/compact/controlled pressure, zones, grow/purge procedures, temporary/system heaps and further queries/errors |
 | Virtual memory/cache utilities | No application VM/MMU compatibility service | Hold/lock/logical-to-physical/cache operations and feature queries; explicitly pin original VM state. Native shared-address M-mode execution is not protected memory or a VM Manager. Add a separate backend/profile when these contracts are implemented. |
 | Resources | App-selected read-only application→System/font search; names/IDs, enumeration, attributes, partial reads, pinned load/release | Resource-file lifecycle/current file/search-chain mutation; resource handles, loading/purging/detach; add/change/remove/write/update; failure and file/heap interactions |
 | QuickDraw | Stateful shapes, regions, polygons, Boolean bitmaps, masks/scroll/fill helpers, direct-RGB worlds, retained replay | Complete port/recording lifecycle, custom grafProcs, text state, coordinate extremes, indexed conversions, PixPat, arithmetic/hilite/dither modes, full masks/damage/GWorld options and handle semantics |
@@ -158,7 +158,7 @@ manager's remaining contracts.
 | Scripts/text utilities | Mac Roman conversion in existing paths | Script Manager, international resources, word/line boundaries, collation/case, number/date formatting, keyboard layout switching, non-Roman scripts, Text Services/input methods and dictionary services |
 | Events/time input | Separate native128 and original-profile OS20 queues; public post/peek/get/flush/masks, physical key/mouse/button state and60-Hz ticks; native app-owned queues | Double-click/caret policy, WaitNextEvent sleep/mouse regions, suspend/resume, high-level events, timer/task interactions and expanded classic A-line adapters |
 | Windows | Standard loaded WDEF0 variations, z order versus active focus, tracking, damage/exposure and retained content | Broader lifecycle/query/hilite/visibility/refcon/behind semantics, Window Manager port/regions, custom WDEF contracts, picture/color windows and classic records |
-| Controls | Loaded button CDEF0 and scrollbar CDEF1, typed scrollbar draw/hit/value tracking | General control objects/lists, lifecycle, bounds/value/range/refcon/title, check/radio/popup/user controls, keyboard focus, action procedures, resource creation and complete tracking semantics |
+| Controls | Loaded CDEF0 button/check/radio and window-font draw/hit variants; CDEF1 scrollbar geometry/value tracking | General control objects/lists, lifecycle, bounds/value/range/refcon/title, popup/user controls, keyboard focus, action procedures, resource creation and complete tracking semantics |
 | Menus | Resource-installed MENU/fmnu objects, loaded native MDEF0 layout/drawing/hit, enable/check state, captured pointer tracking and keyboard command routing through the public SDK; app-owned menus and resident application switcher | Dynamic insertion/deletion, all item icons/marks/styles, arbitrary MDEF lifecycle, hierarchical/scrolling/pop-up variants, original flashing and classic trap adaptation |
 | Lists | No List Manager public service | Cells/data/selection/scrolling, LDEF, click/double-click, drawing modes, resource/procedure lifetimes and control integration |
 | TextEdit | Resident monochrome Chicago12 editor with thin UTF8 SDK, generation IDs, CR wrapping, selection/hits, anchored native navigation, edits, caret/activation, clipping/scroll and native clipboard; original semantic/pixel fixtures | Styled text, other fonts/alignment, original TEHandle/MacRoman A-line and private scrap adapters, hooks, double-click word selection/autoscroll, editable-dialog integration |
