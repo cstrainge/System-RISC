@@ -56,6 +56,7 @@ impl<'a> Memory<'a>
 
 /// Stable opaque identity. No raw data pointer escapes System. Byte access
 /// borrows caller buffers; locking retains the original handle-state bits.
+#[must_use = "dropping the handle owner disposes its allocation"]
 pub struct Handle<'a>
 {
     client: Client<'a>,

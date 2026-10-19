@@ -155,11 +155,12 @@ fn run(system: &System<'_>) -> Result<(), Status>
     let mut buffer = [0; 128];
     let title = system.resources().application().string(128, &mut buffer).map_err(|e| e.0)?;
     let (bounds, procedure) = window_layout(system)?;
-    let window =
+    let mut window_owner =
         system.windows()
-              .create(windows::WindowSpec::new(bounds, title).procedure(procedure)
-                                                             .minimum(500, 320))
+              .create_owned(windows::WindowSpec::new(bounds, title).procedure(procedure)
+                                                                   .minimum(500, 320))
               .map_err(|e| e.0)?;
+    let window = window_owner.id();
     system.windows().set_grow_icon_clip(window, Some(Rect::ZERO)).map_err(|e| e.0)?;
     let view = editor_view(bounds.right - bounds.left, bounds.bottom - bounds.top);
     let editor = system.textedit().create(view, view).map_err(|e| e.0)?;
@@ -181,7 +182,7 @@ fn run(system: &System<'_>) -> Result<(), Status>
             if [u32::from_be_bytes(*b"clos"), u32::from_be_bytes(*b"quit")]
                .contains(&selection.command)
             {
-                system.windows().close(window).map_err(|e| e.0)?;
+                window_owner.close().map_err(|e| e.0)?;
                 break;
             }
             let cursor = system.quickdraw().cursors();

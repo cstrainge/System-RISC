@@ -164,6 +164,8 @@ pub fn memory_new_clear(system: &System<'_>) -> Result<usize, Failure>
 }
 
 pub mod memory;
+#[allow(dead_code)] // Ownership acceptance needs the real graphical Window Manager.
+pub mod ownership;
 pub use memory::memory_handles;
 /// Run all267 original oval cases without a JSON parser or heap in userspace.
 /// Compact records contain signedwidth/height plus originalbig-endianregionbytes.

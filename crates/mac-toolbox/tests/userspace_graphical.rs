@@ -40,6 +40,9 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
             "actual resident ECALL gate absent:\n{serial}");
     assert!(serial.contains("EVENTS_USERSPACE_PASS original_queue=passed native_queue=passed"),
             "Event Manager public ECALL conformance absent:\n{serial}");
+    assert!(serial.contains("OWNERSHIP_USERSPACE_PASS scope=40 early_returns=16 stale=passed \
+                             transfer=passed"),
+            "owned window/handle lifecycle acceptance absent:\n{serial}");
     for definition in ["CODE_LOADED CDEF0", "CODE_LOADED CDEF1"]
     {
         assert!(serial.contains(definition),

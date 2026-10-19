@@ -63,6 +63,15 @@ impl<'a> Windows<'a>
         Ok(WindowId(self.client.window(NEW_WINDOW, request)?.id))
     }
 
+    /// Create a uniquely owned window which closes when its Rust owner drops.
+    /// The existing ID-based constructor remains available for explicit lifecycles.
+    pub fn create_owned(self, spec: WindowSpec<'_>) -> Result<Window<'a>>
+    {
+        Ok(Window { client: self.client,
+                    id:     self.create(spec)?,
+                    owned:  true })
+    }
+
     pub fn close(self, id: WindowId) -> Result<()>
     {
         self.client.window(CLOSE_WINDOW, request(id)).map(|_| ())
@@ -143,6 +152,91 @@ impl<'a> Windows<'a>
         self.client.window(SET_GROW_ICON_CLIP, r).map(|_| ())
     }
 }
+
+/// Owns one resident window. Copying its event identity does not copy ownership.
+///
+/// Drop makes one non-panicking close attempt. Explicit `close` preserves this
+/// owner on a service error so callers can retry. As with memory handles, a
+/// temporarily busy destructor currently relies on application-exit reclamation;
+/// general concurrent cleanup still needs resident deferred disposal.
+#[must_use = "dropping the window owner closes its window"]
+pub struct Window<'a>
+{
+    client: Client<'a>,
+    id:     WindowId,
+    owned:  bool
+}
+impl Window<'_>
+{
+    /// Stable identity for event matching and other Toolbox services. This is
+    /// non-owning and remains the same after closure; stale requests are checked
+    /// by System. It never becomes ID zero, which means the front window.
+    pub fn id(&self) -> WindowId
+    {
+        self.id
+    }
+
+    fn windows(&self) -> Windows<'_>
+    {
+        Windows::new(self.client)
+    }
+
+    pub fn info(&self) -> Result<WindowRequest>
+    {
+        self.windows().info(self.id)
+    }
+
+    pub fn set_title(&self, title: &str) -> Result<()>
+    {
+        self.windows().set_title(self.id, title)
+    }
+
+    pub fn select(&self) -> Result<()>
+    {
+        self.windows().select(self.id)
+    }
+
+    pub fn invalidate(&self, bounds: Rect) -> Result<()>
+    {
+        self.windows().invalidate(self.id, bounds)
+    }
+
+    pub fn set_close_deferred(&self, deferred: bool) -> Result<()>
+    {
+        self.windows().set_close_deferred(self.id, deferred)
+    }
+
+    /// Close immediately, retaining ownership on failure. An already closed
+    /// window (including one closed by its close box) is harmless.
+    pub fn close(&mut self) -> Result<()>
+    {
+        if self.owned
+        {
+            match self.windows().close(self.id)
+            {
+                Ok(()) | Err(Error(NOT_FOUND)) => self.owned = false,
+                Err(error) => return Err(error)
+            }
+        }
+        Ok(())
+    }
+
+    /// Transfer cleanup responsibility to the caller without closing the window.
+    /// Ordinary event matching should use `id`, which retains this Rust owner.
+    pub fn into_id(mut self) -> WindowId
+    {
+        self.owned = false;
+        self.id
+    }
+}
+impl Drop for Window<'_>
+{
+    fn drop(&mut self)
+    {
+        let _ = self.close();
+    }
+}
+
 fn request(id: WindowId) -> WindowRequest
 {
     WindowRequest { id:             id.0,

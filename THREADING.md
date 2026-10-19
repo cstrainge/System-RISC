@@ -196,6 +196,13 @@ scheduler-aware blocking disposal or owner-queued deferred cleanup is required
 before general concurrent RAII cleanup can be advertised. Host-only yields in
 this test are not a proposed resident scheduler or kernel retry policy.
 
+The SDK also provides an owned `Window` through `Windows::create_owned`.
+`close(&mut self)` retains ownership on failure; Drop makes a non-panicking
+close attempt with the same current contention limit. Its copied `WindowId`
+only identifies events/drawing, and `into_id` explicitly transfers cleanup.
+Graphical userspace ownership acceptance covers scope exit, early returns with
+both window and memory owners, externally closed windows and ownership transfer.
+
 ## Rust standard library readiness
 
 The long-term application model includes Rust `std`, and Finder should use it

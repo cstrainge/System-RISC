@@ -41,6 +41,7 @@ Watch, animated watch, and the original ring and RAM-disk cursor resources.
 Its editable text box exercises automatic I-beam switching and typing obscures
 the pointer until it moves. The Cursor menu has Hide, Show, Obscure, Reset,
 Next Frame and Toggle Read Only commands (Ctrl-H/S/O/R/N/L).
+It holds an owned Toolbox `Window`, so early returns also clean up its window.
 
 New launchers use the public Toolbox facade:
 

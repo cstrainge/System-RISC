@@ -51,6 +51,7 @@ fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::
     conformance::scrap::legacy_text(system, gate)?;
     conformance::textedit::legacy(system, gate)?;
     conformance::strings::graphical(system, gate)?;
+    conformance::ownership::graphical(system)?;
     Ok(())
 }
 /// # Safety
