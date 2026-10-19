@@ -190,8 +190,8 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
     assert_eq!(report["base_before"], report["base_after"]);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
-    for marker in ["RESEDIT_ERROR", "SYSTEM_PANIC:", "SYSTEM_TRAP:", "DISK_REQUEST_FAILED",
-                   "DISK_READ_FAILED", "SYSTEM_ALLOCATION_FAILED:"]
+    for marker in ["RESEDIT_ERROR", "RESEDIT_SAVE_ERROR", "SYSTEM_PANIC:", "SYSTEM_TRAP:",
+                   "DISK_REQUEST_FAILED", "DISK_READ_FAILED", "SYSTEM_ALLOCATION_FAILED:"]
     {
         assert!(!serial.contains(marker), "{marker}: {serial}");
     }
@@ -364,6 +364,69 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                 "{package} hex preview must use Monaco 9, including fixed-pitch columns");
     }
     let observation = |name: &str| frames.iter().find(|row| row["name"] == name).unwrap();
+    // Radio state/animation must be actual CDEF0 output, including press and
+    // cancellation. The standard CDEF itself has original-System pixel tests.
+    mac_system::testing::with_resource_forks(&system_fork, &resource::encode(&[]).unwrap(), |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        for package in ["QuickDraw Test", "System"]
+        {
+            for (suffix, hex, pressed) in [("hex-radio-held",false,true),
+                                            ("hex-radio-left",false,false),
+                                            ("hex-radio-cancelled",false,false),
+                                            ("hex",true,false),
+                                            ("disassembly-restored",false,false)]
+            {
+                let name = format!("{package}-{suffix}");
+                let image = pixels(&output.join(observation(&name)["frame"].as_str().unwrap()));
+                for (is_hex, left, width, title) in [(true,295,104,"Hex Dump"),(false,407,203,"Disassembly")]
+                {
+                    let mut expected = vec![0xffffff; width*21];
+                    let mut state = mac_toolbox::controls::StandardState::new(mac_toolbox::Rect::new(0,0,width as i16,21),title);
+                    state.value = i16::from(hex==is_hex);
+                    state.highlighted = u32::from(is_hex && pressed);
+                    system.controls().draw_standard_pixels(&mut expected,width,21,mac_toolbox::controls::StandardKind::Radio,state).unwrap();
+                    // Held pointer stays in the bottom-right blank margin;
+                    // retain the entire CDEF glyph and caption comparison.
+                    let compared_width=if is_hex && pressed {width-8}else{width};
+                    for y in 0..21 {for x in 0..compared_width {
+                        let pixel=expected[y*width+x];
+                        assert_eq!(&image[((y+50)*640+left+x)*3..((y+50)*640+left+x)*3+3],&[(pixel>>16) as u8,(pixel>>8) as u8,pixel as u8],"{name} {title} at {x},{y}");
+                    }}
+                }
+            }
+            let before=pixels(&output.join(observation(&format!("{package}-hex"))["frame"].as_str().unwrap()));
+            let after=pixels(&output.join(observation(&format!("{package}-hex-down"))["frame"].as_str().unwrap()));
+            for y in 48..425 {
+                assert_eq!(&before[(y*640+13)*3..(y*640+291)*3],&after[(y*640+13)*3..(y*640+291)*3],"{package}: scrolling preview changed navigation panes");
+            }
+            for y in 130..410 {
+                assert_eq!(&before[((y+14)*640+292)*3..((y+14)*640+596)*3],&after[(y*640+292)*3..(y*640+596)*3],"{package}: cached rows did not shift exactly one line");
+            }
+        }
+    }).unwrap();
+    let mut timings = Vec::new();
+    for package in ["QuickDraw Test", "System"]
+    {
+        let start = observation(&format!("{package}-hex-down"))["log"].as_str().unwrap().len();
+        let end = observation(&format!("{package}-hex-key-scroll"))["log"].as_str().unwrap();
+        let samples: Vec<u64> = end[start..].lines()
+                                            .filter_map(|line| {
+                                                line.strip_prefix("RESEDIT_RENDER pane=2 ns=")
+                                                    .map(|v| v.parse().unwrap())
+                                            })
+                                            .collect();
+        assert_eq!(samples.len(), 8, "{package}: missing one-row render measurements");
+        assert_eq!(end[start..].matches("RESEDIT_RENDER pane=all").count(),
+                   0,
+                   "key scrolling must not redraw the browser");
+        timings.extend(samples);
+    }
+    timings.sort_unstable();
+    let median_ns = timings[timings.len() / 2];
+    let worst_ns = *timings.last().unwrap();
+    assert!(median_ns < 50_000_000,
+            "one-row fill and commit median is {}ms",
+            median_ns / 1_000_000);
     mac_system::testing::with_resource_forks(&system_fork,&resource::encode(&[]).unwrap(),|services|{
         let system=unsafe{System::from_raw(services)}.unwrap();let font=mac_toolbox::quickdraw::fonts::FontSelection::default();
         for (name,title) in [("running-app-open","QuickDraw Test"),("System-49434f4e","System")] {
@@ -469,6 +532,12 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
     let fork = fs::read(root.join("build/system7/dist/ResEdit.rsrc")).unwrap();
     mac_system::testing::with_resource_forks(&resource::encode(&[]).unwrap(), &fork, |services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
+        assert!(system.resources()
+                      .application()
+                      .get(ResourceKey { kind: *b"MENU",
+                                         id:   129 })
+                      .is_err(),
+                "viewer mode belongs to code-view radio buttons");
         for item in icon_provenance["resources"].as_array().unwrap()
         {
             let kind = mac_formats::text::encode(item["type"].as_str().unwrap()).unwrap()
@@ -493,7 +562,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         let marker = format!("RESEDIT_RESOURCE kind={}", u32::from_be_bytes(kind));
         assert!(serial.contains(&marker), "missing viewer {kind:?}");
     }
-    fs::write(root.join("results/system7/resedit-checks.json"),serde_json::to_vec_pretty(&serde_json::json!({"passed":true,"running_app":true,"lossless_export":true,"icon_pixels":3*128*128,"capture":report})).unwrap()).unwrap();
+    fs::write(root.join("results/system7/resedit-checks.json"),serde_json::to_vec_pretty(&serde_json::json!({"passed":true,"running_app":true,"lossless_export":true,"icon_pixels":3*128*128,"radio_pixels":"CDEF0 press leave cancel select","scroll":{"samples":timings.len(),"median_ns":median_ns,"worst_ns":worst_ns,"scope":"one-row key fill plus resident commit"},"capture":report})).unwrap()).unwrap();
 }
 
 // Three load segments: mixed 32/16-bit instructions, non-code bytes, then
@@ -563,15 +632,10 @@ fn code_view_rejects_bad_elf_and_scrollbars_cover_large_resources()
     for pane in [view::Pane::Types, view::Pane::Resources, view::Pane::Preview]
     {
         assert!(layout.baseline(pane, 0) > layout.bounds(pane).top);
-        let s = view::Scroll::new(0, layout.rows(pane), 200000);
-        let state = s.state(layout.scrollbar(pane));
-        assert_eq!(s.row_for_value(0), 0);
-        assert_eq!(s.row_for_value(state.maximum), s.maximum());
-        assert_eq!(s.step(mac_toolbox::controls::SCROLL_DOWN), 1);
-        assert_eq!(s.step(mac_toolbox::controls::SCROLL_PAGE_DOWN), s.rows);
+        let state = layout.scrollbar(pane);
         assert!(layout.row_at(pane,
-                              mac_toolbox::Point { h: state.bounds.left,
-                                                   v: state.bounds.top })
+                              mac_toolbox::Point { h: state.left,
+                                                   v: state.top })
                       .is_none());
     }
     let mut relocation = b"RLC1".to_vec();

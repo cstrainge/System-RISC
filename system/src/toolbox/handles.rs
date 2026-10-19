@@ -23,7 +23,8 @@ pub(crate) enum Kind
     Windows,
     Files,
     FileWrites,
-    StandardFiles
+    StandardFiles,
+    ScrollBoxes
 }
 impl Kind
 {
@@ -31,6 +32,7 @@ impl Kind
     {
         match self
         {
+            Self::ScrollBoxes => 96,
             Self::Memory => 512,
             Self::Windows => 32,
             Self::Files => 64,
@@ -42,6 +44,10 @@ impl Kind
     {
         match self
         {
+            Self::ScrollBoxes =>
+            {
+                Self::StandardFiles.first_slot() + Self::StandardFiles.capacity() as u32
+            }
             Self::Memory => 1,
             Self::Windows => Self::Memory.capacity() as u32 + 1,
             Self::Files => Self::Windows.first_slot() + Self::Windows.capacity() as u32,
@@ -57,7 +63,11 @@ impl Kind
     {
         match self
         {
-            Self::Memory | Self::Files | Self::FileWrites | Self::StandardFiles => u16::MAX,
+            Self::Memory
+            | Self::Files
+            | Self::FileWrites
+            | Self::StandardFiles
+            | Self::ScrollBoxes => u16::MAX,
             Self::Windows => 255
         }
     }

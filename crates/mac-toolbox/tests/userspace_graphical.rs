@@ -46,6 +46,9 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
     assert!(serial.contains("HANDLE_REUSE_USERSPACE_PASS windows=40 native=9 legacy=3 \
                              retirement=passed"),
             "shared handle validation through native and legacy traps absent:\n{serial}");
+    assert!(serial.contains("SCROLL_BOX_USERSPACE_PASS parent_cleanup=8 stale=passed \
+                             legacy=passed rows=passed"),
+            "resident scroll-box lifecycle acceptance absent:\n{serial}");
     for definition in ["CODE_LOADED CDEF0", "CODE_LOADED CDEF1"]
     {
         assert!(serial.contains(definition),

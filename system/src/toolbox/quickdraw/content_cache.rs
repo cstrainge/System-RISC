@@ -78,11 +78,27 @@ pub struct ContentCache
 {
     entries: Vec<Entry>,
     clock:   u64,
-    frame:   u64
+    frame:   u64,
+    budget:  Option<usize>
 }
 
 impl ContentCache
 {
+    pub fn set_budget(&mut self, bytes: usize)
+    {
+        self.budget = Some(bytes.min(PIXEL_BUDGET));
+        while self.bytes() > bytes
+        {
+            let Some((index, _)) =
+                self.entries.iter().enumerate().min_by_key(|(_, entry)| entry.touched)
+            else
+            {
+                break;
+            };
+            self.entries.swap_remove(index);
+        }
+    }
+
     pub fn begin_frame(&mut self)
     {
         self.frame = self.frame.wrapping_add(1);
@@ -114,6 +130,7 @@ impl ContentCache
     pub fn paint(&mut self, id: u32, bounds: Rect, canvas: &mut Canvas<'_>,
                  replay: impl FnOnce(&mut Canvas<'_>))
     {
+        let budget = self.budget.unwrap_or(PIXEL_BUDGET);
         let mut crop = Rect::ZERO;
         let mut visible = Rect::ZERO;
         if !sect_rect(bounds, Rect::new(0, 0, canvas.width as i16, canvas.height as i16), &mut crop)
@@ -147,11 +164,11 @@ impl ContentCache
         {
             let count = (crop.right - crop.left) as usize * (crop.bottom - crop.top) as usize;
             let bytes = count * core::mem::size_of::<u32>();
-            if bytes > PIXEL_BUDGET
+            if bytes > budget
             {
                 return;
             }
-            while self.entries.len() >= MAX_WINDOWS || self.bytes() + bytes > PIXEL_BUDGET
+            while self.entries.len() >= MAX_WINDOWS || self.bytes() + bytes > budget
             {
                 // Preserve the hot background if the visible scene exceeds
                 // the budget, rather than cycling through every raster.
@@ -176,7 +193,7 @@ impl ContentCache
             }
             pixels.resize(count, 0);
             // The allocator may provide more capacity than requested.
-            if self.bytes() + pixels.capacity() * 4 > PIXEL_BUDGET
+            if self.bytes() + pixels.capacity() * 4 > budget
             {
                 return;
             }

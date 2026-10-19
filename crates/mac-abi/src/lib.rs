@@ -266,3 +266,5 @@ pub mod dialogs;
 pub mod processes;
 
 pub mod standard_file;
+
+pub mod scrollbox;

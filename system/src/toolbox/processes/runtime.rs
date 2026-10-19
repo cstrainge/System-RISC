@@ -531,6 +531,7 @@ impl Desktop
                 }
                 self.enter(caller);
                 self.standard_file.remove_owner(caller);
+                self.scroll_boxes.remove_owner(caller);
                 let ids: Vec<_> = self.window_owners
                                       .iter()
                                       .filter(|(_, id)| *id == caller)

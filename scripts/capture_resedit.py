@@ -63,7 +63,13 @@ def capture(output):
         frame(package+'-'+kind.hex())
         if kind==b'RV64':
             draw_key('end');frame(package+'-disassembly-end')
-            draw_key('home');draw_key('h',('ctrl',));frame(package+'-hex')
+            draw_key('home')
+            # Exercise actual CDEF0 radio press/leave/release cancellation.
+            driver.move(398,70);driver.button(True);frame(package+'-hex-radio-held',False)
+            driver.move(16,444);frame(package+'-hex-radio-left',False)
+            before=driver.log().count('RESEDIT_DRAW_READY\n');driver.button(False)
+            driver.wait('RESEDIT_DRAW_READY\n',before);frame(package+'-hex-radio-cancelled')
+            click(330,60);frame(package+'-hex')
             # Drag the actual CDEF thumb across its full track. No virtual row
             # positions are injected; Rust checks the resulting viewport.
             driver.move(604,153);driver.button(True);frame(package+'-hex-thumb-held',False)
@@ -71,7 +77,10 @@ def capture(output):
             driver.wait('RESEDIT_DRAW_READY\n',before)
             frame(package+'-hex-end')
             draw_key('home');click(604,418);frame(package+'-hex-down')
-            draw_key('d',('ctrl',));frame(package+'-disassembly-restored')
+            # Timed one-row key repaints include row fill and resident commit.
+            for i in range(8):draw_key('down')
+            frame(package+'-hex-key-scroll')
+            click(460,60);frame(package+'-disassembly-restored')
     try:
         driver.click(40,95,double=True);driver.wait(' name=Applications\n')
         driver.application('QuickDraw Test');driver.wait('QUICKDRAW_TEST_READY\n')

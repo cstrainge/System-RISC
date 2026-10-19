@@ -160,7 +160,12 @@ Finder begins a staged desktop update, draws through ordinary QuickDraw, then
 commits it atomically. Desktop activation deactivates a folder without changing
 window order. CDEF1 owns scrollbar geometry, hit tests, drawing and thumb-value
 mapping in its own executable resource; the Control Manager only retains and
-dispatches it. See `analysis/desktop-compositor.md` at the repository root.
+dispatches it. The resident scroll-box manager composes CDEF1 with a virtualized
+row viewport. It owns generation-tagged IDs, parent/owner validation, immutable
+raster snapshots, pixel shifting and repeat timing. The thin controls SDK
+supplies exposed rows and pumps tracking events. Viewport double buffers and
+compositor caches share a bounded budget. See `docs/SCROLL_BOX.md` and
+`analysis/desktop-compositor.md` at the repository root.
 
 ## Application-local namespaces
 

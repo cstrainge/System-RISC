@@ -10,6 +10,7 @@ pub enum RenderCommand
 {
     Legacy(alloc::boxed::Box<DrawCommand>),
     Control(crate::toolbox::controls::Drawing),
+    ScrollBox(crate::toolbox::controls::scrollbox::Drawing),
     Graphics(service::Drawing),
     Picture(super::pictures_service::Drawing),
     Image(super::png::Drawing),
@@ -31,6 +32,7 @@ impl RenderCommand
         match self
         {
             Self::Control(c) => c.storage(),
+            Self::ScrollBox(c) => c.storage(),
             Self::Legacy(_) => core::mem::size_of::<DrawCommand>(),
             Self::Graphics(g) => g.storage(),
             Self::Picture(p) => p.storage(),
@@ -50,6 +52,7 @@ impl RenderCommand
         {
             Self::Legacy(c) => legacy(canvas, c),
             Self::Control(c) => c.paint(canvas),
+            Self::ScrollBox(c) => c.paint(canvas),
             Self::Graphics(d) =>
             {
                 let _ = d.paint(canvas);

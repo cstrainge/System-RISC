@@ -11,6 +11,7 @@ use mac_abi::{traps::*, *};
 struct Session
 {
     standard_file: crate::toolbox::standard_file::Manager,
+    scroll_boxes:  crate::toolbox::controls::scrollbox::Manager,
     crashes:       crate::toolbox::crashes::Manager,
     events:        crate::toolbox::events::EventManager,
     scrap:         crate::toolbox::scrap::Manager,
@@ -45,7 +46,8 @@ impl Default for Session
                                                              data: data.to_vec() });
         }
         let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources);
-        Self { standard_file: Default::default(),
+        Self { scroll_boxes: Default::default(),
+               standard_file: Default::default(),
                crashes: Default::default(),
                events: crate::toolbox::events::EventManager::new(),
                scrap: Default::default(),
@@ -417,6 +419,11 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        }
                    })
         }
+        SCROLL_BOX => unsafe {crate::toolbox::controls::scrollbox_native::dispatch(pointer,size,|call|SESSION.with(|slot|{
+            let mut session=slot.borrow_mut();let session=session.as_mut().unwrap();
+            if call.operation==scrollbox::CREATE && call.window!=0{return Err(NOT_SUPPORTED);}
+            session.scroll_boxes.request(files::current_owner(),call,&session.fonts,crate::test_scrollbar::scrollbar_definition,host_gate)
+        }))},
         CONTROL =>
         unsafe {
             crate::toolbox::controls::native::dispatch(number,

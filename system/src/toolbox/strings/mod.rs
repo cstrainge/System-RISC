@@ -482,6 +482,20 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                 *original = call;
                 Ok(status)
             }
+            SCROLL_BOX =>
+            {
+                let original = get!(mac_abi::scrollbox::Call);
+                let mut call = *original;
+                if call.operation == mac_abi::scrollbox::SET_ROW
+                {
+                    inline_input(&mut call.text, &mut call.text_length)?;
+                }
+                let status = invoke!(call);
+                call.text = original.text;
+                call.text_length = original.text_length;
+                *original = call;
+                Ok(status)
+            }
             CONTROL =>
             {
                 let original = get!(mac_abi::controls::ControlCall);

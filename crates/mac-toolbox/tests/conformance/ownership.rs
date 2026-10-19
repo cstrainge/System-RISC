@@ -167,9 +167,63 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
         }
     }
     assert!(retired, "window generations must retire rather than wrap into event flags");
+    scroll_boxes(system, gate)?;
     system.log("HANDLE_REUSE_USERSPACE_PASS windows=40 native=9 legacy=3 retirement=passed \
                 foreign=passed\n")
           .map_err(Failure::Service)?;
     system.log("OWNERSHIP_USERSPACE_PASS scope=40 early_returns=16 stale=passed transfer=passed\n")
+          .map_err(Failure::Service)
+}
+
+fn scroll_boxes(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>
+{
+    use mac_toolbox::controls::{ScrollBoxId, ScrollBoxSpec};
+    for _ in 0..8
+    {
+        let window = create(system)?;
+        let spec = ScrollBoxSpec { viewport: Rect::new(8, 8, 192, 72),
+                                   scrollbar: Rect::new(192, 8, 208, 72),
+                                   count: 100000,
+                                   ..Default::default() };
+        let control = system.controls().create_scroll_box(window.id(), spec)?;
+        let id = control.id();
+        assert_ne!(id.0 & 0xffff, window.id().0 & 0xffff);
+        let view = control.control().info()?;
+        for row in view.missing
+        {
+            control.control().set_row(row, "Retained viewport", false)?;
+        }
+        system.windows().begin_update(window.id())?;
+        control.control().draw()?;
+        system.windows().end_update(window.id())?;
+        let view = control.control().scroll_to(1)?;
+        assert_eq!(view.missing, 4..5);
+        control.control().set_row(4, "Exposed row only", true)?;
+        control.control().draw()?;
+        let mut pixels = [0; 240 * 100];
+        control.control().draw_pixels(&mut pixels, 240, 100)?;
+        drop(window);
+        assert!(matches!(control.control().info(), Err(Error(NOT_FOUND))));
+        let replacement_window = create(system)?;
+        let replacement = system.controls().create_scroll_box(replacement_window.id(), spec)?;
+        assert_eq!(replacement.id().0 & 0xffff, id.0 & 0xffff);
+        assert_ne!(replacement.id(), id);
+        drop(control);
+        assert!(replacement.control().info().is_ok());
+        for foreign in [id, ScrollBoxId(replacement_window.id().0)]
+        {
+            assert!(matches!(system.controls().scroll_box(foreign).info(), Err(Error(NOT_FOUND))));
+            let mut call = mac_abi::scrollbox::Call { id: foreign.0,
+                                                      ..Default::default() };
+            assert_eq!(unsafe {
+                           gate(mac_abi::traps::PSTRING_SCROLL_BOX,
+                                core::ptr::from_mut(&mut call).cast(),
+                                core::mem::size_of_val(&call))
+                       },
+                       NOT_FOUND as i64);
+        }
+    }
+    system.log("SCROLL_BOX_USERSPACE_PASS parent_cleanup=8 stale=passed legacy=passed \
+                rows=passed\n")
           .map_err(Failure::Service)
 }

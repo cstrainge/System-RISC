@@ -6,14 +6,16 @@ use core::fmt::{self, Write};
 use mac_toolbox::{events::{CMD_KEY, EVERY_EVENT},
                   files::{CatalogInfo, ROOT_ID},
                   quickdraw::{cursors::StandardCursor, fonts::FontSelection},
-                  resources::ResourceFile,
+                  resources::{FileResourceInfo, ResourceFile},
                   *};
 mod code;
 mod document;
 mod preview;
 mod view;
+mod viewers;
+use controls::scrollbox::View;
 use document::Text;
-use view::{Layout, Pane, Scroll};
+use view::{Layout, Pane};
 const FONT: FontSelection = FontSelection { family: 3,
                                             size:   9,
                                             face:   0 };
@@ -65,6 +67,10 @@ fn window_layout(system: &System<'_>) -> ToolboxResult<(Rect, i16)>
 }
 struct Browser<'a>
 {
+    boxes:          [controls::ScrollBox<'a>; 2],
+    resource_view:  viewers::ResourceView<'a>,
+    preview_rows:   u32,
+    selected:       Option<FileResourceInfo>,
     catalog:        Option<CatalogInfo>,
     file:           Option<ResourceFile<'a>>,
     type_index:     u32,
@@ -75,9 +81,6 @@ struct Browser<'a>
     type_count:     u32,
     resource_count: u32,
     preview_count:  u32,
-    code_key:       Option<ResourceKey>,
-    code_index:     Option<code::Index>,
-    hex_mode:       bool,
     saved:          Option<standard_file::Selection>,
     volume:         u32,
     directory:      u32,
@@ -86,12 +89,23 @@ struct Browser<'a>
 }
 impl<'a> Browser<'a>
 {
-    fn new(system: &System<'a>) -> ToolboxResult<Self>
+    fn new(system: &System<'a>, window: WindowId) -> ToolboxResult<Self>
     {
         let volume = system.files().volume_at(0)?.id;
         let directory =
             system.files().lookup(volume, ROOT_ID, "Applications").map(|e| e.id).unwrap_or(ROOT_ID);
-        Ok(Self { catalog: None,
+        let bounds = system.windows().info(window)?.bounds;
+        let layout = Layout { width:  bounds.right - bounds.left,
+                              height: bounds.bottom - bounds.top };
+        let create =
+            |pane| system.controls().create_scroll_box(window, Self::spec(layout, pane, 0, FONT));
+        Ok(Self { boxes: [create(Pane::Types)?, create(Pane::Resources)?],
+                  resource_view: viewers::ResourceView::new(system,
+                                                            window,
+                                                            Self::resource_area(layout))?,
+                  preview_rows: layout.rows(Pane::Preview),
+                  selected: None,
+                  catalog: None,
                   file: None,
                   type_index: 0,
                   resource_index: 0,
@@ -101,9 +115,6 @@ impl<'a> Browser<'a>
                   type_count: 0,
                   resource_count: 0,
                   preview_count: 0,
-                  code_key: None,
-                  code_index: None,
-                  hex_mode: false,
                   saved: None,
                   volume,
                   directory,
@@ -123,9 +134,7 @@ impl<'a> Browser<'a>
         self.type_top = 0;
         self.resource_top = 0;
         self.preview_top = 0;
-        self.code_key = None;
-        self.code_index = None;
-        self.hex_mode = false;
+        self.resource_view.reset();
         self.saved = None;
         self.status = 10;
         let mut log = Text::<256>::new();
@@ -137,8 +146,9 @@ impl<'a> Browser<'a>
         system.log(log.as_str()).map_err(Error)
     }
 
-    fn draw(&mut self, system: &System<'_>, window: WindowId) -> ToolboxResult<()>
+    fn draw(&mut self, system: &System<'a>, window: WindowId) -> ToolboxResult<()>
     {
+        let started = system.events().monotonic_nanoseconds()?;
         let bounds = system.windows().info(window)?.bounds;
         let width = bounds.right - bounds.left;
         let height = bounds.bottom - bounds.top;
@@ -158,18 +168,37 @@ impl<'a> Browser<'a>
         label(system, window, 10, height - 10, self.status)?;
         port.reset()?;
         system.windows().end_update(window)?;
+        let elapsed = system.events().monotonic_nanoseconds()?.saturating_sub(started);
+        let mut timing = Text::<128>::new();
+        let _ = writeln!(timing, "RESEDIT_RENDER pane=all ns={elapsed}");
+        system.log(timing.as_str()).map_err(Error)?;
         system.log("RESEDIT_DRAW_READY\n").map_err(Error)
     }
 
-    fn scroll(&self, layout: Layout, pane: Pane) -> Scroll
+    fn control(&self, pane: Pane) -> controls::ScrollBoxRef<'a>
     {
-        let (top, count) = match pane
+        if pane == Pane::Preview
         {
-            Pane::Types => (self.type_top, self.type_count),
-            Pane::Resources => (self.resource_top, self.resource_count),
-            Pane::Preview => (self.preview_top, self.preview_count)
-        };
-        Scroll::new(top, layout.rows(pane), count)
+            self.resource_view.control()
+        }
+        else
+        {
+            self.boxes[pane as usize].control()
+        }
+    }
+
+    fn spec(layout: Layout, pane: Pane, count: u32, font: FontSelection)
+            -> controls::ScrollBoxSpec
+    {
+        let body = layout.body(pane);
+        controls::ScrollBoxSpec { viewport: body,
+                                  scrollbar: layout.scrollbar(pane),
+                                  font,
+                                  padding: Point { h: if pane == Pane::Preview { 3 } else { 5 },
+                                                   v: layout.baseline(pane, 0) - body.top },
+                                  row_height: layout.row_height(pane),
+                                  count,
+                                  ..Default::default() }
     }
 
     fn set_top(&mut self, pane: Pane, top: u32)
@@ -182,392 +211,75 @@ impl<'a> Browser<'a>
         }
     }
 
-    fn track_scrollbar(&mut self, system: &System<'_>, window: WindowId, layout: Layout,
-                       pane: Pane, anchor: Point)
-                       -> ToolboxResult<()>
+    fn row(control: controls::ScrollBoxRef<'_>, index: u32, text: &str, selected: bool)
+           -> ToolboxResult<()>
     {
-        let origin = system.windows().info(window)?.bounds;
-        let controls = system.controls();
-        let initial = self.scroll(layout, pane);
-        let mut state = initial.state(layout.scrollbar(pane));
-        let part = controls.scrollbar_hit(window,
-                                          state.bounds,
-                                          state.value,
-                                          state.maximum,
-                                          state.active != 0,
-                                          anchor)?;
-        if !matches!(part,
-                     controls::SCROLL_UP
-                     | controls::SCROLL_DOWN
-                     | controls::SCROLL_PAGE_UP
-                     | controls::SCROLL_PAGE_DOWN
-                     | controls::SCROLL_THUMB)
+        let mut length = text.len().min(768);
+        while !text.is_char_boundary(length)
         {
-            return Ok(());
+            length -= 1;
         }
-        let mut next_repeat = 0;
-        let mut first = true;
-        let mut last = None;
-        loop
-        {
-            let input = system.events().input_state()?;
-            let down = input.modifiers & events::BTN_STATE == 0;
-            let point = Point { h: input.mouse.h - origin.left,
-                                v: input.mouse.v - origin.top };
-            if part == controls::SCROLL_THUMB
-            {
-                state.value = controls.scrollbar_track_value(window,
-                                                             state.bounds,
-                                                             initial.state(state.bounds).value,
-                                                             state.maximum,
-                                                             anchor,
-                                                             point)?;
-            }
-            else
-            {
-                let current = self.scroll(layout, pane);
-                state = current.state(state.bounds);
-                let hot = controls.scrollbar_hit(window, state.bounds, state.value,
-                                                 state.maximum, true, point)?
-                          == part;
-                if first || down && hot && input.uptime_ticks >= next_repeat
-                {
-                    let top = current.step(part);
-                    if top != current.top
-                    {
-                        self.set_top(pane, top);
-                        self.draw(system, window)?;
-                        state = self.scroll(layout, pane).state(state.bounds);
-                    }
-                    next_repeat = input.uptime_ticks + if first { 20 } else { 6 };
-                    first = false;
-                }
-                state.highlighted = if down && hot { part } else { 0 };
-            }
-            if part == controls::SCROLL_THUMB
-            {
-                state.highlighted = if down { part } else { 0 };
-            }
-            if last != Some((state.value, state.highlighted))
-            {
-                controls.draw_scrollbar_state(window, state)?;
-                last = Some((state.value, state.highlighted));
-            }
-            if !down
-            {
-                if part == controls::SCROLL_THUMB
-                   && state.value != initial.state(state.bounds).value
-                {
-                    self.set_top(pane, initial.row_for_value(state.value));
-                    self.draw(system, window)?;
-                }
-                return Ok(());
-            }
-            system.events().wait_event(0, 1)?;
-        }
+        control.set_row(index, &text[..length], selected)
     }
 
-    fn draw_resources(&mut self, system: &System<'_>, window: WindowId, width: i16, height: i16)
-                      -> ToolboxResult<()>
+    fn fill_rows(&mut self, _system: &System<'a>, _window: WindowId, _layout: Layout, pane: Pane,
+                 view: View)
+                 -> ToolboxResult<()>
     {
-        let layout = Layout { width,
-                              height };
-        let port = system.quickdraw().graphics(window);
-        label(system, window, 10, 18, 2)?;
-        label(system, window, 120, 18, 3)?;
-        label(system, window, 282, 18, 5)?;
-        for pane in [Pane::Types, Pane::Resources]
-        {
-            port.frame_rect(layout.bounds(pane))?;
-        }
+        self.set_top(pane, view.top);
+
+        let control = self.control(pane);
         let Some(file) = &self.file
         else
         {
-            for pane in [Pane::Types, Pane::Resources, Pane::Preview]
-            {
-                system.controls().draw_scrollbar_state(window,Scroll::new(0,layout.rows(pane),0).state(layout.scrollbar(pane)))?;
-            }
             return Ok(());
         };
-        self.type_count = file.type_count()?;
-        let kind = if self.type_count == 0 { *b"    " } else { file.type_at(self.type_index)? };
-        self.resource_count = if self.type_count == 0 { 0 } else { file.count(kind)? };
-        self.type_top = self.scroll(layout, Pane::Types).top;
-        self.resource_top = self.scroll(layout, Pane::Resources).top;
-        for row in 0..layout.rows(Pane::Types)
+        let kind = self.selected.map(|item| item.info.key.kind).unwrap_or(*b"    ");
+        for index in view.missing
         {
-            let index = self.type_top + row;
-            if index >= self.type_count
-            {
-                break;
-            }
-            let value = file.type_at(index)?;
-            let y = layout.baseline(Pane::Types, row);
-            let body = layout.body(Pane::Types);
-            if index == self.type_index
-            {
-                port.paint_rect(Rect::new(body.left + 1, y - 12, body.right, y + 3))?;
-            }
-            let mut line = Text::<64>::new();
-            line.roman(&value);
-            let _ = write!(line, " ({})", file.count(value)?);
-            port.clip_rect(Rect::new(8, y - 12, body.right - 1, y + 3))?;
-            text(system,
-                 window,
-                 10,
-                 y,
-                 line.as_str(),
-                 if index == self.type_index { 0xffffff } else { 0 })?;
-            port.reset()?;
-        }
-        for row in 0..layout.rows(Pane::Resources)
-        {
-            let index = self.resource_top + row;
-            if index >= self.resource_count
-            {
-                break;
-            }
-            let item = file.at(kind, index)?;
-            let y = layout.baseline(Pane::Resources, row);
-            let body = layout.body(Pane::Resources);
-            if index == self.resource_index
-            {
-                port.paint_rect(Rect::new(body.left + 1, y - 12, body.right, y + 3))?;
-            }
             let mut line = Text::<1024>::new();
-            let _ = write!(line, "{}  {}", item.info.key.id, item.info.name());
-            port.clip_rect(Rect::new(117, y - 12, body.right - 1, y + 3))?;
-            text(system,
-                 window,
-                 119,
-                 y,
-                 line.as_str(),
-                 if index == self.resource_index { 0xffffff } else { 0 })?;
-            port.reset()?;
-        }
-        if self.resource_count != 0
-        {
-            let item = file.at(kind, self.resource_index)?;
-            port.clip_rect(Rect::new(279, 24, width - 16, height - 34))?;
-            let mut meta = Text::<128>::new();
-            meta.roman(&kind);
-            let _ = write!(meta, "  ID {}  {} bytes", item.info.key.id, item.info.length);
-            text(system, window, 283, 37, meta.as_str(), 0)?;
-            let mut meta = Text::<128>::new();
-            let _ = write!(meta, "Attributes: 0x{:02x}", item.info.attributes);
-            text(system, window, 283, 52, meta.as_str(), 0)?;
-            text(system,
-                 window,
-                 283,
-                 67,
-                 if item.has_name { item.info.name() } else { "(unnamed)" },
-                 0)?;
-            let native = matches!(&kind, b"RV64" | b"CODE");
-            if native && !self.hex_mode && self.code_key != Some(item.info.key)
+            let selected = if pane == Pane::Types
             {
-                self.code_key = Some(item.info.key);
-                system.quickdraw().cursors().set_standard(StandardCursor::Watch)?;
-                self.code_index = code::Index::build(item.info.length, |at, out| {
-                                      file.read(item.info.key, at, out)
-                                  }).ok();
-                system.quickdraw().cursors().init()?;
-            }
-            let disassembly = native && !self.hex_mode && self.code_index.is_some();
-            if kind == *b"RLOC" && !self.hex_mode
-            {
-                self.preview_count = code::relocation_count(item.info.length, |at, out| {
-                                         file.read(item.info.key, at, out)
-                                     }).unwrap_or(1);
-                self.preview_top = self.scroll(layout, Pane::Preview).top;
-                port.clip_rect(layout.body(Pane::Preview))?;
-                let mut row = 0;
-                let mut error = None;
-                let mut emit = |line: &str| {
-                    if let Err(e) = port.text(HEX_FONT,
-                                              Point { h: 283,
-                                                      v: layout.baseline(Pane::Preview, row) },
-                                              line,
-                                              0)
-                    {
-                        error = Some(e);
-                    }
-                    row += 1;
-                };
-                if code::relocations(item.info.length,
-                                     self.preview_top,
-                                     layout.rows(Pane::Preview),
-                                     |at, out| file.read(item.info.key, at, out),
-                                     &mut emit).is_err()
-                {
-                    emit("Malformed RLOC; raw bytes export intact.");
-                }
-                if let Some(e) = error
-                {
-                    return Err(e);
-                }
-            }
-            else if disassembly
-            {
-                let index = self.code_index.as_ref().unwrap();
-                self.preview_count = index.rows.saturating_add(code::HEADER_ROWS);
-                let scroll =
-                    Scroll::new(self.preview_top, layout.rows(Pane::Preview), self.preview_count);
-                self.preview_top = scroll.top;
-                port.clip_rect(layout.body(Pane::Preview))?;
-                let mut draw_error = None;
-                let mut draw_line = |row: u32, line: &str| {
-                    if row >= scroll.top
-                       && row - scroll.top < scroll.rows
-                       && let Err(e) = port.text(HEX_FONT,
-                                                 Point { h: 283,
-                                                         v: layout.baseline(Pane::Preview,
-                                                                            row - scroll.top) },
-                                                 line,
-                                                 0)
-                    {
-                        draw_error = Some(e);
-                    }
-                };
-                let mut row = 0;
-                code::loader(file, index.entry, |line| {
-                    draw_line(row, line);
-                    row += 1;
-                });
-                let first = scroll.top.saturating_sub(code::HEADER_ROWS);
-                row = code::HEADER_ROWS + first;
-                let visible_header = code::HEADER_ROWS.saturating_sub(scroll.top).min(scroll.rows);
-                index.lines(first,
-                            scroll.rows - visible_header,
-                            |at, out| file.read(item.info.key, at, out),
-                            |line| {
-                                draw_line(row, line);
-                                row += 1;
-                            })?;
-                if let Some(e) = draw_error
-                {
-                    return Err(e);
-                }
+                let kind = file.type_at(index)?;
+                line.roman(&kind);
+                let _ = write!(line, " ({})", file.count(kind)?);
+                index == self.type_index
             }
             else
             {
-                let mut data = [0; 32768];
-                let structured = !self.hex_mode
-                                 && matches!(&kind,
-                                             b"MENU" | b"STR " | b"STR#" | b"vers" | b"NABI")
-                                 && item.info.length <= data.len();
-                let icon = !self.hex_mode
-                           && matches!(&kind,
-                                       b"ICON"
-                                       | b"ICN#"
-                                       | b"ics#"
-                                       | b"SICN"
-                                       | b"cicn"
-                                       | b"icl4"
-                                       | b"icl8"
-                                       | b"ics4"
-                                       | b"ics8")
-                           && item.info.length <= data.len();
-                let size;
-                let offset;
-                if structured || icon
-                {
-                    offset = 0;
-                    size = file.read(item.info.key, 0, &mut data)?;
-                    let mut lines = 0;
-                    if structured
-                       && preview::structured(kind, &data[..size], |_| lines += 1).is_err()
-                    {
-                        lines += 1;
-                    }
-                    self.preview_count = lines;
-                }
-                else
-                {
-                    self.preview_count = item.info.length.div_ceil(8).min(u32::MAX as usize) as u32;
-                    self.preview_top = self.scroll(layout, Pane::Preview).top;
-                    offset = self.preview_top as usize * 8;
-                    let capacity = (layout.rows(Pane::Preview) as usize * 8).min(data.len());
-                    size = file.read(item.info.key, offset, &mut data[..capacity])?;
-                }
-                self.preview_top = self.scroll(layout, Pane::Preview).top;
-                let mut line_number = 0u32;
-                let mut draw_error = None;
-                port.clip_rect(layout.body(Pane::Preview))?;
-                let mut emit = |line: &str| {
-                    let visible = if structured
-                    {
-                        line_number >= self.preview_top
-                        && line_number - self.preview_top < layout.rows(Pane::Preview)
-                    }
-                    else
-                    {
-                        line_number < layout.rows(Pane::Preview)
-                    };
-                    if visible
-                    {
-                        let row =
-                            if structured { line_number - self.preview_top } else { line_number };
-                        let font = if !structured && !icon { HEX_FONT } else { FONT };
-                        if let Err(e) = port.text(font,
-                                                  Point { h: 283,
-                                                          v: layout.baseline(Pane::Preview, row) },
-                                                  line,
-                                                  0)
-                        {
-                            draw_error = Some(e);
-                        }
-                    }
-                    line_number += 1;
-                };
-                if icon
-                {
-                    if let Err(e) =
-                        port.draw_icon(kind, &data[..size], Rect::new(298, 91, 426, 219))
-                    {
-                        let mut message = Text::<128>::new();
-                        let _ = write!(message, "Icon preview unavailable ({})", e.0);
-                        emit(message.as_str());
-                    }
-                }
-                else if structured
-                {
-                    if preview::structured(kind, &data[..size], &mut emit).is_err()
-                    {
-                        emit("Malformed resource; raw bytes export intact.");
-                    }
-                }
-                else
-                {
-                    preview::hex(&data[..size], offset, &mut emit);
-                }
-                if let Some(e) = draw_error
-                {
-                    return Err(e);
-                }
-            }
-            port.reset()?;
-            let mut log = Text::<128>::new();
-            let _ = writeln!(log,
-                             "RESEDIT_RESOURCE kind={} id={} bytes={} top={} mode={}",
-                             u32::from_be_bytes(kind),
-                             item.info.key.id,
-                             item.info.length,
-                             self.preview_top,
-                             if disassembly { "disassembly" } else { "preview" });
-            system.log(log.as_str()).map_err(Error)?;
+                let item = file.at(kind, index)?;
+                let _ = write!(line, "{}  {}", item.info.key.id, item.info.name());
+                index == self.resource_index
+            };
+            Self::row(control, index, line.as_str(), selected)?;
         }
-        else
-        {
-            self.preview_count = 0;
-            self.preview_top = 0;
-        }
-        port.reset()?;
-        for pane in [Pane::Types, Pane::Resources, Pane::Preview]
-        {
-            system.controls()
-                  .draw_scrollbar_state(window,
-                                        self.scroll(layout, pane).state(layout.scrollbar(pane)))?;
-        }
+        Ok(())
+    }
+
+    fn track_scrollbar(&mut self, system: &System<'a>, window: WindowId, layout: Layout,
+                       pane: Pane, anchor: Point)
+                       -> ToolboxResult<()>
+    {
+        let control = self.control(pane);
+        control.track(anchor, |view| {
+                   let started = system.events().monotonic_nanoseconds()?;
+                   let first = view.missing.start;
+                   let end = view.missing.end;
+                   self.fill_rows(system, window, layout, pane, view)?;
+                   let elapsed = system.events().monotonic_nanoseconds()?.saturating_sub(started);
+                   let mut log = Text::<128>::new();
+                   let _ = writeln!(log,
+                                    "RESEDIT_ROWS pane={} first={first} end={end} ns={elapsed}",
+                                    pane as u32);
+                   system.log(log.as_str()).map_err(Error)
+               })?;
+        self.set_top(pane, control.info()?.top);
+        self.report(system, layout)?;
+        system.log("RESEDIT_DRAW_READY\n").map_err(Error)
+    }
+
+    fn report(&self, system: &System<'a>, layout: Layout) -> ToolboxResult<()>
+    {
         let mut log = Text::<256>::new();
         let _ = writeln!(log,
                          "RESEDIT_VIEW types_top={} types_rows={} resources_top={} \
@@ -577,9 +289,75 @@ impl<'a> Browser<'a>
                          self.resource_top,
                          layout.rows(Pane::Resources),
                          self.preview_top,
-                         layout.rows(Pane::Preview),
-                         self.scroll(layout, Pane::Preview).maximum());
-        system.log(log.as_str()).map_err(Error)?;
+                         self.preview_rows,
+                         self.preview_count.saturating_sub(self.preview_rows));
+        system.log(log.as_str()).map_err(Error)
+    }
+
+    fn draw_resources(&mut self, system: &System<'a>, window: WindowId, width: i16, height: i16)
+                      -> ToolboxResult<()>
+    {
+        let layout = Layout { width,
+                              height };
+        let port = system.quickdraw().graphics(window);
+        label(system, window, 10, 18, 2)?;
+        label(system, window, 120, 18, 3)?;
+
+        for pane in [Pane::Types, Pane::Resources]
+        {
+            port.frame_rect(layout.bounds(pane))?;
+        }
+        self.type_count = if let Some(file) = &self.file { file.type_count()? } else { 0 };
+        let kind = if self.type_count == 0
+        {
+            *b"    "
+        }
+        else
+        {
+            self.file.as_ref().unwrap().type_at(self.type_index)?
+        };
+        self.resource_count =
+            if self.type_count == 0 { 0 } else { self.file.as_ref().unwrap().count(kind)? };
+        self.selected = if self.resource_count == 0
+        {
+            None
+        }
+        else
+        {
+            Some(self.file.as_ref().unwrap().at(kind, self.resource_index)?)
+        };
+        for (pane, count, top) in [(Pane::Types, self.type_count, self.type_top),
+                                   (Pane::Resources, self.resource_count, self.resource_top)]
+        {
+            let control = self.control(pane);
+            control.configure(Self::spec(layout, pane, count, FONT))?;
+            control.invalidate()?;
+            let view = control.scroll_to(top)?;
+            self.fill_rows(system, window, layout, pane, view)?;
+            control.draw()?;
+        }
+        let view = self.resource_view.draw(system,
+                                            window,
+                                            self.file.as_ref(),
+                                            self.selected,
+                                            Self::resource_area(layout))?;
+        self.preview_top = view.top;
+        self.preview_count = view.spec.count;
+        self.preview_rows = view.rows();
+        self.report(system, layout)
+    }
+
+    fn resource_area(layout: Layout) -> Rect
+    {
+        Rect::new(279, 0, layout.width - 16, layout.height - 34)
+    }
+
+    fn sync_preview(&mut self) -> ToolboxResult<()>
+    {
+        let view = self.resource_view.control().info()?;
+        self.preview_top = view.top;
+        self.preview_count = view.spec.count;
+        self.preview_rows = view.rows();
         Ok(())
     }
 }
@@ -820,7 +598,6 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
 {
     system.menus().clear()?;
     system.menus().install_menu_resource(resources::APPLICATION, 128)?;
-    system.menus().install_menu_resource(resources::APPLICATION, 129)?;
     let (bounds, procedure) = window_layout(system)?;
     let mut title_buffer = [0; 128];
     let title = system.resources().application().string(128, &mut title_buffer)?;
@@ -828,7 +605,7 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
                           .create_owned(windows::WindowSpec::new(bounds, title).procedure(procedure)
                                                                                .minimum(600, 400))?;
     let window = owner.id();
-    let mut browser = Browser::new(system)?;
+    let mut browser = Browser::new(system, window)?;
     browser.draw(system, window)?;
     system.log("RESEDIT_READY\n").map_err(Error)?;
     loop
@@ -853,16 +630,13 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
             }
             redraw = true;
         }
-        if command == Some(*b"hex ") || command == Some(*b"dasm")
-        {
-            browser.hex_mode = command == Some(*b"hex ");
-            browser.preview_top = 0;
-            redraw = true;
-        }
         if command == Some(*b"save") || command == Some(*b"svas") || command == Some(*b"expr")
         {
-            if save(system, &mut browser, command == Some(*b"svas")).is_err()
+            if let Err(error) = save(system, &mut browser, command == Some(*b"svas"))
             {
+                let mut log = Text::<128>::new();
+                let _ = writeln!(log, "RESEDIT_SAVE_ERROR status={}", error.0);
+                system.log(log.as_str()).map_err(Error)?;
                 browser.status = 13;
             }
             redraw = true;
@@ -881,18 +655,19 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
             let bounds = system.windows().info(window)?.bounds;
             let layout = Layout { width:  bounds.right - bounds.left,
                                   height: bounds.bottom - bounds.top };
-            let scroll = browser.scroll(layout, Pane::Preview);
-            browser.preview_top = match (event.message >> 8) as u8
+            if let (Some(file), Some(item)) = (browser.file.as_ref(), browser.selected)
             {
-                0x79 => scroll.step(controls::SCROLL_PAGE_DOWN),
-                0x7d => scroll.step(controls::SCROLL_DOWN),
-                0x74 => scroll.step(controls::SCROLL_PAGE_UP),
-                0x7e => scroll.step(controls::SCROLL_UP),
-                0x73 => 0,
-                0x77 => scroll.maximum(),
-                _ => scroll.top
-            };
-            redraw = true;
+                browser.resource_view.key(system,
+                                           window,
+                                           file,
+                                           item,
+                                           Browser::resource_area(layout),
+                                           (event.message >> 8) as u8)?;
+                browser.sync_preview()?;
+                browser.report(system, layout)?;
+            }
+            system.log("RESEDIT_DRAW_READY\n").map_err(Error)?;
+            continue;
         }
         if event.kind == EventKind::MouseDown && event.message == window.0
         {
@@ -901,11 +676,37 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
                                   height: bounds.bottom - bounds.top };
             let point = Point { h: event.where_.h - bounds.left,
                                 v: event.where_.v - bounds.top };
+            if Browser::resource_area(layout).contains(point)
+            {
+                let changed = if let (Some(file), Some(item)) =
+                    (browser.file.as_ref(), browser.selected)
+                {
+                    browser.resource_view.mouse(system,
+                                                 window,
+                                                 file,
+                                                 item,
+                                                 Browser::resource_area(layout),
+                                                 point)?
+                }
+                else
+                {
+                    false
+                };
+                browser.sync_preview()?;
+                if changed
+                {
+                    browser.draw(system, window)?;
+                }
+                else
+                {
+                    browser.report(system, layout)?;
+                    system.log("RESEDIT_DRAW_READY\n").map_err(Error)?;
+                }
+                continue;
+            }
             if let Some(pane) =
-                [Pane::Types, Pane::Resources, Pane::Preview].into_iter().find(|p| {
-                                                                             layout.scrollbar(*p)
-                                                                                   .contains(point)
-                                                                         })
+                [Pane::Types, Pane::Resources].into_iter()
+                                              .find(|p| layout.scrollbar(*p).contains(point))
             {
                 browser.track_scrollbar(system, window, layout, pane, point)?;
                 continue;

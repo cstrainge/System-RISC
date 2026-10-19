@@ -1,7 +1,6 @@
 //! Pane geometry and full-range row positions; CDEF owns scrollbar geometry.
 #![forbid(unsafe_code)]
-use mac_toolbox::{Point, Rect,
-                  controls::{self, ScrollbarState}};
+use mac_toolbox::{Point, Rect};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane
 {
@@ -64,73 +63,5 @@ impl Layout
         r.contains(point)
          .then(|| ((point.v - r.top) / self.row_height(pane)) as u32)
          .filter(|row| *row < self.rows(pane))
-    }
-}
-#[derive(Clone, Copy)]
-pub struct Scroll
-{
-    pub top:   u32,
-    pub rows:  u32,
-    pub count: u32
-}
-impl Scroll
-{
-    pub fn new(top: u32, rows: u32, count: u32) -> Self
-    {
-        let mut s = Self { top,
-                           rows,
-                           count };
-        s.top = s.top.min(s.maximum());
-        s
-    }
-
-    pub fn maximum(self) -> u32
-    {
-        self.count.saturating_sub(self.rows)
-    }
-
-    pub fn state(self, bounds: Rect) -> ScrollbarState
-    {
-        let maximum = self.maximum().min(i16::MAX as u32) as i16;
-        ScrollbarState { bounds,
-                         maximum,
-                         value: if self.maximum() == 0
-                         {
-                             0
-                         }
-                         else
-                         {
-                             (u64::from(self.top) * maximum as u64 / u64::from(self.maximum()))
-                             as i16
-                         },
-                         active: u32::from(maximum != 0),
-                         ..Default::default() }
-    }
-
-    pub fn row_for_value(self, value: i16) -> u32
-    {
-        let maximum = self.maximum().min(i16::MAX as u32);
-        if maximum == 0
-        {
-            0
-        }
-        else
-        {
-            ((value.max(0) as u64 * u64::from(self.maximum()) + u64::from(maximum) / 2)
-             / u64::from(maximum)).min(u64::from(self.maximum())) as u32
-        }
-    }
-
-    pub fn step(self, part: i16) -> u32
-    {
-        let delta = match part
-        {
-            controls::SCROLL_UP => -1,
-            controls::SCROLL_DOWN => 1,
-            controls::SCROLL_PAGE_UP => -i64::from(self.rows),
-            controls::SCROLL_PAGE_DOWN => i64::from(self.rows),
-            _ => 0
-        };
-        (i64::from(self.top) + delta).clamp(0, i64::from(self.maximum())) as u32
     }
 }

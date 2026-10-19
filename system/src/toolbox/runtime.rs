@@ -33,6 +33,7 @@ const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
     standard_file:   super::standard_file::Manager,
+    scroll_boxes:    super::controls::scrollbox::Manager,
     crash:           super::crashes::Manager,
     dialogs:         super::dialogs::DialogState,
     desktop:         DesktopLayer,
@@ -136,6 +137,7 @@ impl Desktop
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
                   standard_file: Default::default(),
+                  scroll_boxes: Default::default(),
                   dialogs: Default::default(),
                   menus: super::menus::Manager::new(mdef, crate::machine::traps::gateway),
                   desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
@@ -304,6 +306,7 @@ impl Desktop
                 {
                     return NOT_FOUND;
                 }
+                self.scroll_boxes.remove_window(id.0);
                 self.content.retain(|content| content.id != id);
                 self.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
@@ -478,6 +481,110 @@ impl Desktop
     pub fn control_definition(&mut self, id: i16) -> Result<DefinitionEntry, Status>
     {
         self.definitions.resolve(*b"CDEF", id).map_err(crate::loader::status)
+    }
+
+    pub fn scroll_box(&mut self, call: &mut mac_abi::scrollbox::Call)
+                      -> Result<Option<super::controls::scrollbox::Drawing>, Status>
+    {
+        use mac_abi::scrollbox::*;
+        let window = if call.operation == CREATE
+        {
+            call.window
+        }
+        else
+        {
+            self.scroll_boxes.window(call.id, self.owner)?
+        };
+        if window != 0 && !self.owns(WindowId(window))
+        {
+            return Err(if self.windows.window(WindowId(window)).is_some()
+                       {
+                           ACCESS_DENIED
+                       }
+                       else
+                       {
+                           NOT_FOUND
+                       });
+        }
+        if matches!(call.operation, CREATE | CONFIGURE)
+           && window != 0
+           && !self.windows.window(WindowId(window)).is_some_and(|w| {
+                                                        let bounds = w.bounds;
+                                                        let r = call.spec.viewport;
+                                                        let b = call.spec.scrollbar;
+                                                        r.left >= 0
+                                                        && r.top >= 0
+                                                        && r.right <= bounds.right - bounds.left
+                                                        && r.bottom <= bounds.bottom - bounds.top
+                                                        && b.left >= 0
+                                                        && b.top >= 0
+                                                        && b.right <= bounds.right - bounds.left
+                                                        && b.bottom <= bounds.bottom - bounds.top
+                                                    })
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if call.operation == DRAW && call.surface.is_null() && window == 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let entry = self.definitions.resolve(*b"CDEF", 1).map_err(crate::loader::status)?;
+        let drawing = self.scroll_boxes.request(self.owner,
+                                                 call,
+                                                 crate::kernel::fonts().ok_or(NOT_SUPPORTED)?,
+                                                 entry,
+                                                 crate::machine::traps::gateway)?;
+        if !call.surface.is_null()
+        {
+            return Ok(drawing);
+        }
+        if call.operation == DISPOSE && window != 0
+        {
+            for content in self.content
+                               .iter_mut()
+                               .chain(self.pending_content.iter_mut())
+                               .filter(|content| content.id.0 == window)
+            {
+                content.commands.retain(|command| {
+                    !matches!(command, RenderCommand::ScrollBox(drawing) if drawing.id == call.id)
+                });
+            }
+            self.content_changed(window);
+        }
+
+        if let Some(drawing) = drawing
+        {
+            let used = self.retained_bytes();
+            let size = drawing.storage();
+            let id = drawing.id;
+            let content = self.content_mut(window)?;
+            let previous = content.commands.iter_mut().find(|command| {
+                matches!(command, RenderCommand::ScrollBox(old) if old.id == id)
+            });
+            if let Some(command) = previous
+            {
+                if used - command.storage() + size > MAX_RETAINED_BYTES
+                {
+                    return Err(NO_MEMORY);
+                }
+                *command = RenderCommand::ScrollBox(drawing);
+            }
+            else
+            {
+                if used + size > MAX_RETAINED_BYTES || content.commands.len() >= 512
+                {
+                    return Err(NO_MEMORY);
+                }
+                content.commands.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                content.commands.push(RenderCommand::ScrollBox(drawing));
+            }
+            self.content_changed(window);
+            if !self.pending_content.iter().any(|content| content.id.0 == window)
+            {
+                self.present();
+            }
+        }
+        Ok(None)
     }
 
     pub fn control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Status
@@ -905,6 +1012,7 @@ impl Desktop
             }
             Action::Close(id) =>
             {
+                self.scroll_boxes.remove_window(id.0);
                 self.content.retain(|content| content.id != id);
                 self.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
@@ -1296,6 +1404,10 @@ impl Desktop
             let cdef = self.cdef;
             let fonts = crate::kernel::fonts();
             let desktop_visible = self.processes.get(1).is_ok_and(|p| p.info.hidden == 0);
+            let cache_budget =
+                super::quickdraw::content_cache::PIXEL_BUDGET.saturating_sub(self.scroll_boxes
+                                                                                 .raster_storage());
+            self.content_cache.set_budget(cache_budget);
             self.content_cache.begin_frame();
             self.content_cache.retain(|id| {
                                   if id == mac_abi::quickdraw::DESKTOP_TARGET
@@ -1305,6 +1417,14 @@ impl Desktop
                                   else
                                   {
                                       self.windows.window(WindowId(id)).is_some()
+                                      && !self.content
+                                              .iter()
+                                              .find(|content| content.id.0 == id)
+                                              .is_some_and(|content| {
+                                                  content.commands.iter().any(|command| {
+                                                  matches!(command, RenderCommand::ScrollBox(_))
+                                              })
+                                              })
                                   }
                               });
             if desktop_visible
@@ -1327,13 +1447,34 @@ impl Desktop
             let cdef = self.cdef;
             platform::with_tracking_mask(|scratch| {
                 self.windows.draw_with_scratch(&mut canvas, scratch, |window, canvas| {
-                            cache.paint(window.id.0, window.bounds, canvas, |canvas| {
+                            let content = content.iter().find(|content| content.id == window.id);
+                            let replay = |canvas: &mut Canvas<'_>| {
                                 canvas.paint_rect(window.local_bounds(), WHITE);
-                                if let Some(content) = content.iter().find(|c| c.id == window.id)
+                                if let Some(content) = content
                                 {
-                                    crate::kernel::with_resource_owner(u64::from(window.refcon),||content.paint(canvas,fonts,|canvas,command|paint(canvas,command,cdef)));
+                                    crate::kernel::with_resource_owner(u64::from(window.refcon), || {
+                                        content.paint(canvas, fonts, |canvas, command| {
+                                            paint(canvas, command, cdef)
+                                        });
+                                    });
                                 }
+                            };
+                            // Managed scroll boxes already retain their viewport rasters.
+                            // A second whole-window raster wastes heap and copies every frame.
+                            let has_viewports = content.is_some_and(|content| {
+                                content.commands.iter().any(|command| {
+                                    matches!(command, RenderCommand::ScrollBox(_))
+                                })
                             });
+                            if has_viewports
+                            {
+                                replay(canvas);
+                            }
+                            else
+                            {
+                                cache.paint(window.id.0, window.bounds, canvas, replay);
+                            }
+
                         })
             });
             self.menus.draw(&mut canvas);

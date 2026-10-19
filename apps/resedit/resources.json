@@ -56,27 +56,6 @@
       }
     },
     {
-      "type": "MENU",
-      "id": 129,
-      "symbol": "VIEW_MENU",
-      "payload": {
-        "format": "menu",
-        "title": "View",
-        "items": [
-          {
-            "text": "Disassembly",
-            "key": "D",
-            "command": "dasm"
-          },
-          {
-            "text": "Hex Dump",
-            "key": "H",
-            "command": "hex "
-          }
-        ]
-      }
-    },
-    {
       "type": "STR ",
       "id": 128,
       "symbol": "PRODUCT_NAME",
@@ -110,7 +89,9 @@
           "Cancel",
           "Select a type, then a resource.",
           "Preview continues: use Page Up / Page Down.",
-          "Export JSON as:"
+          "Export JSON as:",
+          "Hex Dump",
+          "Disassembly"
         ]
       }
     },

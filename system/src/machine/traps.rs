@@ -278,6 +278,12 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 toolbox::memory::native::dispatch(manager, number, pointer, size)
             }).unwrap_or_else(|error| error.status() as i64)
         }
+        SCROLL_BOX =>
+        unsafe {
+            toolbox::controls::scrollbox_native::dispatch(pointer, size, |call| {
+                crate::kernel::with_desktop(|desktop|desktop.scroll_box(call)).unwrap_or_else(|e|Err(e.status()))
+            })
+        },
         CONTROL =>
         {
             let call = read_request!(mac_abi::controls::ControlCall);

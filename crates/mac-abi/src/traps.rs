@@ -2,6 +2,8 @@
 use crate::*;
 
 /// System-owned Standard File dialogs; native range beyond every classic 16-bit trap.
+pub const SCROLL_BOX: u32 = 0x10021;
+pub const PSTRING_SCROLL_BOX: u32 = SCROLL_BOX | PSTRING_BIT;
 pub const STANDARD_FILE: u32 = 0x10020;
 pub const PSTRING_STANDARD_FILE: u32 = STANDARD_FILE | PSTRING_BIT;
 pub const CRASH: u32 = 0x1001f;
@@ -159,7 +161,8 @@ pub const fn native_string_trap(number: u32) -> Option<u32>
 {
     match number
     {
-        PSTRING_LOG
+        PSTRING_SCROLL_BOX
+        | PSTRING_LOG
         | PSTRING_WINDOW
         | PSTRING_DRAW
         | PSTRING_SURFACE

@@ -19,8 +19,11 @@ to applications.
 
 Open and export are File menu commands. The document window title is the
 inspected filename. Select a resource type in the left column, then a resource
-in the next. Types, resources and the preview each have a standard CDEF
-scrollbar with arrows, page tracking and thumb dragging. The information panel
+in the next. Types, resources and the preview each use a resident Toolbox
+scroll box, composed with a standard CDEF1 scrollbar for arrows, page tracking
+and live thumb dragging. System shifts cached pixels and requests only newly
+exposed rows; a scroll does not rebuild the entire browser. See [Scroll boxes](SCROLL_BOX.md).
+The information panel
 shows type, signed ID, name, exact byte length and attributes. Resizing adjusts
 the visible row counts. Page Up/Down, arrows, Home and End scroll the preview.
 
@@ -34,9 +37,17 @@ available as hex and export completely. Inspection never executes code.
 
 The native System executable is **RV64 resource 0**, containing a little-endian
 RISC-V ELF64 image, rather than a classic CODE resource. Native RV64 (and CODE
-containing a valid RV64 ELF) defaults to disassembly in Monaco 9. View > Hex Dump
-(Ctrl-H) and View > Disassembly (Ctrl-D) switch views and return to the top.
+containing a valid RV64 ELF) defaults to disassembly in Monaco 9. The code viewer's
+Hex Dump and Disassembly radio buttons switch views and return to the top. These
+are standard CDEF0 radio controls, including press/leave/release cancellation;
+Disassembly is disabled for non-RV64 code. There is no View menu.
 Classic 68k CODE remains hex; this is an RV64 decoder, not a 68k translator.
+
+Each resource viewer owns the entire right-hand pane, including its metadata,
+controls, content, mouse input and keyboard behavior. Implementations live in
+`apps/resedit/src/viewers`; the browser supplies a resource and a rectangle.
+Viewers share optional metadata and scrolling helpers, rather than a fixed
+browser-owned header or format switch.
 
 The instruction viewer decodes only file-backed executable PT_LOAD segments,
 using linked virtual addresses and skipping data segments and the ELF header.
@@ -127,7 +138,7 @@ resource bytes and hashes are under `tests/data/standard-file`.
 Canonical checks live in `crates/mac-toolbox/tests`, through the aggregate SDK:
 
 ```sh
-cargo test -p mac-toolbox --test resedit --test file_mutations --test file_ownership
+cargo test -p mac-toolbox --test resedit --test scrollbox --test file_mutations --test file_ownership
 cargo xtask image
 cargo test -p mac-toolbox --test resedit -- --ignored
 cargo xtask check
@@ -137,7 +148,8 @@ Coverage includes all resource fields and both forks, malformed maps, invalid
 code that must never execute, unusual type/name bytes, payloads over 1 MiB,
 original icon hashes, actual icon pixels, Monaco hex/disassembly pixels,
 compressed instruction/checkpoint boundaries, malformed ELF and full-range
-scrolling through native CDEFs, native saves extracted from a stopped
+scrolling through native CDEFs, cached-row pixel equivalence, radio control
+press/cancel/select pixels, timed one-row fill-and-commit, native saves extracted from a stopped
 private QEMU disk, archive rebuild, running-app inspection, filters, modal
 cancellation/replacement, New Folder, stale/foreign IDs, ownership, legacy string
 conversion, remounts, and injected write/flush failures. Python supplies transport;

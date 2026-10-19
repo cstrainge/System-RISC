@@ -163,3 +163,6 @@ impl<'a> Controls<'a>
     }
 }
 pub use mac_abi::definitions::{CDEF, ControlDefinitionState};
+
+pub mod scrollbox;
+pub use scrollbox::{ScrollBox, ScrollBoxId, ScrollBoxRef, ScrollBoxSpec};

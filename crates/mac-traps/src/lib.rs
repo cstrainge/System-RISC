@@ -940,3 +940,37 @@ impl Client<'_>
         result
     }
 }
+
+impl Client<'_>
+{
+    pub fn scroll_box(self, call: &mut mac_abi::scrollbox::Call) -> Result<()>
+    {
+        call.surface = core::ptr::null_mut();
+        status(self.invoke(SCROLL_BOX, call))
+    }
+
+    pub fn scroll_box_pixels(self, call: &mut mac_abi::scrollbox::Call, pixels: &mut [u32],
+                             width: usize, height: usize)
+                             -> Result<()>
+    {
+        call.surface = core::ptr::null_mut();
+        if width == 0
+           || height == 0
+           || width > i16::MAX as usize
+           || height > i16::MAX as usize
+           || width.checked_mul(height) != Some(pixels.len())
+           || pixels.len() > 640 * 480
+        {
+            return Err(Error(BAD_ARGUMENT));
+        }
+        let mut surface = Surface { pixels: pixels.as_mut_ptr(),
+                                    width:  width as u32,
+                                    height: height as u32,
+                                    origin: Point::default(),
+                                    clip:   Rect::new(0, 0, width as i16, height as i16) };
+        call.surface = &mut surface;
+        let result = status(self.invoke(SCROLL_BOX, call));
+        call.surface = core::ptr::null_mut();
+        result
+    }
+}
