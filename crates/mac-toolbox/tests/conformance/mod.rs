@@ -207,6 +207,8 @@ pub fn run_core(system: &System<'_>) -> Result<(), Failure>
 pub fn run_all(system: &System<'_>) -> Result<(), Failure>
 {
     events::run(system)?;
+    textedit::original(system)?;
+    textedit::native(system)?;
     dates::values()?;
     run_core(system)?;
     require(png::run(system)? == 23, "PNG conformance count")?;
@@ -226,6 +228,7 @@ pub mod dates;
 
 pub mod png;
 pub mod events;
+pub mod textedit;
 
 #[allow(dead_code)] // Legacy gate checks are called only by string/guest runners.
 pub mod scrap;

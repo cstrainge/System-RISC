@@ -19,6 +19,33 @@
       }
     },
     {
+      "type": "WIND",
+      "id": 2003,
+      "symbol": "TEXTEDIT_LAYOUT",
+      "name": "TextEdit exerciser window layout",
+      "payload": {
+        "format": "hex",
+        "hex": "005a0078019a0258000801000100000000000000"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 1257,
+      "symbol": "DEVELOP_MENU",
+      "name": "Native Toolbox exercisers",
+      "payload": {
+        "format": "menu",
+        "title": "Develop",
+        "items": [
+          {
+            "text": "TextEdit Exerciser",
+            "enabled": true,
+            "command": "tedm"
+          }
+        ]
+      }
+    },
+    {
       "type": "MENU",
       "id": 1251,
       "symbol": "APPLE_MENU",
@@ -367,7 +394,10 @@
           "none",
           "text",
           "This clipboard format cannot be displayed.",
-          "This clipboard text is too large to display."
+          "This clipboard text is too large to display.",
+          "TextEdit Exerciser",
+          "TextEdit runs inside System.\rSelect text, type, or use Edit to cut, copy and paste.\rThis window uses the public Rust Toolbox API.",
+          "Chicago 12  •  Drag to select  •  Ctrl-X / C / V / A"
         ]
       }
     },

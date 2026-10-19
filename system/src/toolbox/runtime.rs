@@ -21,6 +21,8 @@ use crate::{loader::Definitions,
 mod dialog_runtime;
 #[path = "events/runtime.rs"]
 mod event_runtime;
+#[path = "textedit/runtime.rs"]
+mod textedit_runtime;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
@@ -32,6 +34,7 @@ pub struct Desktop
     classic_font: mac_abi::quickdraw::FontSelection,
     pub windows:  WindowManager,
     events:       EventManager,
+    textedit:     super::textedit::Manager,
     definitions:  Definitions,
     content:      Vec<Content>,
     decoders:     [Decoder; 2],
@@ -83,6 +86,7 @@ impl Desktop
                   classic_font: Default::default(),
                   windows: WindowManager::with_gate(crate::machine::traps::gateway),
                   events: EventManager::new(),
+                  textedit: Default::default(),
                   definitions,
                   content: Vec::new(),
                   decoders: [Decoder::new(), Decoder::new()],

@@ -36,7 +36,7 @@ audit, synchronization rules and scheduler/application-thread exit criteria.
 ## Resident implementation
 
 `system/src/toolbox` contains QuickDraw, windows, controls, events, resources,
-files, menus, dialogs, memory and scrap modules. The implemented managers own the
+files, menus, dialogs, memory, scrap and textedit modules. The implemented managers own the
 rasterizer, bitmap/TrueType font manager, window state, retained drawing lists,
 offscreen worlds, cursors, icon and PICT decoders, event queue and shared read-only
 resource search, HFS catalog/Trash mutations and bounded handle Memory Manager.
@@ -46,7 +46,7 @@ calls WDEF1/CDEF0, with modal input routing. The shared Scrap Manager owns bound
 binary-flavor records and native UTF8 text behind a separate nonwaiting guard.
 The Event Manager separates its128-entry native application queue from the
 captured20-entry low-level OS queue; physical input state is observed before
-window/menu/dialog routing. Full classic managers remain incomplete.
+window/menu/dialog routing. Monochrome TextEdit owns generation-checked editor records, fallible UTF8 editing/layout and clipped retained drawing. Native clipboard edits stage changes while holding the desktop then Scrap guards; no borrowed text escapes. Full classic managers remain incomplete.
 
 The Window Manager controls lifecycle, z-order, exposure and interaction. Each
 loaded WDEF supplies its own frame drawing, hit testing and geometry. The

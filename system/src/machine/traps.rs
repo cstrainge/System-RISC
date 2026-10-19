@@ -124,6 +124,18 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 Err(status) => status as i64
             }
         }
+        TEXTEDIT =>
+        {
+            crate::kernel::with_desktop(|runtime| unsafe {
+                toolbox::textedit::native::dispatch_with(number,
+                                                         pointer,
+                                                         size,
+                                                         |call, input, output| {
+                                                             runtime.textedit_request(call, input,
+                                                                                      output)
+                                                         })
+            }).unwrap_or_else(|error| error.status() as i64)
+        }
         DIALOG =>
         {
             let call = read_request!(mac_abi::dialogs::DialogCall);

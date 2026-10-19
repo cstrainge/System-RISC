@@ -9,6 +9,7 @@ mac-abi.workspace = true
 mac-traps.workspace = true
 toolbox-quickdraw = { path = "../../toolbox/quickdraw" }
 toolbox-windows = { path = "../../toolbox/windows" }
+toolbox-textedit = { path = "../../toolbox/textedit" }
 toolbox-scrap = { path = "../../toolbox/scrap" }
 toolbox-events = { path = "../../toolbox/events" }
 toolbox-resources = { path = "../../toolbox/resources" }

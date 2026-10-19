@@ -162,6 +162,22 @@ impl<'a> Client<'a>
         status(result)
     }
 
+    /// Borrow text and scratch storage for one resident TextEdit request.
+    pub fn textedit(self, call: &mut textedit::TextEditCall, input: &str, output: &mut [u8])
+                    -> Result<()>
+    {
+        call.input = input.as_ptr();
+        call.input_length = input.len();
+        call.output = output.as_mut_ptr();
+        call.capacity = output.len();
+        let result = self.invoke(TEXTEDIT, call);
+        call.input = core::ptr::null();
+        call.input_length = 0;
+        call.output = core::ptr::null_mut();
+        call.capacity = 0;
+        status(result)
+    }
+
     pub fn geometry(self, call: &mut GeometryCall) -> Result<()>
     {
         status(self.invoke(GEOMETRY, call))

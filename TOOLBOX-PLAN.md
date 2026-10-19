@@ -161,8 +161,8 @@ manager's remaining contracts.
 | Controls | Loaded button CDEF0 and scrollbar CDEF1, typed scrollbar draw/hit/value tracking | General control objects/lists, lifecycle, bounds/value/range/refcon/title, check/radio/popup/user controls, keyboard focus, action procedures, resource creation and complete tracking semantics |
 | Menus | Resource-installed MENU/fmnu objects, loaded native MDEF0 layout/drawing/hit, enable/check state, captured pointer tracking and keyboard command routing through the public SDK | Dynamic insertion/deletion, all item icons/marks/styles, arbitrary MDEF lifecycle, hierarchical/scrolling/pop-up variants, original flashing, per-app menu ownership and classic trap adaptation |
 | Lists | No List Manager public service | Cells/data/selection/scrolling, LDEF, click/double-click, drawing modes, resource/procedure lifetimes and control integration |
-| TextEdit | No public manager | Mono/styled edit records, classic text limits, CR handling, selection/caret/hit testing, line layout/scroll, edit operations, style scraps, hooks and drawing/activation integration |
-| Scrap | Resident shared memory clipboard with clear/append/first-match reads, ordered binary flavors, Rust UTF8 text and paired Pascal conversion trap | Disk-backed Scrap.dat, original counted-MacRoman A-line adapter, process suspend/resume, private scrap conversion and TextEdit/dialog clipboard integration |
+| TextEdit | Resident monochrome Chicago12 editor with thin UTF8 SDK, generation IDs, CR wrapping, selection/hits, edits, caret/activation, clipping/scroll and native clipboard; original semantic/pixel fixtures | Styled text, other fonts/alignment, original TEHandle/MacRoman A-line and private scrap adapters, hooks, double-click word selection/autoscroll, editable-dialog integration |
+| Scrap | Resident shared memory clipboard with clear/append/first-match reads, ordered binary flavors, Rust UTF8 text and paired Pascal conversion trap | Disk-backed Scrap.dat, original counted-MacRoman A-line adapter, process suspend/resume, private scrap conversion and editable-dialog clipboard integration |
 | Dialogs/alerts | Resource-backed ALRT/DITL alerts, static substitutions/icons/buttons, modal pointer tracking/default/cancel and focus restoration through public SDK | General DLOG lifecycle, item mutation, editable/user items, tab focus, modal/modeless filters, alert stages/sounds and broader classic records |
 | Files | Mounted HFS volumes, catalog/CNID/path and read-only fork reads, bounded persistent create-folder/move/rename/delete/Trash and Finder metadata, block flush/rollback | General file creation, fork write/truncate/extend, catalog/extents growth, crash recovery, full metadata/lock policy, unmount/eject, working directories and async parameter blocks |
 | Aliases/Standard File | No public managers | Alias records/resolution/update under move/rename; original open/save dialogs, filters/hooks, replies, directory selection and resource ownership |
@@ -185,9 +185,9 @@ coverage detail: [QuickDraw](../analysis/quickdraw-coverage.md),
 [File Manager](system/src/toolbox/files/README.md), and
 [architecture/classic adapter](ARCHITECTURE.md).
 
-The next tranche is mono TextEdit: original line layout, hit/selection, caret,
-CR text and edit/Scrap operations through the same public test harness. Editable
-dialog items can then use that service. Resource-file/handle lifecycle and native
+The bounded mono TextEdit slice now has original semantic and pixel coverage.
+The next tranche is editable dialog items using that resident service, including
+focus, modal keyboard routing, default/cancel behavior and resource lifecycle. Resource-file/handle lifecycle and native
 control objects remain separate prerequisites for broader applications; general
 fork writes precede Standard File and persistent preferences. Scheduler and
 per-app ownership work stays on the THREADING.md gates throughout.

@@ -2,6 +2,7 @@
 pub mod quickdraw;
 pub mod events;
 pub mod scrap;
+pub mod textedit;
 pub mod windows;
 pub mod controls;
 pub mod resources;

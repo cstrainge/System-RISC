@@ -23,6 +23,25 @@ pub struct Manager
 }
 impl Manager
 {
+    /// Replace the shared clipboard in one transaction for native editor Copy.
+    /// Allocation and record construction finish before the old generation is
+    /// released, so an error preserves the previous clipboard in full.
+    pub fn replace_text(&mut self, text: &str) -> Result<(), Status>
+    {
+        let mut replacement = Self::default();
+        replacement.put(TEXT, text.as_bytes())?;
+        replacement.count = self.count.wrapping_add(1);
+        *self = replacement;
+        Ok(())
+    }
+
+    /// Borrow the first native text record while holding the Scrap guard.
+    pub fn text(&self) -> Result<&str, Status>
+    {
+        let record = self.records.iter().find(|record| record.kind == TEXT).ok_or(NO_TYPE_ERR)?;
+        core::str::from_utf8(&record.bytes).map_err(|_| BAD_ARGUMENT)
+    }
+
     pub fn request(&mut self, call: &mut ScrapCall, input: &[u8], output: &mut [u8]) -> Status
     {
         call.transferred = 0;

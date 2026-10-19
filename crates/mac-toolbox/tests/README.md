@@ -160,7 +160,7 @@ contracts;12 paired Pascal trap cases test conversion at the actual boundary.
 Additional host tests check byte/record limits, failure preservation, cleared
 transport borrows and eight concurrent OS threads sharing one resident clipboard.
 These are memory clipboard contracts. Disk Scrap.dat, original counted-MacRoman
-A-line adapters, TextEdit and scheduler/application ownership remain separate.
+A-line adapters and scheduler/application ownership remain separate.
 
 
 Uncached menu sizing now has eight executed original CalcMenuSize observations
@@ -169,3 +169,20 @@ cases through the public Menu Manager. The graphical probe also checks a full
 Close Window label, its10-pixel gap, and Command-W against public QuickDraw text
 rendering. This covers generated Finder menus whose resource width is zero;
 cached original popup pixel comparisons remain in the same test.
+
+## Monochrome TextEdit
+
+`textedit.rs` calls the public SDK for356 original layout/edit/hit observations,
+20 native Unicode/clipboard contracts and6 paired Pascal conversion contracts.
+The same contracts run through the private graphical RV64 conformance Finder.
+Additional host tests exercise editor/byte limits and failed edits preserving
+both editor and clipboard. Original private TE scrap remains separate from the
+native shared clipboard API.
+
+`textedit_graphical.rs` compares seven original128×96 one-bit frames (86,016
+pixels) with actual resident drawing: text, multiline selection, caret, scroll,
+blink on/off and inactive selection. Python supplies private-disk transport;
+Rust owns pixel acceptance and actual Finder keyboard/menu/resize assertions
+in a second private VM. Original probes, small fixtures and provenance are
+under `fixtures/textedit-original` and `data/textedit`. Styled text, other
+font/alignment profiles, hooks and original TEHandle adapters remain open.

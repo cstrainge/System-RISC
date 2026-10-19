@@ -49,6 +49,7 @@ fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::
     conformance::dates::filesystem(system)?;
     conformance::strings::shared(system, gate)?;
     conformance::scrap::legacy_text(system, gate)?;
+    conformance::textedit::legacy(system, gate)?;
     conformance::strings::graphical(system, gate)?;
     Ok(())
 }
@@ -69,6 +70,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     {
         Ok(()) =>
         {
+            let _ = system.log("TEXTEDIT_USERSPACE_PASS original=356 native=20 legacy=6\n");
             let _ = system.log("SCRAP_USERSPACE_PASS original=18 native=17 legacy=12\n");
             let _ = system.log("TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48 \
                                 controls=86 controlpixels=269600 controlhits=8424 strings=passed \

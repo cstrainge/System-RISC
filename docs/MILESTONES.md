@@ -1,5 +1,40 @@
 # Verified milestones
 
+## Monochrome TextEdit — ABI5 service extension
+
+TEXTEDIT and its paired Pascal conversion trap add a resident editor behind the
+thin `toolbox-textedit` SDK and aggregate `System::textedit()` API. Applications
+own generation-checked IDs and explicitly dispose editors; resident code owns
+text, wrapping, selection, hit testing, editing and clipped drawing.
+
+- Original System7.6.1 probes record86 observations and seven one-bit images.
+  Shared public SDK conformance covers356 original layout/edit/hit observations,
+  20 native UTF8/clipboard cases and6 Pascal conversion cases on host and RV64.
+- Original insertion versus typing, CR wrapping, trailing whitespace, arrow
+  behavior and point/hit conventions are preserved for left-aligned Chicago12.
+  Native offsets are checked UTF8 byte boundaries, with32767-byte and64-editor
+  limits. Failed edits and oversized Paste preserve editor and clipboard state.
+- Native Copy/Cut/Paste uses the guarded System clipboard and stages fallible
+  edits before publication. Original TextEdit's private scrap is separately
+  observed and remains a classic-adapter gap.
+- Finder's resource-based Develop > TextEdit Exerciser uses WIND2003, resource
+  strings, loaded WDEF0 and resident drawing. Its resizable window supports
+  typing, mouse selection, caret blink and contextual Edit-menu commands.
+- Seven resident RV64 frames match all86,016 original pixels exactly, including
+  clipped text, multiline selection, scroll and controlled caret transitions.
+  A second private VM exercises actual Finder menu dispatch, typing, selection,
+  Copy/Cut/repeated Paste and resize through real keyboard/mouse input.
+
+Validation: full `cargo xtask check` and host/RV64 Clippy with warnings denied
+pass. One initial persistence run reported `ROLLBACK_FAILED` on boot2; the
+isolated three-boot test and a complete gate rerun passed. Its cause remains
+unidentified; the failed and successful logs are retained outside the repo.
+
+Styled text, other font/alignment profiles, hooks, double-click/autoscroll,
+original TEHandle/A-line/private-scrap adapters and editable Dialog Manager
+items remain open. See the [resident profile](../system/src/toolbox/textedit/README.md)
+and [aggregate tests](../crates/mac-toolbox/tests/README.md).
+
 ## Events, Scrap and Finder Clipboard — ABI5 service extension
 
 New independent EVENTS and SCRAP traps preserve the existing ABI5 payloads.
@@ -32,7 +67,7 @@ under the aggregate test tree; original media and the visible guest are excluded
 from test input injection.
 
 Original A-line adapters for the new services, event waits/timers/autorepeat,
-process ownership, disk-backed Scrap, TextEdit/editable dialogs and full native
+process ownership, disk-backed Scrap, styled TextEdit/editable dialogs and full native
 scheduling remain open. Device-profile differences and the native clipboard
 limits are documented in [Events](../EVENTS.md) and
 [Scrap](../system/src/toolbox/scrap/README.md). The remaining manager sequence is

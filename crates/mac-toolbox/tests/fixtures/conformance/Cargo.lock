@@ -101,6 +101,7 @@ dependencies = [
  "toolbox-quickdraw",
  "toolbox-resources",
  "toolbox-scrap",
+ "toolbox-textedit",
  "toolbox-windows",
 ]
 
@@ -277,6 +278,14 @@ dependencies = [
 
 [[package]]
 name = "toolbox-scrap"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
+]
+
+[[package]]
+name = "toolbox-textedit"
 version = "0.1.0"
 dependencies = [
  "mac-abi",

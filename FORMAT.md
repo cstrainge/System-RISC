@@ -177,10 +177,9 @@ All Rust Toolbox text uses UTF-8 `&str` and Rust string writers. Finder has only
 that facade. Inline native strings hold768bytes and reject oversized input
 instead of silently truncating. Binary resource and fork data remains bytes.
 
-The eight services carrying human-readable text have separate Pascal/MacRoman
-trap identities: LOG, WINDOW, DRAW, SURFACE, FONT, RESOURCE, FILE and CONTROL.
-Their legacy number is the native number OR0x20000 (0x30000,0x30001,0x30002,
-0x30007,0x30009,0x30010,0x30012,0x30013). Layouts are unchanged, but text length
+Services carrying human-readable text have separate Pascal/MacRoman trap
+identities: LOG, WINDOW, DRAW, SURFACE, FONT, RESOURCE, FILE, CONTROL, DIALOG,
+SCRAP and TEXTEDIT. Their legacy number is the native number OR0x20000. Layouts are unchanged, but text length
 fields count the Pascal prefix **plus** payload; an empty string is one zero
 byte. Prefix/payload lengths must agree and occupy at most256bytes. Output text
 uses the same convention. Raw file/resource payload reads are never converted.
@@ -234,3 +233,16 @@ serializes Goldfish TIME_LOW/TIME_HIGH reads; no HFS epoch is imposed on native
 Timestamp. HFS writes explicitly check conversion to unsigned1904 seconds.
 Resource STRING operation10 decodes STR or zero-based STR# to UTF8; only the
 paired Pascal Resource trap returns a Pascal/MacRoman result.
+
+## Monochrome TextEdit (ABI5 independent service)
+
+TEXTEDIT0x1001b borrows a `TextEditCall`, optional UTF8 input and output scratch
+for one synchronous request. IDs contain slot generations and require explicit
+disposal. Text/selection offsets count UTF8 bytes and reject interior character
+boundaries. The initial service limits are64 editors and32767 bytes per editor.
+Its paired Pascal trap converts strings only; it retains native UTF8 offsets.
+This is separate from original TEHandle, counted MacRoman and private TE scrap
+A-line conventions. Native Copy/Cut/Paste use the shared System clipboard.
+Drawing appends a clipped snapshot to the window's retained update; clients
+erase and redraw inside BeginUpdate/EndUpdate after edits or caret transitions.
+See `system/src/toolbox/textedit/README.md` for the captured profile and gaps.

@@ -1,0 +1,140 @@
+{
+  "target": "Original System7.6.1 mono TextEdit, Chicago0/12/face0",
+  "originals_before": [
+    {
+      "path": "working/vm/system-before-apps.qcow2",
+      "length": 47316992,
+      "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+    },
+    {
+      "path": "downloads/roms/Quadra-650.ROM",
+      "length": 1048576,
+      "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+    }
+  ],
+  "originals_after": [
+    {
+      "path": "working/vm/system-before-apps.qcow2",
+      "length": 47316992,
+      "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+    },
+    {
+      "path": "downloads/roms/Quadra-650.ROM",
+      "length": 1048576,
+      "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+    }
+  ],
+  "system": {
+    "path": "working/textedit-reference/System.bin",
+    "length": 5667584,
+    "sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea"
+  },
+  "finder": {
+    "path": "working/textedit-reference/Finder.bin",
+    "length": 515200,
+    "sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f"
+  },
+  "binary": {
+    "path": "build/textedit-original-68k/TextEditProbe.bin",
+    "length": 64384,
+    "sha256": "44acbedba6c6c822ac23f6351016fda0185530fa7093202c84cb6cae3cd13338"
+  },
+  "source": [
+    {
+      "path": "System7/crates/mac-toolbox/tests/fixtures/textedit-original/CMakeLists.txt",
+      "length": 243,
+      "sha256": "9d3740637d3f6071373d5dea8fe2c252998d489b931114ec781e3f68643abd1d"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/fixtures/textedit-original/TextEditProbe.cc",
+      "length": 6969,
+      "sha256": "463815dc260a6560ca39f7adc7c0365eb8699c666197acf7f9d8b6ed36823f02"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/fixtures/textedit-original/application.r",
+      "length": 387,
+      "sha256": "84ceb3d09df69982ddc8ea4c3ec2b58e746ea6e1b97a19a31346463e27fb201a"
+    }
+  ],
+  "transport": {
+    "path": "System7/scripts/capture_original_textedit.py",
+    "length": 3633,
+    "sha256": "faee9e3d1bb75157d3671c067a5b46a7b076d03ac3c77e701cf8352965edf819"
+  },
+  "runtime": {
+    "path": "results/textedit-reference/runtime.jsonl",
+    "length": 44933,
+    "sha256": "5a35e73344eea69d01441c387ff0cdbefa91bdbe70537c39fb45ca7d8ea03fbe"
+  },
+  "command": [
+    "qemu-system-m68k",
+    "-name",
+    "Isolated Finder Reference",
+    "-machine",
+    "q800,audiodev=sound",
+    "-cpu",
+    "m68040",
+    "-m",
+    "128",
+    "-bios",
+    "/home/cstrainge/workdir/rea-work/downloads/roms/Quadra-650.ROM",
+    "-g",
+    "640x480x8",
+    "-display",
+    "none",
+    "-audiodev",
+    "none,id=sound",
+    "-nic",
+    "none",
+    "-drive",
+    "file=/home/cstrainge/workdir/rea-work/working/textedit-reference/pram.bin,format=raw,if=mtd",
+    "-drive",
+    "file=/home/cstrainge/workdir/rea-work/working/textedit-reference/reference.raw,format=raw,if=none,id=system",
+    "-device",
+    "scsi-hd,scsi-id=0,drive=system",
+    "-qmp",
+    "unix:/home/cstrainge/workdir/rea-work/working/textedit-reference/qmp.sock,server=on,wait=off",
+    "-monitor",
+    "none",
+    "-parallel",
+    "none",
+    "-serial",
+    "file:/home/cstrainge/workdir/rea-work/working/textedit-reference/serial.log"
+  ],
+  "tool_identities": [
+    {
+      "path": ".toolchains/retro68/rootfs/Retro68-build/toolchain/bin/m68k-apple-macos-g++",
+      "length": 18616552,
+      "sha256": "ef990adb1a2b9c4d5b8734d9c67a579c12327eb3baf4de0fa5ede578b7e550b4"
+    },
+    {
+      "path": ".toolchains/retro68/rootfs/Retro68-build/toolchain/multiversal/CIncludes/Multiverse.h",
+      "length": 437113,
+      "sha256": "bdd1eca59dcc4df745018b1ab25180e082926c93af25c109e8140dd6482ec626"
+    },
+    {
+      "path": "/usr/bin/qemu-system-m68k",
+      "length": 10601496,
+      "sha256": "7350ac7cc54161918e8855d744bfa3d30cdc73ed2800795e9020cec8c1b15d38"
+    }
+  ],
+  "owned_vm_exited": true,
+  "limits": [
+    "Mono TextEdit only; no styled text, custom hooks, or invalid pointers.",
+    "TEToScrap/TEFromScrap not provided by pinned Retro68 glue; private TE scrap observed via documented low memory.",
+    "Offscreen one-bit GWorld snapshots; caretTime forced just beyond the documented blink interval before TEIdle, no RGB desktop selection color claim."
+  ],
+  "documentation": [
+    {
+      "title": "Inside Macintosh: Text, TextEdit",
+      "url": "https://dev.os9.ca/techpubs/mac/pdf/Text/TextEdit.pdf",
+      "pages": [
+        "2-86",
+        "2-88",
+        "2-99",
+        "2-100",
+        "2-108"
+      ]
+    }
+  ]
+}

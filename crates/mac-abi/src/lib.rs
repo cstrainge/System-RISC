@@ -27,6 +27,7 @@ pub mod dates;
 pub mod geometry;
 pub mod events;
 pub mod scrap;
+pub mod textedit;
 pub mod menus;
 pub mod memory;
 pub mod images;

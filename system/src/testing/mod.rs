@@ -12,6 +12,7 @@ struct Session
 {
     events:      crate::toolbox::events::EventManager,
     scrap:       crate::toolbox::scrap::Manager,
+    textedit:    crate::toolbox::textedit::Manager,
     started:     std::time::Instant,
     memory:      crate::toolbox::memory::Manager,
     files:       crate::toolbox::files::Manager,
@@ -43,6 +44,7 @@ impl Default for Session
         let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources);
         Self { events: crate::toolbox::events::EventManager::new(),
                scrap: Default::default(),
+               textedit: Default::default(),
                started: std::time::Instant::now(),
                memory: Default::default(),
                files: Default::default(),
@@ -195,6 +197,23 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        }
                    })
         }
+        TEXTEDIT => SESSION.with(|slot| {
+                        let Ok(mut session) = slot.try_borrow_mut()
+                        else
+                        {
+                            return SERVICE_BUSY as i64;
+                        };
+                        let Some(session) = session.as_mut()
+                        else
+                        {
+                            return NOT_SUPPORTED as i64;
+                        };
+                        unsafe {
+                            crate::toolbox::textedit::native::dispatch_with(number, pointer, size,
+                        |call, input, output| crate::toolbox::textedit::clipboard::request(
+                            &mut session.textedit, &mut session.scrap, call, input, output))
+                        }
+                    }),
         EVENTS | NEXT_EVENT | SCRAP =>
         {
             SESSION.with(|slot| {

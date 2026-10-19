@@ -15,6 +15,7 @@ mod resources
 
 mod ui;
 mod clipboard;
+mod textedit_demo;
 mod menus;
 mod browser;
 mod icon_view;
@@ -81,7 +82,8 @@ fn finder(system: &System<'_>) -> Result<(), Status>
     menus::install(system)?;
     browser.initialize(system)?;
     let mut alerts = ui::Alerts::default();
-    menus::update(system, &browser)?;
+    let mut editor = textedit_demo::Editor::default();
+    menus::update(system, &browser, &editor)?;
     let mut demo = 0;
     let mut about_id = 0;
     let mut clipboard = clipboard::Viewer::default();
@@ -109,20 +111,29 @@ fn finder(system: &System<'_>) -> Result<(), Status>
             if alerts.window == 0
             {
                 browser.redraw_all(system)?;
+                if editor.window != 0 && system.window(editor.window).is_ok()
+                {
+                    let _ = try_action(system, &mut alerts, editor.draw(system))?;
+                }
                 if clipboard.window != 0
                 {
                     let _ = try_action(system, &mut alerts, clipboard.draw(system))?;
                 }
-                menus::update(system, &browser)?;
+                menus::update(system, &browser, &editor)?;
             }
             if confirm
             {
                 let _ = try_action(system, &mut alerts, browser.empty_trash(system))?;
-                menus::update(system, &browser)?;
+                menus::update(system, &browser, &editor)?;
             }
             continue;
         }
         browser.prune(system)?;
+        if try_action(system, &mut alerts, editor.event(system, event))?.unwrap_or(false)
+        {
+            menus::update(system, &browser, &editor)?;
+            continue;
+        }
         let _ = try_action(system, &mut alerts, clipboard.refresh(system))?;
         if alerts.window != 0
         {
@@ -130,7 +141,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
         }
         if try_action(system, &mut alerts, clipboard.event(system, event))?.unwrap_or(false)
         {
-            menus::update(system, &browser)?;
+            menus::update(system, &browser, &editor)?;
             continue;
         }
         if alerts.window != 0
@@ -150,6 +161,11 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                              "FINDER_MENU menu={} item={} command={:08x}",
                              selection.menu_id, selection.item, selection.command);
             system.log(log.as_str())?;
+            if try_action(system, &mut alerts, editor.command(system, selection.command))?.unwrap_or(false)
+            {
+                menus::update(system, &browser, &editor)?;
+                continue;
+            }
             let action = match selection.command
             {
                 menus::NEW_FOLDER => browser.new_folder(system),
@@ -166,11 +182,12 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                 menus::CLEAR => browser.trash_selection(system),
                 menus::EMPTY => alerts.confirm_empty(system, &browser),
                 menus::ABOUT => open_about(system, &mut about_id),
+                menus::TEXTEDIT => editor.open(system),
                 menus::SHOW_CLIPBOARD => clipboard.open(system),
                 _ => Ok(())
             };
             let _ = try_action(system, &mut alerts, action)?;
-            menus::update(system, &browser)?;
+            menus::update(system, &browser, &editor)?;
             continue;
         }
         match event.kind
@@ -309,7 +326,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
         }
         if event.kind != EventKind::Null
         {
-            menus::update(system, &browser)?;
+            menus::update(system, &browser, &editor)?;
         }
     }
 }
