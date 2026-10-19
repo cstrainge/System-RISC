@@ -18,7 +18,8 @@ runs on its own timer-scheduled OS thread.
 
 The resource manifest's `name` is the Macintosh display and HFS filename.
 Optional `binary_name` selects a different Cargo executable name without spaces.
-The reservations are the first native loader profile, not relocation support.
+The manifests specify preferred link ranges. New packages also carry checked
+`RLOC` metadata, allowing a copy to load at another free address.
 
 QuickDraw Test includes ten pages for shapes, transfer modes, regions, bitmaps,
 fonts, offscreen worlds, PICTs, icons, resources and PNGs. Use its Tests menu,
@@ -40,6 +41,14 @@ let running = system.processes().launch(volume, file.id)?;
 system.processes().activate(running.id)?;
 ```
 
-Launching an already running file activates its existing process. This first
-native profile uses fixed nonoverlapping ELF regions and an eight-image cache;
-original 68k application execution and document-open parameters are later work.
+Launching the same mounted-volume/catalog ID activates its existing process.
+A separate copy has a different catalog ID and runs in its own OS thread with
+separate code, data, BSS, and Toolbox state. Rename and same-volume moves preserve
+that identity. Finder marks only that running file with the open-icon transform;
+Finder itself is exempt. Hidden applications still count as running.
+
+The loader retains eight immutable cached images, including Finder, and assigns
+nonoverlapping physical spans. Supported RV64 relocations are checked before any
+write; old fixed packages without `RLOC` cannot be moved to another link address.
+This remains trusted shared memory without MMU protection. Original 68k execution,
+document-open parameters and general dynamic linking remain later work.

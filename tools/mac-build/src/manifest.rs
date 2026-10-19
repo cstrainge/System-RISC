@@ -316,7 +316,7 @@ impl Manifest
         fourcc(&self.creator)?;
         self.descriptor()?.encode()?;
         version_header(&self.cargo_version)?;
-        let mut keys = BTreeSet::from([(*b"RV64", 0), (*b"NABI", 0), (*b"vers", 1)]);
+        let mut keys = BTreeSet::from([(*b"RV64", 0), (*b"NABI", 0), (*b"RLOC", 0), (*b"vers", 1)]);
         let mut symbols = BTreeSet::from(["NATIVE_CODE", "NATIVE_ABI", "VERSION"]);
         for definition in &self.resources
         {

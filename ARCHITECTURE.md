@@ -47,14 +47,17 @@ Finder. Background applications retain independently scheduled execution.
 Original presentation and actual multi-app input behavior have their own
 [launch-slice acceptance gate](TOOLBOX-PLAN.md#first-native-application-launch-slice).
 
-The initial loader validates APPL NABI/RV64 resources, ELF segments and explicit
-nonoverlapping memory reservations. System/definition ranges remain reserved;
-Finder uses `0x81000000..0x82000000`, QuickDraw Test uses
-`0x83000000..0x84000000`, and TextEdit Exerciser uses
-`0x84000000..0x85000000`. An eight-slot immutable image cache includes Finder;
-relaunch reuses its image/resources and resets loaded executable segments. This
-is not arbitrary relocation, protected address spaces, hot replacement or original
-68k translation. All native code remains trusted in shared M-mode memory.
+The loader validates APPL NABI/RV64 resources and ELF segments. System and
+independently loaded definitions retain fixed ranges; Finder owns
+`0x81000000..0x82000000`. Native application manifests specify preferred ranges.
+The image registry reserves each application's actual page-aligned extent and
+can relocate new `RLOC` packages into a free span in `0x83000000..0x87000000`.
+All pointer patches validate before destination memory is written. Different
+files get separate code/data/BSS, including copies of the same executable.
+An eight-slot immutable image cache includes Finder; relaunch of a stopped file
+resets its segments. Launch of a running volume/CNID activates its existing
+process. This does not provide MMU isolation, hot replacement, general dynamic
+linking or original68k translation. Native code remains trusted shared M-mode.
 
 ## Resident implementation
 

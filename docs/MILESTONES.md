@@ -1,5 +1,16 @@
 # Verified milestones
 
+## Running-file identities and independent copies
+
+Finder marks running APPLs by mounted volume and catalog ID, with Finder exempt.
+Same-file launch activates the existing process; separate copies get distinct
+threads and relocated code/data/BSS. The public SDK gate verifies concurrent
+identically named copies in separate folders, private mutable statics, rename,
+same-volume move, hidden state, foreground
+activation and separate exit cleanup. Graphical tests verify the running icon,
+unlaunched copy and cleared-on-exit states. See [application icons](APPLICATION-ICONS.md)
+and [native applications](../apps/README.md).
+
 ## Application-owned icons
 
 Finder folder views and Get Info resolve application icons directly from each
@@ -56,8 +67,8 @@ and `application-ui-checks.json` outside the repository.
 This remains a trusted shared M-mode system without MMU isolation. Kernel traps
 mask interrupts, and firmware I/O uses a dedicated synchronous fixed-owner stack,
 not an independently runnable I/O thread. There are eight immutable cached image
-slots including Finder, fixed disjoint executable reservations and no arbitrary
-relocation or original68k execution. Blocking/wakeup queues, native worker
+slots including Finder and disjoint physical image spans. Checked native RV64
+relocation is now supported; original68k execution remains unimplemented. Blocking/wakeup queues, native worker
 threads, original Thread Manager contexts, document parameters, std and multi-
 hart execution remain separate work. See [threading](../THREADING.md) and
 [native applications](../apps/README.md).

@@ -132,9 +132,9 @@ impl Drawing for Port<'_, '_>
     fn icon(&mut self, icon: Icon, bounds: Rect, state: State) -> Result<(), Status>
     {
         let icons = self.system.quickdraw().icons();
-        let flags = IconFlags { selected: state.selected && state.active,
-                                open: state.open,
-                                ..Default::default() };
+        let mut flags = IconFlags { selected: state.selected && state.active,
+                                    open: state.open,
+                                    ..Default::default() };
         let id = match icon
         {
             Icon::Resource(id) => id,
@@ -142,6 +142,7 @@ impl Drawing for Port<'_, '_>
                                 cnid,
                                 fallback } =>
             {
+                flags.open |= self.system.processes().is_running(volume, cnid).map_err(error)?;
                 match icons.plot_file(self.graphics.window_id(), volume, cnid, bounds, flags)
                 {
                     Ok(()) => return Ok(()),
@@ -212,7 +213,7 @@ pub(crate) fn entry_icon(system: &System<'_>, volume: &VolumeInfo, entry: &Catal
                                     {
                                         standard::DOCUMENT
                                     });
-    if matches!(&entry.file_type, b"APPL" | b"FNDR")
+    if entry.file_type == *b"APPL"
     {
         Icon::Application { volume: volume.id,
                             cnid: entry.id,

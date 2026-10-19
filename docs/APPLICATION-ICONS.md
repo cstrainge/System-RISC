@@ -22,13 +22,30 @@ the same bounded reader. The icon renderer prefers small resources at16px and
 large resources at32px, then color depth; it preserves masks and selection/open
 transforms.
 
+## Running files
+
+Finder's APPL icon uses the open/stipple transform while
+`Processes::is_running(volume, cnid)` is true. The query includes background and
+hidden instances and compares both fields, never the name, creator, icon ID or
+path. FNDR files stay normal. Launch and exit invalidate Finder-owned windows;
+ordinary Window Manager damage coalesces the updates. No idle polling or
+activation-triggered process scans are added.
+
+Same-file launch brings its instance forward. Different file copies receive
+independent relocated images and threads; see [native applications](../apps/README.md).
+The SDK process gate runs two copies concurrently, checks separate mutable
+statics, renames and moves one through Trash/Put Away, and verifies independent
+running state through each exit. The graphical fixture verifies that an
+unlaunched copy of the same QuickDraw application stays normal while its source
+is running, then verifies the source returns to normal after exit.
+
 ## Validation
 
 - `mac-toolbox/tests/file_icons.rs` exercises actual HFS reads through the SDK:
   non-128 IDs, overlapping IDs in different apps, large/small families, color
   precedence, transparency, malformed/missing resources, unchanged search chain,
   read-only media and bounded reads alongside a1MiB executable resource.
-- `mac-toolbox/tests/application_ui.rs` checks3,584 icon pixels across unlaunched
+- `mac-toolbox/tests/application_ui.rs` checks6,656 icon pixels across unlaunched
   Finder entries, application-menu rows and foreground titles. A private copy
   moves QuickDraw's icon to9433 without changing its executable. Both Linux and
   Windows native QEMU pass, including existing launch/switch/hide/restore tests.

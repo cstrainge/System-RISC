@@ -26,7 +26,7 @@ blocking primitives, migration and multiple harts remain future work. A private
 RV64 SDK gate has demonstrated another app progressing during a
 no-trap/no-yield interval, plus launch, relaunch, ownership, input, hide and exit.
 The consolidated regression gate also passes the paired Pascal process traps,
-eight caller-posted foreign-window event-isolation cases, and actual Finder/two-
+twelve caller-posted foreign-window event-isolation cases, and actual Finder/two-
 app graphical launch, focus, hide/restore, quit and relaunch tests.
 
 Window BeginUpdate now stages commands and port state until EndUpdate. Another
@@ -68,7 +68,7 @@ its historical implicit global is selected through AppId.
 
 | Current state | Present assumption and required boundary |
 | --- | --- |
-| `kernel.rs` guarded managers and immutable images | One-shot startup and bounded guards remain. Eight immutable image-cache slots include Finder; app code/resources remain resident after exit. No arbitrary relocation, hot replacement or unloading is implied. |
+| `kernel.rs` guarded managers and immutable images | One-shot startup and bounded guards remain. Eight immutable image-cache slots include Finder; app code/resources remain resident after exit. Checked RV64 RLOC metadata permits independent copies with separate physical code/data/BSS spans. General dynamic linking, hot replacement and unloading remain unsupported. |
 | `ThreadContext::traps` | The RV64 scheduler selects the running thread context; nested accounting belongs to that OS thread. A separate bootstrap context is used for synchronous firmware service execution. |
 | `Desktop` | The global compositor, physical input and window registry remain shared. Trusted app context selects saved events, menus, dialogs, cursors, worlds, font/legacy state and TextEdit managers at the masked service boundary. Windows carry an owner; background retained scenes are composed centrally. |
 | Application resources | Read-only application-to-System/font search selects the caller's immutable image. Retained content replay selects the owning image, so a background window does not resolve against whichever application invoked the compositor. General mutable Resource Manager chains remain open. |

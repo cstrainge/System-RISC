@@ -50,12 +50,14 @@ def capture(output):
         hfs('hmkdir', ':Applications', check=False)
         for package, _ in children:
             hfs('hcopy', '-m', package, ':Applications:')
+        hfs('hmkdir', ':Copies')
+        hfs('hcopy', '-m', children[0][0], ':Copies:')
     finally:
         hfs('humount')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)
     vm.DIST = private
-    process, endpoint = vm.launch(output / 'vm')
+    process, endpoint = vm.launch(output / 'vm', writable=True)
     serial = output / 'vm/serial.log'
     actions = []
 
@@ -72,13 +74,14 @@ def capture(output):
                            + serial.read_text(errors='replace')[-6000:])
 
     try:
-        for round in [1, 2]:
-            wait('PROCESS_READY_FOR_INPUT_' + str(round) + '\n')
+        for marker in ['PROCESS_READY_FOR_INPUT_1', 'PROCESS_READY_FOR_INPUT_2',
+                       'PROCESS_READY_FOR_COPY_INPUT_1', 'PROCESS_READY_FOR_COPY_INPUT_2']:
+            wait(marker + '\n')
             # A child is foreground. Input travels through the real virtio device.
             events = [{'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'x'},
                                              'down': down}} for down in [True, False]]
             vm.qmp('input-send-event', {'events': events}, endpoint)
-            actions.append({'after': 'PROCESS_READY_FOR_INPUT_' + str(round),
+            actions.append({'after': marker,
                             'input': events})
         text = wait('hide=passed appmenu=passed\n')
         vm.qmp('screendump', {'filename': str(output / 'processes.ppm')}, endpoint)
@@ -99,6 +102,9 @@ def capture(output):
         finally:
             process.wait(timeout=10)
             vm.DIST = original
+            for media in [output / 'vm/system7.qcow2', output / 'vm/bootrom.bin',
+                          private / 'system7.qcow2', private / 'bootrom.bin', raw]:
+                media.unlink(missing_ok=True)
     report['owned_vm_exited'] = process.returncode == 0
     (output / 'capture.json').write_text(json.dumps(report, indent=2) + '\n')
 

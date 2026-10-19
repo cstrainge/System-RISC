@@ -1,4 +1,5 @@
 //! Strict ELF64 little-endian RV64IMAC loader metadata; never executes code.
+pub mod relocation;
 use alloc::vec::Vec;
 
 use crate::{Error, Result, slice};

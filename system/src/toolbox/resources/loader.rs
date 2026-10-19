@@ -37,7 +37,7 @@ pub fn read_startup(info: &BootInfo, name: &str) -> Result<Vec<u8>>
     Ok(output)
 }
 
-pub fn application(resources: &[Resource]) -> Result<usize>
+fn application_parts(resources: &[Resource]) -> Result<(Descriptor, &[u8], elf::Image)>
 {
     let descriptor = resources.iter()
                               .find(|r| r.kind == *b"NABI" && r.id == 0)
@@ -51,7 +51,72 @@ pub fn application(resources: &[Resource]) -> Result<usize>
     let code = resources.iter()
                         .find(|r| r.kind == *b"RV64" && r.id == 0)
                         .ok_or(Error("application executable resource is missing"))?;
-    load(&descriptor, &code.data)
+    let image = elf::decode(&code.data, descriptor.load_base, descriptor.load_limit)?;
+    Ok((descriptor, &code.data, image))
+}
+pub fn application_extent(resources: &[Resource]) -> Result<u64>
+{
+    let (descriptor, _, image) = application_parts(resources)?;
+    elf::relocation::span(&image, descriptor.load_base)
+}
+pub fn application(resources: &[Resource]) -> Result<usize>
+{
+    let (descriptor, _, _) = application_parts(resources)?;
+    application_at(resources, descriptor.load_base)
+}
+pub fn application_at(resources: &[Resource], destination: u64) -> Result<usize>
+{
+    let (descriptor, bytes, image) = application_parts(resources)?;
+    let extent = elf::relocation::span(&image, descriptor.load_base)?;
+    let end = destination.checked_add(extent).ok_or(Error("application destination overflow"))?;
+    if destination & 4095 != 0 || !application_region(destination, end)
+    {
+        return Err(Error("application destination overlaps resident images"));
+    }
+    let table = resources.iter().find(|r| r.kind == *b"RLOC" && r.id == 0);
+    let patches = if let Some(table) = table
+    {
+        elf::relocation::patches(bytes, &image, &table.data, descriptor.load_base, destination)?
+    }
+    else
+    {
+        if destination != descriptor.load_base
+        {
+            return Err(Error("application relocation metadata is missing"));
+        }
+        Vec::new()
+    };
+    // All bounds, relocation types and values have been checked before any
+    // destination write. The image registry owns this disjoint physical range.
+    for segment in &image.segments
+    {
+        let address = destination + segment.address - descriptor.load_base;
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr().add(segment.offset as usize),
+                                           address as *mut u8,
+                                           segment.file_size as usize);
+            core::ptr::write_bytes((address + segment.file_size) as *mut u8,
+                                   0,
+                                   (segment.memory_size - segment.file_size) as usize);
+        }
+    }
+    for patch in patches
+    {
+        unsafe {
+            if patch.width == 4
+            {
+                core::ptr::write_unaligned(patch.address as *mut u32, patch.value as u32);
+            }
+            else
+            {
+                core::ptr::write_unaligned(patch.address as *mut u64, patch.value);
+            }
+        }
+    }
+    unsafe {
+        asm!("fence.i", options(nostack));
+    }
+    Ok((destination + image.entry - descriptor.load_base) as usize)
 }
 
 fn load(descriptor: &Descriptor, bytes: &[u8]) -> Result<usize>

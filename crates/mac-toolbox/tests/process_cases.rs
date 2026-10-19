@@ -384,6 +384,7 @@ pub fn observer(system: &System<'_>) -> Result<()>
         memory(&handle, b"observer-owned memory")?;
         prior = Some((child.id, child.thread));
     }
+    copies(system, volume, worker.id, own_window)?;
     handle.dispose()?;
     system.windows().close(own_front)?;
     system.windows().close(own_window)?;
@@ -393,14 +394,103 @@ pub fn observer(system: &System<'_>) -> Result<()>
     Ok(())
 }
 
+/// Real duplicate files keep independent images, mutable statics and identities.
+fn copies(system: &System<'_>, volume: u32, original: u32, parent: WindowId) -> Result<()>
+{
+    let processes = system.processes();
+    let copy = system.files().lookup(volume, 2, "Copies/ProcessWorker")?;
+    require(copy.id != original, "copy reused catalog ID")?;
+    require(copy.name() == system.files().catalog(volume, original)?.name(),
+            "copy fixture must retain the same filename in another folder")?;
+    require(!processes.is_running(volume, original)? && !processes.is_running(volume, copy.id)?,
+            "stopped files reported running")?;
+    let mut children = [ProcessInfo::default(); 2];
+    for (slot, cnid) in [original, copy.id].into_iter().enumerate()
+    {
+        system.scrap().clear()?;
+        let mut announcement = crate::LogBuffer::new();
+        use core::fmt::Write;
+        let _ = write!(announcement, "process-observer-window:{}", parent.0);
+        system.scrap().put_text(announcement.text())?;
+        children[slot] = processes.launch(volume, cnid)?;
+        if slot == 0
+        {
+            require(processes.is_running(volume, original)?
+                    && !processes.is_running(volume, copy.id)?,
+                    "unlaunched copy inherited original running mark")?;
+        }
+        wait(system, || {
+            let mut bytes = [0; 64];
+            Ok(system.scrap()
+                     .text(&mut bytes)
+                     .ok()
+                     .and_then(|text| parse_window(text, "process-worker-window:"))
+                     .is_some())
+        })?;
+    }
+    require(children[0].id != children[1].id && children[0].thread != children[1].thread,
+            "copies shared a process or thread")?;
+    require(processes.count()? == 3, "copies did not run concurrently")?;
+    require(processes.is_running(volume, original)? && processes.is_running(volume, copy.id)?,
+            "live file lookup lost a copy")?;
+    require(!processes.is_running(volume + 1000, original)?, "CNID lookup ignored mounted volume")?;
+    let now = mac_toolbox::files::Timestamp::from_mac_seconds(3_875_209_985);
+    let renamed = system.files().rename(volume, original, "Moved Worker", now)?;
+    require(renamed.id == original && processes.is_running(volume, renamed.id)?,
+            "rename lost running file identity")?;
+    let moved = system.files().move_to_trash(volume, original, now)?;
+    require(moved.id == original
+            && moved.parent != renamed.parent
+            && processes.is_running(volume, moved.id)?,
+            "folder move lost running identity")?;
+    let restored = system.files().put_away(volume, original, now)?;
+    require(restored.id == original
+            && restored.parent == renamed.parent
+            && processes.is_running(volume, original)?,
+            "put away lost running identity")?;
+    system.files().rename(volume, original, "ProcessWorker", now)?;
+    require(processes.launch(volume, original)?.id == children[0].id
+            && processes.current()?.foreground == 0,
+            "running file did not foreground its existing instance")?;
+    require(processes.count()? == 3, "same-file launch duplicated process")?;
+    processes.hide(children[1].id)?;
+    require(processes.is_running(volume, copy.id)?, "hidden copy lost running mark")?;
+    for (slot, cnid) in [original, copy.id].into_iter().enumerate()
+    {
+        processes.activate(children[slot].id)?;
+        system.log(if slot == 0
+                   {
+                       "PROCESS_READY_FOR_COPY_INPUT_1\n"
+                   }
+                   else
+                   {
+                       "PROCESS_READY_FOR_COPY_INPUT_2\n"
+                   })?;
+        wait(system, || Ok(find(system, children[slot].id)?.is_none()))?;
+        require(!processes.is_running(volume, cnid)?, "exit retained file's running mark")?;
+        if slot == 0
+        {
+            require(processes.is_running(volume, copy.id)?,
+                    "one copy exiting cleared the other's mark")?;
+        }
+    }
+    require(processes.count()? == 1, "copy exit cleanup")?;
+    system.log("PROCESS_FILE_IDENTITIES_PASS copies=2 concurrent=passed statics=private \
+                rename=passed move=passed foreground=passed exit=passed\n")?;
+    Ok(())
+}
+
 pub fn worker(system: &System<'_>) -> Result<()>
 {
     static ENTERED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
     require(!ENTERED.swap(true, core::sync::atomic::Ordering::Relaxed),
             "relaunch did not initialize application BSS")?;
+    static INSTANCE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    static POINTER: &core::sync::atomic::AtomicU64 = &INSTANCE;
     resource(system, "process-worker")?;
     let identity = system.processes().current()?;
     require(identity.id != 0 && identity.thread != 0, "worker execution identity")?;
+    POINTER.store(identity.id, core::sync::atomic::Ordering::Relaxed);
     let handle = system.memory().handle_from_bytes(b"worker-owned memory")?;
     let window = system.windows()
                        .create(WindowSpec::new(Rect::new(100, 180, 400, 310), "Process Worker"))?;
@@ -429,6 +519,8 @@ pub fn worker(system: &System<'_>) -> Result<()>
     loop
     {
         let event = system.next_event(EVERY_EVENT)?;
+        require(POINTER.load(core::sync::atomic::Ordering::Relaxed) == identity.id,
+                "copies shared mutable static data or an unrelocated pointer")?;
         require(event.when != OBSERVER_SYNTHETIC,
                 "observer synthetic event reached foreign worker")?;
         require(system.events().uptime_ticks()?.wrapping_sub(start) < 1800,

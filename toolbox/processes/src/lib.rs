@@ -44,6 +44,17 @@ impl<'a> Processes<'a>
                .info)
     }
 
+    /// Whether this exact file has a live instance, including hidden/background apps.
+    pub fn is_running(self, volume: u32, cnid: u32) -> Result<bool>
+    {
+        Ok(self.call(ProcessCall { operation: IS_RUNNING,
+                                   volume,
+                                   cnid,
+                                   ..Default::default() })?
+               .index
+           != 0)
+    }
+
     pub fn launch(self, volume: u32, cnid: u32) -> Result<ProcessInfo>
     {
         Ok(self.call(ProcessCall { operation: LAUNCH,

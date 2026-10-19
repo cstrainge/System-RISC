@@ -25,8 +25,13 @@ fn region(bytes: &[u8], left: usize, top: usize, right: usize, bottom: usize) ->
 /// file lookup and the process menu's loaded-image lookup.
 fn icon(root: &Path, package: &str, id: i16, size: usize) -> Vec<u8>
 {
-    use mac_toolbox::{Point, Rect,
-                      quickdraw::{SurfacePort, icons::IconFlags}};
+    icon_flags(root, package, id, size, Default::default())
+}
+fn icon_flags(root: &Path, package: &str, id: i16, size: usize,
+              flags: mac_toolbox::quickdraw::icons::IconFlags)
+              -> Vec<u8>
+{
+    use mac_toolbox::{Point, Rect, quickdraw::SurfacePort};
     let system = fs::read(root.join("build/system7/dist/System.rsrc")).unwrap();
     let application =
         fs::read(root.join("build/system7/dist").join(format!("{package}.rsrc"))).unwrap();
@@ -41,7 +46,7 @@ fn icon(root: &Path, package: &str, id: i16, size: usize) -> Vec<u8>
         SurfacePort::new(connection).plot_icon(mac_abi::resources::APPLICATION,
                                                id,
                                                Rect::new(0, 0, size as i16, size as i16),
-                                               IconFlags::default())
+                                               flags)
                                     .unwrap();
     }).unwrap();
     pixels.iter()
@@ -118,6 +123,22 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
                    icon(&root, package, 128, 32),
                    "Finder did not draw {package}'s own icon before launch");
     }
+    let running = image("running-file-icons");
+    assert_eq!(region(&running, 40, 90, 72, 122),
+               icon_flags(&root,
+                          "QuickDraw Test",
+                          128,
+                          32,
+                          mac_toolbox::quickdraw::icons::IconFlags { open: true,
+                                                                     ..Default::default() }),
+               "running application's icon did not use the open transform");
+    assert_eq!(region(&running, 296, 90, 328, 122),
+               icon(&root, "QuickDraw Test", 128, 32),
+               "unlaunched copy inherited the running application's mark");
+    let closed = image("closed-file-icons");
+    assert_eq!(region(&closed, 40, 90, 72, 122),
+               icon(&root, "QuickDraw Test", 128, 32),
+               "exiting application retained its running icon");
     let popup = image("three-app-menu");
     for (package, id, top) in
         [("System", 3, 85), ("QuickDraw Test", 128, 103), ("TextEdit Exerciser", 128, 121)]
@@ -258,7 +279,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
         "activation_click_does_not_click_through":"passed","second_content_click_delivered":"passed",
         "background_command_drag_preserves_foreground":"passed","ordinary_drag_activates_on_release":"passed",
         "resource_menu_quit_and_fresh_relaunch":"passed","finder_alive_after_exit":"passed",
-        "application_icon_pixels":3584,"application_icons_before_launch":"passed",
+        "application_icon_pixels":6656,"running_file_identity_icons":"passed","unlaunched_copy_unmarked":"passed","running_icon_cleared_on_exit":"passed","application_icons_before_launch":"passed",
         "application_menu_icon_rows_and_foreground_title":"passed","non_128_icon_bundle":"passed"});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join(if windows

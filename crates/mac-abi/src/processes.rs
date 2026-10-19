@@ -9,6 +9,8 @@ pub const HIDE: u32 = 5;
 pub const HIDE_OTHERS: u32 = 6;
 pub const SHOW_ALL: u32 = 7;
 pub const EXIT: u32 = 8;
+/// Exact mounted-volume/catalog identity, independent of path or creator code.
+pub const IS_RUNNING: u32 = 9;
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ProcessInfo

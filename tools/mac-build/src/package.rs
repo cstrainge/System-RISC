@@ -57,7 +57,20 @@ pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
     strip_runtime(elf_path, &runtime)?;
     let elf_bytes = fs::read(&runtime)?;
     elf::decode(&elf_bytes, descriptor.load_base, descriptor.load_limit)?;
-    let resources = resource::encode(&manifest.compile_resources(manifest_path, &elf_bytes)?)?;
+    let mut compiled = manifest.compile_resources(manifest_path, &elf_bytes)?;
+    if descriptor.role == Role::Application
+    {
+        let image = elf::decode(&debug_elf, descriptor.load_base, descriptor.load_limit)?;
+        if let Some(data) = elf::relocation::extract(&debug_elf, &image, descriptor.load_base)?
+        {
+            compiled.push(resource::Resource { kind: *b"RLOC",
+                                               id: 0,
+                                               name: None,
+                                               attributes: 0,
+                                               data });
+        }
+    }
+    let resources = resource::encode(&compiled)?;
     let seconds: u64 = env::var("SOURCE_DATE_EPOCH").unwrap_or_else(|_| "0".into()).parse()?;
     let date = mac_date(seconds)?;
     let file = MacFile { name: text::encode(&manifest.name)?,

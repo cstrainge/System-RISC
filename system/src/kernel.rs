@@ -66,15 +66,41 @@ pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [
     {
         return Ok(i);
     }
-    let (base, limit) = crate::loader::reservation(&resources).map_err(crate::loader::status)?;
-    if IMAGES.iter().filter_map(Once::get).any(|i| base < i.limit && i.base < limit)
+    let (preferred, _) = crate::loader::reservation(&resources).map_err(crate::loader::status)?;
+    let extent = crate::loader::application_extent(&resources).map_err(crate::loader::status)?;
+    let overlaps = |base: u64| {
+        IMAGES.iter().filter_map(Once::get).any(|i| base < i.limit && i.base < base + extent)
+    };
+    let base = if !overlaps(preferred)
     {
-        return Err(BAD_ARGUMENT);
+        preferred
     }
+    else
+    {
+        let mut regions: alloc::vec::Vec<_> = IMAGES.iter()
+                                                    .filter_map(Once::get)
+                                                    .filter(|i| i.limit > 0x83000000)
+                                                    .map(|i| (i.base, i.limit))
+                                                    .collect();
+        regions.sort_unstable();
+        let mut candidate = 0x83000000u64;
+        for (start, end) in regions
+        {
+            if candidate + extent <= start
+            {
+                break;
+            }
+            candidate = candidate.max(end);
+        }
+        if candidate.checked_add(extent).is_none_or(|end| end > 0x87000000)
+        {
+            return Err(NO_MEMORY);
+        }
+        candidate
+    };
+    let limit = base + extent;
     let slot = IMAGES.iter().position(|i| i.get().is_none()).ok_or(NO_MEMORY)?;
-    // Validate fully before publication. No executable segment is copied until all
-    // reservations have been checked against the immutable loaded-image catalog.
-    crate::loader::application(&resources).map_err(crate::loader::status)?;
+    crate::loader::application_at(&resources, base).map_err(crate::loader::status)?;
     IMAGES[slot].call_once(|| {
                     AppImage { resources,
                                volume,
@@ -176,7 +202,7 @@ pub(crate) fn release_memory()
 pub(crate) fn reload_image(index: usize) -> Result<usize, Status>
 {
     let image = image(index).ok_or(NOT_FOUND)?;
-    crate::loader::application(&image.resources).map_err(crate::loader::status)
+    crate::loader::application_at(&image.resources, image.base).map_err(crate::loader::status)
 }
 pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontManager>
 {

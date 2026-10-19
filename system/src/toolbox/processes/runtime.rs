@@ -247,6 +247,25 @@ impl Desktop
         mac_abi::menus::MenuIcon::new(0, -3996)
     }
 
+    /// Lifecycle changes coalesce into the Finder's ordinary window damage.
+    /// No polling, synthetic input or activation-triggered invalidation is needed.
+    fn invalidate_finder_icons(&mut self)
+    {
+        for (id, owner) in &self.window_owners
+        {
+            if *owner == 1
+               && let Some(window) = self.windows.window(*id)
+            {
+                let bounds = window.bounds;
+                self.windows.invalidate(*id,
+                                        Rect::new(0,
+                                                  0,
+                                                  bounds.right - bounds.left,
+                                                  bounds.bottom - bounds.top));
+            }
+        }
+    }
+
     fn refresh_app_menu(&mut self)
     {
         let entries: Vec<_> = self.processes
@@ -397,6 +416,16 @@ impl Desktop
         match call.operation
         {
             CURRENT => call.info = self.processes.snapshot(caller)?,
+            IS_RUNNING =>
+            {
+                call.index =
+                    u32::from(self.processes
+                                  .entries
+                                  .iter()
+                                  .any(|p| {
+                                      p.info.volume == call.volume && p.info.cnid == call.cnid
+                                  }))
+            }
             COUNT => call.index = self.processes.entries.len() as u32,
             INDEX =>
             {
@@ -439,6 +468,7 @@ impl Desktop
                 self.processes.get_mut(id)?.info.thread = thread;
                 self.activate_process(id)?;
                 call.info = self.processes.snapshot(id)?;
+                self.invalidate_finder_icons();
                 serial!("PROCESS_LAUNCHED app={} thread={} name={}", id, thread, catalog.name());
             }
             ACTIVATE => self.activate_process(call.id)?,
@@ -469,6 +499,7 @@ impl Desktop
                 self.enter(previous);
                 self.locals.retain(|s| s.id != caller);
                 self.processes.remove(caller);
+                self.invalidate_finder_icons();
                 if self.foreground == caller
                 {
                     self.activate_process(previous)?;

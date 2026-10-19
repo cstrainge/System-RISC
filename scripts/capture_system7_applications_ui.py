@@ -138,6 +138,7 @@ def icon_disk(output):
     try:
         hfs('hdel', ':Applications:QuickDraw Test')
         hfs('hcopy', '-m', package, ':Applications:')
+        hfs('hcopy', '-m', package, ':Applications:Z QuickDraw Copy')
     finally:
         hfs('humount')
     shutil.copyfile(vm.DIST / 'bootrom.bin', private / 'bootrom.bin')
@@ -209,6 +210,10 @@ def capture(output, remap_icon=False, windows=False):
         frame('quickdraw-page-two')
         activate(0, 1)
         frame('finder-restored')
+        clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
+        driver.click(320, 200)
+        driver.wait('FINDER_CLICK_HANDLED\n', clicks)
+        frame('running-file-icons')
         driver.click(184, 106, double=True)
         driver.wait('TEXTEDIT_EXERCISER_READY\n')
         driver.key('a', ('ctrl',))
@@ -278,6 +283,10 @@ def capture(output, remap_icon=False, windows=False):
         driver.menu(28, 60, popup_x=65)  # QuickDraw's own File > Quit.
         driver.wait('PROCESS_EXIT app=2\n')
         frame('quickdraw-quit')
+        clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
+        driver.click(320, 200)
+        driver.wait('FINDER_CLICK_HANDLED\n', clicks)
+        frame('closed-file-icons')
         previous = driver.log().count('TEXTEDIT_EXERCISER_READY\n')
         driver.click(184, 106, double=True)
         driver.wait('TEXTEDIT_EXERCISER_READY\n', previous)

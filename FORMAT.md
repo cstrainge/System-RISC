@@ -23,6 +23,23 @@ fit available guest RAM and must not overlap the bootstrap, other resident
 images, stacks or heaps. The build verifies non-overlapping System/Finder
 reservations; an actual loader must check all resident allocations.
 
+For applications this is the preferred link envelope, not a process identity.
+New application packages add `RLOC` ID0, generated from `--emit-relocs` output
+before stripping. It contains `RLC1`, a little-endian u32 record count, and
+8-byte records: little-endian u32 offset from the preferred base, u8 pointer
+width (4 or8), and three zero bytes. Records are ordered and nonoverlapping;
+their sources must be initialized PT_LOAD bytes and linked pointer values must
+remain within the image extent. Count is bounded at65,536. Runtime validates
+all patches before copying segments or patching relocated pointers.
+
+The packager accepts internal R_RISCV_32/64 absolute pointers and internal
+PC-relative calls/addressing/branches (16..19,23..25,44,45,57); literal absolute
+symbols remain literal. Other relocation types fail packaging. A linker marker
+`__system_risc_relocation_v1=1` distinguishes new builds; older fixed binaries
+receive no relocation capability. Kernel placement uses disjoint page-aligned
+actual image spans; a copied file can move to a free application span while
+preserving relative code references. Process identity remains volume plus CNID.
+
 The ELF must be ELF64, little endian, System V ABI, `ET_EXEC`, `EM_RISCV`,
 version 1, with 64-byte ELF and 56-byte program headers. The initial contract
 allows only the RVC flag and the soft-float calling convention. Current Rust
