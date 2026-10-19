@@ -73,6 +73,21 @@ string conversion, native clock and actual writable HFS persistence/rollback.
 Capture scripts operate only on private clones. Existing graphics, windows,
 controls, fonts, icons, PNG, boot and boundary checks remain part of the gate.
 
+The Trash capture waits for the complete `FINDER_TRASH_EMPTIED` record before
+capturing the empty state or stopping/rebooting the guest. Dismissing the alert
+and repainting the underlying window happen before the durable mutation and its
+final refresh; a fixed screenshot delay or a Window Manager revision is not a
+commit acknowledgement. The report includes `empty_completion_seconds`. Rust
+acceptance checks the completion count, three cold boots, the resulting catalog
+through the public SDK, and the absence of storage failures in all boot logs.
+
+A historical New Folder failure reported only an already-poisoned virtio queue;
+the original write/flush error was discarded. Firmware now records the first
+request failure and callback error as described in `bootrom/README.md`. This is
+diagnostic coverage, not evidence that the underlying historical fault is fixed.
+SDK disk-fault tests separately verify failed writes/flushes restore sectors and
+payloads, and failed rollback refuses further mutation.
+
 Only the supported ALRT profile is implemented: DLOG, edit/user items and alert
 stages are future work. Original MenuSelect/classic WindowRecord contracts and
 68k execution are not supplied by these native interfaces. Apple accessory

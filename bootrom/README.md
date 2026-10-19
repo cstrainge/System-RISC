@@ -66,7 +66,7 @@ An original 68k System file does not satisfy this native executable contract.
   forks are limited to 4 MiB to bound firmware memory use. The ROM borrows the
   resource map and loads only the executable; fonts and visual resources are
   interpreted by System after startup.
-- HFS access is read-only. The shared `mac-hfs` crate follows checked linked
+- Startup discovery uses read-only HFS access. The shared `mac-hfs` crate follows checked linked
   leaf records, supports fragmented resource/catalog forks with overflow
   extents, and rejects invalid bounds, cycles and missing records.
 - Limits: 128 APM entries, 65,536 leaf-scan iterations per search, and 1,024
@@ -76,9 +76,17 @@ An original 68k System file does not satisfy this native executable contract.
 - ELF segment permissions are validated; no MMU/PMP protection is installed
   in this initial M-mode firmware.
 
-The driver issues only block read requests and resets a device before freeing
-its DMA queue. The filesystem and executable parsing code is reusable by
+The driver also exposes sector writes and explicit flushes to the resident File
+Manager when the device is writable and supports FLUSH. It resets a device before
+freeing its DMA queue. The filesystem and executable parsing code is reusable by
 future native disk tools; it has no host subprocess or filesystem dependency.
+
+Requests have bounded waits. A timeout, failed device, or invalid completion
+poisons the queue permanently: its descriptors and data cannot be reused while
+DMA completion is uncertain. `DISK_REQUEST_FAILED` records the first failure's
+operation, sector, submitted/used indices, completion head/length, request/device
+status, elapsed microseconds and poison decision. The firmware callbacks also
+record write/flush errors; later rollback errors must not hide the initial cause.
 
 ## Verification
 

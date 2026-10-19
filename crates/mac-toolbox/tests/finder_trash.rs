@@ -116,6 +116,11 @@ fn finder_menus_and_trash_are_resource_based_and_persist_across_disk_boots()
     {
         let serial = fs::read_to_string(output.join(boot)).unwrap();
         assert!(!serial.contains("FINDER_ACTION_FAILED"), "{boot}: {serial}");
+        assert!(!serial.contains("DISK_REQUEST_FAILED")
+                && !serial.contains("DISK_WRITE_FAILED")
+                && !serial.contains("DISK_FLUSH_FAILED")
+                && !serial.contains("DISK_READ_FAILED"),
+                "{boot}: storage failed during Trash transaction: {serial}");
         assert!(!serial.contains("PANIC"));
     }
     mac_system::testing::with_file_disk(Path::new(report["private_disk"].as_str().unwrap()),true,Default::default(),|services|{

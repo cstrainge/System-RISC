@@ -79,7 +79,13 @@ def capture(output):
         # Exercise real CDEF press/leave/re-enter/release on original default OK bounds.
         move(464,175);button(True);snapshot('ok-held')
         move(100,300);snapshot('ok-left');move(464,175);snapshot('ok-reentered')
-        button(False);move(16,444);snapshot('emptied')
+        emptied_start=time.monotonic();button(False)
+        # UI dismissal precedes the durable catalog transaction and redraw.
+        # Do not terminate/reboot this guest until Finder acknowledges completion.
+        wait(lambda _: any(line.startswith('FINDER_TRASH_EMPTIED removed=')
+                           for line in serial.read_text(errors='replace').split('\n')[:-1]))
+        empty_completion_seconds=time.monotonic()-emptied_start
+        move(16,444);snapshot('emptied')
         final_log=serial.read_text(errors='replace');(output/'second-boot.log').write_text(final_log)
         vm.qmp('quit',endpoint=endpoint);process.wait(timeout=10)
         process,endpoint=vm.launch(state_dir,writable=True,preserve=True)
@@ -91,7 +97,7 @@ def capture(output):
     import subprocess
     raw=output/'persisted.hfs'
     subprocess.run(['qemu-img','convert','-f','qcow2','-O','raw','-S','4k',str(state_dir/'system7.qcow2'),str(raw)],check=True)
-    report={'observations':observations,'base_before':baseline,'base_after':hashlib.sha256((vm.DIST/'system7.qcow2').read_bytes()).hexdigest(),'private_disk':str(raw)}
+    report={'observations':observations,'base_before':baseline,'base_after':hashlib.sha256((vm.DIST/'system7.qcow2').read_bytes()).hexdigest(),'private_disk':str(raw),'empty_completion_seconds':empty_completion_seconds}
     (output/'capture.json').write_text(json.dumps(report,indent=2)+'\n')
 
 if __name__=='__main__':

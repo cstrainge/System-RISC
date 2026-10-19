@@ -221,7 +221,15 @@ unsafe extern "C" fn write_sector(context: *mut (), index: u32, sector: u64, inp
         return BAD_ARGUMENT;
     }
     let input = unsafe { &*input.cast::<[u8; 512]>() };
-    disk.write_sector(sector, input).map_or_else(|_| mac_abi::IO_ERROR, |_| OK)
+    disk.write_sector(sector, input).map_or_else(|error| {
+                                                     serial!("DISK_WRITE_FAILED: disk={} \
+                                                              sector={} {}",
+                                                             index,
+                                                             sector,
+                                                             error);
+                                                     mac_abi::IO_ERROR
+                                                 },
+                                                 |_| OK)
 }
 unsafe extern "C" fn flush_disk(context: *mut (), index: u32) -> Status
 {
@@ -239,7 +247,11 @@ unsafe extern "C" fn flush_disk(context: *mut (), index: u32) -> Status
     {
         return mac_abi::READ_ONLY;
     }
-    disk.flush().map_or_else(|_| mac_abi::IO_ERROR, |_| OK)
+    disk.flush().map_or_else(|error| {
+                                 serial!("DISK_FLUSH_FAILED: disk={} {}", index, error);
+                                 mac_abi::IO_ERROR
+                             },
+                             |_| OK)
 }
 
 

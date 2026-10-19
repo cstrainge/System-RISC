@@ -1,6 +1,7 @@
 //! Modern virtio-mmio, split queue, one outstanding read/write/flush request.
 use alloc::boxed::Box;
 use core::{arch::asm,
+           fmt::Write,
            ptr::{addr_of_mut, read_volatile, write_volatile}};
 
 use mac_hfs::{BlockDevice, Error, Result, WritableBlockDevice};
@@ -239,6 +240,38 @@ impl BlockDevice for Disk
 
 impl Disk
 {
+    fn request_error(&mut self, kind: u32, sector: u64, start: u64, reason: &'static str,
+                     poison: bool)
+                     -> Error
+    {
+        self.failed |= poison;
+        fence();
+        let q = &mut *self.queue;
+        let used = unsafe { u16::from_le(read_volatile(addr_of_mut!(q.used.index))) };
+        let completion = unsafe {
+            read_volatile(addr_of_mut!(q.used.ring[self.index.wrapping_sub(1) as usize % N]))
+        };
+        let status = unsafe { read_volatile(addr_of_mut!(q.status)) };
+        // Record the original failure, before later rollback/read requests report
+        // only a poisoned queue. Never reuse DMA storage after uncertain completion.
+        let _ = writeln!(crate::Serial,
+                         "DISK_REQUEST_FAILED kind={} sector={} submitted={} used={} head={} \
+                          length={} status={} device_status={:#x} elapsed_us={} poisoned={} \
+                          reason={}",
+                         kind,
+                         sector,
+                         self.index,
+                         used,
+                         u32::from_le(completion.id),
+                         u32::from_le(completion.length),
+                         status,
+                         self.read(0x70),
+                         now().wrapping_sub(start) / 10,
+                         self.failed,
+                         reason);
+        Error(reason)
+    }
+
     fn request(&mut self, kind: u32, sector: u64, input: Option<&[u8; 512]>) -> Result<()>
     {
         if self.failed
@@ -275,15 +308,15 @@ impl Disk
             }
             if self.read(0x70) & 0xc0 != 0
             {
-                self.failed = true;
-                return Err(Error("virtio block device failed"));
+                return Err(self.request_error(kind, sector, start, "virtio block device failed",
+                                              true));
             }
             if now().wrapping_sub(start) > 10_000_000
             {
                 // DMA completion is uncertain. Never reuse its descriptors or data;
                 // rollback will fail truthfully rather than race an in-flight write.
-                self.failed = true;
-                return Err(Error("virtio block request timed out"));
+                return Err(self.request_error(kind, sector, start,
+                                              "virtio block request timed out", true));
             }
             core::hint::spin_loop();
         }
@@ -295,12 +328,13 @@ impl Disk
         if u32::from_le(completion.id) != 0
            || u32::from_le(completion.length) != (if kind == 0 { 513 } else { 1 })
         {
-            self.failed = true;
-            return Err(Error("virtio block completion is invalid"));
+            return Err(self.request_error(kind, sector, start,
+                                          "virtio block completion is invalid", true));
         }
         if unsafe { read_volatile(addr_of_mut!(q.status)) } != 0
         {
-            return Err(Error("virtio block request failed"));
+            return Err(self.request_error(kind, sector, start, "virtio block request failed",
+                                          false));
         }
         let pending = self.read(0x60);
         if pending != 0
