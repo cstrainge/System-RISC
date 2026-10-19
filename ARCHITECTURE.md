@@ -33,6 +33,13 @@ execution identities. The current direct-call single-app bootstrap does not yet
 satisfy this requirement. See [THREADING.md](THREADING.md) for the shared-state
 audit, synchronization rules and scheduler/application-thread exit criteria.
 
+The application-launch milestone also requires a resident, right-aligned system
+application menu driven by Process Manager state. It selects foreground UI and
+input ownership while each app continues on its own scheduled OS thread. App
+names/icons and static menu commands remain resource based; Finder does not own
+the cross-application switcher. This menu is planned, not implemented yet; see
+[the launch slice](TOOLBOX-PLAN.md#first-native-application-launch-slice).
+
 ## Resident implementation
 
 `system/src/toolbox` contains QuickDraw, windows, controls, events, resources,

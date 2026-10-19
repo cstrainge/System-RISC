@@ -209,7 +209,7 @@ The current raster/UI prototypes need not be discarded while foundations mature.
 | **M6 — Scrap, TextEdit, dialogs and Standard File** | M1–M5 | Scrap + mono/styled TextEdit first; then DITL/DLOG/ALRT behavior, filters, editable items, defaults/cancel and original open/save dialogs. Verify selection/caret/CR/style data, cross-editor paste, clipping/scrolling and callback traces. Alert sound is complete only with its audio contract or an explicit unavailable-device result. |
 | **M7 — Writable files, forks and resource persistence** | M1–M3; existing HFS reader; writable native block contract | Scratch-image create/write/resize/rename/move/delete, both forks, catalog/Finder metadata, free-space/accounting, flush/remount and failures. Complete Resource Manager writes on this foundation. Cross-check with original operations and an independent HFS reader after restart; readonly media and failed writes preserve state. |
 | **M8 — Aliases, disk utility and persistent desktop data** | M5–M7 | Alias behavior across moves; Desktop Manager database/services, Finder state and file-type/icon associations; disk initialization and a native utility using public APIs. Verify dismount/remount, blessing/bootability, fork preservation and error recovery on disposable disks. |
-| **M9 — Processes, application launch and interapplication contracts** | M1–M3, M5; resources/files | Each application on its own actual OS-scheduled thread; partitions/ownership, foreground switching, kernel preemption/blocking/wakeup, launch/document/quit parameters and cleanup. Legacy cooperative Thread Manager contexts stay inside each app. Add Apple-event descriptors/handlers/core events and relevant notifications/tasks. Finder launches separate apps through services, not an internal function call. Desk accessories/segments and legacy code execution have separate adapter gates. |
+| **M9 — Processes, application launch and interapplication contracts** | M1–M3, M5; resources/files | Each application on its own actual OS-scheduled thread; partitions/ownership, foreground switching through the right-hand system application menu, kernel preemption/blocking/wakeup, launch/document/quit parameters and cleanup. Legacy cooperative Thread Manager contexts stay inside each app. Add Apple-event descriptors/handlers/core events and relevant notifications/tasks. Finder launches separate apps through services, not an internal function call. Desk accessories/segments and legacy code execution have separate adapter gates. |
 | **M10 — Sound, printing and general device services** | M1–M3; M5–M6 for UI; M9 for process ownership | Independently captured device contracts: sound buffers/commands/callbacks/sample results, print records/dialogs/page/job/spool/cancel/errors, Device Manager queues and completion. Baseline absent hardware is truthful; supported optional device profiles have concrete backends and acceptance oracles. No silent successful no-ops. |
 | **M11 — Remaining scripts, components and system integration** | Relevant earlier milestones | Additional language/script/text-service profiles, VM/cache/physical-memory utilities, help, components/cdevs, translation, drag/drop, Edition Manager, network/communications and remaining utilities/extension APIs. Version-filter the inventory, capture real installed implementations, and close their dependency-specific test gates. |
 
@@ -219,6 +219,36 @@ rendering a dialog-shaped rectangle does not satisfy M6. Apple's documented
 initialization dependencies explicitly place graphics/fonts/windows/menus and
 TextEdit ahead of the Dialog Manager.
 [InitDialogs](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-391.html)
+
+### First native application-launch slice
+
+The first launch milestone includes the right-aligned system application menu.
+It belongs to the resident system UI and uses Process Manager state; Finder and
+other applications access process services through the aggregate Toolbox SDK.
+The foreground application's ordinary menu bar changes with activation, while
+the system application menu remains available across applications.
+
+- Enumerate running applications using stable, generation-checked application
+  identities. Resolve display names and icons from application resources, mark
+  the foreground entry, and remove entries on exit or failed-launch cleanup.
+- Selecting an entry activates that application's windows, menu bar and keyboard
+  event routing without launching another instance. Background applications
+  continue executing on their own actual OS threads.
+- Include Hide, Hide Others and Show All, preserving window positions, ordering
+  and application state. Hidden applications remain listed and can be restored;
+  Finder remains available for returning to the desktop.
+- Capture original System7.6.1 presentation and behavior before implementation:
+  right-edge layout, icon/label/checkmark rules, command wording and enabled
+  states, activation/event ordering, hidden-window restoration and foreground
+  fallback after hide/quit. Encode those observations in aggregate public SDK
+  tests rather than freezing unmeasured original behavior in this plan.
+
+Acceptance: launch two separately built native applications from Finder, switch
+among all three using the right-hand menu, exercise hide/restore and quit/relaunch,
+and verify menu ownership, input isolation and resource cleanup. A nonyielding
+background application must not prevent another application's execution or menu
+switching. The first app can be a small no-std editor using today's Toolbox;
+full Rust std support and original68k execution have separate prerequisites.
 
 ### M5 animation and interaction gate
 
