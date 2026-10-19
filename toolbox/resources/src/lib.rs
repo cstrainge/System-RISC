@@ -213,3 +213,118 @@ impl Resource<'_>
             .map(|_| ())
     }
 }
+
+/// An owned read-only resource-fork mark, independent of the active chain.
+/// Drop closes it. Running apps may be inspected without loading their code.
+pub struct ResourceFile<'a>
+{
+    client: Client<'a>,
+    handle: u32
+}
+#[derive(Clone, Copy, Debug)]
+pub struct FileResourceInfo
+{
+    pub info:     ResourceInfo,
+    /// Distinguishes an absent name from a present empty Pascal string.
+    pub has_name: bool
+}
+impl<'a> Resources<'a>
+{
+    pub fn open_file(self, volume: u32, cnid: u32) -> Result<ResourceFile<'a>>
+    {
+        let mut call = mac_abi::files::FileCall { operation: mac_abi::files::OPEN,
+                                                  volume,
+                                                  cnid,
+                                                  fork: mac_abi::files::RESOURCE_FORK,
+                                                  ..Default::default() };
+        self.client.file(&mut call, "", &mut [])?;
+        let file = ResourceFile { client: self.client,
+                                  handle: call.handle };
+        file.type_count()?;
+        Ok(file)
+    }
+}
+impl ResourceFile<'_>
+{
+    fn request(&self, operation: u32, key: ResourceKey, index: u32, name: &str, offset: usize,
+               output: &mut [u8])
+               -> Result<FileResourceCall>
+    {
+        let mut call = FileResourceCall { operation,
+                                          handle: self.handle,
+                                          key,
+                                          index,
+                                          offset,
+                                          ..Default::default() };
+        self.client.file_resource(&mut call, name, output)?;
+        Ok(call)
+    }
+
+    pub fn type_count(&self) -> Result<u32>
+    {
+        Ok(self.request(COUNT_TYPES, ResourceKey::default(), 0, "", 0, &mut [])?.index)
+    }
+
+    pub fn type_at(&self, index: u32) -> Result<[u8; 4]>
+    {
+        Ok(self.request(TYPE_INDEX, ResourceKey::default(), index, "", 0, &mut [])?.key.kind)
+    }
+
+    pub fn count(&self, kind: [u8; 4]) -> Result<u32>
+    {
+        Ok(self.request(COUNT,
+                        ResourceKey { kind,
+                                      id: 0 },
+                        0,
+                        "",
+                        0,
+                        &mut [])?
+               .index)
+    }
+
+    fn metadata(&self, operation: u32, key: ResourceKey, index: u32, name: &str)
+                -> Result<FileResourceInfo>
+    {
+        let call = self.request(operation, key, index, name, 0, &mut [])?;
+        Ok(FileResourceInfo { info:     call.info,
+                              has_name: call.has_name != 0 })
+    }
+
+    pub fn at(&self, kind: [u8; 4], index: u32) -> Result<FileResourceInfo>
+    {
+        self.metadata(INDEX,
+                      ResourceKey { kind,
+                                    id: 0 },
+                      index,
+                      "")
+    }
+
+    pub fn get(&self, key: ResourceKey) -> Result<FileResourceInfo>
+    {
+        self.metadata(GET, key, 0, "")
+    }
+
+    pub fn named(&self, kind: [u8; 4], name: &str) -> Result<FileResourceInfo>
+    {
+        self.metadata(NAMED,
+                      ResourceKey { kind,
+                                    id: 0 },
+                      0,
+                      name)
+    }
+
+    pub fn read(&self, key: ResourceKey, offset: usize, output: &mut [u8]) -> Result<usize>
+    {
+        Ok(self.request(READ, key, 0, "", offset, output)?.transferred)
+    }
+}
+impl Drop for ResourceFile<'_>
+{
+    fn drop(&mut self)
+    {
+        let mut call = mac_abi::files::FileCall { operation: mac_abi::files::CLOSE,
+                                                  handle: self.handle,
+                                                  ..Default::default() };
+        let _ = self.client.file(&mut call, "", &mut []);
+    }
+}

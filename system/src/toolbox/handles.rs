@@ -20,7 +20,10 @@ pub(crate) struct Exhausted;
 pub(crate) enum Kind
 {
     Memory,
-    Windows
+    Windows,
+    Files,
+    FileWrites,
+    StandardFiles
 }
 impl Kind
 {
@@ -29,7 +32,9 @@ impl Kind
         match self
         {
             Self::Memory => 512,
-            Self::Windows => 32
+            Self::Windows => 32,
+            Self::Files => 64,
+            Self::FileWrites | Self::StandardFiles => 8
         }
     }
 
@@ -38,7 +43,13 @@ impl Kind
         match self
         {
             Self::Memory => 1,
-            Self::Windows => Self::Memory.capacity() as u32 + 1
+            Self::Windows => Self::Memory.capacity() as u32 + 1,
+            Self::Files => Self::Windows.first_slot() + Self::Windows.capacity() as u32,
+            Self::FileWrites => Self::Files.first_slot() + Self::Files.capacity() as u32,
+            Self::StandardFiles =>
+            {
+                Self::FileWrites.first_slot() + Self::FileWrites.capacity() as u32
+            }
         }
     }
 
@@ -46,7 +57,7 @@ impl Kind
     {
         match self
         {
-            Self::Memory => u16::MAX,
+            Self::Memory | Self::Files | Self::FileWrites | Self::StandardFiles => u16::MAX,
             Self::Windows => 255
         }
     }

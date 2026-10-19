@@ -4,21 +4,21 @@ use alloc::{collections::BTreeSet, vec, vec::Vec};
 use mac_abi::{resources::*, *};
 use mac_formats::resource::Resource;
 
-fn word(bytes: &[u8], at: usize) -> Result<u16, Status>
+pub(super) fn word(bytes: &[u8], at: usize) -> Result<u16, Status>
 {
     Ok(u16::from_be_bytes(bytes.get(at..at + 2)
                                .ok_or(BAD_ARGUMENT)?
                                .try_into()
                                .map_err(|_| BAD_ARGUMENT)?))
 }
-fn long(bytes: &[u8], at: usize) -> Result<u32, Status>
+pub(super) fn long(bytes: &[u8], at: usize) -> Result<u32, Status>
 {
     Ok(u32::from_be_bytes(bytes.get(at..at + 4)
                                .ok_or(BAD_ARGUMENT)?
                                .try_into()
                                .map_err(|_| BAD_ARGUMENT)?))
 }
-fn bounded(start: u64, size: u64, total: u64) -> Result<(), Status>
+pub(super) fn bounded(start: u64, size: u64, total: u64) -> Result<(), Status>
 {
     if start.checked_add(size).is_none_or(|end| end > total) { Err(BAD_ARGUMENT) } else { Ok(()) }
 }

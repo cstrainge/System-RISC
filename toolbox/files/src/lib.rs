@@ -374,3 +374,91 @@ pub struct AllocationInfo
     pub data_bytes:     u64,
     pub resource_bytes: u64
 }
+
+/// A staged copy-on-write ordinary data file. Drop aborts an unfinished write.
+/// Only finish publishes a catalog entry; existing resource fork bytes survive.
+pub struct DataWriter<'a>
+{
+    client: Client<'a>,
+    handle: u32
+}
+/// Destination and metadata for one atomic ordinary data-fork save.
+#[derive(Clone, Copy)]
+pub struct DataFileSpec<'a>
+{
+    pub volume:    u32,
+    pub parent:    u32,
+    pub name:      &'a str,
+    /// None creates; Some(id) replaces only that exact confirmed catalog item.
+    pub replacing: Option<u32>,
+    pub file_type: [u8; 4],
+    pub creator:   [u8; 4],
+    pub modified:  Timestamp
+}
+impl<'a> Files<'a>
+{
+    pub fn create_data(self, spec: DataFileSpec<'_>, length: usize) -> Result<DataWriter<'a>>
+    {
+        let mut call = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                       volume: spec.volume,
+                                       parent: spec.parent,
+                                       expected_cnid: spec.replacing.unwrap_or(0),
+                                       file_type: spec.file_type,
+                                       creator: spec.creator,
+                                       length,
+                                       when: spec.modified
+                                                 .mac_seconds()
+                                                 .ok_or(Error(mac_abi::BAD_ARGUMENT))?,
+                                       ..Default::default() };
+        self.client.data_write(&mut call, spec.name, &[])?;
+        Ok(DataWriter { client: self.client,
+                        handle: call.handle })
+    }
+}
+impl DataWriter<'_>
+{
+    pub fn write_all(&mut self, data: &[u8]) -> Result<()>
+    {
+        for chunk in data.chunks(64 * 1024)
+        {
+            let mut call = DataWriteCall { operation: APPEND_DATA_WRITE,
+                                           handle: self.handle,
+                                           ..Default::default() };
+            self.client.data_write(&mut call, "", chunk)?;
+        }
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<CatalogInfo>
+    {
+        let mut call = DataWriteCall { operation: COMMIT_DATA_WRITE,
+                                       handle: self.handle,
+                                       ..Default::default() };
+        self.client.data_write(&mut call, "", &[])?;
+        self.handle = 0;
+        Ok(call.entry)
+    }
+
+    pub fn abort(mut self) -> Result<()>
+    {
+        let mut call = DataWriteCall { operation: ABORT_DATA_WRITE,
+                                       handle: self.handle,
+                                       ..Default::default() };
+        self.client.data_write(&mut call, "", &[])?;
+        self.handle = 0;
+        Ok(())
+    }
+}
+impl Drop for DataWriter<'_>
+{
+    fn drop(&mut self)
+    {
+        if self.handle != 0
+        {
+            let mut call = DataWriteCall { operation: ABORT_DATA_WRITE,
+                                           handle: self.handle,
+                                           ..Default::default() };
+            let _ = self.client.data_write(&mut call, "", &[]);
+        }
+    }
+}

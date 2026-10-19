@@ -102,6 +102,30 @@ pub struct Drawing
 }
 impl Drawing
 {
+    pub(crate) fn bytes(kind: [u8; 4], data: &[u8], destination: Rect) -> Result<Self, Status>
+    {
+        if !matches!(&kind,
+                     b"ICON"
+                     | b"ICN#"
+                     | b"ics#"
+                     | b"SICN"
+                     | b"cicn"
+                     | b"icl4"
+                     | b"icl8"
+                     | b"ics4"
+                     | b"ics8")
+        {
+            return Err(NOT_SUPPORTED);
+        }
+        let family = IconFamily::from_lookup(0, |candidate, id| {
+                         (id == 0 && candidate == kind).then_some(data)
+                     }).map_err(status)?;
+        Ok(Self { family,
+                  destination,
+                  flags: IconFlags::default(),
+                  port: Port::default() })
+    }
+
     #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
     pub(crate) fn file(files: &mut crate::toolbox::files::Manager, manager: Manager<'_>,
                        call: &FileIconCall)

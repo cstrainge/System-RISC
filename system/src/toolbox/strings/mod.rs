@@ -120,6 +120,33 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                                          length: text.len() };
                 Ok(invoke!(call))
             }
+            STANDARD_FILE =>
+            {
+                let original = get!(mac_abi::standard_file::StandardFileCall);
+                let mut call = *original;
+                if call.operation == mac_abi::standard_file::BEGIN
+                {
+                    if call.prompt_length != 0
+                    {
+                        inline_input(&mut call.prompt, &mut call.prompt_length)?;
+                    }
+                    if call.name_length != 0
+                    {
+                        inline_input(&mut call.name, &mut call.name_length)?;
+                    }
+                }
+                let status = invoke!(call);
+                if status == OK as i64
+                {
+                    if call.operation != mac_abi::standard_file::DISPOSE
+                       && call.state == mac_abi::standard_file::ACCEPTED
+                    {
+                        inline_output(&mut call.entry.name, &mut call.entry.name_length)?;
+                    }
+                    *original = call;
+                }
+                Ok(status)
+            }
             DIALOG =>
             {
                 let original = get!(mac_abi::dialogs::DialogCall);
@@ -212,6 +239,38 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
             }
             RESOURCE =>
             {
+                if size == size_of::<resources::FileResourceCall>()
+                {
+                    let original = get!(resources::FileResourceCall);
+                    let mut call = *original;
+                    let name = if call.operation == resources::NAMED
+                    {
+                        unsafe { input(call.name, call.name_length) }?
+                    }
+                    else
+                    {
+                        String::new()
+                    };
+                    call.name = name.as_ptr();
+                    call.name_length = name.len();
+                    let status = invoke!(call);
+                    if status == OK as i64
+                    {
+                        if matches!(call.operation,
+                                    resources::GET
+                                    | resources::INDEX
+                                    | resources::NAMED
+                                    | resources::INFO
+                                    | resources::READ)
+                        {
+                            inline_output(&mut call.info.name, &mut call.info.name_length)?;
+                        }
+                        call.name = original.name;
+                        call.name_length = original.name_length;
+                        *original = call;
+                    }
+                    return Ok(status);
+                }
                 if size == size_of::<resources::FileVersionCall>()
                 {
                     let original = get!(resources::FileVersionCall);
@@ -291,6 +350,33 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
             }
             FILE =>
             {
+                if size == size_of::<files::DataWriteCall>()
+                {
+                    let original = get!(files::DataWriteCall);
+                    let mut call = *original;
+                    let name = if call.operation == files::BEGIN_DATA_WRITE
+                    {
+                        unsafe { input(call.name, call.name_length) }?
+                    }
+                    else
+                    {
+                        String::new()
+                    };
+                    call.name = name.as_ptr();
+                    call.name_length = name.len();
+                    let status = invoke!(call);
+                    if status == OK as i64
+                    {
+                        if call.operation == files::COMMIT_DATA_WRITE
+                        {
+                            inline_output(&mut call.entry.name, &mut call.entry.name_length)?;
+                        }
+                        call.name = original.name;
+                        call.name_length = original.name_length;
+                        *original = call;
+                    }
+                    return Ok(status);
+                }
                 if size == size_of::<files::FileScanCall>()
                 {
                     let original = get!(files::FileScanCall);

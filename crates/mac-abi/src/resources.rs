@@ -118,3 +118,24 @@ pub struct ResourceCall
     pub offset:      usize,
     pub transferred: usize
 }
+
+/// Read-only inspection through an existing File Manager resource-fork handle.
+/// No resource-chain mutation, executable loading, or additional object identity.
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct FileResourceCall
+{
+    pub operation:   u32,
+    pub handle:      u32,
+    pub key:         ResourceKey,
+    pub index:       u32,
+    pub info:        ResourceInfo,
+    pub has_name:    u32,
+    pub name:        *const u8,
+    pub name_length: usize,
+    pub output:      *mut u8,
+    pub capacity:    usize,
+    pub offset:      usize,
+    pub transferred: usize,
+    pub reserved:    [u64; 2]
+}

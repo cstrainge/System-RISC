@@ -70,7 +70,7 @@ impl Workspace
     {
         self.guest_build(&["native-wdef", "native-cdef", "native-scrollbar-cdef", "native-mdef"])?;
         self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "textedit-exerciser",
-                           "cursor-test", "panic-test", "bootrom"])?;
+                           "cursor-test", "panic-test", "resedit", "bootrom"])?;
         boot::package_rom(self)?;
         let mut reports = Vec::new();
         for (directory, name, binary) in
@@ -79,7 +79,8 @@ impl Workspace
              ("apps/quickdraw-test", "QuickDraw Test", "QuickDrawTest"),
              ("apps/textedit-exerciser", "TextEdit Exerciser", "TextEditExerciser"),
              ("apps/cursor-test", "Cursor Test", "CursorTest"),
-             ("apps/panic-test", "Panic Test", "PanicTest")]
+             ("apps/panic-test", "Panic Test", "PanicTest"),
+             ("apps/resedit", "ResEdit", "ResEdit")]
         {
             let report = package::build(&self.root.join(directory).join("resources.json"),
                                         &self.build
@@ -117,9 +118,9 @@ impl Workspace
         run(self.cargo().args(["test", "--locked", "--workspace", "--exclude", "mac-finder",
                                "--exclude", "quickdraw-test", "--exclude",
                                "textedit-exerciser", "--exclude", "cursor-test", "--exclude",
-                               "panic-test", "--exclude", "abi-smoke", "--exclude", "bootrom",
-                               "--exclude", "native-wdef", "--exclude", "native-cdef",
-                               "--exclude", "native-mdef"]))?;
+                               "panic-test", "--exclude", "resedit", "--exclude", "abi-smoke",
+                               "--exclude", "bootrom", "--exclude", "native-wdef", "--exclude",
+                               "native-cdef", "--exclude", "native-mdef"]))?;
         let reports = self.build()?;
         run(Command::new("python3").current_dir(&self.repo)
                                    .arg("System7/scripts/check_system7_boundaries.py"))?;
@@ -134,10 +135,10 @@ impl Workspace
                                "window_interactions", "--", "--ignored"]))?;
         run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", "finder_png",
                                "--", "--ignored"]))?;
-        for test in ["menus", "finder_trash", "file_writes_guest", "deferred_close", "get_info_ui",
-                     "events", "clipboard", "textedit_graphical", "typing", "processes",
-                     "application_ui", "retained_update", "event_latency", "cursor_graphical",
-                     "panic_graphical"]
+        for test in ["resedit", "menus", "finder_trash", "file_writes_guest", "deferred_close",
+                     "get_info_ui", "events", "clipboard", "textedit_graphical", "typing",
+                     "processes", "application_ui", "retained_update", "event_latency",
+                     "cursor_graphical", "panic_graphical"]
         {
             run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", test,
                                    "--", "--ignored"]))?;
@@ -333,6 +334,12 @@ fn execute() -> Result<()>
         {
             println!("{}", serde_json::to_string_pretty(&package::inspect(&fs::read(path)?)?)?)
         }
+        [command, manifest, directory] if command == "rebuild" =>
+        {
+            println!("{}",
+                     serde_json::to_string_pretty(&package::rebuild(Path::new(manifest),
+                                                                    Path::new(directory))?)?);
+        }
         [command, manifest, executable, directory] if command == "package" =>
         {
             let report =
@@ -348,12 +355,13 @@ fn execute() -> Result<()>
 
 fn help()
 {
-    println!("System7 build tools\n\n  cargo xtask build          Build System, Finder, \
-              applications and boot ROM\n  cargo xtask image          Build a separate 500 MiB \
-              HFS disk and qcow2\n  cargo xtask rom            Build the read-only flash ROM\n  \
-              cargo xtask boot [DISK]    Boot from a read-only raw/qcow2 disk; serial console\n  \
-              cargo xtask boot-check     Verify ROM disk boot and rejection cases\n  cargo xtask \
-              inspect FILE   Validate a native MacBinary file\n  cargo xtask package MANIFEST \
-              ELF OUT  Package a native application\n  cargo xtask check          Host, disk, \
-              ABI, ROM boot and graphical desktop checks");
+    println!("System7 build tools\n\n  cargo xtask rebuild MANIFEST OUT  Rebuild a ResEdit \
+              resource archive\n  cargo xtask build          Build System, Finder, applications \
+              and boot ROM\n  cargo xtask image          Build a separate 500 MiB HFS disk and \
+              qcow2\n  cargo xtask rom            Build the read-only flash ROM\n  cargo xtask \
+              boot [DISK]    Boot from a read-only raw/qcow2 disk; serial console\n  cargo xtask \
+              boot-check     Verify ROM disk boot and rejection cases\n  cargo xtask inspect \
+              FILE   Validate a native MacBinary file\n  cargo xtask package MANIFEST ELF OUT  \
+              Package a native application\n  cargo xtask check          Host, disk, ABI, ROM \
+              boot and graphical desktop checks");
 }

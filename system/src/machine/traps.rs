@@ -225,6 +225,13 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 })
             }).unwrap_or_else(|error| error.status() as i64)
         }
+        STANDARD_FILE =>
+        {
+            let call = read_request!(mac_abi::standard_file::StandardFileCall);
+            crate::kernel::with_desktop(|runtime| {
+                runtime.standard_file_request(call).err().unwrap_or(OK)
+            }).unwrap_or_else(|e| e.status()) as i64
+        }
         DIALOG =>
         {
             let call = read_request!(mac_abi::dialogs::DialogCall);

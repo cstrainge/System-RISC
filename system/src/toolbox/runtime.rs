@@ -19,6 +19,8 @@ use crate::{loader::Definitions,
 
 #[path = "crashes/runtime.rs"]
 mod crash_runtime;
+#[path = "standard_file/runtime.rs"]
+mod standard_file_runtime;
 #[path = "dialogs/runtime.rs"]
 mod dialog_runtime;
 #[path = "events/runtime.rs"]
@@ -30,6 +32,7 @@ mod local;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
+    standard_file:   super::standard_file::Manager,
     crash:           super::crashes::Manager,
     dialogs:         super::dialogs::DialogState,
     desktop:         DesktopLayer,
@@ -132,6 +135,7 @@ impl Desktop
         serial!("VIRTIO_INPUT=READY devices={}", devices);
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
+                  standard_file: Default::default(),
                   dialogs: Default::default(),
                   menus: super::menus::Manager::new(mdef, crate::machine::traps::gateway),
                   desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
@@ -681,7 +685,17 @@ impl Desktop
            .filter(|id| self.owns(*id))
            .and_then(|id| self.windows.window(id).map(|window| (id, window)))
            .is_some_and(|(id, window)| {
-               self.textedit.cursor_hit(id, window.global_to_local(self.events.mouse))
+               let local = window.global_to_local(self.events.mouse);
+               self.textedit.cursor_hit(id, local)
+               || self.standard_file
+                      .active(self.owner)
+                      .and_then(|key| self.standard_file.get(key).ok())
+                      .is_some_and(|d| {
+                          d.window == id
+                          && d.mode == mac_abi::standard_file::PUT
+                          && d.sheet == super::standard_file::Sheet::Main
+                          && d.editor.info().view.contains(local)
+                      })
            })
     }
 
@@ -941,6 +955,10 @@ impl Desktop
             self.redraw = true;
         }
         if self.crash_input(input, when)
+        {
+            return;
+        }
+        if self.standard_file_input(input, when)
         {
             return;
         }

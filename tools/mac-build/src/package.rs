@@ -50,6 +50,10 @@ pub fn inspect(bytes: &[u8]) -> Result<Value>
 pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
 {
     let manifest = Manifest::read(manifest_path)?;
+    if manifest.archive
+    {
+        return Err(error("use rebuild for a lossless archive"));
+    }
     let descriptor = manifest.descriptor()?;
     fs::create_dir_all(out)?;
     let debug_elf = fs::read(elf_path)?;
@@ -122,4 +126,55 @@ mod tests
         assert!(super::mac_date(2_212_122_496).is_err());
         assert!(super::mac_date(u64::MAX).is_err());
     }
+}
+
+/// Rebuild a lossless ResEdit archive without a compiler, Cargo project, or
+/// regenerated executable/version resources. Both fork payloads are retained.
+pub fn rebuild(manifest_path: &Path, out: &Path) -> Result<Value>
+{
+    let manifest = Manifest::read(manifest_path)?;
+    if !manifest.archive
+    {
+        return Err(error("rebuild requires an archive manifest"));
+    }
+    let resources = resource::encode(&manifest.compile_resources(manifest_path, &[])?)?;
+    let data = if let Some(crate::manifest::Payload::Hex { hex }) = &manifest.data_fork
+    {
+        if !hex.is_ascii() || !hex.len().is_multiple_of(2)
+        {
+            return Err(error("invalid archive data fork hex"));
+        }
+        (0..hex.len()).step_by(2)
+                      .map(|at| u8::from_str_radix(&hex[at..at + 2], 16))
+                      .collect::<std::result::Result<Vec<_>, _>>()?
+    }
+    else
+    {
+        Vec::new()
+    };
+    let file = MacFile { name: text::encode(&manifest.name)?,
+                         file_type: crate::manifest::fourcc(&manifest.file_type)?,
+                         creator: crate::manifest::fourcc(&manifest.creator)?,
+                         flags: manifest.file_flags,
+                         created: manifest.created,
+                         modified: manifest.modified,
+                         data,
+                         resources };
+    fs::create_dir_all(out)?;
+    // A slash is legal in an HFS catalog name but must never become a host
+    // directory or an absolute path. Preserve the Macintosh header verbatim.
+    let host_name = if manifest.name.contains(['/', '\\'])
+    {
+        format!("archive-{}.bin",
+                text::encode(&manifest.name)?.iter()
+                                             .map(|b| format!("{b:02x}"))
+                                             .collect::<String>())
+    }
+    else
+    {
+        format!("{}.bin", manifest.name)
+    };
+    let path = out.join(host_name);
+    fs::write(&path, macbinary::encode(&file)?)?;
+    Ok(json!({"file":path,"resource_fork_sha256":sha256(&file.resources),"data_fork_sha256":sha256(&file.data),"resources":manifest.resources.len(),"archive":true}))
 }

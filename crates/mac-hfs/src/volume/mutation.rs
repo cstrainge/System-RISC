@@ -4,6 +4,8 @@ use core::cmp::Ordering;
 use super::*;
 use crate::WritableBlockDevice;
 mod comments;
+mod data;
+pub use data::DataSave;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MutationError
 {

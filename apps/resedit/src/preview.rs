@@ -1,0 +1,148 @@
+//! Bounded display decoders. Export always uses untouched bytes instead.
+use core::fmt::Write;
+
+use mac_toolbox::{BAD_ARGUMENT, Status};
+
+use super::document::Text;
+
+fn word(bytes: &[u8], offset: usize) -> Result<u16, Status>
+{
+    Ok(u16::from_be_bytes(bytes.get(offset..offset + 2)
+                               .ok_or(BAD_ARGUMENT)?
+                               .try_into()
+                               .map_err(|_| BAD_ARGUMENT)?))
+}
+fn pstring<'a>(bytes: &'a [u8], at: &mut usize) -> Result<&'a [u8], Status>
+{
+    let size = usize::from(*bytes.get(*at).ok_or(BAD_ARGUMENT)?);
+    let result = bytes.get(*at + 1..*at + 1 + size).ok_or(BAD_ARGUMENT)?;
+    *at += 1 + size;
+    Ok(result)
+}
+pub fn structured(kind: [u8; 4], data: &[u8], mut line: impl FnMut(&str)) -> Result<bool, Status>
+{
+    let mut at = 0;
+    match &kind
+    {
+        b"STR " =>
+        {
+            let mut text = Text::<1024>::new();
+            text.roman(pstring(data, &mut at)?);
+            line(text.as_str());
+        }
+        b"STR#" =>
+        {
+            let count = word(data, 0)?;
+            at = 2;
+            for index in 0..count
+            {
+                let mut text = Text::<1024>::new();
+                let _ = write!(text, "{}: ", index + 1);
+                text.roman(pstring(data, &mut at)?);
+                line(text.as_str());
+            }
+        }
+        b"vers" =>
+        {
+            let header = data.get(..6).ok_or(BAD_ARGUMENT)?;
+            let mut text = Text::<128>::new();
+            let _ = write!(text,
+                           "Version {}.{}.{}",
+                           (header[0] >> 4) * 10 + (header[0] & 15),
+                           header[1] >> 4,
+                           header[1] & 15);
+            line(text.as_str());
+            let mut text = Text::<128>::new();
+            let _ = write!(text,
+                           "Stage 0x{:02x}, build {}, country {}",
+                           header[2],
+                           header[3],
+                           word(data, 4)?);
+            line(text.as_str());
+            at = 6;
+            for _ in 0..2
+            {
+                let mut text = Text::<1024>::new();
+                text.roman(pstring(data, &mut at)?);
+                line(text.as_str());
+            }
+        }
+        b"MENU" =>
+        {
+            let header = data.get(..12).ok_or(BAD_ARGUMENT)?;
+            let enabled = u32::from_be_bytes(header[8..12].try_into().map_err(|_| BAD_ARGUMENT)?);
+            let mut text = Text::<128>::new();
+            let _ = write!(text, "Menu {}   MDEF {}", word(data, 0)? as i16, word(data, 6)? as i16);
+            line(text.as_str());
+            let mut text = Text::<128>::new();
+            let _ = write!(text,
+                           "Size {} x {}   {}",
+                           word(data, 2)?,
+                           word(data, 4)?,
+                           if enabled & 1 != 0 { "enabled" } else { "disabled" });
+            line(text.as_str());
+            at = 12;
+            let mut text = Text::<1024>::new();
+            text.roman(pstring(data, &mut at)?);
+            line(text.as_str());
+            let mut index = 1u32;
+            loop
+            {
+                let label = pstring(data, &mut at)?;
+                if label.is_empty()
+                {
+                    break;
+                }
+                let metadata = data.get(at..at + 4).ok_or(BAD_ARGUMENT)?;
+                at += 4;
+                let mut text = Text::<1024>::new();
+                let _ = write!(text,
+                               "{} ",
+                               if enabled & 1 != 0 && index < 32 && enabled & (1 << index) != 0
+                               {
+                                   "+"
+                               }
+                               else
+                               {
+                                   "-"
+                               });
+                if metadata[2] != 0
+                {
+                    let _ = text.write_str("[marked] ");
+                }
+                text.roman(label);
+                line(text.as_str());
+                let mut text = Text::<128>::new();
+                let _ = write!(text,
+                               "  icon {}  key {}  mark {}  style {:#x}",
+                               metadata[0], metadata[1], metadata[2], metadata[3]);
+                line(text.as_str());
+                index += 1;
+            }
+        }
+        _ => return Ok(false)
+    }
+    Ok(true)
+}
+pub fn hex(data: &[u8], offset: usize, mut line: impl FnMut(&str))
+{
+    for (index, chunk) in data.chunks(8).enumerate()
+    {
+        let mut text = Text::<128>::new();
+        let _ = write!(text, "{:08x} ", offset + index * 8);
+        for byte in chunk
+        {
+            let _ = write!(text, "{:02x} ", byte);
+        }
+        for _ in chunk.len()..8
+        {
+            let _ = text.write_str("   ");
+        }
+        let _ = text.write_str(" ");
+        for &byte in chunk
+        {
+            let _ = text.write_char(if (32..127).contains(&byte) { byte as char } else { '.' });
+        }
+        line(text.as_str());
+    }
+}

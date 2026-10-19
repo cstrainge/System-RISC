@@ -10,17 +10,18 @@ use mac_abi::{traps::*, *};
 
 struct Session
 {
-    crashes:     crate::toolbox::crashes::Manager,
-    events:      crate::toolbox::events::EventManager,
-    scrap:       crate::toolbox::scrap::Manager,
-    textedit:    crate::toolbox::textedit::Manager,
-    cursors:     crate::toolbox::quickdraw::cursors::Cursors,
-    started:     std::time::Instant,
-    memory:      crate::toolbox::memory::Manager,
-    files:       crate::toolbox::files::Manager,
-    fonts:       crate::toolbox::quickdraw::fonts::FontManager,
-    resources:   std::vec::Vec<mac_formats::resource::Resource>,
-    application: std::vec::Vec<mac_formats::resource::Resource>
+    standard_file: crate::toolbox::standard_file::Manager,
+    crashes:       crate::toolbox::crashes::Manager,
+    events:        crate::toolbox::events::EventManager,
+    scrap:         crate::toolbox::scrap::Manager,
+    textedit:      crate::toolbox::textedit::Manager,
+    cursors:       crate::toolbox::quickdraw::cursors::Cursors,
+    started:       std::time::Instant,
+    memory:        crate::toolbox::memory::Manager,
+    files:         crate::toolbox::files::Manager,
+    fonts:         crate::toolbox::quickdraw::fonts::FontManager,
+    resources:     std::vec::Vec<mac_formats::resource::Resource>,
+    application:   std::vec::Vec<mac_formats::resource::Resource>
 }
 impl Default for Session
 {
@@ -44,7 +45,8 @@ impl Default for Session
                                                              data: data.to_vec() });
         }
         let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources);
-        Self { crashes: Default::default(),
+        Self { standard_file: Default::default(),
+               crashes: Default::default(),
                events: crate::toolbox::events::EventManager::new(),
                scrap: Default::default(),
                textedit: Default::default(),
@@ -140,6 +142,13 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                 Ok(()) => OK as i64,
                 Err(_) => IO_ERROR as i64
             }
+        }
+        STANDARD_FILE => {
+            let call = unsafe { request::<mac_abi::standard_file::StandardFileCall>(pointer,size) };
+            match call { Err(e)=>e as i64, Ok(call)=>SESSION.with(|slot| {
+                let mut session=slot.borrow_mut();let session=session.as_mut().unwrap();
+                session.standard_file.request(files::current_owner(),call,&mut session.files).err().unwrap_or(OK) as i64
+            }) }
         }
         DIALOG =>
         {
@@ -350,7 +359,10 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                 let session = session.as_mut().unwrap();
                 let manager = crate::toolbox::resources::manager::Manager::new(
                     &session.resources, &session.application, session.fonts.resources());
-                let (drawing, surface) = if size == size_of::<quickdraw::FileIconCall>()
+                let (drawing, surface) = if size == size_of::<quickdraw::IconDataCall>() {
+                    let call = unsafe { request::<quickdraw::IconDataCall>(pointer,size) }?;
+                    (unsafe { crate::toolbox::quickdraw::native::icon_bytes(call) }?, call.surface)
+                } else if size == size_of::<quickdraw::FileIconCall>()
                 {
                     let call = unsafe { request::<quickdraw::FileIconCall>(pointer, size) }?;
                     (crate::toolbox::quickdraw::icons_service::Drawing::file(
@@ -379,6 +391,12 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
         }
         RESOURCE =>
         {
+            if size == size_of::<resources::FileResourceCall>() {
+                return SESSION.with(|slot| {
+                    let mut session = slot.borrow_mut();
+                    unsafe { crate::toolbox::resources::inspect::dispatch(&mut session.as_mut().unwrap().files, files::current_owner(), pointer, size) }
+                });
+            }
             if size == size_of::<resources::FileVersionCall>()
             {
                 return SESSION.with(|slot| {
@@ -659,3 +677,24 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
 }
 
 pub mod files;
+
+/// Feed a physical dialog action into the same resident model used by System UI.
+pub fn standard_file_action(action: crate::toolbox::standard_file::Action, when: u32)
+                            -> Result<(), Status>
+{
+    SESSION.with(|slot| {
+               let mut s = slot.borrow_mut();
+               let s = s.as_mut().unwrap();
+               let id = s.standard_file.active(files::current_owner()).ok_or(NOT_FOUND)?;
+               s.standard_file.action(id, &mut s.files, action, when)
+           })
+}
+pub fn standard_file_entries() -> std::vec::Vec<mac_abi::files::CatalogInfo>
+{
+    SESSION.with(|slot| {
+               let s = slot.borrow();
+               let s = s.as_ref().unwrap();
+               let id = s.standard_file.active(files::current_owner()).unwrap();
+               s.standard_file.get(id).unwrap().entries.clone()
+           })
+}

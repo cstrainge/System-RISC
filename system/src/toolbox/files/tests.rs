@@ -277,7 +277,7 @@ fn independent_fork_marks_seek_eof_close_stale_handles_and_capacity()
     resource.operation = READ;
     m.request(&mut resource, "", &mut bytes).unwrap();
     assert_eq!(&bytes[..resource.transferred], b"RESFORK");
-    while m.handles.iter().filter(|s| s.file.is_some()).count() < MAX_OPEN_FILES
+    while m.handles.iter().count() < MAX_OPEN_FILES
     {
         call(&mut m, OPEN, 1, 19);
     }
@@ -453,7 +453,7 @@ fn public_safe_client_crosses_actual_filecall_and_drop_releases_handles()
         assert_eq!(data.position().unwrap(), 599);
         resource.close().unwrap();
     }
-    API.with(|fixture| assert!(fixture.borrow().manager.handles.iter().all(|s| s.file.is_none())));
+    API.with(|fixture| assert!(fixture.borrow().manager.handles.iter().next().is_none()));
     // Untrusted scalar fields do not let safe callers supply unrelated raw pointers.
     let mut raw = FileCall { operation: LOOKUP,
                              volume: 1,

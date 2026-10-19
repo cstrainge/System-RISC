@@ -235,3 +235,18 @@ and reject live foreign memory/window IDs in both directions.
 Memory acceptance checks all65535 generations without wrap, the unchanged16/16
 wire encoding, stale byte access/disposal, and generation preservation on app
 cleanup. Owner/access-denied coverage remains in the process conformance suite.
+
+## ResEdit
+
+`resedit.rs` runs the actual document/export and display decoders through the
+public SDK and resident HFS/Resource services. It checks lossless resource and
+data fork reconstruction through mac-build, unusual metadata, malformed maps,
+independent read-only marks and cleanup. The ignored graphical case drives the
+installed application beside a running QuickDraw Test and checks exported code,
+metadata, icon pixels and continued application operation. See
+`docs/RESEDIT.md` for native Save/Save As, optional host transport and the archive
+schema. `file_mutations.rs` also covers Standard File filtering/navigation,
+replacement/New Folder/cancellation, UTF8 and legacy Pascal names, generation
+reuse/foreign IDs, atomic data saves, remounts and injected I/O failures. The
+original Standard File probe and DLOG/DITL provenance live in
+`fixtures/standard-file-original` and `data/standard-file`.

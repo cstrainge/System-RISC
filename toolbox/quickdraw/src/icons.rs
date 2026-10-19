@@ -146,3 +146,15 @@ pub mod standard
     pub const EXTENSIONS_FOLDER: i16 = -3973;
     pub const FONTS_FOLDER: i16 = -3968;
 }
+
+impl crate::graphics::GraphicsPort<'_>
+{
+    pub fn draw_icon(self, kind: [u8; 4], data: &[u8], destination: Rect) -> Result<()>
+    {
+        self.client.icon_data(&mut IconDataCall { window: self.window.0,
+                                                  kind,
+                                                  destination,
+                                                  ..Default::default() },
+                              data)
+    }
+}

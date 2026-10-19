@@ -7,6 +7,10 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
                                     size: usize)
                                     -> i64
 {
+    if size == size_of::<mac_abi::files::DataWriteCall>()
+    {
+        return unsafe { super::write::dispatch(manager, owner, pointer, size) };
+    }
     if size == size_of::<mac_abi::files::FileScanCall>()
     {
         if pointer.is_null()

@@ -9,6 +9,32 @@
   "description": "System RISC native operating system",
   "resources": [
     {
+      "type": "STR#",
+      "id": -16490,
+      "symbol": "STANDARD_FILE_LABELS",
+      "name": "Native Standard File labels",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Desktop",
+          "New Folder",
+          "Save as:",
+          "The name is invalid. Use 1 to 31 Macintosh characters without a colon.",
+          "The item could not be found.",
+          "This operation is not available for this item.",
+          "There is not enough memory to complete the operation.",
+          "The item is in use. Try again after closing it.",
+          "The disk could not be read or written.",
+          "The disk is locked. Choose another disk.",
+          "An item with this name already exists.",
+          "The item is locked or protected.",
+          "The disk is full. Choose another disk.",
+          "The disk could not be restored after an error. Remount it before saving again.",
+          "The operation could not be completed."
+        ]
+      }
+    },
+    {
       "type": "ICON",
       "id": -16400,
       "symbol": "PANIC_BOMB",

@@ -333,3 +333,31 @@ mod tests
                    Some(crate::Rect::ZERO));
     }
 }
+
+pub const BEGIN_DATA_WRITE: u32 = 0;
+pub const APPEND_DATA_WRITE: u32 = 1;
+pub const COMMIT_DATA_WRITE: u32 = 2;
+pub const ABORT_DATA_WRITE: u32 = 3;
+pub const MAX_DATA_WRITE: usize = 4 * 1024 * 1024;
+/// Size-distinct native copy-on-write data-file transaction. expected_cnid=0
+/// means create-new; otherwise commit requires that same confirmed file ID.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct DataWriteCall
+{
+    pub operation:     u32,
+    pub handle:        u32,
+    pub volume:        u32,
+    pub parent:        u32,
+    pub expected_cnid: u32,
+    pub when:          u32,
+    pub file_type:     [u8; 4],
+    pub creator:       [u8; 4],
+    pub length:        usize,
+    pub name:          *const u8,
+    pub name_length:   usize,
+    pub data:          *const u8,
+    pub data_length:   usize,
+    pub entry:         CatalogInfo,
+    pub reserved:      [u64; 2]
+}

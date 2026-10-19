@@ -108,10 +108,11 @@ def check(args):
     assert not any(dep.startswith('toolbox-') for dep in normal_dependencies(by_name['mac-system'])), \
         'System must implement managers internally, without depending on public client bindings'
 
-    for name in ['mac-finder', 'quickdraw-test', 'textedit-exerciser', 'cursor-test', 'panic-test']:
+    for name in ['mac-finder', 'quickdraw-test', 'textedit-exerciser', 'cursor-test', 'panic-test', 'resedit']:
         direct = sorted(packages[dep['pkg']]['name'] for dep in nodes[by_name[name]]['deps']
                         if any(kind['kind'] is None for kind in dep['dep_kinds']))
-        assert direct == ['mac-toolbox'], (name, 'runtime must use only the aggregate Toolbox', direct)
+        expected = ['mac-text', 'mac-toolbox'] if name == 'resedit' else ['mac-toolbox']
+        assert direct == expected, (name, 'runtime must use only the aggregate Toolbox', direct)
         manifest = Path(packages[by_name[name]]['manifest_path'])
         source = (manifest.parent / 'src/main.rs').read_text()
         assert 'mac_toolbox::panic_handler!();' in source, (name, 'must use the shared panic handler')
@@ -121,7 +122,7 @@ def check(args):
              for name in ['chicago-12.font', 'geneva-9.font']]
     reports = []
     release = args.release_dir.resolve()
-    binaries = [('mac-finder', 'Finder'), ('quickdraw-test', 'QuickDrawTest'), ('textedit-exerciser', 'TextEditExerciser'), ('cursor-test', 'CursorTest'), ('panic-test', 'PanicTest'), ('native-wdef', 'WDEF'), ('native-cdef', 'CDEF'), ('native-scrollbar-cdef', 'SCROLLBAR'), ('native-mdef', 'MDEF')]
+    binaries = [('mac-finder', 'Finder'), ('quickdraw-test', 'QuickDrawTest'), ('textedit-exerciser', 'TextEditExerciser'), ('cursor-test', 'CursorTest'), ('panic-test', 'PanicTest'), ('resedit', 'ResEdit'), ('native-wdef', 'WDEF'), ('native-cdef', 'CDEF'), ('native-scrollbar-cdef', 'SCROLLBAR'), ('native-mdef', 'MDEF')]
     missing = [str(release / binary) for binary in ['System'] + [b for _, b in binaries]
                if not (release / binary).is_file()]
     if missing:

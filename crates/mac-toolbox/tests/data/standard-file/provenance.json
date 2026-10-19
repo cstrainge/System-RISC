@@ -1,0 +1,108 @@
+{
+  "system": "System 7.6.1",
+  "machine": "QEMU q800, Quadra 650 ROM, 128 MiB, 640x480x8",
+  "probe": "StandardGetFile(NULL,1,TEXT), Escape, StandardPutFile(\"Save JSON as:\",\"resources.json\"), Escape",
+  "references": [
+    "https://dev.os9.ca/techpubs/mac/Files/Files-307.html",
+    "https://dev.os9.ca/techpubs/mac/Files/Files-306.html",
+    "https://dev.os9.ca/techpubs/mac/Files/Files-308.html"
+  ],
+  "inputs": [
+    {
+      "path": "../working/standard-file-reference/System.bin",
+      "sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea"
+    },
+    {
+      "path": "../working/standard-file-reference/Finder.bin",
+      "sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f"
+    },
+    {
+      "path": "../build/standard-file-original-68k/StandardFileProbe.bin",
+      "sha256": "a94d16d90a1a94f9f528fc03681de1074fbd9f2c1a4380d2dce1c91e297da3b0"
+    },
+    {
+      "path": "crates/mac-toolbox/tests/fixtures/standard-file-original/StandardFileProbe.cc",
+      "sha256": "665409372fc845626d077a9300218923bc2707b93430ecd1ab46444a78799e3b"
+    },
+    {
+      "path": "../working/vm/system-before-apps.qcow2",
+      "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+    }
+  ],
+  "resources": [
+    {
+      "type": "DITL",
+      "id": -6043,
+      "file": "DITL--6043.bin",
+      "sha256": "dd81f2451a57ca50ea49a692845a085f701b85a149e7f465b8609a48b41ba9bc"
+    },
+    {
+      "type": "DITL",
+      "id": -6042,
+      "file": "DITL--6042.bin",
+      "sha256": "ed4268b0e8ab2b0f4ba57749f4cc7e1021e77768202c30f6b9d67c6574c294c9"
+    },
+    {
+      "type": "DITL",
+      "id": -6046,
+      "file": "DITL--6046.bin",
+      "sha256": "539439a6dee6b3d17cddd612cc5a348e171ba62000b938504ebbd28563dcc929"
+    },
+    {
+      "type": "DITL",
+      "id": -6045,
+      "file": "DITL--6045.bin",
+      "sha256": "e8ade93d927954d589a28d8b5b59906e707288ca322bf29d02b7dfccfdf5be11"
+    },
+    {
+      "type": "DITL",
+      "id": -6044,
+      "file": "DITL--6044.bin",
+      "sha256": "4fb1b414b15a13b6360667fa1866357a9cf8d543a9e54657a20b1a034180ee47"
+    },
+    {
+      "type": "DLOG",
+      "id": -6043,
+      "file": "DLOG--6043.bin",
+      "sha256": "bbb17a39ce80750b5918b764bca44f0a7f4840d721d69a8978385ee0121de0c6"
+    },
+    {
+      "type": "DLOG",
+      "id": -6042,
+      "file": "DLOG--6042.bin",
+      "sha256": "f7b8b0c13b498bc7f05f4f909bd72acf2f887f8459afad3163e3594c530e7933"
+    },
+    {
+      "type": "DLOG",
+      "id": -6046,
+      "file": "DLOG--6046.bin",
+      "sha256": "ad0ab93d3fd392ac18a324b10d4e442097f789a1737f79fe1925061f1cbc6033"
+    },
+    {
+      "type": "DLOG",
+      "id": -6045,
+      "file": "DLOG--6045.bin",
+      "sha256": "12ccc60fbad0a163e23f1b94b75ba64883bbc875db8fbdc1e43a0b3843aea12a"
+    },
+    {
+      "type": "DLOG",
+      "id": -6044,
+      "file": "DLOG--6044.bin",
+      "sha256": "618acb6b4ce48f01bb0238b76105d41981622daf7f55ce1914a5c048ffb2174c"
+    }
+  ],
+  "captures": [
+    {
+      "file": "open-text-filter.png",
+      "sha256": "37ada9e9daec46286b81e4db7b12a17272895318cb25645de8b358f4cd8f692b"
+    },
+    {
+      "file": "runtime.jsonl",
+      "sha256": "1cdce98743a53fcaad0775c5a9ebc783360e3d5b4a9ea3bb7be9baf71c3c6913"
+    },
+    {
+      "file": "save-default.png",
+      "sha256": "17499ae65d580b9af9b8d024e4e6cda4f1724296b62b2ec032a3de3e82b3ba7a"
+    }
+  ]
+}

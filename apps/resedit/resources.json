@@ -1,0 +1,346 @@
+{
+  "name": "ResEdit",
+  "binary_name": "ResEdit",
+  "file_type": "APPL",
+  "creator": "RSED",
+  "role": "application",
+  "abi_version": 6,
+  "load_base": "0x86800000",
+  "load_limit": "0x87000000",
+  "description": "System RISC read-only resource browser",
+  "resources": [
+    {
+      "type": "MENU",
+      "id": 128,
+      "symbol": "FILE_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "File",
+        "items": [
+          {
+            "text": "Open...",
+            "key": "O",
+            "command": "open"
+          },
+          "-",
+          {
+            "text": "Save JSON",
+            "key": "S",
+            "command": "save"
+          },
+          {
+            "text": "Save JSON As...",
+            "command": "svas"
+          },
+          {
+            "text": "Export JSON...",
+            "key": "E",
+            "command": "expr"
+          },
+          {
+            "text": "Export JSON to Host",
+            "command": "host"
+          },
+          "-",
+          {
+            "text": "Close Window",
+            "key": "W",
+            "command": "clos"
+          },
+          {
+            "text": "Quit",
+            "key": "Q",
+            "command": "quit"
+          }
+        ]
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 128,
+      "symbol": "PRODUCT_NAME",
+      "payload": {
+        "format": "pstring",
+        "text": "ResEdit"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 2000,
+      "symbol": "UI_TEXT",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Open",
+          "Export JSON",
+          "Types",
+          "Resources",
+          "Resource Info",
+          "Preview",
+          "Up",
+          "Next",
+          "Prev",
+          "Open a file to browse its resources.",
+          "Read only",
+          "JSON saved.",
+          "Open failed; choose another file.",
+          "Export failed; original file is unchanged.",
+          "Volumes",
+          "Cancel",
+          "Select a type, then a resource.",
+          "Preview continues: use Page Up / Page Down.",
+          "Export JSON as:"
+        ]
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 128,
+      "symbol": "ORIGINAL_46524546_128",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/46524546-128.bin"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 129,
+      "symbol": "ORIGINAL_46524546_129",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/46524546-129.bin"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 130,
+      "symbol": "ORIGINAL_46524546_130",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/46524546-130.bin"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 131,
+      "symbol": "ORIGINAL_46524546_131",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/46524546-131.bin"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 132,
+      "symbol": "ORIGINAL_46524546_132",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/46524546-132.bin"
+      }
+    },
+    {
+      "type": "BNDL",
+      "id": 128,
+      "symbol": "ORIGINAL_424E444C_128",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/424e444c-128.bin"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 128,
+      "symbol": "ORIGINAL_49434E23_128",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/49434e23-128.bin"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 129,
+      "symbol": "ORIGINAL_49434E23_129",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/49434e23-129.bin"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 130,
+      "symbol": "ORIGINAL_49434E23_130",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/49434e23-130.bin"
+      }
+    },
+    {
+      "type": "icl4",
+      "id": 128,
+      "symbol": "ORIGINAL_69636C34_128",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69636c34-128.bin"
+      }
+    },
+    {
+      "type": "icl4",
+      "id": 129,
+      "symbol": "ORIGINAL_69636C34_129",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69636c34-129.bin"
+      }
+    },
+    {
+      "type": "icl4",
+      "id": 130,
+      "symbol": "ORIGINAL_69636C34_130",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69636c34-130.bin"
+      }
+    },
+    {
+      "type": "icl8",
+      "id": 128,
+      "symbol": "ORIGINAL_69636C38_128",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69636c38-128.bin"
+      }
+    },
+    {
+      "type": "icl8",
+      "id": 129,
+      "symbol": "ORIGINAL_69636C38_129",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69636c38-129.bin"
+      }
+    },
+    {
+      "type": "icl8",
+      "id": 130,
+      "symbol": "ORIGINAL_69636C38_130",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69636c38-130.bin"
+      }
+    },
+    {
+      "type": "ics#",
+      "id": 128,
+      "symbol": "ORIGINAL_69637323_128",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69637323-128.bin"
+      }
+    },
+    {
+      "type": "ics#",
+      "id": 129,
+      "symbol": "ORIGINAL_69637323_129",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69637323-129.bin"
+      }
+    },
+    {
+      "type": "ics#",
+      "id": 130,
+      "symbol": "ORIGINAL_69637323_130",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69637323-130.bin"
+      }
+    },
+    {
+      "type": "ics4",
+      "id": 128,
+      "symbol": "ORIGINAL_69637334_128",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69637334-128.bin"
+      }
+    },
+    {
+      "type": "ics4",
+      "id": 129,
+      "symbol": "ORIGINAL_69637334_129",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69637334-129.bin"
+      }
+    },
+    {
+      "type": "ics4",
+      "id": 130,
+      "symbol": "ORIGINAL_69637334_130",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69637334-130.bin"
+      }
+    },
+    {
+      "type": "ics8",
+      "id": 128,
+      "symbol": "ORIGINAL_69637338_128",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69637338-128.bin"
+      }
+    },
+    {
+      "type": "ics8",
+      "id": 129,
+      "symbol": "ORIGINAL_69637338_129",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69637338-129.bin"
+      }
+    },
+    {
+      "type": "ics8",
+      "id": 130,
+      "symbol": "ORIGINAL_69637338_130",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/69637338-130.bin"
+      }
+    },
+    {
+      "type": "WIND",
+      "id": 2003,
+      "symbol": "WINDOW_LAYOUT",
+      "payload": {
+        "format": "hex",
+        "hex": "0030000c01cc0274000001000100000000000000"
+      }
+    }
+  ]
+}

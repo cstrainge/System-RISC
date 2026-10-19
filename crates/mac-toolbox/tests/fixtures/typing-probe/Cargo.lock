@@ -85,6 +85,13 @@ dependencies = [
 [[package]]
 name = "mac-formats"
 version = "0.1.0"
+dependencies = [
+ "mac-text",
+]
+
+[[package]]
+name = "mac-text"
+version = "0.1.0"
 
 [[package]]
 name = "mac-toolbox"
@@ -103,6 +110,7 @@ dependencies = [
  "toolbox-quickdraw",
  "toolbox-resources",
  "toolbox-scrap",
+ "toolbox-standard-file",
  "toolbox-textedit",
  "toolbox-windows",
 ]
@@ -286,6 +294,14 @@ dependencies = [
 
 [[package]]
 name = "toolbox-scrap"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
+]
+
+[[package]]
+name = "toolbox-standard-file"
 version = "0.1.0"
 dependencies = [
  "mac-abi",

@@ -22,7 +22,7 @@ def main():
     visual=json.loads((ROOT/'provenance/system7-visual-resource-bundle.json').read_text())
     fonts=json.loads((ROOT/'provenance/system7-font-bundle.json').read_text())
     reports=[]
-    app_manifests={'QuickDraw Test':'apps/quickdraw-test', 'TextEdit Exerciser':'apps/textedit-exerciser', 'Cursor Test':'apps/cursor-test', 'Panic Test':'apps/panic-test'}
+    app_manifests={'QuickDraw Test':'apps/quickdraw-test', 'TextEdit Exerciser':'apps/textedit-exerciser', 'Cursor Test':'apps/cursor-test', 'Panic Test':'apps/panic-test', 'ResEdit':'apps/resedit'}
     forks={}
     for name in ['System','Finder',*app_manifests]:
         path=ROOT/'build/system7/dist'/(name+'.rsrc');blob=path.read_bytes()

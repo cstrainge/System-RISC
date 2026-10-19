@@ -32,6 +32,18 @@ unsafe fn text<'a>(pointer: *const u8, length: usize) -> Result<&'a str, Status>
     core::str::from_utf8(unsafe { input(pointer, length, 65535) }?).map_err(|_| BAD_ARGUMENT)
 }
 /// # Safety
+/// The call's data pointer must borrow readable bytes of the declared length.
+pub(crate) unsafe fn icon_bytes(call: &IconDataCall)
+                                -> Result<super::icons_service::Drawing, Status>
+{
+    if call.reserved != [0; 2]
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    let data = unsafe { input(call.data, call.length, 256 * 1024) }?;
+    super::icons_service::Drawing::bytes(call.kind, data, call.destination)
+}
+/// # Safety
 /// Payload and all nested pointers borrow valid storage for their declared sizes;
 /// output/surface memory is exclusive and does not alias input or the payload.
 pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option<&FontManager>)
@@ -293,6 +305,16 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
             RESOURCE =>
             {
                 #[cfg(target_arch = "riscv64")]
+                if size == size_of::<mac_abi::resources::FileResourceCall>()
+                {
+                    let owner = crate::context::current_thread_context().identity().app.0;
+                    let status = crate::kernel::with_files(|files| unsafe {
+                                     crate::toolbox::resources::inspect::dispatch(files, owner,
+                                                                                  pointer, size)
+                                 }).unwrap_or_else(|e| e.status() as i64);
+                    return if status == 0 { Ok(()) } else { Err(status as Status) };
+                }
+                #[cfg(target_arch = "riscv64")]
                 if size == size_of::<mac_abi::resources::FileVersionCall>()
                 {
                     let status = crate::kernel::with_files(|files| unsafe {
@@ -359,6 +381,25 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
             }
             ICON =>
             {
+                if size == size_of::<IconDataCall>()
+                {
+                    let call = unsafe { request::<IconDataCall>(pointer, size) }?;
+                    let drawing = unsafe { icon_bytes(call) }?;
+                    if call.surface.is_null()
+                    {
+                        #[cfg(target_arch = "riscv64")]
+                        return crate::kernel::with_desktop(|d| {
+                                   d.icon(&IconCall { window: call.window,
+                                                      ..Default::default() },
+                                          drawing)
+                               }).unwrap_or_else(|e| Err(e.status()));
+                        #[cfg(not(target_arch = "riscv64"))]
+                        return Err(NOT_SUPPORTED);
+                    }
+                    let surface =
+                        unsafe { request::<Surface>(call.surface.cast(), size_of::<Surface>()) }?;
+                    return drawing.paint(&mut unsafe { surface.canvas() }.ok_or(BAD_ARGUMENT)?);
+                }
                 #[cfg(target_arch = "riscv64")]
                 if size == size_of::<FileIconCall>()
                 {

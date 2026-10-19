@@ -20,6 +20,7 @@ pub use toolbox_processes as processes;
 pub use toolbox_quickdraw as quickdraw;
 pub use toolbox_resources as resources;
 pub use toolbox_scrap as scrap;
+pub use toolbox_standard_file as standard_file;
 pub use toolbox_textedit as textedit;
 pub use toolbox_windows as windows;
 
@@ -96,6 +97,11 @@ impl<'a> System<'a>
     pub fn now(&self) -> ToolboxResult<Timestamp>
     {
         self.client.now()
+    }
+
+    pub fn standard_file(&self) -> standard_file::StandardFile<'a>
+    {
+        standard_file::StandardFile::new(self.client)
     }
 
     pub fn dialogs(&self) -> dialogs::Dialogs<'a>

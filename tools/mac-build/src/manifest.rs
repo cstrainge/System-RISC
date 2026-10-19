@@ -13,6 +13,18 @@ use crate::{Result, error};
 #[serde(deny_unknown_fields)]
 pub struct Manifest
 {
+    /// Lossless resource archive: preserve every supplied resource verbatim.
+    /// Build manifests keep automatic NABI/RV64/vers generation.
+    #[serde(default)]
+    pub archive:       bool,
+    #[serde(default)]
+    pub data_fork:     Option<Payload>,
+    #[serde(default)]
+    pub file_flags:    u16,
+    #[serde(default)]
+    pub created:       u32,
+    #[serde(default)]
+    pub modified:      u32,
     pub name:          String,
     /// Cargo executable name, when the Macintosh filename contains spaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,7 +296,10 @@ impl Manifest
     pub fn read(path: &Path) -> Result<Self>
     {
         let mut manifest: Self = serde_json::from_slice(&fs::read(path)?)?;
-        manifest.cargo_version = package_version(path)?;
+        if !manifest.archive
+        {
+            manifest.cargo_version = package_version(path)?;
+        }
         manifest.validate()?;
         Ok(manifest)
     }
@@ -307,17 +322,33 @@ impl Manifest
            || name.len() > 31
            || name.contains(&b':')
            || name.contains(&0)
-           || self.name.contains('/')
-           || self.name.contains('\\')
+           || !self.archive && (self.name.contains('/') || self.name.contains('\\'))
         {
             return Err(error("invalid HFS application filename"));
         }
         fourcc(&self.file_type)?;
         fourcc(&self.creator)?;
-        self.descriptor()?.encode()?;
-        version_header(&self.cargo_version)?;
+        if !self.archive
+        {
+            self.descriptor()?.encode()?;
+            version_header(&self.cargo_version)?;
+            if self.data_fork.is_some()
+            {
+                return Err(error("data_fork requires archive mode"));
+            }
+        }
+        else if self.resources.iter().any(|r| !matches!(r.payload, Payload::Hex { .. }))
+                  || self.data_fork.as_ref().is_some_and(|p| !matches!(p, Payload::Hex { .. }))
+        {
+            return Err(error("lossless archives require raw hex payloads"));
+        }
         let mut keys = BTreeSet::from([(*b"RV64", 0), (*b"NABI", 0), (*b"RLOC", 0), (*b"vers", 1)]);
         let mut symbols = BTreeSet::from(["NATIVE_CODE", "NATIVE_ABI", "VERSION"]);
+        if self.archive
+        {
+            keys.clear();
+            symbols.clear();
+        }
         for definition in &self.resources
         {
             let kind = fourcc(&definition.kind)?;
@@ -337,7 +368,7 @@ impl Manifest
             {
                 text::pstring(name)?;
             }
-            if definition.attributes & 1 != 0
+            if !self.archive && definition.attributes & 1 != 0
             {
                 return Err(error("compressed resource payloads are not supported"));
             }
@@ -410,24 +441,28 @@ impl Manifest
     pub fn compile_resources(&self, path: &Path, elf: &[u8]) -> Result<Vec<Resource>>
     {
         self.validate()?;
-        let mut resources = vec![Resource { kind:       *b"RV64",
-                                            id:         0,
-                                            name:       Some(b"Native executable".to_vec()),
-                                            attributes: 0,
-                                            data:       elf.to_vec() },
-                                 Resource { kind:       *b"NABI",
-                                            id:         0,
-                                            name:       Some(b"Native ABI".to_vec()),
-                                            attributes: 0,
-                                            data:       self.descriptor()?.encode()?.to_vec() },];
-        let mut version = version_header(&self.cargo_version)?.to_vec();
-        version.extend(text::pstring(&self.cargo_version)?);
-        version.extend(text::pstring(&self.description)?);
-        resources.push(Resource { kind:       *b"vers",
-                                  id:         1,
-                                  name:       None,
-                                  attributes: 0,
-                                  data:       version });
+        let mut resources = Vec::new();
+        if !self.archive
+        {
+            resources.extend([Resource { kind:       *b"RV64",
+                                         id:         0,
+                                         name:       Some(b"Native executable".to_vec()),
+                                         attributes: 0,
+                                         data:       elf.to_vec() },
+                              Resource { kind:       *b"NABI",
+                                         id:         0,
+                                         name:       Some(b"Native ABI".to_vec()),
+                                         attributes: 0,
+                                         data:       self.descriptor()?.encode()?.to_vec() }]);
+            let mut version = version_header(&self.cargo_version)?.to_vec();
+            version.extend(text::pstring(&self.cargo_version)?);
+            version.extend(text::pstring(&self.description)?);
+            resources.push(Resource { kind:       *b"vers",
+                                      id:         1,
+                                      name:       None,
+                                      attributes: 0,
+                                      data:       version });
+        }
         for definition in &self.resources
         {
             let data = match &definition.payload

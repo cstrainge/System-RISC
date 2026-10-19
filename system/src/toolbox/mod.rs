@@ -20,3 +20,5 @@ pub(crate) mod strings;
 
 #[cfg(target_arch = "riscv64")]
 pub mod processes;
+
+pub mod standard_file;

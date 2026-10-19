@@ -11,3 +11,6 @@ pub(crate) mod file;
 
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
 pub(crate) mod native;
+
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+pub(crate) mod inspect;

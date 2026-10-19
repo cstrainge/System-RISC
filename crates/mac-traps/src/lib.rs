@@ -69,6 +69,11 @@ impl<'a> Client<'a>
         status(result)
     }
 
+    pub fn standard_file(self, call: &mut mac_abi::standard_file::StandardFileCall) -> Result<()>
+    {
+        status(self.invoke(mac_abi::traps::STANDARD_FILE, call))
+    }
+
     pub fn dialog(self, call: &mut mac_abi::dialogs::DialogCall) -> Result<()>
     {
         status(self.invoke(DIALOG, call))
@@ -728,6 +733,22 @@ pub struct ResourceReply
 }
 impl Client<'_>
 {
+    pub fn file_resource(self, call: &mut resources::FileResourceCall, name: &str,
+                         output: &mut [u8])
+                         -> Result<()>
+    {
+        call.name = name.as_ptr();
+        call.name_length = name.len();
+        call.output = output.as_mut_ptr();
+        call.capacity = output.len();
+        let result = status(self.invoke(RESOURCE, call));
+        call.name = core::ptr::null();
+        call.name_length = 0;
+        call.output = core::ptr::null_mut();
+        call.capacity = 0;
+        result
+    }
+
     pub fn file_version(self, volume: u32, cnid: u32, id: i16) -> Result<resources::VersionInfo>
     {
         let mut call = resources::FileVersionCall { operation: resources::FILE_VERSION,
@@ -889,5 +910,33 @@ impl Client<'_>
     pub fn process(self, call: &mut mac_abi::processes::ProcessCall) -> Result<()>
     {
         status(self.invoke(PROCESS, call))
+    }
+}
+
+impl Client<'_>
+{
+    pub fn icon_data(self, call: &mut quickdraw::IconDataCall, data: &[u8]) -> Result<()>
+    {
+        call.data = data.as_ptr();
+        call.length = data.len();
+        status(self.invoke(ICON, call))
+    }
+}
+
+impl Client<'_>
+{
+    pub fn data_write(self, call: &mut mac_abi::files::DataWriteCall, name: &str, data: &[u8])
+                      -> Result<()>
+    {
+        call.name = name.as_ptr();
+        call.name_length = name.len();
+        call.data = data.as_ptr();
+        call.data_length = data.len();
+        let result = status(self.invoke(FILE, call));
+        call.name = core::ptr::null();
+        call.name_length = 0;
+        call.data = core::ptr::null();
+        call.data_length = 0;
+        result
     }
 }

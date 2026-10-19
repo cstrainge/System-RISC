@@ -1,0 +1,153 @@
+{
+  "source": "https://download.info.apple.com/Apple_Support_Area/Apple_Software_Updates/English-North_American/Macintosh/Utilities/ResEdit_2.1.3.sea.bin",
+  "source_md5": "07b93ea43811f069ccdb166d1cb7e19c",
+  "source_sha256": "07ba9493aa0dd8429dcf25882e530636e79a402338cc2579987ab953e1ea8938",
+  "resource_fork_sha256": "b54091dc0e06923733ef5d09525c6e38e28a49ab7ffc3c2b5f906a996a7224c0",
+  "extraction": "unar 1.10.8; ResEdit resource entry extracted successfully; AppleDouble resource entry offset82, length670639. Unrelated example members reported extraction errors. Payloads copied byte-for-byte.",
+  "resources": [
+    {
+      "type": "FREF",
+      "id": 128,
+      "bytes": 7,
+      "sha256": "6ae70fda6b5f837884e8d6de071429e82370e929a86f133fd3c2b8775a9d594b"
+    },
+    {
+      "type": "FREF",
+      "id": 129,
+      "bytes": 7,
+      "sha256": "64c5ea1b456b92a95609c28c250ae6c1c466aba33e765dbbfeccaaf5870f1462"
+    },
+    {
+      "type": "FREF",
+      "id": 130,
+      "bytes": 7,
+      "sha256": "e21143707e60826235de07b787048df7f2281d788ea382601e16f4f39e410a21"
+    },
+    {
+      "type": "FREF",
+      "id": 131,
+      "bytes": 7,
+      "sha256": "43d771aedf4ece7da5074302949ff78ec7ae5a6edfd9e7c69766b94defba5310"
+    },
+    {
+      "type": "FREF",
+      "id": 132,
+      "bytes": 7,
+      "sha256": "82df5c24468839d9bee64850746f872c9d634721c4d440c133d27bbc96eab834"
+    },
+    {
+      "type": "BNDL",
+      "id": 128,
+      "bytes": 60,
+      "sha256": "e1f65cab340e7e15b3461e42176669e2d4efb61c5776764425e83a94ad37a3af"
+    },
+    {
+      "type": "ICN#",
+      "id": 128,
+      "bytes": 256,
+      "sha256": "ac7b1437ebdd84cf16cbf7c36d6a3e7e3ac5b1c7cdfa965abb74822ecc289761"
+    },
+    {
+      "type": "ICN#",
+      "id": 129,
+      "bytes": 256,
+      "sha256": "c97a811cf44a51545d468bf198295bab403d9cea04a0deb67ec6e6034eae0c32"
+    },
+    {
+      "type": "ICN#",
+      "id": 130,
+      "bytes": 256,
+      "sha256": "0539fc59cc562ab90191dc1cc59dea324a541d21eb08343be73498264144a60a"
+    },
+    {
+      "type": "icl4",
+      "id": 128,
+      "bytes": 512,
+      "sha256": "ea713314882dcaaec901d202f22ddad8a529a286f6a94f90df9fcdb65349092f"
+    },
+    {
+      "type": "icl4",
+      "id": 129,
+      "bytes": 512,
+      "sha256": "abc977611569ff13800a266f080b73e95c1e62c0bf312dfda1819b7380f1ccd2"
+    },
+    {
+      "type": "icl4",
+      "id": 130,
+      "bytes": 512,
+      "sha256": "f70a49d2c1bdab7ade961d67cc5df2593740b8ebbc1e2d6c37aee54255362886"
+    },
+    {
+      "type": "icl8",
+      "id": 128,
+      "bytes": 1024,
+      "sha256": "c4a146f37ee1eb10fb5598097af14a8a74e614887a0510f6160a4c60c26707b9"
+    },
+    {
+      "type": "icl8",
+      "id": 129,
+      "bytes": 1024,
+      "sha256": "2b3e4ef812e915193511dce0421b37cb97b4831c7eea78616af2af24fd826e9a"
+    },
+    {
+      "type": "icl8",
+      "id": 130,
+      "bytes": 1024,
+      "sha256": "19d9038b29e1cfda3f04a136401af421cc2cc47b54580e54884c3c0732e54764"
+    },
+    {
+      "type": "ics#",
+      "id": 128,
+      "bytes": 64,
+      "sha256": "f145e4731c6e6dfce51e9183c33586e5e1477d1c08fa385a4fac1d4fd562492f"
+    },
+    {
+      "type": "ics#",
+      "id": 129,
+      "bytes": 64,
+      "sha256": "f16d786bda2e387c445887d1b49e587f1ac74fa2183115f0f1d6a20c040c916f"
+    },
+    {
+      "type": "ics#",
+      "id": 130,
+      "bytes": 64,
+      "sha256": "fbbf738690f5f23ae5714598d11e39541149ac31c6c1802f47c0f1a296669e72"
+    },
+    {
+      "type": "ics4",
+      "id": 128,
+      "bytes": 128,
+      "sha256": "7ace1423b1f77eeff4bdfb25363fc9d3cc49357069afd446824c70cca943c9a0"
+    },
+    {
+      "type": "ics4",
+      "id": 129,
+      "bytes": 128,
+      "sha256": "f61dda50b168c43b042af2988d6e03118bf00edfea2b6548a9773a02e71bf77c"
+    },
+    {
+      "type": "ics4",
+      "id": 130,
+      "bytes": 128,
+      "sha256": "125a39616f904e1eb9a83aa5fc16b83437fbf7d7429b92d81f8e69e2ea10085b"
+    },
+    {
+      "type": "ics8",
+      "id": 128,
+      "bytes": 256,
+      "sha256": "fd5a0ed97eeb75ff478d5e9a702eb98b3d950cf7209929ddd71fd75890a9263e"
+    },
+    {
+      "type": "ics8",
+      "id": 129,
+      "bytes": 256,
+      "sha256": "4157f354242961984a372c71fe539bfdfadcf136d98b04634800a6309d2702ae"
+    },
+    {
+      "type": "ics8",
+      "id": 130,
+      "bytes": 256,
+      "sha256": "0c2f0ca3e7d7b6aedeeb13244f0dba62a900da4fa2d5446a61ff4be9574eb820"
+    }
+  ]
+}

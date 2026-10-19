@@ -23,6 +23,7 @@ APPLICATION_POINTS = {
     'Cursor Test': (56, 106),
     'Panic Test': (120, 106),
     'QuickDraw Test': (184, 106),
+    'ResEdit': (248, 106),
     'TextEdit Exerciser': (312, 106),
     'Z QuickDraw Copy': (56, 158),
 }

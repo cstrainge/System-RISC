@@ -173,7 +173,8 @@ impl Catalog
 }
 impl<'a, D: WritableBlockDevice> Volume<'a, D>
 {
-    fn allocate_desktop_db(&mut self, cat: &mut Catalog) -> MutationResult<(Fork, StagedSectors)>
+    pub(super) fn allocate_data_fork(&mut self, cat: &mut Catalog, length: u64)
+                                     -> MutationResult<(Fork, StagedSectors)>
     {
         let bitmap_sector = u64::from(word(&cat.mdb, 14)?);
         let bitmap_length = (self.allocation_count as usize).div_ceil(8).next_multiple_of(512);
@@ -243,7 +244,7 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
                 }
             }
         }
-        let needed = (NEW_DB_BYTES as u64).div_ceil(self.allocation_size) as usize;
+        let needed = length.div_ceil(self.allocation_size) as usize;
         if needed > free
         {
             return Err(MutationError::Full);
@@ -282,7 +283,7 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         put16(&mut cat.mdb, 34, (free - needed) as u16);
         let fork = Fork { id: long(&cat.mdb, 30)?,
                           kind: 0,
-                          length: NEW_DB_BYTES as u64,
+                          length,
                           extents };
         let mut staged = Vec::new();
         reserve(&mut staged, bitmap_length / 512)?;
@@ -333,7 +334,7 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
             {
                 return Ok(());
             }
-            let (fork, staged) = self.allocate_desktop_db(&mut cat)?;
+            let (fork, staged) = self.allocate_data_fork(&mut cat, NEW_DB_BYTES as u64)?;
             let physical = fork.blocks() * self.allocation_size;
             if physical > 256 * 1024
             {

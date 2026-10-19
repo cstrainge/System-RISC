@@ -392,3 +392,17 @@ pub struct IconCall
     pub creator:     [u8; 4],
     pub file_type:   [u8; 4]
 }
+
+/// Draw one borrowed icon resource without installing a resource chain.
+#[repr(C)]
+#[derive(Default)]
+pub struct IconDataCall
+{
+    pub window:      u32,
+    pub kind:        [u8; 4],
+    pub data:        *const u8,
+    pub length:      usize,
+    pub destination: Rect,
+    pub surface:     *mut Surface,
+    pub reserved:    [u64; 2]
+}

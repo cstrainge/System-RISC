@@ -3,15 +3,17 @@
 `cargo xtask image` builds and packages these applications into the startup
 volume's `Applications` folder. Each application has its own native entry point,
 Cargo-generated `vers`, `RV64` code, `NABI` descriptor, `MENU`/`MCMD` commands,
-window layout and icon bundle. Their runtime dependency is only `mac-toolbox`;
-the implementation of Toolbox services remains in System.
+window layout and icon bundle. Applications call OS services through `mac-toolbox`;
+the resident implementation remains in System. ResEdit additionally uses the
+allocation-free `mac-text` scalar table to decode raw MacRoman resource payloads.
 
 | Application | Cargo package / executable | Initial memory reservation |
 | --- | --- | --- |
 | QuickDraw Test | `quickdraw-test` / `QuickDrawTest` | `0x83000000..0x84000000` |
 | TextEdit Exerciser | `textedit-exerciser` / `TextEditExerciser` | `0x84000000..0x85000000` |
 | Cursor Test | `cursor-test` / `CursorTest` | `0x85000000..0x86000000` |
-| Panic Test | `panic-test` / `PanicTest` | `0x86000000..0x87000000` |
+| Panic Test | `panic-test` / `PanicTest` | `0x86000000..0x86800000` |
+| ResEdit | `resedit` / `ResEdit` | `0x86800000..0x87000000` |
 
 Open `Applications` in Finder and double-click an application, or select it
 and use File > Open. The menu at the right edge of the menu bar switches running
@@ -70,3 +72,15 @@ The short case exercises formatted values, Unicode, and automatic source
 location capture. The long case includes over 20 KiB of numbered Unicode
 diagnostics and `END_OF_LONG_PANIC` at its end, to exercise complete reporting
 and scrolling. It uses the shared Toolbox panic handler, as do the other apps.
+
+ResEdit is the read-only resource browser, with original ResEdit2.1.3 icons.
+Its preferred reservation is `0x86800000..0x87000000`; Panic Test's reservation
+now ends at `0x86800000`. Open apps or other resource files from its File menu,
+including apps that are running. It previews icons, menus, strings and versions,
+and exports a lossless resources.json archive to the host. See
+[ResEdit](../docs/RESEDIT.md) for export/rebuild commands and phase boundaries.
+
+ResEdit browses resource forks of arbitrary files, including running apps, and
+exports a lossless resources.json archive using native Save/Save As. Its Open
+and Save dialogs belong to the shared System Standard File Package. The icon
+bundle is copied from original ResEdit 2.1.3. See [ResEdit](../docs/RESEDIT.md).

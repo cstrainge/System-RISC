@@ -1106,3 +1106,355 @@ fn desktop_db_flush_failure_restores_payload_bitmap_and_both_volume_headers()
     assert_eq!(fs::read(&fixture.disk).unwrap(), before);
     fixture.verify_hfs(":Source:");
 }
+
+#[test]
+fn native_data_save_is_atomic_owned_and_preserves_resource_forks()
+{
+    use mac_toolbox::files::DataFileSpec;
+    let fixture = Fixture::new();
+    let payload: Vec<_> = (0..20_003).map(|i| (i * 23) as u8).collect();
+    let ((id, source, sample, resource, free), activity) =
+        fixture.run(false, DiskFaults::default(), |system| {
+                   let files = system.files();
+                   let source = files.lookup(1, ROOT_ID, "Source").unwrap();
+                   let sample = files.lookup(1, source.id, "Sample").unwrap();
+                   let resource = fork_bytes(system, sample.id, Fork::Resource);
+                   let free = files.volume(1).unwrap().free_bytes;
+                   let spec = DataFileSpec { volume:    1,
+                                             parent:    source.id,
+                                             name:      "Café.json",
+                                             replacing: None,
+                                             file_type: *b"TEXT",
+                                             creator:   *b"ttxt",
+                                             modified:  WHEN };
+                   {
+                       let mut abandoned = files.create_data(spec, 20).unwrap();
+                       abandoned.write_all(b"unfinished").unwrap();
+                       assert_eq!(abandoned.finish(),
+                                  Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT)));
+                   }
+                   assert!(files.lookup(1, source.id, "Café.json").is_err());
+                   let mut writer = files.create_data(spec, payload.len()).unwrap();
+                   writer.write_all(&payload[..123]).unwrap();
+                   writer.write_all(&payload[123..]).unwrap();
+                   assert!(files.lookup(1, source.id, "Café.json").is_err());
+                   let entry = writer.finish().unwrap();
+                   assert_eq!(entry.created_at(), WHEN);
+                   assert_eq!(entry.modified_at(), WHEN);
+                   assert_eq!(entry.file_type, *b"TEXT");
+                   assert_eq!(fork_bytes(system, entry.id, Fork::Data), payload);
+                   let replacement = DataFileSpec { name: "Sample",
+                                                    replacing: Some(sample.id),
+                                                    ..spec };
+                   let mut writer = files.create_data(replacement, 3).unwrap();
+                   writer.write_all(b"new").unwrap();
+                   assert_eq!(writer.finish().unwrap().id, sample.id);
+                   assert_eq!(fork_bytes(system, sample.id, Fork::Data), b"new");
+                   assert_eq!(fork_bytes(system, sample.id, Fork::Resource), resource);
+                   let mut duplicate = files.create_data(spec, 0).unwrap();
+                   duplicate.write_all(&[]).unwrap();
+                   assert_eq!(duplicate.finish(),
+                              Err(mac_toolbox::Error(mac_toolbox::ALREADY_EXISTS)));
+                   let mut empty = files.create_data(DataFileSpec { name: "Empty",
+                                                                    ..spec },
+                                                     0)
+                                        .unwrap();
+                   empty.write_all(&[]).unwrap();
+                   assert_eq!(empty.finish().unwrap().data_length, 0);
+                   (entry.id, source.id, sample.id, resource, free)
+               });
+    assert!(activity.writes > 0 && activity.flushes > 0);
+    fixture.run(false, DiskFaults::default(), |system| {
+               assert_eq!(fork_bytes(system, id, Fork::Data), payload);
+               assert_eq!(fork_bytes(system, sample, Fork::Resource), resource);
+               assert_eq!(system.files().catalog(1, source).unwrap().child_count, 3);
+               assert!(system.files().volume(1).unwrap().free_bytes < free);
+           });
+}
+
+#[test]
+fn native_data_write_failures_preserve_live_files_and_abort_unpublished_creations()
+{
+    use mac_toolbox::files::DataFileSpec;
+    let fixture = Fixture::new();
+    let original = fs::read(&fixture.disk).unwrap();
+    let ((parent, id, data, resource), _) =
+        fixture.run(false, DiskFaults::default(), |system| {
+                   let e = system.files().lookup(1, ROOT_ID, "Source/Sample").unwrap();
+                   (e.parent,
+                    e.id,
+                    fork_bytes(system, e.id, Fork::Data),
+                    fork_bytes(system, e.id, Fork::Resource))
+               });
+    let spec = DataFileSpec { volume: 1,
+                              parent,
+                              name: "Sample",
+                              replacing: Some(id),
+                              file_type: *b"TEXT",
+                              creator: *b"TEST",
+                              modified: WHEN };
+    // Sweep every write and flush in the successful operation, including payload
+    // staging, journal publication and rollback of partially written sectors.
+    let (_, activity) = fixture.run(false, DiskFaults::default(), |system| {
+                                   let mut w = system.files().create_data(spec, 1800).unwrap();
+                                   w.write_all(&[42; 1800]).unwrap();
+                                   w.finish().unwrap();
+                               });
+    for fault in (0..activity.writes).map(|n| {
+                                         DiskFaults { write_at: Some(n),
+                                                      partial_write: true,
+                                                      ..Default::default() }
+                                     })
+                                     .chain((0..activity.flushes).map(|n| {
+                                                                     DiskFaults { flush_at: Some(n),
+                                                             ..Default::default() }
+                                                                 }))
+    {
+        fs::write(&fixture.disk, &original).unwrap();
+        fixture.run(false, fault, |system| {
+                   let mut w = system.files().create_data(spec, 1800).unwrap();
+                   w.write_all(&[42; 1800]).unwrap();
+                   assert!(w.finish().is_err(), "fault {fault:?}, activity {activity:?}");
+               });
+        fixture.run(false, DiskFaults::default(), |system| {
+                   assert_eq!(fork_bytes(system, id, Fork::Data), data);
+                   assert_eq!(fork_bytes(system, id, Fork::Resource), resource);
+               });
+    }
+    fixture.run(true, DiskFaults::default(), |system| {
+               assert!(matches!(system.files().create_data(spec, 0),
+                                Err(mac_toolbox::Error(mac_toolbox::READ_ONLY))))
+           });
+}
+
+#[test]
+fn standard_file_filters_folders_save_as_replace_and_cancel_through_sdk()
+{
+    use mac_system::{testing::{standard_file_action as action, standard_file_entries as entries},
+                     toolbox::standard_file::Action as A};
+    use mac_toolbox::standard_file::{Location, Progress, TypeFilter};
+    let fixture = Fixture::new();
+    fixture.run(false, DiskFaults::default(), |system| {
+               let files = system.files();
+               let source = files.lookup(1, ROOT_ID, "Source").unwrap();
+               let sample = files.lookup(1, source.id, "Sample").unwrap();
+               let loc = Location { volume:    1,
+                                    directory: source.id };
+               let dialog =
+                   system.standard_file().begin_get(loc, TypeFilter::Types(&[*b"APPL"])).unwrap();
+               assert!(entries().is_empty());
+               action(A::Accept, 0).unwrap();
+               assert!(matches!(dialog.poll().unwrap(), Progress::Pending));
+               action(A::Parent, 0).unwrap();
+               assert!(entries().iter().all(|e| e.is_directory()));
+               action(A::Cancel, 0).unwrap();
+               assert!(matches!(dialog.poll().unwrap(), Progress::Cancelled));
+               drop(dialog);
+               let dialog =
+                   system.standard_file().begin_get(loc, TypeFilter::Types(&[*b"TEXT"])).unwrap();
+               assert_eq!(entries().len(), 1);
+               action(A::Accept, 0).unwrap();
+               match dialog.poll().unwrap()
+               {
+                   Progress::Selected(s) => assert_eq!(s.entry.id, sample.id),
+                   _ => panic!("missing selection")
+               };
+               drop(dialog);
+               let dialog = system.standard_file()
+                                  .begin_put(loc, "Save JSON as:", "resources.json")
+                                  .unwrap();
+               action(A::Accept, 0).unwrap();
+               match dialog.poll().unwrap()
+               {
+                   Progress::Selected(s) =>
+                   {
+                       assert!(!s.replacing);
+                       assert_eq!(s.name(), "resources.json");
+                       assert_eq!(s.entry.id, 0);
+                       assert_eq!(s.entry.parent, source.id);
+                   }
+                   _ => panic!("missing save selection")
+               };
+               drop(dialog);
+               assert!(files.lookup(1, source.id, "resources.json").is_err());
+               let dialog = system.standard_file().begin_put(loc, "Save as:", "Sample").unwrap();
+               action(A::Accept, 0).unwrap();
+               assert!(matches!(dialog.poll().unwrap(), Progress::Pending));
+               action(A::Cancel, 0).unwrap();
+               assert!(matches!(dialog.poll().unwrap(), Progress::Pending));
+               action(A::Accept, 0).unwrap();
+               action(A::Confirm, 0).unwrap();
+               match dialog.poll().unwrap()
+               {
+                   Progress::Selected(s) =>
+                   {
+                       assert!(s.replacing);
+                       assert_eq!(s.entry.id, sample.id);
+                   }
+                   _ => panic!("missing replacement")
+               };
+               drop(dialog);
+               let dialog = system.standard_file().begin_put(loc, "Save as:", "x").unwrap();
+               action(A::NewFolder, 0).unwrap();
+               action(A::SelectName, 0).unwrap();
+               for c in "Exports".chars()
+               {
+                   action(A::Edit(c), 0).unwrap();
+               }
+               action(A::Confirm, WHEN.mac_seconds().unwrap()).unwrap();
+               let folder = files.lookup(1, source.id, "Exports").unwrap();
+               assert!(folder.is_directory());
+               action(A::Cancel, 0).unwrap();
+               drop(dialog);
+           });
+}
+
+#[test]
+fn shared_file_dialog_and_writer_ids_reject_reused_and_foreign_slots()
+{
+    use mac_abi::{files::*, standard_file as sf};
+    use mac_system::testing::files::with_owner;
+    use mac_toolbox::{ACCESS_DENIED, Error, NOT_FOUND};
+    let fixture = Fixture::new();
+    fixture.run(false, DiskFaults::default(), |system| {
+               let client = system.client();
+               let parent = system.files().lookup(1, ROOT_ID, "Source").unwrap().id;
+               let mut write = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                               volume: 1,
+                                               parent,
+                                               length: 1,
+                                               ..Default::default() };
+               with_owner(11, || client.data_write(&mut write, "JSON", &[])).unwrap();
+               let old = write.handle;
+               write.operation = APPEND_DATA_WRITE;
+               assert_eq!(with_owner(22, || client.data_write(&mut write, "", b"x")),
+                          Err(Error(ACCESS_DENIED)));
+               write.operation = ABORT_DATA_WRITE;
+               with_owner(11, || client.data_write(&mut write, "", &[])).unwrap();
+               write = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                       volume: 1,
+                                       parent,
+                                       length: 1,
+                                       ..Default::default() };
+               with_owner(11, || client.data_write(&mut write, "JSON", &[])).unwrap();
+               assert_eq!(old & 0xffff, write.handle & 0xffff);
+               assert_ne!(old, write.handle);
+               let mut stale = DataWriteCall { operation: APPEND_DATA_WRITE,
+                                               handle: old,
+                                               ..Default::default() };
+               assert_eq!(with_owner(11, || client.data_write(&mut stale, "", b"x")),
+                          Err(Error(NOT_FOUND)));
+
+               let mut call = sf::StandardFileCall { volume: 1,
+                                                     directory: parent,
+                                                     ..Default::default() };
+               with_owner(11, || client.standard_file(&mut call)).unwrap();
+               let first = call.handle;
+               call.operation = sf::POLL;
+               assert_eq!(with_owner(22, || client.standard_file(&mut call)),
+                          Err(Error(ACCESS_DENIED)));
+               call.operation = sf::DISPOSE;
+               with_owner(11, || client.standard_file(&mut call)).unwrap();
+               call = sf::StandardFileCall { volume: 1,
+                                             directory: parent,
+                                             ..Default::default() };
+               with_owner(11, || client.standard_file(&mut call)).unwrap();
+               assert_eq!(first & 0xffff, call.handle & 0xffff);
+               assert_ne!(first, call.handle);
+               let mut stale = sf::StandardFileCall { operation: sf::POLL,
+                                                      handle: first,
+                                                      ..Default::default() };
+               assert_eq!(with_owner(11, || client.standard_file(&mut stale)),
+                          Err(Error(NOT_FOUND)));
+               stale.handle = write.handle;
+               assert_eq!(with_owner(11, || client.standard_file(&mut stale)),
+                          Err(Error(NOT_FOUND)));
+               let mut foreign = FileCall { operation: TELL,
+                                            handle: write.handle,
+                                            ..Default::default() };
+               assert_eq!(with_owner(11, || client.file(&mut foreign, "", &mut [])),
+                          Err(Error(NOT_FOUND)));
+               write.operation = ABORT_DATA_WRITE;
+               with_owner(11, || client.data_write(&mut write, "", &[])).unwrap();
+               call.operation = sf::DISPOSE;
+               with_owner(11, || client.standard_file(&mut call)).unwrap();
+           });
+}
+
+#[test]
+fn legacy_standard_file_pascal_names_and_writer_share_native_validation()
+{
+    use mac_abi::{files::*, standard_file as sf, traps};
+    use mac_system::{testing::{files::with_owner, standard_file_action as action},
+                     toolbox::standard_file::Action as A};
+    let fixture = Fixture::new();
+    with_file_disk(&fixture.disk, false, DiskFaults::default(), |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let name = b"\x09Caf\x8e.json";
+        let mut dialog = sf::StandardFileCall { mode: sf::PUT,
+                                                volume: 1,
+                                                directory: ROOT_ID,
+                                                name_length: name.len() as u32,
+                                                ..Default::default() };
+        dialog.name[..name.len()].copy_from_slice(name);
+        let invoke = |c: &mut sf::StandardFileCall| unsafe {
+            (services.trap)(traps::PSTRING_STANDARD_FILE,
+                            core::ptr::from_mut(c).cast(),
+                            size_of::<sf::StandardFileCall>())
+        };
+        assert_eq!(invoke(&mut dialog), 0);
+        action(A::Accept, 0).unwrap();
+        dialog.operation = sf::POLL;
+        assert_eq!(invoke(&mut dialog), 0);
+        assert_eq!(dialog.state, sf::ACCEPTED);
+        assert_eq!(&dialog.entry.name[..dialog.entry.name_length as usize], name);
+        dialog.operation = sf::DISPOSE;
+        assert_eq!(invoke(&mut dialog), 0);
+        let stale = dialog.handle;
+        let mut next = sf::StandardFileCall { volume: 1,
+                                              directory: ROOT_ID,
+                                              ..Default::default() };
+        system.client().standard_file(&mut next).unwrap();
+        assert_eq!(next.handle & 0xffff, stale & 0xffff);
+        dialog.operation = sf::POLL;
+        assert_eq!(invoke(&mut dialog), i64::from(mac_toolbox::NOT_FOUND));
+        next.operation = sf::DISPOSE;
+        system.client().standard_file(&mut next).unwrap();
+        let mut w = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                    volume: 1,
+                                    parent: ROOT_ID,
+                                    name: name.as_ptr(),
+                                    name_length: name.len(),
+                                    length: 2,
+                                    when: WHEN.mac_seconds().unwrap(),
+                                    file_type: *b"TEXT",
+                                    creator: *b"ttxt",
+                                    ..Default::default() };
+        let call = |c: &mut DataWriteCall| unsafe {
+            (services.trap)(traps::PSTRING_FILE,
+                            core::ptr::from_mut(c).cast(),
+                            size_of::<DataWriteCall>())
+        };
+        assert_eq!(with_owner(11, || call(&mut w)), 0);
+        let first = w.handle;
+        w.operation = APPEND_DATA_WRITE;
+        w.data = b"{}".as_ptr();
+        w.data_length = 2;
+        assert_eq!(with_owner(22, || call(&mut w)), i64::from(mac_toolbox::ACCESS_DENIED));
+        assert_eq!(with_owner(11, || call(&mut w)), 0);
+        w.operation = COMMIT_DATA_WRITE;
+        assert_eq!(with_owner(11, || call(&mut w)), 0);
+        assert_eq!(&w.entry.name[..w.entry.name_length as usize], name);
+        assert_eq!(system.files().lookup(1, ROOT_ID, "Café.json").unwrap().id, w.entry.id);
+        w.operation = BEGIN_DATA_WRITE;
+        w.expected_cnid = w.entry.id;
+        assert_eq!(with_owner(11, || call(&mut w)), 0);
+        assert_eq!(w.handle & 0xffff, first & 0xffff);
+        let mut old = DataWriteCall { operation: ABORT_DATA_WRITE,
+                                      handle: first,
+                                      ..Default::default() };
+        assert_eq!(with_owner(11, || call(&mut old)), i64::from(mac_toolbox::NOT_FOUND));
+        w.operation = ABORT_DATA_WRITE;
+        assert_eq!(with_owner(11, || call(&mut w)), 0);
+    }).unwrap();
+}

@@ -145,8 +145,13 @@ read/seek/tell/close calls fail, and exit closes only the app's marks. Its bound
 HFS engine rebuilds catalog/thread/index/map records within existing fork reservations. New Folder,
 Trash, Put Away and recursive Empty Trash persist to the actual device; failed
 writes/flushes trigger rollback and failed rollback poisons further mutations.
-This is not a crash-atomic journal. Native data/resource-fork writing, arbitrary
-rename and catalog-fork growth remain future work. Neither SDK nor Finder links
+This is not a crash-atomic journal. Bounded native ordinary data-fork saves now
+stage bytes in an owned generation-tagged writer and publish a copy-on-write
+fork after its payload flush. Replacement preserves CNID and resource fork;
+reported failures retain the old live file. Resource-fork writing and catalog-fork
+growth remain future work. System owns StandardGetFile/StandardPutFile dialogs,
+including filtering, destination navigation and replacement confirmation; the
+Rust interface lives in toolbox/standard-file. See docs/RESEDIT.md for limits. Neither SDK nor Finder links
 the HFS engine. Finder aggregates actual per-volume Trash directories in a
 virtual window and keeps selection identities as (volume,CNID) pairs.
 

@@ -1,7 +1,9 @@
 //! Native transport numbers. Classic A-line numbers occupy their original u16 range.
 use crate::*;
 
-/// System-owned panic reports; native range beyond every classic 16-bit trap.
+/// System-owned Standard File dialogs; native range beyond every classic 16-bit trap.
+pub const STANDARD_FILE: u32 = 0x10020;
+pub const PSTRING_STANDARD_FILE: u32 = STANDARD_FILE | PSTRING_BIT;
 pub const CRASH: u32 = 0x1001f;
 pub const SCRAP: u32 = 0x10019;
 pub const EVENTS: u32 = 0x1001a;
@@ -157,9 +159,19 @@ pub const fn native_string_trap(number: u32) -> Option<u32>
 {
     match number
     {
-        PSTRING_LOG | PSTRING_WINDOW | PSTRING_DRAW | PSTRING_SURFACE | PSTRING_FONT
-        | PSTRING_RESOURCE | PSTRING_FILE | PSTRING_CONTROL | PSTRING_DIALOG | PSTRING_SCRAP
-        | PSTRING_TEXTEDIT | PSTRING_PROCESS => Some(number & !PSTRING_BIT),
+        PSTRING_LOG
+        | PSTRING_WINDOW
+        | PSTRING_DRAW
+        | PSTRING_SURFACE
+        | PSTRING_FONT
+        | PSTRING_STANDARD_FILE
+        | PSTRING_RESOURCE
+        | PSTRING_FILE
+        | PSTRING_CONTROL
+        | PSTRING_DIALOG
+        | PSTRING_SCRAP
+        | PSTRING_TEXTEDIT
+        | PSTRING_PROCESS => Some(number & !PSTRING_BIT),
         _ => None
     }
 }

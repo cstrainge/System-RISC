@@ -13,7 +13,9 @@ use mac_hfs::{BlockDevice, CatalogEntry, Fork, MutationError, Partition, Volume,
 
 pub const MAX_DISKS: u32 = 32;
 pub const MAX_VOLUMES: usize = 128;
-pub const MAX_OPEN_FILES: usize = 64;
+pub const MAX_OPEN_FILES: usize = crate::toolbox::handles::Kind::Files.capacity();
+use crate::toolbox::handles::{Kind, Table};
+mod write;
 const MAX_PATH: usize = 4096;
 
 /// Capabilities borrowed from firmware. Only construction crosses the unsafe ABI.
@@ -132,17 +134,22 @@ struct OpenFile
     fork:     Fork,
     position: u64
 }
-struct Slot
-{
-    generation: u32,
-    file:       Option<OpenFile>
-}
-#[derive(Default)]
 pub struct Manager
 {
     volumes:              Vec<Mounted>,
-    handles:              Vec<Slot>,
+    handles:              Table<OpenFile>,
+    writes:               Table<write::Pending>,
     pub rejected_volumes: u32
+}
+impl Default for Manager
+{
+    fn default() -> Self
+    {
+        Self { volumes:          Vec::new(),
+               handles:          Table::new(Kind::Files),
+               writes:           Table::new(Kind::FileWrites),
+               rejected_volumes: 0 }
+    }
 }
 fn io<T>(result: mac_hfs::Result<T>) -> Result<T, Status>
 {
@@ -380,13 +387,7 @@ impl Manager
 
     fn slot(&mut self, owner: u64, handle: u32) -> Result<&mut OpenFile, Status>
     {
-        let index = (handle & 0xff).checked_sub(1).ok_or(NOT_FOUND)? as usize;
-        let slot = self.handles.get_mut(index).ok_or(NOT_FOUND)?;
-        if slot.generation != handle >> 8
-        {
-            return Err(NOT_FOUND);
-        }
-        let file = slot.file.as_mut().ok_or(NOT_FOUND)?;
+        let file = self.handles.get_mut(handle).ok_or(NOT_FOUND)?;
         if file.owner != owner
         {
             return Err(ACCESS_DENIED);
@@ -408,29 +409,14 @@ impl Manager
                        _ => return Err(BAD_ARGUMENT)
                    }.ok_or(NOT_SUPPORTED)?;
         let length = fork.length;
-        let index = if let Some(index) =
-            self.handles.iter().position(|s| s.file.is_none() && s.generation < 0xffffff)
-        {
-            index
-        }
-        else
-        {
-            if self.handles.len() == MAX_OPEN_FILES
-            {
-                return Err(NO_MEMORY);
-            }
-            self.handles.push(Slot { generation: 0,
-                                     file:       None });
-            self.handles.len() - 1
-        };
-        let slot = &mut self.handles[index];
-        slot.generation += 1;
-        slot.file = Some(OpenFile { owner,
-                                    id,
-                                    volume,
-                                    fork,
-                                    position: 0 });
-        Ok(((slot.generation << 8) | (index as u32 + 1), length))
+        let handle = self.handles
+                         .insert(OpenFile { owner,
+                                            id,
+                                            volume,
+                                            fork,
+                                            position: 0 })
+                         .map_err(|_| NO_MEMORY)?;
+        Ok((handle, length))
     }
 
     fn mutation(&mut self, call: &mut FileCall, name: &str, output: &mut [u8])
@@ -443,13 +429,19 @@ impl Manager
         }
         let name = text::encode(name).map_err(|_| BAD_ARGUMENT)?;
         let mut protected = Vec::new();
-        protected.try_reserve_exact(self.handles.len()).map_err(|_| NO_MEMORY)?;
-        for slot in &self.handles
+        protected.try_reserve_exact(MAX_OPEN_FILES).map_err(|_| NO_MEMORY)?;
+        for (_, file) in self.handles.iter()
         {
-            if let Some(file) = &slot.file
-               && file.volume == call.volume
+            if file.volume == call.volume
             {
                 protected.push(file.id);
+            }
+        }
+        for (_, pending) in self.writes.iter()
+        {
+            if pending.volume == call.volume && pending.expected_cnid != 0
+            {
+                protected.push(pending.expected_cnid);
             }
         }
         let mounted = self.mounted(call.volume)?;
@@ -564,13 +556,27 @@ impl Manager
     pub fn close_all(&mut self, owner: u64) -> usize
     {
         let mut count = 0;
-        for slot in &mut self.handles
+        loop
         {
-            if slot.file.as_ref().is_some_and(|file| file.owner == owner)
+            let id = self.handles.iter().find_map(|(id, file)| (file.owner == owner).then_some(id));
+            let Some(id) = id
+            else
             {
-                slot.file = None;
-                count += 1;
-            }
+                break;
+            };
+            self.handles.remove(id);
+            count += 1;
+        }
+        loop
+        {
+            let id = self.writes.iter().find_map(|(id, file)| (file.owner == owner).then_some(id));
+            let Some(id) = id
+            else
+            {
+                break;
+            };
+            self.writes.remove(id);
+            count += 1;
         }
         count
     }
@@ -702,7 +708,7 @@ impl Manager
             CLOSE =>
             {
                 self.slot(owner, call.handle)?;
-                self.handles[((call.handle & 0xff) - 1) as usize].file = None;
+                self.handles.remove(call.handle).ok_or(NOT_FOUND)?;
             }
             _ => return Err(NOT_SUPPORTED)
         }
