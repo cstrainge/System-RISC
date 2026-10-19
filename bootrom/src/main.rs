@@ -18,7 +18,7 @@ use mac_abi::{BAD_ARGUMENT, BootInfo, Header, NO_MEMORY, NOT_FOUND, NOT_SUPPORTE
 use mac_formats::{elf,
                   native::{Descriptor, Role},
                   resource, text};
-use mac_hfs::{BlockDevice, Error, Partition, Result, Volume};
+use mac_hfs::{BlockDevice, Error, Partition, Result, Volume, WritableBlockDevice};
 
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
@@ -199,6 +199,49 @@ unsafe extern "C" fn read_sector(context: *mut (), index: u32, sector: u64, outp
         }
     }
 }
+unsafe extern "C" fn write_sector(context: *mut (), index: u32, sector: u64, input: *const u8)
+                                  -> Status
+{
+    if context.is_null() || input.is_null()
+    {
+        return BAD_ARGUMENT;
+    }
+    let context = unsafe { &mut *context.cast::<BootVolume>() };
+    if index as usize >= context.disk_count
+    {
+        return NOT_FOUND;
+    }
+    let disk = unsafe { &mut *context.disks.add(index as usize) };
+    if disk.is_read_only()
+    {
+        return mac_abi::READ_ONLY;
+    }
+    if sector >= disk.sector_count()
+    {
+        return BAD_ARGUMENT;
+    }
+    let input = unsafe { &*input.cast::<[u8; 512]>() };
+    disk.write_sector(sector, input).map_or_else(|_| mac_abi::IO_ERROR, |_| OK)
+}
+unsafe extern "C" fn flush_disk(context: *mut (), index: u32) -> Status
+{
+    if context.is_null()
+    {
+        return BAD_ARGUMENT;
+    }
+    let context = unsafe { &mut *context.cast::<BootVolume>() };
+    if index as usize >= context.disk_count
+    {
+        return NOT_FOUND;
+    }
+    let disk = unsafe { &mut *context.disks.add(index as usize) };
+    if disk.is_read_only()
+    {
+        return mac_abi::READ_ONLY;
+    }
+    disk.flush().map_or_else(|_| mac_abi::IO_ERROR, |_| OK)
+}
+
 
 unsafe extern "C" fn read_startup(context: *mut (), name: *const u8, name_length: usize,
                                   output: *mut u8, capacity: usize, length: *mut usize)
@@ -282,6 +325,8 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize, pa
                           storage_context:         context_pointer,
                           disk_info:               Some(disk_info),
                           read_sector:             Some(read_sector),
+                          write_sector:            Some(write_sector),
+                          flush_disk:              Some(flush_disk),
                           startup_disk:            disk_index as u32,
                           reserved:                0,
                           startup_partition_start: partition.start };

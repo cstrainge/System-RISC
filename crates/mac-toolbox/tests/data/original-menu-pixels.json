@@ -1,0 +1,60 @@
+{
+  "crop": [
+    33,
+    20,
+    175,
+    278
+  ],
+  "source": "Original System7.6.1 MDEF0 MenuProbe, cursor hidden",
+  "states": [
+    {
+      "state": "unselected",
+      "file": "original-menu-file-unselected.rgb",
+      "source": "results/finder-menu-trash-reference/menu-file-unselected.png",
+      "source_sha256": "b860522d56f0a439e319ba2512ae48321227b0664718d5a0b80d769307dcbcfe",
+      "rgb_sha256": "acebf8db55f8edef0210f6a3d98e99a292b2449ad2f295f2881bcc87cc7d6af0",
+      "pixels": 36636
+    },
+    {
+      "state": "row1",
+      "file": "original-menu-file-row1.rgb",
+      "source": "results/finder-menu-trash-reference/menu-file-row1.png",
+      "source_sha256": "32d497b3ae3f0a4aafdc1590489aca00afbea6e4b075a0134a9044cb33ed738a",
+      "rgb_sha256": "d4965b83241fc42854fd40588c8a40f40789c041d73854134e2ef0646a399158",
+      "pixels": 36636
+    },
+    {
+      "state": "disabled-row2",
+      "file": "original-menu-file-disabled-row2.rgb",
+      "source": "results/finder-menu-trash-reference/menu-file-disabled-row2.png",
+      "source_sha256": "b860522d56f0a439e319ba2512ae48321227b0664718d5a0b80d769307dcbcfe",
+      "rgb_sha256": "acebf8db55f8edef0210f6a3d98e99a292b2449ad2f295f2881bcc87cc7d6af0",
+      "pixels": 36636
+    }
+  ],
+  "apple_title": {
+    "crop": [
+      10,
+      0,
+      34,
+      19
+    ],
+    "source": "results/finder-menu-trash-reference/menu-file-unselected.png",
+    "source_sha256": "b860522d56f0a439e319ba2512ae48321227b0664718d5a0b80d769307dcbcfe",
+    "rgb_sha256": "0ae156aa08f8838226e107fec7bdb2eec2c43ca69978804f0cf79d18ef5c5b4e",
+    "pixels": 456,
+    "scope": "normal enabled title; selected and disabled title not captured without cursor"
+  },
+  "file_title": {
+    "crop": [
+      33,
+      0,
+      74,
+      20
+    ],
+    "source": "results/finder-menu-trash-reference/menu-file-unselected.png",
+    "source_sha256": "b860522d56f0a439e319ba2512ae48321227b0664718d5a0b80d769307dcbcfe",
+    "rgb_sha256": "8fa0c6bba8623a00cc4f82816150663f6cc3aac898eecc0337269935c9486b4e",
+    "pixels": 820
+  }
+}

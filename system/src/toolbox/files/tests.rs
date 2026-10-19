@@ -136,6 +136,8 @@ fn manager(context: &mut Context) -> Manager
     Manager::new(BootStorage { context:                 (context as *mut Context).cast(),
                                disk_info:               info,
                                read_sector:             read,
+                               write_sector:            None,
+                               flush_disk:              None,
                                startup_disk:            1,
                                startup_partition_start: 8 }).unwrap()
 }
@@ -346,6 +348,8 @@ fn actual_disk_catalog_and_both_forks()
     let storage = BootStorage { context:                 (&mut d as *mut HostDisk).cast(),
                                 disk_info:               host_info,
                                 read_sector:             host_read,
+                                write_sector:            None,
+                                flush_disk:              None,
                                 startup_disk:            0,
                                 startup_partition_start: p.start };
     let mut manager = Manager::new(storage).unwrap();
@@ -513,6 +517,8 @@ fn bounded_discovery_empty_system_invalid_ids_and_parent_cycles_are_explicit()
     let storage = BootStorage { context:                 (&mut context as *mut Context).cast(),
                                 disk_info:               info,
                                 read_sector:             read,
+                                write_sector:            None,
+                                flush_disk:              None,
                                 startup_disk:            0,
                                 startup_partition_start: 0 };
     assert!(matches!(Manager::new(storage), Err(NO_MEMORY)));

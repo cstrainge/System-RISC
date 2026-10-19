@@ -3,11 +3,378 @@
   "file_type": "FNDR",
   "creator": "MACS",
   "role": "application",
-  "abi_version": 4,
+  "abi_version": 5,
   "load_base": "0x81000000",
   "load_limit": "0x82000000",
   "description": "RISCy System Finder",
   "resources": [
+    {
+      "type": "MENU",
+      "id": 1251,
+      "symbol": "APPLE_MENU",
+      "name": "Native Finder \u0014 menu",
+      "payload": {
+        "format": "menu",
+        "title": "\u0014",
+        "items": [
+          {
+            "text": "About RISCy System…",
+            "enabled": true,
+            "command": "abou"
+          },
+          "-"
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 1252,
+      "symbol": "FILE_MENU",
+      "name": "Native Finder File menu",
+      "payload": {
+        "format": "menu",
+        "title": "File",
+        "items": [
+          {
+            "text": "New Folder",
+            "enabled": false,
+            "command": "new ",
+            "key": "N"
+          },
+          {
+            "text": "Open",
+            "enabled": false,
+            "command": "sope",
+            "key": "O"
+          },
+          {
+            "text": "Print",
+            "enabled": false,
+            "command": "spri",
+            "key": "P"
+          },
+          {
+            "text": "Close Window",
+            "enabled": false,
+            "command": "clos",
+            "key": "W"
+          },
+          "-",
+          {
+            "text": "Get Info",
+            "enabled": false,
+            "command": "sinf",
+            "key": "I"
+          },
+          {
+            "text": "Sharing…",
+            "enabled": false,
+            "command": "sprv"
+          },
+          {
+            "text": "Duplicate",
+            "enabled": false,
+            "command": "sdup",
+            "key": "D"
+          },
+          {
+            "text": "Make Alias",
+            "enabled": false,
+            "command": "sali",
+            "key": "M"
+          },
+          {
+            "text": "Put Away",
+            "enabled": false,
+            "command": "sput",
+            "key": "Y"
+          },
+          "-",
+          {
+            "text": "Find…",
+            "enabled": false,
+            "command": "find",
+            "key": "F"
+          },
+          {
+            "text": "Find Again",
+            "enabled": false,
+            "command": "finn",
+            "key": "G"
+          },
+          "-",
+          {
+            "text": "Page Setup…",
+            "enabled": false,
+            "command": "pgsu"
+          },
+          {
+            "text": "Print Window…",
+            "enabled": false,
+            "command": "pwin"
+          }
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 1253,
+      "symbol": "EDIT_MENU",
+      "name": "Native Finder Edit menu",
+      "payload": {
+        "format": "menu",
+        "title": "Edit",
+        "items": [
+          {
+            "text": "Undo",
+            "enabled": false,
+            "command": "undo",
+            "key": "Z"
+          },
+          "-",
+          {
+            "text": "Cut",
+            "enabled": false,
+            "command": "cut ",
+            "key": "X"
+          },
+          {
+            "text": "Copy",
+            "enabled": false,
+            "command": "copy",
+            "key": "C"
+          },
+          {
+            "text": "Paste",
+            "enabled": false,
+            "command": "past",
+            "key": "V"
+          },
+          {
+            "text": "Clear",
+            "enabled": false,
+            "command": "cler"
+          },
+          {
+            "text": "Select All",
+            "enabled": false,
+            "command": "sela",
+            "key": "A"
+          },
+          "-",
+          {
+            "text": "Show Clipboard",
+            "enabled": false,
+            "command": "shcl"
+          }
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 1254,
+      "symbol": "VIEW_MENU",
+      "name": "Native Finder View menu",
+      "payload": {
+        "format": "menu",
+        "title": "View",
+        "items": [
+          {
+            "text": "by Small Icon",
+            "command": "v000",
+            "checked": false,
+            "enabled": false
+          },
+          {
+            "text": "by Icon",
+            "command": "v001",
+            "checked": true,
+            "enabled": false
+          },
+          {
+            "text": "by Name",
+            "command": "v002",
+            "checked": false,
+            "enabled": false
+          },
+          {
+            "text": "by Size",
+            "command": "v003",
+            "checked": false,
+            "enabled": false
+          },
+          {
+            "text": "by Kind",
+            "command": "v004",
+            "checked": false,
+            "enabled": false
+          },
+          {
+            "text": "by Label",
+            "command": "v005",
+            "checked": false,
+            "enabled": false
+          },
+          {
+            "text": "by Date",
+            "command": "v006",
+            "checked": false,
+            "enabled": false
+          }
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 1255,
+      "symbol": "SPECIAL_MENU",
+      "name": "Native Finder Special menu",
+      "payload": {
+        "format": "menu",
+        "title": "Special",
+        "items": [
+          {
+            "text": "Clean Up",
+            "enabled": false,
+            "command": "clea"
+          },
+          {
+            "text": "Empty Trash…",
+            "enabled": false,
+            "command": "empt"
+          },
+          "-",
+          {
+            "text": "Eject Disk",
+            "enabled": false,
+            "command": "seje",
+            "key": "E"
+          },
+          {
+            "text": "Erase Disk…",
+            "enabled": false,
+            "command": "sera"
+          },
+          "-",
+          {
+            "text": "Restart",
+            "enabled": false,
+            "command": "rest"
+          },
+          {
+            "text": "Shut Down",
+            "enabled": false,
+            "command": "shut"
+          }
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 1256,
+      "symbol": "LABEL_MENU",
+      "name": "Native Finder Label menu",
+      "payload": {
+        "format": "menu",
+        "title": "Label",
+        "items": [
+          {
+            "text": "None",
+            "enabled": false,
+            "command": "sscl"
+          },
+          "-",
+          {
+            "text": "Essential",
+            "enabled": false,
+            "command": "sscl"
+          },
+          {
+            "text": "Hot",
+            "enabled": false,
+            "command": "sscl"
+          },
+          {
+            "text": "In Progress",
+            "enabled": false,
+            "command": "sscl"
+          },
+          {
+            "text": "Cool",
+            "enabled": false,
+            "command": "sscl"
+          },
+          {
+            "text": "Personal",
+            "enabled": false,
+            "command": "sscl"
+          },
+          {
+            "text": "Project 1",
+            "enabled": false,
+            "command": "sscl"
+          },
+          {
+            "text": "Project 2",
+            "enabled": false,
+            "command": "sscl"
+          }
+        ]
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 2000,
+      "symbol": "UI_TEXT",
+      "name": "Native Finder interface strings",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Trash",
+          "untitled folder",
+          "Are you sure you want to permanently remove all items in the Trash? You cannot undo this action.",
+          "About RISCy System",
+          "RISCy System",
+          "Finder running in Rust",
+          "Mounted HFS volumes and both forks",
+          "Double-click: open folders",
+          "Ctrl-O / Return: open selection",
+          "Ctrl-Up: parent; Ctrl-W: close",
+          "Q: QuickDraw; A: About",
+          "The volume is locked. This item cannot be changed.",
+          "An item with that name already exists.",
+          "This item is locked or belongs to the active System Folder.",
+          "The operation could not be completed.",
+          "The disk could not complete the operation.",
+          "The disk has no room for more catalog entries.",
+          "This item is open. Close it and try again.",
+          "item",
+          "items",
+          " in disk",
+          " available"
+        ]
+      }
+    },
+    {
+      "type": "DITL",
+      "id": 2001,
+      "symbol": "ERROR_DITL",
+      "name": "Native Finder error DITL",
+      "payload": {
+        "format": "hex",
+        "hex": "0002000000000044012b0058016604024f4b00000000000a0014002a0034a0020002000000000007004a0037016688025e30"
+      }
+    },
+    {
+      "type": "ALRT",
+      "id": 2001,
+      "symbol": "ERROR_ALRT",
+      "name": "Native Finder error ALRT",
+      "payload": {
+        "format": "hex",
+        "hex": "000000000062017007d14444300a"
+      }
+    },
     {
       "type": "STR ",
       "id": 128,
@@ -16,20 +383,6 @@
       "payload": {
         "format": "pstring",
         "text": "Finder"
-      }
-    },
-    {
-      "type": "MENU",
-      "id": 128,
-      "symbol": "FILE_MENU",
-      "payload": {
-        "format": "menu",
-        "title": "File",
-        "items": [
-          "Open",
-          "Close",
-          "Quit"
-        ]
       }
     },
     {
@@ -1761,6 +2114,16 @@
       "payload": {
         "format": "file",
         "path": "assets/demo-rgba.png"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 11750,
+      "symbol": "ORIGINAL_TRASH_STRINGS",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/visual/53545223-11750.bin"
       }
     }
   ]

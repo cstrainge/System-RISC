@@ -2,7 +2,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 pub type Status = i32;
 pub const OK: Status = 0;
 pub const BAD_ABI: Status = -1;
@@ -15,10 +15,18 @@ pub const TRANSLATION_REQUIRED: Status = -6;
 pub const SERVICE_BUSY: Status = -7;
 /// Operation requires its owning OS thread/service context.
 pub const WRONG_THREAD: Status = -8;
+pub const IO_ERROR: Status = -9;
+pub const READ_ONLY: Status = -10;
+pub const ALREADY_EXISTS: Status = -11;
+pub const ACCESS_DENIED: Status = -12;
+pub const DISK_FULL: Status = -13;
+pub const ROLLBACK_FAILED: Status = -14;
+pub const DIRECTORY_NOT_EMPTY: Status = -15;
 
 pub mod dates;
 pub mod geometry;
 pub mod events;
+pub mod menus;
 pub mod memory;
 pub mod images;
 pub use events::*;
@@ -59,6 +67,12 @@ pub type DiskInfoFn =
 pub type ReadSectorFn =
     unsafe extern "C" fn(context: *mut (), index: u32, sector: u64, output: *mut u8) -> Status;
 
+/// Transfer exactly one512-byte sector from exclusive caller-owned readable storage.
+pub type WriteSectorFn =
+    unsafe extern "C" fn(context: *mut (), index: u32, sector: u64, input: *const u8) -> Status;
+/// Complete all preceding writes to durable storage, or report an I/O error.
+pub type FlushDiskFn = unsafe extern "C" fn(context: *mut (), index: u32) -> Status;
+
 /// The pointed-to bytes must remain readable for the duration of the call.
 pub type LogFn = unsafe extern "C" fn(bytes: *const u8, length: usize) -> Status;
 
@@ -97,6 +111,8 @@ pub struct BootInfo
     pub storage_context:         *mut (),
     pub disk_info:               Option<DiskInfoFn>,
     pub read_sector:             Option<ReadSectorFn>,
+    pub write_sector:            Option<WriteSectorFn>,
+    pub flush_disk:              Option<FlushDiskFn>,
     pub startup_disk:            u32,
     pub reserved:                u32,
     pub startup_partition_start: u64
@@ -207,7 +223,7 @@ mod tests
         assert_eq!(core::mem::size_of::<Header>(), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_base), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, log), 24);
-        assert_eq!(core::mem::size_of::<BootInfo>(), 88);
+        assert_eq!(core::mem::size_of::<BootInfo>(), 104);
         assert_eq!(core::mem::offset_of!(SystemServices, trap), 8);
         assert_eq!(core::mem::size_of::<SystemServices>(), 24);
         assert!(Header::for_type::<SystemServices>().supports::<SystemServices>());
@@ -231,3 +247,5 @@ pub mod definitions;
 pub mod files;
 
 pub mod controls;
+
+pub mod dialogs;

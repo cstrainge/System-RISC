@@ -46,7 +46,7 @@ def main():
              for name in ['chicago-12.font', 'geneva-9.font']]
     reports = []
     release = ROOT / 'build/system7/target' / TARGET / 'release'
-    for package, binary in [('mac-finder', 'Finder'), ('native-wdef', 'WDEF'), ('native-cdef', 'CDEF'), ('native-scrollbar-cdef', 'SCROLLBAR')]:
+    for package, binary in [('mac-finder', 'Finder'), ('native-wdef', 'WDEF'), ('native-cdef', 'CDEF'), ('native-scrollbar-cdef', 'SCROLLBAR'), ('native-mdef', 'MDEF')]:
         dependencies = normal_dependencies(by_name[package])
         assert 'mac-system' not in dependencies, (package, 'links resident implementation')
         assert 'linked_list_allocator' not in dependencies, (package, 'links resident heap')
@@ -62,6 +62,7 @@ def main():
         ['llvm-nm', '--defined-only', '--demangle', str(release / 'System')], text=True)
     assert 'standard_window_definition' not in system_symbols, 'WDEF implementation belongs to the resource'
     assert 'standard_control_definition' not in system_symbols, 'CDEF implementation belongs to the resource'
+    assert 'standard_menu_definition' not in system_symbols, 'MDEF implementation belongs to the resource'
     report = {'status': 'passed', 'abi_has_no_dependencies': True,
               'system_has_no_client_dependencies': True, 'definition_code_resident_in_resources': True,
               'applications': reports}

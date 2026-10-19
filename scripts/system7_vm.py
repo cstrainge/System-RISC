@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and boot the System7 disk desktop through its read-only flash ROM."""
+"""Build and boot the System7 disk desktop through its read-only flash ROM and private working disk."""
 import argparse
 import hashlib
 import json
@@ -26,15 +26,29 @@ def build():
     subprocess.run(['cargo', 'xtask', 'image'], cwd=ROOT / 'System7', check=True)
 
 
-def launch(state, frontend='headless', extra_disks=()):
-    """Launch an isolated read-only disk snapshot; never use -kernel or a loader."""
+def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False):
+    """Launch a private disk copy. Tests default to read-only and fresh copies.
+
+    Persistent desktop starts retain their writable copy while the build is unchanged.
+    A new OS build archives that copy before installing the new boot disk.
+    """
     state = Path(state).resolve()
     state.mkdir(parents=True, exist_ok=True)
     native = frontend == 'native'
     if native and not native_executable():
         raise FileNotFoundError('Portable qemu-system-riscv64.exe missing; use --frontend gtk')
-    for name in ['bootrom.bin', 'system7.qcow2']:
-        shutil.copyfile(DIST / name, state / name)
+    shutil.copyfile(DIST / 'bootrom.bin', state / 'bootrom.bin')
+    disk = state / 'system7.qcow2'
+    base_hash = hashlib.sha256((DIST / 'system7.qcow2').read_bytes()).hexdigest()
+    stamp = state / 'base-disk.sha256'
+    same_base = stamp.exists() and stamp.read_text().strip() == base_hash
+    if not preserve or not disk.exists() or not same_base:
+        if preserve and disk.exists():
+            archive = state / ('system7-previous-' + str(time.time_ns()) + '.qcow2')
+            disk.rename(archive)
+            print('Archived previous working disk:', archive)
+        shutil.copyfile(DIST / 'system7.qcow2', disk)
+        stamp.write_text(base_hash + '\n')
     executable = str(native_executable()) if native else 'qemu-system-riscv64'
     host_path = windows_path if native else str
     endpoint = ({'transport': 'tcp', 'host': '127.0.0.1', 'port': 4447, 'platform': 'windows'}
@@ -52,7 +66,7 @@ def launch(state, frontend='headless', extra_disks=()):
     args = [executable, '-name', 'RISCy System - Finder', '-machine', 'virt', '-cpu', 'rv64',
             '-m', '128M', '-smp', '1', '-bios', 'none',
             '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + host_path(state / 'bootrom.bin'),
-            '-drive', 'if=none,id=startup,format=qcow2,readonly=on,file=' + host_path(state / 'system7.qcow2'),
+            '-drive', 'if=none,id=startup,format=qcow2,readonly=' + ('off' if writable else 'on') + ',file=' + host_path(disk),
             '-global', 'virtio-mmio.force-legacy=false',
             '-device', 'virtio-blk-device,drive=startup,bus=virtio-mmio-bus.0',
             '-device', 'ramfb', '-device', 'virtio-keyboard-device', '-device', 'virtio-tablet-device',
@@ -113,7 +127,7 @@ def start(frontend='auto', rebuild=True):
         build()
     if frontend == 'auto':
         frontend = 'native' if native_executable() else 'gtk'
-    process, _ = launch(STATE, frontend)
+    process, _ = launch(STATE, frontend, writable=True, preserve=True)
     print(json.dumps({'pid': process.pid, 'frontend': 'native-gtk' if frontend == 'native' else frontend,
                       'bootrom': str((STATE / 'bootrom.bin').relative_to(ROOT)),
                       'disk': str((STATE / 'system7.qcow2').relative_to(ROOT))}))

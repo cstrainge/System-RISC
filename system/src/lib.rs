@@ -26,6 +26,10 @@ pub(crate) mod test_cdef;
 pub(crate) mod test_scrollbar;
 
 #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+#[path = "../../definitions/mdef/src/main.rs"]
+pub(crate) mod test_mdef;
+
+#[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
 extern crate std;
 #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
 pub mod testing;

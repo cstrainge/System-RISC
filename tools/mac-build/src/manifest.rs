@@ -56,7 +56,7 @@ pub enum Payload
     },
     Menu
     {
-        title: String, items: Vec<String>
+        title: String, items: Vec<MenuItem>
     },
     Hex
     {
@@ -182,6 +182,98 @@ fn version_header(version: &str) -> Result<[u8; 6]>
         ordinal,
         0,
         0])
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum MenuItem
+{
+    Text(String),
+    Definition(MenuItemDefinition)
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MenuItemDefinition
+{
+    pub text:    String,
+    #[serde(default)]
+    pub key:     Option<String>,
+    #[serde(default)]
+    pub mark:    u8,
+    #[serde(default)]
+    pub style:   u8,
+    #[serde(default = "menu_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub checked: bool,
+    #[serde(default)]
+    pub command: Option<String>
+}
+fn menu_enabled() -> bool
+{
+    true
+}
+impl MenuItem
+{
+    fn text(&self) -> &str
+    {
+        match self
+        {
+            Self::Text(text) => text,
+            Self::Definition(item) => &item.text
+        }
+    }
+
+    fn enabled(&self) -> bool
+    {
+        self.text() != "-"
+        && match self
+        {
+            Self::Text(_) => true,
+            Self::Definition(item) => item.enabled
+        }
+    }
+
+    fn command(&self) -> Result<u32>
+    {
+        match self
+        {
+            Self::Definition(item) =>
+            {
+                item.command
+                    .as_deref()
+                    .map(fourcc)
+                    .transpose()
+                    .map(|v| v.map_or(0, u32::from_be_bytes))
+            }
+            _ => Ok(0)
+        }
+    }
+
+    fn metadata(&self) -> Result<[u8; 4]>
+    {
+        match self
+        {
+            Self::Text(_) => Ok([0; 4]),
+            Self::Definition(item) =>
+            {
+                let key = match &item.key
+                {
+                    None => 0,
+                    Some(key) =>
+                    {
+                        let bytes = text::encode(key)?;
+                        if bytes.len() != 1
+                        {
+                            return Err(error("menu key must encode one Mac Roman character"));
+                        }
+                        bytes[0]
+                    }
+                };
+                Ok([0, key, if item.checked { 0x12 } else { item.mark }, item.style])
+            }
+        }
+    }
 }
 
 impl Manifest
@@ -348,18 +440,44 @@ impl Manifest
                 {
                     if definition.kind != "MENU"
                        || items.len() > 31
-                       || items.iter().any(|item| item.is_empty())
+                       || items.iter().any(|item| item.text().is_empty())
                     {
                         return Err(error("invalid MENU definition"));
                     }
                     let mut out = definition.id.to_be_bytes().to_vec();
                     out.extend_from_slice(&[0; 6]); // width, height, procedure ID
-                    out.extend_from_slice(&u32::MAX.to_be_bytes());
+                    let enable_bits = items.iter().enumerate().fold(1u32, |bits, (index, item)| {
+                                                                  bits
+                                                                  | if item.enabled()
+                                                                  {
+                                                                      1u32 << (index + 1)
+                                                                  }
+                                                                  else
+                                                                  {
+                                                                      0
+                                                                  }
+                                                              });
+                    out.extend_from_slice(&enable_bits.to_be_bytes());
                     out.extend(text::pstring(title)?);
+                    let mut commands = Vec::new();
                     for item in items
                     {
-                        out.extend(text::pstring(item)?);
-                        out.extend_from_slice(&[0; 4]);
+                        out.extend(text::pstring(item.text())?);
+                        out.extend_from_slice(&item.metadata()?);
+                        commands.extend_from_slice(&item.command()?.to_be_bytes());
+                    }
+                    if commands.iter().any(|byte| *byte != 0)
+                    {
+                        if self.resources.iter().any(|r| r.kind == "MCMD" && r.id == definition.id)
+                        {
+                            return Err(error("menu command fields conflict with explicit MCMD \
+                                              resource"));
+                        }
+                        resources.push(Resource { kind:       *b"MCMD",
+                                                  id:         definition.id,
+                                                  name:       None,
+                                                  attributes: 0,
+                                                  data:       commands });
                     }
                     out.push(0);
                     out
@@ -422,9 +540,12 @@ mod tests
         let m = manifest();
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../finder/resources.json");
         let resources = m.compile_resources(&path, b"ELF").unwrap();
-        let menu = &resources.iter().find(|r| r.kind == *b"MENU").unwrap().data;
-        assert_eq!(&menu[..2], &128i16.to_be_bytes());
+        let menu = &resources.iter().find(|r| r.kind == *b"MENU" && r.id == 1252).unwrap().data;
+        assert_eq!(&menu[..2], &1252i16.to_be_bytes());
         assert_eq!(&menu[12..17], b"\x04File");
+        assert_eq!(&menu[17..32], b"\x0aNew Folder\0N\0\0");
+        let commands = &resources.iter().find(|r| r.kind == *b"MCMD" && r.id == 1252).unwrap().data;
+        assert_eq!(&commands[..8], b"new sope");
         let vers = &resources.iter().find(|r| r.kind == *b"vers").unwrap().data;
         assert_eq!(&vers[..7], &[0, 0x10, 0x80, 0, 0, 0, 5]);
         assert!(m.rust_ids().contains("FILE_MENU"));

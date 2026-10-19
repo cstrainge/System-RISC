@@ -1,3 +1,4 @@
+pub mod mutation;
 use alloc::{vec, vec::Vec};
 
 use crate::{BlockDevice, Error, Partition, Result, be16, be32, bytes, read_at};

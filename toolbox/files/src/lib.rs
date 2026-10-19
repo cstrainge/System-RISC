@@ -1,4 +1,4 @@
-//! Safe, read-only File Manager clients. Storage and HFS parsing live in System.
+//! Safe File Manager clients. Storage and HFS mutation engines live in System.
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::files::*;
@@ -113,6 +113,67 @@ impl<'a> Files<'a>
         output.write_str(text).map_err(|_| Error(mac_abi::NO_MEMORY))
     }
 
+    fn mutation(self, operation: u32, volume: u32, cnid: u32, name: &str, when: Timestamp)
+                -> Result<FileCall>
+    {
+        let time = when.mac_seconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        self.call(FileCall { operation,
+                             volume,
+                             cnid,
+                             position: time as u64,
+                             ..Default::default() },
+                  name)
+    }
+
+    pub fn new_folder(self, volume: u32, parent: u32, name: &str, when: Timestamp)
+                      -> Result<CatalogInfo>
+    {
+        Ok(self.mutation(NEW_FOLDER, volume, parent, name, when)?.entry)
+    }
+
+    pub fn trash_directory(self, volume: u32, create: bool) -> Result<CatalogInfo>
+    {
+        self.trash_directory_at(volume, create, Timestamp::from_mac_seconds(0))
+    }
+
+    pub fn trash_directory_at(self, volume: u32, create: bool, when: Timestamp)
+                              -> Result<CatalogInfo>
+    {
+        let time = when.mac_seconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        Ok(self.call(FileCall { operation: TRASH_DIRECTORY,
+                                volume,
+                                index: u32::from(create),
+                                position: time as u64,
+                                ..Default::default() },
+                     "")?
+               .entry)
+    }
+
+    pub fn move_to_trash(self, volume: u32, cnid: u32, when: Timestamp) -> Result<CatalogInfo>
+    {
+        Ok(self.mutation(MOVE_TO_TRASH, volume, cnid, "", when)?.entry)
+    }
+
+    pub fn put_away(self, volume: u32, cnid: u32, when: Timestamp) -> Result<CatalogInfo>
+    {
+        Ok(self.mutation(PUT_AWAY, volume, cnid, "", when)?.entry)
+    }
+
+    pub fn trash_usage(self, volume: u32) -> Result<TrashUsage>
+    {
+        let call = self.call(FileCall { operation: TRASH_USAGE,
+                                        volume,
+                                        ..Default::default() },
+                             "")?;
+        Ok(TrashUsage { items:           call.index,
+                        allocated_bytes: call.length })
+    }
+
+    pub fn empty_trash(self, volume: u32, when: Timestamp) -> Result<u32>
+    {
+        Ok(self.mutation(EMPTY_TRASH, volume, 0, "", when)?.index)
+    }
+
     pub fn open(self, volume: u32, cnid: u32, fork: Fork) -> Result<OpenFile<'a>>
     {
         let call = self.call(FileCall { operation: OPEN,
@@ -222,4 +283,11 @@ impl Drop for OpenFile<'_>
             let _ = self.client.file(&mut call, "", &mut []);
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrashUsage
+{
+    pub items:           u32,
+    pub allocated_bytes: u64
 }

@@ -12,6 +12,8 @@ pub const TYPE_INDEX: u32 = 5;
 pub const INFO: u32 = 6;
 pub const READ: u32 = 7;
 pub const RELEASE: u32 = 8;
+/// Decode STR / zero-based STR# element to native UTF8 in output.
+pub const STRING: u32 = 10;
 pub const LOAD: u32 = 9;
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

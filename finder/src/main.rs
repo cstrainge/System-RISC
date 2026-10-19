@@ -13,10 +13,13 @@ mod resources
     include!(concat!(env!("OUT_DIR"), "/resource_ids.rs"));
 }
 
+mod ui;
+mod menus;
 mod browser;
 mod icon_view;
 
-fn try_action<T>(system: &System<'_>, result: Result<T, Status>) -> Result<Option<T>, Status>
+fn try_action<T>(system: &System<'_>, alerts: &mut ui::Alerts, result: Result<T, Status>)
+                 -> Result<Option<T>, Status>
 {
     use core::fmt::Write;
     match result
@@ -27,6 +30,12 @@ fn try_action<T>(system: &System<'_>, result: Result<T, Status>) -> Result<Optio
             let mut message = browser::Text::<80>::default();
             let _ = writeln!(&mut message, "FINDER_ACTION_FAILED status={}", status);
             system.log(message.as_str())?;
+            if let Err(error) = alerts.error(system, status)
+            {
+                let mut message = browser::Text::<80>::default();
+                let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error);
+                system.log(message.as_str())?;
+            }
             Ok(None)
         }
     }
@@ -39,14 +48,10 @@ fn about(system: &System<'_>, id: u32) -> Result<(), Status>
     port.reset().map_err(|e| e.0)?;
     port.colors(0xffffff, 0xffffff).map_err(|e| e.0)?;
     port.paint_rect(Rect::new(0, 0, 300, 210)).map_err(|e| e.0)?;
-    for (y, text) in [(20, "RISCy System"),
-                      (45, "Finder running in Rust"),
-                      (70, "Mounted HFS volumes and both forks"),
-                      (100, "Double-click: open folders"),
-                      (120, "Ctrl-O / Return: open selection"),
-                      (140, "Ctrl-Up: parent; Ctrl-W: close"),
-                      (160, "Q: QuickDraw; A: About")]
+    for (y, index) in [(20, 4), (45, 5), (70, 6), (100, 7), (120, 8), (140, 9), (160, 10)]
     {
+        let mut bytes = [0; 768];
+        let text = ui::text(system, index, &mut bytes)?;
         port.text(mac_toolbox::quickdraw::fonts::FontSelection { family: 3,
                                                                  size:   9,
                                                                  face:   0 },
@@ -58,10 +63,24 @@ fn about(system: &System<'_>, id: u32) -> Result<(), Status>
     }
     system.end_update(id)
 }
+fn open_about(system: &System<'_>, id: &mut u32) -> Result<(), Status>
+{
+    if *id == 0 || system.window(*id).is_err()
+    {
+        let mut bytes = [0; 768];
+        let title = ui::text(system, 3, &mut bytes)?;
+        *id = system.new_window(Rect::new(250, 150, 550, 345), title, (260, 180), 0)?;
+    }
+    system.select_window(*id)?;
+    about(system, *id)
+}
 fn finder(system: &System<'_>) -> Result<(), Status>
 {
     let mut browser = browser::Browser::default();
+    menus::install(system)?;
     browser.initialize(system)?;
+    let mut alerts = ui::Alerts::default();
+    menus::update(system, &browser)?;
     let mut demo = 0;
     let mut about_id = 0;
     let mut demo_page = 0;
@@ -82,8 +101,57 @@ fn finder(system: &System<'_>) -> Result<(), Status>
     loop
     {
         let event = system.next_event(EVERY_EVENT)?;
+        if alerts.window != 0
+        {
+            let confirm = alerts.event(system, event)?;
+            if alerts.window == 0
+            {
+                browser.redraw_all(system)?;
+                menus::update(system, &browser)?;
+            }
+            if confirm
+            {
+                let _ = try_action(system, &mut alerts, browser.empty_trash(system))?;
+                menus::update(system, &browser)?;
+            }
+            continue;
+        }
         browser.prune(system)?;
-        browser.track(system, event)?;
+        let _ = try_action(system, &mut alerts, browser.track(system, event))?;
+        if alerts.window != 0
+        {
+            continue;
+        }
+        if let Some(selection) = system.menus().selection(&event).map_err(|e| e.0)?
+        {
+            let mut log = browser::Text::<120>::default();
+            use core::fmt::Write;
+            let _ = writeln!(&mut log,
+                             "FINDER_MENU menu={} item={} command={:08x}",
+                             selection.menu_id, selection.item, selection.command);
+            system.log(log.as_str())?;
+            let action = match selection.command
+            {
+                menus::NEW_FOLDER => browser.new_folder(system),
+                menus::OPEN => browser.open_selection(system),
+                menus::CLOSE =>
+                {
+                    if let Ok(front) = system.window(0)
+                    {
+                        system.close_window(front.id)?;
+                    }
+                    browser.prune(system)
+                }
+                menus::PUT_AWAY => browser.put_away(system),
+                menus::CLEAR => browser.trash_selection(system),
+                menus::EMPTY => alerts.confirm_empty(system, &browser),
+                menus::ABOUT => open_about(system, &mut about_id),
+                _ => Ok(())
+            };
+            let _ = try_action(system, &mut alerts, action)?;
+            menus::update(system, &browser)?;
+            continue;
+        }
         match event.kind
         {
             EventKind::Update =>
@@ -110,11 +178,12 @@ fn finder(system: &System<'_>) -> Result<(), Status>
             {
                 let key = event.character().to_ascii_lowercase();
                 let code = (event.message >> 8) as u8;
-                if key == b'q'
+                if key == b'q' && event.modifiers & CMD_KEY == 0
                 {
                     if demo == 0 || system.window(demo).is_err()
                     {
-                        let Some(id) = try_action(system, quickdraw_demo::open(system))?
+                        let Some(id) =
+                            try_action(system, &mut alerts, quickdraw_demo::open(system))?
                         else
                         {
                             continue;
@@ -126,22 +195,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                 }
                 else if key == b'a' && event.modifiers & CMD_KEY == 0
                 {
-                    if about_id == 0 || system.window(about_id).is_err()
-                    {
-                        let Some(id) = try_action(system,
-                                                  system.new_window(Rect::new(250, 150, 550,
-                                                                              345),
-                                                                    "About RISCy System",
-                                                                    (260, 180),
-                                                                    0))?
-                        else
-                        {
-                            continue;
-                        };
-                        about_id = id;
-                    }
-                    system.select_window(about_id)?;
-                    about(system, about_id)?;
+                    let _ = try_action(system, &mut alerts, open_about(system, &mut about_id))?;
                 }
                 else if key == b'w' && event.modifiers & CMD_KEY != 0
                 {
@@ -151,10 +205,10 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                         browser.prune(system)?;
                     }
                 }
-                else if key == b'n'
+                else if key == b'n' && event.modifiers & CMD_KEY == 0
                 {
                     let _ =
-                        try_action(system,
+                        try_action(system,&mut alerts,
                                    browser.open(system,
                                          browser::Location { volume: browser.startup,
                                                              folder: mac_toolbox::files::ROOT_ID }))?;
@@ -188,15 +242,19 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                         quickdraw_demo::draw(system, demo, demo_page, icon_offset)?;
                     }
                 }
+                else if code == 0x33 && event.modifiers & CMD_KEY != 0
+                {
+                    let _ = try_action(system, &mut alerts, browser.trash_selection(system))?;
+                }
                 else if code == 0x7e && event.modifiers & CMD_KEY != 0
                 {
-                    let _ = try_action(system, browser.parent(system))?;
+                    let _ = try_action(system, &mut alerts, browser.parent(system))?;
                 }
                 else if key == b'\r'
                           || key == b'o' && event.modifiers & CMD_KEY != 0
                           || code == 0x7d && event.modifiers & CMD_KEY != 0
                 {
-                    let _ = try_action(system, browser.open_selection(system))?;
+                    let _ = try_action(system, &mut alerts, browser.open_selection(system))?;
                 }
                 else if code == 0x74
                 {
@@ -222,11 +280,15 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                 }
                 else if event.message == 0 || browser.contains(event.message)
                 {
-                    let _ = try_action(system, browser.click(system, event))?;
+                    let _ = try_action(system, &mut alerts, browser.click(system, event))?;
                 }
             }
             _ =>
             {}
+        }
+        if event.kind != EventKind::Null
+        {
+            menus::update(system, &browser)?;
         }
     }
 }

@@ -5,6 +5,9 @@ edition = "2024"
 publish = false
 build = "build.rs"
 
+[features]
+menus = []
+
 [workspace]
 
 [[bin]]

@@ -10,3 +10,4 @@
 *.font binary
 *.hfs binary
 *.rsrc binary
+*.rgb binary

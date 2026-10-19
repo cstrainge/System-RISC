@@ -68,6 +68,8 @@ extern "C" fn main() -> !
                           storage_context:         core::ptr::null_mut(),
                           disk_info:               None,
                           read_sector:             None,
+                          write_sector:            None,
+                          flush_disk:              None,
                           startup_disk:            0,
                           reserved:                0,
                           startup_partition_start: 0 };

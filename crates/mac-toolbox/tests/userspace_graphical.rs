@@ -31,7 +31,7 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
                              controls=86 controlpixels=269600 controlhits=8424 strings=passed \
                              dates=passed"),
             "missing complete canonical success marker:\n{serial}");
-    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=4"),
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=5"),
             "actual resident ECALL gate absent:\n{serial}");
     for definition in ["CODE_LOADED CDEF0", "CODE_LOADED CDEF1"]
     {

@@ -1,4 +1,4 @@
-//! Read-only classic HFS for firmware and future native disk utilities.
+//! Classic HFS reads and bounded catalog mutations for firmware and disk utilities.
 //! Sector I/O is supplied by the caller; this crate has no host dependencies.
 #![no_std]
 extern crate alloc;
@@ -7,12 +7,22 @@ mod volume;
 use alloc::vec::Vec;
 
 pub use mac_formats::{Error, Result};
-pub use volume::{CatalogEntry, File, Folder, Fork, Volume, names_equal};
+pub use volume::{CatalogEntry, File, Folder, Fork, Volume,
+                 mutation::{MutationError, MutationResult},
+                 names_equal};
 
 pub trait BlockDevice
 {
     fn sector_count(&self) -> u64;
     fn read_sector(&mut self, sector: u64, output: &mut [u8; 512]) -> Result<()>;
+}
+
+/// Durable write capabilities. Reads remain independently usable on read-only media.
+pub trait WritableBlockDevice: BlockDevice
+{
+    fn is_read_only(&self) -> bool;
+    fn write_sector(&mut self, sector: u64, input: &[u8; 512]) -> Result<()>;
+    fn flush(&mut self) -> Result<()>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

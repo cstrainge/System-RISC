@@ -13,6 +13,12 @@ pub const READ: u32 = 9;
 pub const SEEK: u32 = 10;
 pub const CLOSE: u32 = 11;
 pub const TELL: u32 = 12;
+pub const NEW_FOLDER: u32 = 13;
+pub const TRASH_DIRECTORY: u32 = 14;
+pub const MOVE_TO_TRASH: u32 = 15;
+pub const PUT_AWAY: u32 = 16;
+pub const EMPTY_TRASH: u32 = 17;
+pub const TRASH_USAGE: u32 = 18;
 pub const DATA_FORK: u32 = 0;
 pub const RESOURCE_FORK: u32 = 1;
 pub const SEEK_START: u32 = 0;
@@ -194,6 +200,11 @@ impl CatalogInfo
 
     /// Raw DXInfo.frOpenChain catalog identity. Startup-list membership and
     /// termination rules belong to Finder, rather than the read-only parser.
+    pub fn put_away_parent(&self) -> u32
+    {
+        u32::from_be_bytes(self.finder_info[28..32].try_into().unwrap())
+    }
+
     pub fn folder_open_chain(&self) -> Option<u32>
     {
         self.is_directory()

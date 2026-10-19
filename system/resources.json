@@ -3,7 +3,7 @@
   "file_type": "zsys",
   "creator": "MACS",
   "role": "system",
-  "abi_version": 4,
+  "abi_version": 5,
   "load_base": "0x80200000",
   "load_limit": "0x81000000",
   "description": "RISCy System native operating system",
@@ -64,6 +64,18 @@
         "path": "../../build/system7/target/riscv64imac-unknown-none-elf/release/SCROLLBAR",
         "load_base": "0x82200000",
         "load_limit": "0x82300000"
+      }
+    },
+    {
+      "type": "MDEF",
+      "id": 0,
+      "symbol": "MDEF_STANDARD",
+      "name": "Standard MDEF",
+      "payload": {
+        "format": "native_code",
+        "path": "../../build/system7/target/riscv64imac-unknown-none-elf/release/MDEF",
+        "load_base": "0x82300000",
+        "load_limit": "0x82400000"
       }
     },
     {

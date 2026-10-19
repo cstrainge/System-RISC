@@ -15,7 +15,7 @@ finds a blessed HFS System Folder, loads its native System resource executable,
 and starts System using disk reads performed inside the guest. System loads
 Finder from that same blessed folder, initializes graphics and input, and
 provides window, drawing and event services to its event loop. Standard WDEF 0
-and button CDEF0/scrollbar CDEF1 are independently linked executables in System's
+and MDEF0/button CDEF0/scrollbar CDEF1 are independently linked executables in System's
 resource fork.
 The [Window Manager](system/src/toolbox/windows/README.md) supports activation, occlusion,
 exposure updates, dragging, resizing, closing and zooming. Its standard definition
@@ -29,7 +29,14 @@ real mounted HFS volumes and folder contents. Double-click volume/folder icons
 to open them; existing folder windows are selected rather than duplicated.
 Selection, open-folder icons, scrollbars, invisible flags and saved icon positions
 are handled by Finder. **A** opens About and **Q** opens the resizable
-**QuickDraw Exerciser**. Menu labels remain static. The exerciser uses the public Toolbox bindings
+**QuickDraw Exerciser**. Resource-defined Apple, File, Edit, View, Label and
+Special menus track mouse input and Ctrl shortcuts through the resident Menu
+Manager. New Folder, Open, Close, Clear, Put Away and Empty Trash are wired;
+other commands remain disabled. Drag an item to Trash or use Ctrl-Backspace.
+Double-click Trash to browse all mounted volumes; Ctrl-Y restores a selected
+item. Empty Trash requires its resource-based confirmation. See
+[menus and Trash](docs/MENUS-TRASH.md) for scope and validation.
+The exerciser uses the public Toolbox bindings
 to test shapes, transfer modes, regions, bitmaps, fonts, offscreen worlds, PICTs,
 original icon families and the shared Resource Manager. Keys **1–9** select pages,
 **Left/Right** browse icon families on page 8, and **Q** reopens the window.
@@ -59,7 +66,11 @@ python3 System7/scripts/system7_vm.py stop
 
 The launcher opens a separate native Windows GTK window at 2× when available,
 otherwise Linux GTK. It copies the generated ROM and disk into
-`working/system7-vm` before attaching them read-only. Its QMP port is 4447;
+`working/system7-vm`. The ROM stays read-only; the private desktop disk is
+writable and retained across starts of the same OS build. A changed base build
+archives the previous working disk before copying the new image; archives are
+never deleted automatically. Isolated test launches default to fresh read-only
+disks. Its QMP port is4447;
 the classic Mac and old QuickDraw machines keep their own state and ports.
 Click a window to activate it, drag its title, resize from the lower-right,
 close from the upper-left, and zoom the volume window from the upper-right.
@@ -174,8 +185,8 @@ same source files without linking them into production System.
 MacBinary, text, native descriptor and ELF code can be reused by a future
 native disk utility once a guest allocator exists. `tools/xtask/src/disk.rs`
 is an initial **host adapter** around hfsutils. A native disk application will
-need HFS write support and writable block services. The File Manager now exposes
-read-only mounted-volume/catalog/fork services through native traps. `mac-hfs`
+need broader HFS write APIs. The File Manager exposes mounted-volume/catalog/fork
+reads plus bounded folder/Trash writes through native traps. `mac-hfs`
 provides the shared HFS engine used by both the actual boot ROM and resident System;
 the host adapter remains separate.
 
@@ -293,7 +304,8 @@ check also compares actual RV64 Finder pixels after opening and closing folders.
 See [original evidence](../analysis/finder-large-icons.md) and
 `../results/system7/finder-{icon,volume}-checks.json`.
 
-This slice is read-only: resource/data-fork writes, rename/create/delete,
+Folder creation, Trash moves/restoration and recursive Empty Trash are writable.
+Resource/data-fork writes, arbitrary rename, catalog-fork growth,
 unmount/hotplug, desktop-file placement, application launching and full classic
 File Manager traps remain future work. Initialized ordinary catalog icon cells
 are read using the original cell-to-icon offset; new positions are not written

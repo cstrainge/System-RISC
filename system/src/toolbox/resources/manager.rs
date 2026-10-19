@@ -143,7 +143,7 @@ impl<'a> Manager<'a>
         }
         let (origin, resource) = match call.operation
         {
-            GET | INFO | READ | LOAD | RELEASE => self.get(call.scope, call.key)?,
+            GET | INFO | READ | LOAD | RELEASE | STRING => self.get(call.scope, call.key)?,
             NAMED => self.named(call.scope, call.key.kind, name)?,
             INDEX =>
             {
@@ -156,6 +156,39 @@ impl<'a> Manager<'a>
             _ => return Err(NOT_SUPPORTED)
         };
         call.info = Self::info(origin, resource);
+        if call.operation == STRING
+        {
+            let data = &resource.data;
+            let mut at = 0;
+            if resource.kind == *b"STR#"
+            {
+                let count = u16::from_be_bytes(data.get(..2)
+                                                   .ok_or(BAD_ARGUMENT)?
+                                                   .try_into()
+                                                   .map_err(|_| BAD_ARGUMENT)?);
+                if call.index >= u32::from(count)
+                {
+                    return Err(NOT_FOUND);
+                }
+                at = 2;
+                for _ in 0..call.index
+                {
+                    at += 1 + usize::from(*data.get(at).ok_or(BAD_ARGUMENT)?);
+                }
+            }
+            else if resource.kind != *b"STR " || call.index != 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let length = usize::from(*data.get(at).ok_or(BAD_ARGUMENT)?);
+            let value = text::decode(data.get(at + 1..at + 1 + length).ok_or(BAD_ARGUMENT)?);
+            if output.len() < value.len()
+            {
+                return Err(NO_MEMORY);
+            }
+            output[..value.len()].copy_from_slice(value.as_bytes());
+            call.transferred = value.len();
+        }
         if call.operation == READ
         {
             if call.offset > resource.data.len()

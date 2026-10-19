@@ -2,7 +2,7 @@
 use crate::{Error, Result, be16, be32, slice};
 
 pub const FORMAT_VERSION: u16 = 1;
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]

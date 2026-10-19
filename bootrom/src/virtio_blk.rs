@@ -1,9 +1,9 @@
-//! Modern virtio-mmio, split queue, one outstanding read-only block request.
+//! Modern virtio-mmio, split queue, one outstanding read/write/flush request.
 use alloc::boxed::Box;
 use core::{arch::asm,
            ptr::{addr_of_mut, read_volatile, write_volatile}};
 
-use mac_hfs::{BlockDevice, Error, Result};
+use mac_hfs::{BlockDevice, Error, Result, WritableBlockDevice};
 
 const N: usize = 8;
 #[repr(C)]
@@ -83,11 +83,13 @@ impl Queue
 
 pub struct Disk
 {
-    base:      usize,
-    queue:     Box<Queue>,
-    index:     u16,
-    sectors:   u64,
-    read_only: bool
+    base:            usize,
+    queue:           Box<Queue>,
+    index:           u16,
+    sectors:         u64,
+    read_only:       bool,
+    flush_supported: bool,
+    failed:          bool
 }
 
 fn fence()
@@ -134,7 +136,9 @@ impl Disk
                               queue: Box::new(Queue::new()),
                               index: 0,
                               sectors: 0,
-                              read_only: false };
+                              read_only: false,
+                              flush_supported: false,
+                              failed: false };
         if disk.read(4) != 2
         {
             return Err(Error("virtio block requires modern MMIO version 2"));
@@ -151,10 +155,12 @@ impl Disk
             return Err(Error("virtio block lacks VERSION_1"));
         }
         disk.write(0x14, 0);
-        let read_only = disk.read(0x10) & (1 << 5);
+        let features = disk.read(0x10);
+        let read_only = features & (1 << 5);
+        disk.flush_supported = features & (1 << 9) != 0;
         disk.read_only = read_only != 0;
         disk.write(0x24, 0);
-        disk.write(0x20, read_only);
+        disk.write(0x20, read_only | (features & (1 << 9)));
         disk.write(0x24, 1);
         disk.write(0x20, 1);
         disk.write(0x70, 11);
@@ -205,7 +211,7 @@ impl Disk
 
     pub fn is_read_only(&self) -> bool
     {
-        self.read_only
+        self.read_only || !self.flush_supported
     }
 }
 
@@ -222,8 +228,32 @@ impl BlockDevice for Disk
         {
             return Err(Error("virtio read outside disk"));
         }
+        self.request(0, sector, None)?;
+        for (index, byte) in output.iter_mut().enumerate()
+        {
+            *byte = unsafe { read_volatile(addr_of_mut!(self.queue.data[index])) };
+        }
+        Ok(())
+    }
+}
+
+impl Disk
+{
+    fn request(&mut self, kind: u32, sector: u64, input: Option<&[u8; 512]>) -> Result<()>
+    {
+        if self.failed
+        {
+            return Err(Error("virtio block queue is poisoned"));
+        }
         let q = &mut *self.queue;
+        q.request.kind = kind.to_le();
         q.request.sector = sector.to_le();
+        if let Some(input) = input
+        {
+            q.data.copy_from_slice(input);
+        }
+        q.descriptors[0].next = if kind == 4 { 2 } else { 1 };
+        q.descriptors[1].flags = if kind == 0 { 3 } else { 1 };
         unsafe {
             write_volatile(addr_of_mut!(q.status), 0xff);
         }
@@ -245,11 +275,15 @@ impl BlockDevice for Disk
             }
             if self.read(0x70) & 0xc0 != 0
             {
+                self.failed = true;
                 return Err(Error("virtio block device failed"));
             }
             if now().wrapping_sub(start) > 10_000_000
             {
-                return Err(Error("virtio block read timed out"));
+                // DMA completion is uncertain. Never reuse its descriptors or data;
+                // rollback will fail truthfully rather than race an in-flight write.
+                self.failed = true;
+                return Err(Error("virtio block request timed out"));
             }
             core::hint::spin_loop();
         }
@@ -259,14 +293,14 @@ impl BlockDevice for Disk
             read_volatile(addr_of_mut!(q.used.ring[self.index.wrapping_sub(1) as usize % N]))
         };
         if u32::from_le(completion.id) != 0
-           || u32::from_le(completion.length) != 513
-           || unsafe { read_volatile(addr_of_mut!(q.status)) } != 0
+           || u32::from_le(completion.length) != (if kind == 0 { 513 } else { 1 })
         {
-            return Err(Error("virtio block read failed"));
+            self.failed = true;
+            return Err(Error("virtio block completion is invalid"));
         }
-        for (index, byte) in output.iter_mut().enumerate()
+        if unsafe { read_volatile(addr_of_mut!(q.status)) } != 0
         {
-            *byte = unsafe { read_volatile(addr_of_mut!(q.data[index])) };
+            return Err(Error("virtio block request failed"));
         }
         let pending = self.read(0x60);
         if pending != 0
@@ -274,6 +308,35 @@ impl BlockDevice for Disk
             self.write(0x64, pending);
         }
         Ok(())
+    }
+}
+impl WritableBlockDevice for Disk
+{
+    fn is_read_only(&self) -> bool
+    {
+        self.read_only || !self.flush_supported
+    }
+
+    fn write_sector(&mut self, sector: u64, input: &[u8; 512]) -> Result<()>
+    {
+        if WritableBlockDevice::is_read_only(self)
+        {
+            return Err(Error("virtio block is read-only or lacks flush"));
+        }
+        if sector >= self.sectors
+        {
+            return Err(Error("virtio write outside disk"));
+        }
+        self.request(1, sector, Some(input))
+    }
+
+    fn flush(&mut self) -> Result<()>
+    {
+        if !self.flush_supported
+        {
+            return Err(Error("virtio block lacks FLUSH"));
+        }
+        self.request(4, 0, None)
     }
 }
 

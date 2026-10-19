@@ -115,3 +115,32 @@ multi-application context isolation; those gates are in
 [THREADING.md](../../../THREADING.md). `Handle::try_dispose(&mut self)` preserves
 ownership on temporary contention; general scheduler-aware RAII cleanup remains
 an explicit future requirement.
+
+`menus.rs` installs original captured MENU records through the public SDK and
+checks geometry, enabled/check state and typed command selection against the
+real resident manager and MDEF. Its ignored hardware test installs an SDK-only
+probe on a private cloned disk, then captures real click, drag, hover, release,
+cancel and keyboard input. Rust checks command routing, disabled items, menu
+switching and complete framebuffer restoration. Three original cursor-hidden
+File popup crops supply109,908 strict RGB pixel comparisons, including text,
+shortcuts, separators, highlight and frame/shadow edges. Their provenance is
+`data/original-menu-pixels.json`; no masks or color tolerances are applied.
+Another456 pixels check the original enabled rainbow Apple title, using its
+bundled System small-icon resource. Selected/disabled Apple pixels remain a
+separate capture gate.
+The selected File title adds820 pixels, including the top edge, selection
+overhang and uninterrupted bottom bar rule.
+An additional native safety regression authors a MENU with no cached width or
+shortcut. Its longest label must match the full measured public QuickDraw text
+raster, including the final pixels; this invariant is separate from the original
+Macintosh pixel count.
+
+Run after `cargo xtask image`:
+
+```sh
+cargo test --manifest-path System7/Cargo.toml -p mac-toolbox --test menus -- --ignored
+```
+
+The Python helper under `System7/scripts` only packages, boots, sends input and
+records observations. Apple/Label icon rows, all custom MDEF protocols and
+continuous flashing animation remain outside this captured menu subset.

@@ -107,10 +107,13 @@ checks plus the original packaging, disk roundtrip and native ABI tests.
 - [Virtio 1.2 specification](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html)
 - [Apple: HFS data organization](https://dev.os9.ca/techpubs/mac/Files/Files-99.html)
 
-The ABI4 firmware opens every supported block device before choosing a startup
-volume, retains all queues, and lends System device-info/sector-read callbacks
-for its lifetime. System can therefore mount non-startup HFS volumes as well.
-The startup callback remains available for initial executable/resource loading;
-File Manager requests subsequently use the generic block interface. Reads are
-serialized on the single hart and every native session still attaches its disks
-read-only.
+The ABI5 firmware opens supported block devices before choosing a startup
+volume, retains their queues, and lends System disk-info/read/write/flush
+callbacks. System mounts non-startup HFS volumes through the same interface.
+The startup callback still reads executable resource forks from the blessed
+folder. Resident File Manager calls are serialized by the firmware-context owner.
+Virtio OUT and negotiated FLUSH support durable catalog/Trash operations; readonly
+media stay readonly. An uncertain completion poisons the device queue to prevent
+reusing descriptors while DMA may still be active. The desktop launcher attaches
+its private working disk writable; test launches default to readonly snapshots.
+See [HFS write scope](../docs/HFS-WRITES.md).

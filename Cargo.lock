@@ -282,6 +282,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-mdef"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-traps",
+ "toolbox-quickdraw",
+]
+
+[[package]]
 name = "native-scrollbar-cdef"
 version = "0.1.0"
 dependencies = [

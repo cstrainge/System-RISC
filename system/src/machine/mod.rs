@@ -12,3 +12,5 @@ pub(crate) fn hart_id() -> usize
     }
     hart
 }
+
+pub(crate) mod clock;

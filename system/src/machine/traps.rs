@@ -111,6 +111,33 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             let bytes = if call.length == 0 { b"".as_ptr() } else { call.bytes };
             (unsafe { crate::kernel::log(bytes, call.length) }) as i64
         }
+        CLOCK =>
+        {
+            let call = read_request!(dates::ClockCall);
+            match super::clock::now()
+            {
+                Ok(now) =>
+                {
+                    call.unix_seconds = now.unix_seconds();
+                    OK as i64
+                }
+                Err(status) => status as i64
+            }
+        }
+        DIALOG =>
+        {
+            let call = read_request!(mac_abi::dialogs::DialogCall);
+            crate::kernel::with_desktop(|runtime| runtime.dialog(call)).unwrap_or_else(|error| {
+                                                                           error.status()
+                                                                       }) as i64
+        }
+        MENU =>
+        {
+            let call = read_request!(mac_abi::menus::MenuCall);
+            crate::kernel::with_desktop(|runtime| runtime.menu(call)).unwrap_or_else(|error| {
+                                                                         error.status()
+                                                                     }) as i64
+        }
         FILE =>
         {
             crate::kernel::with_files(|files| unsafe {

@@ -1,0 +1,22 @@
+{
+  "source": "results/finder-menu-trash-reference/09-empty-trash-confirm.png",
+  "sha256": "4d19cc3fa17f3dae5782cd91bb624ed1d7f92bf24dc98811c44db43e18953c2b",
+  "crop": [
+    128,
+    89,
+    512,
+    203
+  ],
+  "format": "RGB24 row-major",
+  "resource": "ALRT/DITL6012 Finder7.6.1",
+  "body": "The Trash contains 1 item.  It uses 8K of disk space.  Are you sure you want to permanently remove it?",
+  "native_mask": {
+    "rect": [
+      440,
+      107,
+      448,
+      119
+    ],
+    "reason": "Native test creates empty folder using0K instead of original allocated file8K; only amount glyph excluded."
+  }
+}

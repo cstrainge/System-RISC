@@ -97,6 +97,23 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                                          length: text.len() };
                 Ok(invoke!(call))
             }
+            DIALOG =>
+            {
+                let original = get!(mac_abi::dialogs::DialogCall);
+                let mut call = *original;
+                if matches!(call.operation,
+                            mac_abi::dialogs::OPEN_ALERT | mac_abi::dialogs::VALIDATE_ALERT)
+                {
+                    inline_input(&mut call.text, &mut call.text_length)?;
+                }
+                let status = invoke!(call);
+                if status == OK as i64
+                {
+                    original.window = call.window;
+                    original.item = call.item;
+                }
+                Ok(status)
+            }
             WINDOW =>
             {
                 let original = get!(WindowCall);
@@ -184,7 +201,38 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                 };
                 call.name = text.as_ptr();
                 call.name_length = text.len();
+                let mut value = [0u8; INLINE_STRING_BYTES];
+                if call.operation == resources::STRING
+                {
+                    call.output = value.as_mut_ptr();
+                    call.capacity = value.len();
+                }
                 let status = invoke!(call);
+                if status == OK as i64 && call.operation == resources::STRING
+                {
+                    let value = core::str::from_utf8(value.get(..call.transferred)
+                                                          .ok_or(BAD_ARGUMENT)?).map_err(|_| {
+                                                                                    BAD_ARGUMENT
+                                                                                })?;
+                    let encoded = encode(value)?;
+                    if original.capacity < encoded.len()
+                    {
+                        return Ok(NO_MEMORY as i64);
+                    }
+                    if original.output.is_null()
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    // SAFETY: legacy output borrow is caller-owned for its declared capacity.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(encoded.as_ptr(),
+                                                       original.output,
+                                                       encoded.len());
+                    }
+                    call.transferred = encoded.len();
+                    call.output = original.output;
+                    call.capacity = original.capacity;
+                }
                 if status == OK as i64
                    && matches!(call.operation,
                                resources::GET
@@ -193,12 +241,15 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                                | resources::INFO
                                | resources::READ
                                | resources::LOAD
-                               | resources::RELEASE)
+                               | resources::RELEASE
+                               | resources::STRING)
                 {
                     inline_output(&mut call.info.name, &mut call.info.name_length)?;
                 }
                 call.name = original.name;
                 call.name_length = original.name_length;
+                call.output = original.output;
+                call.capacity = original.capacity;
                 *original = call;
                 Ok(status)
             }
@@ -206,7 +257,7 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
             {
                 let original = get!(FileCall);
                 let mut call = *original;
-                let text = if call.operation == files::LOOKUP
+                let text = if matches!(call.operation, files::LOOKUP | files::NEW_FOLDER)
                 {
                     unsafe { input(call.name, call.name_length) }?
                 }
@@ -233,7 +284,14 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                             inline_output(&mut call.volume_info.name,
                                           &mut call.volume_info.name_length)?
                         }
-                        files::CATALOG | files::DIRECTORY_ENTRY | files::LOOKUP | files::PARENT =>
+                        files::CATALOG
+                        | files::DIRECTORY_ENTRY
+                        | files::LOOKUP
+                        | files::PARENT
+                        | files::NEW_FOLDER
+                        | files::TRASH_DIRECTORY
+                        | files::MOVE_TO_TRASH
+                        | files::PUT_AWAY =>
                         {
                             inline_output(&mut call.entry.name, &mut call.entry.name_length)?
                         }

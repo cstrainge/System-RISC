@@ -15,15 +15,17 @@ pub const CONTROL_KEY: u16 = 4096;
 pub enum EventKind
 {
     #[default]
-    Null      = 0,
-    MouseDown = 1,
-    MouseUp   = 2,
-    KeyDown   = 3,
-    KeyUp     = 4,
-    AutoKey   = 5,
-    Update    = 6,
-    Activate  = 8,
-    OsEvent   = 15
+    Null        = 0,
+    MouseDown   = 1,
+    MouseUp     = 2,
+    KeyDown     = 3,
+    KeyUp       = 4,
+    AutoKey     = 5,
+    Update      = 6,
+    Activate    = 8,
+    /// Native menu command: high16 menu ID, low16 one-based item.
+    MenuCommand = 14,
+    OsEvent     = 15
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

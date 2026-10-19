@@ -50,7 +50,11 @@ impl Workspace
         for package in packages
         {
             if matches!(*package,
-                        "mac-system" | "native-wdef" | "native-cdef" | "native-scrollbar-cdef")
+                        "mac-system"
+                        | "native-wdef"
+                        | "native-cdef"
+                        | "native-scrollbar-cdef"
+                        | "native-mdef")
             {
                 command.arg("--features").arg(format!("{package}/guest"));
             }
@@ -60,7 +64,7 @@ impl Workspace
 
     fn build(&self) -> Result<Vec<Value>>
     {
-        self.guest_build(&["native-wdef", "native-cdef", "native-scrollbar-cdef"])?;
+        self.guest_build(&["native-wdef", "native-cdef", "native-scrollbar-cdef", "native-mdef"])?;
         self.guest_build(&["mac-system", "mac-finder", "bootrom"])?;
         boot::package_rom(self)?;
         let mut reports = Vec::new();
@@ -89,9 +93,10 @@ impl Workspace
     fn check(&self) -> Result<()>
     {
         run(self.cargo().args(["fmt", "--all", "--", "--check"]))?;
-        run(self.cargo().args(["test", "--locked", "--workspace", "--exclude", "mac-finder",
-                               "--exclude", "abi-smoke", "--exclude", "bootrom", "--exclude",
-                               "native-wdef", "--exclude", "native-cdef"]))?;
+        run(self.cargo()
+                .args(["test", "--locked", "--workspace", "--exclude", "mac-finder", "--exclude",
+                       "abi-smoke", "--exclude", "bootrom", "--exclude", "native-wdef",
+                       "--exclude", "native-cdef", "--exclude", "native-mdef"]))?;
         let reports = self.build()?;
         run(Command::new("python3").current_dir(&self.repo)
                                    .arg("System7/scripts/check_system7_boundaries.py"))?;
@@ -106,6 +111,17 @@ impl Workspace
                                "window_interactions", "--", "--ignored"]))?;
         run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", "finder_png",
                                "--", "--ignored"]))?;
+        for test in ["menus", "finder_trash", "file_writes_guest"]
+        {
+            run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", test,
+                                   "--", "--ignored"]))?;
+        }
+        let resource_desktop: Value =
+            serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
+                                                             finder-trash-checks.json"))?)?;
+        let writable: Value =
+            serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
+                                                             filesystem-write-checks.json"))?)?;
         let userspace: Value =
             serde_json::from_slice(&fs::read(self.repo
                                                  .join("results/system7/\
@@ -161,8 +177,8 @@ impl Workspace
             serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
                                                              filesystem-checks.json"))?)?;
         let report = json!({
-            "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"finder":finder,
-            "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures and read-only Resource Manager. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
+            "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
+            "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, resource menus/alerts, bounded durable HFS catalog/Trash writes and read-only Resource Manager. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
         });
         let path = self.repo.join("results/system7/toolchain-checks.json");
         write_json(&path, &report)?;

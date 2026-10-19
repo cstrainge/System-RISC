@@ -2,6 +2,7 @@
 //! Calls enter the same resident service dispatchers as native userspace; this
 //! module supplies lifetime/scoping and the host adapter, never canned results.
 pub mod shared;
+pub mod menus;
 use core::cell::RefCell;
 
 use mac_abi::{traps::*, *};
@@ -97,6 +98,55 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
     }
     match number
     {
+        DIALOG =>
+        {
+            let call = match unsafe { request::<dialogs::DialogCall>(pointer, size) }
+            {
+                Ok(call) => call,
+                Err(status) => return status as i64
+            };
+            if call.operation != dialogs::VALIDATE_ALERT
+            {
+                return NOT_SUPPORTED as i64;
+            }
+            SESSION.with(|slot| {
+                       let session = slot.borrow();
+                       let session = session.as_ref().unwrap();
+                       let manager =
+                           crate::toolbox::resources::manager::Manager::new(&session.resources,
+                                                                            &session.application,
+                                                                            session.fonts
+                                                                                   .resources());
+                       match crate::toolbox::dialogs::load(manager, call)
+                       {
+                           Ok(alert) =>
+                           {
+                               call.item = alert.items.len() as u16;
+                               OK as i64
+                           }
+                           Err(status) => status as i64
+                       }
+                   })
+        }
+        CLOCK =>
+        {
+            match unsafe { request::<dates::ClockCall>(pointer, size) }
+            {
+                Ok(call) =>
+                {
+                    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    {
+                        Ok(time) =>
+                        {
+                            call.unix_seconds = time.as_secs() as i64;
+                            OK as i64
+                        }
+                        Err(_) => NOT_SUPPORTED as i64
+                    }
+                }
+                Err(status) => status as i64
+            }
+        }
         FILE =>
         {
             SESSION.with(|slot| {
@@ -228,6 +278,8 @@ pub fn with_disk<R>(bytes: &[u8], run: impl FnOnce(&SystemServices) -> R) -> R
                           storage_context:         core::ptr::from_mut(&mut disk).cast(),
                           disk_info:               Some(info),
                           read_sector:             Some(read),
+                          write_sector:            None,
+                          flush_disk:              None,
                           startup_disk:            0,
                           reserved:                0,
                           startup_partition_start: 0 };
@@ -260,4 +312,140 @@ pub fn with_resource_forks<R>(system: &[u8], application: &[u8],
                });
         run(services)
     }))
+}
+
+/// Faults exercise reported I/O failure/rollback; they never change manager results.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DiskFaults
+{
+    pub write_at:      Option<usize>,
+    pub flush_at:      Option<usize>,
+    pub partial_write: bool,
+    pub persistent:    bool
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DiskActivity
+{
+    pub writes:  usize,
+    pub flushes: usize
+}
+/// Mount an actual disposable host file, retaining storage and callbacks until
+/// the scoped userspace session ends. Flush uses sync_all, not a RAM overlay.
+pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFaults,
+                         run: impl FnOnce(&SystemServices) -> R)
+                         -> std::io::Result<(R, DiskActivity)>
+{
+    use std::io::{Read, Seek, SeekFrom, Write};
+    struct Disk
+    {
+        file:      std::fs::File,
+        sectors:   u64,
+        read_only: bool,
+        faults:    DiskFaults,
+        activity:  DiskActivity
+    }
+    unsafe extern "C" fn info(context: *mut (), index: u32, output: *mut DiskInfo) -> Status
+    {
+        if index != 0
+        {
+            return NOT_FOUND;
+        }
+        let d = unsafe { &*context.cast::<Disk>() };
+        unsafe {
+            *output = DiskInfo { sector_count: d.sectors,
+                                 read_only: u32::from(d.read_only),
+                                 ..Default::default() };
+        }
+        OK
+    }
+    unsafe extern "C" fn read(context: *mut (), index: u32, sector: u64, output: *mut u8)
+                              -> Status
+    {
+        let d = unsafe { &mut *context.cast::<Disk>() };
+        if index != 0 || sector >= d.sectors
+        {
+            return BAD_ARGUMENT;
+        }
+        let output = unsafe { core::slice::from_raw_parts_mut(output, 512) };
+        d.file
+         .seek(SeekFrom::Start(sector * 512))
+         .and_then(|_| d.file.read_exact(output))
+         .map_or(IO_ERROR, |_| OK)
+    }
+    unsafe extern "C" fn write(context: *mut (), index: u32, sector: u64, input: *const u8)
+                               -> Status
+    {
+        let d = unsafe { &mut *context.cast::<Disk>() };
+        if d.read_only
+        {
+            return READ_ONLY;
+        }
+        if index != 0 || sector >= d.sectors
+        {
+            return BAD_ARGUMENT;
+        }
+        let input = unsafe { core::slice::from_raw_parts(input, 512) };
+        let attempt = d.activity.writes;
+        d.activity.writes += 1;
+        let fail = d.faults
+                    .write_at
+                    .is_some_and(|n| attempt == n || (d.faults.persistent && attempt >= n));
+        if d.file.seek(SeekFrom::Start(sector * 512)).is_err()
+        {
+            return IO_ERROR;
+        }
+        if fail
+        {
+            if d.faults.partial_write
+            {
+                let _ = d.file.write_all(&input[..256]);
+            }
+            return IO_ERROR;
+        }
+        d.file.write_all(input).map_or(IO_ERROR, |_| OK)
+    }
+    unsafe extern "C" fn flush(context: *mut (), index: u32) -> Status
+    {
+        if index != 0
+        {
+            return NOT_FOUND;
+        }
+        let d = unsafe { &mut *context.cast::<Disk>() };
+        let attempt = d.activity.flushes;
+        d.activity.flushes += 1;
+        if d.faults.flush_at.is_some_and(|n| attempt == n || (d.faults.persistent && attempt >= n))
+        {
+            return IO_ERROR;
+        }
+        d.file.sync_all().map_or(IO_ERROR, |_| OK)
+    }
+    let file = std::fs::OpenOptions::new().read(true).write(!read_only).open(path)?;
+    let sectors = file.metadata()?.len() / 512;
+    let mut disk = Disk { file,
+                          sectors,
+                          read_only,
+                          faults,
+                          activity: Default::default() };
+    let boot = BootInfo { header:                  Header::for_type::<BootInfo>(),
+                          ram_base:                0,
+                          ram_size:                0,
+                          log:                     None,
+                          startup_context:         core::ptr::null_mut(),
+                          read_startup:            None,
+                          storage_context:         core::ptr::from_mut(&mut disk).cast(),
+                          disk_info:               Some(info),
+                          read_sector:             Some(read),
+                          write_sector:            Some(write),
+                          flush_disk:              Some(flush),
+                          startup_disk:            0,
+                          reserved:                0,
+                          startup_partition_start: 0 };
+    let result = with_services(|services| {
+        let storage=unsafe{crate::toolbox::files::BootStorage::from_boot_info(&boot)}.expect("file storage callbacks");
+        let manager =
+            crate::toolbox::files::Manager::new(storage).expect("disposable file volume mount");
+        SESSION.with(|slot| slot.borrow_mut().as_mut().unwrap().files = manager);
+        run(services)
+    });
+    Ok((result, disk.activity))
 }

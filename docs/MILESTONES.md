@@ -1,5 +1,47 @@
 # Verified milestones
 
+## Resource menus and durable Trash — ABI5
+
+Finder uses only the main Toolbox facade. MENU/MCMD resources own labels,
+shortcuts, command IDs and initial state; independently loaded MDEF0 owns menu
+geometry, pixels and hit testing. Original ALRT/DITL6012, STR#11750 and system
+icon families supply Empty Trash. Native error/About/header strings also live
+in the application resource fork. Resource Manager string APIs return Rust UTF8;
+paired legacy traps convert Pascal/MacRoman at the boundary.
+
+The accepted profile includes:
+
+- Six classic Finder menus with context-sensitive supported commands and disabled
+  unfinished commands; mouse tracking and Ctrl equivalents share MenuCommand.
+- 111,184 exact original menu pixels plus2,448 public-renderer regression pixels
+  for an uncached longest keyless label.
+- 43,680 exact original alert pixels, including text, frame, buttons and caution
+  icon. Only the amount digit differs between the original8K file and native0K
+  empty-folder test and is excluded from that comparison. Modal default/cancel,
+  press/leave/reentry/release, blocked background input and desktop-focus
+  restoration run through actual userspace services.
+- New Folder, drag/Ctrl-Backspace to Trash, Put Away, aggregated per-volume Trash
+  browsing and confirmation-gated recursive Empty Trash. Finder and independent
+  File Manager fixtures each cold-boot a private writable500MiB disk three times
+  to verify persisted state. Both fork contents and CNIDs survive moves/restores;
+  deletion reclaims physical allocation blocks.
+- Twelve host mutation regressions over real HFS files, independent hfsutils
+  checks, reported write/flush rollback and failed-rollback poisoning. Metadata
+  trees rebuild within existing reservations without increasing the System heap.
+- Serialized native wall-clock reads and checked classic timestamp conversion.
+  BootInfo now carries read/write/flush firmware callbacks and is104bytes.
+
+Validation is `cargo xtask check` plus host/RV64 Clippy with warnings denied.
+Original media and the user's visible VM are excluded from test input injection.
+The desktop runs from a persistent private writable copy; a changed OS build
+archives the previous working disk before installing its new image.
+
+This is bounded native functionality. General fork writes, catalog growth,
+crash-atomic journaling, collision renaming/Option locked-item policy, full
+Menu/Dialog/classic trap coverage, scheduling, native std and JSON preference
+transactions remain future work. See [menus/Trash](MENUS-TRASH.md) and
+[write limits](HFS-WRITES.md). Existing TrueType/style differences remain recorded.
+
 ## Initial OS baseline — ABI4
 
 The first repository milestone includes the existing RV64 boot ROM, blessed HFS

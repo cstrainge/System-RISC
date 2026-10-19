@@ -15,12 +15,12 @@ import subprocess
 import system7_vm as vm
 
 
-def private_probe_disk(output):
+def private_probe_disk(output, menus=False):
     fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures/window-probe'
     target = vm.ROOT / 'build/system7/window-probe-target'
     subprocess.run(['cargo','build','--manifest-path',str(fixture/'Cargo.toml'),'--locked',
                     '--release','--target','riscv64imac-unknown-none-elf','--bin','Finder',
-                    '--target-dir',str(target)],cwd=vm.ROOT,check=True)
+                    '--target-dir',str(target),*(['--features','menus'] if menus else [])],cwd=vm.ROOT,check=True)
     packaged = output / 'package'
     subprocess.run(['cargo','run','--manifest-path',str(fixture/'Cargo.toml'),'--locked',
                     '--bin','package','--target-dir',str(target),'--',
@@ -48,13 +48,13 @@ def private_probe_disk(output):
                     str(private/'system7.qcow2')],check=True)
     return private
 
-def capture(output, probe=False):
+def capture(output, probe=False, menus=False):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     disk = vm.DIST / 'system7.qcow2'
     disk_before = hashlib.sha256(disk.read_bytes()).hexdigest()
     if probe:
-        vm.DIST = private_probe_disk(output)
+        vm.DIST = private_probe_disk(output,menus)
     process, endpoint = vm.launch(output / 'vm')
     serial = output / 'vm/serial.log'
     observations = []
@@ -101,7 +101,27 @@ def capture(output, probe=False):
         observations.append({'name': name, 'state': state(), 'frame': path.name})
 
     try:
-        if probe:
+        if menus:
+            wait(lambda _: 'WINDOW_PROBE_READY' in serial.read_text(errors='replace'))
+            move(16,444);snapshot('menu-baseline')
+            move(50,10);button(True);snapshot('menu-file')
+            move(50,28);snapshot('menu-file-highlight')
+            button(False);move(16,444);snapshot('menu-selected')
+            move(50,10);button(True);move(50,44);snapshot('menu-disabled')
+            button(False);move(16,444);snapshot('menu-disabled-release')
+            move(50,10);button(True);move(500,400);snapshot('menu-outside')
+            button(False);move(16,444);snapshot('menu-cancelled')
+            move(50,10);button(True);move(90,10);snapshot('menu-edit')
+            move(500,400);button(False)
+            key_transition('ctrl',True);key_transition('n',True);key_transition('n',False);key_transition('ctrl',False)
+            move(16,444);snapshot('menu-key')
+            key_transition('ctrl',True);key_transition('o',True);key_transition('o',False);key_transition('ctrl',False)
+            move(16,444);snapshot('menu-disabled-key')
+            key_transition('g',True);key_transition('g',False)
+            wait(lambda _: 'MENU_LABEL width=' in serial.read_text(errors='replace'))
+            move(20,10);button(True);snapshot('menu-keyless')
+            move(16,444);button(False)
+        elif probe:
             wait(lambda _: 'WINDOW_PROBE_READY' in serial.read_text(errors='replace'))
             move(16,444); snapshot('baseline')
             move(230,88); button(True); move(289,127); snapshot('drag-held')
@@ -150,7 +170,9 @@ def capture(output, probe=False):
         report = {'profile': 'native-rv64-640x480', 'observations': observations,
                   'disk_sha256_before': disk_before,
                   'disk_sha256_after': hashlib.sha256(disk.read_bytes()).hexdigest(),
-                  'launch': json.loads((output / 'vm/command.json').read_text())}
+                  'launch': json.loads((output / 'vm/command.json').read_text()),
+                  'menu_events':[line for line in serial.read_text(errors='replace').splitlines() if line.startswith('MENU_PROBE ')],
+                  'menu_label_width': next((int(line.split('=')[1]) for line in serial.read_text(errors='replace').splitlines() if line.startswith('MENU_LABEL width=')),None)}
         (output / 'capture.json').write_text(json.dumps(report, indent=2) + '\n')
     finally:
         try:
@@ -163,5 +185,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True)
     parser.add_argument('--probe', action='store_true', help='private application using only publicSDK')
+    parser.add_argument('--menus', action='store_true')
     args=parser.parse_args()
-    capture(args.output,args.probe)
+    capture(args.output,args.probe or args.menus,args.menus)

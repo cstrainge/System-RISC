@@ -1,0 +1,711 @@
+{
+  "source": "results/finder-menu-trash-reference/02-desktop-no-selection-menus.json",
+  "source_sha256": "9d3e8971079c9fddefe3bf80a429f18a9e9e55e7f0506256f435b40c33171d65",
+  "conversion": "LiveMenuInfo MDEFhandle bytes6..10 replaced by resource procedureID0 u16; metadata/itembytes retained. No behavioral expected values invented.",
+  "menus": [
+    {
+      "id": 256,
+      "title": "\u0014",
+      "left": 10,
+      "width": 182,
+      "height": 284,
+      "items": [
+        {
+          "index": 1,
+          "text": "About This Computer\u2026",
+          "text_hex": "41626f7574205468697320436f6d7075746572c9",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 2,
+          "text": "-",
+          "text_hex": "2d",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 3,
+          "text": "\u0000\u0000Apple System Profiler",
+          "text_hex": "00004170706c652053797374656d2050726f66696c6572",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 4,
+          "text": "\u0000\u0000AppleCD Audio Player",
+          "text_hex": "00004170706c65434420417564696f20506c61796572",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 5,
+          "text": "\u0000\u0000Automated Tasks",
+          "text_hex": "00004175746f6d61746564205461736b73",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 6,
+          "text": "\u0000\u0000Calculator",
+          "text_hex": "000043616c63756c61746f72",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 7,
+          "text": "\u0000\u0000Chooser",
+          "text_hex": "000043686f6f736572",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 8,
+          "text": "\u0000\u0000Control Panels",
+          "text_hex": "0000436f6e74726f6c2050616e656c73",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 9,
+          "text": "\u0000\u0000Desktop Printers",
+          "text_hex": "00004465736b746f70205072696e74657273",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 10,
+          "text": "\u0000\u0000Find File",
+          "text_hex": "000046696e642046696c65",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 11,
+          "text": "\u0000\u0000Jigsaw Puzzle",
+          "text_hex": "00004a69677361772050757a7a6c65",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 12,
+          "text": "\u0000\u0000Key Caps",
+          "text_hex": "00004b65792043617073",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 13,
+          "text": "\u0000\u0000Note Pad",
+          "text_hex": "00004e6f746520506164",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 14,
+          "text": "\u0000\u0000Scrapbook",
+          "text_hex": "00005363726170626f6f6b",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 15,
+          "text": "\u0000\u0000Stickies",
+          "text_hex": "0000537469636b696573",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 16,
+          "text": "\u0000\u0000\u2022 Shut Down",
+          "text_hex": "0000a5205368757420446f776e",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": 257,
+      "title": "File",
+      "left": 34,
+      "width": 139,
+      "height": 256,
+      "items": [
+        {
+          "index": 1,
+          "text": "New Folder",
+          "text_hex": "4e657720466f6c646572",
+          "icon": 0,
+          "key": 78,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 2,
+          "text": "Open",
+          "text_hex": "4f70656e",
+          "icon": 0,
+          "key": 79,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 3,
+          "text": "Print",
+          "text_hex": "5072696e74",
+          "icon": 0,
+          "key": 80,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 4,
+          "text": "Close Window",
+          "text_hex": "436c6f73652057696e646f77",
+          "icon": 0,
+          "key": 87,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 5,
+          "text": "-",
+          "text_hex": "2d",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 6,
+          "text": "Get Info",
+          "text_hex": "47657420496e666f",
+          "icon": 0,
+          "key": 73,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 7,
+          "text": "Sharing\u2026",
+          "text_hex": "53686172696e67c9",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 8,
+          "text": "Duplicate",
+          "text_hex": "4475706c6963617465",
+          "icon": 0,
+          "key": 68,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 9,
+          "text": "Make Alias",
+          "text_hex": "4d616b6520416c696173",
+          "icon": 0,
+          "key": 77,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 10,
+          "text": "Put Away",
+          "text_hex": "5075742041776179",
+          "icon": 0,
+          "key": 89,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 11,
+          "text": "-",
+          "text_hex": "2d",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 12,
+          "text": "Find\u2026",
+          "text_hex": "46696e64c9",
+          "icon": 0,
+          "key": 70,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 13,
+          "text": "Find Again",
+          "text_hex": "46696e6420416761696e",
+          "icon": 0,
+          "key": 71,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 14,
+          "text": "-",
+          "text_hex": "2d",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 15,
+          "text": "Page Setup\u2026",
+          "text_hex": "50616765205365747570c9",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 16,
+          "text": "Print Desktop\u2026",
+          "text_hex": "5072696e74204465736b746f70c9",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": 258,
+      "title": "Edit",
+      "left": 70,
+      "width": 125,
+      "height": 144,
+      "items": [
+        {
+          "index": 1,
+          "text": "Undo",
+          "text_hex": "556e646f",
+          "icon": 0,
+          "key": 90,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 2,
+          "text": "-",
+          "text_hex": "2d",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 3,
+          "text": "Cut",
+          "text_hex": "437574",
+          "icon": 0,
+          "key": 88,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 4,
+          "text": "Copy",
+          "text_hex": "436f7079",
+          "icon": 0,
+          "key": 67,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 5,
+          "text": "Paste",
+          "text_hex": "5061737465",
+          "icon": 0,
+          "key": 86,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 6,
+          "text": "Clear",
+          "text_hex": "436c656172",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 7,
+          "text": "Select All",
+          "text_hex": "53656c65637420416c6c",
+          "icon": 0,
+          "key": 65,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 8,
+          "text": "-",
+          "text_hex": "2d",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 9,
+          "text": "Show Clipboard",
+          "text_hex": "53686f7720436c6970626f617264",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": 259,
+      "title": "View",
+      "left": 108,
+      "width": -1,
+      "height": -1,
+      "items": [
+        {
+          "index": 1,
+          "text": "by Small Icon",
+          "text_hex": "627920536d616c6c2049636f6e",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 2,
+          "text": "by Icon",
+          "text_hex": "62792049636f6e",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 3,
+          "text": "by Name",
+          "text_hex": "6279204e616d65",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 4,
+          "text": "by Size",
+          "text_hex": "62792053697a65",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 5,
+          "text": "by Kind",
+          "text_hex": "6279204b696e64",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 6,
+          "text": "by Label",
+          "text_hex": "6279204c6162656c",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 7,
+          "text": "by Date",
+          "text_hex": "62792044617465",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "id": 260,
+      "title": "Label",
+      "left": 153,
+      "width": 124,
+      "height": 144,
+      "items": [
+        {
+          "index": 1,
+          "text": "None",
+          "text_hex": "4e6f6e65",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 2,
+          "text": "-",
+          "text_hex": "2d",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 3,
+          "text": "Essential",
+          "text_hex": "457373656e7469616c",
+          "icon": 51,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 4,
+          "text": "Hot",
+          "text_hex": "486f74",
+          "icon": 50,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 5,
+          "text": "In Progress",
+          "text_hex": "496e2050726f6772657373",
+          "icon": 49,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 6,
+          "text": "Cool",
+          "text_hex": "436f6f6c",
+          "icon": 48,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 7,
+          "text": "Personal",
+          "text_hex": "506572736f6e616c",
+          "icon": 47,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 8,
+          "text": "Project 1",
+          "text_hex": "50726f6a6563742031",
+          "icon": 46,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 9,
+          "text": "Project 2",
+          "text_hex": "50726f6a6563742032",
+          "icon": 45,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        }
+      ]
+    },
+    {
+      "id": 261,
+      "title": "Special",
+      "left": 201,
+      "width": 137,
+      "height": 128,
+      "items": [
+        {
+          "index": 1,
+          "text": "Clean Up Desktop",
+          "text_hex": "436c65616e205570204465736b746f70",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 2,
+          "text": "Empty Trash\u2026",
+          "text_hex": "456d707479205472617368c9",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 3,
+          "text": "-",
+          "text_hex": "2d",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 4,
+          "text": "Eject Disk",
+          "text_hex": "456a656374204469736b",
+          "icon": 0,
+          "key": 69,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 5,
+          "text": "Erase Disk\u2026",
+          "text_hex": "4572617365204469736bc9",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 6,
+          "text": "-",
+          "text_hex": "2d",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": false
+        },
+        {
+          "index": 7,
+          "text": "Restart",
+          "text_hex": "52657374617274",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        },
+        {
+          "index": 8,
+          "text": "Shut Down",
+          "text_hex": "5368757420446f776e",
+          "icon": 0,
+          "key": 0,
+          "mark": 0,
+          "style": 0,
+          "enabled": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,11 +1,12 @@
-//! Read-only resident File Manager backed by the firmware's live block devices.
+//! Resident File Manager with catalog/Trash writes on live firmware block devices.
 //! No file contents or catalog listings are fabricated or cached in applications.
 use alloc::{string::String, vec::Vec};
 
 use mac_abi::{files::*, *};
 pub use mac_formats::macbinary::MacFile;
 use mac_formats::text;
-use mac_hfs::{BlockDevice, CatalogEntry, Fork, Partition, Volume};
+use mac_hfs::{BlockDevice, CatalogEntry, Fork, MutationError, Partition, Volume,
+              WritableBlockDevice};
 
 pub const MAX_DISKS: u32 = 32;
 pub const MAX_VOLUMES: usize = 128;
@@ -19,6 +20,8 @@ pub struct BootStorage
     context:                 *mut (),
     disk_info:               DiskInfoFn,
     read_sector:             ReadSectorFn,
+    write_sector:            Option<WriteSectorFn>,
+    flush_disk:              Option<FlushDiskFn>,
     startup_disk:            u32,
     startup_partition_start: u64
 }
@@ -32,6 +35,8 @@ impl BootStorage
         Some(Self { context:                 info.storage_context,
                     disk_info:               info.disk_info?,
                     read_sector:             info.read_sector?,
+                    write_sector:            info.write_sector,
+                    flush_disk:              info.flush_disk,
                     startup_disk:            info.startup_disk,
                     startup_partition_start: info.startup_partition_start })
     }
@@ -71,14 +76,52 @@ impl BlockDevice for Device
         if status == OK { Ok(()) } else { Err(mac_hfs::Error("firmware sector read failed")) }
     }
 }
+impl WritableBlockDevice for Device
+{
+    fn is_read_only(&self) -> bool
+    {
+        self.info.read_only != 0
+        || self.storage.write_sector.is_none()
+        || self.storage.flush_disk.is_none()
+    }
+
+    fn write_sector(&mut self, sector: u64, input: &[u8; 512]) -> mac_hfs::Result<()>
+    {
+        if self.is_read_only()
+        {
+            return Err(mac_hfs::Error("device is read-only"));
+        }
+        if sector >= self.info.sector_count
+        {
+            return Err(mac_hfs::Error("sector outside device"));
+        }
+        let status = unsafe {
+            (self.storage.write_sector.unwrap())(self.storage.context,
+                                                 self.index,
+                                                 sector,
+                                                 input.as_ptr())
+        };
+        if status == OK { Ok(()) } else { Err(mac_hfs::Error("firmware sector write failed")) }
+    }
+
+    fn flush(&mut self) -> mac_hfs::Result<()>
+    {
+        let callback =
+            self.storage.flush_disk.ok_or(mac_hfs::Error("device has no flush callback"))?;
+        let status = unsafe { callback(self.storage.context, self.index) };
+        if status == OK { Ok(()) } else { Err(mac_hfs::Error("firmware disk flush failed")) }
+    }
+}
 struct Mounted
 {
     device:    Device,
     partition: Partition,
-    info:      VolumeInfo
+    info:      VolumeInfo,
+    poisoned:  bool
 }
 struct OpenFile
 {
+    id:       u32,
     volume:   u32,
     fork:     Fork,
     position: u64
@@ -185,29 +228,33 @@ impl Manager
                 {
                     return Err(NO_MEMORY);
                 }
-                let mut summary = VolumeInfo { id: result.volumes.len() as u32 + 1,
-                                               disk: index,
-                                               partition_start: partition.start,
-                                               total_bytes: volume.allocation_bytes,
-                                               free_bytes: volume.free_bytes,
-                                               created: volume.created,
-                                               modified: volume.modified,
-                                               attributes: volume.attributes,
-                                               read_only: 1,
-                                               startup:
-                                                   u32::from(index == storage.startup_disk
-                                                             && partition.start
-                                                                == storage.startup_partition_start),
-                                               finder_info: volume.finder_info,
-                                               icon_kind: info.icon_kind,
-                                               icon_id: info.icon_id,
-                                               ..Default::default() };
+                let mut summary =
+                    VolumeInfo { id: result.volumes.len() as u32 + 1,
+                                 disk: index,
+                                 partition_start: partition.start,
+                                 total_bytes: volume.allocation_bytes,
+                                 free_bytes: volume.free_bytes,
+                                 created: volume.created,
+                                 modified: volume.modified,
+                                 attributes: volume.attributes,
+                                 read_only: u16::from(info.read_only != 0
+                                                      || storage.write_sector.is_none()
+                                                      || storage.flush_disk.is_none()
+                                                      || volume.attributes & 0x8080 != 0),
+                                 startup: u32::from(index == storage.startup_disk
+                                                    && partition.start
+                                                       == storage.startup_partition_start),
+                                 finder_info: volume.finder_info,
+                                 icon_kind: info.icon_kind,
+                                 icon_id: info.icon_id,
+                                 ..Default::default() };
                 summary.name_length = utf8_name(&volume.name, &mut summary.name);
                 result.volumes.push(Mounted { device: Device { storage,
                                                                index,
                                                                info },
                                               partition,
-                                              info: summary });
+                                              info: summary,
+                                              poisoned: false });
             }
         }
         Err(NO_MEMORY)
@@ -223,6 +270,10 @@ impl Manager
                       -> Result<T, Status>
     {
         let mounted = self.mounted(id)?;
+        if mounted.poisoned
+        {
+            return Err(ROLLBACK_FAILED);
+        }
         let mut volume = io(Volume::mount(&mut mounted.device, mounted.partition))?;
         f(&mut volume)
     }
@@ -361,16 +412,120 @@ impl Manager
         };
         let slot = &mut self.handles[index];
         slot.generation += 1;
-        slot.file = Some(OpenFile { volume,
+        slot.file = Some(OpenFile { id,
+                                    volume,
                                     fork,
                                     position: 0 });
         Ok(((slot.generation << 8) | (index as u32 + 1), length))
+    }
+
+    fn mutation(&mut self, call: &mut FileCall, name: &str) -> Result<(), Status>
+    {
+        let when = u32::try_from(call.position).map_err(|_| BAD_ARGUMENT)?;
+        if call.operation == TRASH_DIRECTORY && call.index > 1
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let name = text::encode(name).map_err(|_| BAD_ARGUMENT)?;
+        let mut protected = Vec::new();
+        protected.try_reserve_exact(self.handles.len()).map_err(|_| NO_MEMORY)?;
+        for slot in &self.handles
+        {
+            if let Some(file) = &slot.file
+               && file.volume == call.volume
+            {
+                protected.push(file.id);
+            }
+        }
+        let mounted = self.mounted(call.volume)?;
+        if mounted.poisoned
+        {
+            return Err(ROLLBACK_FAILED);
+        }
+        let mut volume = io(Volume::mount(&mut mounted.device, mounted.partition))?;
+        let result = match call.operation
+        {
+            NEW_FOLDER =>
+            {
+                volume.create_folder(if call.cnid == 0 { ROOT_ID } else { call.cnid }, &name, when)
+                      .map(Some)
+            }
+            TRASH_DIRECTORY =>
+            {
+                volume.trash_directory(call.index != 0,
+                                       if when == 0 { volume.modified } else { when })
+                      .map(Some)
+            }
+            MOVE_TO_TRASH => volume.move_to_trash(call.cnid, when, &protected).map(Some),
+            PUT_AWAY => volume.put_away(call.cnid, when, &protected).map(Some),
+            TRASH_USAGE =>
+            {
+                volume.trash_usage().map(|(count, bytes)| {
+                                        call.index = count;
+                                        call.length = bytes;
+                                        None
+                                    })
+            }
+            EMPTY_TRASH =>
+            {
+                volume.empty_trash(when, &protected).map(|count| {
+                                                        call.index = count;
+                                                        None
+                                                    })
+            }
+            _ => return Err(NOT_SUPPORTED)
+        };
+        match result
+        {
+            Ok(entry) =>
+            {
+                mounted.info.free_bytes = volume.free_bytes;
+                mounted.info.modified = volume.modified;
+                if let Some(entry) = entry
+                {
+                    call.entry = metadata(call.volume, &entry);
+                }
+                Ok(())
+            }
+            Err(error) =>
+            {
+                if error == MutationError::RollbackFailed
+                {
+                    mounted.poisoned = true;
+                    mounted.info.read_only = 1;
+                }
+                Err(match error
+                {
+                    MutationError::Invalid => BAD_ARGUMENT,
+                    MutationError::ReadOnly => READ_ONLY,
+                    MutationError::NotFound => NOT_FOUND,
+                    MutationError::Exists => ALREADY_EXISTS,
+                    MutationError::Protected => ACCESS_DENIED,
+                    MutationError::Busy => SERVICE_BUSY,
+                    MutationError::Full => DISK_FULL,
+                    MutationError::NoMemory => NO_MEMORY,
+                    MutationError::Unsupported => NOT_SUPPORTED,
+                    MutationError::Io => IO_ERROR,
+                    MutationError::RollbackFailed => ROLLBACK_FAILED
+                })
+            }
+        }
     }
 
     pub fn request(&mut self, call: &mut FileCall, name: &str, output: &mut [u8])
                    -> Result<(), Status>
     {
         call.transferred = 0;
+        if matches!(call.operation,
+                    NEW_FOLDER
+                    | TRASH_DIRECTORY
+                    | MOVE_TO_TRASH
+                    | PUT_AWAY
+                    | EMPTY_TRASH
+                    | TRASH_USAGE)
+        {
+            return self.mutation(call, name);
+        }
         match call.operation
         {
             VOLUME_COUNT => call.index = self.volumes.len() as u32,

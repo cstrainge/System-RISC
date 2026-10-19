@@ -3,9 +3,76 @@
   "file_type": "FNDR",
   "creator": "MACS",
   "role": "application",
-  "abi_version": 4,
+  "abi_version": 5,
   "load_base": "0x81000000",
   "load_limit": "0x82000000",
   "description": "Public Toolbox userspace window tracking fixture",
-  "resources": []
+  "resources": [
+    {
+      "type": "MENU",
+      "id": 256,
+      "symbol": "MENU_256",
+      "payload": {
+        "format": "file",
+        "path": "../../data/original-menu-256.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 257,
+      "symbol": "MENU_257",
+      "payload": {
+        "format": "file",
+        "path": "../../data/original-menu-257.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 258,
+      "symbol": "MENU_258",
+      "payload": {
+        "format": "file",
+        "path": "../../data/original-menu-258.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 259,
+      "symbol": "MENU_259",
+      "payload": {
+        "format": "file",
+        "path": "../../data/original-menu-259.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 260,
+      "symbol": "MENU_260",
+      "payload": {
+        "format": "file",
+        "path": "../../data/original-menu-260.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 261,
+      "symbol": "MENU_261",
+      "payload": {
+        "format": "file",
+        "path": "../../data/original-menu-261.bin"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 30000,
+      "symbol": "KEYLESS_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "Test",
+        "items": [
+          "Unclipped keyless label"
+        ]
+      }
+    }
+  ]
 }

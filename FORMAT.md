@@ -13,7 +13,7 @@ resource ID 0 has exactly 32 bytes, all numeric fields big endian:
 | 0 | 4 | Magic `RVN1` |
 | 4 | 2 | Container format version, currently 1 |
 | 6 | 2 | Role: 1 = resident System, 2 = application, 3 = code resource |
-| 8 | 4 | Native System service ABI version, currently 4 |
+| 8 | 4 | Native System service ABI version, currently 5 |
 | 12 | 4 | Reserved, must be zero |
 | 16 | 8 | Inclusive load reservation base |
 | 24 | 8 | Exclusive load reservation limit |
@@ -78,11 +78,11 @@ unsafe extern "C" fn(*const SystemServices) -> i32
 ```
 
 An application validates the table before calling the loader-supplied trap gate.
-ABI 4's `SystemServices` is 24 bytes on RV64:
+ABI 5's `SystemServices` is 24 bytes on RV64:
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 8 | ABI version 4 and structure size |
+| 0 | 8 | ABI version 5 and structure size |
 | 8 | 8 | `TrapGate` function pointer |
 | 16 | 8 | Capability bits |
 
@@ -136,15 +136,17 @@ than a nested resource fork. See [CODE-RESOURCES.md](CODE-RESOURCES.md).
 
 These interfaces are an evolving native prototype. The structure-size checks
 reject older tables that lack required fields even while the prototype ABI
-version is 4. Rebuild ROM, System, Finder and definitions together.
+version is 5. Rebuild ROM, System, Finder and definitions together.
 
-ABI4 BootInfo adds storage_context, disk_info, read_sector, startup_disk, reserved
-and startup_partition_start. Its size is88bytes on RV64; SystemServices remains
+ABI5 BootInfo adds optional write_sector and flush_disk callbacks to the storage
+contract introduced by ABI4. Its size is104bytes on RV64; SystemServices remains
 24bytes. Device ordinals stay stable while System runs; NOT_FOUND ends device
-enumeration. Each read transfers exactly512bytes. Callback contexts and live
-DMA queues remain firmware-owned. DiskInfo is24bytes and carries sector count,
-read-only state and resource type/ID for the driver icon. All native modules must
-be rebuilt together for ABI4. Window and retained drawing titles accept768 UTF8 bytes, enough for all255
+enumeration. Each read or write transfers exactly512bytes; flush is an explicit
+durability barrier. Callback contexts and DMA queues remain firmware-owned and
+are serialized by the resident owner guard. DiskInfo is24bytes and carries sector
+count, read-only state and the driver icon resource identity. Missing write/flush
+callbacks make a volume read-only. Rebuild all native modules together for ABI5.
+Window and retained drawing titles accept768 UTF8 bytes, enough for all255
 MacRoman characters after conversion. All inline font/resource/control title
 buffers use the same capacity. File/volume name buffers remain sized for HFS31.
 
@@ -210,3 +212,25 @@ BCD versions require major<=99/minor<=9/patch<=9. Stable versions use final0x80;
 dev/alpha/beta use0x20/0x40/0x60, and rc uses final with a nonzero ordinal. Unknown
 prerelease labels or overflowing classic fields fail the build. The short string
 retains the full Cargo version, including prerelease/build metadata.
+
+## Resource menus, alerts and clocks (ABI5)
+
+MENU0x10016 carries `mac-abi/src/menus.rs::MenuCall`. MENU/fmnu resources define
+items; an optional same-ID MCMD resource supplies one big-endian command per
+item. MDEF0 is an independent native code resource at0x82300000..0x82400000.
+Native EventKind14 carries MenuCommand: high16 bits menuID, low16 one-based item.
+Ctrl key equivalents use the same event path. This is a native extension, not a
+claim that original MenuSelect/WindowRecord contracts execute unchanged.
+
+DIALOG0x10017 carries `dialogs::DialogCall`; PSTRING_DIALOG0x30017 converts the
+inline substitution at the boundary. The current alert profile loads ALRT/DITL
+resources, button/static-text/ICON items, WDEF1 and CDEF0. It provides ^0
+substitution, modal input routing, default Return, cancel Escape and button
+press/leave/reentry/release. General DLOG/edit-text/user-items/alert stages remain
+unimplemented. Unsupported resource items fail before creating a window.
+
+CLOCK0x10018 returns signed64-bit Unix wall-clock seconds. The QEMU virt adapter
+serializes Goldfish TIME_LOW/TIME_HIGH reads; no HFS epoch is imposed on native
+Timestamp. HFS writes explicitly check conversion to unsigned1904 seconds.
+Resource STRING operation10 decodes STR or zero-based STR# to UTF8; only the
+paired Pascal Resource trap returns a Pascal/MacRoman result.

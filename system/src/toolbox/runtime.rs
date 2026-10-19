@@ -13,15 +13,18 @@ use crate::{loader::Definitions,
             platform,
             toolbox::{events::{BTN_STATE, EventManager,
                                input::{Decoder, Input}},
-                      quickdraw::{Canvas, WHITE,
-                                  font::{CHICAGO_12, GENEVA_9}},
+                      quickdraw::{Canvas, WHITE, font::GENEVA_9},
                       windows::{Action, WindowId, WindowManager, WindowPart}},
             virtio_input};
 
+#[path = "dialogs/runtime.rs"]
+mod dialog_runtime;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
+    dialogs:      super::dialogs::DialogState,
     desktop:      DesktopLayer,
+    menus:        super::menus::Manager,
     cursors:      super::quickdraw::cursors::Cursors,
     worlds:       super::quickdraw::worlds::Worlds,
     classic_font: mac_abi::quickdraw::FontSelection,
@@ -62,6 +65,7 @@ impl Desktop
     {
         definitions.resolve(*b"WDEF", 0).map_err(crate::loader::status)?;
         let cdef = definitions.resolve(*b"CDEF", 0).map_err(crate::loader::status)?;
+        let mdef = definitions.resolve(*b"MDEF", 0).map_err(crate::loader::status)?;
         let devices = virtio_input::initialize();
         if devices != 2
         {
@@ -69,7 +73,9 @@ impl Desktop
             return Err(NOT_SUPPORTED);
         }
         serial!("VIRTIO_INPUT=READY devices={}", devices);
-        Ok(Self { desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
+        Ok(Self { dialogs: Default::default(),
+                  menus: super::menus::Manager::new(mdef, crate::machine::traps::gateway),
+                  desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
                   cursors: Default::default(),
                   worlds: Default::default(),
                   classic_font: Default::default(),
@@ -90,6 +96,32 @@ impl Desktop
     fn when() -> u32
     {
         (platform::ticks() * 60 / 10_000_000) as u32
+    }
+
+    pub fn menu(&mut self, call: &mut mac_abi::menus::MenuCall) -> Status
+    {
+        let Some(resources) = crate::kernel::resources()
+        else
+        {
+            return NOT_SUPPORTED;
+        };
+        let result = self.menus.request(call, resources);
+        if result.is_ok()
+        {
+            self.redraw = true;
+        }
+        result.map_or_else(|status| status, |_| OK)
+    }
+
+    fn menu_selection(&mut self, selection: mac_abi::menus::Selection, when: u32)
+    {
+        self.events.post(Event { kind: EventKind::MenuCommand,
+                                 message: ((selection.menu_id as u16 as u32) << 16)
+                                          | u32::from(selection.item),
+                                 when,
+                                 where_: self.events.mouse,
+                                 modifiers: self.events.modifiers });
+        self.last_action = "MENU";
     }
 
     pub fn window(&mut self, operation: u32, request: &mut WindowRequest) -> Status
@@ -593,11 +625,21 @@ impl Desktop
     {
         self.revision = self.revision.wrapping_add(1);
         self.redraw = true;
+        if self.dialogs.active()
+        {
+            self.dialog_input(input, when);
+            return;
+        }
         match input
         {
             Input::Move(point) =>
             {
                 self.events.mouse = point;
+                if self.menus.is_tracking()
+                {
+                    self.menus.hover(point);
+                    return;
+                }
                 if let Some(action) = self.windows.track(point, false, &mut self.events, when)
                 {
                     self.action(action, when);
@@ -617,6 +659,10 @@ impl Desktop
                 }
                 if down
                 {
+                    if self.menus.begin(point)
+                    {
+                        return;
+                    }
                     let hit = self.windows.find_window(point);
                     if let Some(id) = hit.window
                     {
@@ -677,6 +723,14 @@ impl Desktop
                 }
                 else
                 {
+                    if self.menus.is_tracking()
+                    {
+                        if let Some(selection) = self.menus.release(point)
+                        {
+                            self.menu_selection(selection, when);
+                        }
+                        return;
+                    }
                     if let Some(action) = self.windows.track(point, true, &mut self.events, when)
                     {
                         self.action(action, when);
@@ -695,6 +749,14 @@ impl Desktop
                          modifiers } =>
             {
                 self.events.modifiers = modifiers | (self.events.modifiers & BTN_STATE);
+                if down && modifiers & CMD_KEY != 0 && self.menus.has_key(character)
+                {
+                    if let Some(selection) = self.menus.key(character)
+                    {
+                        self.menu_selection(selection, when);
+                    }
+                    return;
+                }
                 if mac_code != 0xff
                 {
                     if down
@@ -750,7 +812,9 @@ impl Desktop
             .or_else(|| {
                 if mask & (1 << EventKind::Update as u16) != 0
                 {
-                    self.windows.next_update(&self.events, when)
+                    if self.dialogs.active() {
+                        self.windows.next_update_for(WindowId(self.dialogs.window),&self.events,when)
+                    } else {self.windows.next_update(&self.events, when)}
                 }
                 else
                 {
@@ -781,6 +845,7 @@ impl Desktop
                                        });
                             }
                         });
+            self.menus.draw(&mut canvas);
             self.cursors.draw(&mut canvas, self.events.mouse);
             platform::present(back);
             self.redraw = false;
@@ -850,14 +915,6 @@ fn background(canvas: &mut Canvas)
                      [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55],
                      0x878787,
                      0xc0c0c0);
-    canvas.paint_rect(Rect::new(0, 0, 640, 21), WHITE);
-    canvas.paint_rect(Rect::new(0, 20, 640, 21), 0);
-    CHICAGO_12.draw(canvas, 12, 16, "\u{f8ff}", 0);
-    CHICAGO_12.draw(canvas, 38, 16, "File", 0);
-    CHICAGO_12.draw(canvas, 82, 16, "Edit", 0);
-    CHICAGO_12.draw(canvas, 126, 16, "View", 0);
-    CHICAGO_12.draw(canvas, 170, 16, "Special", 0);
-    CHICAGO_12.draw(canvas, 580, 16, "Finder", 0);
 }
 
 impl super::classic::Services for Desktop

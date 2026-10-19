@@ -16,6 +16,13 @@ impl core::fmt::Display for Error
                         BAD_ABI => "incompatible System ABI",
                         BAD_ARGUMENT => "invalid argument",
                         NOT_FOUND => "not found",
+                        IO_ERROR => "disk I/O failed",
+                        READ_ONLY => "volume is read-only",
+                        ALREADY_EXISTS => "an item with that name already exists",
+                        ACCESS_DENIED => "item is protected or locked",
+                        DISK_FULL => "metadata storage is full",
+                        ROLLBACK_FAILED => "disk rollback failed; remount required",
+                        DIRECTORY_NOT_EMPTY => "directory is not empty",
                         SERVICE_BUSY => "System service is busy",
                         WRONG_THREAD => "Operation requires its owning OS thread",
                         NOT_SUPPORTED => "service not supported",
@@ -45,6 +52,27 @@ pub struct Client<'a>
 }
 impl<'a> Client<'a>
 {
+    pub fn dialog(self, call: &mut mac_abi::dialogs::DialogCall) -> Result<()>
+    {
+        status(self.invoke(DIALOG, call))
+    }
+
+    pub fn now(self) -> Result<dates::Timestamp>
+    {
+        let mut call = dates::ClockCall::default();
+        status(self.invoke(CLOCK, &mut call))?;
+        Ok(dates::Timestamp::from_unix_seconds(call.unix_seconds))
+    }
+
+    pub fn menu(self, call: &mut mac_abi::menus::MenuCall) -> Result<()>
+    {
+        status(unsafe {
+            (self.services.trap)(MENU,
+                                 (call as *mut mac_abi::menus::MenuCall).cast(),
+                                 core::mem::size_of::<mac_abi::menus::MenuCall>())
+        })
+    }
+
     pub fn new(services: &'a SystemServices) -> Result<Self>
     {
         if !services.header.supports::<SystemServices>()
@@ -384,6 +412,23 @@ impl SurfaceConnection<'_>
         })?;
         *state = call.state;
         Ok(())
+    }
+
+    pub fn font_width(&mut self, selection: quickdraw::FontSelection, text: &str) -> Result<i16>
+    {
+        let mut call = font_call(quickdraw::FONT_WIDTH,
+                                 (0, self.surface),
+                                 selection,
+                                 text,
+                                 0,
+                                 Point::default(),
+                                 0);
+        status(unsafe {
+            (self.gate)(FONT,
+                        (&mut call as *mut quickdraw::FontCall).cast(),
+                        core::mem::size_of::<quickdraw::FontCall>())
+        })?;
+        Ok(call.width)
     }
 
     pub fn font_draw(&mut self, selection: quickdraw::FontSelection, baseline: Point, text: &str,

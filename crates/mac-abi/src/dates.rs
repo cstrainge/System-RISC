@@ -29,3 +29,11 @@ impl Timestamp
         u32::try_from(self.0.checked_add(Self::MAC_TO_UNIX_SECONDS)?).ok()
     }
 }
+
+/// Wall-clock transport; native seconds remain signed and independent of HFS.
+#[derive(Default, Clone, Copy)]
+#[repr(C)]
+pub struct ClockCall
+{
+    pub unix_seconds: i64
+}

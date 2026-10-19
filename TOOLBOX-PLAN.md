@@ -160,7 +160,7 @@ is being built.
 | Events/time input | Resident queue, masks/peek, activation/update input, key mapping and ticks; thin next-event API | Full public posting/peeking/flushing, key maps, double-click/caret policy, WaitNextEvent sleep/mouse regions, suspend/resume, event ownership, high-level events and timer/task interactions |
 | Windows | Standard loaded WDEF0 variations, z order versus active focus, tracking, damage/exposure and retained content | Broader lifecycle/query/hilite/visibility/refcon/behind semantics, Window Manager port/regions, custom WDEF contracts, picture/color windows and classic records |
 | Controls | Loaded button CDEF0 and scrollbar CDEF1, typed scrollbar draw/hit/value tracking | General control objects/lists, lifecycle, bounds/value/range/refcon/title, check/radio/popup/user controls, keyboard focus, action procedures, resource creation and complete tracking semantics |
-| Menus | Static resident menu-bar labels; public namespace scaffold | Menu objects/resources, insertion/deletion, enable/check/mark/style/shortcuts, MDEF lifecycle, tracking/cancellation/hilite, popups, menu bar ownership and keyboard routing |
+| Menus | Resource-installed MENU/fmnu objects, loaded native MDEF0 layout/drawing/hit, enable/check state, captured pointer tracking and keyboard command routing through the public SDK | Dynamic insertion/deletion, all item icons/marks/styles, arbitrary MDEF lifecycle, hierarchical/scrolling/pop-up variants, original flashing, per-app menu ownership and classic trap adaptation |
 | Lists | No List Manager public service | Cells/data/selection/scrolling, LDEF, click/double-click, drawing modes, resource/procedure lifetimes and control integration |
 | TextEdit | No public manager | Mono/styled edit records, classic text limits, CR handling, selection/caret/hit testing, line layout/scroll, edit operations, style scraps, hooks and drawing/activation integration |
 | Scrap | No public manager | Multiple scrap flavors, clear/append/read, private/system scrap conversion, memory/disk state, suspend/resume and TextEdit/dialog clipboard behavior |
@@ -357,8 +357,9 @@ of trap numbers establishes whole-System-7.6.1 compatibility.
 
 Every newly implemented human-text API must have paired native UTF-8 and legacy
 Pascal/MacRoman trap entries. Conversion lives only at System's trap boundary;
-Rust apps use `mac-toolbox` string interfaces. ABI4 covers current string-bearing
-service families; original A-line adapters retain their historical calling
+Rust apps use `mac-toolbox` string interfaces. ABI4 established the initial
+string-bearing families; ABI5 adds resource strings and alert substitutions.
+Original A-line adapters retain their historical calling
 conventions. Aggregate userspace tests compare decoded results and pixels and
 reject invalid UTF-8, malformed Pascal input and unrepresentable output.
 
@@ -366,7 +367,8 @@ Every date-bearing API must accept2026. Keep classic dates unsigned1904-seconds
 at disk/trap boundaries and native dates signed64-bit values, with checked
 conversion and no two-digit-year pivot assumptions. Current filesystem metadata,
 MacBinary build dates and public timestamp conversions have2026 regressions;
-future clock/calendar/formatting APIs need equivalent public tests before use.
+ABI5 wall-clock reads also have public native/guest coverage. Future calendar
+and formatting APIs need equivalent public tests before use.
 
 Application `vers` resources come from Cargo package versions, including workspace
 inheritance. Finder uses only the aggregate Toolbox facade at runtime. PNG
@@ -385,4 +387,4 @@ atomic replacement or equivalent recoverable transaction, so concurrent app
 threads cannot overwrite each other's edits or leave truncated JSON. Invalid or
 unknown-version documents produce explicit errors with a documented recovery
 policy. Writable storage and these transactions remain M7 prerequisites; the
-current read-only HFS implementation does not yet persist preferences.
+current bounded catalog/Trash write API does not yet persist preferences.

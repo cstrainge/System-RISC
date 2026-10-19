@@ -451,6 +451,21 @@ impl WindowManager
                      modifiers: events.modifiers })
     }
 
+    /// During modal alerts, leave background damage queued for its application.
+    pub fn next_update_for(&self, id: WindowId, events: &EventManager, when: u32) -> Option<Event>
+    {
+        let window = self.window(id)?;
+        if window.damage.is_none() || window.updating
+        {
+            return None;
+        }
+        Some(Event { kind: EventKind::Update,
+                     message: id.0,
+                     when,
+                     where_: events.mouse,
+                     modifiers: events.modifiers })
+    }
+
     pub fn begin_update(&mut self, id: WindowId) -> Option<Rect>
     {
         let window = self.window_mut(id)?;

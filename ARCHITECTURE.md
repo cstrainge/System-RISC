@@ -18,7 +18,7 @@ Finder / definition resource
 ```
 
 The RV64 gate uses `a7` for the operation, `a0` for the request pointer and `a1`
-for its byte size. ABI 4 supplies one gate and capability bits in the 24-byte
+for its byte size. ABI 5 supplies one gate and capability bits in the 24-byte
 `SystemServices` structure. [FORMAT.md](FORMAT.md) describes the exact contract.
 Applications and System must be rebuilt together when this ABI changes.
 
@@ -39,9 +39,10 @@ audit, synchronization rules and scheduler/application-thread exit criteria.
 files, menus, dialogs and memory modules. The implemented managers own the
 rasterizer, bitmap/TrueType font manager, window state, retained drawing lists,
 offscreen worlds, cursors, icon and PICT decoders, event queue and shared read-only
-resource search, read-only HFS File Manager and bounded handle Memory Manager.
-Menus and dialogs still include scaffolding;
-their public interfaces will grow as resident services are implemented.
+resource search, HFS catalog/Trash mutations and bounded handle Memory Manager.
+The resident Menu Manager tracks resource-defined menus and invokes MDEF0 for
+sizing, drawing and hits. The initial Dialog Manager interprets ALRT/DITL and
+calls WDEF1/CDEF0, with modal input routing. Full classic managers remain incomplete.
 
 The Window Manager controls lifecycle, z-order, exposure and interaction. Each
 loaded WDEF supplies its own frame drawing, hit testing and geometry. The
@@ -99,14 +100,18 @@ and embedded font strikes. Its result is included in `toolchain-checks.json`.
 
 ## Filesystem and Finder ownership
 
-ABI4 extends BootInfo to88bytes with an immutable storage callback contract:
-firmware context, device-info callback, one-sector read callback and startup
-volume identity. DiskInfo contains capacity, read-only state and driver icon
-resource identity. The ROM retains its virtio queues while System runs; System
-serializes calls into that context and mounts its own HFS views. The File Manager
-owns mounted-volume IDs, catalog traversal and independent open-fork marks.
-Neither Toolbox clients nor Finder link mac-hfs. There are no host disk reads
-inside the guest and no writes in this slice.
+ABI5 extends BootInfo to104bytes with firmware disk-info/read/write/flush callbacks
+and startup volume identity. DiskInfo carries capacity, read-only state and the
+driver icon resource identity. System serializes firmware access through its I/O
+owner guard. The File Manager owns mounted-volume IDs, catalog traversal,
+independent fork marks and mutation policy. Its bounded HFS engine rebuilds
+catalog/thread/index/map records within existing fork reservations. New Folder,
+Trash, Put Away and recursive Empty Trash persist to the actual device; failed
+writes/flushes trigger rollback and failed rollback poisons further mutations.
+This is not a crash-atomic journal. Native data/resource-fork writing, arbitrary
+rename and catalog-fork growth remain future work. Neither SDK nor Finder links
+the HFS engine. Finder aggregates actual per-volume Trash directories in a
+virtual window and keeps selection identities as (volume,CNID) pairs.
 
 The desktop is a retained application scene below windows and the menu bar.
 Finder begins a staged desktop update, draws through ordinary QuickDraw, then

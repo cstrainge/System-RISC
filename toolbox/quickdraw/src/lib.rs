@@ -107,6 +107,12 @@ impl<'a> SurfacePort<'a>
         Self { connection }
     }
 
+    /// Draw a resource icon through the resident Icon Utilities service.
+    pub fn icon_resource(&mut self, scope: i16, id: i16, bounds: Rect, flags: u16) -> Result<()>
+    {
+        self.connection.icon(scope, id, bounds, flags)
+    }
+
     pub fn paint_rect(&mut self, bounds: Rect, color: u32) -> Result<()>
     {
         self.connection
@@ -147,6 +153,26 @@ impl<'a> SurfacePort<'a>
                                                  bounds,
                                                  ..Default::default() })
             .map(|_| ())
+    }
+
+    pub fn styled_width(&mut self, style: u16, text: &str) -> Result<i16>
+    {
+        self.connection.font_width(mac_abi::quickdraw::FontSelection { family: 0,
+                                                                       size:   12,
+                                                                       face:   style },
+                                   text)
+    }
+
+    pub fn styled_text(&mut self, style: u16, x: i16, baseline: i16, text: &str, color: u32)
+                       -> Result<i16>
+    {
+        self.connection.font_draw(mac_abi::quickdraw::FontSelection { family: 0,
+                                                                      size:   12,
+                                                                      face:   style },
+                                  Point { h: x,
+                                          v: baseline },
+                                  text,
+                                  color)
     }
 
     pub fn text_width(&mut self, font: u32, text: &str) -> Result<i16>

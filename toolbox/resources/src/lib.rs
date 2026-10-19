@@ -50,6 +50,36 @@ impl<'a> Resources<'a>
                              &mut [])
     }
 
+    /// Decode a STR resource to UTF8 through the resident Resource Manager.
+    pub fn string(self, id: i16, output: &mut [u8]) -> Result<&str>
+    {
+        self.string_value(ResourceKey { kind: *b"STR ",
+                                        id },
+                          0,
+                          output)
+    }
+
+    /// Rust indexes STR# elements from zero; the serialized resource remains classic.
+    pub fn indexed_string(self, id: i16, index: u32, output: &mut [u8]) -> Result<&str>
+    {
+        self.string_value(ResourceKey { kind: *b"STR#",
+                                        id },
+                          index,
+                          output)
+    }
+
+    fn string_value(self, key: ResourceKey, index: u32, output: &mut [u8]) -> Result<&str>
+    {
+        let reply = self.client.resource(ResourceRequest { operation: STRING,
+                                                            scope: self.scope,
+                                                            key,
+                                                            index,
+                                                            ..Default::default() },
+                                          output)?;
+        core::str::from_utf8(output.get(..reply.transferred).ok_or(Error(mac_abi::BAD_ARGUMENT))?)
+            .map_err(|_|Error(mac_abi::BAD_ARGUMENT))
+    }
+
     pub fn get(self, key: ResourceKey) -> Result<Resource<'a>>
     {
         self.request(GET, key, 0, "").map(|r| {

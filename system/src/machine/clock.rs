@@ -1,0 +1,15 @@
+//! QEMU virt Goldfish RTC. TIME_LOW latches TIME_HIGH; serialize both reads.
+//! Sources: qemu hw/riscv/virt.c VIRT_RTC and hw/rtc/goldfish_rtc.c.
+use mac_abi::{SERVICE_BUSY, Status, dates::Timestamp};
+static RTC: spinning_top::Spinlock<()> = spinning_top::Spinlock::new(());
+pub(crate) fn now() -> Result<Timestamp, Status>
+{
+    let _guard = RTC.try_lock().ok_or(SERVICE_BUSY)?;
+    // SAFETY: the virt board maps this read-only RTC register pair, 32-bit aligned.
+    let nanos = unsafe {
+        let low = core::ptr::read_volatile(0x00101000 as *const u32);
+        let high = core::ptr::read_volatile(0x00101004 as *const u32);
+        (u64::from(high) << 32) | u64::from(low)
+    };
+    Ok(Timestamp::from_unix_seconds((nanos / 1_000_000_000) as i64))
+}
