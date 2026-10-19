@@ -92,6 +92,21 @@ impl<'a> Icons<'a>
                              ..Default::default() })
             .map(|_| ())
     }
+
+    /// Read the file's BNDL/FREF mapping and draw its own icon family. This works
+    /// before the application has been launched and leaves the search chain alone.
+    pub fn plot_file(self, window: WindowId, volume: u32, cnid: u32, destination: Rect,
+                     flags: IconFlags)
+                     -> Result<()>
+    {
+        self.client.file_icon(&mut FileIconCall { operation: ICON_PLOT_FILE,
+                                                  window: window.0,
+                                                  volume,
+                                                  cnid,
+                                                  destination,
+                                                  flags: flags.bits()?,
+                                                  ..Default::default() })
+    }
 }
 impl<'a> crate::QuickDraw<'a>
 {
@@ -102,6 +117,12 @@ impl<'a> crate::QuickDraw<'a>
 }
 impl crate::SurfacePort<'_>
 {
+    pub fn plot_file_icon(&mut self, volume: u32, cnid: u32, destination: Rect, flags: IconFlags)
+                          -> Result<()>
+    {
+        self.connection.file_icon(volume, cnid, destination, flags.bits()?)
+    }
+
     pub fn plot_icon(&mut self, scope: i16, id: i16, destination: Rect, flags: IconFlags)
                      -> Result<()>
     {

@@ -1,5 +1,14 @@
 # Verified milestones
 
+## Application-owned icons
+
+Finder folder views and Get Info resolve application icons directly from each
+file's BNDL/FREF resources, before launch. Application-menu rows and foreground
+titles use the same bundle identities in their loaded image scopes. Linux and
+Windows graphical tests check3,584 icon pixels, including a non-128 icon ID;
+host SDK tests cover colors, masks, size selection and bounded HFS resource reads.
+See [application icons](APPLICATION-ICONS.md) for architecture and evidence.
+
 ## Native application launch — ABI6
 
 The native launch path now has a one-hart CLINT timer scheduler with up to eight

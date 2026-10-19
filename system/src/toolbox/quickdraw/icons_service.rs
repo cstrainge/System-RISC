@@ -11,6 +11,21 @@ use super::{Canvas,
             icons::{self, IconFamily, IconFlags},
             service::{self, Port}};
 use crate::toolbox::resources::manager::Manager;
+/// Resolve local bundle IDs inside one resource file, never across app forks.
+pub fn file_id(resources: &[mac_formats::resource::Resource], creator: [u8; 4], file_type: [u8; 4])
+               -> Result<i16, Status>
+{
+    let refs: Vec<_> = resources.iter()
+                                .map(|r| {
+                                    ResourceRef { kind:       r.kind,
+                                                  id:         r.id,
+                                                  name:       r.name.as_deref(),
+                                                  attributes: r.attributes,
+                                                  data:       &r.data }
+                                })
+                                .collect();
+    icons::file_icon_id(&refs, creator, file_type).map_err(status)
+}
 pub fn status(error: icons::IconError) -> Status
 {
     match error
@@ -87,6 +102,22 @@ pub struct Drawing
 }
 impl Drawing
 {
+    #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+    pub(crate) fn file(files: &mut crate::toolbox::files::Manager, manager: Manager<'_>,
+                       call: &FileIconCall)
+                       -> Result<Self, Status>
+    {
+        if call.operation != ICON_PLOT_FILE || call.reserved != [0; 3]
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let flags = IconFlags::from_transform(call.flags).map_err(status)?;
+        Ok(Self { family: files.file_icon(call.volume, call.cnid, manager)?,
+                  destination: call.destination,
+                  flags,
+                  port: Port::default() })
+    }
+
     pub fn new(manager: Manager<'_>, call: &IconCall, port: Port) -> Result<Self, Status>
     {
         let flags = IconFlags::from_transform(call.flags).map_err(status)?;

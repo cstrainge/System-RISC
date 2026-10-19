@@ -1,7 +1,8 @@
-//! File-backed vers metadata without adding a resource file to the search chain.
-use alloc::{vec, vec::Vec};
+//! Bounded file-backed metadata without changing the resident resource chain.
+use alloc::{collections::BTreeSet, vec, vec::Vec};
 
 use mac_abi::{resources::*, *};
+use mac_formats::resource::Resource;
 
 fn word(bytes: &[u8], at: usize) -> Result<u16, Status>
 {
@@ -26,6 +27,17 @@ fn bounded(start: u64, size: u64, total: u64) -> Result<(), Status>
 pub(crate) fn read_value(length: u64, key: ResourceKey,
                          mut read: impl FnMut(u64, &mut [u8]) -> Result<(), Status>)
                          -> Result<Vec<u8>, Status>
+{
+    read_selected(length, |candidate| candidate == key, 518, &mut read)?.pop()
+                                                                        .map(|r| r.data)
+                                                                        .ok_or(NOT_FOUND)
+}
+
+/// Bound both the map and total selected payload; never read executable data.
+pub(crate) fn read_selected(length: u64, mut select: impl FnMut(ResourceKey) -> bool,
+                            limit: usize,
+                            mut read: impl FnMut(u64, &mut [u8]) -> Result<(), Status>)
+                            -> Result<Vec<Resource>, Status>
 {
     if length == 0
     {
@@ -65,7 +77,8 @@ pub(crate) fn read_value(length: u64, key: ResourceKey,
     {
         return Err(BAD_ARGUMENT);
     }
-    let mut selected = None;
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
     for index in 0..count
     {
         let at = types + 2 + index * 8;
@@ -90,27 +103,36 @@ pub(crate) fn read_value(length: u64, key: ResourceKey,
             }
             let offset = u64::from(u32::from_be_bytes([0, record[5], record[6], record[7]]));
             bounded(offset, 4, data_len)?;
-            if kind == key.kind
-               && word(record, 0)? as i16 == key.id
-               && selected.replace(offset).is_some()
+            let key = ResourceKey { kind,
+                                    id: word(record, 0)? as i16 };
+            if select(key)
             {
-                return Err(BAD_ARGUMENT);
+                if !seen.insert((key.kind, key.id))
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                selected.push((key, offset, record[4]));
             }
         }
     }
-    let offset = selected.ok_or(NOT_FOUND)?;
-    let mut size = [0; 4];
-    read(data + offset, &mut size)?;
-    let size = u64::from(u32::from_be_bytes(size));
-    bounded(offset + 4, size, data_len)?;
-    // vers max6+256+256 bytes; larger values are malformed, not big allocations.
-    if size > 518
+    let mut output = Vec::new();
+    let mut remaining = limit;
+    for (key, offset, attributes) in selected
     {
-        return Err(BAD_ARGUMENT);
+        let mut size = [0; 4];
+        read(data + offset, &mut size)?;
+        let size = u64::from(u32::from_be_bytes(size));
+        bounded(offset + 4, size, data_len)?;
+        remaining = remaining.checked_sub(size as usize).ok_or(BAD_ARGUMENT)?;
+        let mut value = vec![0; size as usize];
+        read(data + offset + 4, &mut value)?;
+        output.push(Resource { kind: key.kind,
+                               id: key.id,
+                               attributes,
+                               name: None,
+                               data: value });
     }
-    let mut value = vec![0; size as usize];
-    read(data + offset + 4, &mut value)?;
-    Ok(value)
+    Ok(output)
 }
 
 fn decode(data: &[u8]) -> Result<VersionInfo, Status>

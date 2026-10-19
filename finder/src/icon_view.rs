@@ -70,7 +70,26 @@ pub trait Drawing
     fn fill(&mut self, bounds: Rect, color: u32) -> Result<(), Status>;
     fn text_width(&mut self, text: &str) -> Result<i16, Status>;
     fn text(&mut self, baseline: Point, text: &str, color: u32) -> Result<(), Status>;
-    fn icon(&mut self, id: i16, bounds: Rect, state: State) -> Result<(), Status>;
+    fn icon(&mut self, id: Icon, bounds: Rect, state: State) -> Result<(), Status>;
+}
+
+#[derive(Clone, Copy)]
+pub enum Icon
+{
+    Resource(i16),
+    Application
+    {
+        volume:   u32,
+        cnid:     u32,
+        fallback: i16
+    }
+}
+impl From<i16> for Icon
+{
+    fn from(id: i16) -> Self
+    {
+        Self::Resource(id)
+    }
 }
 
 pub fn label_bounds(icon: Rect, width: i16) -> Rect
@@ -80,10 +99,11 @@ pub fn label_bounds(icon: Rect, width: i16) -> Rect
     Rect::new(origin - 2, icon.bottom, origin + width + 2, icon.bottom + 12)
 }
 
-pub fn draw_item(draw: &mut impl Drawing, id: i16, icon: Rect, name: &str, state: State)
+pub fn draw_item(draw: &mut impl Drawing, id: impl Into<Icon>, icon: Rect, name: &str,
+                 state: State)
                  -> Result<Rect, Status>
 {
-    draw.icon(id, icon, state)?;
+    draw.icon(id.into(), icon, state)?;
     let width = draw.text_width(name)?;
     let label = label_bounds(icon, width);
     let selected = state.selected && state.active;

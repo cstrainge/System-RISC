@@ -56,7 +56,7 @@ struct Info
     version:        Text<512>,
     description:    Text<256>,
     location:       Text<768>,
-    icon:           i16
+    icon:           crate::icon_view::Icon
 }
 #[derive(Default)]
 pub struct Controller

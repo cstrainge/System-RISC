@@ -321,6 +321,21 @@ pub const ICON_PLOT: u32 = 0;
 pub const ICON_COUNT: u32 = 1;
 pub const ICON_AT: u32 = 2;
 pub const ICON_FILE: u32 = 3;
+pub const ICON_PLOT_FILE: u32 = 4;
+/// Draw an application's own icon without adding its fork to the resource chain.
+#[repr(C)]
+#[derive(Default)]
+pub struct FileIconCall
+{
+    pub operation:   u32,
+    pub window:      u32,
+    pub surface:     *mut Surface,
+    pub volume:      u32,
+    pub cnid:        u32,
+    pub destination: Rect,
+    pub flags:       u16,
+    pub reserved:    [u16; 3]
+}
 #[repr(C)]
 #[derive(Default)]
 pub struct IconCall

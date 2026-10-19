@@ -43,6 +43,8 @@ pub(crate) struct AppImage
     pub resources: alloc::vec::Vec<mac_formats::resource::Resource>,
     pub volume:    u32,
     pub cnid:      u32,
+    pub creator:   [u8; 4],
+    pub file_type: [u8; 4],
     pub base:      u64,
     pub limit:     u64
 }
@@ -51,7 +53,7 @@ pub(crate) fn image(index: usize) -> Option<&'static AppImage>
 {
     IMAGES.get(index)?.get()
 }
-pub(crate) fn cache_image(volume: u32, cnid: u32,
+pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [u8; 4],
                           resources: alloc::vec::Vec<mac_formats::resource::Resource>)
                           -> Result<usize, Status>
 {
@@ -77,6 +79,8 @@ pub(crate) fn cache_image(volume: u32, cnid: u32,
                     AppImage { resources,
                                volume,
                                cnid,
+                               creator,
+                               file_type,
                                base,
                                limit }
                 });
@@ -224,6 +228,8 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                  AppImage { resources: finder.clone(),
                             volume: 0,
                             cnid: 0,
+                            creator: *b"MACS",
+                            file_type: *b"FNDR",
                             base,
                             limit }
              });

@@ -284,6 +284,40 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                    })
         }
 
+        ICON =>
+        {
+            let result = SESSION.with(|slot| {
+                let mut session = slot.borrow_mut();
+                let session = session.as_mut().unwrap();
+                let manager = crate::toolbox::resources::manager::Manager::new(
+                    &session.resources, &session.application, session.fonts.resources());
+                let (drawing, surface) = if size == size_of::<quickdraw::FileIconCall>()
+                {
+                    let call = unsafe { request::<quickdraw::FileIconCall>(pointer, size) }?;
+                    (crate::toolbox::quickdraw::icons_service::Drawing::file(
+                        &mut session.files, manager, call)?, call.surface)
+                }
+                else
+                {
+                    let call = unsafe { request::<quickdraw::IconCall>(pointer, size) }?;
+                    if call.operation != quickdraw::ICON_PLOT
+                    {
+                        return crate::toolbox::quickdraw::icons_service::query(manager, call);
+                    }
+                    (crate::toolbox::quickdraw::icons_service::Drawing::new(
+                        manager, call, Default::default())?, call.surface)
+                };
+                if surface.is_null()
+                {
+                    return Err(NOT_SUPPORTED);
+                }
+                let surface = unsafe { request::<Surface>(surface.cast(), size_of::<Surface>()) }?;
+                let mut canvas = unsafe { crate::toolbox::quickdraw::SurfaceExt::canvas(surface) }
+                    .ok_or(BAD_ARGUMENT)?;
+                drawing.paint(&mut canvas)
+            });
+            result.err().unwrap_or(OK) as i64
+        }
         RESOURCE =>
         {
             if size == size_of::<resources::FileVersionCall>()

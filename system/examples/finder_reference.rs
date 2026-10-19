@@ -8,6 +8,8 @@ use mac_system::toolbox::quickdraw::{Canvas,
                                      fonts::{FontManager, FontSelection},
                                      icons::{IconFamily, IconFlags}};
 #[path = "../../finder/src/icon_view.rs"]
+// This original-reference renderer only exercises System resource icons.
+#[allow(dead_code)]
 mod icon_view;
 use icon_view::{Drawing, Layout, State};
 struct Draw<'a, 'b>
@@ -45,8 +47,13 @@ impl Drawing for Draw<'_, '_>
             .map(|_| ())
     }
 
-    fn icon(&mut self, id: i16, bounds: Rect, state: State) -> Result<(), Status>
+    fn icon(&mut self, id: icon_view::Icon, bounds: Rect, state: State) -> Result<(), Status>
     {
+        let icon_view::Icon::Resource(id) = id
+        else
+        {
+            return Err(-2);
+        };
         IconFamily::from_resources(self.resources, id).map_err(|_| -2)?
                                                       .draw(self.canvas,
                                                             bounds,

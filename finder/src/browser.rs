@@ -8,7 +8,7 @@ use mac_toolbox::{System,
                               icons::{IconFlags, standard}},
                   *};
 
-use crate::icon_view::{self, Drawing, Layout, State};
+use crate::icon_view::{self, Drawing, Icon, Layout, State};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Location
@@ -129,18 +129,28 @@ impl Drawing for Port<'_, '_>
             .map_err(|e| e.0)
     }
 
-    fn icon(&mut self, id: i16, bounds: Rect, state: State) -> Result<(), Status>
+    fn icon(&mut self, icon: Icon, bounds: Rect, state: State) -> Result<(), Status>
     {
-        self.system
-            .quickdraw()
-            .icons()
-            .plot(self.graphics.window_id(),
-                  id,
-                  bounds,
-                  IconFlags { selected: state.selected && state.active,
-                              open: state.open,
-                              ..Default::default() })
-            .map_err(|e| e.0)
+        let icons = self.system.quickdraw().icons();
+        let flags = IconFlags { selected: state.selected && state.active,
+                                open: state.open,
+                                ..Default::default() };
+        let id = match icon
+        {
+            Icon::Resource(id) => id,
+            Icon::Application { volume,
+                                cnid,
+                                fallback } =>
+            {
+                match icons.plot_file(self.graphics.window_id(), volume, cnid, bounds, flags)
+                {
+                    Ok(()) => return Ok(()),
+                    Err(Error(NOT_FOUND | BAD_ARGUMENT | NOT_SUPPORTED)) => fallback,
+                    Err(e) => return Err(e.0)
+                }
+            }
+        };
+        icons.plot(self.graphics.window_id(), id, bounds, flags).map_err(|e| e.0)
     }
 }
 fn error(e: mac_toolbox::Error) -> Status
@@ -179,29 +189,39 @@ fn folder_icon(volume: &VolumeInfo, entry: &CatalogInfo) -> i16
     }
     standard::FOLDER
 }
-pub(crate) fn entry_icon(system: &System<'_>, volume: &VolumeInfo, entry: &CatalogInfo) -> i16
+pub(crate) fn entry_icon(system: &System<'_>, volume: &VolumeInfo, entry: &CatalogInfo) -> Icon
 {
     if entry.is_directory()
     {
-        return folder_icon(volume, entry);
+        return folder_icon(volume, entry).into();
     }
     // Original System generic stationery family: stacked paper with the
     // lower-right fold. App-specific document/pad compositing is separate.
     if entry.is_stationery()
     {
-        return -3985;
+        return (-3985).into();
     }
-    system.quickdraw()
-          .icons()
-          .for_file(entry.creator, entry.file_type)
-          .unwrap_or(if entry.file_type == *b"APPL" || entry.file_type == *b"FNDR"
-                     {
-                         standard::APPLICATION
-                     }
-                     else
-                     {
-                         standard::DOCUMENT
-                     })
+    let fallback = system.quickdraw()
+                         .icons()
+                         .for_file(entry.creator, entry.file_type)
+                         .unwrap_or(if entry.file_type == *b"APPL" || entry.file_type == *b"FNDR"
+                                    {
+                                        standard::APPLICATION
+                                    }
+                                    else
+                                    {
+                                        standard::DOCUMENT
+                                    });
+    if matches!(&entry.file_type, b"APPL" | b"FNDR")
+    {
+        Icon::Application { volume: volume.id,
+                            cnid: entry.id,
+                            fallback }
+    }
+    else
+    {
+        fallback.into()
+    }
 }
 // The 16-pixel controls overlap the content frame and size-box borders by 1px.
 fn vertical_scrollbar(width: i16, height: i16) -> Rect

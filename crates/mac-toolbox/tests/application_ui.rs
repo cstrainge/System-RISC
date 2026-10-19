@@ -21,6 +21,34 @@ fn region(bytes: &[u8], left: usize, top: usize, right: usize, bottom: usize) ->
                  .collect()
 }
 
+/// Render a known resource through the public SDK, independently of Finder's
+/// file lookup and the process menu's loaded-image lookup.
+fn icon(root: &Path, package: &str, id: i16, size: usize) -> Vec<u8>
+{
+    use mac_toolbox::{Point, Rect,
+                      quickdraw::{SurfacePort, icons::IconFlags}};
+    let system = fs::read(root.join("build/system7/dist/System.rsrc")).unwrap();
+    let application =
+        fs::read(root.join("build/system7/dist").join(format!("{package}.rsrc"))).unwrap();
+    let mut pixels = vec![0xffffff; size * size];
+    mac_system::testing::with_resource_forks(&system, &application, |services| {
+        let mut surface = mac_abi::Surface { pixels: pixels.as_mut_ptr(),
+                                             width:  size as u32,
+                                             height: size as u32,
+                                             origin: Point::default(),
+                                             clip:   Rect::new(0, 0, size as i16, size as i16) };
+        let connection = unsafe { mac_traps::SurfaceConnection::new(&mut surface, services.trap) };
+        SurfacePort::new(connection).plot_icon(mac_abi::resources::APPLICATION,
+                                               id,
+                                               Rect::new(0, 0, size as i16, size as i16),
+                                               IconFlags::default())
+                                    .unwrap();
+    }).unwrap();
+    pixels.iter()
+          .flat_map(|pixel| [(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8])
+          .collect()
+}
+
 #[test]
 #[ignore = "requires fresh cargo xtask image and an independent graphical QEMU"]
 fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_them()
@@ -28,13 +56,18 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
     let output =
         root.join("results/system7").join(format!("applications-ui-{}", std::process::id()));
-    let capture = Command::new("python3").arg(root.join("System7/scripts/\
-                                                         capture_system7_applications_ui.py"))
-                                         .arg("--output")
-                                         .arg(&output)
-                                         .current_dir(&root)
-                                         .output()
-                                         .unwrap();
+    let windows = std::env::var_os("SYSTEM7_APPLICATION_UI_WINDOWS").is_some();
+    let mut command = Command::new("python3");
+    command.arg(root.join("System7/scripts/capture_system7_applications_ui.py"))
+           .arg("--output")
+           .arg(&output)
+           .arg("--remap-icon")
+           .current_dir(&root);
+    if windows
+    {
+        command.arg("--windows-headless");
+    }
+    let capture = command.output().unwrap();
     assert!(capture.status.success(),
             "UI capture failed:\n{}\n{}",
             String::from_utf8_lossy(&capture.stdout),
@@ -75,6 +108,32 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
                     .unwrap()
     };
     assert!(prefix("applications-folder").contains("window=2 name=Applications\n"));
+    let fixture: Value =
+        serde_json::from_slice(&fs::read(output.join("icon-fixture.json")).unwrap()).unwrap();
+    assert_eq!(fixture["icon_id"], 9433, "non-128 loaded-image icon fixture");
+    let applications = image("applications-folder");
+    for (package, left) in [("QuickDraw Test", 40), ("TextEdit Exerciser", 168)]
+    {
+        assert_eq!(region(&applications, left, 90, left + 32, 122),
+                   icon(&root, package, 128, 32),
+                   "Finder did not draw {package}'s own icon before launch");
+    }
+    let popup = image("three-app-menu");
+    for (package, id, top) in
+        [("System", 3, 85), ("QuickDraw Test", 128, 103), ("TextEdit Exerciser", 128, 121)]
+    {
+        assert_eq!(region(&popup, 475, top, 491, top + 16),
+                   icon(&root, package, id, 16),
+                   "application menu used the wrong icon for {package}");
+    }
+    for (frame, package, id) in [("finder-initial", "System", 3),
+                                 ("quickdraw-launched", "QuickDraw Test", 128),
+                                 ("textedit-abc", "TextEdit Exerciser", 128)]
+    {
+        assert_eq!(region(&image(frame), 610, 1, 626, 17),
+                   icon(&root, package, id, 16),
+                   "application menu title did not follow foreground {package}");
+    }
     assert!(prefix("quickdraw-launched").contains("FINDER_MENU menu=1252 item=2 \
                                                    command=736f7065\n"),
             "QuickDraw must launch from Finder's actual File > Open resource command");
@@ -160,8 +219,9 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
             "Finder did not handle a real folder double-click after both applications exited");
 
     // The original Finder-only application-menu interior, border and row text.
-    // The native icon may be the generic resource while original Finder uses a
-    // private icon family; exclude only that16px slot and the recorded cursor tail.
+    // Original Finder's menu icon differs from its bundled System FNDR family.
+    // That slot is checked against the actual resource above; retain the original
+    // comparison for menu layout/text and exclude the recorded cursor tail.
     let golden = include_bytes!("data/application-menu/01-finder-menu.rgb");
     assert_eq!(golden.len(), 103 * 84 * 3);
     let actual = image("finder-only-menu");
@@ -197,8 +257,17 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
         "application_switching_and_editor_state":"passed","hide_others_and_show_all":"passed",
         "activation_click_does_not_click_through":"passed","second_content_click_delivered":"passed",
         "background_command_drag_preserves_foreground":"passed","ordinary_drag_activates_on_release":"passed",
-        "resource_menu_quit_and_fresh_relaunch":"passed","finder_alive_after_exit":"passed"});
+        "resource_menu_quit_and_fresh_relaunch":"passed","finder_alive_after_exit":"passed",
+        "application_icon_pixels":3584,"application_icons_before_launch":"passed",
+        "application_menu_icon_rows_and_foreground_title":"passed","non_128_icon_bundle":"passed"});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
-    fs::write(root.join("results/system7/application-ui-checks.json"),
+    fs::write(root.join(if windows
+                        {
+                            "results/system7/application-ui-windows-checks.json"
+                        }
+                        else
+                        {
+                            "results/system7/application-ui-checks.json"
+                        }),
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
 }

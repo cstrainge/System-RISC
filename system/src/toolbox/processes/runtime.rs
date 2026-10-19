@@ -224,10 +224,24 @@ impl Desktop
         let scope = mac_abi::resources::LOADED_IMAGE_BASE + index as i16;
         if let Some(image) = crate::kernel::image(index)
         {
-            let resources = &image.resources;
-            if resources.iter().any(|r| r.kind == *b"ICN#" && r.id == 128)
+            if let Ok(id) = crate::toolbox::quickdraw::icons_service::file_id(&image.resources,
+                                                                              image.creator,
+                                                                              image.file_type)
             {
-                return mac_abi::menus::MenuIcon::new(scope, 128);
+                return mac_abi::menus::MenuIcon::new(scope, id);
+            }
+            if let Some(manager) = crate::kernel::resources()
+            {
+                let mut call = mac_abi::quickdraw::IconCall { operation:
+                                                                  mac_abi::quickdraw::ICON_FILE,
+                                                              scope: mac_abi::resources::SYSTEM,
+                                                              creator: image.creator,
+                                                              file_type: image.file_type,
+                                                              ..Default::default() };
+                if crate::toolbox::quickdraw::icons_service::query(manager, &mut call).is_ok()
+                {
+                    return mac_abi::menus::MenuIcon::new(call.origin, call.id);
+                }
             }
         }
         mac_abi::menus::MenuIcon::new(0, -3996)
@@ -406,11 +420,12 @@ impl Desktop
                 {
                     return Err(NO_MEMORY);
                 }
-                let (name, resources) =
+                let (catalog, resources) =
                     crate::toolbox::processes::read_application(call.volume, call.cnid)?;
-                let image = crate::kernel::cache_image(call.volume, call.cnid, resources)?;
+                let image = crate::kernel::cache_image(call.volume, call.cnid, catalog.creator,
+                                                       catalog.file_type, resources)?;
                 let entry = crate::kernel::reload_image(image)?;
-                let id = self.processes.add(&name, call.volume, call.cnid, image)?;
+                let id = self.processes.add(catalog.name(), call.volume, call.cnid, image)?;
                 let thread = match crate::machine::scheduler::spawn(id, image, entry)
                 {
                     Ok(t) => t,
@@ -424,7 +439,7 @@ impl Desktop
                 self.processes.get_mut(id)?.info.thread = thread;
                 self.activate_process(id)?;
                 call.info = self.processes.snapshot(id)?;
-                serial!("PROCESS_LAUNCHED app={} thread={} name={}", id, thread, name);
+                serial!("PROCESS_LAUNCHED app={} thread={} name={}", id, thread, catalog.name());
             }
             ACTIVATE => self.activate_process(call.id)?,
             HIDE => self.hide_process(call.id)?,

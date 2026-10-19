@@ -1,6 +1,6 @@
 //! Application metadata and activation policy, independent of CPU scheduling.
 #![forbid(unsafe_code)]
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 
 use mac_abi::{processes::*, *};
 pub mod menu;
@@ -100,7 +100,8 @@ impl Manager
 /// Read a resource fork through the filesystem service on its actual I/O thread.
 pub fn read_application(
     volume: u32, cnid: u32)
-    -> Result<(String, alloc::vec::Vec<mac_formats::resource::Resource>), Status>
+    -> Result<(mac_abi::files::CatalogInfo, alloc::vec::Vec<mac_formats::resource::Resource>),
+              Status>
 {
     use mac_abi::files::*;
     crate::kernel::with_files(|files| {
@@ -113,7 +114,6 @@ pub fn read_application(
         {
             return Err(BAD_ARGUMENT);
         }
-        let name = String::from(call.entry.name());
         let size = call.entry.resource_length as usize;
         if size == 0 || size > 4 * 1024 * 1024
         {
@@ -141,7 +141,7 @@ pub fn read_application(
             return Err(IO_ERROR);
         }
         let resources = crate::loader::resources(&data).map_err(crate::loader::status)?;
-        Ok((name, resources))
+        Ok((call.entry, resources))
     }).map_err(|e| e.status())?
 }
 

@@ -1,6 +1,6 @@
 //! Resource-based original Finder layout, using only native Toolbox clients.
 use mac_toolbox::{controls::StandardState,
-                  quickdraw::{fonts::FontSelection, graphics::GraphicsPort, icons::IconFlags}};
+                  quickdraw::{fonts::FontSelection, graphics::GraphicsPort}};
 
 use super::*;
 pub(super) fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8])
@@ -233,10 +233,11 @@ impl Info
             let bounds = self.layout.icon;
             let icon_bounds =
                 Rect::new(bounds.left + 3, bounds.top + 3, bounds.left + 35, bounds.top + 35);
-            system.quickdraw()
-                  .icons()
-                  .plot(WindowId(self.window), self.icon, icon_bounds, IconFlags::default())
-                  .map_err(error)?;
+            crate::icon_view::Drawing::icon(&mut crate::browser::Port { system,
+                                                                        graphics: port },
+                                            self.icon,
+                                            icon_bounds,
+                                            crate::icon_view::State::default())?;
             system.textedit().draw(self.name, WindowId(self.window)).map_err(error)?;
             if self.focus == Focus::Name && self.active && self.editable(Focus::Name)
             {

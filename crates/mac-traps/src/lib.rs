@@ -770,9 +770,32 @@ impl Client<'_>
         status(self.invoke(ICON, &mut call))?;
         Ok(call)
     }
+
+    pub fn file_icon(self, call: &mut quickdraw::FileIconCall) -> Result<()>
+    {
+        call.surface = core::ptr::null_mut();
+        status(self.invoke(ICON, call))
+    }
 }
 impl SurfaceConnection<'_>
 {
+    pub fn file_icon(&mut self, volume: u32, cnid: u32, destination: Rect, flags: u16)
+                     -> Result<()>
+    {
+        let mut call = quickdraw::FileIconCall { operation: quickdraw::ICON_PLOT_FILE,
+                                                 surface: self.surface,
+                                                 volume,
+                                                 cnid,
+                                                 destination,
+                                                 flags,
+                                                 ..Default::default() };
+        status(unsafe {
+            (self.gate)(ICON,
+                        core::ptr::from_mut(&mut call).cast(),
+                        core::mem::size_of::<quickdraw::FileIconCall>())
+        })
+    }
+
     pub fn picture(&mut self, data: &[u8], destination: Rect) -> Result<()>
     {
         let mut call = quickdraw::PictureCall { operation: quickdraw::PICTURE_BYTES,

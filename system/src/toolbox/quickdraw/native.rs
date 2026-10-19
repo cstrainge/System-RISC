@@ -347,6 +347,26 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
             }
             ICON =>
             {
+                #[cfg(target_arch = "riscv64")]
+                if size == size_of::<FileIconCall>()
+                {
+                    let call = unsafe { request::<FileIconCall>(pointer, size) }?;
+                    let manager = crate::kernel::resources().ok_or(NOT_SUPPORTED)?;
+                    let drawing = crate::kernel::with_files(|files| {
+                                      super::icons_service::Drawing::file(files, manager, call)
+                                  }).map_err(|e| e.status())??;
+                    if call.surface.is_null()
+                    {
+                        let target = IconCall { window: call.window,
+                                                ..Default::default() };
+                        return crate::kernel::with_desktop(|d| d.icon(&target, drawing))
+                            .unwrap_or_else(|error| Err(error.status()));
+                    }
+                    let surface =
+                        unsafe { request::<Surface>(call.surface.cast(), size_of::<Surface>()) }?;
+                    let mut canvas = unsafe { surface.canvas() }.ok_or(BAD_ARGUMENT)?;
+                    return drawing.paint(&mut canvas);
+                }
                 let call = unsafe { request::<IconCall>(pointer, size) }?;
                 #[cfg(not(target_arch = "riscv64"))]
                 {

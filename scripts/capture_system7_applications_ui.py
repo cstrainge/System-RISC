@@ -6,6 +6,10 @@ tests own acceptance decisions. It never changes the visible desktop VM.
 """
 import argparse
 import json
+import os
+import shutil
+import struct
+import subprocess
 from pathlib import Path
 import time
 
@@ -93,13 +97,73 @@ def open_textedit(endpoint, serial):
     return driver
 
 
-def capture(output):
+def icon_disk(output):
+    """Same executable, but non-128 icon IDs prove bundle-based lookup."""
+    private = output / 'dist'
+    private.mkdir()
+    raw = private / 'icons.raw'
+    subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
+                    str(vm.DIST / 'system7.qcow2'), str(raw)], check=True)
+    binary = bytearray((vm.DIST / 'QuickDraw Test.bin').read_bytes())
+    data_length, fork_length = struct.unpack_from('>II', binary, 83)
+    fork = 128 + (data_length + 127) // 128 * 128
+    data, resource_map = struct.unpack_from('>II', binary, fork)
+    types = resource_map + struct.unpack_from('>H', binary, fork + resource_map + 24)[0]
+    for index in range(struct.unpack_from('>H', binary, fork + types)[0] + 1):
+        kind, last, refs = struct.unpack_from('>4sHH', binary, fork + types + 2 + index * 8)
+        for entry in range(last + 1):
+            reference = fork + types + refs + entry * 12
+            resource_id = struct.unpack_from('>h', binary, reference)[0]
+            if kind == b'ICN#' and resource_id == 128:
+                struct.pack_into('>h', binary, reference, 9433)
+            if kind == b'BNDL' and resource_id == 128:
+                offset = int.from_bytes(binary[reference + 5:reference + 8], 'big')
+                payload = fork + data + offset + 4
+                # Fixture metadata is pinned by the canonical Rust assertions.
+                binary[payload + 16:payload + 18] = struct.pack('>h', 9433)
+    package = private / 'QuickDraw Test.bin'
+    package.write_bytes(binary)
+    # Retain the small map/metadata fork identity, not another executable copy.
+    (output / 'icon-fixture.json').write_text(json.dumps({
+        'application': 'QuickDraw Test', 'icon_id': 9433,
+        'package_sha256': packaging.sha(package), 'resource_length': fork_length}, indent=2) + '\n')
+    state = private / 'hfs-state'
+    state.mkdir()
+    env = dict(os.environ, HOME=str(state))
+    tools = vm.ROOT / '.toolchains/hfsutils/rootfs/usr/bin'
+    def hfs(name, *args):
+        subprocess.run([str(tools / name), *map(str, args)], env=env,
+                       check=True, capture_output=True)
+    hfs('hmount', raw)
+    try:
+        hfs('hdel', ':Applications:QuickDraw Test')
+        hfs('hcopy', '-m', package, ':Applications:')
+    finally:
+        hfs('humount')
+    shutil.copyfile(vm.DIST / 'bootrom.bin', private / 'bootrom.bin')
+    subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
+                    str(private / 'system7.qcow2')], check=True)
+    return private
+
+
+def capture(output, remap_icon=False, windows=False):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     before = {name: packaging.sha(original / name)
               for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
-    process, endpoint = vm.launch(output / 'vm', writable=True)
+    private = output / 'dist'
+    try:
+        if remap_icon:
+            vm.DIST = icon_disk(output)
+        options = {'frontend': 'native-headless', 'qmp_port': 4457} if windows else {}
+        process, endpoint = vm.launch(output / 'vm', writable=True, **options)
+    except BaseException:
+        if private.exists():
+            shutil.rmtree(private)
+        raise
+    finally:
+        vm.DIST = original
     driver = Driver(endpoint, output / 'vm/serial.log')
     snapshots = []
 
@@ -128,10 +192,15 @@ def capture(output):
         driver.button(True)
         frame('finder-only-menu')
         driver.button(False)
+        clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
         driver.click(40, 95, double=True)
         driver.wait('window=2 name=Applications')
+        # Folder-open is logged before the second click's redraw completes.
+        driver.wait('FINDER_CLICK_HANDLED\n', clicks + 1)
         frame('applications-folder')
+        clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
         driver.click(56, 106)
+        driver.wait('FINDER_CLICK_HANDLED\n', clicks)
         driver.menu(52, 44, popup_x=80)  # Actual Finder File > Open resource item.
         driver.wait('QUICKDRAW_TEST_READY\n')
         frame('quickdraw-launched')
@@ -230,6 +299,10 @@ def capture(output):
                 vm.qmp('quit', endpoint=endpoint)
         finally:
             process.wait(timeout=10)
+            for path in [output / 'vm/system7.qcow2', output / 'vm/bootrom.bin']:
+                path.unlink(missing_ok=True)
+            if private.exists():
+                shutil.rmtree(private)
     report = {'transport': 'actual Finder and separately packaged applications; physical QMP input',
               'assertion_owner': 'mac-toolbox/tests/application_ui.rs',
               'snapshots': snapshots, 'owned_vm_exited': process.poll() is not None,
@@ -243,4 +316,7 @@ def capture(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True)
-    capture(parser.parse_args().output)
+    parser.add_argument('--remap-icon', action='store_true')
+    parser.add_argument('--windows-headless', action='store_true')
+    args = parser.parse_args()
+    capture(args.output, args.remap_icon, args.windows_headless)
