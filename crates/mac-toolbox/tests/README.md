@@ -6,6 +6,13 @@ SDK facade. They do not call resident algorithms or private managers. The single
 `mac_system::testing` then dispatches to the real resident native services.
 There are no canned manager results in that harness.
 
+Cursor coverage is in `cursors.rs`, `textedit_cursors.rs` and the ignored
+`cursor_graphical.rs` guest test. These check all original System/Finder CURS
+and acur records, synthetic indexed color formats, visibility, failure
+preservation and actual automatic TextEdit hover. The graphical test launches
+the installed Cursor Test app through Finder and compares exact original cursor
+sprites and timed frames. See [cursor services](../../../docs/CURSORS.md).
+
 The host harness is enabled only by mac-toolbox's host dev-dependency using
 mac-system's `test-support` feature. Its TLS session owns a fresh real Memory
 Manager, cleans it up even on unwind, and exposes no manager reference to a test.

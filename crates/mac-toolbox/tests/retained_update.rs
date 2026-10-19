@@ -2,6 +2,43 @@
 #![cfg(not(target_arch = "riscv64"))]
 use std::{fs, path::PathBuf, process::Command};
 
+fn cursor_on_white(frame: &[u8], point: [usize; 2], cursor: &[u8], stage: &str)
+{
+    assert_eq!(cursor.len(), 68);
+    let word = |at| u16::from_be_bytes([cursor[at], cursor[at + 1]]);
+    let hotspot = [word(66) as isize, word(64) as isize];
+    let header = b"P6\n640 480\n255\n";
+    assert!(frame.starts_with(header));
+    assert_eq!(frame.len(), header.len() + 640 * 480 * 3);
+    for y in point[1] - 16..point[1] + 16
+    {
+        for x in point[0] - 16..point[0] + 16
+        {
+            let column = x as isize - point[0] as isize + hotspot[0];
+            let row = y as isize - point[1] as isize + hotspot[1];
+            let mut expected = [255; 3];
+            if (0..16).contains(&column) && (0..16).contains(&row)
+            {
+                let bit = 0x8000 >> column;
+                let image = word(row as usize * 2) & bit != 0;
+                let mask = word(32 + row as usize * 2) & bit != 0;
+                if mask
+                {
+                    expected.fill(if image { 0 } else { 255 });
+                }
+                else if image
+                {
+                    expected.fill(0);
+                }
+            }
+            let offset = header.len() + (y * 640 + x) * 3;
+            assert_eq!(&frame[offset..offset + 3],
+                       expected,
+                       "{stage}: incorrect committed cursor at ({x},{y}), hover {point:?}");
+        }
+    }
+}
+
 #[test]
 #[ignore = "requires fresh cargo xtask image and QEMU"]
 fn staged_window_drawing_stays_private_until_end_update()
@@ -25,15 +62,45 @@ fn staged_window_drawing_stays_private_until_end_update()
     assert_eq!(report["owned_vm_exited"], true);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert!(!serial.contains("RETAINED_UPDATE_FAIL"), "{serial}");
-    assert!(serial.contains("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=17\n"),
+    assert!(serial.contains("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=21\n"),
             "{serial}");
     let stages = report["stages"].as_array().unwrap();
-    assert_eq!(stages.len(), 17);
+    assert_eq!(stages.len(), 21);
     let header = b"P6\n640 480\n255\n";
     let mut checked = 0;
+    let mut cursor_pixels = 0;
     for stage in stages
     {
         let name = stage["stage"].as_str().unwrap();
+        if name.starts_with("cursor-")
+        {
+            let cursor_frames = stage["cursor_frames"].as_array().unwrap();
+            assert_eq!(cursor_frames.len(), 2);
+            for (index, expected_point) in [[380, 400], [550, 400]].into_iter().enumerate()
+            {
+                let entry = &cursor_frames[index];
+                assert_eq!(entry["point"], serde_json::json!(expected_point));
+                let ibeam = match name
+                {
+                    "cursor-left" | "cursor-pending-right" => index == 0,
+                    "cursor-right" => index == 1,
+                    "cursor-omitted" => false,
+                    _ => panic!("unexpected cursor checkpoint {name}")
+                };
+                let cursor: &[u8] = if ibeam
+                {
+                    include_bytes!("../../../system/assets/visual/43555253-1.bin")
+                }
+                else
+                {
+                    include_bytes!("../../../system/assets/cursors/arrow.curs")
+                };
+                let frame = fs::read(output.join(entry["frame"].as_str().unwrap())).unwrap();
+                cursor_on_white(&frame, expected_point, cursor, name);
+                cursor_pixels += 32 * 32;
+            }
+            continue;
+        }
         let frame = fs::read(output.join(stage["frame"].as_str().unwrap())).unwrap();
         assert!(frame.starts_with(header));
         assert_eq!(frame.len(), header.len() + 640 * 480 * 3);
@@ -112,8 +179,11 @@ fn staged_window_drawing_stays_private_until_end_update()
             }
         }
     }
-    let acceptance = serde_json::json!({"status":"passed","stages":17,"native_app_threads":2,
+    assert_eq!(cursor_pixels, 8 * 32 * 32);
+    let acceptance = serde_json::json!({"status":"passed","stages":21,"native_app_threads":2,
         "pixels":checked,"pending_frames_retain_last_commit":true,
+        "cursor_binding_pixels":cursor_pixels,"cursor_bindings_commit_atomically":true,
+        "omitted_editor_removes_cursor_binding":true,
         "end_update_publishes_complete_scene":true,
         "pattern_phase_append_and_exposure":true,
         "desktop_commit_pending_cancel_and_exposure":true,"capture":report});

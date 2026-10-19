@@ -214,6 +214,18 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
             }
             CURSOR =>
             {
+                if size == core::mem::size_of::<CursorResourceCall>()
+                {
+                    let call = unsafe { request::<CursorResourceCall>(pointer, size) }?;
+                    #[cfg(target_arch = "riscv64")]
+                    return crate::kernel::with_desktop(|d| d.cursor_resource(call))
+                        .unwrap_or_else(|error| Err(error.status()));
+                    #[cfg(not(target_arch = "riscv64"))]
+                    {
+                        let _ = call;
+                        return Err(NOT_SUPPORTED);
+                    }
+                }
                 let call = unsafe { request::<CursorCall>(pointer, size) }?;
                 let colors = unsafe { input(call.colors, call.color_count, 256) }?;
                 #[cfg(target_arch="riscv64")]

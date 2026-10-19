@@ -10,8 +10,9 @@ the implementation of Toolbox services remains in System.
 | --- | --- | --- |
 | QuickDraw Test | `quickdraw-test` / `QuickDrawTest` | `0x83000000..0x84000000` |
 | TextEdit Exerciser | `textedit-exerciser` / `TextEditExerciser` | `0x84000000..0x85000000` |
+| Cursor Test | `cursor-test` / `CursorTest` | `0x85000000..0x86000000` |
 
-Open `Applications` in Finder and double-click either application, or select it
+Open `Applications` in Finder and double-click an application, or select it
 and use File > Open. The menu at the right edge of the menu bar switches running
 apps and provides Hide, Hide Others and Show All. Every app, including Finder,
 runs on its own timer-scheduled OS thread.
@@ -25,13 +26,19 @@ QuickDraw Test includes ten pages for shapes, transfer modes, regions, bitmaps,
 fonts, offscreen worlds, PICTs, icons, resources and PNGs. Use its Tests menu,
 number keys or tabs to change pages. TextEdit Exerciser retains the native
 editor's selection, caret, clipboard, resize and keyboard navigation behavior.
-Both applications return from their entry point on File > Quit, Ctrl-Q or closing
+These applications return from their entry point on File > Quit, Ctrl-Q or closing
 their only window; System owns thread termination and remaining object cleanup.
 
 The QuickDraw test content and text sample are intentionally demonstration
 data. User-facing window names, menu commands, tab labels and editor text come
 from each application's resources. These are test applications, not a document
 editor or a claim of original 68k application compatibility.
+
+Cursor Test provides labeled hover areas for Arrow, I-beam, Crosshair, Plus,
+Watch, animated watch, and the original ring and RAM-disk cursor resources.
+Its editable text box exercises automatic I-beam switching and typing obscures
+the pointer until it moves. The Cursor menu has Hide, Show, Obscure, Reset,
+Next Frame and Toggle Read Only commands (Ctrl-H/S/O/R/N/L).
 
 New launchers use the public Toolbox facade:
 

@@ -21,14 +21,33 @@ impl super::Desktop
         let fonts = crate::kernel::fonts().unwrap_or(&fallback);
         if matches!(call.operation, COPY | CUT | PASTE)
         {
-            return crate::kernel::with_scrap(|scrap| {
-                       crate::toolbox::textedit::clipboard::request(&mut self.textedit, scrap,
-                                                                    call, input, output, fonts)
-                   }).unwrap_or_else(|error| error.status());
+            let status = crate::kernel::with_scrap(|scrap| {
+                             crate::toolbox::textedit::clipboard::request(&mut self.textedit,
+                                                                          scrap, call, input,
+                                                                          output, fonts)
+                         }).unwrap_or_else(|error| error.status());
+            if status == OK
+               && matches!(call.operation, CUT | PASTE)
+               && self.owner == self.foreground
+            {
+                self.redraw |= self.cursors.obscure(self.events.mouse);
+            }
+            return status;
         }
         if call.operation != DRAW
         {
-            return self.textedit.request_with_fonts(call, input, output, fonts);
+            let status = self.textedit.request_with_fonts(call, input, output, fonts);
+            if status == OK && matches!(call.operation, SET_CURSOR_ENABLED | DISPOSE)
+            {
+                self.redraw = true;
+            }
+            if status == OK
+               && matches!(call.operation, KEY | NAVIGATE)
+               && self.owner == self.foreground
+            {
+                self.redraw |= self.cursors.obscure(self.events.mouse);
+            }
+            return status;
         }
         self.draw_textedit(call).map_or_else(|status| status, |()| OK)
     }
@@ -133,6 +152,8 @@ impl super::Desktop
         content.commands.try_reserve(commands.len()).map_err(|_| NO_MEMORY)?;
         content.commands.extend(commands);
         self.content_changed(call.window.0);
+        let staged = self.pending_content.iter().any(|content| content.id == call.window);
+        self.textedit.bind_cursor(call.id, call.window, port, staged)?;
         call.info = info;
         Ok(())
     }

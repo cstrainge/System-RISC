@@ -117,14 +117,14 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
         serde_json::from_slice(&fs::read(output.join("icon-fixture.json")).unwrap()).unwrap();
     assert_eq!(fixture["icon_id"], 9433, "non-128 loaded-image icon fixture");
     let applications = image("applications-folder");
-    for (package, left) in [("QuickDraw Test", 40), ("TextEdit Exerciser", 168)]
+    for (package, left) in [("QuickDraw Test", 168), ("TextEdit Exerciser", 296)]
     {
         assert_eq!(region(&applications, left, 90, left + 32, 122),
                    icon(&root, package, 128, 32),
                    "Finder did not draw {package}'s own icon before launch");
     }
     let running = image("running-file-icons");
-    assert_eq!(region(&running, 40, 90, 72, 122),
+    assert_eq!(region(&running, 168, 90, 200, 122),
                icon_flags(&root,
                           "QuickDraw Test",
                           128,
@@ -132,11 +132,11 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
                           mac_toolbox::quickdraw::icons::IconFlags { open: true,
                                                                      ..Default::default() }),
                "running application's icon did not use the open transform");
-    assert_eq!(region(&running, 296, 90, 328, 122),
+    assert_eq!(region(&running, 360, 90, 392, 122),
                icon(&root, "QuickDraw Test", 128, 32),
                "unlaunched copy inherited the running application's mark");
     let closed = image("closed-file-icons");
-    assert_eq!(region(&closed, 40, 90, 72, 122),
+    assert_eq!(region(&closed, 168, 90, 200, 122),
                icon(&root, "QuickDraw Test", 128, 32),
                "exiting application retained its running icon");
     let popup = image("three-app-menu");

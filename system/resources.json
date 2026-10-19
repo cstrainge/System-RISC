@@ -8378,6 +8378,16 @@
         "format": "file",
         "path": "assets/drivers/virtio-harddisk.icn"
       }
+    },
+    {
+      "type": "acur",
+      "id": -6078,
+      "symbol": "ORIGINAL_VISUAL_61637572_N6078",
+      "attributes": 84,
+      "payload": {
+        "format": "file",
+        "path": "assets/visual/61637572--6078.bin"
+      }
     }
   ]
 }

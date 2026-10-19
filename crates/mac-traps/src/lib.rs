@@ -628,6 +628,13 @@ impl Client<'_>
 }
 impl Client<'_>
 {
+    pub fn cursor_resource(self, mut call: quickdraw::CursorResourceCall)
+                           -> Result<quickdraw::CursorSnapshot>
+    {
+        status(self.invoke(CURSOR, &mut call))?;
+        Ok(call.snapshot)
+    }
+
     pub fn cursor(self, operation: u32, cursor: quickdraw::MonoCursor, bounds: Rect,
                   offset: Point, colors: &[u32])
                   -> Result<i32>

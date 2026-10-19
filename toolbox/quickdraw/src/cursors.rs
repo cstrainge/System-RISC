@@ -1,18 +1,103 @@
 //! Cursor visibility and image changes are resident services.
-pub use mac_abi::quickdraw::MonoCursor;
+pub use mac_abi::quickdraw::{CURSOR_ANIMATED, CURSOR_AUTOMATIC, CURSOR_COLOR,
+                             CURSOR_DEFERRED_HIDE, CURSOR_OBSCURED, CURSOR_VISIBLE,
+                             CursorSnapshot, MonoCursor};
+use mac_abi::resources::{APPLICATION, CHAIN, SYSTEM};
+
+/// Original System cursor resources. Arrow restores automatic editor cursor selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum StandardCursor
+{
+    Arrow     = 0,
+    IBeam     = 1,
+    Crosshair = 2,
+    Plus      = 3,
+    Watch     = 4
+}
 use mac_abi::quickdraw::*;
 
 use crate::{Client, Point, Rect, Result};
 #[derive(Clone, Copy)]
 pub struct Cursors<'a>
 {
-    client: Client<'a>
+    client: Client<'a>,
+    scope:  i16
 }
 impl<'a> Cursors<'a>
 {
     pub const fn new(client: Client<'a>) -> Self
     {
-        Self { client }
+        Self { client,
+               scope: CHAIN }
+    }
+
+    pub const fn system(self) -> Self
+    {
+        Self { scope: SYSTEM,
+               ..self }
+    }
+
+    pub const fn application(self) -> Self
+    {
+        Self { scope: APPLICATION,
+               ..self }
+    }
+
+    pub const fn search_chain(self) -> Self
+    {
+        Self { scope: CHAIN,
+               ..self }
+    }
+
+    pub fn set_standard(self, cursor: StandardCursor) -> Result<()>
+    {
+        self.client
+            .cursor_resource(CursorResourceCall { operation: CURSOR_RESOURCE_BUILTIN,
+                                                  builtin: cursor as u32,
+                                                  ..Default::default() })
+            .map(|_| ())
+    }
+
+    /// Select an original 68-byte CURS resource from the selected resource scope.
+    pub fn set_resource(self, id: i16) -> Result<()>
+    {
+        self.resource(CURSOR_RESOURCE_SET, id, 0).map(|_| ())
+    }
+
+    /// Select an indexed monochrome/color crsr resource.
+    pub fn set_color_resource(self, id: i16) -> Result<()>
+    {
+        self.resource(CURSOR_RESOURCE_COLOR, id, 0).map(|_| ())
+    }
+
+    /// Load an acur resource atomically and display its first frame. An interval of
+    /// zero advances only when advance_animation is called; other intervals use 60 Hz ticks.
+    /// The selected scope locates the acur resource; its frames resolve there and then
+    /// in System resources. Color crsr frames take precedence over monochrome CURS frames.
+    pub fn animate_resource(self, id: i16, interval_ticks: u32) -> Result<()>
+    {
+        self.resource(CURSOR_RESOURCE_ANIMATE, id, interval_ticks).map(|_| ())
+    }
+
+    pub fn advance_animation(self) -> Result<()>
+    {
+        self.resource(CURSOR_RESOURCE_ADVANCE, 0, 0).map(|_| ())
+    }
+
+    /// Inspect the selected image, visibility nesting, and animation state without redrawing.
+    pub fn info(self) -> Result<CursorSnapshot>
+    {
+        self.resource(CURSOR_RESOURCE_STATE, 0, 0)
+    }
+
+    fn resource(self, operation: u32, id: i16, interval: u32) -> Result<CursorSnapshot>
+    {
+        self.client.cursor_resource(CursorResourceCall { operation,
+                                                         scope: self.scope,
+                                                         id,
+                                                         interval,
+                                                         ..Default::default() })
     }
 
     pub fn set(self, cursor: MonoCursor) -> Result<()>
@@ -74,6 +159,10 @@ impl<'a> Cursors<'a>
         }
         c.hotspot = Point { v: i16::from_be_bytes([bytes[64], bytes[65]]),
                             h: i16::from_be_bytes([bytes[66], bytes[67]]) };
+        if !(0..16).contains(&c.hotspot.h) || !(0..16).contains(&c.hotspot.v)
+        {
+            return None;
+        }
         Some(c)
     }
 }

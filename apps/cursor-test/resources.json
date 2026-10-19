@@ -1,0 +1,159 @@
+{
+  "name": "Cursor Test",
+  "binary_name": "CursorTest",
+  "file_type": "APPL",
+  "creator": "CURT",
+  "role": "application",
+  "abi_version": 6,
+  "load_base": "0x85000000",
+  "load_limit": "0x86000000",
+  "description": "System RISC Cursor Test",
+  "resources": [
+    {
+      "type": "MENU",
+      "id": 128,
+      "symbol": "FILE_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "File",
+        "items": [
+          {
+            "text": "Close Window",
+            "command": "clos",
+            "enabled": true,
+            "key": "W"
+          },
+          "-",
+          {
+            "text": "Quit",
+            "command": "quit",
+            "enabled": true,
+            "key": "Q"
+          }
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 129,
+      "symbol": "CURSOR_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "Cursor",
+        "items": [
+          {
+            "text": "Hide",
+            "command": "hide",
+            "enabled": true,
+            "key": "H"
+          },
+          {
+            "text": "Show",
+            "command": "show",
+            "enabled": true,
+            "key": "S"
+          },
+          {
+            "text": "Obscure",
+            "command": "obsc",
+            "enabled": true,
+            "key": "O"
+          },
+          {
+            "text": "Reset",
+            "command": "rset",
+            "enabled": true,
+            "key": "R"
+          },
+          {
+            "text": "Next Frame",
+            "command": "next",
+            "enabled": true,
+            "key": "N"
+          },
+          {
+            "text": "Toggle Read Only",
+            "command": "edit",
+            "enabled": true,
+            "key": "L"
+          }
+        ]
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 128,
+      "symbol": "PRODUCT_NAME",
+      "payload": {
+        "format": "pstring",
+        "text": "Cursor Test"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 128,
+      "symbol": "APPLICATION_ICON",
+      "payload": {
+        "format": "file",
+        "path": "assets/application.icn"
+      }
+    },
+    {
+      "type": "BNDL",
+      "id": 128,
+      "symbol": "APPLICATION_BUNDLE",
+      "payload": {
+        "format": "hex",
+        "hex": "435552540000000149434e2300000000008046524546000000000080"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 128,
+      "symbol": "APPLICATION_REFERENCE",
+      "payload": {
+        "format": "hex",
+        "hex": "4150504c000000"
+      }
+    },
+    {
+      "type": "SIZE",
+      "id": -1,
+      "symbol": "MEMORY_REQUIREMENTS",
+      "payload": {
+        "format": "hex",
+        "hex": "00000010000000040000"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 2000,
+      "symbol": "UI_TEXT",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Move the pointer over an area to test its cursor.",
+          "Arrow",
+          "I-beam",
+          "Crosshair",
+          "Plus",
+          "Watch",
+          "Animated watch",
+          "Ring resource",
+          "RAM disk resource",
+          "Automatic TextEdit cursor: click here and type.",
+          "Type to obscure the pointer; move to restore it."
+        ]
+      }
+    },
+    {
+      "type": "WIND",
+      "id": 2003,
+      "symbol": "WINDOW_LAYOUT",
+      "payload": {
+        "format": "hex",
+        "hex": "0046003c01b80258000801000100000000000000"
+      }
+    }
+  ]
+}

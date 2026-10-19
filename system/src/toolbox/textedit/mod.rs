@@ -4,6 +4,8 @@
 use alloc::vec::Vec;
 
 use mac_abi::{textedit::*, *};
+
+use crate::toolbox::quickdraw::service::Port;
 mod layout;
 mod model;
 pub mod clipboard;
@@ -12,8 +14,17 @@ pub use model::Editor;
 pub mod native;
 struct Slot
 {
-    generation: u16,
-    editor:     Option<Editor>
+    generation:     u16,
+    editor:         Option<Editor>,
+    cursor_enabled: bool,
+    cursor:         Option<CursorBinding>,
+    pending_cursor: Option<CursorBinding>
+}
+struct CursorBinding
+{
+    window: WindowId,
+    view:   Rect,
+    port:   Port
 }
 #[derive(Default)]
 pub struct Manager
@@ -27,6 +38,107 @@ pub struct PreparedEdit
 }
 impl Manager
 {
+    /// Register a successful draw's geometry and clip. Staged registrations stay
+    /// private alongside retained drawing until their window's EndUpdate.
+    pub fn bind_cursor(&mut self, id: EditorId, window: WindowId, port: Port, staged: bool)
+                       -> Result<(), Status>
+    {
+        let view = self.inspect(id).ok_or(NOT_FOUND)?.info().view;
+        let slot = &mut self.slots[(id.0 & 0xffff) as usize - 1];
+        let binding = Some(CursorBinding { window,
+                                           view,
+                                           port });
+        if staged
+        {
+            slot.pending_cursor = binding;
+        }
+        else
+        {
+            slot.cursor = binding;
+        }
+        Ok(())
+    }
+
+    /// Begin a replacement scene without disturbing its committed hover regions.
+    pub fn begin_cursor_update(&mut self, window: WindowId)
+    {
+        for slot in &mut self.slots
+        {
+            if slot.pending_cursor.as_ref().is_some_and(|binding| binding.window == window)
+            {
+                slot.pending_cursor = None;
+            }
+        }
+    }
+
+    /// Publish exactly the editors drawn in a successfully committed scene.
+    pub fn commit_cursor_update(&mut self, window: WindowId)
+    {
+        for slot in &mut self.slots
+        {
+            if slot.cursor.as_ref().is_some_and(|binding| binding.window == window)
+            {
+                slot.cursor = None;
+            }
+            if slot.pending_cursor.as_ref().is_some_and(|binding| binding.window == window)
+            {
+                slot.cursor = slot.pending_cursor.take();
+            }
+        }
+    }
+
+    /// Window disposal discards both visible registrations and abandoned draws.
+    pub fn forget_cursor_window(&mut self, window: WindowId)
+    {
+        self.begin_cursor_update(window);
+        for slot in &mut self.slots
+        {
+            if slot.cursor.as_ref().is_some_and(|binding| binding.window == window)
+            {
+                slot.cursor = None;
+            }
+        }
+    }
+
+    /// The caller first resolves topmost visible content and its owning app.
+    /// `local` is in that window's coordinate system, before its port origin.
+    pub fn cursor_hit(&self, window: WindowId, local: Point) -> bool
+    {
+        self.slots.iter().any(|slot| {
+                             if slot.editor.is_none() || !slot.cursor_enabled
+                             {
+                                 return false;
+                             }
+                             let Some(binding) = &slot.cursor
+                             else
+                             {
+                                 return false;
+                             };
+                             if binding.window != window
+                             {
+                                 return false;
+                             }
+                             let Some(h) = local.h.checked_sub(binding.port.origin.h)
+                             else
+                             {
+                                 return false;
+                             };
+                             let Some(v) = local.v.checked_sub(binding.port.origin.v)
+                             else
+                             {
+                                 return false;
+                             };
+                             let point = Point { h,
+                                                 v };
+                             binding.view.contains(point)
+                             && binding.port
+                                       .state
+                                       .clip
+                                       .as_ref()
+                                       .is_none_or(|clip| clip.contains(point))
+                         })
+    }
+
     pub fn font_request(&mut self, call: &mut TextEditFontCall,
                         fonts: &crate::toolbox::quickdraw::fonts::FontManager)
                         -> Status
@@ -144,14 +256,20 @@ impl Manager
                     return Err(NO_MEMORY);
                 }
                 self.slots.try_reserve(1).map_err(|_| NO_MEMORY)?;
-                self.slots.push(Slot { generation: 0,
-                                       editor:     None });
+                self.slots.push(Slot { generation:     0,
+                                       editor:         None,
+                                       cursor_enabled: true,
+                                       cursor:         None,
+                                       pending_cursor: None });
                 self.slots.len() - 1
             };
             let slot = &mut self.slots[index];
             slot.generation += 1;
             call.id = EditorId((u32::from(slot.generation) << 16) | (index + 1) as u32);
             slot.editor = Some(editor);
+            slot.cursor_enabled = true;
+            slot.cursor = None;
+            slot.pending_cursor = None;
         }
         if call.operation == DISPOSE
         {
@@ -159,7 +277,21 @@ impl Manager
             {
                 return Err(NOT_FOUND);
             }
-            self.slots[(call.id.0 & 0xffff) as usize - 1].editor = None;
+            let slot = &mut self.slots[(call.id.0 & 0xffff) as usize - 1];
+            slot.editor = None;
+            slot.cursor = None;
+            slot.pending_cursor = None;
+            return Ok(());
+        }
+        if call.operation == SET_CURSOR_ENABLED
+        {
+            let info = self.inspect(call.id).ok_or(NOT_FOUND)?.info();
+            if call.index > 1
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            self.slots[(call.id.0 & 0xffff) as usize - 1].cursor_enabled = call.index != 0;
+            call.info = info;
             return Ok(());
         }
         let editor = self.inspect_mut(call.id).ok_or(NOT_FOUND)?;

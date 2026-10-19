@@ -255,7 +255,7 @@ pub struct WorldCall
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MonoCursor
 {
     pub image:   [u16; 16],
@@ -280,6 +280,46 @@ pub struct CursorCall
     pub colors:      *const u32,
     pub color_count: usize,
     pub visibility:  i32
+}
+
+/// Additive, size-distinct cursor resource interface. Legacy CursorCall remains stable.
+pub const CURSOR_RESOURCE_SET: u32 = 0;
+pub const CURSOR_RESOURCE_COLOR: u32 = 1;
+pub const CURSOR_RESOURCE_ANIMATE: u32 = 2;
+pub const CURSOR_RESOURCE_ADVANCE: u32 = 3;
+pub const CURSOR_RESOURCE_STATE: u32 = 4;
+pub const CURSOR_RESOURCE_BUILTIN: u32 = 5;
+pub const CURSOR_AUTOMATIC: u32 = 1;
+pub const CURSOR_OBSCURED: u32 = 2;
+pub const CURSOR_VISIBLE: u32 = 4;
+pub const CURSOR_ANIMATED: u32 = 8;
+pub const CURSOR_DEFERRED_HIDE: u32 = 16;
+pub const CURSOR_COLOR: u32 = 32;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CursorSnapshot
+{
+    pub cursor:      MonoCursor,
+    pub visibility:  i32,
+    pub flags:       u32,
+    pub frame_index: u32,
+    pub frame_count: u32,
+    /// Zero selects explicitly advanced animation. Other values are 60 Hz ticks.
+    pub interval:    u32,
+    pub resource_id: i16,
+    pub scope:       i16
+}
+#[repr(C)]
+#[derive(Default)]
+pub struct CursorResourceCall
+{
+    pub operation: u32,
+    pub scope:     i16,
+    pub id:        i16,
+    pub interval:  u32,
+    /// Arrow=0, I-beam=1, crosshair=2, plus=3, watch=4.
+    pub builtin:   u32,
+    pub snapshot:  CursorSnapshot
 }
 
 pub const MAP_POINT: u32 = 0;

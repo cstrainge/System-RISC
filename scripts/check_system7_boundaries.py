@@ -38,7 +38,7 @@ def main():
     assert not any(dep.startswith('toolbox-') for dep in normal_dependencies(by_name['mac-system'])), \
         'System must implement managers internally, without depending on public client bindings'
 
-    for name in ['mac-finder', 'quickdraw-test', 'textedit-exerciser']:
+    for name in ['mac-finder', 'quickdraw-test', 'textedit-exerciser', 'cursor-test']:
         direct = sorted(packages[dep['pkg']]['name'] for dep in nodes[by_name[name]]['deps']
                         if any(kind['kind'] is None for kind in dep['dep_kinds']))
         assert direct == ['mac-toolbox'], (name, 'runtime must use only the aggregate Toolbox', direct)
@@ -47,7 +47,7 @@ def main():
              for name in ['chicago-12.font', 'geneva-9.font']]
     reports = []
     release = ROOT / 'build/system7/target' / TARGET / 'release'
-    for package, binary in [('mac-finder', 'Finder'), ('quickdraw-test', 'QuickDrawTest'), ('textedit-exerciser', 'TextEditExerciser'), ('native-wdef', 'WDEF'), ('native-cdef', 'CDEF'), ('native-scrollbar-cdef', 'SCROLLBAR'), ('native-mdef', 'MDEF')]:
+    for package, binary in [('mac-finder', 'Finder'), ('quickdraw-test', 'QuickDrawTest'), ('textedit-exerciser', 'TextEditExerciser'), ('cursor-test', 'CursorTest'), ('native-wdef', 'WDEF'), ('native-cdef', 'CDEF'), ('native-scrollbar-cdef', 'SCROLLBAR'), ('native-mdef', 'MDEF')]:
         dependencies = normal_dependencies(by_name[package])
         assert 'mac-system' not in dependencies, (package, 'links resident implementation')
         assert 'linked_list_allocator' not in dependencies, (package, 'links resident heap')

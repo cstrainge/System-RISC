@@ -734,6 +734,11 @@ impl WindowManager
         self.start_tracking_with_modifiers(hit, point, 0);
     }
 
+    pub fn is_tracking(&self) -> bool
+    {
+        self.tracking.is_some()
+    }
+
     /// Native desktop tracking policy. Command-drag leaves activation and z order
     /// unchanged; an ordinary background drag activates only after acceptance.
     pub fn start_tracking_with_modifiers(&mut self, hit: Hit, point: Point, modifiers: u16)

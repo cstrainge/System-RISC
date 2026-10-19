@@ -279,6 +279,7 @@ impl Info
     {
         for (focus, id) in [(Focus::Name, self.name), (Focus::Comments, self.comments)]
         {
+            system.textedit().set_cursor_enabled(id, self.editable(focus)).map_err(error)?;
             system.textedit()
                   .activate(id, self.active && self.focus == focus && self.editable(focus))
                   .map_err(error)?;

@@ -239,6 +239,20 @@ impl<'a> TextEdit<'a>
                .info)
     }
 
+    /// Enable the automatic I-beam over this editor's most recently drawn view.
+    /// Editors default to enabled; read-only fields can disable it independently
+    /// of keyboard activation or selection visibility.
+    pub fn set_cursor_enabled(self, id: EditorId, enabled: bool) -> Result<EditorInfo>
+    {
+        Ok(self.request(TextEditCall { id,
+                                       operation: SET_CURSOR_ENABLED,
+                                       index: u32::from(enabled),
+                                       ..Default::default() },
+                        "",
+                        &mut [])?
+               .info)
+    }
+
     pub fn idle(self, id: EditorId, ticks: u32) -> Result<EditorInfo>
     {
         Ok(self.request(TextEditCall { id,

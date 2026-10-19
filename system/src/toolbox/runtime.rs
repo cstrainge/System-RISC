@@ -32,6 +32,7 @@ pub struct Desktop
     desktop:         DesktopLayer,
     menus:           super::menus::Manager,
     cursors:         super::quickdraw::cursors::Cursors,
+    text_cursor:     mac_abi::quickdraw::MonoCursor,
     worlds:          super::quickdraw::worlds::Worlds,
     classic_font:    mac_abi::quickdraw::FontSelection,
     legacy:          crate::context::LegacyGlobals,
@@ -121,11 +122,15 @@ impl Desktop
             serial!("INPUT_UNAVAILABLE devices={}", devices);
             return Err(NOT_SUPPORTED);
         }
+        let text_cursor = super::quickdraw::cursors::decode_mono(
+            &crate::kernel::resources().ok_or(NOT_SUPPORTED)?
+                .get(mac_abi::resources::SYSTEM, ResourceKey { kind: *b"CURS", id: 1 })?.1.data)?;
         serial!("VIRTIO_INPUT=READY devices={}", devices);
         Ok(Self { dialogs: Default::default(),
                   menus: super::menus::Manager::new(mdef, crate::machine::traps::gateway),
                   desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
                   cursors: Default::default(),
+                  text_cursor,
                   worlds: Default::default(),
                   classic_font: Default::default(),
                   legacy:Default::default(),
@@ -287,6 +292,7 @@ impl Desktop
                 }
                 self.content.retain(|content| content.id != id);
                 self.pending_content.retain(|content| content.id != id);
+                self.forget_cursor_window(id);
                 self.window_owners.retain(|(window, _)| *window != id);
                 self.last_action = "CLOSE";
             }
@@ -417,6 +423,7 @@ impl Desktop
                 };
                 request.bounds = damage;
                 self.pending_content.push(pending);
+                self.textedit.begin_cursor_update(id);
                 self.updates += 1;
             }
             END_UPDATE =>
@@ -432,6 +439,7 @@ impl Desktop
                     return NOT_FOUND;
                 };
                 *content = self.pending_content.swap_remove(index);
+                self.textedit.commit_cursor_update(id);
                 self.content_cache.invalidate(id.0);
                 self.windows.end_update(id);
             }
@@ -618,9 +626,53 @@ impl Desktop
     pub fn cursor(&mut self, call: &mut mac_abi::quickdraw::CursorCall, colors: &[u32])
                   -> Result<(), Status>
     {
-        self.cursors.request(call, colors, self.events.mouse)?;
-        self.redraw = true;
+        let changed = self.cursors.request(call, colors, self.events.mouse)?;
+        self.redraw |= changed && self.owner == self.foreground;
         Ok(())
+    }
+
+    pub fn cursor_resource(&mut self, call: &mut mac_abi::quickdraw::CursorResourceCall)
+                           -> Result<(), Status>
+    {
+        let resources = crate::kernel::resources().ok_or(NOT_SUPPORTED)?;
+        let changed =
+            self.cursors.resource_request(call,
+                                           self.events.mouse,
+                                           Self::when(),
+                                           |kind, id, scope| {
+                                               resources.get(scope,
+                                                             ResourceKey { kind,
+                                                                           id })
+                                                        .ok()
+                                                        .map(|(_, resource)| resource.data.clone())
+                                           })?;
+        self.redraw |= changed && self.owner == self.foreground;
+        Ok(())
+    }
+
+    /// The foreground application owns cursor policy; only an exposed editor
+    /// content region can request an automatic I-beam. WDEF hit-testing excludes
+    /// chrome and covered windows, while TextEdit accounts for its port clip.
+    fn text_cursor_at_mouse(&self) -> bool
+    {
+        if !self.cursors.is_automatic()
+           || self.menus.is_tracking()
+           || self.app_menu.is_tracking()
+           || self.windows.is_tracking()
+        {
+            return false;
+        }
+        let hit = self.windows.find_window(self.events.mouse);
+        if hit.part != WindowPart::Content
+        {
+            return false;
+        }
+        hit.window
+           .filter(|id| self.owns(*id))
+           .and_then(|id| self.windows.window(id).map(|window| (id, window)))
+           .is_some_and(|(id, window)| {
+               self.textedit.cursor_hit(id, window.global_to_local(self.events.mouse))
+           })
     }
 
     pub fn world(&mut self, call: &mut mac_abi::quickdraw::WorldCall, pixels: &mut [u32])
@@ -831,6 +883,7 @@ impl Desktop
             {
                 self.content.retain(|content| content.id != id);
                 self.pending_content.retain(|content| content.id != id);
+                self.forget_cursor_window(id);
                 self.events.post_system(Event { kind: EventKind::OsEvent,
                                                 message: 0x02000000 | id.0,
                                                 when,
@@ -861,6 +914,14 @@ impl Desktop
         };
         crate::trace::record(crate::trace::INPUT, self.owner, kind, a, b, c);
         self.events.observe_input(input, when);
+        if let Input::Move(point)
+        | Input::Button { point,
+                               .. } = input
+        {
+            // Clear obscuring at input time, even if several queued moves
+            // bring the pointer back before the next framebuffer is painted.
+            self.observe_cursor_motion(point);
+        }
         self.revision = self.revision.wrapping_add(1);
         // Key delivery does not change window pixels. Repainting here stalls
         // dispatch on an obsolete frame before the application handles the key.
@@ -1185,6 +1246,7 @@ impl Desktop
     pub fn present(&mut self)
     {
         crate::trace::record(crate::trace::PRESENT, self.owner, 0, 0, 0, 0);
+        self.tick_cursor();
         if !self.redraw && self.last_logged == self.revision
         {
             return;
@@ -1193,6 +1255,7 @@ impl Desktop
         self.enter(self.foreground);
         if self.redraw
         {
+            let text_cursor = self.text_cursor_at_mouse().then_some(self.text_cursor);
             let started = crate::trace::clock();
             let updating = self.windows.back_to_front().filter(|w| w.updating).count();
             let back = platform::back_buffer();
@@ -1244,7 +1307,7 @@ impl Desktop
             self.menus.draw(&mut canvas);
             self.app_menu.draw_bar(&mut canvas);
             self.app_menu.draw_popup(&mut canvas);
-            self.cursors.draw(&mut canvas, self.events.mouse);
+            self.cursors.draw_auto(&mut canvas, self.events.mouse, text_cursor);
             platform::present(back);
             self.redraw = false;
             crate::trace::record(crate::trace::RENDER,

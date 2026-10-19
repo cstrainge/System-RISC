@@ -10,6 +10,7 @@ from pathlib import Path
 import time
 
 import capture_system7_conformance as packaging
+from capture_system7_applications_ui import Driver
 import system7_vm as vm
 
 
@@ -23,6 +24,7 @@ def capture(output):
     vm.DIST = private
     process, endpoint = vm.launch(output / 'vm')
     serial = output / 'vm/serial.log'
+    driver = Driver(endpoint, serial)
     stages = []
 
     def wait(marker):
@@ -43,18 +45,28 @@ def capture(output):
                       'committed-pattern', 'appended-black', 'pattern-occluded',
                       'pattern-revealed', 'desktop-cyan', 'desktop-pending',
                       'desktop-cancelled', 'desktop-magenta', 'desktop-covered',
-                      'desktop-revealed']:
+                      'desktop-revealed', 'cursor-left', 'cursor-pending-right',
+                      'cursor-right', 'cursor-omitted']:
             wait('RETAINED_UPDATE_STAGE ' + stage + '\n')
             # Leave both actual app threads running across multiple timer
             # slices before capture, including event polling and presentation.
             time.sleep(.15)
-            frame = stage + '.ppm'
-            vm.qmp('screendump', {'filename': str(output / frame)}, endpoint)
-            stages.append({'stage': stage, 'frame': frame})
+            if stage.startswith('cursor-'):
+                frames = []
+                for label, point in [('left', [380, 400]), ('right', [550, 400])]:
+                    driver.move(*point)
+                    frame = stage + '-' + label + '.ppm'
+                    vm.qmp('screendump', {'filename': str(output / frame)}, endpoint)
+                    frames.append({'point': point, 'frame': frame})
+                stages.append({'stage': stage, 'cursor_frames': frames})
+            else:
+                frame = stage + '.ppm'
+                vm.qmp('screendump', {'filename': str(output / frame)}, endpoint)
+                stages.append({'stage': stage, 'frame': frame})
             vm.qmp('input-send-event', {'events': [
                 {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'spc'},
                                          'down': down}} for down in [True, False]]}, endpoint)
-        wait('RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=17\n')
+        wait('RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=21\n')
         report = {'transport': 'private blessed disk -> live System -> two native SDK app threads',
                   'assertion_owner': 'mac-toolbox/tests/retained_update{,_cases}.rs',
                   'termination': 'guest-outcome',

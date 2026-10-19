@@ -2273,6 +2273,16 @@
           "The item couldn't be saved."
         ]
       }
+    },
+    {
+      "type": "acur",
+      "id": 6500,
+      "symbol": "ORIGINAL_VISUAL_61637572_6500",
+      "attributes": 20,
+      "payload": {
+        "format": "file",
+        "path": "assets/visual/61637572-6500.bin"
+      }
     }
   ]
 }

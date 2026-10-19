@@ -1,0 +1,406 @@
+{
+  "format_version": 1,
+  "source_path_base": "Parent of the System7 repository; original media is read only.",
+  "scope": "Complete CURS/crsr/acur inventories of the pinned System and Finder forks, plus the standard arrow record from the pinned ROM. No crsr is present in either source resource map. No runtime behavior is inferred.",
+  "arrow": {
+    "asset": "system/assets/cursors/arrow.curs",
+    "length": 68,
+    "sha256": "f7861225708284b299d2bbf5bc659472df5c8708b3789c3c5c2d341d78313e7d",
+    "source": "downloads/roms/Quadra-650.ROM",
+    "source_sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca",
+    "source_file_offset": 202316,
+    "hotspot": {
+      "v": 1,
+      "h": 1
+    },
+    "note": "QuickDraw global arrow record; not an original CURS resource with ID 0."
+  },
+  "resources": [
+    {
+      "package": "Finder",
+      "type": "CURS",
+      "id": 6500,
+      "attributes": 20,
+      "asset": "finder/assets/visual/43555253-6500.bin",
+      "length": 68,
+      "sha256": "019d6951ad045f9264c0cd5b74dbd8e30224f9c0bb1ac5fd8eed2379e93a3b1c",
+      "source": "working/icon-reference/Finder.bin",
+      "source_sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f",
+      "source_resource_fork_offset": 325331,
+      "source_file_offset": 325459,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "Finder",
+      "type": "CURS",
+      "id": 6501,
+      "attributes": 20,
+      "asset": "finder/assets/visual/43555253-6501.bin",
+      "length": 68,
+      "sha256": "a9c6c10ed76abd4539549ad8b90d589df0bf03219b31a1ffa83be09a486d2917",
+      "source": "working/icon-reference/Finder.bin",
+      "source_sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f",
+      "source_resource_fork_offset": 325259,
+      "source_file_offset": 325387,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "Finder",
+      "type": "CURS",
+      "id": 6502,
+      "attributes": 20,
+      "asset": "finder/assets/visual/43555253-6502.bin",
+      "length": 68,
+      "sha256": "e635fff95d7425da9b650eb2a0796e5e9987245a6c56a5a99e0e59b0fc049425",
+      "source": "working/icon-reference/Finder.bin",
+      "source_sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f",
+      "source_resource_fork_offset": 325187,
+      "source_file_offset": 325315,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "Finder",
+      "type": "CURS",
+      "id": 6503,
+      "attributes": 20,
+      "asset": "finder/assets/visual/43555253-6503.bin",
+      "length": 68,
+      "sha256": "f1abf0d36a57781cb17eb1cab900844fc7c4167ca7c507e887a76cfc7ee1d4b4",
+      "source": "working/icon-reference/Finder.bin",
+      "source_sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f",
+      "source_resource_fork_offset": 325115,
+      "source_file_offset": 325243,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "Finder",
+      "type": "CURS",
+      "id": 6504,
+      "attributes": 20,
+      "asset": "finder/assets/visual/43555253-6504.bin",
+      "length": 68,
+      "sha256": "04439def2a3ad4a0dc0d862ad58d62beb08221d02a84c99892e2898f1d4e7538",
+      "source": "working/icon-reference/Finder.bin",
+      "source_sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f",
+      "source_resource_fork_offset": 324984,
+      "source_file_offset": 325112,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "Finder",
+      "type": "CURS",
+      "id": 6505,
+      "attributes": 20,
+      "asset": "finder/assets/visual/43555253-6505.bin",
+      "length": 68,
+      "sha256": "36cb7547da3caffc5b2fc121b1d672c9c4fb5d844b90fbb9ba30f4d28fb16299",
+      "source": "working/icon-reference/Finder.bin",
+      "source_sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f",
+      "source_resource_fork_offset": 324912,
+      "source_file_offset": 325040,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "Finder",
+      "type": "CURS",
+      "id": 6506,
+      "attributes": 20,
+      "asset": "finder/assets/visual/43555253-6506.bin",
+      "length": 68,
+      "sha256": "d3ba79885bbb4b2e6a014b5c774dfa8530dd201a5f712e78a064d64603fdc96c",
+      "source": "working/icon-reference/Finder.bin",
+      "source_sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f",
+      "source_resource_fork_offset": 324840,
+      "source_file_offset": 324968,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "Finder",
+      "type": "acur",
+      "id": 6500,
+      "attributes": 20,
+      "asset": "finder/assets/visual/61637572-6500.bin",
+      "length": 36,
+      "sha256": "54367ebd3f0195f6e0785e7bf6588e5632d5377efb5aa4108ca9508218df7912",
+      "source": "working/icon-reference/Finder.bin",
+      "source_sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f",
+      "source_resource_fork_offset": 245715,
+      "source_file_offset": 245843,
+      "frames": [
+        4,
+        6500,
+        6501,
+        6502,
+        6503,
+        6504,
+        6505,
+        6506
+      ]
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": -20161,
+      "attributes": 80,
+      "asset": "system/assets/visual/43555253--20161.bin",
+      "length": 68,
+      "sha256": "3b2307bcd5d83bfdf5dc4577fab3faeb203e708cf86f2c67753257e51bfe81ff",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 43180,
+      "source_file_offset": 337068,
+      "hotspot": {
+        "v": 0,
+        "h": 0
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": -6078,
+      "attributes": 84,
+      "asset": "system/assets/visual/43555253--6078.bin",
+      "length": 68,
+      "sha256": "019d6951ad045f9264c0cd5b74dbd8e30224f9c0bb1ac5fd8eed2379e93a3b1c",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 1809244,
+      "source_file_offset": 2103132,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": -6077,
+      "attributes": 84,
+      "asset": "system/assets/visual/43555253--6077.bin",
+      "length": 68,
+      "sha256": "a9c6c10ed76abd4539549ad8b90d589df0bf03219b31a1ffa83be09a486d2917",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 1809316,
+      "source_file_offset": 2103204,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": -6076,
+      "attributes": 84,
+      "asset": "system/assets/visual/43555253--6076.bin",
+      "length": 68,
+      "sha256": "e635fff95d7425da9b650eb2a0796e5e9987245a6c56a5a99e0e59b0fc049425",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 1809388,
+      "source_file_offset": 2103276,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": -6075,
+      "attributes": 84,
+      "asset": "system/assets/visual/43555253--6075.bin",
+      "length": 68,
+      "sha256": "f1abf0d36a57781cb17eb1cab900844fc7c4167ca7c507e887a76cfc7ee1d4b4",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 1809460,
+      "source_file_offset": 2103348,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": -6074,
+      "attributes": 84,
+      "asset": "system/assets/visual/43555253--6074.bin",
+      "length": 68,
+      "sha256": "04439def2a3ad4a0dc0d862ad58d62beb08221d02a84c99892e2898f1d4e7538",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 1809532,
+      "source_file_offset": 2103420,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": -6073,
+      "attributes": 84,
+      "asset": "system/assets/visual/43555253--6073.bin",
+      "length": 68,
+      "sha256": "36cb7547da3caffc5b2fc121b1d672c9c4fb5d844b90fbb9ba30f4d28fb16299",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 1809604,
+      "source_file_offset": 2103492,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": -6072,
+      "attributes": 84,
+      "asset": "system/assets/visual/43555253--6072.bin",
+      "length": 68,
+      "sha256": "d3ba79885bbb4b2e6a014b5c774dfa8530dd201a5f712e78a064d64603fdc96c",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 1809676,
+      "source_file_offset": 2103564,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": -5760,
+      "attributes": 0,
+      "asset": "system/assets/visual/43555253--5760.bin",
+      "length": 68,
+      "sha256": "26e31f9c81e7bdff013d6d8b838c0787824bac324abbc90d82a6f19527acacfa",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 1809172,
+      "source_file_offset": 2103060,
+      "hotspot": {
+        "v": 7,
+        "h": 8
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": 1,
+      "attributes": 64,
+      "asset": "system/assets/visual/43555253-1.bin",
+      "length": 68,
+      "sha256": "a99ec0e60771ada5a580bbddf4e57924375ccf51250d8c48831de5c0ee0f7908",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 43468,
+      "source_file_offset": 337356,
+      "hotspot": {
+        "v": 4,
+        "h": 7
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": 2,
+      "attributes": 64,
+      "asset": "system/assets/visual/43555253-2.bin",
+      "length": 68,
+      "sha256": "43587b642a37018ff30b6b3a6cc14c9b3c226facea7c4186e117607ed0ff02ec",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 43396,
+      "source_file_offset": 337284,
+      "hotspot": {
+        "v": 5,
+        "h": 5
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": 3,
+      "attributes": 64,
+      "asset": "system/assets/visual/43555253-3.bin",
+      "length": 68,
+      "sha256": "0ea7f1a945fdf23f8ef332097182c337aeab8d2780ecc26c4daef6caf11d5e98",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 43324,
+      "source_file_offset": 337212,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "System",
+      "type": "CURS",
+      "id": 4,
+      "attributes": 64,
+      "asset": "system/assets/visual/43555253-4.bin",
+      "length": 68,
+      "sha256": "3226d4d77426a9da25fbc0a74920b6242d83c6b9805ca04103c741f872c48829",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 43252,
+      "source_file_offset": 337140,
+      "hotspot": {
+        "v": 8,
+        "h": 8
+      }
+    },
+    {
+      "package": "System",
+      "type": "acur",
+      "id": -6078,
+      "attributes": 84,
+      "asset": "system/assets/visual/61637572--6078.bin",
+      "length": 36,
+      "sha256": "22a322d1afc032e328543a9056d02c17245b9d2ae30a7981206407ac3fe8c89e",
+      "source": "working/icon-reference/System.bin",
+      "source_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+      "source_resource_fork_offset": 1795277,
+      "source_file_offset": 2089165,
+      "frames": [
+        4,
+        -6078,
+        -6077,
+        -6076,
+        -6075,
+        -6074,
+        -6073,
+        -6072
+      ]
+    }
+  ]
+}

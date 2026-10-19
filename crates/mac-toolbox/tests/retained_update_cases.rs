@@ -113,7 +113,37 @@ pub fn run(system: &System<'_>) -> Result<(), i32>
     checkpoint(system, "RETAINED_UPDATE_STAGE desktop-covered\n")?;
     system.close_window(cover)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE desktop-revealed\n")?;
-    system.log("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=17\n")?;
+    // Restore the second real presenter, then commit cursor policy through the
+    // same public drawing transaction as its pixels. An inactive editor still
+    // owns an editable hover region without adding a blinking insertion point.
+    system.processes().activate(child.id).map_err(|e| e.0)?;
+    system.processes().activate(mine.id).map_err(|e| e.0)?;
+    system.select_window(window)?;
+    system.quickdraw().cursors().init().map_err(|e| e.0)?;
+    let text = system.textedit();
+    let left = Rect::new(10, 10, 100, 70);
+    let right = Rect::new(160, 10, 250, 70);
+    let editor = text.create(left, left).map_err(|e| e.0)?;
+    text.activate(editor, false).map_err(|e| e.0)?;
+    system.begin_update(window)?;
+    port.paint_rect(bounds, 0xffffff).map_err(|e| e.0)?;
+    text.draw(editor, WindowId(window)).map_err(|e| e.0)?;
+    system.end_update(window)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE cursor-left\n")?;
+
+    system.begin_update(window)?;
+    port.paint_rect(bounds, 0xffffff).map_err(|e| e.0)?;
+    text.set_rects(editor, right, right).map_err(|e| e.0)?;
+    text.draw(editor, WindowId(window)).map_err(|e| e.0)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE cursor-pending-right\n")?;
+    system.end_update(window)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE cursor-right\n")?;
+
+    system.begin_update(window)?;
+    port.paint_rect(bounds, 0xffffff).map_err(|e| e.0)?;
+    system.end_update(window)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE cursor-omitted\n")?;
+    system.log("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=21\n")?;
     // Keep the last committed scene available until the owned VM is stopped.
     loop
     {

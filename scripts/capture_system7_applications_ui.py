@@ -92,7 +92,7 @@ def open_textedit(endpoint, serial):
     driver = Driver(endpoint, serial)
     driver.click(40, 95, double=True)
     driver.wait('window=2 name=Applications')
-    driver.click(184, 106, double=True)
+    driver.click(312, 106, double=True)
     driver.wait('TEXTEDIT_EXERCISER_READY\n')
     return driver
 
@@ -200,7 +200,7 @@ def capture(output, remap_icon=False, windows=False):
         driver.wait('FINDER_CLICK_HANDLED\n', clicks + 1)
         frame('applications-folder')
         clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
-        driver.click(56, 106)
+        driver.click(184, 106)
         driver.wait('FINDER_CLICK_HANDLED\n', clicks)
         driver.menu(52, 44, popup_x=80)  # Actual Finder File > Open resource item.
         driver.wait('QUICKDRAW_TEST_READY\n')
@@ -214,7 +214,7 @@ def capture(output, remap_icon=False, windows=False):
         driver.click(320, 200)
         driver.wait('FINDER_CLICK_HANDLED\n', clicks)
         frame('running-file-icons')
-        driver.click(184, 106, double=True)
+        driver.click(312, 106, double=True)
         driver.wait('TEXTEDIT_EXERCISER_READY\n')
         driver.key('a', ('ctrl',))
         driver.key('a')
@@ -288,7 +288,7 @@ def capture(output, remap_icon=False, windows=False):
         driver.wait('FINDER_CLICK_HANDLED\n', clicks)
         frame('closed-file-icons')
         previous = driver.log().count('TEXTEDIT_EXERCISER_READY\n')
-        driver.click(184, 106, double=True)
+        driver.click(312, 106, double=True)
         driver.wait('TEXTEDIT_EXERCISER_READY\n', previous)
         frame('textedit-relaunched')
         previous = driver.log().count('FINDER_TEXTEDIT_STATE length=1 selection=1..1\n')

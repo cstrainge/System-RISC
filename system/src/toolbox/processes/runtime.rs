@@ -39,11 +39,50 @@ impl Saved
 }
 impl Desktop
 {
+    pub(super) fn forget_cursor_window(&mut self, window: WindowId)
+    {
+        self.textedit.forget_cursor_window(window);
+        for local in &mut self.locals
+        {
+            local.textedit.forget_cursor_window(window);
+        }
+    }
+
+    pub(super) fn observe_cursor_motion(&mut self, point: Point)
+    {
+        self.redraw |= self.cursors.mouse_moved(point);
+        for local in &mut self.locals
+        {
+            local.cursors.mouse_moved(point);
+        }
+    }
+
+    /// Advance only the foreground cursor, without swapping app-local UI state
+    /// or posting synthetic events. A sleeping event consumer presents changes.
+    pub(super) fn tick_cursor(&mut self) -> bool
+    {
+        let now = Self::when();
+        let changed = if self.owner == self.foreground
+        {
+            self.cursors.animation_tick(now)
+        }
+        else
+        {
+            self.locals
+                .iter_mut()
+                .find(|local| local.id == self.foreground)
+                .is_some_and(|local| local.cursors.animation_tick(now))
+        };
+        self.redraw |= changed;
+        changed
+    }
+
     /// Read waiting queues in place. A timer tick must not swap each app's UI
     /// state just to find out whether its thread can remain asleep.
     pub fn wake_waiters(&mut self, waiting: &[(u64, u16); 8]) -> ([bool; 8], u64)
     {
         let pointer_activity = self.poll_inputs();
+        let cursor_activity = self.tick_cursor();
         self.route_events();
         let pointer_consumer = if waiting.iter().any(|(app, _)| *app == self.foreground)
         {
@@ -60,7 +99,7 @@ impl Desktop
             {
                 return false;
             }
-            if pointer_activity && app == pointer_consumer
+            if (pointer_activity || cursor_activity) && app == pointer_consumer
             {
                 return true;
             }

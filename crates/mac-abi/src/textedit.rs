@@ -26,6 +26,9 @@ pub const SET_RECTS: u32 = 21;
 pub const NAVIGATE: u32 = 22;
 /// Size-distinct native font request; the existing TextEditCall stays ABI-stable.
 pub const SET_FONT: u32 = 23;
+/// Enable automatic I-beam hover independently of keyboard activation.
+/// Uses TextEditCall.index as a checked boolean (0/1).
+pub const SET_CURSOR_ENABLED: u32 = 24;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TextEditFontCall
