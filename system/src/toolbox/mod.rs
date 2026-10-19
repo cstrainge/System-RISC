@@ -15,3 +15,6 @@ pub mod classic;
 pub(crate) mod runtime;
 
 pub(crate) mod strings;
+
+#[cfg(target_arch = "riscv64")]
+pub mod processes;

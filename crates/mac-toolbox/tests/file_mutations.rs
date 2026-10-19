@@ -166,6 +166,34 @@ fn readonly_busy_conflict_and_invalid_names_never_modify_disk()
            });
     assert_eq!(fs::read(&fixture.disk).unwrap(), before);
 }
+
+#[test]
+fn exiting_apps_release_their_open_forks_without_removing_other_apps_protection()
+{
+    use mac_system::testing::files::{close_owner, with_owner};
+    let fixture = Fixture::new();
+    fixture.run(false, DiskFaults::default(), |system| {
+               let files = system.files();
+               let item = files.lookup(1, ROOT_ID, "Source/Sample").unwrap();
+               let first = with_owner(11, || files.open(1, item.id, Fork::Data)).unwrap();
+               let second = with_owner(22, || files.open(1, item.id, Fork::Resource)).unwrap();
+               assert_eq!(with_owner(33, || files.move_to_trash(1, item.id, WHEN)),
+                          Err(mac_toolbox::Error(mac_toolbox::SERVICE_BUSY)));
+               assert_eq!(close_owner(11), 1);
+               assert_eq!(with_owner(11, || first.position()),
+                          Err(mac_toolbox::Error(mac_toolbox::NOT_FOUND)));
+               assert_eq!(with_owner(33, || files.move_to_trash(1, item.id, WHEN)),
+                          Err(mac_toolbox::Error(mac_toolbox::SERVICE_BUSY)));
+               assert_eq!(with_owner(22, || second.position()), Ok(0));
+               assert_eq!(close_owner(22), 1);
+               let moved = with_owner(33, || files.move_to_trash(1, item.id, WHEN)).unwrap();
+               assert_eq!(moved.id, item.id);
+               assert_ne!(moved.parent, item.parent);
+               assert_eq!(with_owner(33, || files.put_away(1, item.id, WHEN)).unwrap().parent,
+                          item.parent);
+           });
+    fixture.verify_hfs(":Source:");
+}
 #[test]
 fn partial_write_and_flush_failures_restore_original_sectors()
 {

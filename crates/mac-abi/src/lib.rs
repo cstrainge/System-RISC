@@ -2,7 +2,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-pub const ABI_VERSION: u32 = 5;
+pub const ABI_VERSION: u32 = 6;
 pub type Status = i32;
 pub const OK: Status = 0;
 pub const BAD_ABI: Status = -1;
@@ -251,3 +251,5 @@ pub mod files;
 pub mod controls;
 
 pub mod dialogs;
+
+pub mod processes;

@@ -25,11 +25,11 @@ fn resident_textedit_matches_original_text_selection_clipping_caret_and_scroll()
         serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
     assert_eq!(report["original_before"], report["original_after"], "base OS changed");
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
-    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=5"));
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=6"));
     assert!(!serial.contains("TEXTEDIT_PROBE_FAIL"), "{serial}");
     let finder_serial = fs::read_to_string(output.join("finder-vm/serial.log")).unwrap();
-    assert!(finder_serial.contains("FINDER_MENU menu=1257 item=1 command=7465646d"),
-            "resource-based TextEdit command missing: {finder_serial}");
+    assert!(finder_serial.contains("PROCESS_LAUNCHED app=2 thread=3 name=TextEdit Exerciser"),
+            "standalone TextEdit launch missing: {finder_serial}");
     assert!(!finder_serial.contains("FINDER_ERROR"), "{finder_serial}");
     let steps = report["finder_steps"].as_array().unwrap();
     for (name, expected) in [("type-hello", "length=5 selection=5..5"),

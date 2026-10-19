@@ -21,7 +21,18 @@ fn text(port: GraphicsPort<'_>, x: i16, y: i16, s: &str) -> Result<(), Status>
 }
 pub fn open(system: &System<'_>) -> Result<u32, Status>
 {
-    system.new_window(Rect::new(40, 75, 600, 441), "QuickDraw Exerciser", (400, 280), 8)
+    let layout =
+        system.resources().application().get(crate::resources::WINDOW_LAYOUT).map_err(|e| e.0)?;
+    let mut bytes = [0; 20];
+    if layout.size() != bytes.len() || layout.read(0, &mut bytes).map_err(|e| e.0)? != bytes.len()
+    {
+        return Err(mac_toolbox::BAD_ARGUMENT);
+    }
+    layout.release().map_err(|e| e.0)?;
+    let word = |at| i16::from_be_bytes([bytes[at], bytes[at + 1]]);
+    let mut title = [0; 128];
+    let title = system.resources().application().string(128, &mut title).map_err(|e| e.0)?;
+    system.new_window(Rect::new(word(2), word(0), word(6), word(4)), title, (400, 280), word(8))
 }
 pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32) -> Result<(), Status>
 {
@@ -36,10 +47,10 @@ pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32) -> Result<
         port.colors(0xffffff, 0xffffff)?;
         port.paint_rect(Rect::new(0, 0, w, h))?;
         port.colors(0, 0xffffff)?;
-        for (i, label) in ["1 Shapes", "2 Modes", "3 Regions", "4 Bits", "5 Fonts", "6 Worlds",
-                           "7 PICT", "8 Icons", "9 Res", "0 PNG"].iter()
-                                                                 .enumerate()
+        for i in 0..10
         {
+            let mut bytes = [0; 128];
+            let label = system.resources().application().indexed_string(2000, i, &mut bytes)?;
             text(port, 3 + i as i16 * 56, 15, label).map_err(mac_traps_error)?;
         }
         port.move_to(point(0, 23))?;
@@ -57,7 +68,9 @@ pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32) -> Result<
             8 => resources(system, port)?,
             _ => png(system, port)?
         }
-        text(port,10,h-24,"Keys 1-9, 0 for PNG, or click tabs. Q reopens this window.").map_err(mac_traps_error)?;
+        let mut bytes = [0; 128];
+        let footer = system.resources().application().indexed_string(2000, 10, &mut bytes)?;
+        text(port, 10, h - 24, footer).map_err(mac_traps_error)?;
         Ok(())
     })();
     system.end_update(id)?;

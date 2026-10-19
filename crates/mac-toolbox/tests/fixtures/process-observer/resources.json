@@ -1,0 +1,21 @@
+{
+  "name": "Finder",
+  "file_type": "FNDR",
+  "creator": "PRTS",
+  "role": "application",
+  "abi_version": 6,
+  "load_base": "0x81000000",
+  "load_limit": "0x82000000",
+  "description": "Public Process Manager acceptance fixture",
+  "resources": [
+    {
+      "type": "STR ",
+      "id": 2000,
+      "symbol": "APPLICATION_SCOPE",
+      "payload": {
+        "format": "pstring",
+        "text": "process-observer"
+      }
+    }
+  ]
+}

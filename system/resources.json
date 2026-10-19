@@ -3,11 +3,25 @@
   "file_type": "zsys",
   "creator": "MACS",
   "role": "system",
-  "abi_version": 5,
+  "abi_version": 6,
   "load_base": "0x80200000",
   "load_limit": "0x81000000",
   "description": "RISCy System native operating system",
   "resources": [
+    {
+      "type": "STR#",
+      "id": 32760,
+      "symbol": "APPLICATION_MENU_LABELS",
+      "name": "System application menu commands",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Hide ",
+          "Hide Others",
+          "Show All"
+        ]
+      }
+    },
     {
       "type": "STR ",
       "id": 128,

@@ -75,3 +75,32 @@ fn handles_release_storage_at_scope_exit_and_sessions_are_independent()
         });
     }
 }
+
+#[test]
+fn application_cleanup_reclaims_zone_without_reusing_old_handle_generations()
+{
+    use mac_system::testing::shared::{clear_memory_services, with_memory_services};
+    with_memory_services(|services| {
+        let system = unsafe { mac_toolbox::System::from_raw(services) }.unwrap();
+        let mut old = system.memory().handle_from_bytes(b"old application").unwrap();
+        assert_eq!(old.len(), Ok(15));
+        clear_memory_services().unwrap();
+        assert_eq!(system.memory().last_error().unwrap(), 0);
+        let mut new = system.memory().handle_from_bytes(b"new application").unwrap();
+        let mut output = [0xa5; 15];
+        assert_eq!(old.read(0, &mut output), Err(Error(NIL_HANDLE_ERR)));
+        assert_eq!(output, [0xa5; 15]);
+        assert_eq!(old.write(0, b"bad"), Err(Error(NIL_HANDLE_ERR)));
+        assert_eq!(old.try_dispose(), Err(Error(NIL_HANDLE_ERR)));
+        assert_eq!(new.read(0, &mut output), Ok(15));
+        assert_eq!(&output, b"new application");
+        new.try_dispose().unwrap();
+        // Each cleanup releases the arena, while metadata prevents stale aliases.
+        for _ in 0..600
+        {
+            let handle = system.memory().new_handle_clear(1024 * 1024).unwrap();
+            clear_memory_services().unwrap();
+            assert_eq!(handle.len(), Err(Error(NIL_HANDLE_ERR)));
+        }
+    });
+}

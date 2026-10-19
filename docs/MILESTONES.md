@@ -1,5 +1,58 @@
 # Verified milestones
 
+## Native application launch — ABI6
+
+The native launch path now has a one-hart CLINT timer scheduler with up to eight
+independent 256 KiB application stacks/register frames, including Finder. Native
+APPLs launch through the aggregate Toolbox Process SDK, not by calling a second
+app inside Finder. App-local menus/events/dialogs/cursors/worlds/TextEdit and
+legacy state follow the trusted context; resources select the app's immutable
+image, memory uses a separate bounded zone and fork handles validate AppId.
+
+QuickDraw Test and TextEdit Exerciser are separate Cargo applications with their
+own resource menus, window layouts, icons/bundles and generated versions. The
+image builder installs both in `Applications` and verifies fork/metadata
+roundtrips. Finder retains browsing, About and Clipboard; its Q shortcut launches
+QuickDraw Test through Process Manager. Both apps quit or return when their last
+window closes. A resident right-hand application menu owns switching and hide/
+restore policy while background application threads remain scheduled.
+
+Both apps build/package at ABI6. Host and RV64 Clippy pass with warnings denied
+for the workspace, System, definitions, Finder and native applications. Four canonical public SDK file-ownership tests and
+thirteen mutation tests pass, including exit cleanup and cross-app open-fork
+protection. Four Memory boundary tests pass, including cleanup that preserves
+slot generations and rejects old handles after reallocation. Resident System
+unit tests pass (74 plus one optional image test ignored), and the full host
+workspace suite and host Clippy pass.
+
+The consolidated `cargo xtask check` gate passes, including the real RV64
+process and graphical application tests. An observer progresses during a child's
+three-second loop with no traps or cooperative yields on one hart. Two worker
+launches verify private resource/memory/event state, foreign-window denial,
+physical input, cleanup and fresh identities; eight synthetic foreign-window
+posts stay private, and five Pascal conversion checks pass.
+
+The actual Finder launches both packaged apps through File > Open and double
+clicks. Twenty-six captured stages cover editing, switching, Hide Others/Show
+All, first-click activation, second-click delivery, Command-drag without focus
+changes, ordinary drag activation on release, resource-menu Quit and relaunch.
+The original application-menu comparison has zero differences across8,112
+compared pixels;271 explicit icon/cursor pixels are excluded. Existing graphics,
+fonts, icons, controls, filesystem, ROM, typing and TextEdit regressions pass.
+The final image also passes the physical typing/selection suite on private
+headless Windows QEMU, with zero filesystem calls per key. Reports are in
+`results/system7/toolchain-checks.json`, `process-checks.json`
+and `application-ui-checks.json` outside the repository.
+
+This remains a trusted shared M-mode system without MMU isolation. Kernel traps
+mask interrupts, and firmware I/O uses a dedicated synchronous fixed-owner stack,
+not an independently runnable I/O thread. There are eight immutable cached image
+slots including Finder, fixed disjoint executable reservations and no arbitrary
+relocation or original68k execution. Blocking/wakeup queues, native worker
+threads, original Thread Manager contexts, document parameters, std and multi-
+hart execution remain separate work. See [threading](../THREADING.md) and
+[native applications](../apps/README.md).
+
 ## Responsive typing and native navigation
 
 Finder's text-edit path updates Edit-menu policy without synchronous browser or

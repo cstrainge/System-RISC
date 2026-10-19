@@ -140,7 +140,11 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
         }
         for _ in 0..32
         {
-            match events.os_event(EVERY_EVENT, true)
+            // Input can arrive between the state snapshot and this drain. Keep
+            // physical mouse events queued until StillDown has observed the held
+            // button, instead of making capture timing part of its contract.
+            let mask = if mouse_probed { EVERY_EVENT } else { EVERY_EVENT & !6 };
+            match events.os_event(mask, true)
             {
                 Ok(read) if read.available =>
                 {

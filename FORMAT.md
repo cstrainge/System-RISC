@@ -13,7 +13,7 @@ resource ID 0 has exactly 32 bytes, all numeric fields big endian:
 | 0 | 4 | Magic `RVN1` |
 | 4 | 2 | Container format version, currently 1 |
 | 6 | 2 | Role: 1 = resident System, 2 = application, 3 = code resource |
-| 8 | 4 | Native System service ABI version, currently 5 |
+| 8 | 4 | Native System service ABI version, currently 6 |
 | 12 | 4 | Reserved, must be zero |
 | 16 | 8 | Inclusive load reservation base |
 | 24 | 8 | Exclusive load reservation limit |
@@ -78,11 +78,11 @@ unsafe extern "C" fn(*const SystemServices) -> i32
 ```
 
 An application validates the table before calling the loader-supplied trap gate.
-ABI 5's `SystemServices` is 24 bytes on RV64:
+ABI 6's `SystemServices` is 24 bytes on RV64:
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 8 | ABI version 5 and structure size |
+| 0 | 8 | ABI version 6 and structure size |
 | 8 | 8 | `TrapGate` function pointer |
 | 16 | 8 | Capability bits |
 
@@ -220,6 +220,16 @@ item. MDEF0 is an independent native code resource at0x82300000..0x82400000.
 Native EventKind14 carries MenuCommand: high16 bits menuID, low16 one-based item.
 Ctrl key equivalents use the same event path. This is a native extension, not a
 claim that original MenuSelect/WindowRecord contracts execute unchanged.
+
+ABI6 extends the native MDEF state with explicit icon scope/ID/flags and a
+presentation profile. The standard profile preserves existing menu geometry.
+The System-owned application profile uses the original right-side icon title,
+16-pixel command rows and18-pixel application rows; its labels come from System
+STR#32760. MDEF owns all measurement, rendering and hit geometry. System owns
+the live process snapshot, alphabetic ordering, foreground checkmark, hidden-icon
+dimming and command policy. Applications can query its LAYOUT/COMMAND state
+through menuID-16489 but cannot mutate it. Rebuild all native modules together
+for ABI6; ABI5 definition-state layouts are incompatible.
 
 DIALOG0x10017 carries `dialogs::DialogCall`; PSTRING_DIALOG0x30017 converts the
 inline substitution at the boundary. The current alert profile loads ALRT/DITL

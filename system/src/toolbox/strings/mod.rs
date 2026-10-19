@@ -91,6 +91,23 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
         }
         match number
         {
+            PROCESS =>
+            {
+                let original = get!(mac_abi::processes::ProcessCall);
+                let mut call = *original;
+                let status = invoke!(call);
+                if status == OK as i64
+                   && matches!(call.operation,
+                               mac_abi::processes::CURRENT
+                               | mac_abi::processes::INDEX
+                               | mac_abi::processes::LAUNCH)
+                {
+                    inline_output(&mut call.info.name, &mut call.info.name_length)?;
+                }
+                *original = call;
+                Ok(status)
+            }
+
             SCRAP =>
             unsafe { scrap::dispatch(pointer, size, &mut native) },
             TEXTEDIT =>

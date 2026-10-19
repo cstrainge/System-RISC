@@ -14,6 +14,9 @@ use crate::{Result, error};
 pub struct Manifest
 {
     pub name:          String,
+    /// Cargo executable name, when the Macintosh filename contains spaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_name:   Option<String>,
     pub file_type:     String,
     pub creator:       String,
     pub role:          String,
@@ -288,6 +291,17 @@ impl Manifest
 
     pub fn validate(&self) -> Result<()>
     {
+        if self.binary_name.as_deref().is_some_and(|name| {
+                                          name.is_empty()
+                                          || !name.bytes().all(|b| {
+                                                              b.is_ascii_alphanumeric()
+                                                              || b == b'_'
+                                                              || b == b'-'
+                                                          })
+                                      })
+        {
+            return Err(error("invalid Cargo binary name"));
+        }
         let name = text::encode(&self.name)?;
         if name.is_empty()
            || name.len() > 31
@@ -329,6 +343,11 @@ impl Manifest
             }
         }
         Ok(())
+    }
+
+    pub fn binary_name(&self) -> &str
+    {
+        self.binary_name.as_deref().unwrap_or(&self.name)
     }
 
     pub fn descriptor(&self) -> Result<Descriptor>

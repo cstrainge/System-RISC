@@ -1,4 +1,4 @@
-//! Measure the actual Finder editor and menu policy through resident services.
+//! Measure the actual TextEdit application editor and menu policy through resident services.
 #![no_std]
 #![no_main]
 #![allow(dead_code)]
@@ -6,16 +6,13 @@ use core::{fmt::Write,
            sync::atomic::{AtomicPtr, AtomicUsize, Ordering}};
 
 use mac_toolbox::*;
-#[path = "../../../../../../finder/src/browser.rs"]
-mod browser;
-#[path = "../../../../../../finder/src/icon_view.rs"]
-mod icon_view;
-#[path = "../../../../../../finder/src/ui.rs"]
-mod ui;
-#[path = "../../../../../../finder/src/menus.rs"]
+#[path = "../../../../../../apps/textedit-exerciser/src/editor.rs"]
+mod editor;
+#[path = "../../../../../../apps/textedit-exerciser/src/menus.rs"]
 mod menus;
-#[path = "../../../../../../finder/src/textedit_demo.rs"]
-mod textedit_demo;
+#[path = "../../../../../../apps/textedit-exerciser/src/ui.rs"]
+mod ui;
+use ui::{Text, text};
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 static FILES: AtomicUsize = AtomicUsize::new(0);
 static MENUS: AtomicUsize = AtomicUsize::new(0);
@@ -34,13 +31,11 @@ unsafe extern "C" fn trace(number: u32, pointer: *mut (), size: usize) -> i64
 }
 fn run(system: &System<'_>) -> Result<(), Status>
 {
-    let mut browser = browser::Browser::default();
     menus::install(system)?;
-    browser.initialize(system)?;
-    let mut editor = textedit_demo::Editor::default();
+    let mut editor = editor::Editor::default();
     editor.open(system)?;
-    menus::update(system, &browser, &editor)?;
-    system.log("DESKTOP_READY: actual Finder typing profile\n")?;
+    menus::update(system, &editor)?;
+    system.log("DESKTOP_READY: actual TextEdit application typing profile\n")?;
     let mut edit_ticks = 0;
     let mut menu_ticks = 0;
     FILES.store(0, Ordering::Relaxed);
@@ -56,24 +51,24 @@ fn run(system: &System<'_>) -> Result<(), Status>
             return Err(BAD_ARGUMENT);
         }
         let edited = system.events().uptime_ticks().map_err(|e| e.0)?;
-        menus::update_edit(system, &editor)?;
-        // Same consumed/released routing as the actual Finder main loop.
+        menus::update(system, &editor)?;
+        // Same consumed/released routing as the actual TextEdit application main loop.
         if editor.event(system,
                         Event { kind: EventKind::KeyUp,
                                 message: u32::from(b'a'),
                                 ..Default::default() })?
         {
-            menus::update_edit(system, &editor)?;
+            menus::update(system, &editor)?;
         }
         else
         {
-            menus::update(system, &browser, &editor)?;
+            menus::update(system, &editor)?;
         }
         let end = system.events().uptime_ticks().map_err(|e| e.0)?;
         edit_ticks += edited - start;
         menu_ticks += end - edited;
     }
-    let mut line = browser::Text::<192>::default();
+    let mut line = Text::<192>::default();
     let _ = writeln!(&mut line,
                      "TYPING_PROFILE chars=20 edit_ticks={} menu_ticks={} file_calls={} \
                       menu_calls={}",
@@ -87,13 +82,13 @@ fn run(system: &System<'_>) -> Result<(), Status>
     for _ in 0..50
     {
         let api = system.menus();
-        let _ = api.layout(1253).map_err(|e| e.0)?;
-        let item = api.item(1253, 3).map_err(|e| e.0)?;
-        api.set_item_enabled(1253, 3, item.enabled).map_err(|e| e.0)?;
+        let _ = api.layout(129).map_err(|e| e.0)?;
+        let item = api.item(129, 3).map_err(|e| e.0)?;
+        api.set_item_enabled(129, 3, item.enabled).map_err(|e| e.0)?;
         let _ = system.events().next_event(0).map_err(|e| e.0)?;
     }
     let elapsed = system.events().uptime_ticks().map_err(|e| e.0)? - start;
-    let mut line = browser::Text::<128>::default();
+    let mut line = Text::<128>::default();
     let _ = writeln!(&mut line, "TYPING_QUERIES polls=50 elapsed_ticks={}", elapsed);
     system.log(line.as_str())?;
     system.log("TYPING_PROFILE_DONE\n")?;

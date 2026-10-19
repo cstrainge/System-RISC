@@ -83,10 +83,8 @@ def capture(output, windows_headless=False):
         raise TimeoutError(name + '\n' + delta)
 
     try:
-        move(290, 10)
-        button(True)
-        move(290, 30)
-        button(False)
+        from capture_system7_applications_ui import open_textedit
+        open_textedit(endpoint,serial)
         wait('FINDER_TEXTEDIT_READY\n')
         deadline = time.monotonic() + 30
         while not re.search(r'FINDER_TEXTEDIT_STATE [^\n]*\n', serial.read_text(errors='replace')):

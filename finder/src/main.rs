@@ -6,7 +6,6 @@ use core::panic::PanicInfo;
 use mac_toolbox::{System,
                   events::{CMD_KEY, EVERY_EVENT},
                   *};
-mod quickdraw_demo;
 mod resources
 {
     use mac_toolbox as mac_abi;
@@ -15,7 +14,6 @@ mod resources
 
 mod ui;
 mod clipboard;
-mod textedit_demo;
 mod menus;
 mod browser;
 mod icon_view;
@@ -82,13 +80,9 @@ fn finder(system: &System<'_>) -> Result<(), Status>
     menus::install(system)?;
     browser.initialize(system)?;
     let mut alerts = ui::Alerts::default();
-    let mut editor = textedit_demo::Editor::default();
-    menus::update(system, &browser, &editor)?;
-    let mut demo = 0;
+    menus::update(system, &browser)?;
     let mut about_id = 0;
     let mut clipboard = clipboard::Viewer::default();
-    let mut demo_page = 0;
-    let mut icon_offset = 0u32;
     for _ in 0..32
     {
         let event = system.next_event(EVERY_EVENT)?;
@@ -111,29 +105,20 @@ fn finder(system: &System<'_>) -> Result<(), Status>
             if alerts.window == 0
             {
                 browser.redraw_all(system)?;
-                if editor.window != 0 && system.window(editor.window).is_ok()
-                {
-                    let _ = try_action(system, &mut alerts, editor.draw(system))?;
-                }
                 if clipboard.window != 0
                 {
                     let _ = try_action(system, &mut alerts, clipboard.draw(system))?;
                 }
-                menus::update(system, &browser, &editor)?;
+                menus::update(system, &browser)?;
             }
             if confirm
             {
                 let _ = try_action(system, &mut alerts, browser.empty_trash(system))?;
-                menus::update(system, &browser, &editor)?;
+                menus::update(system, &browser)?;
             }
             continue;
         }
         browser.prune(system)?;
-        if try_action(system, &mut alerts, editor.event(system, event))?.unwrap_or(false)
-        {
-            menus::update_edit(system, &editor)?;
-            continue;
-        }
         let _ = try_action(system, &mut alerts, clipboard.refresh(system))?;
         if alerts.window != 0
         {
@@ -141,7 +126,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
         }
         if try_action(system, &mut alerts, clipboard.event(system, event))?.unwrap_or(false)
         {
-            menus::update(system, &browser, &editor)?;
+            menus::update(system, &browser)?;
             continue;
         }
         if alerts.window != 0
@@ -161,11 +146,6 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                              "FINDER_MENU menu={} item={} command={:08x}",
                              selection.menu_id, selection.item, selection.command);
             system.log(log.as_str())?;
-            if try_action(system, &mut alerts, editor.command(system, selection.command))?.unwrap_or(false)
-            {
-                menus::update(system, &browser, &editor)?;
-                continue;
-            }
             let action = match selection.command
             {
                 menus::NEW_FOLDER => browser.new_folder(system),
@@ -182,23 +162,18 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                 menus::CLEAR => browser.trash_selection(system),
                 menus::EMPTY => alerts.confirm_empty(system, &browser),
                 menus::ABOUT => open_about(system, &mut about_id),
-                menus::TEXTEDIT => editor.open(system),
                 menus::SHOW_CLIPBOARD => clipboard.open(system),
                 _ => Ok(())
             };
             let _ = try_action(system, &mut alerts, action)?;
-            menus::update(system, &browser, &editor)?;
+            menus::update(system, &browser)?;
             continue;
         }
         match event.kind
         {
             EventKind::Update =>
             {
-                if event.message == demo && demo != 0
-                {
-                    quickdraw_demo::draw(system, demo, demo_page, icon_offset)?;
-                }
-                else if event.message == about_id && about_id != 0
+                if event.message == about_id && about_id != 0
                 {
                     about(system, about_id)?;
                 }
@@ -218,18 +193,16 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                 let code = (event.message >> 8) as u8;
                 if key == b'q' && event.modifiers & CMD_KEY == 0
                 {
-                    if demo == 0 || system.window(demo).is_err()
-                    {
-                        let Some(id) =
-                            try_action(system, &mut alerts, quickdraw_demo::open(system))?
-                        else
-                        {
-                            continue;
-                        };
-                        demo = id;
-                    }
-                    system.select_window(demo)?;
-                    quickdraw_demo::draw(system, demo, demo_page, icon_offset)?;
+                    let launch = (|| {
+                        let app = system.files()
+                                        .lookup(browser.startup,
+                                                files::ROOT_ID,
+                                                "/Applications/QuickDraw Test")
+                                        .map_err(|e| e.0)?;
+                        system.processes().launch(browser.startup, app.id).map_err(|e| e.0)?;
+                        Ok(())
+                    })();
+                    let _ = try_action(system, &mut alerts, launch)?;
                 }
                 else if key == b'a' && event.modifiers & CMD_KEY == 0
                 {
@@ -250,35 +223,6 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                                    browser.open(system,
                                          browser::Location { volume: browser.startup,
                                                              folder: mac_toolbox::files::ROOT_ID }))?;
-                }
-                else if system.window(0).is_ok_and(|w| w.id == demo) && demo != 0
-                {
-                    if (b'1'..=b'9').contains(&key) || key == b'0'
-                    {
-                        demo_page = if key == b'0' { 9 } else { key - b'1' };
-                        quickdraw_demo::draw(system, demo, demo_page, icon_offset)?;
-                    }
-                    else if demo_page == 7 && [0x7b, 0x7c].contains(&code)
-                    {
-                        let count = system.quickdraw().icons().count().map_err(|e| e.0)?;
-                        if code == 0x7c
-                        {
-                            icon_offset =
-                                if icon_offset + 16 < count { icon_offset + 16 } else { 0 };
-                        }
-                        else
-                        {
-                            icon_offset = if icon_offset >= 16
-                            {
-                                icon_offset - 16
-                            }
-                            else
-                            {
-                                count.saturating_sub(1) / 16 * 16
-                            };
-                        }
-                        quickdraw_demo::draw(system, demo, demo_page, icon_offset)?;
-                    }
                 }
                 else if code == 0x33 && event.modifiers & CMD_KEY != 0
                 {
@@ -303,30 +247,16 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                     browser.scroll(system, 104)?;
                 }
             }
-            EventKind::MouseDown =>
+            EventKind::MouseDown if event.message == 0 || browser.contains(event.message) =>
             {
-                if event.message == demo && demo != 0
-                {
-                    let window = system.window(demo)?;
-                    let x = event.where_.h - window.bounds.left;
-                    let y = event.where_.v - window.bounds.top;
-                    if (0..23).contains(&y)
-                    {
-                        demo_page = (x.max(0) / 56).min(9) as u8;
-                        quickdraw_demo::draw(system, demo, demo_page, icon_offset)?;
-                    }
-                }
-                else if event.message == 0 || browser.contains(event.message)
-                {
-                    let _ = try_action(system, &mut alerts, browser.click(system, event))?;
-                }
+                let _ = try_action(system, &mut alerts, browser.click(system, event))?;
             }
             _ =>
             {}
         }
         if event.kind != EventKind::Null
         {
-            menus::update(system, &browser, &editor)?;
+            menus::update(system, &browser)?;
         }
     }
 }

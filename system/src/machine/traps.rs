@@ -11,13 +11,14 @@ unsafe extern "C" {
 }
 pub(crate) use __system_trap_gateway as gateway;
 #[repr(C)]
-struct TrapFrame
+#[derive(Default)]
+pub(crate) struct TrapFrame
 {
-    registers: [usize; 30],
-    pc:        usize,
-    status:    usize,
-    cause:     usize,
-    value:     usize
+    pub registers: [usize; 30],
+    pub pc:        usize,
+    pub status:    usize,
+    cause:         usize,
+    value:         usize
 }
 
 pub(crate) fn install()
@@ -29,8 +30,13 @@ pub(crate) fn install()
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame)
+extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
 {
+    if frame.cause == (1usize << 63) | 7
+    {
+        return super::scheduler::schedule(frame);
+    }
+
     if frame.cause != 11
     {
         serial!("SYSTEM_TRAP: cause={} pc=0x{:x} value=0x{:x}", frame.cause, frame.pc, frame.value);
@@ -56,6 +62,14 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame)
     let result = unsafe { dispatch(number, request, size) };
     frame.registers[8] = result as usize;
     frame.pc = frame.pc.wrapping_add(4);
+    drop(scope);
+    if matches!(number, PROCESS | PSTRING_PROCESS)
+       && result == OK as i64
+       && super::scheduler::retired()
+    {
+        return super::scheduler::schedule(frame);
+    }
+    frame
 }
 
 unsafe fn request<'a, T>(pointer: *mut (), size: usize) -> Option<&'a mut T>
@@ -150,10 +164,18 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                                                                          error.status()
                                                                      }) as i64
         }
+        PROCESS =>
+        {
+            let call = read_request!(mac_abi::processes::ProcessCall);
+            crate::kernel::with_desktop(|desktop| desktop.process(call)).unwrap_or_else(|e| {
+                                                                            e.status()
+                                                                        }) as i64
+        }
         FILE =>
         {
+            let owner = crate::context::current_thread_context().identity().app.0;
             crate::kernel::with_files(|files| unsafe {
-                toolbox::files::native::dispatch(files, pointer, size)
+                toolbox::files::native::dispatch_owned(files, owner, pointer, size)
             }).unwrap_or_else(|error| error.status() as i64)
         }
         EVENTS =>

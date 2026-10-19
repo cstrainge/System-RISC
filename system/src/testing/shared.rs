@@ -30,6 +30,14 @@ pub fn with_memory_services<R>(run: impl FnOnce(&SystemServices) -> R) -> R
                                     capabilities: 0 };
     run(&services)
 }
+
+/// Simulate application exit on the same real manager used by the shared gate.
+/// Existing caller threads must be quiescent, just as native exit drains work.
+pub fn clear_memory_services() -> Result<(), Status>
+{
+    let state = SESSION.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or(NOT_SUPPORTED)?;
+    state.with(crate::toolbox::memory::Manager::clear).map_err(|error| error.status())
+}
 unsafe extern "C" fn gate(number: u32, pointer: *mut (), size: usize) -> i64
 {
     // This host-only fixture setup lock is never held across a service call.

@@ -63,7 +63,14 @@ pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
     let file = MacFile { name: text::encode(&manifest.name)?,
                          file_type: crate::manifest::fourcc(&manifest.file_type)?,
                          creator: crate::manifest::fourcc(&manifest.creator)?,
-                         flags: 0,
+                         flags: if manifest.resources.iter().any(|r| r.kind == "BNDL")
+                         {
+                             0x2000
+                         }
+                         else
+                         {
+                             0
+                         },
                          created: date,
                          modified: date,
                          data: vec![],

@@ -1,6 +1,6 @@
 //! Execution identity and virtualized classic state shapes. Identity must come
 //! from the kernel scheduler, not from untrusted request fields.
-#![allow(dead_code)] // Scheduler/context routing is a declared next milestone.
+#![allow(dead_code)] // Legacy cooperative state fields await their individual services.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,8 +36,8 @@ pub struct LegacyGlobals
 #[cfg(target_arch = "riscv64")]
 pub fn bootstrap_thread() -> ThreadId
 {
-    // Bootstrap-only identity. The machine adapter supplies hardware identity;
-    // a future scheduler must supply actual ThreadId before launching threads.
+    // Used only to admit primary-hart bootstrap. Scheduled service calls obtain
+    // their actual identities from current_thread_context instead.
     let hart = crate::machine::hart_id();
     if hart == 0 { BOOT_THREAD } else { ThreadId(0) }
 }
@@ -83,18 +83,51 @@ impl Drop for TrapScope<'_>
 }
 pub struct ThreadContext
 {
-    pub identity: ExecutionContext,
-    pub traps:    ThreadTrapState
+    app:       core::sync::atomic::AtomicU64,
+    thread:    core::sync::atomic::AtomicU64,
+    pub traps: ThreadTrapState
 }
-static BOOTSTRAP_CONTEXT: ThreadContext =
-    ThreadContext { identity: ExecutionContext { app:    FINDER_APP,
-                                                 thread: BOOT_THREAD,
-                                                 legacy: None },
-                    traps:    ThreadTrapState::new() };
-/// Temporary single-thread bootstrap accessor. A scheduler must replace this
-/// with its current OS ThreadContext before launching any additional threads;
-/// no global current-app or per-hart nesting counter is introduced here.
+impl ThreadContext
+{
+    pub const fn new() -> Self
+    {
+        Self { app:    core::sync::atomic::AtomicU64::new(0),
+               thread: core::sync::atomic::AtomicU64::new(1),
+               traps:  ThreadTrapState::new() }
+    }
+
+    pub fn identity(&self) -> ExecutionContext
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        ExecutionContext { app:    AppId(self.app.load(Relaxed)),
+                           thread: ThreadId(self.thread.load(Relaxed)),
+                           legacy: None }
+    }
+
+    pub fn assign(&self, app: u64, thread: u64)
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        self.app.store(app, Relaxed);
+        self.thread.store(thread, Relaxed);
+    }
+}
+static BOOTSTRAP_CONTEXT: ThreadContext = ThreadContext::new();
+#[cfg(target_arch = "riscv64")]
+pub fn current_thread_context() -> &'static ThreadContext
+{
+    crate::machine::scheduler::current_context()
+}
+#[cfg(not(target_arch = "riscv64"))]
 pub fn current_thread_context() -> &'static ThreadContext
 {
     &BOOTSTRAP_CONTEXT
+}
+pub fn boot_context() -> &'static ThreadContext
+{
+    &BOOTSTRAP_CONTEXT
+}
+#[cfg(target_arch = "riscv64")]
+pub fn current_thread() -> ThreadId
+{
+    current_thread_context().identity().thread
 }

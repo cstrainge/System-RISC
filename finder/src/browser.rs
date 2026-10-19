@@ -731,6 +731,10 @@ impl Browser
                           Location { volume,
                                      folder })?;
             }
+            else if entry.file_type == *b"APPL"
+            {
+                system.processes().launch(volume, folder).map_err(error)?;
+            }
         }
         self.redraw_all(system)?;
         system.log("FINDER_CLICK_HANDLED\n")
@@ -838,6 +842,10 @@ impl Browser
                 self.open(system,
                           Location { volume: entry.volume,
                                      folder: entry.id })?;
+            }
+            else if entry.file_type == *b"APPL"
+            {
+                system.processes().launch(entry.volume, entry.id).map_err(error)?;
             }
         }
         else if let Some(volume) = self.desktop_selection
@@ -997,9 +1005,11 @@ impl Browser
     {
         self.desktop_active && (self.trash_selected || self.desktop_selection.is_some())
         || self.selection(system).is_some_and(|s| {
-                                     system.files()
-                                           .catalog(s.volume, s.folder)
-                                           .is_ok_and(|e| e.is_directory())
+                                     system.files().catalog(s.volume, s.folder).is_ok_and(|e| {
+                                                                                   e.is_directory()
+                                                                                   || e.file_type
+                                                                                      == *b"APPL"
+                                                                               })
                                  })
     }
 

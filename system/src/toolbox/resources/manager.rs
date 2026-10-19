@@ -28,6 +28,13 @@ impl<'a> Manager<'a>
 
     pub fn all(self, scope: i16) -> Result<Vec<(i16, &'a Resource)>, Status>
     {
+        #[cfg(target_arch = "riscv64")]
+        if scope >= LOADED_IMAGE_BASE
+        {
+            let image =
+                crate::kernel::image((scope - LOADED_IMAGE_BASE) as usize).ok_or(BAD_ARGUMENT)?;
+            return Ok(image.resources.iter().map(|resource| (scope, resource)).collect());
+        }
         if ![CHAIN, SYSTEM, APPLICATION].contains(&scope)
         {
             return Err(BAD_ARGUMENT);
@@ -52,6 +59,17 @@ impl<'a> Manager<'a>
 
     pub fn get(self, scope: i16, key: ResourceKey) -> Result<(i16, &'a Resource), Status>
     {
+        #[cfg(target_arch = "riscv64")]
+        if scope >= LOADED_IMAGE_BASE
+        {
+            let image =
+                crate::kernel::image((scope - LOADED_IMAGE_BASE) as usize).ok_or(BAD_ARGUMENT)?;
+            return image.resources
+                        .iter()
+                        .find(|resource| resource.kind == key.kind && resource.id == key.id)
+                        .map(|resource| (scope, resource))
+                        .ok_or(NOT_FOUND);
+        }
         // Lookup is allocation-free, including nested manager/resource requests.
         if (scope == CHAIN || scope == APPLICATION)
            && let Some(r) = self.application.iter().find(|r| r.kind == key.kind && r.id == key.id)

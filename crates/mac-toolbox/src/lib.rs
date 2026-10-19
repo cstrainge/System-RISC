@@ -13,6 +13,7 @@ pub use toolbox_events as events;
 pub use toolbox_files as files;
 pub use toolbox_memory as memory;
 pub use toolbox_menus as menus;
+pub use toolbox_processes as processes;
 pub use toolbox_quickdraw as quickdraw;
 pub use toolbox_resources as resources;
 pub use toolbox_scrap as scrap;
@@ -37,6 +38,11 @@ impl<'a> System<'a>
     pub fn client(&self) -> Client<'a>
     {
         self.client
+    }
+
+    pub fn processes(&self) -> processes::Processes<'a>
+    {
+        processes::Processes::new(self.client)
     }
 
     pub fn windows(&self) -> windows::Windows<'a>

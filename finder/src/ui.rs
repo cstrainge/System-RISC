@@ -90,7 +90,7 @@ impl Alerts
 
     fn modal_menus(&self, system: &System<'_>, enabled: bool) -> Result<(), Status>
     {
-        for id in [1251, 1252, 1253, 1254, 1256, 1255, 1257]
+        for id in [1251, 1252, 1253, 1254, 1256, 1255]
         {
             system.menus().set_item_enabled(id, 0, enabled).map_err(|e| e.0)?;
         }

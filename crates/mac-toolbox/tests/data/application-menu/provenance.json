@@ -1,0 +1,427 @@
+{
+  "target": "Original Mac OS 7.6.1 application menu",
+  "originals_before": [
+    {
+      "path": "working/vm/system-before-apps.qcow2",
+      "length": 47316992,
+      "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+    },
+    {
+      "path": "downloads/roms/Quadra-650.ROM",
+      "length": 1048576,
+      "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+    }
+  ],
+  "originals_after": [
+    {
+      "path": "working/vm/system-before-apps.qcow2",
+      "length": 47316992,
+      "sha256": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c"
+    },
+    {
+      "path": "downloads/roms/Quadra-650.ROM",
+      "length": 1048576,
+      "sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca"
+    }
+  ],
+  "system": {
+    "path": "working/application-menu-reference/System.bin",
+    "length": 5667584,
+    "sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea"
+  },
+  "finder": {
+    "path": "working/application-menu-reference/Finder.bin",
+    "length": 515200,
+    "sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f"
+  },
+  "command": [
+    "qemu-system-m68k",
+    "-name",
+    "Isolated Finder Reference",
+    "-machine",
+    "q800,audiodev=sound",
+    "-cpu",
+    "m68040",
+    "-m",
+    "128",
+    "-bios",
+    "/home/cstrainge/workdir/rea-work/downloads/roms/Quadra-650.ROM",
+    "-g",
+    "640x480x8",
+    "-display",
+    "none",
+    "-audiodev",
+    "none,id=sound",
+    "-nic",
+    "none",
+    "-drive",
+    "file=/home/cstrainge/workdir/rea-work/working/application-menu-reference/pram.bin,format=raw,if=mtd",
+    "-drive",
+    "file=/home/cstrainge/workdir/rea-work/working/application-menu-reference/reference.raw,format=raw,if=none,id=system",
+    "-device",
+    "scsi-hd,scsi-id=0,drive=system",
+    "-qmp",
+    "unix:/home/cstrainge/workdir/rea-work/working/application-menu-reference/qmp.sock,server=on,wait=off",
+    "-monitor",
+    "none",
+    "-parallel",
+    "none",
+    "-serial",
+    "file:/home/cstrainge/workdir/rea-work/working/application-menu-reference/serial.log"
+  ],
+  "tool_identities": [
+    {
+      "path": ".toolchains/retro68/rootfs/Retro68-build/toolchain/bin/m68k-apple-macos-g++",
+      "length": 18616552,
+      "sha256": "ef990adb1a2b9c4d5b8734d9c67a579c12327eb3baf4de0fa5ede578b7e550b4"
+    },
+    {
+      "path": ".toolchains/retro68/rootfs/Retro68-build/toolchain/multiversal/CIncludes/Multiverse.h",
+      "length": 437113,
+      "sha256": "bdd1eca59dcc4df745018b1ab25180e082926c93af25c109e8140dd6482ec626"
+    },
+    {
+      "path": "/usr/bin/qemu-system-m68k",
+      "length": 10601496,
+      "sha256": "7350ac7cc54161918e8855d744bfa3d30cdc73ed2800795e9020cec8c1b15d38"
+    }
+  ],
+  "sources": [
+    {
+      "path": "System7/crates/mac-toolbox/tests/fixtures/application-menu-original/CMakeLists.txt",
+      "length": 305,
+      "sha256": "6c0f628854a8f40ba82f800c141b44ff06e393234447f30b7a37e2e6b84fc8f2"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/fixtures/application-menu-original/Probe.cc",
+      "length": 1720,
+      "sha256": "cdf9d72eead29965e2f8a5af84faa16a41e085922dfb1413c8d794fc404d0c89"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/fixtures/application-menu-original/application.r",
+      "length": 379,
+      "sha256": "7e5a3977a0ad400584428aa5cb419570f4b76ad15458840b7d4a65cbfd5001bb"
+    }
+  ],
+  "binary": [
+    {
+      "path": "build/application-menu-original-68k/AlphaProbe.bin",
+      "length": 15872,
+      "sha256": "5301e318251de6e1533410ade7d82dd2c6d4e77dcdc081146064bfc1f170aaab"
+    },
+    {
+      "path": "build/application-menu-original-68k/ZuluProbe.bin",
+      "length": 15872,
+      "sha256": "9de8c614f302a086785adc0d92cad666cc6fe0410095d9d217cbb2cf33ee937f"
+    }
+  ],
+  "transport": {
+    "path": "System7/scripts/capture_original_application_menu.py",
+    "length": 5180,
+    "sha256": "4271718effeb8555b2863c5784b5684e05028ca74538709d9a7a14c6eec0b12a"
+  },
+  "actions": {
+    "path": "working/application-menu-reference/actions.jsonl",
+    "length": 19097,
+    "sha256": "14ebe6bc4e3176ee5ebef18ad947b3c4f79dfe055e595c7b40ad65cfe75cecaa"
+  },
+  "captures": [
+    {
+      "path": "results/application-menu-reference/00-finder.png",
+      "length": 4985,
+      "sha256": "be604af1e24d415dc574ed250b625b5efded943472a7e0ca56d7194e37a75031"
+    },
+    {
+      "path": "results/application-menu-reference/01-finder-menu.png",
+      "length": 5748,
+      "sha256": "c616763debad568285c54fe9120b0f83e4231cebbabdd2f2892ec4c11681e4ab"
+    },
+    {
+      "path": "results/application-menu-reference/02-probe-folder.png",
+      "length": 8262,
+      "sha256": "6b7320da15e83f11939185b145ebf35fa8f3fae3f7cf65803ceb5ee5d3a3a91e"
+    },
+    {
+      "path": "results/application-menu-reference/03-zulu-active.png",
+      "length": 8279,
+      "sha256": "452effe9c0043a7048d4e6dfd39862cd8f205872424aa6ee92fd8df90a484f28"
+    },
+    {
+      "path": "results/application-menu-reference/04-zulu-menu.png",
+      "length": 9401,
+      "sha256": "195240c98479949bba9621664363a8bc81d77007e6fee8713a6e4afd8b4f976d"
+    },
+    {
+      "path": "results/application-menu-reference/05-alpha-active.png",
+      "length": 7853,
+      "sha256": "f8f324aedd6498f66481cc9652e4152c482647412dc4f0d5ae55bd4287838de2"
+    },
+    {
+      "path": "results/application-menu-reference/06-three-apps-alpha-menu.png",
+      "length": 9420,
+      "sha256": "7e34f3174368c5aba77ecc9ab0c065d485fabcc772441969156cd365ad8fd57c"
+    },
+    {
+      "path": "results/application-menu-reference/07-hide-alpha-fallback.png",
+      "length": 8733,
+      "sha256": "89d6a41f6eaa4929b335880379e7cc1788aa1349110667c46e45609e5bf981f9"
+    },
+    {
+      "path": "results/application-menu-reference/08-hidden-alpha-menu.png",
+      "length": 9995,
+      "sha256": "a682998f03bba1559a95139f19d057dcb9883d342c96668c16415fc2027038b6"
+    },
+    {
+      "path": "results/application-menu-reference/09-hide-others-finder.png",
+      "length": 8516,
+      "sha256": "3be1c414d4b9478c5c1b4745ec90e386883734a3beab9f7748614db14f077b8a"
+    },
+    {
+      "path": "results/application-menu-reference/10-only-finder-visible-menu.png",
+      "length": 9835,
+      "sha256": "e0cbdee8fe377fb3f4652c5d4369df55ff20c3da503c3da6da269d53b6adce6a"
+    },
+    {
+      "path": "results/application-menu-reference/11-select-hidden-zulu.png",
+      "length": 8346,
+      "sha256": "b25e5765d78e762fc36e2e92a3926d207cf74da9eeecdf04c0a76bfacf49a62a"
+    },
+    {
+      "path": "results/application-menu-reference/12-unhidden-zulu-menu.png",
+      "length": 9682,
+      "sha256": "0d40620eec4149854d9edbf581162ea82e2339480f655fabc808f76c6b1275b3"
+    },
+    {
+      "path": "results/application-menu-reference/13-zulu-hide-others.png",
+      "length": 5891,
+      "sha256": "fa01b95154a963e7c8ef47b33faa1e0d88253721d96091267e11f73ef50eec80"
+    },
+    {
+      "path": "results/application-menu-reference/14-only-zulu-visible-menu.png",
+      "length": 7551,
+      "sha256": "7e46e362c0f76a4b46f4e31015f7c4c8382ebb8dca4494f11f55343980c54ae5"
+    },
+    {
+      "path": "results/application-menu-reference/15-show-all-zulu-still-active.png",
+      "length": 8299,
+      "sha256": "2819ea6624d6f8db3453e39fcd8574bd066c822330b3c2fbf7a9826c8308476d"
+    },
+    {
+      "path": "results/application-menu-reference/16-show-all-menu.png",
+      "length": 9733,
+      "sha256": "5c76fae2e70babc81be8697c39cda7fb6bb785b18af6117b5272cafedf7156e7"
+    },
+    {
+      "path": "results/application-menu-reference/17-quit-zulu-fallback.png",
+      "length": 8615,
+      "sha256": "f3aef6f2f31df52048420118dc036065ab819925d08dbdc0f4ba8febc8633137"
+    },
+    {
+      "path": "results/application-menu-reference/18-quit-zulu-menu.png",
+      "length": 9557,
+      "sha256": "5054cd005b0c1796441071cab732f342746fe256d594978bbbe6360a9245e651"
+    },
+    {
+      "path": "results/application-menu-reference/19-alpha-highlight.png",
+      "length": 9537,
+      "sha256": "a2a5ce4a4c94348da8b71192f03f79090212dde3fd753c1b878dd57ae9df7488"
+    },
+    {
+      "path": "results/application-menu-reference/20-restore-alpha-window.png",
+      "length": 7752,
+      "sha256": "0849d5dcefa19358fc7163774182db2c676cbf636f84bf16c617fb76d8c9a018"
+    },
+    {
+      "path": "results/application-menu-reference/21-quit-alpha-finder.png",
+      "length": 8599,
+      "sha256": "5a16097130a3cd36d580defb7e4a248fd4bd142228251731e4db17e7a040378f"
+    },
+    {
+      "path": "results/application-menu-reference/22-finder-only-again.png",
+      "length": 9273,
+      "sha256": "6cf447c09dcc38c85ab6ef483462dfa13e87d213fd075be264a2b14068bf71ab"
+    },
+    {
+      "path": "results/application-menu-reference/boot-check-2.png",
+      "length": 4985,
+      "sha256": "be604af1e24d415dc574ed250b625b5efded943472a7e0ca56d7194e37a75031"
+    },
+    {
+      "path": "results/application-menu-reference/boot-check.png",
+      "length": 13853,
+      "sha256": "08b4a27a67eb0ee9d6f9ef91db2ee4b0651c7445f2e4d40dbf32789a2fa948f8"
+    }
+  ],
+  "menus": [
+    {
+      "path": "results/application-menu-reference/01-finder-menu-menus.json",
+      "length": 22679,
+      "sha256": "dfd2527b6dbcc5653cbcad4ef45d3ede34e298ff7bb95f701aa2b9199d4bad88"
+    },
+    {
+      "path": "results/application-menu-reference/04-zulu-menu-menus.json",
+      "length": 4747,
+      "sha256": "29a86a4c3006017db0e8068210c3fd0b9f6a65e6434c64054cecf400dcb913df"
+    },
+    {
+      "path": "results/application-menu-reference/06-three-apps-alpha-menu-menus.json",
+      "length": 5025,
+      "sha256": "b45590148439e5f1cb1ba92c00445050c367b947103a269824fb38b1454423a2"
+    },
+    {
+      "path": "results/application-menu-reference/08-hidden-alpha-menu-menus.json",
+      "length": 23517,
+      "sha256": "0b8a124db2751ec1d9290d3503545017525e16c287ce6617d78e828b5da12b0a"
+    },
+    {
+      "path": "results/application-menu-reference/10-only-finder-visible-menu-menus.json",
+      "length": 23526,
+      "sha256": "3214270941b094e5f337154172ecf150dfb2e27568263a8646d917c35c87d45a"
+    },
+    {
+      "path": "results/application-menu-reference/12-unhidden-zulu-menu-menus.json",
+      "length": 5016,
+      "sha256": "e6d83b87bfadbbaeaa598e6cd117f543171c84a498ff3724cfe6a7e80215a901"
+    },
+    {
+      "path": "results/application-menu-reference/14-only-zulu-visible-menu-menus.json",
+      "length": 5022,
+      "sha256": "59f3b4c0fec202349857a95ca6931713d26c05c8f36de481417f2236c58c348e"
+    },
+    {
+      "path": "results/application-menu-reference/16-show-all-menu-menus.json",
+      "length": 5012,
+      "sha256": "ec930fb668159df6080961afd17b78b79c9ab5c54dedf0cd1456690da4fdd43b"
+    },
+    {
+      "path": "results/application-menu-reference/18-quit-zulu-menu-menus.json",
+      "length": 23259,
+      "sha256": "b95e77500383903f8a740bc0636ac67f39b4381c1e584afb39ebc9462cecfa30"
+    },
+    {
+      "path": "results/application-menu-reference/22-finder-only-again-menus.json",
+      "length": 23001,
+      "sha256": "2714b5bdee3603f83478fb3466229f8210e1d6a4314409158655ae399175c15c"
+    }
+  ],
+  "owned_vm_exited": true,
+  "isolation": "Owned raw clone and unique Unix QMP endpoint; original and visible VMs untouched.",
+  "derived_fixtures": [
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/01-finder-menu.png",
+      "length": 930,
+      "sha256": "caa5659ffb8541c54863643769ba4e93dbc81e00859f960bc8b2ebf8c06f51f3"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/01-finder-menu.rgb",
+      "length": 25956,
+      "sha256": "2e953aef4ba561f083a3a817ffd71a43e41dd5d9f42f1e6c02037797a458ec03"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/04-zulu-menu.png",
+      "length": 1321,
+      "sha256": "8e01a5e148d21c35a21f8817c9949420fc9cd9752e5015016b5b0cf58ce892c5"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/06-three-apps-alpha-menu.png",
+      "length": 1552,
+      "sha256": "a8681544f6fa0bd2beb3e6d851916b19d5a876218b713d6cd003d39675b492f0"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/07-hide-alpha-fallback.png",
+      "length": 8733,
+      "sha256": "89d6a41f6eaa4929b335880379e7cc1788aa1349110667c46e45609e5bf981f9"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/08-hidden-alpha-menu.png",
+      "length": 1567,
+      "sha256": "d2066df21d0b04a7b96c5b2f6124efa69178fe712096f98274bbe2c085ebabaf"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/09-hide-others-finder.png",
+      "length": 8516,
+      "sha256": "3be1c414d4b9478c5c1b4745ec90e386883734a3beab9f7748614db14f077b8a"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/10-only-finder-visible-menu.png",
+      "length": 1451,
+      "sha256": "441f3d637f56e7987bd47af062b6bc98ea143862833375374be05bd184df5112"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/11-select-hidden-zulu.png",
+      "length": 8346,
+      "sha256": "b25e5765d78e762fc36e2e92a3926d207cf74da9eeecdf04c0a76bfacf49a62a"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/12-unhidden-zulu-menu.png",
+      "length": 1646,
+      "sha256": "a9e4c0f67659d5001470c42cbe25ec719a7e506d877617f9a0cfc9b240b592ec"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/13-zulu-hide-others.png",
+      "length": 5891,
+      "sha256": "fa01b95154a963e7c8ef47b33faa1e0d88253721d96091267e11f73ef50eec80"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/14-only-zulu-visible-menu.png",
+      "length": 1674,
+      "sha256": "2bf1fac0a9f43c5d40be9e040b1c9721f68e6161e8619e4b4195cd10bb2bcd23"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/15-show-all-zulu-still-active.png",
+      "length": 8299,
+      "sha256": "2819ea6624d6f8db3453e39fcd8574bd066c822330b3c2fbf7a9826c8308476d"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/16-show-all-menu.png",
+      "length": 1563,
+      "sha256": "0e753a4a0d23a7cae33aef34255b281d742c67fdc094cbff9ea917689013d072"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/17-quit-zulu-fallback.png",
+      "length": 8615,
+      "sha256": "f3aef6f2f31df52048420118dc036065ab819925d08dbdc0f4ba8febc8633137"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/18-quit-zulu-menu.png",
+      "length": 1303,
+      "sha256": "781112bd3b14708e7807e8d137c6ccbc193d5205c8ccf58c824ce020f735bc8d"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/19-alpha-highlight.png",
+      "length": 425,
+      "sha256": "0b7c02a675a88bf83d5aaf09abc1d1d2749c8475d372c574a2b192f1cd1d9538"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/20-restore-alpha-window.png",
+      "length": 7752,
+      "sha256": "0849d5dcefa19358fc7163774182db2c676cbf636f84bf16c617fb76d8c9a018"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/21-quit-alpha-finder.png",
+      "length": 8599,
+      "sha256": "5a16097130a3cd36d580defb7e4a248fd4bd142228251731e4db17e7a040378f"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/22-finder-only-again.png",
+      "length": 927,
+      "sha256": "f14aca05177c39b19b52754701b32c115c623527d2bdb0935a71f78579e2d86e"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/README.md",
+      "length": 3836,
+      "sha256": "3ae5c1c3b7234c78083cea4ccf5528536c15c23d2331082d981664aeee690c0e"
+    },
+    {
+      "path": "System7/crates/mac-toolbox/tests/data/application-menu/original.json",
+      "length": 17701,
+      "sha256": "0c1eb00c9ae014ccc2c3f0dcb68b13fa2f092dbcd00e28a836ca3b24f5c8fc48"
+    }
+  ],
+  "limits": [
+    "Three apps, ASCII names with distinct initial letters, one window per probe.",
+    "No name collation ties, overflow, Desk Accessories, modal failures or exhaustive fallback permutations.",
+    "No original timer-preemption claim: original probes cooperate through WaitNextEvent.",
+    "Literal menu crops retain cursor tail at global [619,20,626,23]; renderer-only comparisons must mask it. Highlight crop retains mouse overlay over text."
+  ]
+}

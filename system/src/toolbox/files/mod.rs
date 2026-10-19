@@ -121,6 +121,7 @@ struct Mounted
 }
 struct OpenFile
 {
+    owner:    u64,
     id:       u32,
     volume:   u32,
     fork:     Fork,
@@ -370,7 +371,7 @@ impl Manager
             })
     }
 
-    fn slot(&mut self, handle: u32) -> Result<&mut OpenFile, Status>
+    fn slot(&mut self, owner: u64, handle: u32) -> Result<&mut OpenFile, Status>
     {
         let index = (handle & 0xff).checked_sub(1).ok_or(NOT_FOUND)? as usize;
         let slot = self.handles.get_mut(index).ok_or(NOT_FOUND)?;
@@ -378,10 +379,15 @@ impl Manager
         {
             return Err(NOT_FOUND);
         }
-        slot.file.as_mut().ok_or(NOT_FOUND)
+        let file = slot.file.as_mut().ok_or(NOT_FOUND)?;
+        if file.owner != owner
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(file)
     }
 
-    fn open(&mut self, volume: u32, id: u32, kind: u32) -> Result<(u32, u64), Status>
+    fn open(&mut self, owner: u64, volume: u32, id: u32, kind: u32) -> Result<(u32, u64), Status>
     {
         let mut entry = self.entry(volume, id)?;
         if entry.directory
@@ -412,7 +418,8 @@ impl Manager
         };
         let slot = &mut self.handles[index];
         slot.generation += 1;
-        slot.file = Some(OpenFile { id,
+        slot.file = Some(OpenFile { owner,
+                                    id,
                                     volume,
                                     fork,
                                     position: 0 });
@@ -512,8 +519,34 @@ impl Manager
         }
     }
 
+    /// Trusted kernel/bootstrap requests use a separate owner namespace. Native
+    /// application dispatch must supply the scheduler's app identity explicitly.
     pub fn request(&mut self, call: &mut FileCall, name: &str, output: &mut [u8])
                    -> Result<(), Status>
+    {
+        self.request_owned(0, call, name, output)
+    }
+
+    /// Close every fork owned by an exiting application, preserving all other
+    /// marks. Slot generations survive cleanup so old IDs cannot alias reuse.
+    pub fn close_all(&mut self, owner: u64) -> usize
+    {
+        let mut count = 0;
+        for slot in &mut self.handles
+        {
+            if slot.file.as_ref().is_some_and(|file| file.owner == owner)
+            {
+                slot.file = None;
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// `owner` is trusted execution context captured before any I/O handoff. It
+    /// is deliberately absent from FileCall and cannot be selected by an app.
+    pub fn request_owned(&mut self, owner: u64, call: &mut FileCall, name: &str, output: &mut [u8])
+                         -> Result<(), Status>
     {
         call.transferred = 0;
         if matches!(call.operation,
@@ -578,7 +611,7 @@ impl Manager
             }
             OPEN =>
             {
-                let (handle, length) = self.open(call.volume, call.cnid, call.fork)?;
+                let (handle, length) = self.open(owner, call.volume, call.cnid, call.fork)?;
                 call.handle = handle;
                 call.length = length;
                 call.position = 0;
@@ -586,10 +619,10 @@ impl Manager
             READ =>
             {
                 // Clone only the bounded extent descriptor; handles keep independent marks.
-                let file = self.slot(call.handle)?;
+                let file = self.slot(owner, call.handle)?;
                 let (volume, position, mut fork) = (file.volume, file.position, file.fork.clone());
                 let length = self.with_volume(volume, |v| io(v.read(&mut fork, position, output)))?;
-                let file = self.slot(call.handle)?;
+                let file = self.slot(owner, call.handle)?;
                 file.fork = fork;
                 file.position += length as u64;
                 call.transferred = length;
@@ -598,7 +631,7 @@ impl Manager
             }
             SEEK =>
             {
-                let file = self.slot(call.handle)?;
+                let file = self.slot(owner, call.handle)?;
                 let base = match call.whence
                 {
                     SEEK_START => 0,
@@ -617,13 +650,13 @@ impl Manager
             }
             TELL =>
             {
-                let file = self.slot(call.handle)?;
+                let file = self.slot(owner, call.handle)?;
                 call.position = file.position;
                 call.length = file.fork.length;
             }
             CLOSE =>
             {
-                self.slot(call.handle)?;
+                self.slot(owner, call.handle)?;
                 self.handles[((call.handle & 0xff) - 1) as usize].file = None;
             }
             _ => return Err(NOT_SUPPORTED)

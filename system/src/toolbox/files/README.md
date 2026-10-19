@@ -1,4 +1,4 @@
-# Resident read-only File Manager
+# Resident File Manager
 
 The System owns the HFS parser and all open fork marks. `toolbox-files` contains
 borrowed native service calls and small typed handles; applications neither parse
@@ -54,8 +54,21 @@ fork contents stream directly into caller buffers. Each operation remounts its
 volume using bounded MDB/B-tree buffers rather than retaining a self-referential
 disk borrow. This favors a simple safe implementation over lookup speed.
 
-This slice is read only even when firmware reports a writable disk. There are no
-write, create, rename, delete, allocation, metadata mutation, or flush services.
+Each open mark also belongs to one trusted application identity. The native trap
+captures that identity before switching to the storage thread and passes it to
+`dispatch_owned` / `request_owned`; `FileCall` cannot choose an owner. Reading,
+seeking, inspecting or closing another application's live handle returns
+`ACCESS_DENIED` and preserves the owner's mark and destination buffer. Closing
+an application invokes `close_all(owner)`, which releases only its marks without
+resetting slot generations. A relaunched application therefore cannot reuse a
+stale handle. Owner zero is the separate trusted loader/bootstrap namespace used
+by internal `request` calls, rather than an application bypass.
+
+Open forks support reads, not byte writes. Writable volumes additionally support
+bounded durable folder creation and Trash/Put Away/Empty Trash catalog mutations
+through the firmware write/flush boundary. All applications' open forks protect
+their files from these mutations. There are no general fork writes or arbitrary
+rename/delete services.
 HFS+ and non-512-byte APMs are unsupported. Existing HFS B-tree/overflow checks
 still apply: scans are bounded, normal file/data/resource overflow extents are
 supported, but growth of the extents-overflow tree itself beyond its inline
@@ -76,6 +89,10 @@ reads, EOF, rejected seeks, stale handles, capacity, and the safe public
 `Files -> Client::file -> FileCall -> Manager` path. The transport test also proves
 that caller-supplied raw pointer fields are replaced and cleared on success and
 error. HFS tests retain the fragmented overflow-fork and malformed-tree fixtures.
+Canonical `mac-toolbox/tests/file_ownership.rs` additionally exercises trusted
+application context selection through the real public gate: foreign-handle
+denial, independent marks, paired legacy-gate enforcement, owner-specific exit
+cleanup and rejection of old handles after slot reuse.
 
 ```sh
 cargo test --manifest-path System7/Cargo.toml -p mac-hfs

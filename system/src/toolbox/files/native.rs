@@ -1,8 +1,11 @@
 //! Checked ABI pointer boundary shared by native and host service gates.
 use mac_abi::{files::FileCall, *};
 /// # Safety
-/// Request and nested buffers must be valid, exclusive borrows for their sizes.
-pub(crate) unsafe fn dispatch(manager: &mut super::Manager, pointer: *mut (), size: usize) -> i64
+/// Request and nested buffers must be live exclusive borrows for their sizes.
+/// `owner` must be captured from trusted execution context before I/O handoff.
+pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, pointer: *mut (),
+                                    size: usize)
+                                    -> i64
 {
     if pointer.is_null()
        || size != size_of::<FileCall>()
@@ -40,5 +43,5 @@ pub(crate) unsafe fn dispatch(manager: &mut super::Manager, pointer: *mut (), si
     {
         unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
     };
-    manager.request(call, name, output).map_or_else(|e| e, |()| OK) as i64
+    manager.request_owned(owner, call, name, output).map_or_else(|e| e, |()| OK) as i64
 }

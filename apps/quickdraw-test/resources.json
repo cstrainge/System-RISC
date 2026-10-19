@@ -1,0 +1,191 @@
+{
+  "name": "QuickDraw Test",
+  "binary_name": "QuickDrawTest",
+  "file_type": "APPL",
+  "creator": "QDTS",
+  "role": "application",
+  "abi_version": 6,
+  "load_base": "0x83000000",
+  "load_limit": "0x84000000",
+  "description": "RISCy System QuickDraw Test",
+  "resources": [
+    {
+      "type": "MENU",
+      "id": 128,
+      "symbol": "FILE_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "File",
+        "items": [
+          {
+            "text": "Close Window",
+            "command": "clos",
+            "enabled": true,
+            "key": "W"
+          },
+          "-",
+          {
+            "text": "Quit",
+            "command": "quit",
+            "enabled": true,
+            "key": "Q"
+          }
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 129,
+      "symbol": "TEST_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "Tests",
+        "items": [
+          {
+            "text": "Shapes",
+            "command": "p000",
+            "enabled": true
+          },
+          {
+            "text": "Transfer Modes",
+            "command": "p001",
+            "enabled": true
+          },
+          {
+            "text": "Regions",
+            "command": "p002",
+            "enabled": true
+          },
+          {
+            "text": "Bitmaps",
+            "command": "p003",
+            "enabled": true
+          },
+          {
+            "text": "Fonts",
+            "command": "p004",
+            "enabled": true
+          },
+          {
+            "text": "Offscreen Worlds",
+            "command": "p005",
+            "enabled": true
+          },
+          {
+            "text": "PICT",
+            "command": "p006",
+            "enabled": true
+          },
+          {
+            "text": "Icons",
+            "command": "p007",
+            "enabled": true
+          },
+          {
+            "text": "Resources",
+            "command": "p008",
+            "enabled": true
+          },
+          {
+            "text": "PNG",
+            "command": "p009",
+            "enabled": true
+          }
+        ]
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 128,
+      "symbol": "PRODUCT_NAME",
+      "payload": {
+        "format": "pstring",
+        "text": "QuickDraw Test"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 128,
+      "symbol": "APPLICATION_ICON",
+      "payload": {
+        "format": "file",
+        "path": "assets/application.icn"
+      }
+    },
+    {
+      "type": "BNDL",
+      "id": 128,
+      "symbol": "APPLICATION_BUNDLE",
+      "payload": {
+        "format": "hex",
+        "hex": "514454530000000149434e2300000000008046524546000000000080"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 128,
+      "symbol": "APPLICATION_REFERENCE",
+      "payload": {
+        "format": "hex",
+        "hex": "4150504c000000"
+      }
+    },
+    {
+      "type": "SIZE",
+      "id": -1,
+      "symbol": "MEMORY_REQUIREMENTS",
+      "payload": {
+        "format": "hex",
+        "hex": "00000010000000040000"
+      }
+    },
+    {
+      "type": "WIND",
+      "id": 128,
+      "symbol": "WINDOW_LAYOUT",
+      "payload": {
+        "format": "hex",
+        "hex": "004b002801b90258000801000100000000000000"
+      }
+    },
+    {
+      "type": "PICT",
+      "id": 24000,
+      "symbol": "QUICKDRAW_DEMO_PICTURE",
+      "payload": {
+        "format": "file",
+        "path": "assets/quickdraw-demo.pict"
+      }
+    },
+    {
+      "type": "PNG ",
+      "id": 128,
+      "symbol": "QUICKDRAW_DEMO_PNG",
+      "payload": {
+        "format": "file",
+        "path": "assets/demo-rgba.png"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 2000,
+      "symbol": "UI_TEXT",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "1 Shapes",
+          "2 Modes",
+          "3 Regions",
+          "4 Bits",
+          "5 Fonts",
+          "6 Worlds",
+          "7 PICT",
+          "8 Icons",
+          "9 Res",
+          "0 PNG",
+          "Keys 1-9, 0 for PNG, or click tabs. Ctrl-Q quits."
+        ]
+      }
+    }
+  ]
+}

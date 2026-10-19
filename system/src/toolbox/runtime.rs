@@ -23,28 +23,38 @@ mod dialog_runtime;
 mod event_runtime;
 #[path = "textedit/runtime.rs"]
 mod textedit_runtime;
+#[path = "processes/runtime.rs"]
+mod local;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
-    dialogs:      super::dialogs::DialogState,
-    desktop:      DesktopLayer,
-    menus:        super::menus::Manager,
-    cursors:      super::quickdraw::cursors::Cursors,
-    worlds:       super::quickdraw::worlds::Worlds,
-    classic_font: mac_abi::quickdraw::FontSelection,
-    pub windows:  WindowManager,
-    events:       EventManager,
-    textedit:     super::textedit::Manager,
-    definitions:  Definitions,
-    content:      Vec<Content>,
-    decoders:     [Decoder; 2],
-    pub revision: u32,
-    pub updates:  u32,
-    last_key:     u8,
-    last_action:  &'static str,
-    redraw:       bool,
-    last_logged:  u32,
-    cdef:         DefinitionEntry
+    dialogs:       super::dialogs::DialogState,
+    desktop:       DesktopLayer,
+    menus:         super::menus::Manager,
+    cursors:       super::quickdraw::cursors::Cursors,
+    worlds:        super::quickdraw::worlds::Worlds,
+    classic_font:  mac_abi::quickdraw::FontSelection,
+    legacy:        crate::context::LegacyGlobals,
+    pub windows:   WindowManager,
+    events:        EventManager,
+    textedit:      super::textedit::Manager,
+    definitions:   Definitions,
+    content:       Vec<Content>,
+    decoders:      [Decoder; 2],
+    pub revision:  u32,
+    pub updates:   u32,
+    last_key:      u8,
+    last_action:   &'static str,
+    redraw:        bool,
+    last_logged:   u32,
+    cdef:          DefinitionEntry,
+    mdef:          DefinitionEntry,
+    owner:         u64,
+    foreground:    u64,
+    locals:        Vec<local::Saved>,
+    window_owners: Vec<(WindowId, u64)>,
+    processes:     super::processes::Manager,
+    app_menu:      super::processes::menu::ApplicationMenu
 }
 
 impl Desktop
@@ -58,10 +68,25 @@ impl Desktop
     {
         if id == mac_abi::quickdraw::DESKTOP_TARGET
         {
+            if self.owner != 1
+            {
+                return Err(ACCESS_DENIED);
+            }
             self.desktop.pending_mut()
         }
         else
         {
+            if !self.owns(WindowId(id))
+            {
+                return Err(if self.windows.window(WindowId(id)).is_some()
+                           {
+                               ACCESS_DENIED
+                           }
+                           else
+                           {
+                               NOT_FOUND
+                           });
+            }
             self.content.iter_mut().find(|content| content.id.0 == id).ok_or(NOT_FOUND)
         }
     }
@@ -84,6 +109,7 @@ impl Desktop
                   cursors: Default::default(),
                   worlds: Default::default(),
                   classic_font: Default::default(),
+                  legacy:Default::default(),
                   windows: WindowManager::with_gate(crate::machine::traps::gateway),
                   events: EventManager::new(),
                   textedit: Default::default(),
@@ -96,7 +122,9 @@ impl Desktop
                   last_action: "READY",
                   redraw: true,
                   last_logged: u32::MAX,
-                  cdef })
+                  cdef,mdef,owner:1,foreground:1,locals:alloc::vec![local::Saved::new(1,mdef)],window_owners:Vec::new(),
+                  processes:super::processes::Manager::new(),
+                  app_menu:super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,crate::kernel::resources().ok_or(NOT_SUPPORTED)?)? })
     }
 
     fn uptime() -> u64
@@ -117,6 +145,10 @@ impl Desktop
         {
             return NOT_SUPPORTED;
         };
+        if call.menu_id == super::processes::menu::MENU_ID
+        {
+            return self.app_menu.query(call).map_or_else(|e| e, |_| OK);
+        }
         let result = self.menus.request(call, resources);
         if matches!(result, Ok(true))
         {
@@ -127,18 +159,40 @@ impl Desktop
 
     fn menu_selection(&mut self, selection: mac_abi::menus::Selection, when: u32)
     {
-        self.events.post(Event { kind: EventKind::MenuCommand,
-                                 message: ((selection.menu_id as u16 as u32) << 16)
-                                          | u32::from(selection.item),
-                                 when,
-                                 where_: self.events.mouse,
-                                 modifiers: self.events.modifiers });
+        self.events.post_system(Event { kind: EventKind::MenuCommand,
+                                        message: ((selection.menu_id as u16 as u32) << 16)
+                                                 | u32::from(selection.item),
+                                        when,
+                                        where_: self.events.mouse,
+                                        modifiers: self.events.modifiers });
         self.last_action = "MENU";
     }
 
     pub fn window(&mut self, operation: u32, request: &mut WindowRequest) -> Status
     {
         let when = Self::when();
+        if request.id == 0 && operation == GET_WINDOW
+        {
+            let Some(id) = self.front_owned()
+            else
+            {
+                return NOT_FOUND;
+            };
+            request.id = id.0;
+        }
+        if !matches!(operation, NEW_WINDOW | SELECT_DESKTOP)
+           && request.id != 0
+           && !self.owns(WindowId(request.id))
+        {
+            return if self.windows.window(WindowId(request.id)).is_some()
+            {
+                ACCESS_DENIED
+            }
+            else
+            {
+                NOT_FOUND
+            };
+        }
         let id = WindowId(request.id);
         match operation
         {
@@ -161,7 +215,7 @@ impl Desktop
                 };
                 let Some(id) = self.windows.new_window_with_definition(request.bounds,
                                                                        title,
-                                                                       0,
+                                                                       self.owner as u32,
                                                                        (request.minimum_width,
                                                                         request.minimum_height),
                                                                        request.procedure,
@@ -173,6 +227,31 @@ impl Desktop
                     return BAD_ARGUMENT;
                 };
                 request.id = id.0;
+                self.window_owners.push((id, self.owner));
+                if self.owner != self.foreground
+                {
+                    if self.processes.get(self.owner).is_ok_and(|p| p.info.hidden != 0)
+                    {
+                        self.windows.set_hidden(id, true);
+                    }
+                    let foreground: Vec<_> =
+                        self.windows
+                            .back_to_front()
+                            .filter(|w| self.window_owner(w.id) == Some(self.foreground))
+                            .map(|w| w.id)
+                            .collect();
+                    if foreground.is_empty()
+                    {
+                        self.windows.deactivate_all(&mut self.events, when);
+                    }
+                    else
+                    {
+                        for front in foreground
+                        {
+                            self.windows.select_window(front, &mut self.events, when);
+                        }
+                    }
+                }
                 self.content.push(Content { id,
                                             commands: Vec::new(),
                                             port: service::Port::default() });
@@ -185,10 +264,16 @@ impl Desktop
                     return NOT_FOUND;
                 }
                 self.content.retain(|content| content.id != id);
+                self.window_owners.retain(|(window, _)| *window != id);
                 self.last_action = "CLOSE";
             }
             SELECT_WINDOW =>
             {
+                if self.owner != self.foreground
+                   && let Err(status) = self.activate_process(self.owner)
+                {
+                    return status;
+                }
                 if self.windows.window(id).is_none()
                 {
                     return NOT_FOUND;
@@ -198,6 +283,15 @@ impl Desktop
             }
             SELECT_DESKTOP =>
             {
+                if self.owner != 1
+                {
+                    return ACCESS_DENIED;
+                }
+                if self.foreground != 1
+                   && let Err(status) = self.activate_process(1)
+                {
+                    return status;
+                }
                 self.windows.deactivate_all(&mut self.events, when);
                 self.last_action = "DESKTOP_SELECT";
             }
@@ -260,6 +354,8 @@ impl Desktop
             END_UPDATE => self.windows.end_update(id),
             _ => return NOT_SUPPORTED
         }
+        self.route_events();
+        self.window_owners.retain(|(id, _)| self.windows.window(*id).is_some());
         self.revision = self.revision.wrapping_add(1);
         self.redraw = true;
         // Retained drawing is committed before EndUpdate returns. Applications
@@ -354,6 +450,10 @@ impl Desktop
         if matches!(call.operation,
                     QD_DESKTOP_BEGIN | QD_DESKTOP_END | QD_DESKTOP_CANCEL | QD_DESKTOP_BOUNDS)
         {
+            if self.owner != 1 && call.operation != QD_DESKTOP_BOUNDS
+            {
+                return Err(ACCESS_DENIED);
+            }
             let committed = self.desktop.request(call)?;
             if committed
             {
@@ -619,15 +719,26 @@ impl Desktop
     {
         self.last_action = match action
         {
-            Action::Drag(_) => "DRAG",
+            Action::Drag(id) =>
+            {
+                // Ordinary DragWindow activates only on accepted release;
+                // Command-drag leaves the foreground application unchanged.
+                if self.windows.active_window() == Some(id)
+                   && let Some(owner) = self.window_owner(id)
+                   && owner != self.foreground
+                {
+                    let _ = self.activate_process(owner);
+                }
+                "DRAG"
+            }
             Action::Resize(_) => "RESIZE",
             Action::Close(id) =>
             {
                 self.content.retain(|content| content.id != id);
-                self.events.post(Event { kind: EventKind::OsEvent,
-                                         message: 0x02000000 | id.0,
-                                         when,
-                                         ..self.events.null_event(when) });
+                self.events.post_system(Event { kind: EventKind::OsEvent,
+                                                message: 0x02000000 | id.0,
+                                                when,
+                                                ..self.events.null_event(when) });
                 "CLOSE"
             }
         };
@@ -654,6 +765,11 @@ impl Desktop
             Input::Move(point) =>
             {
                 self.events.mouse = point;
+                if self.app_menu.is_tracking()
+                {
+                    self.app_menu.hover(point);
+                    return;
+                }
                 if self.menus.is_tracking()
                 {
                     self.menus.hover(point);
@@ -678,14 +794,25 @@ impl Desktop
                 }
                 if down
                 {
+                    if self.app_menu.begin(point)
+                    {
+                        return;
+                    }
                     if self.menus.begin(point)
                     {
                         return;
                     }
                     let hit = self.windows.find_window(point);
+                    let active_before = self.windows.active_window();
+                    let owner = hit.window.and_then(|id| self.window_owner(id)).unwrap_or(1);
+                    if owner != self.foreground && hit.part != WindowPart::Drag
+                    {
+                        let _ = self.activate_process(owner);
+                    }
+
                     if let Some(id) = hit.window
                     {
-                        let active = self.windows.active_window() == Some(id);
+                        let active = active_before == Some(id);
                         // DragWindow activates a background window only after a
                         // successful release; Command-drag preserves its plane.
                         if hit.part != WindowPart::Drag
@@ -712,18 +839,19 @@ impl Desktop
                                 let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 1, reserved: 0, param: (((local.v as u16 as u32) << 16) | local.h as u16 as u32) as i64, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: core::ptr::null_mut() };
                                 if super::resources::definitions::invoke(self.cdef, &mut call) > 0
                                 {
-                                    self.events.post(Event { kind: EventKind::OsEvent,
-                                                             message: 0x01000000 | id.0,
-                                                             when,
-                                                             where_: point,
-                                                             modifiers: self.events.modifiers });
+                                    self.events.post_system(Event { kind: EventKind::OsEvent,
+                                                                    message: 0x01000000 | id.0,
+                                                                    when,
+                                                                    where_: point,
+                                                                    modifiers: self.events
+                                                                                   .modifiers });
                                 }
                             }
-                            self.events.post(Event { kind: EventKind::MouseDown,
-                                                     message: id.0,
-                                                     when,
-                                                     where_: point,
-                                                     modifiers: self.events.modifiers });
+                            self.events.post_system(Event { kind: EventKind::MouseDown,
+                                                            message: id.0,
+                                                            when,
+                                                            where_: point,
+                                                            modifiers: self.events.modifiers });
                             self.last_action = "CONTENT";
                         }
                         else
@@ -733,15 +861,23 @@ impl Desktop
                     }
                     else
                     {
-                        self.events.post(Event { kind: EventKind::MouseDown,
-                                                 message: 0,
-                                                 when,
-                                                 where_: point,
-                                                 modifiers: self.events.modifiers });
+                        self.events.post_system(Event { kind: EventKind::MouseDown,
+                                                        message: 0,
+                                                        when,
+                                                        where_: point,
+                                                        modifiers: self.events.modifiers });
                     }
                 }
                 else
                 {
+                    if self.app_menu.is_tracking()
+                    {
+                        if let Some(action) = self.app_menu.release(point)
+                        {
+                            self.application_action(action);
+                        }
+                        return;
+                    }
                     if self.menus.is_tracking()
                     {
                         if let Some(selection) = self.menus.release(point)
@@ -754,11 +890,11 @@ impl Desktop
                     {
                         self.action(action, when);
                     }
-                    self.events.post(Event { kind: EventKind::MouseUp,
-                                             message: 0,
-                                             when,
-                                             where_: point,
-                                             modifiers: self.events.modifiers });
+                    self.events.post_system(Event { kind: EventKind::MouseUp,
+                                                    message: 0,
+                                                    when,
+                                                    where_: point,
+                                                    modifiers: self.events.modifiers });
                 }
             }
             Input::Key { mac_code,
@@ -782,22 +918,23 @@ impl Desktop
                     {
                         self.last_key = character;
                     }
-                    self.events.post(Event { kind: if !down
-                                             {
-                                                 EventKind::KeyUp
-                                             }
-                                             else if repeat
-                                             {
-                                                 EventKind::AutoKey
-                                             }
-                                             else
-                                             {
-                                                 EventKind::KeyDown
-                                             },
-                                             message: (mac_code as u32) << 8 | character as u32,
-                                             when,
-                                             where_: self.events.mouse,
-                                             modifiers: self.events.modifiers });
+                    self.events.post_system(Event { kind: if !down
+                                                    {
+                                                        EventKind::KeyUp
+                                                    }
+                                                    else if repeat
+                                                    {
+                                                        EventKind::AutoKey
+                                                    }
+                                                    else
+                                                    {
+                                                        EventKind::KeyDown
+                                                    },
+                                                    message: (mac_code as u32) << 8
+                                                             | character as u32,
+                                                    when,
+                                                    where_: self.events.mouse,
+                                                    modifiers: self.events.modifiers });
                 }
             }
         }
@@ -822,10 +959,15 @@ impl Desktop
                                      }
                                  })
         });
+        let caller = self.owner;
+        self.enter(self.foreground);
         for input in pending[..count].iter().flatten()
         {
             self.input(*input, when);
+            self.route_events();
         }
+        self.sync_input_state();
+        self.enter(caller);
         let mut keys = events::KeyMap::default();
         for decoder in &self.decoders
         {
@@ -835,6 +977,7 @@ impl Desktop
             }
         }
         self.events.keys = keys;
+        self.sync_input_state();
     }
 
     fn next_with_remove(&mut self, mask: u16, remove: bool) -> Event
@@ -842,13 +985,14 @@ impl Desktop
         self.poll_inputs();
         let when = Self::when();
         self.present();
+        self.route_events();
         (if remove { self.events.next_matching(mask) } else {self.events.peek_matching(mask)})
             .or_else(|| {
                 if mask & (1 << EventKind::Update as u16) != 0
                 {
                     if self.dialogs.active() {
                         self.windows.next_update_for(WindowId(self.dialogs.window),&self.events,when)
-                    } else {self.windows.next_update(&self.events, when)}
+                    } else {self.windows.next_update_matching(&self.events, when,|id|self.owns(id))}
                 }
                 else
                 {
@@ -860,6 +1004,8 @@ impl Desktop
 
     pub fn present(&mut self)
     {
+        let caller = self.owner;
+        self.enter(self.foreground);
         if self.redraw
         {
             let back = platform::back_buffer();
@@ -867,19 +1013,23 @@ impl Desktop
             background(&mut canvas);
             let cdef = self.cdef;
             let fonts = crate::kernel::fonts();
-            self.desktop.paint(&mut canvas, fonts, |canvas, command| paint(canvas, command, cdef));
+            if self.processes.get(1).is_ok_and(|p| p.info.hidden == 0)
+            {
+                self.desktop
+                    .paint(&mut canvas, fonts, |canvas, command| paint(canvas, command, cdef));
+            }
             let content = &self.content;
             let cdef = self.cdef;
             self.windows.draw(&mut canvas, |window, canvas| {
                             canvas.paint_rect(window.local_bounds(), WHITE);
                             if let Some(content) = content.iter().find(|c| c.id == window.id)
                             {
-                                content.paint(canvas, fonts, |canvas, command| {
-                                           paint(canvas, command, cdef)
-                                       });
+                                crate::kernel::with_resource_owner(u64::from(window.refcon),||content.paint(canvas,fonts,|canvas,command|paint(canvas,command,cdef)));
                             }
                         });
             self.menus.draw(&mut canvas);
+            self.app_menu.draw_bar(&mut canvas);
+            self.app_menu.draw_popup(&mut canvas);
             self.cursors.draw(&mut canvas, self.events.mouse);
             platform::present(back);
             self.redraw = false;
@@ -904,6 +1054,7 @@ impl Desktop
                     self.updates,
                     self.events.dropped);
         }
+        self.enter(caller);
     }
 }
 
@@ -966,6 +1117,7 @@ impl super::classic::Services for Desktop
             crate::kernel::fonts().ok_or(NOT_SUPPORTED)?
                                   .metrics(fonts_service::selection(selection))?;
             self.classic_font = selection;
+            self.legacy.font = selection;
         }
         Ok(self.classic_font)
     }

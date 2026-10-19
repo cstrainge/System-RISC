@@ -32,6 +32,18 @@ fn span(size: usize) -> usize
 }
 impl Manager
 {
+    /// Release an application's arena and live blocks without recycling old
+    /// handle generations when its scheduler slot is assigned to another app.
+    pub fn clear(&mut self)
+    {
+        self.arena = Vec::new();
+        for slot in &mut self.slots
+        {
+            slot.block = None;
+        }
+        self.error = OK;
+    }
+
     fn index(&self, handle: u32) -> Result<usize, Status>
     {
         let index = (handle & 0xffff).checked_sub(1).ok_or(NIL_HANDLE_ERR)? as usize;

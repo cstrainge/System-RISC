@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture Finder's PNG exercise; Rust owns pixel and completion assertions."""
+"""Capture the standalone QuickDraw Test PNG page launched from Finder; Rust owns pixel and completion assertions."""
 import argparse
 import hashlib
 import json

@@ -10,7 +10,7 @@ use crate::toolbox::{events::*,
                      quickdraw::{Canvas, Point, Rect, SurfaceExt,
                                  geometry::{sect_rect, union_rect}}};
 
-pub const MAX_WINDOWS: usize = 8;
+pub const MAX_WINDOWS: usize = 32;
 pub use mac_abi::WindowId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i16)]
@@ -47,6 +47,7 @@ pub struct Window
     user_bounds:    Option<Rect>,
     grow_icon_clip: Option<Rect>,
     damage:         Option<Rect>,
+    hidden:         bool,
     updating:       bool
 }
 impl Window
@@ -117,7 +118,16 @@ impl Window
                                         surface,
                                         gate: self.gate };
         // The manager owns state, and a supplied entry must implement this native ABI.
-        crate::toolbox::resources::definitions::invoke(self.entry, &mut call)
+        #[cfg(target_arch = "riscv64")]
+        {
+            crate::kernel::with_resource_owner(u64::from(self.refcon), || {
+                crate::toolbox::resources::definitions::invoke(self.entry, &mut call)
+            })
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            crate::toolbox::resources::definitions::invoke(self.entry, &mut call)
+        }
     }
 
     fn calculate(&mut self) -> bool
@@ -220,7 +230,10 @@ impl WindowManager
 
     pub fn front_window(&self) -> Option<WindowId>
     {
-        self.len.checked_sub(1).map(|n| self.order[n])
+        self.order[..self.len].iter()
+                              .rev()
+                              .find(|id| self.window(**id).is_some_and(|w| !w.hidden))
+                              .copied()
     }
 
     /// The desktop may own focus while windows remain in the same z order.
@@ -241,7 +254,7 @@ impl WindowManager
 
     pub fn back_to_front(&self) -> impl Iterator<Item = &Window>
     {
-        self.order[..self.len].iter().filter_map(|id| self.window(*id))
+        self.order[..self.len].iter().filter_map(|id| self.window(*id)).filter(|w| !w.hidden)
     }
 
     #[cfg(test)]
@@ -305,6 +318,7 @@ impl WindowManager
                                                          0,
                                                          bounds.right - bounds.left,
                                                          bounds.bottom - bounds.top)),
+                                  hidden: false,
                                   updating: false };
         if window.call(definition::NEW, 0, core::ptr::null_mut()) < 0 || !window.calculate()
         {
@@ -344,12 +358,12 @@ impl WindowManager
     {
         if let Some(id) = id
         {
-            events.post(Event { kind: EventKind::Activate,
-                                message: id.0,
-                                when,
-                                where_: events.mouse,
-                                modifiers: (events.modifiers & !ACTIVE_FLAG)
-                                           | if active { ACTIVE_FLAG } else { 0 } });
+            events.post_system(Event { kind: EventKind::Activate,
+                                       message: id.0,
+                                       when,
+                                       where_: events.mouse,
+                                       modifiers: (events.modifiers & !ACTIVE_FLAG)
+                                                  | if active { ACTIVE_FLAG } else { 0 } });
         }
     }
 
@@ -416,6 +430,26 @@ impl WindowManager
         true
     }
 
+    pub fn set_hidden(&mut self, id: WindowId, hidden: bool)
+    {
+        if let Some(window) = self.window_mut(id)
+        {
+            window.hidden = hidden;
+        }
+        self.invalidate_all();
+    }
+
+    pub fn next_update_matching(&self, events: &EventManager, when: u32,
+                                owns: impl Fn(WindowId) -> bool)
+                                -> Option<Event>
+    {
+        self.order[..self.len].iter().rev().filter(|id| owns(**id)).find_map(|id| {
+                                                                       self.next_update_for(*id,
+                                                                                            events,
+                                                                                            when)
+                                                                   })
+    }
+
     pub fn invalidate(&mut self, id: WindowId, rect: Rect)
     {
         if let Some(window) = self.window_mut(id)
@@ -439,10 +473,11 @@ impl WindowManager
     pub fn next_update(&self, events: &EventManager, when: u32) -> Option<Event>
     {
         let id = self.order[..self.len].iter().rev().find(|id| {
-                                                         self.window(**id)
-                                                             .is_some_and(|w| {
-                                                                 w.damage.is_some() && !w.updating
-                                                             })
+                                                         self.window(**id).is_some_and(|w| {
+                                                                              !w.hidden
+                                                                              && w.damage.is_some()
+                                                                              && !w.updating
+                                                                          })
                                                      })?;
         Some(Event { kind: EventKind::Update,
                      message: id.0,
@@ -455,7 +490,7 @@ impl WindowManager
     pub fn next_update_for(&self, id: WindowId, events: &EventManager, when: u32) -> Option<Event>
     {
         let window = self.window(id)?;
-        if window.damage.is_none() || window.updating
+        if window.hidden || window.damage.is_none() || window.updating
         {
             return None;
         }
@@ -496,6 +531,10 @@ impl WindowManager
         for id in self.order[..self.len].iter().rev()
         {
             let window = self.window(*id).unwrap();
+            if window.hidden
+            {
+                continue;
+            }
             let mut probe = *window;
             let param = ((point.v as u16 as u32) << 16) | point.h as u16 as u32;
             let part = match probe.call(definition::HIT, param as i64, core::ptr::null_mut())
@@ -840,6 +879,10 @@ impl WindowManager
         let mut count = 1;
         for front in &self.order[index + 1..self.len]
         {
+            if self.window(*front).is_none_or(|window| window.hidden)
+            {
+                continue;
+            }
             for cover in self.window(*front).unwrap().structure_pieces()
             {
                 let before = count;

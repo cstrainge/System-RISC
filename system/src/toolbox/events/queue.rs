@@ -4,6 +4,7 @@ use mac_abi::{Point, events::*};
 pub struct EventManager
 {
     queue:         [Event; 128],
+    routed:        [bool; 128],
     len:           usize,
     os_queue:      [Event; 20],
     os_len:        usize,
@@ -25,6 +26,7 @@ impl EventManager
     pub fn new() -> Self
     {
         Self { queue:     [Event::default(); 128],
+               routed:    [false; 128],
                len:       0,
                os_queue:  [Event::default(); 20],
                os_len:    0,
@@ -38,23 +40,51 @@ impl EventManager
 
     pub fn post(&mut self, event: Event)
     {
+        self.push(event, false);
+    }
+
+    /// Only trusted Window Manager/input paths may request owner routing. Public
+    /// application-posted events remain in their own queue, even when their
+    /// opaque message happens to equal another application's WindowId.
+    pub(crate) fn post_system(&mut self, event: Event)
+    {
+        self.push(event, true);
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn next_system(&mut self) -> Option<Event>
+    {
+        let index = self.routed[..self.len].iter().position(|routed| *routed)?;
+        Some(self.remove(index))
+    }
+
+    fn remove(&mut self, index: usize) -> Event
+    {
+        let event = self.queue[index];
+        self.queue.copy_within(index + 1..self.len, index);
+        self.routed.copy_within(index + 1..self.len, index);
+        self.len -= 1;
+        event
+    }
+
+    fn push(&mut self, event: Event, routed: bool)
+    {
         if self.len == self.queue.len()
         {
             self.queue.copy_within(1..self.len, 0);
+            self.routed.copy_within(1..self.len, 0);
             self.len -= 1;
             self.dropped = self.dropped.saturating_add(1);
         }
         self.queue[self.len] = event;
+        self.routed[self.len] = routed;
         self.len += 1;
     }
 
     pub fn next_matching(&mut self, mask: u16) -> Option<Event>
     {
         let index = self.queue[..self.len].iter().position(|event| event.matches(mask))?;
-        let event = self.queue[index];
-        self.queue.copy_within(index + 1..self.len, index);
-        self.len -= 1;
-        Some(event)
+        Some(self.remove(index))
     }
 
     pub fn peek_matching(&self, mask: u16) -> Option<Event>
@@ -66,7 +96,23 @@ impl EventManager
     /// An entry in both masks is the stop entry and remains queued.
     pub fn flush(&mut self, mask: u16, stop_mask: u16)
     {
-        flush(&mut self.queue, &mut self.len, mask, stop_mask);
+        let mut index = 0;
+        while index < self.len
+        {
+            let event = self.queue[index];
+            if event.matches(stop_mask)
+            {
+                break;
+            }
+            if event.matches(mask)
+            {
+                self.remove(index);
+            }
+            else
+            {
+                index += 1;
+            }
+        }
     }
 
     pub fn null_event(&self, when: u32) -> Event

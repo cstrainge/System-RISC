@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect resident TextEdit frames from a private SDK Finder; Rust asserts them."""
+"""Collect resident TextEdit reference frames and the standalone app UI; Rust asserts them."""
 import argparse
 import json
 from pathlib import Path
@@ -116,10 +116,8 @@ def capture(output):
 
     try:
         wait('DESKTOP_READY: Finder and native Window Manager')
-        move(290, 10)
-        button(True)
-        move(290, 30)
-        button(False)
+        from capture_system7_applications_ui import open_textedit
+        open_textedit(endpoint,serial)
         wait('FINDER_TEXTEDIT_READY\n')
         wait('FINDER_TEXTEDIT_STATE ')
         vm.qmp('screendump', {'filename': str(output / 'finder-open.ppm')}, endpoint)

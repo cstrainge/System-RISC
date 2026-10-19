@@ -21,10 +21,21 @@ pub struct Editor
 }
 impl Editor
 {
+    pub fn close(&mut self, system: &System<'_>) -> Result<(), Status>
+    {
+        if self.window != 0
+        {
+            system.textedit().dispose(self.editor).map_err(error)?;
+            system.close_window(self.window)?;
+            *self = Self::default();
+        }
+        Ok(())
+    }
+
     fn report(&self, system: &System<'_>) -> Result<(), Status>
     {
         let info = system.textedit().info(self.editor).map_err(error)?;
-        let mut line = crate::browser::Text::<128>::default();
+        let mut line = crate::Text::<128>::default();
         let _ = writeln!(&mut line,
                          "FINDER_TEXTEDIT_STATE length={} selection={}..{}",
                          info.text_length, info.selection_start, info.selection_end);
@@ -33,7 +44,9 @@ impl Editor
 
     pub fn active(&self, system: &System<'_>) -> bool
     {
-        self.window != 0 && system.window(0).is_ok_and(|w| w.id == self.window)
+        self.window != 0
+        && system.processes().current().is_ok_and(|process| process.foreground != 0)
+        && system.window(0).is_ok_and(|w| w.id == self.window)
     }
 
     pub fn selected(&self, system: &System<'_>) -> bool
@@ -68,9 +81,9 @@ impl Editor
                 return Err(BAD_ARGUMENT);
             }
             let mut title = [0; 768];
-            let title = crate::ui::text(system, 28, &mut title)?;
+            let title = crate::text(system, 0, &mut title)?;
             let mut sample = [0; 768];
-            let sample = crate::ui::text(system, 29, &mut sample)?;
+            let sample = crate::text(system, 1, &mut sample)?;
             let window = system.new_window(bounds, title, (240, 120), 8)?;
             let view =
                 Rect::new(8, 8, bounds.right - bounds.left - 8, bounds.bottom - bounds.top - 24);
@@ -129,7 +142,7 @@ impl Editor
             let view = Rect::new(8, 8, size.h - 8, size.v - 24);
             system.textedit().set_rects(self.editor, view, view).map_err(error)?;
             self.size = size;
-            let mut line = crate::browser::Text::<96>::default();
+            let mut line = crate::Text::<96>::default();
             let _ =
                 writeln!(&mut line, "FINDER_TEXTEDIT_LAYOUT width={} height={}", size.h, size.v);
             system.log(line.as_str())?;
@@ -147,7 +160,7 @@ impl Editor
             system.textedit().draw(self.editor, WindowId(self.window)).map_err(error)?;
             port.colors(0, 0xffffff).map_err(error)?;
             let mut bytes = [0; 768];
-            let footer = crate::ui::text(system, 30, &mut bytes)?;
+            let footer = crate::text(system, 2, &mut bytes)?;
             port.clip_rect(Rect::new(0, size.v - 20, size.h - 16, size.v)).map_err(error)?;
             port.text(quickdraw::fonts::FontSelection { family: 3,
                                                         size:   9,

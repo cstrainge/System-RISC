@@ -9,6 +9,7 @@ members = [
     "toolbox/*",
     "system",
     "finder",
+    "apps/*",
     "tools/mac-build",
     "tools/xtask",
     "tests/abi-smoke",

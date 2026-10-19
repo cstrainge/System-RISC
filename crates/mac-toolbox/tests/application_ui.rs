@@ -1,0 +1,204 @@
+//! Actual Finder launch and system app-switching interaction over physical input.
+#![cfg(not(target_arch = "riscv64"))]
+use std::{fs,
+          path::{Path, PathBuf},
+          process::Command};
+
+use serde_json::Value;
+
+fn frame(path: &Path) -> Vec<u8>
+{
+    let bytes = fs::read(path).unwrap();
+    let header = b"P6\n640 480\n255\n";
+    assert!(bytes.starts_with(header));
+    assert_eq!(bytes.len(), header.len() + 640 * 480 * 3);
+    bytes[header.len()..].to_vec()
+}
+
+fn region(bytes: &[u8], left: usize, top: usize, right: usize, bottom: usize) -> Vec<u8>
+{
+    (top..bottom).flat_map(|y| bytes[(y * 640 + left) * 3..(y * 640 + right) * 3].iter().copied())
+                 .collect()
+}
+
+#[test]
+#[ignore = "requires fresh cargo xtask image and an independent graphical QEMU"]
+fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_them()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let output =
+        root.join("results/system7").join(format!("applications-ui-{}", std::process::id()));
+    let capture = Command::new("python3").arg(root.join("System7/scripts/\
+                                                         capture_system7_applications_ui.py"))
+                                         .arg("--output")
+                                         .arg(&output)
+                                         .current_dir(&root)
+                                         .output()
+                                         .unwrap();
+    assert!(capture.status.success(),
+            "UI capture failed:\n{}\n{}",
+            String::from_utf8_lossy(&capture.stdout),
+            String::from_utf8_lossy(&capture.stderr));
+    let report: Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(report["original_before"], report["original_after"], "base OS artifacts changed");
+    assert_eq!(report["owned_vm_exited"], true);
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:", "SYSTEM_ALLOCATION_FAILED:", "FINDER_ERROR:",
+                    "TEXTEDIT_EXERCISER_ERROR", "QUICKDRAW_TEST_ERROR", "PROCESS_ACTION_FAILED",
+                    "APPLICATION_MENU_FAILED"]
+    {
+        assert!(!serial.contains(failure), "unexpected {failure}:\n{serial}");
+    }
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=6"));
+    let snapshots = report["snapshots"].as_array().unwrap();
+    let observation = |name: &str| snapshots.iter().find(|value| value["name"] == name).unwrap();
+    let image = |name: &str| frame(&output.join(observation(name)["frame"].as_str().unwrap()));
+    let prefix =
+        |name: &str| &serial[..observation(name)["serial_length"].as_u64().unwrap() as usize];
+    let between = |before: &str, after: &str| {
+        &serial[observation(before)["serial_length"].as_u64().unwrap() as usize
+                ..observation(after)["serial_length"].as_u64().unwrap() as usize]
+    };
+    let editor_state = |name: &str| {
+        prefix(name).lines().rev().find(|line| line.starts_with("FINDER_TEXTEDIT_STATE ")).unwrap()
+    };
+    let front = |name: &str| {
+        prefix(name).lines()
+                    .rev()
+                    .find(|line| line.starts_with("WM_STATE "))
+                    .unwrap()
+                    .split_whitespace()
+                    .find_map(|field| field.strip_prefix("front="))
+                    .unwrap()
+                    .parse::<u32>()
+                    .unwrap()
+    };
+    assert!(prefix("applications-folder").contains("window=2 name=Applications\n"));
+    assert!(prefix("quickdraw-launched").contains("FINDER_MENU menu=1252 item=2 \
+                                                   command=736f7065\n"),
+            "QuickDraw must launch from Finder's actual File > Open resource command");
+    assert!(prefix("quickdraw-launched").contains("name=QuickDraw Test\n"));
+    assert!(prefix("quickdraw-page-two").contains("QD_DEMO_READY page=2 transfer\n"));
+    assert_ne!(region(&image("quickdraw-launched"), 48, 100, 575, 390),
+               region(&image("quickdraw-page-two"), 48, 100, 575, 390),
+               "launched QuickDraw application did not react to physical keyboard input");
+    assert!(prefix("textedit-abc").contains("FINDER_TEXTEDIT_STATE length=3 selection=3..3\n"));
+    let hidden = image("hide-others");
+    let restored = image("show-all");
+    // The original Hide Others removes Finder's desktop icons as well as windows.
+    // Keep this patch clear of the editor's structure and the composited pointer.
+    for y in 22..70
+    {
+        for x in 576..630
+        {
+            let expected = if (x + y) % 2 == 0 { 0x87 } else { 0xc0 };
+            let at = (y * 640 + x) * 3;
+            assert_eq!(&hidden[at..at + 3],
+                       &[expected; 3],
+                       "Hide Others left another app's desktop pixels at{x},{y}");
+        }
+    }
+    // QuickDraw's restored title overlaps the left part of the volume icon.
+    // The right-hand slice remains visible beyond both application structures.
+    assert!(region(&restored, 604, 22, 630, 70)
+            == region(&image("finder-initial"), 604, 22, 630, 70),
+            "Show All failed to restore Finder's visible desktop resources");
+    assert!(region(&hidden, 120, 71, 600, 88) == region(&restored, 120, 71, 600, 88),
+            "Show All changed foreground editor focus");
+    assert_eq!(editor_state("background-editor-before-click"),
+               "FINDER_TEXTEDIT_STATE length=3 selection=0..0");
+    assert!(between("background-editor-before-click", "first-background-content-click")
+            .contains("PROCESS_ACTIVE app=3\n"),
+            "first background content click must activate the editor application");
+    assert_eq!(editor_state("first-background-content-click"),
+               "FINDER_TEXTEDIT_STATE length=3 selection=1..1",
+               "activation click changed the caret before the Right-arrow probe");
+    assert_eq!(editor_state("first-click-caret-reset"),
+               "FINDER_TEXTEDIT_STATE length=3 selection=0..0");
+    assert_eq!(editor_state("second-foreground-content-click"),
+               "FINDER_TEXTEDIT_STATE length=3 selection=2..2",
+               "second content click must place the caret before the Left-arrow probe");
+    assert_eq!(editor_state("editor-caret-restored"),
+               "FINDER_TEXTEDIT_STATE length=3 selection=3..3");
+    assert!(!between("editor-caret-restored", "background-command-drag-released")
+             .contains("PROCESS_ACTIVE app=2\n"),
+             "Command-drag activated a background application");
+    for stage in ["background-command-drag-held", "background-command-drag-released",
+                  "background-ordinary-drag-held"]
+    {
+        assert_eq!(front(stage), 4, "background drag changed the front window at{stage}");
+        assert!(region(&image(stage), 0, 0, 145, 20)
+                == region(&image("editor-caret-restored"), 0, 0, 145, 20),
+                "background drag changed the foreground app menus at{stage}");
+    }
+    assert!(region(&image("editor-caret-restored"), 50, 58, 590, 74)
+            == region(&image("background-command-drag-released"), 60, 68, 600, 84),
+            "Command-drag must move the inactive title without changing its appearance");
+    assert!(!between("background-command-drag-released", "background-ordinary-drag-held")
+             .contains("PROCESS_ACTIVE app=2\n"),
+             "ordinary DragWindow activated its background application before release");
+    assert!(between("background-ordinary-drag-held", "background-ordinary-drag-released")
+            .contains("PROCESS_ACTIVE app=2\n"),
+            "ordinary DragWindow must activate its application after accepted release");
+    assert_eq!(front("background-ordinary-drag-released"), 3);
+    assert!(region(&image("background-ordinary-drag-released"), 0, 0, 145, 20)
+            == region(&image("quickdraw-page-two"), 0, 0, 145, 20),
+            "accepted background drag did not restore the owning application's menu bar");
+    assert!(prefix("quickdraw-resumed").contains("QD_DEMO_READY page=3 regions\n"));
+    assert!(prefix("textedit-resumed").contains("FINDER_TEXTEDIT_STATE length=5 selection=5..5\n"),
+            "application switching lost editor contents/selection or keyboard routing");
+    assert!(prefix("textedit-quit").contains("PROCESS_EXIT app=3\n"));
+    assert!(prefix("quickdraw-quit").contains("PROCESS_EXIT app=2\n"));
+    assert_eq!(prefix("textedit-relaunched").matches("TEXTEDIT_EXERCISER_READY\n").count(), 2);
+    assert!(prefix("textedit-relaunched-input").contains("PROCESS_LAUNCHED app=4 thread=5 \
+                                                          name=TextEdit Exerciser\n"),
+            "relaunch must create a fresh OS thread and application identity");
+    assert!(prefix("textedit-relaunched-input").contains("FINDER_TEXTEDIT_STATE length=1 \
+                                                          selection=1..1\n"));
+    assert!(prefix("finder-responsive-after-exit").contains("name=Documents\n"),
+            "Finder did not handle a real folder double-click after both applications exited");
+
+    // The original Finder-only application-menu interior, border and row text.
+    // The native icon may be the generic resource while original Finder uses a
+    // private icon family; exclude only that16px slot and the recorded cursor tail.
+    let golden = include_bytes!("data/application-menu/01-finder-menu.rgb");
+    assert_eq!(golden.len(), 103 * 84 * 3);
+    let actual = image("finder-only-menu");
+    let mut pixels = 0;
+    let mut differences = Vec::new();
+    for y in 20..103
+    {
+        for x in 533..634
+        {
+            if (550..566).contains(&x) && (85..101).contains(&y)
+               || (620..625).contains(&x) && y < 23
+            {
+                continue;
+            }
+            let at = (y * 640 + x) * 3;
+            let reference = ((y - 20) * 103 + x - 532) * 3;
+            if actual[at..at + 3] != golden[reference..reference + 3]
+            {
+                differences.push((x, y));
+            }
+            pixels += 1;
+        }
+    }
+    assert!(differences.is_empty(),
+            "{} original application-menu pixel differences; first{:?}; capture{}",
+            differences.len(),
+            &differences[..differences.len().min(20)],
+            output.display());
+    let acceptance = serde_json::json!({"status":"passed", "capture":report,
+        "acceptance":"mac-toolbox/tests/application_ui.rs", "original_application_menu_pixels":pixels,
+        "original_pixel_differences":0,"masked_pixels":{"native_icon_slot":256,"recorded_cursor_tail":15},
+        "finder_file_open_and_double_click_launch":"passed","independent_app_keyboard_input":"passed",
+        "application_switching_and_editor_state":"passed","hide_others_and_show_all":"passed",
+        "activation_click_does_not_click_through":"passed","second_content_click_delivered":"passed",
+        "background_command_drag_preserves_foreground":"passed","ordinary_drag_activates_on_release":"passed",
+        "resource_menu_quit_and_fresh_relaunch":"passed","finder_alive_after_exit":"passed"});
+    fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
+    fs::write(root.join("results/system7/application-ui-checks.json"),
+              serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
+}

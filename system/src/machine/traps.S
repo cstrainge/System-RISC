@@ -43,6 +43,9 @@ csrr t0, mtval
 sd t0, 264(sp)
 mv a0, sp
 call __system_trap_dispatch
+mv sp, a0
+.global __system_restore_frame
+__system_restore_frame:
 ld t0, 240(sp)
 csrw mepc, t0
 ld t0, 248(sp)
@@ -86,3 +89,8 @@ mv a0, a1
 mv a1, a2
 ecall
 ret
+
+.global __system_start_frame
+__system_start_frame:
+mv sp,a0
+j __system_restore_frame

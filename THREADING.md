@@ -12,12 +12,21 @@ preemption. Classic callback and A5/low-memory conventions are compatibility
 state attached to the application/context, not global scheduler state. A later
 native worker-thread API can expose additional OS threads explicitly.
 
-This is a required architecture contract, not a description of an implemented
-scheduler. Current firmware parks secondary harts, disables interrupts and starts
-Finder by a direct function call. There is no timer-driven context switch,
-thread-owned kernel stack, runnable queue or application-thread launch yet.
-Existing one-application boots and host concurrency tests cannot establish those
-features. They remain concrete delivery gates below.
+The first native implementation now schedules Finder and separately loaded APPLs
+on one RV64 hart. CLINT timer interrupts preempt application code independently
+of Toolbox calls. Up to eight application threads have independent 256 KiB stacks,
+saved register frames and trusted AppId/ThreadId contexts. Kernel traps mask
+interrupts, including nested definition calls, so allocator and manager guards
+cannot be preempted by another application on this hart. Blocking queues, worker
+thread APIs, migration and multiple harts remain future work. A private RV64 SDK gate has demonstrated another app progressing during a
+no-trap/no-yield interval, plus launch, relaunch, ownership, input, hide and exit.
+The consolidated regression gate also passes the paired Pascal process traps,
+eight caller-posted foreign-window event-isolation cases, and actual Finder/two-
+app graphical launch, focus, hide/restore, quit and relaunch tests.
+
+This is a trusted shared M-mode address space without an MMU or protection
+boundary. Owner checks prevent accidental cross-application object access through
+services; they cannot constrain arbitrary application pointers or machine code.
 
 ## Execution identities
 
@@ -42,17 +51,16 @@ its historical implicit global is selected through AppId.
 
 | Current state | Present assumption and required boundary |
 | --- | --- |
-| `kernel.rs` guarded managers and immutable published slots | One-shot startup now publishes logging/font/resource data through Once and mutable managers through bounded guards; repeated entry is rejected instead of replacing live values. App ownership and future scheduler-aware blocking remain separate gates. |
-| `ThreadContext::traps` | Trap dispatch now uses per-context RAII accounting rather than global DEPTH/NESTED. The current accessor deliberately supplies only the bootstrap thread; the scheduler must select each running thread's context before launching more threads, including migration. |
-| `Desktop` | Currently combines global compositor/input with application ports, event queue, controls and retained scenes. Split device/UI owner services from AppState; UI requests carry trusted AppId and return events to that app. A UI service OS thread is legitimate; a single cooperative loop scheduling all apps is not. |
-| Resource `Files.application`, current fonts, classic port/font state | Immutable System catalogs can be shared. Application resources/search state and graphics selection belong to the correct app/context. Published slices remain alive across asynchronous requests and exit until references drain. |
-| Scrap Manager | One system clipboard is deliberately shared and guarded by TryState. Requests copy payloads; no borrowed pointer escapes. Eight host threads exercise this real shared holder. Per-app private scraps, ownership/suspend-resume and scheduler-aware retry remain future integration. |
-| TextEdit | Generation-checked records belong to the guarded Desktop today. Native clipboard operations acquire Desktop then Scrap, stage fallible edits before publication, and return copied metadata. Future AppState must own editors and validate AppId; IDs alone are not isolation. Classic private TE scraps remain unimplemented. |
-| Memory and File Manager | Mutable arenas and fork marks are currently shared singleton state. Context-local instances or owner-checked tables are needed. Firmware storage callbacks have opaque pointers and serial-call requirements; they are not implicitly Send/Sync or interrupt-safe. |
-| Framebuffer/backbuffer and virtio input queues | Hardware accesses use mutable static storage with implicit single-owner access. Give compositor/device workers explicit ownership; never expose an unrestricted `'static mut` buffer to arbitrary app threads. Interrupt handlers enqueue bounded work rather than reentering managers. |
-| `LockedHeap` in ROM/System | Its allocator spinlock is not a scheduler-aware mutex. A preempted lock holder can deadlock a same-core allocator caller. Before enabling preemption, provide a bounded nonpreemptible allocator critical section or a proven scheduler-aware allocator; prohibit allocating interrupt paths. |
-| Firmware `BootVolume`, disk callbacks and ROM stack | Borrowed stack/context remains alive only while the original System call is live. Device ownership/lifetime must survive app threads, asynchronous I/O and shutdown. An I/O-owner OS thread can serialize the existing callbacks without asserting unrestricted thread affinity. |
-| Host test-support TLS `RefCell` | Test-only isolation, not production synchronization and not proof that callers share one manager. Concurrent acceptance must enter one shared real service fixture. |
+| `kernel.rs` guarded managers and immutable images | One-shot startup and bounded guards remain. Eight immutable image-cache slots include Finder; app code/resources remain resident after exit. No arbitrary relocation, hot replacement or unloading is implied. |
+| `ThreadContext::traps` | The RV64 scheduler selects the running thread context; nested accounting belongs to that OS thread. A separate bootstrap context is used for synchronous firmware service execution. |
+| `Desktop` | The global compositor, physical input and window registry remain shared. Trusted app context selects saved events, menus, dialogs, cursors, worlds, font/legacy state and TextEdit managers at the masked service boundary. Windows carry an owner; background retained scenes are composed centrally. |
+| Application resources | Read-only application-to-System/font search selects the caller's immutable image. Retained content replay selects the owning image, so a background window does not resolve against whichever application invoked the compositor. General mutable Resource Manager chains remain open. |
+| Scrap Manager | One shared guarded System clipboard. Native edits stage fallible changes before publication. Original private scraps and process suspend/resume transfer remain unimplemented. |
+| Memory Manager | Each scheduler slot has a separate bounded handle zone and MemErr state. Numeric IDs are process-local, not globally unique capabilities. Exit drops arena/live blocks while retaining generation counters across scheduler-slot reuse; a stale ID cannot alias the next allocation in that reused namespace. |
+| File Manager | One mounted catalog/device service with owner-tagged fork marks. The native trap captures AppId before I/O handoff; handle read/seek/tell/close checks that identity. Exit closes only its owner's marks. Internal loader requests use reserved owner zero. |
+| Framebuffer, input and allocator | One-hart interrupt-masked kernel work serializes device and heap access. App-only code is preemptible. This is not a multi-hart synchronization or blocking-mutex design. Secondary harts remain parked. |
+| Firmware `BootVolume` and disk callbacks | The original boot call remains live. `machine/io.rs` masks interrupts and switches to a dedicated synchronous execution stack with fixed bootstrap ownership. It is not an independently runnable I/O thread or an asynchronous queue, and the opaque firmware context is not given a Send implementation. |
+| Host test-support | Scoped TLS fixtures supply real resident gates. Shared service fixtures separately test guarded concurrency. Neither replaces actual RV64 timer, launch, switching and cleanup acceptance. |
 
 ## Legacy globals and native contexts
 
@@ -110,15 +118,15 @@ address-space/object translation rather than access to resident Rust addresses.
 
 ## Delivery gates
 
-| Gate | Required evidence |
+| Gate | Current implementation and required evidence |
 | --- | --- |
-| Boundary hardening | One-shot startup publication, bounded synchronized manager access, explicit owner/context plan and no new unchecked shared mutable globals. Shared real-service aggregate SDK concurrency tests verify exclusion, progress and cleanup. This does not provide OS threads. |
-| Scheduler foundation | Kernel-owned ThreadId, stacks/register saves, timer interrupt, runnable/blocked queues, wakeups and exit. Tests prove an independent OS thread runs when another performs no cooperative yield, including one-hart operation. |
-| Application launch | Finder and each independently loaded app are launched as separate actual OS threads. Per-app memory/resources/events/ports and owner-checked IDs pass simultaneous public SDK calls. A shared-stack function call, host thread or cooperative coroutine does not satisfy this gate. |
-| Application switching | The system-owned right-hand application menu reflects live Process Manager identities. Switching routes windows, app menus and keyboard events to the foreground AppId; hide/restore preserves state and quit removes stale entries. Background apps retain independent scheduled execution. Test Finder plus two native apps, including a nonyielding background thread. |
-| Reentrant service work | Snapshot/callback/commit paths release manager locks and preserve generation/owner state; nested WDEF/CDEF/resource/font traps and app callbacks pass under preemption and cancellation. |
-| Legacy Thread Manager | Original version-filtered APIs and errors pass inside one app's OS thread. A nonyielding context can stall sibling legacy contexts, but cannot prevent other apps or kernel threads from running. Context switches preserve the original app-visible state. |
-| Multi-hart and devices | Per-hart entry/interrupt stacks, thread migration, allocator preemption safety, device ownership, wakeup ordering and concurrent callback publication are proven. Removing the secondary-hart park alone is insufficient. |
+| Boundary hardening | One-shot publication, bounded guards, owner-tagged file marks and trusted context routing exist. Shared real-service host tests establish the captured exclusion/cleanup contracts, not hardware scheduling. |
+| Scheduler foundation | One-hart CLINT preemption, eight independent stacks/register frames, trusted identities and deferred retired-stack reclamation exist. A private RV64 observer progresses during a child's no-trap/no-yield loop on one hart; the canonical process acceptance passes. Blocking/sleep/wakeup queues, worker APIs and cancellation remain open. |
+| Application launch | Finder and disk-loaded native APPLs have independent application threads, app-local UI/resource/memory state and exit cleanup. Host SDK ownership tests cover file denial/cleanup and memory generation retention; the real RV64 launch/quit/relaunch, partition/ownership, Pascal and private synthetic-event gates pass. |
+| Application switching | Resident right-hand menu and Process Manager activation/hide/restore paths exist. Private SDK and actual Finder/two-app activation/hide/input/exit tests pass, including first-click activation and background dragging. The original popup comparison passes with explicit icon/cursor masks; this establishes the captured profile, not all application behavior. |
+| Reentrant service work | Existing definition-to-Surface/font/resource nesting remains supported. Stateful recursive manager calls still return Busy. General app callbacks require snapshot/callback/commit and cancellation tests. |
+| Legacy Thread Manager | Not implemented. Cooperative contexts must remain inside their host application's OS thread and cannot replace kernel preemption. |
+| Multi-hart and devices | Not implemented. Per-hart entry stacks, migration, blocking/wakeup ordering, allocator/device synchronization and concurrent callback publication need independent evidence. |
 
 Canonical tests belong under `crates/mac-toolbox/tests` and use the public SDK.
 Host tests are useful for shared-manager safety and race detection; real RV64
@@ -140,26 +148,27 @@ through `try_lock`. Memory and desktop callers receive
 `AccessError::{Unavailable, Busy, WrongOwner}`; these map respectively to
 `NOT_SUPPORTED`, `SERVICE_BUSY` and `WRONG_THREAD`. Busy is a temporary ownership
 condition, not a missing manager. No kernel retry loop spins behind a preempted
-owner. `OwnerState` keeps the non-Send firmware storage context on its verified
-I/O thread; its unsafe construction is confined to the bootstrap boundary.
+owner. `OwnerState` keeps the non-Send firmware storage context in its fixed-owner
+synchronous I/O service context; its unsafe construction is confined to the
+bootstrap boundary. This context uses a dedicated stack but is not an independently
+runnable service thread.
 `spin::Once` publishes immutable font/resource catalogs and logging callbacks.
 A one-shot entry guard prevents live manager replacement and races in heap setup.
 
 `context.rs` names AppId, ThreadId and LegacyContextId and provides an owned
 `LegacyGlobals` shape: resource-file selection, graphics port/font, memory and
 resource errors, volume/directory, event mask, A5 world, application zone and scrap
-reference. This shape is a routing contract, not implemented low-memory
-virtualization: existing managers still need to move their corresponding fields
-into the actual selected AppState. Only actual system-wide catalogs, device
+reference. The native application context now saves these fields with its
+manager state. This does not implement original low-memory addresses or 68k
+Thread Manager save/restore semantics. Only actual system-wide catalogs, device
 ownership, compositor state and system configuration stay shared. A global
 current-app variable is prohibited.
 
 Trap accounting is stored in `ThreadContext::traps`, with an RAII scope restoring
-its nesting count on exit. The current accessor explicitly supplies only the
-bootstrap context; scheduling must install the running thread's context before
-any additional thread can enter. It is not a per-hart counter disguised as a
-thread counter. The temporary I/O owner provider likewise must change from the
-single bootstrap hart invariant to the scheduler's actual ThreadId first.
+its nesting count on exit. The current accessor selects the scheduled RV64
+thread and uses a separate bootstrap service context during synchronous firmware handoff. The one-hart
+provider and interrupt discipline must become per-hart before migration or
+parallel execution is enabled.
 
 `concurrent_services.rs` exercises one shared production holder/Memory Manager
 through public SDK calls from eight host OS threads. It verifies request
@@ -182,7 +191,7 @@ facade remains `no_std` and usable by applications with or without `std`.
 | Platform layer requirement | Required delivery gate |
 | --- | --- |
 | Stable aligned pointer allocation, deallocation/reallocation and failure policy | Define raw allocator ABI, alignment/zero-size rules, ownership and preemption-safe synchronization. The current movable/opaque Memory Manager handles are not a GlobalAlloc backend. |
-| Application entry and termination | OS starts each application's main thread with owned arguments/environment/streams; exit drains threads and manager work before unloading. Current direct-call entry is bootstrap only. |
+| Application entry and termination | OS starts each application's main thread with owned arguments/environment/streams; exit drains threads and manager work before unloading. Independent application entry/exit exists; owned arguments, environment, streams and worker-thread draining remain open. |
 | OS thread spawn/join, TLS and destructors | Real kernel scheduling/stacks, per-thread platform data and deterministic cleanup. `std::thread_local!` and Toolbox execution identity must use the same actual ThreadId. |
 | Blocking mutex/condvar or futex/park/wake | Scheduler queues, atomic unlock-and-wait, wakeup ordering, timeout and cancellation. No spinlock held across preemption or callback substitutes for these services. |
 | Files and process-owned streams | Native UTF-8 paths, buffers, 64-bit offsets, open/read/write/flush/seek/error contracts, stdin/stdout/stderr and working directory. Legacy Mac Roman/HFS/fork conventions remain explicit adapters. Bounded catalog/Trash writes exist; general file writes and atomic replacement remain M7 work. |
@@ -207,8 +216,9 @@ blocking/wakeup semantics and std platform services are architecture-neutral.
 RISC-V is the first live machine. x86 is a future target, not a supported build;
 whether that means x86-64 or 32-bit x86 is an explicit later platform decision.
 Do not encode hardware hart/CPU IDs into application identity or add RISC-V CSRs
-to Toolbox/context code. The current bootstrap provider calls the machine
-adapter; the scheduler must replace it with genuine thread identity.
+to Toolbox/context code. The current RV64 machine adapter supplies scheduled
+thread identity; a second target must provide equivalent identity and trap-entry
+contracts.
 
 Keep trap entry/exit and register saves, thread stack/context switching, privilege
 levels/MMU/page tables, interrupts/timers/IPIs, atomics/barriers and machine-device

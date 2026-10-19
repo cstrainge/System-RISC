@@ -31,12 +31,61 @@ static RESOURCE_FILES: Once<crate::toolbox::resources::manager::Files> = Once::n
 static FONTS: Once<crate::toolbox::quickdraw::fonts::FontManager> = Once::new();
 static DESKTOP: TryState<crate::toolbox::runtime::Desktop> = TryState::new();
 static SCRAP: TryState<crate::toolbox::scrap::Manager> = TryState::new();
-static MEMORY: TryState<crate::toolbox::memory::Manager> = TryState::new();
-// SAFETY: firmware runs only bootstrap OS thread1 on hart0. Before scheduling
-// starts, this provider must be replaced by the scheduler's genuine ThreadId.
-// Opaque firmware callbacks remain on the I/O owner; no Send impl is invented.
+static MEMORY: [TryState<crate::toolbox::memory::Manager>; 8] = [const { TryState::new() }; 8];
+// SAFETY: storage executes on hart0's fixed-owner service stack, with interrupts
+// masked. The scheduler supplies genuine app thread identities; io::run hands
+// execution to the bootstrap storage context before accessing opaque callbacks.
+// They remain non-Send, including after application scheduling begins.
 static FILES: OwnerState<crate::toolbox::files::Manager> =
-    unsafe { OwnerState::new(crate::context::BOOT_THREAD, crate::context::bootstrap_thread) };
+    unsafe { OwnerState::new(crate::context::BOOT_THREAD, crate::context::current_thread) };
+pub(crate) struct AppImage
+{
+    pub resources: alloc::vec::Vec<mac_formats::resource::Resource>,
+    pub volume:    u32,
+    pub cnid:      u32,
+    pub base:      u64,
+    pub limit:     u64
+}
+static IMAGES: [Once<AppImage>; 8] = [const { Once::new() }; 8];
+pub(crate) fn image(index: usize) -> Option<&'static AppImage>
+{
+    IMAGES.get(index)?.get()
+}
+pub(crate) fn cache_image(volume: u32, cnid: u32,
+                          resources: alloc::vec::Vec<mac_formats::resource::Resource>)
+                          -> Result<usize, Status>
+{
+    if let Some((i, _)) = IMAGES.iter().enumerate().find(|(_, slot)| {
+                                                       slot.get().is_some_and(|image| {
+                                                                     image.volume == volume
+                                                                     && image.cnid == cnid
+                                                                 })
+                                                   })
+    {
+        return Ok(i);
+    }
+    let (base, limit) = crate::loader::reservation(&resources).map_err(crate::loader::status)?;
+    if IMAGES.iter().filter_map(Once::get).any(|i| base < i.limit && i.base < limit)
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    let slot = IMAGES.iter().position(|i| i.get().is_none()).ok_or(NO_MEMORY)?;
+    // Validate fully before publication. No executable segment is copied until all
+    // reservations have been checked against the immutable loaded-image catalog.
+    crate::loader::application(&resources).map_err(crate::loader::status)?;
+    IMAGES[slot].call_once(|| {
+                    AppImage { resources,
+                               volume,
+                               cnid,
+                               base,
+                               limit }
+                });
+    Ok(slot)
+}
+pub(crate) fn services() -> *const SystemServices
+{
+    &SERVICES
+}
 static STARTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 static SERVICES: SystemServices = SystemServices { header:       Header::for_type::<SystemServices>(),
@@ -66,32 +115,72 @@ pub(crate) unsafe extern "C" fn log(bytes: *const u8, length: usize) -> Status
 pub(crate) fn with_desktop<R>(call: impl FnOnce(&mut crate::toolbox::runtime::Desktop) -> R)
                               -> Result<R, AccessError>
 {
-    DESKTOP.with(call)
+    DESKTOP.with(|desktop| {
+               desktop.enter_caller();
+               call(desktop)
+           })
 }
 pub(crate) fn with_files<R>(call: impl FnOnce(&mut crate::toolbox::files::Manager) -> R)
                             -> Result<R, AccessError>
 {
-    FILES.with(call)
+    crate::machine::io::run(|| FILES.with(call))
 }
 pub(crate) fn with_memory<R>(call: impl FnOnce(&mut crate::toolbox::memory::Manager) -> R)
                              -> Result<R, AccessError>
 {
-    MEMORY.with(call)
+    MEMORY[crate::machine::scheduler::slot()].with(call)
 }
 pub(crate) fn with_scrap<R>(call: impl FnOnce(&mut crate::toolbox::scrap::Manager) -> R)
                             -> Result<R, AccessError>
 {
     SCRAP.with(call)
 }
+pub(crate) fn release_memory()
+{
+    let _ = MEMORY[crate::machine::scheduler::slot()].with(|manager| manager.clear());
+}
+pub(crate) fn reload_image(index: usize) -> Result<usize, Status>
+{
+    let image = image(index).ok_or(NOT_FOUND)?;
+    crate::loader::application(&image.resources).map_err(crate::loader::status)
+}
 pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontManager>
 {
     FONTS.get()
 }
+static RESOURCE_IMAGE: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(usize::MAX);
+pub(crate) fn with_resource_owner<R>(app: u64, call: impl FnOnce() -> R) -> R
+{
+    use core::sync::atomic::Ordering::Relaxed;
+    struct Restore(usize);
+    impl Drop for Restore
+    {
+        fn drop(&mut self)
+        {
+            RESOURCE_IMAGE.store(self.0, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let index = crate::machine::scheduler::image_for(app).unwrap_or(0);
+    let _restore = Restore(RESOURCE_IMAGE.swap(index, Relaxed));
+    call()
+}
 pub(crate) fn resources() -> Option<crate::toolbox::resources::manager::Manager<'static>>
 {
     let files = RESOURCE_FILES.get()?;
+    let override_image = RESOURCE_IMAGE.load(core::sync::atomic::Ordering::Relaxed);
+    let index = if override_image == usize::MAX
+    {
+        crate::machine::scheduler::image()
+    }
+    else
+    {
+        override_image
+    };
     Some(crate::toolbox::resources::manager::Manager::new(&files.system,
-                                                          &files.application,
+                                                          image(index).map_or(&files.application
+                                                                                  [..],
+                                                                              |i| &i.resources),
                                                           fonts()?.resources()))
 }
 
@@ -100,6 +189,14 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     let mut system = crate::loader::resources(&crate::loader::read_startup(info, "System")?)?;
     let finder = crate::loader::resources(&crate::loader::read_startup(info, "Finder")?)?;
     let finder_entry = crate::loader::application(&finder)?;
+    let (base, limit) = crate::loader::reservation(&finder)?;
+    IMAGES[0].call_once(|| {
+                 AppImage { resources: finder.clone(),
+                            volume: 0,
+                            cnid: 0,
+                            base,
+                            limit }
+             });
     if !crate::platform::setup_framebuffer()
     {
         return Err(mac_formats::Error("RAM framebuffer is unavailable"));
@@ -121,10 +218,13 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     DESKTOP.publish(runtime).map_err(|_| mac_formats::Error("desktop already published"))?;
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", &SERVICES as *const SystemServices as usize);
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
-    let entry: ApplicationEntry = unsafe { core::mem::transmute(finder_entry) };
-    let status = unsafe { entry(&SERVICES) };
-    serial!("FINDER_EXIT status={}", status);
-    Ok(())
+    let thread=crate::machine::scheduler::spawn(1,0,finder_entry).map_err(|_|mac_formats::Error("Finder thread creation failed"))?;
+    with_desktop(|desktop| desktop.started(1, thread)).map_err(|_| {
+                                                          mac_formats::Error("Finder context \
+                                                                              initialization \
+                                                                              failed")
+                                                      })?;
+    crate::machine::scheduler::start()
 }
 
 /// # Safety
@@ -172,9 +272,12 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
         }
         None => crate::toolbox::files::Manager::default()
     };
+    for memory in &MEMORY
+    {
+        let _ = memory.publish(Default::default());
+    }
     if FILES.publish(files).is_err()
        || SCRAP.publish(crate::toolbox::scrap::Manager::default()).is_err()
-       || MEMORY.publish(crate::toolbox::memory::Manager::default()).is_err()
     {
         return ptr::null();
     }

@@ -192,8 +192,10 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        let mut session = slot.borrow_mut();
                        let session = session.as_mut().expect("session");
                        unsafe {
-                           crate::toolbox::files::native::dispatch(&mut session.files, pointer,
-                                                                   size)
+                           crate::toolbox::files::native::dispatch_owned(&mut session.files,
+                                                                         files::current_owner(),
+                                                                         pointer,
+                                                                         size)
                        }
                    })
         }
@@ -550,3 +552,5 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
     });
     Ok((result, disk.activity))
 }
+
+pub mod files;

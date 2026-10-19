@@ -73,7 +73,7 @@ impl super::Desktop
                         modifiers: self.events.modifiers }
             }
         };
-        self.events.post(event);
+        self.events.post_system(event);
     }
 
     pub fn dialog(&mut self, call: &mut DialogCall) -> Status
@@ -217,11 +217,11 @@ impl super::Desktop
         {}
         if let Some(active) = self.windows.active_window()
         {
-            self.events.post(Event { kind:      EventKind::Activate,
-                                     message:   active.0,
-                                     when:      Self::when(),
-                                     where_:    self.events.mouse,
-                                     modifiers: self.events.modifiers | ACTIVE_FLAG });
+            self.events.post_system(Event { kind:      EventKind::Activate,
+                                            message:   active.0,
+                                            when:      Self::when(),
+                                            where_:    self.events.mouse,
+                                            modifiers: self.events.modifiers | ACTIVE_FLAG });
         }
         self.dialogs = Default::default();
         Ok(())

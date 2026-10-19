@@ -1,0 +1,145 @@
+{
+  "name": "TextEdit Exerciser",
+  "binary_name": "TextEditExerciser",
+  "file_type": "APPL",
+  "creator": "TEDT",
+  "role": "application",
+  "abi_version": 6,
+  "load_base": "0x84000000",
+  "load_limit": "0x85000000",
+  "description": "RISCy System TextEdit Exerciser",
+  "resources": [
+    {
+      "type": "MENU",
+      "id": 128,
+      "symbol": "FILE_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "File",
+        "items": [
+          {
+            "text": "Close Window",
+            "command": "clos",
+            "enabled": true,
+            "key": "W"
+          },
+          "-",
+          {
+            "text": "Quit",
+            "command": "quit",
+            "enabled": true,
+            "key": "Q"
+          }
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 129,
+      "symbol": "EDIT_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "Edit",
+        "items": [
+          {
+            "text": "Cut",
+            "command": "cut ",
+            "enabled": true,
+            "key": "X"
+          },
+          {
+            "text": "Copy",
+            "command": "copy",
+            "enabled": true,
+            "key": "C"
+          },
+          {
+            "text": "Paste",
+            "command": "past",
+            "enabled": true,
+            "key": "V"
+          },
+          {
+            "text": "Clear",
+            "command": "cler",
+            "enabled": true
+          },
+          "-",
+          {
+            "text": "Select All",
+            "command": "sela",
+            "enabled": true,
+            "key": "A"
+          }
+        ]
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 128,
+      "symbol": "PRODUCT_NAME",
+      "payload": {
+        "format": "pstring",
+        "text": "TextEdit Exerciser"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 128,
+      "symbol": "APPLICATION_ICON",
+      "payload": {
+        "format": "file",
+        "path": "assets/application.icn"
+      }
+    },
+    {
+      "type": "BNDL",
+      "id": 128,
+      "symbol": "APPLICATION_BUNDLE",
+      "payload": {
+        "format": "hex",
+        "hex": "544544540000000149434e2300000000008046524546000000000080"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 128,
+      "symbol": "APPLICATION_REFERENCE",
+      "payload": {
+        "format": "hex",
+        "hex": "4150504c000000"
+      }
+    },
+    {
+      "type": "SIZE",
+      "id": -1,
+      "symbol": "MEMORY_REQUIREMENTS",
+      "payload": {
+        "format": "hex",
+        "hex": "00000010000000040000"
+      }
+    },
+    {
+      "type": "WIND",
+      "id": 2003,
+      "symbol": "TEXTEDIT_LAYOUT",
+      "payload": {
+        "format": "hex",
+        "hex": "005a0078019a0258000801000100000000000000"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 2000,
+      "symbol": "UI_TEXT",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "TextEdit Exerciser",
+          "TextEdit runs inside System.\rSelect text, type, or use Edit to cut, copy and paste.\rThis window uses the public Rust Toolbox API.",
+          "Chicago 12  \u2022  Drag to select  \u2022  Ctrl-X / C / V / A"
+        ]
+      }
+    }
+  ]
+}

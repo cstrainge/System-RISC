@@ -124,6 +124,7 @@ pub const MEMORY: u32 = 0x10014;
 /// Wire structs are identical; string lengths include the Pascal length byte.
 /// These are legacy ABI entry points, deliberately absent from Rust SDK clients.
 pub const PSTRING_BIT: u32 = 0x20000;
+pub const PSTRING_PROCESS: u32 = PROCESS | PSTRING_BIT;
 pub const PSTRING_LOG: u32 = LOG | PSTRING_BIT;
 pub const PSTRING_WINDOW: u32 = WINDOW | PSTRING_BIT;
 pub const PSTRING_DRAW: u32 = DRAW | PSTRING_BIT;
@@ -141,7 +142,9 @@ pub const fn native_string_trap(number: u32) -> Option<u32>
     {
         PSTRING_LOG | PSTRING_WINDOW | PSTRING_DRAW | PSTRING_SURFACE | PSTRING_FONT
         | PSTRING_RESOURCE | PSTRING_FILE | PSTRING_CONTROL | PSTRING_DIALOG | PSTRING_SCRAP
-        | PSTRING_TEXTEDIT => Some(number & !PSTRING_BIT),
+        | PSTRING_TEXTEDIT | PSTRING_PROCESS => Some(number & !PSTRING_BIT),
         _ => None
     }
 }
+
+pub const PROCESS: u32 = 0x1001c;

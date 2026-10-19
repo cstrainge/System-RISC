@@ -32,7 +32,7 @@ fn finder_typing_avoids_disk_work_and_preserves_navigation_selection()
     assert_eq!(report["original_before"], report["original_after"]);
     let profile = fs::read_to_string(output.join("profile-vm/serial.log")).unwrap();
     assert!(!profile.contains("TYPING_PROFILE_FAIL"), "{profile}");
-    assert!(profile.contains("TRAPS_READY: resident ecall dispatcher ABI=5"));
+    assert!(profile.contains("TRAPS_READY: resident ecall dispatcher ABI=6"));
     let fields = profile.lines().find_map(|line| line.strip_prefix("TYPING_PROFILE ")).unwrap();
     let field = |name: &str| {
         fields.split_whitespace()
@@ -52,7 +52,8 @@ fn finder_typing_avoids_disk_work_and_preserves_navigation_selection()
     assert_eq!(states.len(), 21, "each keyDown edits once; keyUp must not edit");
     let finder = fs::read_to_string(output.join("finder-vm/serial.log")).unwrap();
     assert!(!finder.contains("FINDER_ACTION_FAILED"), "{finder}");
-    assert!(finder.contains("FINDER_MENU menu=1257 item=1 command=7465646d"));
+    assert!(finder.contains("PROCESS_LAUNCHED app=2 thread=3 name=TextEdit Exerciser"));
+    assert!(finder.contains("TEXTEDIT_EXERCISER_READY"));
     assert!(!finder.lines().filter_map(|line| line.split("dropped=").nth(1)).any(|n| {
                                                                                 n.parse::<u64>()
                                                                                  .unwrap()

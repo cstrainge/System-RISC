@@ -44,10 +44,9 @@ pub fn application(resources: &[Resource]) -> Result<usize>
                               .ok_or(Error("application ABI resource is missing"))?;
     let descriptor = Descriptor::decode(&descriptor.data)?;
     if descriptor.role != Role::Application
-       || descriptor.load_base < 0x81000000
-       || descriptor.load_limit > 0x82000000
+       || !application_region(descriptor.load_base, descriptor.load_limit)
     {
-        return Err(Error("Finder reservation is incompatible"));
+        return Err(Error("application reservation overlaps resident images"));
     }
     let code = resources.iter()
                         .find(|r| r.kind == *b"RV64" && r.id == 0)
@@ -86,34 +85,31 @@ struct Binding
 }
 pub struct Definitions
 {
-    files:    &'static super::manager::Files,
     registry: CodeRegistry,
     bindings: Vec<Binding>
 }
 impl Definitions
 {
-    pub fn new(files: &'static super::manager::Files) -> Self
+    pub fn new(_files: &'static super::manager::Files) -> Self
     {
-        Self { files,
-               registry: CodeRegistry::new(),
+        Self { registry: CodeRegistry::new(),
                bindings: Vec::new() }
     }
 
     pub fn resolve(&mut self, kind: [u8; 4], id: i16) -> Result<DefinitionEntry>
     {
-        let (origin, resource) = if let Some(resource) =
-            self.files.application.iter().find(|r| r.kind == kind && r.id == id)
+        let manager = crate::kernel::resources().ok_or(Error("resource catalog is missing"))?;
+        let (scope, resource) = manager.get(mac_abi::resources::CHAIN,
+                                            mac_abi::ResourceKey { kind,
+                                                                   id })
+                                       .map_err(|_| Error("definition resource is missing"))?;
+        let origin = if scope == mac_abi::resources::APPLICATION
         {
-            (1, resource)
+            crate::context::current_thread_context().identity().app.0 as u32
         }
         else
         {
-            (0,
-             self.files
-                 .system
-                 .iter()
-                 .find(|r| r.kind == kind && r.id == id)
-                 .ok_or(Error("definition resource is missing"))?)
+            0
         };
         if let Some(binding) =
             self.bindings.iter().find(|b| b.kind == kind && b.id == id && b.origin == origin)
@@ -123,7 +119,7 @@ impl Definitions
         let code = self.registry.prepare(resource, origin, &mut NoTranslator)?;
         let d = &code.descriptor;
         if d.load_base < 0x82000000
-           || d.load_limit > 0x85000000
+           || d.load_limit > 0x83000000
            || self.bindings.iter().any(|b| d.load_base < b.limit && b.base < d.load_limit)
         {
             return Err(Error("code resource reservation overlaps resident images"));
@@ -163,4 +159,22 @@ pub fn status(error: Error) -> Status
     {
         BAD_ARGUMENT
     }
+}
+
+pub fn application_region(base: u64, limit: u64) -> bool
+{
+    base < limit
+    && ((base >= 0x81000000 && limit <= 0x82000000) || (base >= 0x83000000 && limit <= 0x87000000))
+}
+pub fn reservation(resources: &[Resource]) -> Result<(u64, u64)>
+{
+    let resource = resources.iter()
+                            .find(|r| r.kind == *b"NABI" && r.id == 0)
+                            .ok_or(Error("application ABI resource is missing"))?;
+    let d = Descriptor::decode(&resource.data)?;
+    if d.role != Role::Application || !application_region(d.load_base, d.load_limit)
+    {
+        return Err(Error("application reservation overlaps resident images"));
+    }
+    Ok((d.load_base, d.load_limit))
 }

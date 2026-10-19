@@ -151,15 +151,15 @@ manager's remaining contracts.
 | --- | --- | --- |
 | Memory | Resident pointer/handle lifecycle, resize/clear/copy, state/lock operations, bounded native allocation and public host/RV64 conformance | Classic address/zone/master-pointer ABI, relocation, purge/compact/controlled pressure, zones, grow/purge procedures, temporary/system heaps and further queries/errors |
 | Virtual memory/cache utilities | No application VM/MMU compatibility service | Hold/lock/logical-to-physical/cache operations and feature queries; explicitly pin original VM state. Native shared-address M-mode execution is not protected memory or a VM Manager. Add a separate backend/profile when these contracts are implemented. |
-| Resources | Shared read-only application→System/font search; names/IDs, enumeration, attributes, partial reads, pinned load/release | Resource-file lifecycle/current file/search-chain mutation; resource handles, loading/purging/detach; add/change/remove/write/update; failure and file/heap interactions |
+| Resources | App-selected read-only application→System/font search; names/IDs, enumeration, attributes, partial reads, pinned load/release | Resource-file lifecycle/current file/search-chain mutation; resource handles, loading/purging/detach; add/change/remove/write/update; failure and file/heap interactions |
 | QuickDraw | Stateful shapes, regions, polygons, Boolean bitmaps, masks/scroll/fill helpers, direct-RGB worlds, retained replay | Complete port/recording lifecycle, custom grafProcs, text state, coordinate extremes, indexed conversions, PixPat, arithmetic/hilite/dither modes, full masks/damage/GWorld options and handle semantics |
 | Color/Palette/Display | RGB rasterization and measured original palette presentation | RGB16 precision, Color2Index/Index2Color, search/complement procedures, GDevice lists/depth/DeviceLoop, gamma, CLUT ownership, Palette Manager reservation/animation and multiple devices |
 | Fonts/QuickDraw text | Original bitmap and sfnt resources, family associations, metrics, native hint-aware drawing | Remaining scaler/style pixel differences, fractional widths/spacing/kerning, policy and fallback, font-cache memory behavior, complete original text procedures and callback semantics |
 | Scripts/text utilities | Mac Roman conversion in existing paths | Script Manager, international resources, word/line boundaries, collation/case, number/date formatting, keyboard layout switching, non-Roman scripts, Text Services/input methods and dictionary services |
-| Events/time input | Separate native128 and original-profile OS20 queues; public post/peek/get/flush/masks, physical key/mouse/button state and60-Hz ticks | Double-click/caret policy, WaitNextEvent sleep/mouse regions, suspend/resume, per-app event ownership, high-level events, timer/task interactions and expanded classic A-line adapters |
+| Events/time input | Separate native128 and original-profile OS20 queues; public post/peek/get/flush/masks, physical key/mouse/button state and60-Hz ticks; native app-owned queues | Double-click/caret policy, WaitNextEvent sleep/mouse regions, suspend/resume, high-level events, timer/task interactions and expanded classic A-line adapters |
 | Windows | Standard loaded WDEF0 variations, z order versus active focus, tracking, damage/exposure and retained content | Broader lifecycle/query/hilite/visibility/refcon/behind semantics, Window Manager port/regions, custom WDEF contracts, picture/color windows and classic records |
 | Controls | Loaded button CDEF0 and scrollbar CDEF1, typed scrollbar draw/hit/value tracking | General control objects/lists, lifecycle, bounds/value/range/refcon/title, check/radio/popup/user controls, keyboard focus, action procedures, resource creation and complete tracking semantics |
-| Menus | Resource-installed MENU/fmnu objects, loaded native MDEF0 layout/drawing/hit, enable/check state, captured pointer tracking and keyboard command routing through the public SDK | Dynamic insertion/deletion, all item icons/marks/styles, arbitrary MDEF lifecycle, hierarchical/scrolling/pop-up variants, original flashing, per-app menu ownership and classic trap adaptation |
+| Menus | Resource-installed MENU/fmnu objects, loaded native MDEF0 layout/drawing/hit, enable/check state, captured pointer tracking and keyboard command routing through the public SDK; app-owned menus and resident application switcher | Dynamic insertion/deletion, all item icons/marks/styles, arbitrary MDEF lifecycle, hierarchical/scrolling/pop-up variants, original flashing and classic trap adaptation |
 | Lists | No List Manager public service | Cells/data/selection/scrolling, LDEF, click/double-click, drawing modes, resource/procedure lifetimes and control integration |
 | TextEdit | Resident monochrome Chicago12 editor with thin UTF8 SDK, generation IDs, CR wrapping, selection/hits, anchored native navigation, edits, caret/activation, clipping/scroll and native clipboard; original semantic/pixel fixtures | Styled text, other fonts/alignment, original TEHandle/MacRoman A-line and private scrap adapters, hooks, double-click word selection/autoscroll, editable-dialog integration |
 | Scrap | Resident shared memory clipboard with clear/append/first-match reads, ordered binary flavors, Rust UTF8 text and paired Pascal conversion trap | Disk-backed Scrap.dat, original counted-MacRoman A-line adapter, process suspend/resume, private scrap conversion and editable-dialog clipboard integration |
@@ -167,8 +167,8 @@ manager's remaining contracts.
 | Files | Mounted HFS volumes, catalog/CNID/path and read-only fork reads, bounded persistent create-folder/move/rename/delete/Trash and Finder metadata, block flush/rollback | General file creation, fork write/truncate/extend, catalog/extents growth, crash recovery, full metadata/lock policy, unmount/eject, working directories and async parameter blocks |
 | Aliases/Standard File | No public managers | Alias records/resolution/update under move/rename; original open/save dialogs, filters/hooks, replies, directory selection and resource ownership |
 | Disk tools | Host image builder and guest read/write/flush block callbacks | Disk initialization/verification, partition/volume operations, formatting/blessing and a native disk utility using the SDK |
-| Desktop/Finder services | Retained desktop layer, mounted-volume/folder browser, persisted icon/window metadata, resource menus and working persistent Trash | Desktop Manager database versus compositor distinction; file associations/comments/icon caches, full drag/drop, aliases, application/document launch and broader saved-state contracts |
-| Processes/segments | Boot loader starts one native Finder; loaded native definition resources | Process identity/partitions, cooperative scheduling, foreground/background ownership, launch/quit/document parameters, suspend/resume, desk accessories, segment/code-resource lifecycle and cleanup |
+| Desktop/Finder services | Retained desktop layer, mounted-volume/folder browser, persisted icon/window metadata, resource menus, working persistent Trash and native APPL launch from Applications | Desktop Manager database versus compositor distinction; file associations/comments/icon caches, full drag/drop, aliases, document launch parameters and broader saved-state contracts |
+| Processes/segments | One-hart preemptive native application threads, Process SDK launch/activation/exit, app-local state and resident application menu; fixed-reservation image cache | Blocking/wakeup and worker APIs, original cooperative Thread Manager contexts, document/quit parameters, suspend/resume, desk accessories, arbitrary relocation and full segment/code-resource lifecycle |
 | Apple events/IPC | No public manager | Descriptor ownership/coercion, handlers, core open/print/quit events, sending/replies/timeouts, object model, PPC/interapplication services and Edition Manager |
 | Utilities | Geometry helpers and narrow classic trap dispatch | Gestalt truthfulness, fixed/fract/SANE/decimal/bit/string utilities, queues, date/time/measurement, PRAM/settings, packages, shutdown/restart, system errors and trap-table APIs |
 | Sound/media | No general public audio backend | SysBeep, channels/commands/resources/buffers, asynchronous callbacks, mixing/format conversion; input, speech and components when the selected profile supplies them |
@@ -222,13 +222,26 @@ TextEdit ahead of the Dialog Manager.
 
 ### First native application-launch slice
 
+
+The native loader, one-hart timer scheduler, per-app
+state routing, Process SDK and right-hand application menu now exist. QuickDraw
+Test and TextEdit Exerciser build as separate APPLs in `Applications`; Finder no
+longer embeds their code. There are eight concurrent thread slots and eight
+cached image slots including Finder, explicit linked reservations, shared trusted
+M-mode memory and synchronous interrupt-masked kernel/I/O work. No blocking
+scheduler, arbitrary relocation, original68k execution or Rust std port is
+implied. The full regression gate passes: package/ownership/cleanup checks,
+real one-hart preemption, launch/relaunch, paired Pascal process traps, private
+synthetic events and actual Finder/two-app graphical focus, hide and exit tests.
+The captured application-menu pixels match with explicit icon/cursor masks.
+
 The first launch milestone includes the right-aligned system application menu.
 It belongs to the resident system UI and uses Process Manager state; Finder and
 other applications access process services through the aggregate Toolbox SDK.
 The foreground application's ordinary menu bar changes with activation, while
 the system application menu remains available across applications.
 
-- Enumerate running applications using stable, generation-checked application
+- Enumerate running applications using stable, nonreused application
   identities. Resolve display names and icons from application resources, mark
   the foreground entry, and remove entries on exit or failed-launch cleanup.
 - Selecting an entry activates that application's windows, menu bar and keyboard

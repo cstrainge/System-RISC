@@ -25,7 +25,7 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
             return Ok(());
         }
         let selected = state.bar_selected != 0;
-        if selected
+        if selected && state.profile != APPLICATION_PROFILE
         {
             // Original MBDF0 leaves the top row and bottom bar rule intact.
             // Title selection extends into the adjacent inter-title spacing.
@@ -34,6 +34,26 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
                                         state.title_bounds.right + 4,
                                         19),
                               0)?;
+        }
+        if state.profile == APPLICATION_PROFILE
+        {
+            let icon = state.title_icon;
+            if icon.present != 0
+            {
+                let left = state.title_bounds.left + 9;
+                canvas.icon_resource(icon.scope,
+                                     icon.id,
+                                     Rect::new(left, 1, left + 16, 17),
+                                     icon.flags)?;
+            }
+            if selected
+            {
+                canvas.invert_rect(Rect::new(state.title_bounds.left - 1,
+                                             1,
+                                             state.title_bounds.right + 4,
+                                             19))?;
+            }
+            return Ok(());
         }
         // Original MBDF0 recognizes the one-byte Apple title and plots the
         // System small-icon family. Its rainbow colors survive title selection.
@@ -81,7 +101,8 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
             continue;
         }
         let selected = state.highlighted == index as i16 + 1;
-        let fg = if selected
+        let invert = selected && state.profile == APPLICATION_PROFILE;
+        let fg = if selected && !invert
         {
             0xffffff
         }
@@ -93,22 +114,33 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
         {
             0xa5a5a5
         };
-        if selected
+        if selected && !invert
         {
             canvas.paint_rect(r, 0)?;
         }
+        let baseline =
+            r.top
+            + if state.profile == APPLICATION_PROFILE && item.icon.present != 0 { 13 } else { 12 };
         if item.checked != 0
         {
-            canvas.draw_text(0, r.left + 2, r.top + 12, "\u{12}", 14, fg)?;
+            canvas.draw_text(0, r.left + 2, baseline, "\u{12}", 14, fg)?;
         }
         let label = text(&item.text, item.text_length).map_err(mac_traps::Error)?;
+        let label_left = r.left + if item.icon.present != 0 { 34 } else { 14 };
+        if item.icon.present != 0
+        {
+            canvas.icon_resource(item.icon.scope,
+                                 item.icon.id,
+                                 Rect::new(r.left + 16, r.top + 1, r.left + 32, r.top + 17),
+                                 item.icon.flags)?;
+        }
         if item.style == 0
         {
-            canvas.draw_text(0, r.left + 14, r.top + 12, label, r.right - r.left - 14, fg)?;
+            canvas.draw_text(0, label_left, baseline, label, r.right - label_left, fg)?;
         }
         else
         {
-            canvas.styled_text(u16::from(item.style), r.left + 14, r.top + 12, label, fg)?;
+            canvas.styled_text(u16::from(item.style), label_left, baseline, label, fg)?;
         }
         if item.checked == 0 && item.mark != 0
         {
@@ -118,15 +150,21 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
             }
             let bytes = [item.mark];
             let mark = core::str::from_utf8(&bytes).map_err(|_| mac_traps::Error(BAD_ARGUMENT))?;
-            canvas.draw_text(0, r.left + 2, r.top + 12, mark, 14, fg)?;
+            canvas.draw_text(0, r.left + 2, baseline, mark, 14, fg)?;
         }
         if item.key != 0
         {
-            canvas.draw_text(0, r.right - 24, r.top + 12, "\u{11}", 14, fg)?;
+            canvas.draw_text(0, r.right - 24, baseline, "\u{11}", 14, fg)?;
             let key = [item.key.to_ascii_uppercase()];
             let key = core::str::from_utf8(&key).map_err(|_| mac_traps::Error(NOT_SUPPORTED))?;
             let command_width = canvas.text_width(0, "\u{11}")?;
-            canvas.draw_text(0, r.right - 24 + command_width, r.top + 12, key, 13, fg)?;
+            canvas.draw_text(0, r.right - 24 + command_width, baseline, key, 13, fg)?;
+        }
+        if invert
+        {
+            // Original application-menu selection uses full-row pixel inversion,
+            // including the small icon; desktop selected-icon tint is different.
+            canvas.invert_rect(r)?;
         }
     }
     Ok(())
@@ -134,7 +172,17 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
 fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_traps::Result<()>
 {
     let title = text(&state.title, state.title_length).map_err(mac_traps::Error)?;
-    state.title_bounds.right = state.title_bounds.left + canvas.text_width(0, title)? + 13;
+    if state.profile == APPLICATION_PROFILE
+    {
+        // System 7.6.1 MBDF: right application title begins at601 on640-wide
+        // screens. Its popup's right interior edge is633, before the bar margin.
+        state.title_bounds.left = 601;
+        state.title_bounds.right = 634;
+    }
+    else
+    {
+        state.title_bounds.right = state.title_bounds.left + canvas.text_width(0, title)? + 13;
+    }
     state.title_bounds.top = 0;
     state.title_bounds.bottom = 20;
     let mut width = state.minimum_width.max(24);
@@ -152,13 +200,32 @@ fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_tra
         // Original CalcMenuSize reserves 24 extra pixels for a shortcut.
         // Combined with the keyless margins this leaves 10 pixels between the
         // label (left+14) and the command column (right-24).
-        width = width.max(label_width + 24 + if item.key != 0 { 24 } else { 0 });
+        width = width.max(label_width
+                          + 24
+                          + if item.key != 0 { 24 } else { 0 }
+                          + if item.icon.present != 0 { 20 } else { 0 });
     }
-    let left = state.title_bounds.left.min(638 - width);
+    let left = if state.profile == APPLICATION_PROFILE
+    {
+        width = width.min(632);
+        633 - width
+    }
+    else
+    {
+        state.title_bounds.left.min(638 - width)
+    };
     let mut y = 20;
     for item in &mut state.items[..state.item_count as usize]
     {
-        let h = if item.text[..item.text_length as usize].starts_with(&[0, 0]) { 18 } else { 16 };
+        let h = if item.icon.present != 0
+                   || item.text[..item.text_length as usize].starts_with(&[0, 0])
+        {
+            18
+        }
+        else
+        {
+            16
+        };
         item.bounds = Rect::new(left, y, left + width, y + h);
         y += h;
     }

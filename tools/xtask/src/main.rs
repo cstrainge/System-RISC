@@ -65,25 +65,38 @@ impl Workspace
     fn build(&self) -> Result<Vec<Value>>
     {
         self.guest_build(&["native-wdef", "native-cdef", "native-scrollbar-cdef", "native-mdef"])?;
-        self.guest_build(&["mac-system", "mac-finder", "bootrom"])?;
+        self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "textedit-exerciser",
+                           "bootrom"])?;
         boot::package_rom(self)?;
         let mut reports = Vec::new();
-        for (directory, name) in [("system", "System"), ("finder", "Finder")]
+        for (directory, name, binary) in
+            [("system", "System", "System"),
+             ("finder", "Finder", "Finder"),
+             ("apps/quickdraw-test", "QuickDraw Test", "QuickDrawTest"),
+             ("apps/textedit-exerciser", "TextEdit Exerciser", "TextEditExerciser")]
         {
-            let report =
-                package::build(&self.root.join(directory).join("resources.json"),
-                               &self.build.join("target").join(TARGET).join("release").join(name),
-                               &self.build.join("dist"))?;
+            let report = package::build(&self.root.join(directory).join("resources.json"),
+                                        &self.build
+                                             .join("target")
+                                             .join(TARGET)
+                                             .join("release")
+                                             .join(binary),
+                                        &self.build.join("dist"))?;
             println!("Packaged {name}: entry 0x{:x}, {} resources",
                      report["entry"].as_u64().unwrap(),
                      report["resources"].as_array().unwrap().len());
             reports.push(report);
         }
-        let a = (&reports[0]["load_base"], &reports[0]["load_limit"]);
-        let b = (&reports[1]["load_base"], &reports[1]["load_limit"]);
-        if a.0.as_u64() < b.1.as_u64() && b.0.as_u64() < a.1.as_u64()
+        for (index, a) in reports.iter().enumerate()
         {
-            return Err(error("System and Finder memory reservations overlap"));
+            for b in &reports[index + 1..]
+            {
+                if a["load_base"].as_u64() < b["load_limit"].as_u64()
+                   && b["load_base"].as_u64() < a["load_limit"].as_u64()
+                {
+                    return Err(error("native executable memory reservations overlap"));
+                }
+            }
         }
         let report = json!({"target": TARGET, "toolchain": {"cargo": output(self.cargo().arg("--version"))?, "rustc": output(Command::new("rustc").arg("--version"))?}, "packages": reports});
         write_json(&self.build.join("dist/build.json"), &report)?;
@@ -93,10 +106,11 @@ impl Workspace
     fn check(&self) -> Result<()>
     {
         run(self.cargo().args(["fmt", "--all", "--", "--check"]))?;
-        run(self.cargo()
-                .args(["test", "--locked", "--workspace", "--exclude", "mac-finder", "--exclude",
-                       "abi-smoke", "--exclude", "bootrom", "--exclude", "native-wdef",
-                       "--exclude", "native-cdef", "--exclude", "native-mdef"]))?;
+        run(self.cargo().args(["test", "--locked", "--workspace", "--exclude", "mac-finder",
+                               "--exclude", "quickdraw-test", "--exclude",
+                               "textedit-exerciser", "--exclude", "abi-smoke", "--exclude",
+                               "bootrom", "--exclude", "native-wdef", "--exclude",
+                               "native-cdef", "--exclude", "native-mdef"]))?;
         let reports = self.build()?;
         run(Command::new("python3").current_dir(&self.repo)
                                    .arg("System7/scripts/check_system7_boundaries.py"))?;
@@ -112,7 +126,7 @@ impl Workspace
         run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", "finder_png",
                                "--", "--ignored"]))?;
         for test in ["menus", "finder_trash", "file_writes_guest", "events", "clipboard",
-                     "textedit_graphical", "typing"]
+                     "textedit_graphical", "typing", "processes", "application_ui"]
         {
             run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", test,
                                    "--", "--ignored"]))?;
@@ -189,8 +203,14 @@ impl Workspace
         let typing: Value = serde_json::from_slice(&fs::read(self.repo
                                                                  .join("results/system7/\
                                                                         typing-checks.json"))?)?;
+        let processes: Value =
+            serde_json::from_slice(&fs::read(self.repo
+                                                 .join("results/system7/process-checks.json"))?)?;
+        let application_ui: Value =
+            serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
+                                                             application-ui-checks.json"))?)?;
         let report = json!({
-            "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
+            "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"processes":processes,"application_ui":application_ui,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
             "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, resource menus/alerts, captured Event/Scrap and monochrome TextEdit services with Finder exercisers, bounded durable HFS catalog/Trash writes and read-only Resource Manager. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
         });
         let path = self.repo.join("results/system7/toolchain-checks.json");
@@ -288,6 +308,12 @@ fn execute() -> Result<()>
         {
             println!("{}", serde_json::to_string_pretty(&package::inspect(&fs::read(path)?)?)?)
         }
+        [command, manifest, executable, directory] if command == "package" =>
+        {
+            let report =
+                package::build(Path::new(manifest), Path::new(executable), Path::new(directory))?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         [] => help(),
         [command] if command == "help" || command == "--help" => help(),
         _ => return Err(error("unknown command; use cargo xtask help"))
@@ -297,11 +323,12 @@ fn execute() -> Result<()>
 
 fn help()
 {
-    println!("System7 build tools\n\n  cargo xtask build          Build System, Finder and boot \
-              ROM\n  cargo xtask image          Build a separate 500 MiB HFS disk and qcow2\n  \
-              cargo xtask rom            Build the read-only flash ROM\n  cargo xtask boot \
-              [DISK]    Boot from a read-only raw/qcow2 disk; serial console\n  cargo xtask \
-              boot-check     Verify ROM disk boot and rejection cases\n  cargo xtask inspect \
-              FILE   Validate a native MacBinary file\n  cargo xtask check          Host, disk, \
+    println!("System7 build tools\n\n  cargo xtask build          Build System, Finder, \
+              applications and boot ROM\n  cargo xtask image          Build a separate 500 MiB \
+              HFS disk and qcow2\n  cargo xtask rom            Build the read-only flash ROM\n  \
+              cargo xtask boot [DISK]    Boot from a read-only raw/qcow2 disk; serial console\n  \
+              cargo xtask boot-check     Verify ROM disk boot and rejection cases\n  cargo xtask \
+              inspect FILE   Validate a native MacBinary file\n  cargo xtask package MANIFEST \
+              ELF OUT  Package a native application\n  cargo xtask check          Host, disk, \
               ABI, ROM boot and graphical desktop checks");
 }

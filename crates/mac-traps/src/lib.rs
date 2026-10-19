@@ -783,3 +783,11 @@ impl Client<'_>
         result
     }
 }
+
+impl Client<'_>
+{
+    pub fn process(self, call: &mut mac_abi::processes::ProcessCall) -> Result<()>
+    {
+        status(self.invoke(PROCESS, call))
+    }
+}

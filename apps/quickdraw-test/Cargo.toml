@@ -1,0 +1,17 @@
+[package]
+name = "quickdraw-test"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "QuickDrawTest"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+mac-toolbox.workspace = true
+
+[build-dependencies]
+mac-build.workspace = true

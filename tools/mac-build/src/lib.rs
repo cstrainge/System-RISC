@@ -50,8 +50,8 @@ pub fn build_guest() -> Result<()>
                                                    descriptor.load_limit - descriptor.load_base));
     let script_path = out.join("native.ld");
     fs::write(&script_path, script)?;
-    println!("cargo:rustc-link-arg-bin={}=-T{}", manifest.name, script_path.display());
+    println!("cargo:rustc-link-arg-bin={}=-T{}", manifest.binary_name(), script_path.display());
     // Module calls use PC-relative addressing, avoiding per-image gp state.
-    println!("cargo:rustc-link-arg-bin={}=--no-relax", manifest.name);
+    println!("cargo:rustc-link-arg-bin={}=--no-relax", manifest.binary_name());
     Ok(())
 }

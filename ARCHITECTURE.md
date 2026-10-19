@@ -9,7 +9,7 @@ the versioned C layouts, protocol constants and shared value types.
 The native dispatch path is:
 
 ```text
-Finder / definition resource
+Finder / native application / definition resource
   -> public Toolbox binding
   -> mac-traps typed request
   -> loader-supplied gate -> RV64 ECALL
@@ -18,33 +18,49 @@ Finder / definition resource
 ```
 
 The RV64 gate uses `a7` for the operation, `a0` for the request pointer and `a1`
-for its byte size. ABI 5 supplies one gate and capability bits in the 24-byte
+for its byte size. ABI 6 supplies one gate and capability bits in the 24-byte
 `SystemServices` structure. [FORMAT.md](FORMAT.md) describes the exact contract.
 Applications and System must be rebuilt together when this ABI changes.
 
-## Required threading model
+## Native application execution
 
-Each application, including Finder, must run on its own actual OS-scheduled
-thread. Kernel scheduling is independent of application event/yield calls.
-Legacy cooperative Thread Manager contexts exist only inside their application's
-OS thread and never replace the global scheduler. Per-app resource/memory/event/
-port state and per-thread trap/callback state must be selected by trusted
-execution identities. The current direct-call single-app bootstrap does not yet
-satisfy this requirement. See [THREADING.md](THREADING.md) for the shared-state
-audit, synchronization rules and scheduler/application-thread exit criteria.
+Finder and disk-loaded native applications run on separate OS-scheduled threads.
+The one-hart RV64 scheduler uses CLINT timer preemption, independent 256 KiB
+stacks and full integer-register frames, with a maximum of eight concurrent
+application threads including Finder. Application progress does not depend on
+`WaitNextEvent` or cooperative yield calls. Kernel traps execute with interrupts
+masked; blocking queues, native worker-thread APIs and multi-hart execution are
+separate future gates. See [THREADING.md](THREADING.md) for ownership and limits.
 
-The application-launch milestone also requires a resident, right-aligned system
-application menu driven by Process Manager state. It selects foreground UI and
-input ownership while each app continues on its own scheduled OS thread. App
-names/icons and static menu commands remain resource based; Finder does not own
-the cross-application switcher. This menu is planned, not implemented yet; see
-[the launch slice](TOOLBOX-PLAN.md#first-native-application-launch-slice).
+`toolbox-processes` exposes launch, enumeration, activation, hiding and exit through
+`System::processes()`. Finder opens APPL catalog entries through that service.
+[QuickDraw Test and TextEdit Exerciser](apps/README.md) are independent
+applications with resource forks, installed under `Applications`; their code is
+no longer part of Finder. Each app owns its resource-defined menus/windows and calls only the
+aggregate Toolbox facade. Closing its last window or choosing Quit returns from
+its native entry point; System cleans up its state and retires its thread stack.
+
+The resident right-hand application menu uses live Process Manager state. It
+switches foreground windows, ordinary menus and keyboard event ownership and
+provides Hide, Hide Others and Show All. The menu belongs to System rather than
+Finder. Background applications retain independently scheduled execution.
+Original presentation and actual multi-app input behavior have their own
+[launch-slice acceptance gate](TOOLBOX-PLAN.md#first-native-application-launch-slice).
+
+The initial loader validates APPL NABI/RV64 resources, ELF segments and explicit
+nonoverlapping memory reservations. System/definition ranges remain reserved;
+Finder uses `0x81000000..0x82000000`, QuickDraw Test uses
+`0x83000000..0x84000000`, and TextEdit Exerciser uses
+`0x84000000..0x85000000`. An eight-slot immutable image cache includes Finder;
+relaunch reuses its image/resources and resets loaded executable segments. This
+is not arbitrary relocation, protected address spaces, hot replacement or original
+68k translation. All native code remains trusted in shared M-mode memory.
 
 ## Resident implementation
 
 `system/src/toolbox` contains QuickDraw, windows, controls, events, resources,
-files, menus, dialogs, memory, scrap and textedit modules. The implemented managers own the
-rasterizer, bitmap/TrueType font manager, window state, retained drawing lists,
+files, menus, dialogs, memory, scrap, textedit and processes modules. The
+implemented managers own the rasterizer, bitmap/TrueType font manager, window state, retained drawing lists,
 offscreen worlds, cursors, icon and PICT decoders, event queue and shared read-only
 resource search, HFS catalog/Trash mutations and bounded handle Memory Manager.
 The resident Menu Manager tracks resource-defined menus and invokes MDEF0 for
@@ -53,7 +69,10 @@ calls WDEF1/CDEF0, with modal input routing. The shared Scrap Manager owns bound
 binary-flavor records and native UTF8 text behind a separate nonwaiting guard.
 The Event Manager separates its128-entry native application queue from the
 captured20-entry low-level OS queue; physical input state is observed before
-window/menu/dialog routing. Monochrome TextEdit owns generation-checked editor records, fallible UTF8 editing/layout and clipped retained drawing. Native clipboard edits stage changes while holding the desktop then Scrap guards; no borrowed text escapes. Full classic managers remain incomplete.
+window/menu/dialog routing. Monochrome TextEdit owns generation-checked editor
+records, fallible UTF8 editing/layout and clipped retained drawing. Native
+clipboard edits stage changes while holding the desktop then Scrap guards; no
+borrowed text escapes. Full classic managers remain incomplete.
 
 The Window Manager controls lifecycle, z-order, exposure and interaction. Each
 loaded WDEF supplies its own frame drawing, hit testing and geometry. The
@@ -67,12 +86,12 @@ Most manager logic forbids unsafe code. Unsafe operations are concentrated in
 loader/entry adapters, hardware access, raw trap payload handling, resource-entry
 invocation and transport. The runtime borrows desktop state under a reentrancy
 guard; stateful recursive calls fail. Drawing/font traps can nest during a WDEF
-call without reborrowing the runtime. System/application resource files and font
-storage are published once before application entry and borrowed immutably;
-readonly resource queries also bypass the mutable desktop borrow, including
+call without reborrowing the runtime. System/font storage is published once, and
+each cached application resource image is immutable. Resource queries select the
+trusted caller or retained-window owner. Readonly resource queries also bypass the mutable desktop borrow, including
 queries nested inside a definition. Resource data moved into the font manager
-remains visible through the System resource scope. The current trusted M-mode environment has
-shared memory; these checks are ABI validation, not process isolation.
+remains visible through the System resource scope. The current trusted M-mode
+environment has shared memory; these checks are ABI validation, not process isolation.
 
 ## Classic applications
 
@@ -114,9 +133,13 @@ and embedded font strikes. Its result is included in `toolchain-checks.json`.
 ABI5 extends BootInfo to104bytes with firmware disk-info/read/write/flush callbacks
 and startup volume identity. DiskInfo carries capacity, read-only state and the
 driver icon resource identity. System serializes firmware access through its I/O
-owner guard. The File Manager owns mounted-volume IDs, catalog traversal,
-independent fork marks and mutation policy. Its bounded HFS engine rebuilds
-catalog/thread/index/map records within existing fork reservations. New Folder,
+owner guard and dedicated synchronous execution stack. The I/O service context
+is not independently runnable; its interrupt guard serializes current one-hart
+access without declaring opaque firmware state Send. The File Manager owns
+mounted-volume IDs, catalog traversal, application-owned independent fork marks
+and mutation policy. Native dispatch captures AppId before the handoff; foreign
+read/seek/tell/close calls fail, and exit closes only the app's marks. Its bounded
+HFS engine rebuilds catalog/thread/index/map records within existing fork reservations. New Folder,
 Trash, Put Away and recursive Empty Trash persist to the actual device; failed
 writes/flushes trigger rollback and failed rollback poisons further mutations.
 This is not a crash-atomic journal. Native data/resource-fork writing, arbitrary
@@ -130,3 +153,17 @@ commits it atomically. Desktop activation deactivates a folder without changing
 window order. CDEF1 owns scrollbar geometry, hit tests, drawing and thumb-value
 mapping in its own executable resource; the Control Manager only retains and
 dispatches it. See `analysis/desktop-compositor.md` at the repository root.
+
+## Application-local namespaces
+
+Window IDs are checked against the caller's owner in the shared registry. Other
+manager IDs, including Memory, TextEdit and offscreen worlds, are meaningful only
+inside the trusted application's selected manager namespace. Equal numeric IDs
+in different app namespaces do not authorize access to one another's objects.
+Memory cleanup retains slot generation counters when a scheduler slot is reused.
+Per-app menus, events, dialogs, worlds, editor records and legacy compatibility
+state are disposed at exit; the system clipboard and immutable cached images
+remain system-owned. These are service-level ownership contracts in trusted
+shared memory, not MMU-enforced isolation. Additional native threads sharing an
+AppId, original cooperative contexts and original low-memory virtualization still
+require their own context and synchronization contracts.

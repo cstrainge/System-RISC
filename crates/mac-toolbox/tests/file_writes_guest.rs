@@ -29,7 +29,7 @@ fn durable_file_manager_operations_survive_three_actual_disk_boots()
         assert!(!serial.contains("FILE_WRITE_FAIL"), "boot {boot}: {serial}");
         assert!(serial.contains(&format!("FILE_WRITE_STAGE {boot}")),
                 "incorrect stage after remount {boot}: {serial}");
-        assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=5"),
+        assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=6"),
                 "actual gate missing: {serial}");
     }
     let acceptance = serde_json::json!({"status":"passed","boots":3,"acceptance":"mac-toolbox/tests/file_write_cases.rs","capture":report,"limits":["read-only volumes rejected","bounded existing catalog/overflow capacity","no power-loss atomicity without journal","Trash name conflicts return ALREADY_EXISTS rather than renaming older original Finder item","locked-item Option override not implemented"]});

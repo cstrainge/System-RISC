@@ -36,7 +36,7 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
             "missing TextEdit userspace contracts:\n{serial}");
     assert!(serial.contains("SCRAP_USERSPACE_PASS original=18 native=17 legacy=12"),
             "missing Scrap Manager userspace contracts:\n{serial}");
-    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=5"),
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=6"),
             "actual resident ECALL gate absent:\n{serial}");
     assert!(serial.contains("EVENTS_USERSPACE_PASS original_queue=passed native_queue=passed"),
             "Event Manager public ECALL conformance absent:\n{serial}");

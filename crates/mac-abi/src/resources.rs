@@ -3,6 +3,9 @@ use crate::ResourceKey;
 pub const CHAIN: i16 = -1;
 pub const SYSTEM: i16 = 0;
 pub const APPLICATION: i16 = 1;
+/// Read-only pinned image scopes advertised by resident services. They never
+/// select an execution identity or grant access to mutable application objects.
+pub const LOADED_IMAGE_BASE: i16 = 256;
 pub const GET: u32 = 0;
 pub const NAMED: u32 = 1;
 pub const COUNT: u32 = 2;

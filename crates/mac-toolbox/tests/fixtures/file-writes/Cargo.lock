@@ -98,6 +98,7 @@ dependencies = [
  "toolbox-files",
  "toolbox-memory",
  "toolbox-menus",
+ "toolbox-processes",
  "toolbox-quickdraw",
  "toolbox-resources",
  "toolbox-scrap",
@@ -252,6 +253,14 @@ dependencies = [
 
 [[package]]
 name = "toolbox-menus"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
+]
+
+[[package]]
+name = "toolbox-processes"
 version = "0.1.0"
 dependencies = [
  "mac-abi",

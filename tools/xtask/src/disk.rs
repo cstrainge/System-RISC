@@ -119,17 +119,18 @@ pub fn image(workspace: &Workspace) -> Result<Value>
         hfs.call("hmkdir", &[directory.as_ref()])?;
     }
     let mut verified = Vec::new();
-    for name in ["System", "Finder"]
+    for (directory, name) in [("System Folder", "System"),
+                              ("System Folder", "Finder"),
+                              ("Applications", "QuickDraw Test"),
+                              ("Applications", "TextEdit Exerciser")]
     {
         let source = workspace.build.join("dist").join(format!("{name}.bin"));
         let original = macbinary::decode(&fs::read(&source)?)?;
         let expected = package::inspect(&fs::read(&source)?)?;
-        hfs.call("hcopy", &["-m".as_ref(), source.as_os_str(), ":System Folder:".as_ref()])?;
+        hfs.call("hcopy", &["-m".as_ref(), source.as_os_str(), format!(":{directory}:").as_ref()])?;
         let extracted = scratch.path.join(format!("{name}-roundtrip.bin"));
         hfs.call("hcopy",
-                 &["-m".as_ref(),
-                   format!(":System Folder:{name}").as_ref(),
-                   extracted.as_os_str()])?;
+                 &["-m".as_ref(), format!(":{directory}:{name}").as_ref(), extracted.as_os_str()])?;
         let copied = macbinary::decode(&fs::read(&extracted)?)?;
         if original.name != copied.name
            || original.file_type != copied.file_type
@@ -143,10 +144,11 @@ pub fn image(workspace: &Workspace) -> Result<Value>
         {
             return Err(error("extracted native executable differs"));
         }
-        verified.push(json!({"path": format!("System Folder/{name}"), "file_type": text::decode(&copied.file_type), "creator": text::decode(&copied.creator), "data_length": copied.data.len(), "resource_length": copied.resources.len(), "resource_fork_sha256": package::sha256(&copied.resources), "fork_and_metadata_roundtrip": "passed"}));
+        verified.push(json!({"path": format!("{directory}/{name}"), "file_type": text::decode(&copied.file_type), "creator": text::decode(&copied.creator), "data_length": copied.data.len(), "resource_length": copied.resources.len(), "resource_fork_sha256": package::sha256(&copied.resources), "fork_and_metadata_roundtrip": "passed"}));
     }
     hfs.call("hattrib", &["-b".as_ref(), ":System Folder".as_ref()])?;
-    let listing = hfs.call("hls", &["-l".as_ref(), ":System Folder".as_ref()])?;
+    let listing =
+        hfs.call("hls", &["-l".as_ref(), ":System Folder".as_ref(), ":Applications".as_ref()])?;
     hfs.call("humount", &[])?;
     drop(hfs);
     let mut header = [0; 512];
@@ -181,6 +183,6 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     fs::rename(&qcow, dist.join("system7.qcow2"))?;
     let report = json!({"raw": "build/system7/dist/system7.hfs", "qcow2": "build/system7/dist/system7.qcow2", "virtual_size": DISK_SIZE, "layout": "unpartitioned HFS", "volume_name": "RISCy System", "blessed_system_folder_id": blessed_id, "files": verified, "listing": listing, "qcow2_check": "passed", "raw_qcow2_comparison": "passed", "riscv_disk_boot_available": true, "boot_rom": "build/system7/dist/bootrom.bin"});
     write_json(&dist.join("disk.json"), &report)?;
-    println!("Built 500 MiB HFS/qcow2; System and Finder fork roundtrips passed.");
+    println!("Built 500 MiB HFS/qcow2; System, Finder and Applications fork roundtrips passed.");
     Ok(report)
 }

@@ -238,6 +238,7 @@ dependencies = [
  "toolbox-files",
  "toolbox-memory",
  "toolbox-menus",
+ "toolbox-processes",
  "toolbox-quickdraw",
  "toolbox-resources",
  "toolbox-scrap",
@@ -326,6 +327,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quickdraw-test"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-toolbox",
 ]
 
 [[package]]
@@ -465,6 +474,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "textedit-exerciser"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-toolbox",
+]
+
+[[package]]
 name = "toolbox-controls"
 version = "0.1.0"
 dependencies = [
@@ -507,6 +524,14 @@ dependencies = [
 
 [[package]]
 name = "toolbox-menus"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
+]
+
+[[package]]
+name = "toolbox-processes"
 version = "0.1.0"
 dependencies = [
  "mac-abi",

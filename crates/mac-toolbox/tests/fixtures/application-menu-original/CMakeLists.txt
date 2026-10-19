@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+project(ApplicationMenuOriginal LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 17)
+add_application(AlphaProbe Probe.cc application.r CREATOR "AMPA")
+add_application(ZuluProbe Probe.cc application.r CREATOR "AMPZ")
+target_compile_definitions(AlphaProbe PRIVATE PROBE_ALPHA=1)

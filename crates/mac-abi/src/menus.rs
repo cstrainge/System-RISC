@@ -12,6 +12,28 @@ pub const MEASURE: i16 = 0;
 pub const DRAW_BAR: i16 = 1;
 pub const DRAW_POPUP: i16 = 2;
 pub const HIT_ITEM: i16 = 3;
+pub const STANDARD_PROFILE: u16 = 0;
+pub const APPLICATION_PROFILE: u16 = 1;
+/// An icon family identity. Registered application scopes remain owned by System.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MenuIcon
+{
+    pub scope:   i16,
+    pub id:      i16,
+    pub flags:   u16,
+    pub present: u16
+}
+impl MenuIcon
+{
+    pub const fn new(scope: i16, id: i16) -> Self
+    {
+        Self { scope,
+               id,
+               flags: 0,
+               present: 1 }
+    }
+}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MenuCall
@@ -46,7 +68,8 @@ pub struct MenuItemState
     pub key:         u8,
     pub mark:        u8,
     pub style:       u8,
-    pub separator:   u8
+    pub separator:   u8,
+    pub icon:        MenuIcon
 }
 impl MenuItemState
 {
@@ -59,14 +82,18 @@ impl MenuItemState
                                    key:         0,
                                    mark:        0,
                                    style:       0,
-                                   separator:   0 };
+                                   separator:   0,
+                                   icon:        MenuIcon { scope:   0,
+                                                           id:      0,
+                                                           flags:   0,
+                                                           present: 0 } };
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct MenuDefinitionState
 {
     pub minimum_width: i16,
-    pub reserved:      u16,
+    pub profile:       u16,
     pub menu_id:       i16,
     pub highlighted:   i16,
     pub enabled:       u32,
@@ -74,6 +101,7 @@ pub struct MenuDefinitionState
     pub first:         u32,
     pub title:         [u8; INLINE_STRING_BYTES],
     pub title_length:  u32,
+    pub title_icon:    MenuIcon,
     pub title_bounds:  Rect,
     pub popup_bounds:  Rect,
     pub item_count:    u32,
@@ -84,7 +112,7 @@ impl Default for MenuDefinitionState
     fn default() -> Self
     {
         Self { minimum_width: 0,
-               reserved:      0,
+               profile:       STANDARD_PROFILE,
                menu_id:       0,
                highlighted:   0,
                enabled:       1,
@@ -92,6 +120,7 @@ impl Default for MenuDefinitionState
                first:         0,
                title:         [0; INLINE_STRING_BYTES],
                title_length:  0,
+               title_icon:    MenuIcon::default(),
                title_bounds:  Rect::ZERO,
                popup_bounds:  Rect::ZERO,
                item_count:    0,

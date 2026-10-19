@@ -1,0 +1,902 @@
+[
+  {
+    "id": -16489,
+    "left": 601,
+    "width": 99,
+    "height": 82,
+    "title": "\u0001\u0007\u02c6|\u2039",
+    "title_hex": "0107f67cdc",
+    "flags": 4294967281,
+    "items": [
+      {
+        "index": 1,
+        "text": "Hide Finder",
+        "text_hex": "486964652046696e646572",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 2,
+        "text": "Hide Others",
+        "text_hex": "48696465204f7468657273",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 3,
+        "text": "Show All",
+        "text_hex": "53686f7720416c6c",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 4,
+        "text": "-",
+        "text_hex": "2d",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 5,
+        "text": "Finder",
+        "text_hex": "46696e646572",
+        "icon": 0,
+        "key": 0,
+        "mark": 18,
+        "style": 0,
+        "enabled": true
+      }
+    ],
+    "case": "01-finder-menu",
+    "hidden_from_observed_actions": [],
+    "crop_bounds": [
+      532,
+      20,
+      635,
+      104
+    ],
+    "cursor_overlay_mask_global": [
+      619,
+      20,
+      626,
+      23
+    ]
+  },
+  {
+    "id": -16489,
+    "left": 601,
+    "width": 122,
+    "height": 100,
+    "title": "\u0001\u0000\u0002T\u00ff",
+    "title_hex": "01000254d8",
+    "flags": 4294967287,
+    "items": [
+      {
+        "index": 1,
+        "text": "Hide ZuluProbe",
+        "text_hex": "48696465205a756c7550726f6265",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 2,
+        "text": "Hide Others",
+        "text_hex": "48696465204f7468657273",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 3,
+        "text": "Show All",
+        "text_hex": "53686f7720416c6c",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 4,
+        "text": "-",
+        "text_hex": "2d",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 5,
+        "text": "Finder",
+        "text_hex": "46696e646572",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 6,
+        "text": "ZuluProbe",
+        "text_hex": "5a756c7550726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 18,
+        "style": 0,
+        "enabled": true
+      }
+    ],
+    "case": "04-zulu-menu",
+    "hidden_from_observed_actions": [],
+    "crop_bounds": [
+      509,
+      20,
+      635,
+      122
+    ],
+    "cursor_overlay_mask_global": [
+      619,
+      20,
+      626,
+      23
+    ]
+  },
+  {
+    "id": -16489,
+    "left": 601,
+    "width": 130,
+    "height": 118,
+    "title": "\u0001\u0000\u0002T\u00ff",
+    "title_hex": "01000254d8",
+    "flags": 4294967287,
+    "items": [
+      {
+        "index": 1,
+        "text": "Hide AlphaProbe",
+        "text_hex": "4869646520416c70686150726f6265",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 2,
+        "text": "Hide Others",
+        "text_hex": "48696465204f7468657273",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 3,
+        "text": "Show All",
+        "text_hex": "53686f7720416c6c",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 4,
+        "text": "-",
+        "text_hex": "2d",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 5,
+        "text": "AlphaProbe",
+        "text_hex": "416c70686150726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 18,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 6,
+        "text": "Finder",
+        "text_hex": "46696e646572",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 7,
+        "text": "ZuluProbe",
+        "text_hex": "5a756c7550726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      }
+    ],
+    "case": "06-three-apps-alpha-menu",
+    "hidden_from_observed_actions": [],
+    "crop_bounds": [
+      501,
+      20,
+      635,
+      140
+    ],
+    "cursor_overlay_mask_global": [
+      619,
+      20,
+      626,
+      23
+    ]
+  },
+  {
+    "id": -16489,
+    "left": 601,
+    "width": 114,
+    "height": 118,
+    "title": "\u0001\u0007\u02c6|\u2039",
+    "title_hex": "0107f67cdc",
+    "flags": 4294967295,
+    "items": [
+      {
+        "index": 1,
+        "text": "Hide Finder",
+        "text_hex": "486964652046696e646572",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 2,
+        "text": "Hide Others",
+        "text_hex": "48696465204f7468657273",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 3,
+        "text": "Show All",
+        "text_hex": "53686f7720416c6c",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 4,
+        "text": "-",
+        "text_hex": "2d",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 5,
+        "text": "AlphaProbe",
+        "text_hex": "416c70686150726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 6,
+        "text": "Finder",
+        "text_hex": "46696e646572",
+        "icon": 0,
+        "key": 0,
+        "mark": 18,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 7,
+        "text": "ZuluProbe",
+        "text_hex": "5a756c7550726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      }
+    ],
+    "case": "08-hidden-alpha-menu",
+    "hidden_from_observed_actions": [
+      "AlphaProbe"
+    ],
+    "crop_bounds": [
+      517,
+      20,
+      635,
+      140
+    ],
+    "cursor_overlay_mask_global": [
+      619,
+      20,
+      626,
+      23
+    ]
+  },
+  {
+    "id": -16489,
+    "left": 601,
+    "width": 114,
+    "height": 118,
+    "title": "\u0001\u0007\u02c6|\u2039",
+    "title_hex": "0107f67cdc",
+    "flags": 4294967289,
+    "items": [
+      {
+        "index": 1,
+        "text": "Hide Finder",
+        "text_hex": "486964652046696e646572",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 2,
+        "text": "Hide Others",
+        "text_hex": "48696465204f7468657273",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 3,
+        "text": "Show All",
+        "text_hex": "53686f7720416c6c",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 4,
+        "text": "-",
+        "text_hex": "2d",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 5,
+        "text": "AlphaProbe",
+        "text_hex": "416c70686150726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 6,
+        "text": "Finder",
+        "text_hex": "46696e646572",
+        "icon": 0,
+        "key": 0,
+        "mark": 18,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 7,
+        "text": "ZuluProbe",
+        "text_hex": "5a756c7550726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      }
+    ],
+    "case": "10-only-finder-visible-menu",
+    "hidden_from_observed_actions": [
+      "AlphaProbe",
+      "ZuluProbe"
+    ],
+    "crop_bounds": [
+      517,
+      20,
+      635,
+      140
+    ],
+    "cursor_overlay_mask_global": [
+      619,
+      20,
+      626,
+      23
+    ]
+  },
+  {
+    "id": -16489,
+    "left": 601,
+    "width": 122,
+    "height": 118,
+    "title": "\u0001\u0000\u0002T\u00ff",
+    "title_hex": "01000254d8",
+    "flags": 4294967295,
+    "items": [
+      {
+        "index": 1,
+        "text": "Hide ZuluProbe",
+        "text_hex": "48696465205a756c7550726f6265",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 2,
+        "text": "Hide Others",
+        "text_hex": "48696465204f7468657273",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 3,
+        "text": "Show All",
+        "text_hex": "53686f7720416c6c",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 4,
+        "text": "-",
+        "text_hex": "2d",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 5,
+        "text": "AlphaProbe",
+        "text_hex": "416c70686150726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 6,
+        "text": "Finder",
+        "text_hex": "46696e646572",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 7,
+        "text": "ZuluProbe",
+        "text_hex": "5a756c7550726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 18,
+        "style": 0,
+        "enabled": true
+      }
+    ],
+    "case": "12-unhidden-zulu-menu",
+    "hidden_from_observed_actions": [
+      "AlphaProbe"
+    ],
+    "crop_bounds": [
+      509,
+      20,
+      635,
+      140
+    ],
+    "cursor_overlay_mask_global": [
+      619,
+      20,
+      626,
+      23
+    ]
+  },
+  {
+    "id": -16489,
+    "left": 601,
+    "width": 122,
+    "height": 118,
+    "title": "\u0001\u0000\u0002T\u00ff",
+    "title_hex": "01000254d8",
+    "flags": 4294967289,
+    "items": [
+      {
+        "index": 1,
+        "text": "Hide ZuluProbe",
+        "text_hex": "48696465205a756c7550726f6265",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 2,
+        "text": "Hide Others",
+        "text_hex": "48696465204f7468657273",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 3,
+        "text": "Show All",
+        "text_hex": "53686f7720416c6c",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 4,
+        "text": "-",
+        "text_hex": "2d",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 5,
+        "text": "AlphaProbe",
+        "text_hex": "416c70686150726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 6,
+        "text": "Finder",
+        "text_hex": "46696e646572",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 7,
+        "text": "ZuluProbe",
+        "text_hex": "5a756c7550726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 18,
+        "style": 0,
+        "enabled": true
+      }
+    ],
+    "case": "14-only-zulu-visible-menu",
+    "hidden_from_observed_actions": [
+      "AlphaProbe",
+      "Finder"
+    ],
+    "crop_bounds": [
+      509,
+      20,
+      635,
+      140
+    ],
+    "cursor_overlay_mask_global": [
+      619,
+      20,
+      626,
+      23
+    ]
+  },
+  {
+    "id": -16489,
+    "left": 601,
+    "width": 122,
+    "height": 118,
+    "title": "\u0001\u0000\u0002T\u00ff",
+    "title_hex": "01000254d8",
+    "flags": 4294967287,
+    "items": [
+      {
+        "index": 1,
+        "text": "Hide ZuluProbe",
+        "text_hex": "48696465205a756c7550726f6265",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 2,
+        "text": "Hide Others",
+        "text_hex": "48696465204f7468657273",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 3,
+        "text": "Show All",
+        "text_hex": "53686f7720416c6c",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 4,
+        "text": "-",
+        "text_hex": "2d",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 5,
+        "text": "AlphaProbe",
+        "text_hex": "416c70686150726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 6,
+        "text": "Finder",
+        "text_hex": "46696e646572",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 7,
+        "text": "ZuluProbe",
+        "text_hex": "5a756c7550726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 18,
+        "style": 0,
+        "enabled": true
+      }
+    ],
+    "case": "16-show-all-menu",
+    "hidden_from_observed_actions": [],
+    "crop_bounds": [
+      509,
+      20,
+      635,
+      140
+    ],
+    "cursor_overlay_mask_global": [
+      619,
+      20,
+      626,
+      23
+    ]
+  },
+  {
+    "id": -16489,
+    "left": 601,
+    "width": 114,
+    "height": 100,
+    "title": "\u0001\u0007\u02c6|\u2039",
+    "title_hex": "0107f67cdc",
+    "flags": 4294967287,
+    "items": [
+      {
+        "index": 1,
+        "text": "Hide Finder",
+        "text_hex": "486964652046696e646572",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 2,
+        "text": "Hide Others",
+        "text_hex": "48696465204f7468657273",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 3,
+        "text": "Show All",
+        "text_hex": "53686f7720416c6c",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 4,
+        "text": "-",
+        "text_hex": "2d",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 5,
+        "text": "AlphaProbe",
+        "text_hex": "416c70686150726f6265",
+        "icon": 0,
+        "key": 0,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 6,
+        "text": "Finder",
+        "text_hex": "46696e646572",
+        "icon": 0,
+        "key": 0,
+        "mark": 18,
+        "style": 0,
+        "enabled": true
+      }
+    ],
+    "case": "18-quit-zulu-menu",
+    "hidden_from_observed_actions": [],
+    "crop_bounds": [
+      517,
+      20,
+      635,
+      122
+    ],
+    "cursor_overlay_mask_global": [
+      619,
+      20,
+      626,
+      23
+    ]
+  },
+  {
+    "id": -16489,
+    "left": 601,
+    "width": 99,
+    "height": 82,
+    "title": "\u0001\u0007\u02c6|\u2039",
+    "title_hex": "0107f67cdc",
+    "flags": 4294967281,
+    "items": [
+      {
+        "index": 1,
+        "text": "Hide Finder",
+        "text_hex": "486964652046696e646572",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 2,
+        "text": "Hide Others",
+        "text_hex": "48696465204f7468657273",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 3,
+        "text": "Show All",
+        "text_hex": "53686f7720416c6c",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": false
+      },
+      {
+        "index": 4,
+        "text": "-",
+        "text_hex": "2d",
+        "icon": 255,
+        "key": 28,
+        "mark": 0,
+        "style": 0,
+        "enabled": true
+      },
+      {
+        "index": 5,
+        "text": "Finder",
+        "text_hex": "46696e646572",
+        "icon": 0,
+        "key": 0,
+        "mark": 18,
+        "style": 0,
+        "enabled": true
+      }
+    ],
+    "case": "22-finder-only-again",
+    "hidden_from_observed_actions": [],
+    "crop_bounds": [
+      532,
+      20,
+      635,
+      104
+    ],
+    "cursor_overlay_mask_global": [
+      619,
+      20,
+      626,
+      23
+    ]
+  }
+]

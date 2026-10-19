@@ -228,16 +228,18 @@ original A-line adapter coverage are tracked separately.
 
 ## Artifacts
 
-Generated files live in `../build/system7/`, outside the source tree:
+Generated files live in `../build/system7/`, outside the source tree. Package
+names are `System`, `Finder`, `QuickDraw Test` and `TextEdit Exerciser`; names with
+spaces remain intact in the artifact and HFS filenames:
 
 | File | Purpose |
 | --- | --- |
-| `dist/System.elf`, `dist/Finder.elf` | Linked executables, with debug information |
+| `dist/<name>.elf` | Linked executables, with debug information |
 | `dist/*.runtime.elf` | Executables stripped of symbols/debug for embedding |
-| `dist/System.rsrc`, `dist/Finder.rsrc` | Standard big-endian resource forks |
-| `dist/System.data`, `dist/Finder.data` | Data forks, currently empty |
-| `dist/System.bin`, `dist/Finder.bin` | MacBinary II transports preserving forks and metadata |
-| `dist/System.json`, `dist/Finder.json` | Resource inventories, entry addresses, segments and hashes |
+| `dist/<name>.rsrc` | Standard big-endian resource forks |
+| `dist/<name>.data` | Data forks, currently empty |
+| `dist/<name>.bin` | MacBinary II transports preserving forks and metadata |
+| `dist/<name>.json` | Resource inventories, entry addresses, segments and hashes |
 | `dist/build.json` | Package inventory and compiler/tool versions |
 | `dist/bootrom.elf`, `dist/bootrom.bin` | Debuggable firmware and 32 MiB flash-bank image |
 | `dist/bootrom.json` | Firmware size, address and hash |
@@ -386,10 +388,12 @@ automatic translation hook. A working 68k translator is not included.
 
 ## Native PNG images
 
-Finder's QuickDraw Exerciser includes a PNG page: press **Q**, then **0**, or click
-**0 PNG**. It reads a PNG resource through the public Resource Manager and uses
-resident QuickDraw to draw at natural size, scaled, with alpha, and clipped over
-a checkerboard. Finder links only `mac-toolbox`, without a PNG decoder.
+Open **Applications → QuickDraw Test**, or press **Q** in Finder to launch it.
+Press **0**, choose **Tests → PNG**, or click **0 PNG** for its PNG page. The
+application reads its own PNG resource through the public Resource Manager and
+uses resident QuickDraw to draw at natural size, scaled, with alpha, and clipped
+over a checkerboard. Its only runtime dependency is `mac-toolbox`; PNG decoding
+remains in System.
 
 The initial native PNG profile supports static, noninterlaced grayscale, RGB,
 indexed, grayscale-alpha and RGBA images, legal1/2/4/8/16-bit depths and tRNS
@@ -399,9 +403,10 @@ Adam7 and APNG return `NOT_SUPPORTED`. Colour profiles/gamma are not applied.
 Input is capped at1MiB, dimensions at1024peraxis and total pixels at262144;
 limits and detailed errors are available through `quickdraw::images`.
 
-Native runtime direction: every application will receive a real OS thread;
-legacy cooperative contexts and app globals are virtualized inside its app
-context. Rust `std` support will sit on the native runtime services. See the
+Native applications now have independent OS-scheduled threads on the one-hart
+RV64 timer scheduler. The native app-local manager state is selected by trusted
+context; original cooperative contexts and low-memory virtualization remain
+future work. Rust `std` support will sit on the native runtime services. See the
 threading/runtime contract in [ARCHITECTURE.md](ARCHITECTURE.md) for current
 implementation boundaries. All future system preferences use versioned JSON.
 
