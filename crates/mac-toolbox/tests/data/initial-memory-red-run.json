@@ -1,0 +1,9 @@
+{
+  "command": "cargo test --manifest-path System7/Cargo.toml --target-dir build/system7/userspace-work -p mac-toolbox --test quickdraw_conformance original_memory_new_handle_clear_allocation_observations -- --nocapture",
+  "exit_code": 101,
+  "result": "FAILED: Service(-4) from first public new_handle_clear via resident memory::native::dispatch -> unimplemented Manager",
+  "oracle_cases_sha256": "f896d3ab59c7b5fe830dd31a4444d9c2f01134c6c44693e4d7f0436f1dd60a24",
+  "mock_results": false,
+  "tests_passed": 0,
+  "tests_failed": 1
+}

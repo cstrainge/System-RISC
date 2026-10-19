@@ -1,0 +1,117 @@
+# Aggregate userspace compatibility tests
+
+All acceptance bodies in this suite import `mac_toolbox::System` and its public
+SDK facade. They do not call resident algorithms or private managers. The single
+`support::with_system` adapter constructs a System from a live host service table;
+`mac_system::testing` then dispatches to the real resident native services.
+There are no canned manager results in that harness.
+
+The host harness is enabled only by mac-toolbox's host dev-dependency using
+mac-system's `test-support` feature. Its TLS session owns a fresh real Memory
+Manager, cleans it up even on unwind, and exposes no manager reference to a test.
+Geometry goes to resident geometry dispatch; region/mapping/surface operations go
+to the production QuickDraw native boundaries; Memory goes to the same
+`memory::native::dispatch` as real ECALL dispatch. Hardware-only Runtime and fonts
+are not simulated: unsupported services remain unsupported until backed by a
+real fixture/service.
+
+Canonical shared acceptance is `conformance::run_all(&System)`. Its no-std code
+owns the assertions and expected counts for20 geometry/region contracts,
+267 original oval encodings,3 cleared-handle allocations and48 original handle
+observations. Host tests call it through the aggregate API. The RV64 ABI smoke
+launcher includes the same module and supplies the real ECALL-backed System;
+acceptance logic stays here, rather than being copied into a simulator runner.
+
+Original expectations are frozen under `data/`:
+
+- `original-quickdraw-regions.json` preserves eight basic captured region records
+  and267 oval records plus the original report hashes. The `.bin` records are
+  verbatim big-endian original region encodings. `original-ovals.bin` is a compact
+  21,440-byte corpus for the no-std runner. Host tests compare the JSON and compiled
+  fixtures independently.
+- `original-memory-cases.json` and `original-memory-actions.json` preserve the
+  original System7.6.1 probe's51 observations and setup ordering. The compiled
+  oracle includes all48 handle observations. The three NewPtrClear observations
+  remain explicitly deferred; this slice exposes owned handles, not raw pointer
+  allocations. Invalid original empty-handle size/state outputs are normalized to
+  null and tests compare their error codes, never undefined returned values.
+- `initial-memory-red-run.json` records the first original-backed public API test
+  failing with NOT_SUPPORTED against the real resident stub. The same suite then
+  passed after the resident implementation was added.
+- `conformance-ledger.json` distinguishes original observations, native safety
+  extensions, deferred families and host versus real ECALL verification.
+
+`memory_boundaries.rs` contains separately labelled native API safety tests. Those
+bounds/generation/borrow checks are not presented as original Macintosh behavior.
+The resident arena's16-byte alignment/12-byte accounting overhead is a bounded
+native policy fitting observed guarded growth/append outcomes; neither the tests
+nor the oracle establish the original heap's physical allocation layout.
+
+Run the host userspace suite with:
+
+```sh
+cargo test --manifest-path System7/Cargo.toml -p mac-toolbox --tests
+cargo clippy --manifest-path System7/Cargo.toml -p mac-toolbox --tests -- -D warnings
+```
+
+This is the initial aggregate corpus, not a claim that every legacy internal
+unit/visual test has already migrated. Public API compatibility for more manager
+families should extend this suite and the same shared acceptance entry point.
+
+
+Window interaction acceptance lives in `window_interactions.rs`. Its ignored
+hardware tests run after building the disk image:
+
+```sh
+cd System7
+cargo xtask image
+cd ..
+cargo test --manifest-path System7/Cargo.toml -p mac-toolbox --test window_interactions -- --ignored --test-threads=1
+```
+
+The capture helper only launches a separate read-only headless
+guest, sends real virtio input and returns trace observations/P6 framebuffers;
+all new behavioral assertions are Rust tests here. It never attaches to the
+visible guest. Finder exercises its normal SDK path. The original-pixel test uses
+a standalone application under `fixtures/window-probe`, depending only on the
+public aggregate SDK. Its host packaging tool builds a native resource fork and
+installs it as Finder on a private cloned image with isolated hfsutils state.
+The user's generated disk is hashed before/after and never modified.
+
+`data/original-window-tracking.json` records original image hashes, actual pointer
+positions, committed bounds and observed RGB pairs. The two original mask files
+retain all changed positions of the 640×480 held drag/grow frames. Rust checks all
+614,400 positions plus exact colors where the original control-filled window and
+the minimal white probe have identical source pixels. Framebuffer roundtrips and
+press cancellation/reentry use complete, unmasked frames. These are bounded held
+states and input sequences, not a claim of exhaustive animation-frame sampling.
+
+
+ABI4's `strings.rs` compares native UTF-8 SDK calls with the separate raw
+Pascal/MacRoman traps, through shared resident font/control/resource/surface/file
+boundaries. The host HFS fixture tests both string input and output and preserves
+2026 metadata. Graphical text/window/log acceptance runs in the real disk-boot
+conformance guest; the isolated non-graphical ABI harness does not claim that
+coverage. UTF-8 errors, malformed Pascal prefixes, all255-byte expanded titles,
+unrepresentable legacy output and undersized output buffers are explicit cases.
+
+`dates.rs` mounts `data/files/dates-2026.hfs` through firmware-style sector reads,
+then reads root/folder/file/volume dates through the aggregate SDK. These are
+synthetic2026 regression values, not original-OS observations. Shared date value
+checks run in `conformance/dates.rs` on host and RV64. Classic overflow fails;
+native64-bit Unix seconds continue past2038 and2040.
+
+The graphical conformance profile runs as a private Finder on a cloned boot disk, with the actual ROM, System resource bundle, native ECALL gate and loaded CDEF0/1. `fixtures/conformance` calls `conformance::run_all`, the real HFS date fixture checks, and the shared/graphical Pascal–UTF8 string checks. The capture script only packages, boots and collects serial; `userspace_graphical.rs` and canonical guest Rust own every acceptance decision. The nongraphical ABI-smoke profile calls `run_core` and makes no control/font/resource/window-string claim.
+
+
+`concurrent_services.rs` adds a native concurrency contract. Eight host OS threads
+share one real resident Memory Manager and the production nonwaiting state
+holder; every operation enters through the public SDK and native dispatcher.
+This checks atomic requests, per-handle data, actual Busy/retry progress and
+explicit disposal/reuse, rather than eight independent TLS-isolated managers.
+The host-only shared fixture lives in `mac_system::testing::shared`; no mock
+manager results are returned. This does not establish an RV64 scheduler or
+multi-application context isolation; those gates are in
+[THREADING.md](../../../THREADING.md). `Handle::try_dispose(&mut self)` preserves
+ownership on temporary contention; general scheduler-aware RAII cleanup remains
+an explicit future requirement.

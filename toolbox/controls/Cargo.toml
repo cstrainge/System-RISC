@@ -1,0 +1,11 @@
+[package]
+name = "toolbox-controls"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+
+[dependencies]
+mac-abi.workspace = true
+mac-traps.workspace = true
+toolbox-quickdraw = { path = "../quickdraw" }

@@ -1,0 +1,8 @@
+[package]
+name = "mac-traps"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mac-abi.workspace = true

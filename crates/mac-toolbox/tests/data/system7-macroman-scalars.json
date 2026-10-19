@@ -1,0 +1,8 @@
+{
+  "source": "working/control-tracking-reference/Apple-ROMAN.txt",
+  "source_sha256": "18e571645be895e9553ed5c842ea8f65f9c5d3c9ccb43e66e0c33a132ed0d721",
+  "format": "256 little-endian u32 Unicode scalars, indexed by original byte",
+  "profile": "System7 pre8.5 currency variant: documented DB maps U+00A4",
+  "bytes_sha256": "06fc61e2d2bb78d7868cda706b6a4092c868d21653c2e3c89d5b355e6392d7b2",
+  "purpose": "Independent Apple mapping oracle; not computed with resident or SDK codecs"
+}

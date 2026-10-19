@@ -1,0 +1,10 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mac-build.workspace = true
+mac-formats.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,20 @@
+# Generated Rust and native image artifacts (including standalone test fixtures).
+**/target/
+/build/
+/dist/
+/results/
+/working/
+/.toolchains/
+# Private VM media and machine-local state.
+*.qcow2
+*.vhd
+*.vhdx
+*.rom
+*.log
+.hfs*
+# Editor, Python and OS caches.
+.vscode/
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db

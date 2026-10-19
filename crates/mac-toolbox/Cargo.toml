@@ -1,0 +1,23 @@
+[package]
+name = "mac-toolbox"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mac-abi.workspace = true
+mac-traps.workspace = true
+toolbox-quickdraw = { path = "../../toolbox/quickdraw" }
+toolbox-windows = { path = "../../toolbox/windows" }
+toolbox-events = { path = "../../toolbox/events" }
+toolbox-resources = { path = "../../toolbox/resources" }
+toolbox-files = { path = "../../toolbox/files" }
+toolbox-memory = { path = "../../toolbox/memory" }
+toolbox-menus = { path = "../../toolbox/menus" }
+toolbox-controls = { path = "../../toolbox/controls" }
+toolbox-dialogs = { path = "../../toolbox/dialogs" }
+
+[target.'cfg(not(target_arch = "riscv64"))'.dev-dependencies]
+mac-system = { path = "../../system", features = ["test-support"] }
+serde_json.workspace = true
+mac-formats.workspace = true

@@ -1,0 +1,115 @@
+{
+  "scope": "Bounded original CDEF0/CDEF1 rendering and hit fidelity through aggregate public userspace Toolbox",
+  "updated_at_utc": "2026-10-19T01:04:26.953413+00:00",
+  "acceptance": "System7/crates/mac-toolbox/tests/conformance/mod.rs::run_all",
+  "no_mocked_manager_results": true,
+  "implemented": [
+    {
+      "area": "CDEF0",
+      "procedures": [
+        0,
+        1,
+        2,
+        8,
+        9,
+        10
+      ],
+      "states": "value0/1/2 \u00d7 normal/pressed/disabled255",
+      "font_selection": "defaultChicago12; useWindowFontGeneva9 andChicago12",
+      "bounds": "push120x24, checkbox/radio160x18 original captures; dynamic geometry outside capture coverage",
+      "cases": 54,
+      "compared_pixels": 155520,
+      "pixel_differences": 0
+    },
+    {
+      "area": "CDEF1 static",
+      "states": "15/16px vertical/horizontal, values0/50/100, disabled255, max0, highlights20/21/129",
+      "cases": 32,
+      "compared_pixels": 114080,
+      "pixel_differences": 0
+    },
+    {
+      "area": "CDEF0/CDEF1 TestControl",
+      "trace_records": 8424,
+      "distinct_tuples": 1296,
+      "differences": 0,
+      "notes": "Repeated original probe passes retained. Full-rectangle push corners, right/bottom exclusion and disabled cases included."
+    }
+  ],
+  "host": {
+    "status": "passed",
+    "command": "cargo test --manifest-path System7/Cargo.toml -p mac-toolbox --test control_conformance",
+    "control_tests": 5,
+    "focused_control_tests": 4,
+    "canonical_suite": "also verified in actual disk-booted ECALL fixture"
+  },
+  "rv64_ecall": {
+    "status": "passed",
+    "transport": "ROM disk boot -> graphical resident System -> private userspace Finder -> actual ECALL",
+    "launcher": "System7/crates/mac-toolbox/tests/fixtures/conformance/src/main.rs",
+    "serial": "results/system7/userspace-conformance-2109138/vm/serial.log",
+    "serial_sha256": "109662a65825fdea0738483c73b1939c7858279b37802bf3ec001232ff471492",
+    "acceptance_report": "results/system7/userspace-conformance-checks.json",
+    "fixture_elf_sha256": "72685eae0f6dd367ffa6fc36de25e54f5c832e88861ad2ef85d61001bfbfc245",
+    "system_resource_sha256": "1111fe2aeb0f73c35269a4af13290afb7962d8efc1a98a8ab40d1c9d03b85134",
+    "marker": "TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48 controls=86 controlpixels=269600 controlhits=8424 strings=passed dates=passed"
+  },
+  "guest_clippy": {
+    "status": "passed",
+    "packages": [
+      "mac-system",
+      "native-cdef",
+      "native-scrollbar-cdef",
+      "toolbox-controls"
+    ],
+    "target": "riscv64imac-unknown-none-elf",
+    "deny_warnings": true
+  },
+  "explicit_gaps": [
+    {
+      "area": "stateful Control Manager",
+      "status": "not implemented this slice",
+      "requires": [
+        "generation-stamped ControlId with bounded resident ownership",
+        "create/get/set/dispose/find and window-close disposal",
+        "live controls rendered after retained application scene",
+        "generic press/move/release/cancel capture; CDEF owns geometry/highlight policy"
+      ]
+    },
+    {
+      "area": "standard TrackControl animation/callback",
+      "status": "original measured; native integration pending",
+      "observed": "push/check/radio inside release10/11, outside release0; leave unhighlights, reenter highlights; values unchanged without app action",
+      "references": "results/control-tracking-reference/{push,check,radio}-*.png and events.json"
+    },
+    {
+      "area": "scrollbar thumb tracking",
+      "status": "original measured; native integration pending",
+      "observed": "Press changes0pixels. Old thumb value50 remains during drag. Held drag adds42 XOR-outline pixels, frame bbox501,255..515,271; screen-phase pattern77dd77dd77dd77dd. Inside release returns129 and commits69; outside returns0 and preserves50.",
+      "references": [
+        "results/control-tracking-supplement/thumb-drag-inside.png",
+        "results/control-tracking-supplement/events.json"
+      ]
+    },
+    {
+      "area": "scrollbar arrow/page callback cadence",
+      "status": "partial original evidence, native synchronous action protocol absent",
+      "observed": "ROM loop calls action with selectedpart inside and0 outside. No scheduler delay in ROM loop; recorded FSWrite/redraw probe timing is not an intrinsic repeat interval."
+    },
+    {
+      "area": "other fonts/color overrides/custom/reserved definitions",
+      "status": "not covered",
+      "notes": "Only captured default control color/font cases claimed exact; arbitrary window fonts beyondChicago12/Geneva9 return NOT_SUPPORTED."
+    }
+  ],
+  "fixtures": {
+    "manifest": "System7/crates/mac-toolbox/tests/data/original-controls.json",
+    "standard_blob_sha256": "c398d4944c084fdc65999faa35a667698843649f0f349482573ebd9c7ba0107c",
+    "scrollbar_blob_sha256": "3cdc1ba83c39beddc8b1ec5e290df679ac5fb43f5d6b5087e2c251f7219ca1b2",
+    "hit_blob_sha256": "df37ba966e503050de73834380ba893a3940024868a07e8e132e1c9008124415"
+  },
+  "original_provenance": [
+    "provenance/control-tracking-reference.json",
+    "provenance/control-tracking-supplement.json"
+  ]
+}

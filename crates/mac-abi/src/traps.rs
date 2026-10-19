@@ -1,0 +1,137 @@
+//! Native transport numbers. Classic A-line numbers occupy their original u16 range.
+use crate::*;
+
+pub const LOG: u32 = 0x10000;
+pub const IMAGE: u32 = 0x10015;
+pub const WINDOW: u32 = 0x10001;
+pub const DRAW: u32 = 0x10002;
+pub const NEXT_EVENT: u32 = 0x10003;
+pub const DEFINITION: u32 = 0x10004;
+pub const CLASSIC: u32 = 0x10005;
+pub const GEOMETRY: u32 = 0x10006;
+pub const SURFACE: u32 = 0x10007;
+pub const QUICKDRAW: u32 = 0x10008;
+pub const FONT: u32 = 0x10009;
+pub const REGION: u32 = 0x1000a;
+pub const COPY_BITS: u32 = 0x1000b;
+pub const WORLD: u32 = 0x1000c;
+pub const FILE: u32 = 0x10012;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LogCall
+{
+    pub bytes:  *const u8,
+    pub length: usize
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WindowCall
+{
+    pub operation: u32,
+    pub request:   WindowRequest
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DrawCall
+{
+    pub window:  u32,
+    pub command: DrawCommand
+}
+#[repr(C)]
+pub struct NextEventCall
+{
+    pub mask:  u16,
+    pub event: Event
+}
+#[repr(C)]
+#[derive(Default)]
+pub struct GeometryCall
+{
+    pub operation: u32,
+    pub a:         Rect,
+    pub b:         Rect,
+    pub output:    Rect,
+    pub result:    u32
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClassicRegisters
+{
+    pub d:        [u32; 8],
+    pub a:        [u32; 8],
+    pub pc:       u32,
+    pub sr:       u16,
+    pub reserved: u16
+}
+#[repr(C)]
+pub struct ClassicCall
+{
+    pub instruction:   u16,
+    pub reserved:      u16,
+    pub guest_base:    u32,
+    pub memory:        *mut u8,
+    pub memory_length: usize,
+    pub registers:     ClassicRegisters
+}
+
+/// Original identities, verified against the pinned Multiversal interface headers.
+pub mod classic;
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct SurfaceCall
+{
+    pub operation:   u32,
+    pub surface:     *mut Surface,
+    pub bounds:      Rect,
+    pub foreground:  u32,
+    pub background:  u32,
+    pub pattern:     [u8; 8],
+    pub font:        u32,
+    pub x:           i16,
+    pub y:           i16,
+    pub limit:       i16,
+    pub reserved:    i16,
+    pub text:        *const u8,
+    pub text_length: usize,
+    pub width:       i16,
+    pub ascent:      i16,
+    pub descent:     i16,
+    pub leading:     i16
+}
+
+pub const CURSOR: u32 = 0x1000e;
+
+pub const MAPPING: u32 = 0x1000f;
+
+pub const RESOURCE: u32 = 0x10010;
+
+pub const PICTURE: u32 = 0x1000d;
+pub const ICON: u32 = 0x10011;
+
+pub const CONTROL: u32 = 0x10013;
+pub const MEMORY: u32 = 0x10014;
+
+/// Pascal/MacRoman counterparts of every native service carrying human text.
+/// Wire structs are identical; string lengths include the Pascal length byte.
+/// These are legacy ABI entry points, deliberately absent from Rust SDK clients.
+pub const PSTRING_BIT: u32 = 0x20000;
+pub const PSTRING_LOG: u32 = LOG | PSTRING_BIT;
+pub const PSTRING_WINDOW: u32 = WINDOW | PSTRING_BIT;
+pub const PSTRING_DRAW: u32 = DRAW | PSTRING_BIT;
+pub const PSTRING_SURFACE: u32 = SURFACE | PSTRING_BIT;
+pub const PSTRING_FONT: u32 = FONT | PSTRING_BIT;
+pub const PSTRING_RESOURCE: u32 = RESOURCE | PSTRING_BIT;
+pub const PSTRING_FILE: u32 = FILE | PSTRING_BIT;
+pub const PSTRING_CONTROL: u32 = CONTROL | PSTRING_BIT;
+pub const fn native_string_trap(number: u32) -> Option<u32>
+{
+    match number
+    {
+        PSTRING_LOG | PSTRING_WINDOW | PSTRING_DRAW | PSTRING_SURFACE | PSTRING_FONT
+        | PSTRING_RESOURCE | PSTRING_FILE | PSTRING_CONTROL => Some(number & !PSTRING_BIT),
+        _ => None
+    }
+}

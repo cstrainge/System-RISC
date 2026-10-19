@@ -1,0 +1,12 @@
+* text=auto
+*.rs text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.bin binary
+*.png binary
+*.font binary
+*.hfs binary
+*.rsrc binary

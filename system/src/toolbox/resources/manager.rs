@@ -1,0 +1,214 @@
+//! A shared resource search chain for native applications and resident managers.
+#![forbid(unsafe_code)]
+use alloc::{collections::BTreeSet, vec::Vec};
+
+use mac_abi::{resources::*, *};
+use mac_formats::{resource::Resource, text};
+pub struct Files
+{
+    pub system:      Vec<Resource>,
+    pub application: Vec<Resource>
+}
+#[derive(Clone, Copy)]
+pub struct Manager<'a>
+{
+    system:      &'a [Resource],
+    application: &'a [Resource],
+    fonts:       &'a [Resource]
+}
+impl<'a> Manager<'a>
+{
+    pub const fn new(system: &'a [Resource], application: &'a [Resource], fonts: &'a [Resource])
+                     -> Self
+    {
+        Self { system,
+               application,
+               fonts }
+    }
+
+    pub fn all(self, scope: i16) -> Result<Vec<(i16, &'a Resource)>, Status>
+    {
+        if ![CHAIN, SYSTEM, APPLICATION].contains(&scope)
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let mut resources = Vec::new();
+        if scope == CHAIN || scope == APPLICATION
+        {
+            for r in self.application
+            {
+                resources.push((APPLICATION, r));
+            }
+        }
+        if scope == CHAIN || scope == SYSTEM
+        {
+            for r in self.system.iter().chain(self.fonts)
+            {
+                resources.push((SYSTEM, r));
+            }
+        }
+        Ok(resources)
+    }
+
+    pub fn get(self, scope: i16, key: ResourceKey) -> Result<(i16, &'a Resource), Status>
+    {
+        // Lookup is allocation-free, including nested manager/resource requests.
+        if (scope == CHAIN || scope == APPLICATION)
+           && let Some(r) = self.application.iter().find(|r| r.kind == key.kind && r.id == key.id)
+        {
+            return Ok((APPLICATION, r));
+        }
+        if (scope == CHAIN || scope == SYSTEM)
+           && let Some(r) =
+               self.system.iter().chain(self.fonts).find(|r| r.kind == key.kind && r.id == key.id)
+        {
+            return Ok((SYSTEM, r));
+        }
+        if ![CHAIN, SYSTEM, APPLICATION].contains(&scope)
+        {
+            Err(BAD_ARGUMENT)
+        }
+        else
+        {
+            Err(NOT_FOUND)
+        }
+    }
+
+    pub fn named(self, scope: i16, kind: [u8; 4], name: &str)
+                 -> Result<(i16, &'a Resource), Status>
+    {
+        self.all(scope)?
+            .into_iter()
+            .find(|(_, r)| {
+                r.kind == kind && r.name.as_ref().is_some_and(|bytes| text::decode(bytes) == name)
+            })
+            .ok_or(NOT_FOUND)
+    }
+
+    pub fn info(origin: i16, resource: &Resource) -> ResourceInfo
+    {
+        let mut info = ResourceInfo { key: ResourceKey { kind: resource.kind,
+                                                         id:   resource.id },
+                                      origin,
+                                      attributes: u16::from(resource.attributes),
+                                      length: resource.data.len(),
+                                      ..Default::default() };
+        if let Some(name) = &resource.name
+        {
+            let name = text::decode(name);
+            let mut length = name.len().min(info.name.len());
+            while !name.is_char_boundary(length)
+            {
+                length -= 1;
+            }
+            info.name[..length].copy_from_slice(&name.as_bytes()[..length]);
+            info.name_length = length as u32;
+        }
+        info
+    }
+
+    /// All shipped resources are resident and pinned. Release drops a caller's
+    /// logical reference; it does not purge OS fonts or loaded definition data.
+    pub fn request(self, call: &mut ResourceCall, name: &str, output: &mut [u8])
+                   -> Result<(), Status>
+    {
+        match call.operation
+        {
+            COUNT =>
+            {
+                call.index =
+                    self.all(call.scope)?.iter().filter(|(_, r)| r.kind == call.key.kind).count()
+                    as u32;
+                return Ok(());
+            }
+            COUNT_TYPES | TYPE_INDEX =>
+            {
+                let mut seen = BTreeSet::new();
+                let types: Vec<_> = self.all(call.scope)?
+                                        .iter()
+                                        .filter_map(|(_, r)| seen.insert(r.kind).then_some(r.kind))
+                                        .collect();
+                if call.operation == COUNT_TYPES
+                {
+                    call.index = types.len() as u32;
+                }
+                else
+                {
+                    call.key.kind = *types.get(call.index as usize).ok_or(NOT_FOUND)?;
+                }
+                return Ok(());
+            }
+            _ =>
+            {}
+        }
+        let (origin, resource) = match call.operation
+        {
+            GET | INFO | READ | LOAD | RELEASE => self.get(call.scope, call.key)?,
+            NAMED => self.named(call.scope, call.key.kind, name)?,
+            INDEX =>
+            {
+                self.all(call.scope)?
+                    .into_iter()
+                    .filter(|(_, r)| r.kind == call.key.kind)
+                    .nth(call.index as usize)
+                    .ok_or(NOT_FOUND)?
+            }
+            _ => return Err(NOT_SUPPORTED)
+        };
+        call.info = Self::info(origin, resource);
+        if call.operation == READ
+        {
+            if call.offset > resource.data.len()
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let length = (resource.data.len() - call.offset).min(output.len());
+            output[..length].copy_from_slice(&resource.data[call.offset..call.offset + length]);
+            call.transferred = length;
+        }
+        Ok(())
+    }
+}
+#[cfg(test)]
+mod tests
+{
+    use alloc::vec;
+
+    use super::*;
+    fn r(id: i16, data: &[u8]) -> Resource
+    {
+        Resource { kind: *b"PICT",
+                   id,
+                   name: Some(vec![0x8e]),
+                   attributes: 0x20,
+                   data: data.to_vec() }
+    }
+    #[test]
+    fn search_chain_scope_names_and_partial_reads_are_consistent()
+    {
+        let system = [r(-3, b"system"), r(2, b"second")];
+        let app = [r(-3, b"application")];
+        let manager = Manager::new(&system, &app, &[]);
+        let key = ResourceKey { kind: *b"PICT",
+                                id:   -3 };
+        assert_eq!(manager.get(CHAIN, key).unwrap().1.data, b"application");
+        assert_eq!(manager.get(SYSTEM, key).unwrap().1.data, b"system");
+        assert_eq!(manager.named(CHAIN, *b"PICT", "é").unwrap().0, APPLICATION);
+        let mut call = ResourceCall { operation: COUNT,
+                                      scope: CHAIN,
+                                      key,
+                                      ..Default::default() };
+        manager.request(&mut call, "", &mut []).unwrap();
+        assert_eq!(call.index, 3);
+        call.operation = READ;
+        call.offset = 3;
+        let mut bytes = [0; 4];
+        manager.request(&mut call, "", &mut bytes).unwrap();
+        assert_eq!(&bytes, b"lica");
+        assert_eq!(call.transferred, 4);
+        assert_eq!(call.info.name(), "é");
+        assert_eq!(call.info.attributes, 0x20);
+        call.offset = 999;
+        assert_eq!(manager.request(&mut call, "", &mut bytes), Err(BAD_ARGUMENT));
+    }
+}

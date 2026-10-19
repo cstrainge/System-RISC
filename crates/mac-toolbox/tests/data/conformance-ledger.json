@@ -1,0 +1,549 @@
+{
+  "scope": "Initial aggregate mac-toolbox userspace compatibility suite",
+  "generated_at_utc": "2026-10-19T00:34:03.499331+00:00",
+  "driver": "aggregate public System/SDK -> Client -> live service gate -> actual resident services",
+  "mock_manager_results": false,
+  "canonical_acceptance": "System7/crates/mac-toolbox/tests/conformance/mod.rs::run_all",
+  "host": {
+    "status": "passed",
+    "command": "cargo test --manifest-path System7/Cargo.toml -p mac-toolbox --tests",
+    "canonical_host_tests": 8,
+    "native_boundaries_owned_by_root": "System7/crates/mac-toolbox/tests/memory_boundaries.rs",
+    "native_boundary_status": "passed-root-run"
+  },
+  "rv64_ecall": {
+    "status": "passed-declared-subset",
+    "launcher": "System7/tests/abi-smoke/src/main.rs",
+    "shared_acceptance": "conformance::run_all",
+    "serial_log": "build/system7/abi-smoke/serial.log",
+    "serial_sha256": "c3924cdcb1bcd89f388e681a7b4a938fe145c9ce562e7b33a0e679be6e73be6e",
+    "marker": "TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48",
+    "all_acceptance_decisions_owned_by_aggregate": true,
+    "final_launcher_only_rerun": "passed",
+    "launcher_sha256": "49e7db2f0cbebfeb3e051a45d90a7eb2bd787d9e9accec35deaa82d2d4b8e1c7",
+    "canonical_source_sha256": "26baf47261ad300d1e9979c36630673db351e4f917487d1cbe9d138d11439ca4",
+    "launch_binary_sha256": "a11c704e7e742780e80c872b72df55d565691c9bf750633f0baa04c8f73aec02"
+  },
+  "counts": {
+    "geometry_region_contracts": 20,
+    "original_oval_regions": 267,
+    "clear_allocation_subset": 3,
+    "original_memory_observations": 51,
+    "original_handle_observations_passed_host": 48,
+    "original_pointer_observations_deferred": 3,
+    "native_boundary_tests": 3
+  },
+  "sources": {
+    "System7/crates/mac-toolbox/tests/data/original-memory-cases.json": "f896d3ab59c7b5fe830dd31a4444d9c2f01134c6c44693e4d7f0436f1dd60a24",
+    "System7/crates/mac-toolbox/tests/data/original-memory-actions.json": "b44253a849300290d834b0ce0422daa4d2ef4d83a158abde0ecafc4de1ea4db0",
+    "System7/crates/mac-toolbox/tests/data/original-quickdraw-regions.json": "ed5d497fa7136cff0cd5ced2723b9dc6d43bbe0c90ca9469ec0bcd17ef28662c",
+    "System7/crates/mac-toolbox/tests/data/original-ovals.bin": "fa17423c387f6207564d5f9ff49cc1412cbdc77c14e41b1d6becbb79644387aa",
+    "provenance/memory-manager-reference.json": "3237cbe4b78c5ffbb84b6335eb6acd598b7e39473999514e34f5e21fd3941533"
+  },
+  "memory_observations": [
+    {
+      "sequence": 0,
+      "case": "new_clear_0",
+      "operation": "NewHandleClear",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 1,
+      "case": "new_clear_0",
+      "operation": "NewPtrClear",
+      "status": "deferred",
+      "function": null,
+      "reason": "Raw pointer allocation family is outside the owned-handle API slice"
+    },
+    {
+      "sequence": 2,
+      "case": "new_clear_1",
+      "operation": "NewHandleClear",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 3,
+      "case": "new_clear_1",
+      "operation": "NewPtrClear",
+      "status": "deferred",
+      "function": null,
+      "reason": "Raw pointer allocation family is outside the owned-handle API slice"
+    },
+    {
+      "sequence": 4,
+      "case": "new_clear_16",
+      "operation": "NewHandleClear",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 5,
+      "case": "new_clear_16",
+      "operation": "NewPtrClear",
+      "status": "deferred",
+      "function": null,
+      "reason": "Raw pointer allocation family is outside the owned-handle API slice"
+    },
+    {
+      "sequence": 6,
+      "case": "new_empty",
+      "operation": "NewEmptyHandle",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 7,
+      "case": "new_empty",
+      "operation": "ReallocateHandle16",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 8,
+      "case": "state_steps",
+      "operation": "initial",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 9,
+      "case": "state_steps",
+      "operation": "HLock",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 10,
+      "case": "state_steps",
+      "operation": "HPurge",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 11,
+      "case": "state_steps",
+      "operation": "HUnlock",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 12,
+      "case": "state_steps",
+      "operation": "HNoPurge",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 13,
+      "case": "state_steps",
+      "operation": "HSetState_00",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 14,
+      "case": "state_steps",
+      "operation": "HSetState_20",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 15,
+      "case": "state_steps",
+      "operation": "HSetState_40",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 16,
+      "case": "state_steps",
+      "operation": "HSetState_60",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 17,
+      "case": "state_steps",
+      "operation": "HSetState_80",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 18,
+      "case": "state_steps",
+      "operation": "HSetState_a0",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 19,
+      "case": "state_steps",
+      "operation": "HSetState_c0",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 20,
+      "case": "state_steps",
+      "operation": "HSetState_e0",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 21,
+      "case": "state_steps",
+      "operation": "HSetState_1f",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 22,
+      "case": "state_steps",
+      "operation": "HSetState_ff",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 23,
+      "case": "resize_unlocked_0",
+      "operation": "SetHandleSize",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 24,
+      "case": "resize_unlocked_8",
+      "operation": "SetHandleSize",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 25,
+      "case": "resize_unlocked_16",
+      "operation": "SetHandleSize",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 26,
+      "case": "resize_unlocked_32",
+      "operation": "SetHandleSize",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 27,
+      "case": "resize_unlocked_4096",
+      "operation": "SetHandleSize",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 28,
+      "case": "resize_locked_0",
+      "operation": "SetHandleSize",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 29,
+      "case": "resize_locked_8",
+      "operation": "SetHandleSize",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 30,
+      "case": "resize_locked_16",
+      "operation": "SetHandleSize",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 31,
+      "case": "resize_locked_32",
+      "operation": "SetHandleSize",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 32,
+      "case": "resize_locked_4096",
+      "operation": "SetHandleSize",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 33,
+      "case": "empty_unlocked",
+      "operation": "EmptyHandle",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 34,
+      "case": "empty_unlocked",
+      "operation": "ReallocateHandle32",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 35,
+      "case": "empty_locked",
+      "operation": "EmptyHandle",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 36,
+      "case": "empty_locked",
+      "operation": "ReallocateHandle32",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 37,
+      "case": "reallocate_unlocked",
+      "operation": "ReallocateHandle32",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 38,
+      "case": "reallocate_locked",
+      "operation": "ReallocateHandle32",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 39,
+      "case": "copy",
+      "operation": "HandToHand_source",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 40,
+      "case": "copy",
+      "operation": "HandToHand_copy",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 41,
+      "case": "copy",
+      "operation": "mutate_copy_source",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 42,
+      "case": "copy",
+      "operation": "mutate_copy_copy",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 43,
+      "case": "copy",
+      "operation": "PtrToHand4",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 44,
+      "case": "copy",
+      "operation": "PtrAndHand4",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 45,
+      "case": "copy",
+      "operation": "HandAndHand_source",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 46,
+      "case": "copy",
+      "operation": "HandAndHand_dest",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 47,
+      "case": "copy",
+      "operation": "PtrToHand0",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 48,
+      "case": "copy",
+      "operation": "PtrAndHand_locked",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 49,
+      "case": "copy",
+      "operation": "PtrAndHand_locked_guarded",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    },
+    {
+      "sequence": 50,
+      "case": "copy",
+      "operation": "PtrToXHand4",
+      "status": "passed-host-and-rv64",
+      "function": "conformance::memory_handles",
+      "reason": null
+    }
+  ],
+  "native_allocator_policy": {
+    "zone_bytes": 4194304,
+    "maximum_payload_bytes": 1048576,
+    "maximum_handles": 512,
+    "span_alignment": 16,
+    "accounting_overhead_bytes": 12,
+    "claim": "Bounded native policy matching measured scenarios; not reverse-engineered original physical heap layout"
+  },
+  "original_behavior_not_claimed": [
+    "Raw NewPtr allocation family",
+    "Physical handle/master-pointer addresses or movement",
+    "Original heap layout/alignment/compaction/zone behavior",
+    "Automatic purge and resource reload under pressure",
+    "Unobserved handle-operation combinations"
+  ],
+  "native_extensions_separate": [
+    "Caller-buffer read/write bounds",
+    "Generation-tagged handle rejection",
+    "Raw borrowed pointer replacement and clearing",
+    "Per-test service-state isolation"
+  ],
+  "other_families_pending_aggregate_migration": [
+    "Fonts/text rendering",
+    "Resources and files",
+    "Uncovered Windows/controls/events beyond declared bounded captures",
+    "Graphics/raster/pictures/icons",
+    "Menus/dialogs"
+  ],
+  "quickdraw_contract_categories": {
+    "original_basic_region_encodings": 8,
+    "rectangle_geometry_value_contracts": 3,
+    "mapping_and_mapping_error_contracts": 5,
+    "region_boundary_contract": 1,
+    "native_region_validation_output_bounds_and_atomic_failure_contracts": 3,
+    "note": "The20 include native/API extension contracts; they are not20 separately captured original operations."
+  },
+  "bounded_aggregate_migrations": {
+    "controls": {
+      "status": "passed host and disk-booted graphical RV64 ECALL",
+      "scope": "tests/data/control-scope-ledger.json",
+      "standard_cases": 54,
+      "scrollbar_cases": 32,
+      "pixels": 269600,
+      "hit_trace_records": 8424,
+      "tracking": "not yet implemented",
+      "evidence": {
+        "status": "passed",
+        "transport": "ROM disk boot -> graphical resident System -> private userspace Finder -> actual ECALL",
+        "launcher": "System7/crates/mac-toolbox/tests/fixtures/conformance/src/main.rs",
+        "serial": "results/system7/userspace-conformance-2109138/vm/serial.log",
+        "serial_sha256": "109662a65825fdea0738483c73b1939c7858279b37802bf3ec001232ff471492",
+        "acceptance_report": "results/system7/userspace-conformance-checks.json",
+        "fixture_elf_sha256": "72685eae0f6dd367ffa6fc36de25e54f5c832e88861ad2ef85d61001bfbfc245",
+        "system_resource_sha256": "1111fe2aeb0f73c35269a4af13290afb7962d8efc1a98a8ab40d1c9d03b85134",
+        "marker": "TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48 controls=86 controlpixels=269600 controlhits=8424 strings=passed dates=passed"
+      }
+    },
+    "windows": {
+      "status": "isolated RV64 public SDK verified by window_manager worker",
+      "acceptance": "System7/crates/mac-toolbox/tests/window_interactions.rs",
+      "held_outline_masks_compared": 614400,
+      "matching_source_xor_colors_compared": 2105,
+      "finder_trace_states": 27,
+      "reports": [
+        "results/system7/window-original-2086871/rust-acceptance.json",
+        "results/system7/window-tracking-2086871/rust-acceptance.json"
+      ],
+      "limits": [
+        "Continuous animation temporal sampling",
+        "WDEF1 drag/grow profiling",
+        "Custom definition callbacks"
+      ]
+    }
+  },
+  "graphical_ecall_profile": {
+    "status": "passed",
+    "transport": "ROM disk boot -> graphical resident System -> private userspace Finder -> actual ECALL",
+    "launcher": "System7/crates/mac-toolbox/tests/fixtures/conformance/src/main.rs",
+    "serial": "results/system7/userspace-conformance-2109138/vm/serial.log",
+    "serial_sha256": "109662a65825fdea0738483c73b1939c7858279b37802bf3ec001232ff471492",
+    "acceptance_report": "results/system7/userspace-conformance-checks.json",
+    "fixture_elf_sha256": "72685eae0f6dd367ffa6fc36de25e54f5c832e88861ad2ef85d61001bfbfc245",
+    "system_resource_sha256": "1111fe2aeb0f73c35269a4af13290afb7962d8efc1a98a8ab40d1c9d03b85134",
+    "marker": "TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48 controls=86 controlpixels=269600 controlhits=8424 strings=passed dates=passed"
+  },
+  "nongraphical_abi_profile": {
+    "acceptance": "conformance::run_core",
+    "scope": "geometry20, original ovals267, handles48 only; graphics/font/resource/window string checks require disk-booted graphical profile"
+  },
+  "native_maximum_resource_name_boundary": {
+    "status": "passed host actual ResourceManager/legacybridge only",
+    "report": "results/system7/max-resource-name-checks.json",
+    "native_utf8_bytes": 765,
+    "pascal_bytes": 256,
+    "ecall_maximum_name": "pending private maximum-name application resource fixture"
+  }
+}

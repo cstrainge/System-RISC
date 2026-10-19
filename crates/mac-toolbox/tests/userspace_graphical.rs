@@ -1,0 +1,45 @@
+//! Boot the real graphical System with a private userspace conformance Finder.
+//! Python only packages/boots/captures; canonical Rust guest assertions decide PASS.
+#![cfg(not(target_arch = "riscv64"))]
+use std::{fs, path::PathBuf, process::Command};
+#[test]
+#[ignore = "requires fresh cargo xtask image, qemu-system-riscv64 and original captured fixtures"]
+fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let output =
+        root.join("results/system7").join(format!("userspace-conformance-{}", std::process::id()));
+    let capture = Command::new("python3").arg(root.join("System7/scripts/\
+                                                         capture_system7_conformance.py"))
+                                         .arg("--output")
+                                         .arg(&output)
+                                         .current_dir(&root)
+                                         .output()
+                                         .expect("start isolated graphical conformance guest");
+    assert!(capture.status.success(),
+            "transport failed:\n{}\n{}",
+            String::from_utf8_lossy(&capture.stdout),
+            String::from_utf8_lossy(&capture.stderr));
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    assert_eq!(report["original_before"], report["original_after"], "base OS artifacts changed");
+    assert_eq!(report["termination"], "guest-outcome", "guest did not report outcome:\n{serial}");
+    assert!(!serial.contains("TOOLBOX_USERSPACE_FAIL"),
+            "canonical userspace assertion failed:\n{serial}");
+    assert!(serial.contains("TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48 \
+                             controls=86 controlpixels=269600 controlhits=8424 strings=passed \
+                             dates=passed"),
+            "missing complete canonical success marker:\n{serial}");
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=4"),
+            "actual resident ECALL gate absent:\n{serial}");
+    for definition in ["CODE_LOADED CDEF0", "CODE_LOADED CDEF1"]
+    {
+        assert!(serial.contains(definition),
+                "loaded definition evidence {definition} absent:\n{serial}");
+    }
+    let acceptance = serde_json::json!({"status":"passed","acceptance":"mac-toolbox/tests/conformance::run_all plus strings::shared/graphical","transport":"real graphical disk boot and RV64 ECALL","controls":{"cases":86,"pixels":269600,"pixel_differences":0,"hit_records":8424,"distinct_hit_tuples":1296,"hit_differences":0},"strings":"passed","dates":"passed","capture":report,"output":output});
+    fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
+    fs::write(root.join("results/system7/userspace-conformance-checks.json"),
+              serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
+}

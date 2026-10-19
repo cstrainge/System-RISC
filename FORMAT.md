@@ -1,0 +1,212 @@
+# Native resource executable format, version 1
+
+The container is a classic Macintosh file. Its resource fork uses the standard
+big-endian resource header, data area, map, type/reference lists and Pascal names.
+The data fork is currently empty. Host transport uses MacBinary II with a valid
+CRC-16/XMODEM header and 128-byte fork padding. File/resource names use Mac Roman.
+
+The complete executable ELF is resource `'RV64'` ID 0. A companion `'NABI'`
+resource ID 0 has exactly 32 bytes, all numeric fields big endian:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | Magic `RVN1` |
+| 4 | 2 | Container format version, currently 1 |
+| 6 | 2 | Role: 1 = resident System, 2 = application, 3 = code resource |
+| 8 | 4 | Native System service ABI version, currently 4 |
+| 12 | 4 | Reserved, must be zero |
+| 16 | 8 | Inclusive load reservation base |
+| 24 | 8 | Exclusive load reservation limit |
+
+The descriptor's version and ABI must be supported. The load reservation must
+fit available guest RAM and must not overlap the bootstrap, other resident
+images, stacks or heaps. The build verifies non-overlapping System/Finder
+reservations; an actual loader must check all resident allocations.
+
+The ELF must be ELF64, little endian, System V ABI, `ET_EXEC`, `EM_RISCV`,
+version 1, with 64-byte ELF and 56-byte program headers. The initial contract
+allows only the RVC flag and the soft-float calling convention. Current Rust
+builds target RV64IMAC; the ELF header alone cannot verify every instruction
+extension. Dynamic linking, an interpreter and TLS are rejected. Native modules
+are linked with relaxation disabled to avoid dependence on per-image `gp` state.
+
+For each nonempty `PT_LOAD`, the loader must:
+
+1. Validate file offsets, sizes, alignment, flags and the complete memory range.
+   Physical and virtual addresses are equal in this initial identity-mapped
+   environment. Segments must not overlap and must fit the image reservation.
+2. Copy `p_filesz` bytes from `p_offset` to `p_vaddr`.
+3. Zero the remaining `p_memsz - p_filesz` bytes, including BSS.
+4. Synchronize instruction fetch before running newly copied code (`fence.i`
+   on the target machine), and enforce segment permissions when memory
+   protection is available. Writable/executable segments are rejected.
+
+The ELF entry must be even and within file-backed executable segment data.
+Before calling it, supply a valid stack aligned to 16 bytes and establish the
+chosen privilege/trap environment. Module entry points are C functions, with
+their first argument in `a0` and return value in `a0`, called with a valid `ra`.
+They do not initialize CPU state, a stack, hardware or their own BSS.
+
+The exact shared structures are in
+[`crates/mac-abi`](crates/mac-abi/src/lib.rs). Entry/service tables and definition
+calls start with two
+native-endian `u32` fields: ABI version and structure size. Version must match;
+size must be at least the known structure size. Only read a full structure
+after validating its header. Native pointers/function pointers are 64 bits.
+These structures must never be written directly as classic 68k disk structures.
+
+System entry:
+
+```text
+unsafe extern "C" fn(*const BootInfo) -> *const SystemServices
+```
+
+System is initialized once on one hart, before concurrent execution. The
+bootstrap supplies RAM information, an optional logging callback, and an optional
+startup-volume context/read callback. The latter reads a named file's resource
+fork from the same blessed folder selected during boot; null output queries its
+length. It remains valid while System/Finder execute. System initializes its
+own heap, graphics, input and window services, loads Finder and calls its entry.
+This call normally remains in Finder's event loop. Without the startup callback,
+System returns a non-graphical service table for the isolated ABI smoke test.
+Incompatible arguments return null. The System image stays resident.
+
+Application entry:
+
+```text
+unsafe extern "C" fn(*const SystemServices) -> i32
+```
+
+An application validates the table before calling the loader-supplied trap gate.
+ABI 4's `SystemServices` is 24 bytes on RV64:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 8 | ABI version 4 and structure size |
+| 8 | 8 | `TrapGate` function pointer |
+| 16 | 8 | Capability bits |
+
+The gate's C signature is
+`unsafe extern "C" fn(number: u32, request: *mut (), size: usize) -> i64`.
+The resident RV64 gate places the number in `a7`, payload address in `a0`, and
+payload size in `a1`, then executes `ecall`. System validates the request layout
+and dispatches it to its internal manager modules. The result is returned in
+`a0`; individual payload contracts describe output fields. Native trap numbers
+and payloads are defined in `mac-abi/src/traps.rs`. Stateful services reject
+recursive runtime access; drawing/font services can be called from a loaded
+WDEF/CDEF while the Window Manager is dispatching that definition.
+
+Finder opens its startup-volume catalog window and runs its event loop when graphics is available;
+it logs and returns zero for the headless ABI harness. There is one foreground
+caller. All code currently runs in M-mode with shared memory, without an
+application scheduler or memory isolation. Payload pointers must obey their
+trusted native ABI contracts; size/alignment checks do not establish memory
+protection. Public request/event structures use their declared `repr(C)` layout,
+without an implicit header.
+
+The CLASSIC payload carries an original A-line trap number, 32-bit registers and
+a checked guest-memory slice. The initial adapter supports SetRect, OffsetRect,
+InsetRect, SectRect, UnionRect, EmptyRect, EqualRect, PtInRect, GetNextEvent,
+EventAvail and TickCount, point/rectangle mapping, basic text/font operations
+and monochrome cursors. It preserves the original Pascal stack conventions,
+big-endian data and result slots. Unsupported traps return `NOT_SUPPORTED`
+without changing guest registers or memory. A 68k execution engine and classic
+WindowRecord-dependent services are not implemented.
+
+Native QuickDraw, font, region, bitmap, offscreen-world, cursor, mapping, picture,
+icon and Resource Manager request layouts live in `mac-abi/src/quickdraw.rs`
+and `resources.rs`, with their operation numbers in `traps.rs`. Input byte and
+point slices are borrowed for the call; window replay retains owned snapshots.
+Read-only resource results identify their originating file, preserving lookup
+identity when the application shadows a System ID. Resource reads copy into
+caller-provided storage. Resource pointers, native wire structures and UTF-8
+names are not substitutes for classic 68k Handle, GrafPort or MacRoman records.
+
+The separate QEMU ABI smoke harness tests this call sequence with executable payloads
+extracted from the generated resource forks. QEMU's ELF loader performs the
+memory loading for that test. The [boot ROM](bootrom/README.md) implements and
+tests the actual virtio/HFS/resource/ELF loading path separately. System performs
+Finder and definition-resource loading through its startup callback. The normal
+disk-boot checks wait for `DESKTOP_READY`, after Finder's first update events.
+
+Runtime ELF resources omit symbols and debug sections; full linked debug ELFs
+remain in the build output. Native executable definitions use a role-3 descriptor
+followed directly by ELF bytes inside their original resource type/ID, rather
+than a nested resource fork. See [CODE-RESOURCES.md](CODE-RESOURCES.md).
+
+These interfaces are an evolving native prototype. The structure-size checks
+reject older tables that lack required fields even while the prototype ABI
+version is 4. Rebuild ROM, System, Finder and definitions together.
+
+ABI4 BootInfo adds storage_context, disk_info, read_sector, startup_disk, reserved
+and startup_partition_start. Its size is88bytes on RV64; SystemServices remains
+24bytes. Device ordinals stay stable while System runs; NOT_FOUND ends device
+enumeration. Each read transfers exactly512bytes. Callback contexts and live
+DMA queues remain firmware-owned. DiskInfo is24bytes and carries sector count,
+read-only state and resource type/ID for the driver icon. All native modules must
+be rebuilt together for ABI4. Window and retained drawing titles accept768 UTF8 bytes, enough for all255
+MacRoman characters after conversion. All inline font/resource/control title
+buffers use the same capacity. File/volume name buffers remain sized for HFS31.
+
+FILE requests and metadata are defined in mac-abi/src/files.rs. File IDs are
+opaque mounted-volume IDs plus persistent HFS catalog IDs; open handles include
+a generation. Reads copy into caller storage, and both forks have independent
+marks. Native slash paths are distinct from classic colon paths. CONTROL requests
+use mac-abi/src/controls.rs and dispatch CDEF1; their inline state does not expose
+classic ControlHandle or WindowRecord ABI.
+
+WINDOW operation8 (`SET_GROW_ICON_CLIP`) adds no structure fields: request.bounds
+is a window-local clip for automatic WDEF grow drawing when reserved=0.
+reserved=1 restores unrestricted drawing; other values are rejected. An empty
+clip suppresses drawing. This leaves application-owned scrollbar borders and
+headers under application control while WDEF retains its drawing implementation.
+
+MEMORY0x10014 uses `mac-abi/src/memory.rs::MemoryCall`, with checked borrowed byte
+buffers. Native handle IDs include generations and never expose master/data
+pointers. Original Memory Manager errors(-108,-109,-112 in the accepted corpus)
+are preserved in Status; `ERROR` reads the last error without resetting it.
+These are native operations, not the classic 32-bit handle/pointer ABI. Limits
+and original comparison boundaries are documented in the resident Memory Manager.
+
+## Native and legacy text (ABI4)
+
+All Rust Toolbox text uses UTF-8 `&str` and Rust string writers. Finder has only
+`mac-toolbox` as a runtime dependency; generated resource keys resolve through
+that facade. Inline native strings hold768bytes and reject oversized input
+instead of silently truncating. Binary resource and fork data remains bytes.
+
+The eight services carrying human-readable text have separate Pascal/MacRoman
+trap identities: LOG, WINDOW, DRAW, SURFACE, FONT, RESOURCE, FILE and CONTROL.
+Their legacy number is the native number OR0x20000 (0x30000,0x30001,0x30002,
+0x30007,0x30009,0x30010,0x30012,0x30013). Layouts are unchanged, but text length
+fields count the Pascal prefix **plus** payload; an empty string is one zero
+byte. Prefix/payload lengths must agree and occupy at most256bytes. Output text
+uses the same convention. Raw file/resource payload reads are never converted.
+
+System copies requests, converts legacy input to UTF-8, invokes the same native
+service and converts string output back to System7 MacRoman. Malformed input,
+unrepresentable output or more than255 encoded characters fails explicitly.
+Borrowed raw pointer fields are restored; temporary UTF-8 storage never escapes.
+The Rust facade supplies no Pascal conversion methods or Classic-call wrapper.
+Original A-line traps retain their original guest-memory/stack conventions.
+Byte0xDB uses the System7 currency sign U+00A4, following Apple's documented
+pre8.5 mapping in [ROMAN.TXT](https://www.unicode.org/Public/MAPPINGS/VENDORS/APPLE/ROMAN.TXT).
+
+## Dates and application versions
+
+Native Rust `Timestamp` holds signed64-bit Unix seconds. HFS/MacBinary dates are
+unsigned32-bit seconds since1904; File Manager metadata provides `created_at`,
+`modified_at` and `backed_up_at` Rust timestamp accessors. Conversion is checked,
+including dates in2026 and across Unix's signed32-bit boundary. The last legacy
+second is2040-02-06 06:28:15UTC; later native dates remain representable and fail
+legacy conversion instead of wrapping. No wall-clock or calendar/locale manager
+is implied by these value and filesystem APIs. Time/date formatting belongs to
+its later Toolbox milestone and must use this same conversion boundary.
+
+Every packaged `vers` ID1 derives from Cargo's resolved package version, including
+`version.workspace=true`. Build scripts use `CARGO_PKG_VERSION`; external
+packaging queries Cargo metadata. Resource manifests cannot override it. Numeric
+BCD versions require major<=99/minor<=9/patch<=9. Stable versions use final0x80;
+dev/alpha/beta use0x20/0x40/0x60, and rc uses final with a nonzero ordinal. Unknown
+prerelease labels or overflowing classic fields fail the build. The short string
+retains the full Cargo version, including prerelease/build metadata.

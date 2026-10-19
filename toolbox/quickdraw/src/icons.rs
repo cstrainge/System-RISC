@@ -1,0 +1,127 @@
+//! Classic icon family/resource lookup and drawing are System services.
+use mac_abi::{quickdraw::*,
+              resources::{APPLICATION, CHAIN, SYSTEM}};
+
+use crate::{Client, Rect, Result, WindowId};
+#[derive(Clone, Copy, Default)]
+pub struct IconFlags
+{
+    pub selected: bool,
+    pub disabled: bool,
+    /// Replace source colors with the classic open-icon silhouette/stipple.
+    pub open:     bool
+}
+impl IconFlags
+{
+    fn bits(self) -> Result<u16>
+    {
+        if self.open && self.disabled
+        {
+            return Err(mac_traps::Error(mac_abi::BAD_ARGUMENT));
+        }
+        Ok((if self.open { 3 } else { u16::from(self.disabled) })
+           | if self.selected { 0x4000 } else { 0 })
+    }
+}
+#[derive(Clone, Copy)]
+pub struct Icons<'a>
+{
+    client: Client<'a>,
+    scope:  i16
+}
+impl<'a> Icons<'a>
+{
+    pub const fn new(client: Client<'a>) -> Self
+    {
+        Self { client,
+               scope: CHAIN }
+    }
+
+    pub const fn system(self) -> Self
+    {
+        Self { scope: SYSTEM,
+               ..self }
+    }
+
+    pub const fn application(self) -> Self
+    {
+        Self { scope: APPLICATION,
+               ..self }
+    }
+
+    pub fn count(self) -> Result<u32>
+    {
+        Ok(self.client
+               .icon(IconCall { operation: ICON_COUNT,
+                                scope: self.scope,
+                                ..Default::default() })?
+               .index)
+    }
+
+    pub fn at(self, index: u32) -> Result<i16>
+    {
+        Ok(self.client
+               .icon(IconCall { operation: ICON_AT,
+                                scope: self.scope,
+                                index,
+                                ..Default::default() })?
+               .id)
+    }
+
+    pub fn for_file(self, creator: [u8; 4], file_type: [u8; 4]) -> Result<i16>
+    {
+        Ok(self.client
+               .icon(IconCall { operation: ICON_FILE,
+                                scope: self.scope,
+                                creator,
+                                file_type,
+                                ..Default::default() })?
+               .id)
+    }
+
+    pub fn plot(self, window: WindowId, id: i16, destination: Rect, flags: IconFlags)
+                -> Result<()>
+    {
+        self.client
+            .icon(IconCall { operation: ICON_PLOT,
+                             window: window.0,
+                             scope: self.scope,
+                             id,
+                             destination,
+                             flags: flags.bits()?,
+                             ..Default::default() })
+            .map(|_| ())
+    }
+}
+impl<'a> crate::QuickDraw<'a>
+{
+    pub fn icons(self) -> Icons<'a>
+    {
+        Icons::new(self.client)
+    }
+}
+impl crate::SurfacePort<'_>
+{
+    pub fn plot_icon(&mut self, scope: i16, id: i16, destination: Rect, flags: IconFlags)
+                     -> Result<()>
+    {
+        self.connection.icon(scope, id, destination, flags.bits()?)
+    }
+}
+/// Standard System resource identities from Inside Macintosh's icon tables.
+pub mod standard
+{
+    pub const DOCUMENT: i16 = -4000;
+    pub const FOLDER: i16 = -3999;
+    pub const FLOPPY: i16 = -3998;
+    pub const APPLICATION: i16 = -3996;
+    pub const TRASH: i16 = -3993;
+    pub const FULL_TRASH: i16 = -3984;
+    pub const SYSTEM_FOLDER: i16 = -3983;
+    pub const APPLE_MENU_FOLDER: i16 = -3982;
+    pub const STARTUP_FOLDER: i16 = -3981;
+    pub const CONTROL_PANELS_FOLDER: i16 = -3976;
+    pub const PREFERENCES_FOLDER: i16 = -3974;
+    pub const EXTENSIONS_FOLDER: i16 = -3973;
+    pub const FONTS_FOLDER: i16 = -3968;
+}

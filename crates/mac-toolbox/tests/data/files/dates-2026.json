@@ -1,0 +1,21 @@
+{
+  "epoch": "1904-01-01T00:00:00Z",
+  "dates": [
+    {
+      "utc": "2026-01-01T00:00:00+00:00",
+      "mac_seconds": 3850070400,
+      "unix_seconds": 1767225600
+    },
+    {
+      "utc": "2026-10-18T12:34:56+00:00",
+      "mac_seconds": 3875171696,
+      "unix_seconds": 1792326896
+    },
+    {
+      "utc": "2026-12-31T23:59:59+00:00",
+      "mac_seconds": 3881606399,
+      "unix_seconds": 1798761599
+    }
+  ],
+  "description": "Synthetic read-only HFS sector fixture. Deliberately not original-OS observations; regression for 2026 unsigned metadata and epoch conversion."
+}

@@ -1,0 +1,11 @@
+{
+  "name": "WDEF",
+  "file_type": "rsrc",
+  "creator": "MACS",
+  "role": "code_resource",
+  "abi_version": 4,
+  "load_base": "0x82000000",
+  "load_limit": "0x82100000",
+  "description": "Native standard WDEF definition",
+  "resources": []
+}

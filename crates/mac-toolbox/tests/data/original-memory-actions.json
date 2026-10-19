@@ -1,0 +1,420 @@
+[
+  {
+    "case": "new_clear_0",
+    "setup": {
+      "requested_size": 0
+    },
+    "observations": [
+      {
+        "sequence": 0,
+        "operation": "NewHandleClear"
+      },
+      {
+        "sequence": 1,
+        "operation": "NewPtrClear"
+      }
+    ]
+  },
+  {
+    "case": "new_clear_1",
+    "setup": {
+      "requested_size": 1
+    },
+    "observations": [
+      {
+        "sequence": 2,
+        "operation": "NewHandleClear"
+      },
+      {
+        "sequence": 3,
+        "operation": "NewPtrClear"
+      }
+    ]
+  },
+  {
+    "case": "new_clear_16",
+    "setup": {
+      "requested_size": 16
+    },
+    "observations": [
+      {
+        "sequence": 4,
+        "operation": "NewHandleClear"
+      },
+      {
+        "sequence": 5,
+        "operation": "NewPtrClear"
+      }
+    ]
+  },
+  {
+    "case": "new_empty",
+    "setup": {
+      "ordering": "NewEmptyHandle then ReallocateHandle16 on the same handle."
+    },
+    "observations": [
+      {
+        "sequence": 6,
+        "operation": "NewEmptyHandle"
+      },
+      {
+        "sequence": 7,
+        "operation": "ReallocateHandle16"
+      }
+    ]
+  },
+  {
+    "case": "state_steps",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "ordering": "Operations occur sequentially on the same handle."
+    },
+    "observations": [
+      {
+        "sequence": 8,
+        "operation": "initial"
+      },
+      {
+        "sequence": 9,
+        "operation": "HLock"
+      },
+      {
+        "sequence": 10,
+        "operation": "HPurge"
+      },
+      {
+        "sequence": 11,
+        "operation": "HUnlock"
+      },
+      {
+        "sequence": 12,
+        "operation": "HNoPurge"
+      },
+      {
+        "sequence": 13,
+        "operation": "HSetState_00"
+      },
+      {
+        "sequence": 14,
+        "operation": "HSetState_20"
+      },
+      {
+        "sequence": 15,
+        "operation": "HSetState_40"
+      },
+      {
+        "sequence": 16,
+        "operation": "HSetState_60"
+      },
+      {
+        "sequence": 17,
+        "operation": "HSetState_80"
+      },
+      {
+        "sequence": 18,
+        "operation": "HSetState_a0"
+      },
+      {
+        "sequence": 19,
+        "operation": "HSetState_c0"
+      },
+      {
+        "sequence": 20,
+        "operation": "HSetState_e0"
+      },
+      {
+        "sequence": 21,
+        "operation": "HSetState_1f"
+      },
+      {
+        "sequence": 22,
+        "operation": "HSetState_ff"
+      }
+    ]
+  },
+  {
+    "case": "resize_unlocked_0",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": false,
+      "target_size": 0,
+      "guard": "Allocate and lock a separate 1024-byte handle immediately after target allocation."
+    },
+    "observations": [
+      {
+        "sequence": 23,
+        "operation": "SetHandleSize"
+      }
+    ]
+  },
+  {
+    "case": "resize_unlocked_8",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": false,
+      "target_size": 8,
+      "guard": "Allocate and lock a separate 1024-byte handle immediately after target allocation."
+    },
+    "observations": [
+      {
+        "sequence": 24,
+        "operation": "SetHandleSize"
+      }
+    ]
+  },
+  {
+    "case": "resize_unlocked_16",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": false,
+      "target_size": 16,
+      "guard": "Allocate and lock a separate 1024-byte handle immediately after target allocation."
+    },
+    "observations": [
+      {
+        "sequence": 25,
+        "operation": "SetHandleSize"
+      }
+    ]
+  },
+  {
+    "case": "resize_unlocked_32",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": false,
+      "target_size": 32,
+      "guard": "Allocate and lock a separate 1024-byte handle immediately after target allocation."
+    },
+    "observations": [
+      {
+        "sequence": 26,
+        "operation": "SetHandleSize"
+      }
+    ]
+  },
+  {
+    "case": "resize_unlocked_4096",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": false,
+      "target_size": 4096,
+      "guard": "Allocate and lock a separate 1024-byte handle immediately after target allocation."
+    },
+    "observations": [
+      {
+        "sequence": 27,
+        "operation": "SetHandleSize"
+      }
+    ]
+  },
+  {
+    "case": "resize_locked_0",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": true,
+      "target_size": 0,
+      "guard": "Allocate and lock a separate 1024-byte handle immediately after target allocation."
+    },
+    "observations": [
+      {
+        "sequence": 28,
+        "operation": "SetHandleSize"
+      }
+    ]
+  },
+  {
+    "case": "resize_locked_8",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": true,
+      "target_size": 8,
+      "guard": "Allocate and lock a separate 1024-byte handle immediately after target allocation."
+    },
+    "observations": [
+      {
+        "sequence": 29,
+        "operation": "SetHandleSize"
+      }
+    ]
+  },
+  {
+    "case": "resize_locked_16",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": true,
+      "target_size": 16,
+      "guard": "Allocate and lock a separate 1024-byte handle immediately after target allocation."
+    },
+    "observations": [
+      {
+        "sequence": 30,
+        "operation": "SetHandleSize"
+      }
+    ]
+  },
+  {
+    "case": "resize_locked_32",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": true,
+      "target_size": 32,
+      "guard": "Allocate and lock a separate 1024-byte handle immediately after target allocation."
+    },
+    "observations": [
+      {
+        "sequence": 31,
+        "operation": "SetHandleSize"
+      }
+    ]
+  },
+  {
+    "case": "resize_locked_4096",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": true,
+      "target_size": 4096,
+      "guard": "Allocate and lock a separate 1024-byte handle immediately after target allocation."
+    },
+    "observations": [
+      {
+        "sequence": 32,
+        "operation": "SetHandleSize"
+      }
+    ]
+  },
+  {
+    "case": "empty_unlocked",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": false,
+      "between_observations": "HUnlock before ReallocateHandle32; reallocated bytes are not asserted."
+    },
+    "observations": [
+      {
+        "sequence": 33,
+        "operation": "EmptyHandle"
+      },
+      {
+        "sequence": 34,
+        "operation": "ReallocateHandle32"
+      }
+    ]
+  },
+  {
+    "case": "empty_locked",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": true,
+      "between_observations": "HUnlock before ReallocateHandle32; reallocated bytes are not asserted."
+    },
+    "observations": [
+      {
+        "sequence": 35,
+        "operation": "EmptyHandle"
+      },
+      {
+        "sequence": 36,
+        "operation": "ReallocateHandle32"
+      }
+    ]
+  },
+  {
+    "case": "reallocate_unlocked",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": false
+    },
+    "observations": [
+      {
+        "sequence": 37,
+        "operation": "ReallocateHandle32"
+      }
+    ]
+  },
+  {
+    "case": "reallocate_locked",
+    "setup": {
+      "initial_size": 16,
+      "initial_bytes": "303132333435363738393a3b3c3d3e3f",
+      "locked": true
+    },
+    "observations": [
+      {
+        "sequence": 38,
+        "operation": "ReallocateHandle32"
+      }
+    ]
+  },
+  {
+    "case": "copy",
+    "setup": {
+      "copy_bytes": "a1b2c3d4",
+      "source_seed": "303132333435363738393a3b3c3d3e3f",
+      "details": "MemoryProbe.cc copies() is the retained complete allocation/action trace. HandToHand source is locked and purgeable. Guarded append allocates and locks a 1024-byte guard; unguarded append does not. Distinct copy byte0 is set to 7e."
+    },
+    "observations": [
+      {
+        "sequence": 39,
+        "operation": "HandToHand_source"
+      },
+      {
+        "sequence": 40,
+        "operation": "HandToHand_copy"
+      },
+      {
+        "sequence": 41,
+        "operation": "mutate_copy_source"
+      },
+      {
+        "sequence": 42,
+        "operation": "mutate_copy_copy"
+      },
+      {
+        "sequence": 43,
+        "operation": "PtrToHand4"
+      },
+      {
+        "sequence": 44,
+        "operation": "PtrAndHand4"
+      },
+      {
+        "sequence": 45,
+        "operation": "HandAndHand_source"
+      },
+      {
+        "sequence": 46,
+        "operation": "HandAndHand_dest"
+      },
+      {
+        "sequence": 47,
+        "operation": "PtrToHand0"
+      },
+      {
+        "sequence": 48,
+        "operation": "PtrAndHand_locked"
+      },
+      {
+        "sequence": 49,
+        "operation": "PtrAndHand_locked_guarded"
+      },
+      {
+        "sequence": 50,
+        "operation": "PtrToXHand4"
+      }
+    ]
+  }
+]

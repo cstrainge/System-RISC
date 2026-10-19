@@ -1,0 +1,483 @@
+//! Read-only resident File Manager backed by the firmware's live block devices.
+//! No file contents or catalog listings are fabricated or cached in applications.
+use alloc::{string::String, vec::Vec};
+
+use mac_abi::{files::*, *};
+pub use mac_formats::macbinary::MacFile;
+use mac_formats::text;
+use mac_hfs::{BlockDevice, CatalogEntry, Fork, Partition, Volume};
+
+pub const MAX_DISKS: u32 = 32;
+pub const MAX_VOLUMES: usize = 128;
+pub const MAX_OPEN_FILES: usize = 64;
+const MAX_PATH: usize = 4096;
+
+/// Capabilities borrowed from firmware. Only construction crosses the unsafe ABI.
+#[derive(Clone, Copy)]
+pub struct BootStorage
+{
+    context:                 *mut (),
+    disk_info:               DiskInfoFn,
+    read_sector:             ReadSectorFn,
+    startup_disk:            u32,
+    startup_partition_start: u64
+}
+impl BootStorage
+{
+    /// # Safety
+    /// Firmware context and callbacks must remain live for the manager's lifetime.
+    /// Calls must be serialized with every other user of the same storage context.
+    pub unsafe fn from_boot_info(info: &BootInfo) -> Option<Self>
+    {
+        Some(Self { context:                 info.storage_context,
+                    disk_info:               info.disk_info?,
+                    read_sector:             info.read_sector?,
+                    startup_disk:            info.startup_disk,
+                    startup_partition_start: info.startup_partition_start })
+    }
+
+    fn info(&self, index: u32) -> Result<DiskInfo, Status>
+    {
+        let mut result = DiskInfo::default();
+        let status = unsafe { (self.disk_info)(self.context, index, &mut result) };
+        if status == OK { Ok(result) } else { Err(status) }
+    }
+}
+struct Device
+{
+    storage: BootStorage,
+    index:   u32,
+    info:    DiskInfo
+}
+impl BlockDevice for Device
+{
+    fn sector_count(&self) -> u64
+    {
+        self.info.sector_count
+    }
+
+    fn read_sector(&mut self, sector: u64, output: &mut [u8; 512]) -> mac_hfs::Result<()>
+    {
+        if sector >= self.info.sector_count
+        {
+            return Err(mac_hfs::Error("sector outside device"));
+        }
+        let status = unsafe {
+            (self.storage.read_sector)(self.storage.context,
+                                       self.index,
+                                       sector,
+                                       output.as_mut_ptr())
+        };
+        if status == OK { Ok(()) } else { Err(mac_hfs::Error("firmware sector read failed")) }
+    }
+}
+struct Mounted
+{
+    device:    Device,
+    partition: Partition,
+    info:      VolumeInfo
+}
+struct OpenFile
+{
+    volume:   u32,
+    fork:     Fork,
+    position: u64
+}
+struct Slot
+{
+    generation: u32,
+    file:       Option<OpenFile>
+}
+#[derive(Default)]
+pub struct Manager
+{
+    volumes:              Vec<Mounted>,
+    handles:              Vec<Slot>,
+    pub rejected_volumes: u32
+}
+fn io<T>(result: mac_hfs::Result<T>) -> Result<T, Status>
+{
+    result.map_err(|_| NOT_SUPPORTED)
+}
+fn utf8_name(bytes: &[u8], output: &mut [u8]) -> u32
+{
+    let name = text::decode(bytes);
+    // Names are at most 31 Mac Roman bytes; supplied fixed buffers fit all UTF8.
+    let mut n = name.len().min(output.len());
+    while !name.is_char_boundary(n)
+    {
+        n -= 1;
+    }
+    output[..n].copy_from_slice(&name.as_bytes()[..n]);
+    n as u32
+}
+fn metadata(volume: u32, entry: &CatalogEntry) -> CatalogInfo
+{
+    let mut result =
+        CatalogInfo { volume,
+                      id: entry.id,
+                      parent: entry.parent,
+                      kind: if entry.directory { DIRECTORY } else { FILE },
+                      data_length: entry.data.as_ref().map_or(0, |f| f.length),
+                      resource_length: entry.resources.as_ref().map_or(0, |f| f.length),
+                      flags: entry.flags,
+                      child_count: entry.child_count,
+                      created: entry.created,
+                      modified: entry.modified,
+                      backup: entry.backup,
+                      finder_info: entry.finder_info,
+                      ..Default::default() };
+    if !entry.directory
+    {
+        result.file_type.copy_from_slice(&entry.finder_info[..4]);
+        result.creator.copy_from_slice(&entry.finder_info[4..8]);
+    }
+    result.name_length = utf8_name(&entry.name, &mut result.name);
+    result
+}
+fn required(entry: Option<CatalogEntry>) -> Result<CatalogEntry, Status>
+{
+    entry.ok_or(NOT_FOUND)
+}
+impl Manager
+{
+    /// Discover all valid classic HFS partitions on each firmware device.
+    /// Non-HFS devices and malformed volumes are skipped; capacity overflow fails.
+    pub fn new(storage: BootStorage) -> Result<Self, Status>
+    {
+        let mut result = Self::default();
+        for index in 0..=MAX_DISKS
+        {
+            let info = match storage.info(index)
+            {
+                Ok(info) => info,
+                Err(NOT_FOUND) => return Ok(result),
+                Err(status) => return Err(status)
+            };
+            if index == MAX_DISKS
+            {
+                return Err(NO_MEMORY);
+            }
+            let mut device = Device { storage,
+                                      index,
+                                      info };
+            let partitions = match mac_hfs::partitions(&mut device)
+            {
+                Ok(p) => p,
+                Err(_) =>
+                {
+                    result.rejected_volumes += 1;
+                    continue;
+                }
+            };
+            for partition in partitions
+            {
+                let volume = match Volume::mount(&mut device, partition)
+                {
+                    Ok(v) => v,
+                    Err(_) =>
+                    {
+                        result.rejected_volumes += 1;
+                        continue;
+                    }
+                };
+                if result.volumes.len() == MAX_VOLUMES
+                {
+                    return Err(NO_MEMORY);
+                }
+                let mut summary = VolumeInfo { id: result.volumes.len() as u32 + 1,
+                                               disk: index,
+                                               partition_start: partition.start,
+                                               total_bytes: volume.allocation_bytes,
+                                               free_bytes: volume.free_bytes,
+                                               created: volume.created,
+                                               modified: volume.modified,
+                                               attributes: volume.attributes,
+                                               read_only: 1,
+                                               startup:
+                                                   u32::from(index == storage.startup_disk
+                                                             && partition.start
+                                                                == storage.startup_partition_start),
+                                               finder_info: volume.finder_info,
+                                               icon_kind: info.icon_kind,
+                                               icon_id: info.icon_id,
+                                               ..Default::default() };
+                summary.name_length = utf8_name(&volume.name, &mut summary.name);
+                result.volumes.push(Mounted { device: Device { storage,
+                                                               index,
+                                                               info },
+                                              partition,
+                                              info: summary });
+            }
+        }
+        Err(NO_MEMORY)
+    }
+
+    fn mounted(&mut self, id: u32) -> Result<&mut Mounted, Status>
+    {
+        self.volumes.get_mut(id.checked_sub(1).ok_or(NOT_FOUND)? as usize).ok_or(NOT_FOUND)
+    }
+
+    fn with_volume<T>(&mut self, id: u32,
+                      f: impl FnOnce(&mut Volume<'_, Device>) -> Result<T, Status>)
+                      -> Result<T, Status>
+    {
+        let mounted = self.mounted(id)?;
+        let mut volume = io(Volume::mount(&mut mounted.device, mounted.partition))?;
+        f(&mut volume)
+    }
+
+    fn entry(&mut self, volume: u32, id: u32) -> Result<CatalogEntry, Status>
+    {
+        self.with_volume(volume, |v| required(io(v.entry(if id == 0 { ROOT_ID } else { id }))?))
+    }
+
+    fn lookup(&mut self, volume: u32, start: u32, path: &str) -> Result<CatalogEntry, Status>
+    {
+        if path.len() > MAX_PATH || path.contains('\0')
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.with_volume(volume, |v| {
+                let mut entry = required(io(v.entry(if path.starts_with('/') || start == 0
+                                                    {
+                                                        ROOT_ID
+                                                    }
+                                                    else
+                                                    {
+                                                        start
+                                                    }))?)?;
+                let components = path.split('/').filter(|s| !s.is_empty());
+                for component in components
+                {
+                    if !entry.directory
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    if component == "."
+                    {
+                        continue;
+                    }
+                    if component == ".."
+                    {
+                        if entry.id != ROOT_ID
+                        {
+                            entry = required(io(v.entry(entry.parent))?)?;
+                        }
+                        continue;
+                    }
+                    let name = text::encode(component).map_err(|_| BAD_ARGUMENT)?;
+                    if name.len() > 31
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    entry = required(io(v.lookup(entry.id, &name))?)?;
+                }
+                if path.ends_with('/') && !entry.directory
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                Ok(entry)
+            })
+    }
+
+    fn path(&mut self, volume: u32, id: u32) -> Result<String, Status>
+    {
+        self.with_volume(volume, |v| {
+                let mut components = Vec::new();
+                let mut current = id;
+                let mut seen = Vec::new();
+                let mut length = 1;
+                for _ in 0..256
+                {
+                    if seen.contains(&current)
+                    {
+                        return Err(NOT_SUPPORTED);
+                    }
+                    seen.push(current);
+                    let entry = required(io(v.entry(current))?)?;
+                    if entry.id == ROOT_ID
+                    {
+                        components.reverse();
+                        return Ok(alloc::format!("/{}", components.join("/")));
+                    }
+                    let name = text::decode(&entry.name);
+                    // Native path convention has slash separators and cannot encode slash names.
+                    if name.contains('/')
+                    {
+                        return Err(NOT_SUPPORTED);
+                    }
+                    length += name.len() + 1;
+                    if length > MAX_PATH
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    components.push(name);
+                    current = entry.parent;
+                }
+                Err(NOT_SUPPORTED)
+            })
+    }
+
+    fn slot(&mut self, handle: u32) -> Result<&mut OpenFile, Status>
+    {
+        let index = (handle & 0xff).checked_sub(1).ok_or(NOT_FOUND)? as usize;
+        let slot = self.handles.get_mut(index).ok_or(NOT_FOUND)?;
+        if slot.generation != handle >> 8
+        {
+            return Err(NOT_FOUND);
+        }
+        slot.file.as_mut().ok_or(NOT_FOUND)
+    }
+
+    fn open(&mut self, volume: u32, id: u32, kind: u32) -> Result<(u32, u64), Status>
+    {
+        let mut entry = self.entry(volume, id)?;
+        if entry.directory
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let fork = match kind
+                   {
+                       DATA_FORK => entry.data.take(),
+                       RESOURCE_FORK => entry.resources.take(),
+                       _ => return Err(BAD_ARGUMENT)
+                   }.ok_or(NOT_SUPPORTED)?;
+        let length = fork.length;
+        let index = if let Some(index) =
+            self.handles.iter().position(|s| s.file.is_none() && s.generation < 0xffffff)
+        {
+            index
+        }
+        else
+        {
+            if self.handles.len() == MAX_OPEN_FILES
+            {
+                return Err(NO_MEMORY);
+            }
+            self.handles.push(Slot { generation: 0,
+                                     file:       None });
+            self.handles.len() - 1
+        };
+        let slot = &mut self.handles[index];
+        slot.generation += 1;
+        slot.file = Some(OpenFile { volume,
+                                    fork,
+                                    position: 0 });
+        Ok(((slot.generation << 8) | (index as u32 + 1), length))
+    }
+
+    pub fn request(&mut self, call: &mut FileCall, name: &str, output: &mut [u8])
+                   -> Result<(), Status>
+    {
+        call.transferred = 0;
+        match call.operation
+        {
+            VOLUME_COUNT => call.index = self.volumes.len() as u32,
+            VOLUME_INDEX =>
+            {
+                call.volume_info = self.volumes.get(call.index as usize).ok_or(NOT_FOUND)?.info
+            }
+            VOLUME_INFO => call.volume_info = self.mounted(call.volume)?.info,
+            CATALOG => call.entry = metadata(call.volume, &self.entry(call.volume, call.cnid)?),
+            DIRECTORY_ENTRY =>
+            {
+                if !self.entry(call.volume, call.cnid)?.directory
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                let id = if call.cnid == 0 { ROOT_ID } else { call.cnid };
+                let entry =
+                    self.with_volume(call.volume, |v| required(io(v.child(id, call.index))?))?;
+                call.entry = metadata(call.volume, &entry);
+            }
+            LOOKUP =>
+            {
+                call.entry = metadata(call.volume, &self.lookup(call.volume, call.cnid, name)?)
+            }
+            PARENT =>
+            {
+                let entry = self.entry(call.volume, call.cnid)?;
+                call.entry = metadata(call.volume,
+                                      &self.entry(call.volume,
+                                                  if entry.id == ROOT_ID
+                                                  {
+                                                      ROOT_ID
+                                                  }
+                                                  else
+                                                  {
+                                                      entry.parent
+                                                  })?);
+            }
+            PATH =>
+            {
+                let path =
+                    self.path(call.volume, if call.cnid == 0 { ROOT_ID } else { call.cnid })?;
+                call.length = path.len() as u64;
+                if output.len() < path.len()
+                {
+                    return Err(NO_MEMORY);
+                }
+                output[..path.len()].copy_from_slice(path.as_bytes());
+                call.transferred = path.len();
+            }
+            OPEN =>
+            {
+                let (handle, length) = self.open(call.volume, call.cnid, call.fork)?;
+                call.handle = handle;
+                call.length = length;
+                call.position = 0;
+            }
+            READ =>
+            {
+                // Clone only the bounded extent descriptor; handles keep independent marks.
+                let file = self.slot(call.handle)?;
+                let (volume, position, mut fork) = (file.volume, file.position, file.fork.clone());
+                let length = self.with_volume(volume, |v| io(v.read(&mut fork, position, output)))?;
+                let file = self.slot(call.handle)?;
+                file.fork = fork;
+                file.position += length as u64;
+                call.transferred = length;
+                call.position = file.position;
+                call.length = file.fork.length;
+            }
+            SEEK =>
+            {
+                let file = self.slot(call.handle)?;
+                let base = match call.whence
+                {
+                    SEEK_START => 0,
+                    SEEK_CURRENT => file.position,
+                    SEEK_END => file.fork.length,
+                    _ => return Err(BAD_ARGUMENT)
+                };
+                let position = base.checked_add_signed(call.offset).ok_or(BAD_ARGUMENT)?;
+                if position > file.fork.length
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                file.position = position;
+                call.position = position;
+                call.length = file.fork.length;
+            }
+            TELL =>
+            {
+                let file = self.slot(call.handle)?;
+                call.position = file.position;
+                call.length = file.fork.length;
+            }
+            CLOSE =>
+            {
+                self.slot(call.handle)?;
+                self.handles[((call.handle & 0xff) - 1) as usize].file = None;
+            }
+            _ => return Err(NOT_SUPPORTED)
+        }
+        Ok(())
+    }
+}
+#[cfg(test)]
+mod tests;
+
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+pub(crate) mod native;

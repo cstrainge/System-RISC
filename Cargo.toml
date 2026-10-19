@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/mac-abi",
+    "crates/mac-toolbox",
+    "crates/mac-traps",
+    "crates/mac-formats",
+    "crates/mac-hfs",
+    "toolbox/*",
+    "system",
+    "finder",
+    "tools/mac-build",
+    "tools/xtask",
+    "tests/abi-smoke",
+    "bootrom",
+    "definitions/*",
+]
+default-members = ["crates/mac-abi", "crates/mac-toolbox", "crates/mac-formats", "crates/mac-hfs", "tools/mac-build", "tools/xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+mac-traps = { path = "crates/mac-traps" }
+mac-abi = { path = "crates/mac-abi" }
+mac-toolbox = { path = "crates/mac-toolbox" }
+mac-formats = { path = "crates/mac-formats" }
+mac-hfs = { path = "crates/mac-hfs" }
+mac-build = { path = "tools/mac-build" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
+codegen-units = 1
+debug = 2
+strip = "none"

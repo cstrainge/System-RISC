@@ -1,0 +1,17 @@
+[package]
+name = "abi-smoke"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "abi-smoke"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+mac-abi.workspace = true
+mac-traps.workspace = true
+mac-toolbox.workspace = true
+toolbox-quickdraw = { path = "../../toolbox/quickdraw" }
