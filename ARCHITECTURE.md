@@ -110,6 +110,16 @@ dependencies, registration ownership, disabled-startup recovery, fatal kernel
 panic behavior and the separate legacy cdev/INIT adapter track. None of this
 implies a loader, hot unloading or fault isolation exists today.
 
+## Planned networking stack
+
+[Platform workstream P7](docs/NETWORKING.md) plans resident Rust networking with
+shared protocol/socket state, thin Toolbox bindings and a future `std::net`
+platform adapter. Machine drivers own DMA/interrupts; preemptible network work
+and monotonic deadlines drive protocol progress independently of UI input.
+The plan covers dual-stack TCP/IP, configuration/DNS/discovery, JSON-backed
+control panels and separate legacy networking adapters. Blocking I/O, entropy,
+TLS and concurrent execution each retain their own delivery gates.
+
 ## Classic applications
 
 Original A-line trap identities remain separate from the native request numbers.

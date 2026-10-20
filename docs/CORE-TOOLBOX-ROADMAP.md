@@ -191,6 +191,22 @@ files and translated legacy callbacks. Add sample extension/panel, Extensions
 Manager, public SDK tests and private boot/failure/performance probes. See
 [the control-panel and extension plan](SYSTEM-EXTENSIONS.md).
 
+### P7 — Full networking stack
+
+Status: backlog. Build a resident, thread-capable host stack with loopback and
+virtio-net, IPv4/IPv6, ARP/NDP/ICMP, UDP/TCP, addressing/routing, DHCP, DNS and
+multicast/discovery. Native apps use owned Rust networking services through the
+Toolbox; a minimal platform adapter later backs `std::net`. Evaluate an existing
+Rust protocol engine against an explicit conformance matrix before selecting it.
+
+Depend on real timer/blocking/wakeup, ownership and bounded-buffer foundations.
+Add a JSON-backed Network control panel, TLS/HTTPS with entropy/clock/trust gates,
+and separately verified MacTCP/Open Transport and AppleTalk compatibility tracks.
+Keep interrupt and packet work bounded, preserve UI responsiveness under load,
+and test through public SDK services plus controlled private QEMU peers.
+See [the staged networking plan](NETWORKING.md) for protocol scope, dependencies,
+device/extension boundaries and acceptance criteria.
+
 ## Planned application tooling
 
 ### A1 — ResEdit resource-editor extensions
