@@ -52,6 +52,7 @@ pub struct Dialog
     pub mode:            u32,
     pub location:        (u32, u32),
     pub entries:         Vec<CatalogInfo>,
+    pub(super) icons:    Vec<(CatalogInfo, crate::toolbox::quickdraw::icons_service::Drawing)>,
     pub selected:        Option<usize>,
     pub first:           usize,
     pub prompt:          String,
@@ -242,6 +243,7 @@ impl Manager
                                  mode: call.mode,
                                  location: (volume, directory),
                                  entries: Vec::new(),
+                                 icons: Vec::new(),
                                  selected: None,
                                  first: 0,
                                  prompt: label,
@@ -345,6 +347,7 @@ impl Manager
             }
         }
         d.entries = entries;
+        d.icons.clear();
         d.ancestors = ancestors;
         d.selected = if d.mode == GET && !d.entries.is_empty() { Some(0) } else { None };
         d.first = 0;

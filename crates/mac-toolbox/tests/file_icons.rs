@@ -1,6 +1,9 @@
 //! Application-owned icon families through the public SDK and real HFS reads.
 #![cfg(not(target_arch = "riscv64"))]
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs,
+          path::PathBuf,
+          process::Command,
+          sync::atomic::{AtomicUsize, Ordering}};
 
 use mac_formats::{macbinary::{self, MacFile},
                   resource::{self, Resource}};
@@ -14,6 +17,7 @@ struct Disk
     path:      PathBuf,
     tools:     PathBuf
 }
+static NEXT_DISK: AtomicUsize = AtomicUsize::new(0);
 impl Drop for Disk
 {
     fn drop(&mut self)
@@ -36,12 +40,14 @@ impl Disk
         let root =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
         let directory =
-            root.join("results/system7").join(format!("file-icons-{}", std::process::id()));
+            root.join("results/system7").join(format!("file-icons-{}-{}",
+                                                      std::process::id(),
+                                                      NEXT_DISK.fetch_add(1, Ordering::Relaxed)));
         fs::create_dir_all(directory.join("state")).unwrap();
         let disk = Self { path: directory.join("disk.hfs"),
                           directory,
                           tools: root.join(".toolchains/hfsutils/rootfs/usr/bin") };
-        fs::File::create(&disk.path).unwrap().set_len(4 * 1024 * 1024).unwrap();
+        fs::File::create(&disk.path).unwrap().set_len(8 * 1024 * 1024).unwrap();
         disk.hfs("hformat", &["-l", "Icons", disk.path.to_str().unwrap()]);
         disk.hfs("hmount", &[disk.path.to_str().unwrap()]);
         // Local icon7 -> actual9433, FREF99. An unmapped ID128
@@ -84,6 +90,17 @@ impl Disk
                                                    resources }).unwrap()).unwrap();
             disk.hfs("hcopy", &["-m", path.to_str().unwrap(), ":"]);
         }
+        let large = vec![255; 256];
+        let small = vec![255; 64];
+        let custom = macbinary::encode(&MacFile {
+            name: b"Custom Document".to_vec(), file_type: *b"TEXT", creator: *b"TEST",
+            flags: 0x0400, created: 0, modified: 0, data: vec![],
+            resources: resource::encode(&[r(b"ICN#", -16455, large), r(b"ics#", -16455, small),
+                                          r(b"CODE", 1, vec![0x55; 1024 * 1024])]).unwrap()
+        }).unwrap();
+        let custom_path = disk.directory.join("custom.bin");
+        fs::write(&custom_path, custom).unwrap();
+        disk.hfs("hcopy", &["-m", custom_path.to_str().unwrap(), ":"]);
         disk.hfs("humount", &[]);
         disk
     }
@@ -175,4 +192,38 @@ fn application_icons_use_their_own_bundle_family_sizes_colors_and_masks()
     assert_eq!(activity.writes, 0);
     assert!(activity.reads < 256, "read executable bytes: {activity:?}");
     assert_eq!(fs::read(&disk.path).unwrap(), before);
+}
+
+#[test]
+fn custom_document_icons_are_read_without_bundle_or_executable_loading()
+{
+    let disk = Disk::new();
+    let (_, activity) =
+        with_file_disk(&disk.path, true, DiskFaults::default(), |services| {
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            let file = system.files().lookup(1, 2, "Custom Document").unwrap();
+            assert_eq!(file.file_type, *b"TEXT");
+            for size in [16, 32]
+            {
+                let mut pixels = vec![0x123456; size * size];
+                let mut surface = mac_abi::Surface { pixels: pixels.as_mut_ptr(),
+                                                     width:  size as u32,
+                                                     height: size as u32,
+                                                     origin: Point::default(),
+                                                     clip:   Rect::new(0, 0, size as i16,
+                                                                       size as i16) };
+                let connection =
+                    unsafe { mac_traps::SurfaceConnection::new(&mut surface, services.trap) };
+                SurfacePort::new(connection).plot_file_icon(1,
+                                                            file.id,
+                                                            Rect::new(0, 0, size as i16,
+                                                                      size as i16),
+                                                            IconFlags::default())
+                                            .unwrap();
+                assert!(pixels.iter().all(|&pixel| pixel == 0),
+                        "custom{size}px document icon was not used");
+            }
+        }).unwrap();
+    assert_eq!(activity.writes, 0);
+    assert!(activity.reads < 128, "custom lookup read executable payload: {activity:?}");
 }

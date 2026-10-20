@@ -332,6 +332,46 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
     assert_eq!(original.flags, rebuilt.flags);
     mac_build::package::inspect(&fs::read(output.join("rebuilt/QuickDraw Test.bin")).unwrap()).unwrap();
     let frames = report["frames"].as_array().unwrap();
+    // The System-owned Open list shows each application's actual small icon;
+    // generic document art must only be a fallback. Render the expected resource
+    // independently through the public SDK, bypassing the dialog's file lookup.
+    for (frame_name, package, scope, id, row, top) in
+        [("system-open", "Panic Test", mac_abi::resources::APPLICATION, 128, 1, 114),
+         ("system-open", "QuickDraw Test", mac_abi::resources::APPLICATION, 128, 2, 114),
+         ("system-open", "ResEdit", mac_abi::resources::APPLICATION, 128, 3, 114),
+         ("system-open", "TextEdit Exerciser", mac_abi::resources::APPLICATION, 128, 4, 114),
+         ("system-save-as", "System", mac_abi::resources::SYSTEM, -4000, 3, 110)]
+    {
+        let mut expected = vec![0xffffffu32; 16 * 16];
+        let application =
+            fs::read(root.join(format!("build/system7/dist/{package}.rsrc"))).unwrap();
+        mac_system::testing::with_resource_forks(&system_fork, &application, |services| {
+            let mut surface = mac_abi::Surface { pixels: expected.as_mut_ptr(),
+                                                 width:  16,
+                                                 height: 16,
+                                                 origin: Default::default(),
+                                                 clip:   mac_abi::Rect::new(0, 0, 16, 16) };
+            let connection =
+                unsafe { mac_traps::SurfaceConnection::new(&mut surface, services.trap) };
+            mac_toolbox::quickdraw::SurfacePort::new(connection).plot_icon(scope,
+                                                                           id,
+                                                                           mac_abi::Rect::new(0,
+                                                                                              0,
+                                                                                              16,
+                                                                                              16),
+                                                                           Default::default())
+                                                                .unwrap();
+        }).unwrap();
+        let expected: Vec<_> =
+            expected.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
+        let open = frames.iter().find(|frame| frame["name"] == frame_name).unwrap();
+        assert_eq!(crop(&pixels(&output.join(open["frame"].as_str().unwrap())),
+                        162,
+                        top + row * 16,
+                        16),
+                   expected,
+                   "{frame_name}: wrong {package} icon or document fallback");
+    }
     for (package, kind) in
         [("QuickDraw Test", *b"ICN#"), ("System", *b"ICON"), ("System", *b"cicn")]
     {

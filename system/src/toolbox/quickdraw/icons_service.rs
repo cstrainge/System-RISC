@@ -1,6 +1,6 @@
 //! Icons resolve through the same immutable resource chain as pictures and fonts.
 #![forbid(unsafe_code)]
-use alloc::{collections::BTreeSet, vec::Vec};
+use alloc::{collections::BTreeSet, sync::Arc, vec::Vec};
 
 use mac_abi::{quickdraw::*,
               resources::{CHAIN, SYSTEM},
@@ -95,7 +95,7 @@ pub fn query(manager: Manager<'_>, call: &mut IconCall) -> Result<(), Status>
 #[derive(Clone)]
 pub struct Drawing
 {
-    pub family:      IconFamily,
+    pub family:      Arc<IconFamily>,
     pub destination: Rect,
     pub flags:       IconFlags,
     pub port:        Port
@@ -120,7 +120,7 @@ impl Drawing
         let family = IconFamily::from_lookup(0, |candidate, id| {
                          (id == 0 && candidate == kind).then_some(data)
                      }).map_err(status)?;
-        Ok(Self { family,
+        Ok(Self { family: family.into(),
                   destination,
                   flags: IconFlags::default(),
                   port: Port::default() })
@@ -136,7 +136,7 @@ impl Drawing
             return Err(BAD_ARGUMENT);
         }
         let flags = IconFlags::from_transform(call.flags).map_err(status)?;
-        Ok(Self { family: files.file_icon(call.volume, call.cnid, manager)?,
+        Ok(Self { family: files.file_icon(call.volume, call.cnid, manager)?.into(),
                   destination: call.destination,
                   flags,
                   port: Port::default() })
@@ -145,7 +145,7 @@ impl Drawing
     pub fn new(manager: Manager<'_>, call: &IconCall, port: Port) -> Result<Self, Status>
     {
         let flags = IconFlags::from_transform(call.flags).map_err(status)?;
-        Ok(Self { family: family(manager, call.scope, call.id)?,
+        Ok(Self { family: family(manager, call.scope, call.id)?.into(),
                   destination: call.destination,
                   flags,
                   port })

@@ -303,6 +303,74 @@ impl super::Desktop
         Ok(())
     }
 
+    fn standard_file_icon(&mut self, id: u32, entry: files::CatalogInfo, destination: Rect)
+                          -> Result<crate::toolbox::quickdraw::icons_service::Drawing, Status>
+    {
+        use crate::toolbox::quickdraw::icons_service::{self, Drawing};
+        let dialog = self.standard_file.get_mut(id)?;
+        if let Some((_, drawing)) = dialog.icons.iter().find(|(key, _)| *key == entry)
+        {
+            let mut drawing = drawing.clone();
+            drawing.destination = destination;
+            return Ok(drawing);
+        }
+        let resources = crate::kernel::with_resource_owner(dialog.owner, crate::kernel::resources)
+                            .ok_or(NOT_SUPPORTED)?;
+        let mut call = IconCall { window: dialog.window.0,
+                                  scope: resources::SYSTEM,
+                                  id: if entry.is_directory() { -3999 } else { -4000 },
+                                  destination,
+                                  ..Default::default() };
+        let actual = if entry.resource_length != 0 && !entry.is_directory()
+        {
+            crate::kernel::with_files(|files| {
+                Drawing::file(files,
+                              resources,
+                              &FileIconCall { operation: ICON_PLOT_FILE,
+                                              volume: entry.volume,
+                                              cnid: entry.id,
+                                              destination,
+                                              ..Default::default() })
+            }).ok()
+              .and_then(Result::ok)
+        }
+        else
+        {
+            None
+        };
+        let drawing =
+            if let Some(drawing) = actual
+            {
+                drawing
+            }
+            else
+            {
+                if !entry.is_directory()
+                {
+                    let mut lookup = IconCall { operation: ICON_FILE,
+                                                scope: resources::CHAIN,
+                                                creator: entry.creator,
+                                                file_type: entry.file_type,
+                                                ..Default::default() };
+                    if icons_service::query(resources, &mut lookup).is_ok()
+                    {
+                        call.id = lookup.id;
+                        call.scope = lookup.origin;
+                    }
+                }
+                Drawing::new(resources, &call, Default::default()).or_else(|_| {
+                    call.scope = resources::SYSTEM;
+                    call.id = if entry.is_directory() { -3999 } else { -4000 };
+                    Drawing::new(resources, &call, Default::default())
+                })?
+            };
+        // Retain only visible rows. Immutable families are shared with retained
+        // drawing commands, so selection/caret updates do no disk I/O or decoding.
+        dialog.icons.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        dialog.icons.push((entry, drawing.clone()));
+        Ok(drawing)
+    }
+
     fn standard_file_draw(&mut self, id: u32) -> Result<(), Status>
     {
         let d = self.standard_file.get(id)?;
@@ -352,6 +420,10 @@ impl super::Desktop
         d.editor.selection_rects(|r| selection.push(r));
         let popup = d.popup;
         let ancestors: Vec<_> = d.ancestors.iter().map(|e| String::from(e.name())).collect();
+        self.standard_file
+            .get_mut(id)?
+            .icons
+            .retain(|(entry, _)| rows.iter().any(|(_, e)| e == entry));
         checked(self.window(BEGIN_UPDATE, &mut request(window)))?;
         let result = (|| {
             self.graphics(&mut GraphicsCall { operation: QD_RESET,
@@ -507,15 +579,12 @@ impl super::Desktop
                                   &[],
                                   &[])?;
                 }
-                // Resource-based standard folder/file icons, independently of apps.
-                let icon_id = if e.is_directory() { -3999 } else { -4000 };
                 let c =
                     IconCall { window: window.0,
-                               scope: resources::SYSTEM,
-                               id: icon_id,
                                destination: Rect::new(list.left + 2, y, list.left + 18, y + 16),
                                ..Default::default() };
-                if let Ok(drawing)=crate::toolbox::quickdraw::icons_service::Drawing::new(crate::kernel::resources().ok_or(NOT_SUPPORTED)?,&c,Default::default()){let _=self.icon(&c,drawing);}
+                let drawing = self.standard_file_icon(id, e, c.destination)?;
+                self.icon(&c, drawing)?;
                 self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
                                                   window: window.0,
                                                   bounds: Rect::new(list.left + 20,

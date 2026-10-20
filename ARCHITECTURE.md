@@ -211,6 +211,16 @@ presents only cursor damage, even when all application threads run without
 yielding. Long interrupt-masked kernel services cannot be observed until they
 return; this policy does not turn those services into preemptible operations.
 
+Standard File lists resolve file-owned custom icon families (-16455 with the
+Finder custom-icon flag), then bundle/FREF or resident creator/type mappings.
+An unavailable file icon falls back to the standard document; directory rows
+retain their folder icon. Only visible rows are cached, keyed by catalog
+identity and metadata, with cache eviction on navigation/list refresh. Immutable
+icon families are shared with retained drawing commands, so selection and caret
+redraws neither reread resource forks nor decode/copy the icon pixels. The dialog
+content renderer still rebuilds its content on selection changes; this cache is
+not a claim of incremental row painting.
+
 ## Application-local namespaces
 
 Window IDs are checked against the caller's owner in the shared registry. Other
