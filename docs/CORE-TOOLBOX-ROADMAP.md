@@ -77,6 +77,8 @@ R2 and R4 can progress independently once their relevant R1 contracts are ready.
 Platform numbers identify workstreams, not execution order. P15's HFS-B workspace
 cutover is an early storage priority, ahead of broad std filesystem/hosted-toolchain
 work. Keep the HFS boot volume initially; do not wait for HFS-B boot support.
+System growth is already a near-term concern: remove fixed small resource-loader
+ceilings as an early storage gate, independently of the chosen boot filesystem.
 
 ### P1 — Multi-hart execution (SMP)
 
@@ -318,6 +320,17 @@ a separate native UTF-8, dual-fork format alongside unchanged classic HFS, not a
 extension of HFS's name keys or date fields. Move native workspaces to HFS-B early,
 before P8's broader filesystem workloads and P12 hosted tools depend on classic
 HFS limits. Initially boot System/Finder from HFS and mount HFS-B after boot.
+
+At this planning checkpoint System.rsrc is 3,084,317 bytes, while ROM startup,
+startup resource transfer, resident resource loading and APPL loading enforce
+4 MiB resource-fork ceilings. These are implementation limits, not HFS's maximum
+file size, and HFS-B does not remove them automatically. Ahead of further System
+resource growth, replace the fixed ceilings with validated, memory-budgeted
+loading and bounded/targeted reads where appropriate. Include the separate
+whole-data-file writer limit in the native write-service audit. Do not merely
+raise one constant or accept an unbounded fork-sized allocation. Require real
+boot/resource/app fixtures beyond 4 MiB while retaining malformed/budget rejection
+and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
 
 1. Freeze a byte-accurate versioned layout and test vectors before image creation:
    signature (proposed HB), volume header, allocation bitmap, catalog/extents/

@@ -18,6 +18,10 @@ either compiler hosting or memory isolation.
 early native workspace/storage target for broader std file support. Keep HFS
 boot and its legacy projection unchanged; validate the new format's full-name,
 64-bit size/time and dual-fork services instead of extending HFS storage limits.
+Audit the existing 4 MiB resource-loading and staged-write ceilings early as part
+of that work. A larger filesystem or std-linked binary cannot bypass an unchanged
+ROM/resource/app loader limit; verify real packaged images beyond that boundary
+with bounded memory use before making std the application build default.
 
 ## Current evidence and gaps
 
