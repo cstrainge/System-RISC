@@ -72,6 +72,33 @@ A deliberately selected original 68k test app runs translated with real records,
 
 R2 and R4 can progress independently once their relevant R1 contracts are ready. R3 can begin its filesystem engine alongside R2, but its end-to-end open/save exit needs the dialog/control services. R6 ABI work can begin earlier against selected APIs; its integrated application acceptance depends on the earlier slices and a working translator.
 
+## Planned platform work
+
+### P1 — Multi-hart execution (SMP)
+
+Status: backlog; additional harts currently park in the boot ROM. This is a
+separate platform workstream alongside the Toolbox delivery sequence.
+
+- Give each hart its own boot/trap stacks, current-thread context, resource
+  selection, timer setup and idle state. Remove single-hart assumptions from
+  scheduler and synchronous I/O context selection.
+- Audit shared manager, allocator, resource-publication and device access.
+  Define lock ordering, blocking/wakeup rules and explicit compositor/input/I/O
+  ownership; masking local interrupts cannot provide cross-hart exclusion.
+- Add secondary-hart startup, concurrent scheduling and inter-hart wakeups.
+  Establish pinned-thread execution first, then separately verify migration.
+  Legacy cooperative contexts remain inside their application's OS threads.
+- Acceptance: public SDK guests on two and four harts demonstrate simultaneous
+  application progress without Toolbox calls or yields, correct ownership and
+  caller context, wakeups without lost events, and safe allocation/file access
+  and exit under contention. A thread must never execute on two harts at once.
+  Keep the one-hart regression profile, Cursor Test responsiveness, event latency
+  and bounded present/repaint timings as required gates.
+
+See [THREADING.md](../THREADING.md#delivery-gates) for the synchronization and
+execution contracts. A successful multi-hart boot with parked secondary harts
+does not satisfy this milestone.
+
 ## Evidence and limits
 
 The current consolidated regression report is `results/system7/toolchain-checks.json` outside the repository. It establishes accepted subsets, not missing selectors. The original comparison profile remains English/Roman System 7.6.1, one 640×480 display. Native UTF8 string/Pascal conversion pairs do not establish original A-line ABI or legacy record layout. The native scheduler supports one hart and fixed executable reservations; that is separate from blocking, Rust std, protected memory and multi-hart support.

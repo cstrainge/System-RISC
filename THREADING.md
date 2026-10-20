@@ -143,7 +143,7 @@ address-space/object translation rather than access to resident Rust addresses.
 | Application switching | Resident right-hand menu and Process Manager activation/hide/restore paths exist. Private SDK and actual Finder/two-app activation/hide/input/exit tests pass, including first-click activation and background dragging. The original popup comparison passes with explicit icon/cursor masks; this establishes the captured profile, not all application behavior. |
 | Reentrant service work | Existing definition-to-Surface/font/resource nesting remains supported. Stateful recursive manager calls still return Busy. General app callbacks require snapshot/callback/commit and cancellation tests. |
 | Legacy Thread Manager | Not implemented. Cooperative contexts must remain inside their host application's OS thread and cannot replace kernel preemption. |
-| Multi-hart and devices | Not implemented. Per-hart entry stacks, migration, blocking/wakeup ordering, allocator/device synchronization and concurrent callback publication need independent evidence. |
+| Multi-hart and devices | Planned as [platform workstream P1](docs/CORE-TOOLBOX-ROADMAP.md#p1--multi-hart-execution-smp); not implemented. Per-hart entry/context state, concurrent scheduling and inter-hart wakeups, migration, blocking/wakeup ordering, allocator/device synchronization and concurrent callback publication need independent evidence. |
 
 Canonical tests belong under `crates/mac-toolbox/tests` and use the public SDK.
 Host tests are useful for shared-manager safety and race detection; real RV64
