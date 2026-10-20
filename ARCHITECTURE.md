@@ -22,6 +22,20 @@ for its byte size. ABI 6 supplies one gate and capability bits in the 24-byte
 `SystemServices` structure. [FORMAT.md](FORMAT.md) describes the exact contract.
 Applications and System must be rebuilt together when this ABI changes.
 
+## Unreleased compatibility policy
+
+System RISC rebuilds ROM, System, applications, definitions, extensions, drivers
+and tooling together. During this phase, internal API/ABI and native format/schema
+changes may break previous project builds without a fallback or migration path.
+Update all producers, consumers and tests in the same change, regenerate generated
+images as needed, and remove the superseded implementation. Do not retain shims
+or dual code paths solely for earlier System RISC artifacts. Version/schema and
+bounds checks still reject incompatible input with a clear rebuild/recreate
+diagnostic; a version field is not a promise to load older layouts.
+
+Compatibility with original Macintosh applications, classic media and explicitly
+supported external formats remains part of the product requirements.
+
 ## Native application execution
 
 Finder and disk-loaded native applications run on separate OS-scheduled threads.

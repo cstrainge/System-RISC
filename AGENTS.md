@@ -5,6 +5,15 @@ root and the public Toolbox facade in `crates/mac-toolbox`. Finder depends only
 on that facade at runtime. Resident implementations belong in System's internal
 Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
 
+- No backward compatibility with earlier System RISC builds is required during
+  this unreleased phase. Break internal APIs, ABIs, resource/native disk formats
+  and preference schemas directly; update all producers, consumers, tools and
+  tests together and rebuild the whole system. Regenerate generated media and
+  remove superseded implementations. Do not add compatibility shims, dual
+  decoders, fallbacks or migrations solely to preserve old project artifacts.
+  Keep validation and clear rebuild/recreate errors for incompatible artifacts.
+  Original Macintosh compatibility and external-format support remain explicit
+  product requirements; this policy does not remove them.
 - Commit completed, verified milestones with descriptive messages. Do not push
   or publish without an explicit request. Keep generated targets, ROMs, disks,
   private working captures, and unrelated Strange Forth code outside this repo.

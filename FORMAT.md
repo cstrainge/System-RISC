@@ -11,6 +11,12 @@ never a runtime resource container. The old unreleased ELF-backed layout is
 replaced, not supported by a second decoder. Rebuild ROM, System, Finder,
 applications and definitions together when this contract changes.
 
+The [unreleased compatibility policy](ARCHITECTURE.md#unreleased-compatibility-policy)
+applies to all native formats, ABIs and schemas. Update every producer/consumer
+and regenerate project artifacts when changing a layout; maintaining previous
+System RISC layouts, automatic migrations or fallback decoders is not required.
+Keep validation and clear rebuild/recreate diagnostics for incompatible input.
+
 ## NABI descriptor
 
 NABI has exactly 40 bytes. All numeric fields are big endian:

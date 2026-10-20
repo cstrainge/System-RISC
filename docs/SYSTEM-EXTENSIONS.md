@@ -35,11 +35,14 @@ must yield a useful status rather than a successful-looking no-op.
 
 Store all system settings, enabled-extension selections and panel preferences as
 versioned JSON through a resident typed preferences service. Define schema
-validation/migration, defaults, concurrent-writer conflict handling and commit/
+validation, defaults, concurrent-writer conflict handling and commit/
 rollback behavior. Define when changes take effect and how Cancel/revert works;
 notify subscribers after commit without invoking code under the storage lock.
 Persistent writes and publication must use real File Manager transactions and
 report errors. No private preference files that bypass shared synchronization.
+Earlier unreleased preference schemas may be rejected/reset explicitly under the
+[project compatibility policy](../ARCHITECTURE.md#unreleased-compatibility-policy);
+they do not require migration code. Report the reset or required recreation.
 
 ## Resource packaging and build
 
