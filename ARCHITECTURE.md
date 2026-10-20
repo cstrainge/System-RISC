@@ -120,6 +120,16 @@ The plan covers dual-stack TCP/IP, configuration/DNS/discovery, JSON-backed
 control panels and separate legacy networking adapters. Blocking I/O, entropy,
 TLS and concurrent execution each retain their own delivery gates.
 
+## Planned Rust standard library
+
+[Platform workstream P8](docs/RUST-STD.md) maps std's platform backends onto
+resident allocation, runtime, thread/TLS/wait, stream/file/process, clock and
+network services. A patched target/sysroot calls the minimal core-only native
+ABI/transport, independently of the application Toolbox facade. Resource-based
+apps may use std while System, definitions and kernel extensions stay no_std.
+The plan stages runtime, concurrency, document/Finder and network acceptance;
+neither a custom target nor a linked unsupported backend establishes std support.
+
 ## Classic applications
 
 Original A-line trap identities remain separate from the native request numbers.

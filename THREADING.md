@@ -212,22 +212,27 @@ once the OS platform layer exists. The resident kernel, ABI and transport remain
 which building `std` requires the application-level `mac-toolbox` facade. The
 facade remains `no_std` and usable by applications with or without `std`.
 
+The detailed [P8 module map and bring-up plan](docs/RUST-STD.md) covers the target/
+sysroot patch, runtime, per-service gaps and S0–S5 acceptance. That inventory is
+the std delivery plan; the table below summarizes its threading/service boundary.
+
 | Platform layer requirement | Required delivery gate |
 | --- | --- |
 | Stable aligned pointer allocation, deallocation/reallocation and failure policy | Define raw allocator ABI, alignment/zero-size rules, ownership and preemption-safe synchronization. The current movable/opaque Memory Manager handles are not a GlobalAlloc backend. |
 | Application entry and termination | OS starts each application's main thread with owned arguments/environment/streams; exit drains threads and manager work before unloading. Independent application entry/exit exists; owned arguments, environment, streams and worker-thread draining remain open. |
 | OS thread spawn/join, TLS and destructors | Real kernel scheduling/stacks, per-thread platform data and deterministic cleanup. `std::thread_local!` and Toolbox execution identity must use the same actual ThreadId. |
 | Blocking mutex/condvar or futex/park/wake | Scheduler queues, atomic unlock-and-wait, wakeup ordering, timeout and cancellation. No spinlock held across preemption or callback substitutes for these services. |
-| Files and process-owned streams | Native UTF-8 paths, buffers, 64-bit offsets, open/read/write/flush/seek/error contracts, stdin/stdout/stderr and working directory. Legacy Mac Roman/HFS/fork conventions remain explicit adapters. Bounded catalog/Trash writes exist; general file writes and atomic replacement remain M7 work. |
+| Files and process-owned streams | Native UTF-8 paths, buffers, 64-bit offsets, open/read/write/flush/seek/error contracts, stdin/stdout/stderr and working directory. Legacy Mac Roman/HFS/fork conventions remain explicit adapters. Bounded whole-data-file creation/replacement now exists; general writable streams, descriptor semantics and pipes remain open. |
 | Networking / `std::net` | Planned [networking workstream P7](docs/NETWORKING.md): resident TCP/UDP sockets, addressing/DNS, owned descriptors, partial I/O/EOF, readiness, park/wake/deadlines/cancellation and process-exit cleanup. The std adapter uses the minimal platform ABI; it does not link a separate stack or depend on the app-level Toolbox facade. |
 | Clocks | Monotonic Instant independent of wall-clock adjustment, 64-bit SystemTime including 2026 and beyond, epoch/range/error tests. Original classic date counters are compatibility views, not the native clock's range limit. |
 | Panic/runtime boundaries | First std port uses panic_abort. Never unwind through an ECALL frame, C ABI entry, WDEF/CDEF procedure or firmware callback. Unwinding support requires a separate ABI and cleanup audit. |
 | Capability and errors | Truthful absent-device/unsupported results, distinct contention/ownership errors, thread-safe error mapping and versioned requests. Native std features must not silently change classic adapter semantics. |
-| Preferences | Versioned typed JSON for system and per-app scopes selected by trusted context. Serialize concurrent writers and commit through atomic replace/transaction; legacy preferences/PRAM APIs adapt to this store. Actual persistence depends on M7 writable-filesystem transactions and is not implemented by the current catalog/Trash-only write API. |
+| Preferences | Versioned typed JSON for system and per-app scopes selected by trusted context. Serialize concurrent writers and commit through atomic replace/transaction; legacy preferences/PRAM APIs adapt to this store. Bounded file creation is a foundation; typed settings/schema/migration/notification and transactional publication still require P6 services. Preferences are not a prerequisite for compiling std itself. |
 
-Sequence the first port after scheduler/application-thread, allocator and blocking
-primitive gates; then add basic std I/O/time/TLS, followed by wider filesystem and
-process support. Keep a native std test application separate from original 68k
+Sequence the first allocating std app after target/startup, application-thread
+and allocator gates; add general blocking, workers and TLS before advertising
+concurrent std services, then broader files/process/network support. Keep a
+native std test application separate from original 68k
 compatibility tests. Compilation alone cannot establish spawn/join, TLS teardown,
 blocking progress, time range or persistence. Finder's eventual std adoption must
 continue using Toolbox services through the public facade rather than linking

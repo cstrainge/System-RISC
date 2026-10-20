@@ -207,6 +207,21 @@ and test through public SDK services plus controlled private QEMU peers.
 See [the staged networking plan](NETWORKING.md) for protocol scope, dependencies,
 device/extension boundaries and acceptance criteria.
 
+### P8 — Rust standard library
+
+Status: backlog; existing no_std apps, resident services and one-hart app/event
+wait scheduling provide foundations, not a std port. Inventory compiler/target
+selection and all std platform backends, pin a maintained sysroot patch/build,
+and bridge normal Rust startup to resource-based loading.
+
+Deliver pointer allocation/runtime first, then worker threads/TLS/blocking,
+general files/streams/paths/child processes and P7 sockets. Keep the std backend
+on a core-only ABI/transport path independent of mac-toolbox; both call the same
+resident services. Start with panic_abort and explicit unsupported operations;
+unwinding/backtraces and wider ecosystem support retain separate gates. SMP is
+not required for the first std threads. See [the module map and staged plan](RUST-STD.md)
+for current evidence, service requirements, Finder migration and guest tests.
+
 ## Planned application tooling
 
 ### A1 — ResEdit resource-editor extensions
