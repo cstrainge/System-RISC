@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 from pathlib import Path
+from system7_paths import build_dir
 import subprocess
 
 # The checkout may have any name and the caller may have any working directory.
@@ -67,7 +68,7 @@ def main():
     parser.add_argument('--nm', default=os.environ.get('SYSTEM7_NM'), metavar='PATH',
                         help='Rust-demangling ELF symbol reader (otherwise discovered automatically)')
     parser.add_argument('--release-dir', type=Path,
-                        default=ROOT / 'build/system7/target' / TARGET / 'release',
+                        default=build_dir() / 'target' / TARGET / 'release',
                         help='guest release binaries produced by cargo xtask build')
     parser.add_argument('--output', type=Path,
                         default=ROOT / 'results/system7/toolbox-boundaries.json')

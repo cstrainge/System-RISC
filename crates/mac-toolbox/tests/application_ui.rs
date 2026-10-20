@@ -32,9 +32,9 @@ fn icon_flags(root: &Path, package: &str, id: i16, size: usize,
               -> Vec<u8>
 {
     use mac_toolbox::{Point, Rect, quickdraw::SurfacePort};
-    let system = fs::read(root.join("build/system7/dist/System.rsrc")).unwrap();
+    let system = fs::read(mac_build::paths::dist_dir(root).join("System.rsrc")).unwrap();
     let application =
-        fs::read(root.join("build/system7/dist").join(format!("{package}.rsrc"))).unwrap();
+        fs::read(mac_build::paths::dist_dir(root).join(format!("{package}.rsrc"))).unwrap();
     let mut pixels = vec![0xffffff; size * size];
     mac_system::testing::with_resource_forks(&system, &application, |services| {
         let mut surface = mac_abi::Surface { pixels: pixels.as_mut_ptr(),

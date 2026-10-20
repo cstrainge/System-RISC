@@ -71,6 +71,17 @@ fn foreground_stalls_animate_without_app_cooperation_or_scene_repaints()
     let sprite = |id| {
         fs::read(root.join(format!("System7/system/assets/visual/43555253-{id}.bin"))).unwrap()
     };
+    let start = serial.lines()
+                      .find_map(|line| line.strip_prefix("BUSY_CLOCK start="))
+                      .expect("missing guest work-start counter")
+                      .parse::<u64>()
+                      .unwrap();
+    let short = entry("short-work");
+    let before = short["clock_before"].as_u64().unwrap();
+    let after = short["clock_after"].as_u64().unwrap();
+    assert!(start <= before && before <= after && after - start < 4_000_000,
+            "short-work capture was late: start={start}, before={before}, after={after}; capture \
+             must finish within400ms of guest work, before the500ms stall threshold");
     let cross = sprite(2);
     for name in ["idle", "short-work", "recovered", "peeking", "trap-recovered"]
     {

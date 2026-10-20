@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from system7_paths import dist_dir, describe
 import struct
 import subprocess
 
@@ -58,14 +59,14 @@ def main():
             raise RuntimeError("Disk or expected fork changed while being checked")
         report["disk_reads"].append({"name": name, "disk": str(disk.relative_to(ROOT)) if disk.is_relative_to(ROOT) else str(disk),
                                      "disk_sha256": before, "disk_unchanged": True,
-                                     "expected_system_resource_fork": str(fork.relative_to(ROOT)),
+                                     "expected_system_resource_fork": describe(fork),
                                      "system_resource_fork_sha256": expected, "system_resource_fork_bytes": fork.stat().st_size,
                                      "both_forks_streamed": True, "resident_resource_fork_exact": True})
 
     try:
         run("hfs-fixtures", base + ["-p", "mac-hfs"])
         run("resident-and-sdk", base + ["-p", "mac-system", "--lib", "toolbox::files", "--", "--nocapture"])
-        disk_case("generated-native-hfs-b", ROOT / "build/system7/dist/system7.hfsb", ROOT / "build/system7/dist/System.rsrc")
+        disk_case("generated-native-hfs-b", dist_dir() / "system7.hfsb", dist_dir() / "System.rsrc")
         if args.original.exists() and args.original_system.exists():
             blob = args.original_system.read_bytes()
             data_size, size = struct.unpack_from(">II", blob, 83)

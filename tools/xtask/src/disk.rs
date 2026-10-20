@@ -145,12 +145,12 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     fs::rename(&raw, dist.join("system7.hfsb"))?;
     fs::rename(&qcow, dist.join("system7.qcow2"))?;
     let finished = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let report = json!({"raw":"build/system7/dist/system7.hfsb","qcow2":"build/system7/dist/system7.qcow2",
+    let report = json!({"raw":workspace.describe(&dist.join("system7.hfsb")),"qcow2":workspace.describe(&dist.join("system7.qcow2")),
         "virtual_size":DISK_SIZE,"layout":"unpartitioned HFS-B","filesystem":"HFS-B","filesystem_version":1,
         "unicode_version":"17.0.0","volume_name":h.name,"created":h.created,"modified":h.modified,
         "image_started_unix":started,"image_finished_unix":finished,"time_basis":"1904 epoch microseconds, UTC",
         "blessed_system_folder_id":system,"files":verified,"catalog_files":checked.files,"catalog_directories":checked.directories,
-        "qcow2_check":"passed","raw_qcow2_comparison":"passed","riscv_disk_boot_available":true,"boot_rom":"build/system7/dist/bootrom.bin"});
+        "qcow2_check":"passed","raw_qcow2_comparison":"passed","riscv_disk_boot_available":true,"boot_rom":workspace.describe(&dist.join("bootrom.bin"))});
     write_json(&dist.join("disk.json"), &report)?;
     println!("Built 500 MiB HFS-B v1/qcow2; all application forks, metadata, blessing and \
               structural checks passed.");

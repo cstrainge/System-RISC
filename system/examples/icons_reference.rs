@@ -10,6 +10,8 @@ use mac_system::toolbox::quickdraw::{Canvas, Rect,
 
 fn load(source: &str, bundled: bool) -> Vec<Resource>
 {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap();
+    let dist = mac_build::paths::dist_dir(root);
     let mut resources = if source == "Synthetic"
     {
         let mut result = Vec::new();
@@ -42,7 +44,7 @@ fn load(source: &str, bundled: bool) -> Vec<Resource>
     }
     else if bundled
     {
-        resource::decode(&fs::read(format!("build/system7/dist/{source}.rsrc")).unwrap()).unwrap()
+        resource::decode(&fs::read(dist.join(format!("{source}.rsrc"))).unwrap()).unwrap()
     }
     else
     {
@@ -51,7 +53,7 @@ fn load(source: &str, bundled: bool) -> Vec<Resource>
     };
     let bundled_system = if bundled
     {
-        resource::decode(&fs::read("build/system7/dist/System.rsrc").unwrap()).unwrap()
+        resource::decode(&fs::read(dist.join("System.rsrc")).unwrap()).unwrap()
     }
     else
     {

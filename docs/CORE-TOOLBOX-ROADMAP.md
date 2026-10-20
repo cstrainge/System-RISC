@@ -8,13 +8,11 @@ All 17 workstreams have remaining work. Ten have usable tested native slices, fo
 
 Core date/time, fixed/fract arithmetic, queue and truthful Gestalt/availability utilities are cross-cutting R1 work rather than separately counted manager groups. General Rust std support remains a separate platform effort alongside these services.
 
-The immediate next implementation milestone is P15: bootable HFS-B, bounded
-resource loading beyond the current small ceilings, and the default System-volume
-cutover. System already approaches the resource-loader ceiling; dependency growth
-must not force repeated emergency limit increases. Complete this storage
-foundation before std application migration, new drivers/extensions or further
-feature/resource growth. Necessary File/Resource Manager, block and ROM changes
-belong to this milestone; P15 does not wait for the full P1/P6/P8/P14 workstreams.
+P15's native HFS-B boot and default System-volume cutover passed the full
+toolchain gate on 2026-10-20. Shared read/write tooling, resident storage, ROM
+startup and bounded/targeted resource reads now supply that foundation. The
+selected-payload and whole-file SDK write budgets remain explicit; this is not
+unlimited resident allocation or complete File/Resource Manager functionality.
 
 After that cutover, establish the driver interface with StuffIt and vhost mounts,
 then deliver the host clipboard extension, in the sequence below. Native
@@ -37,7 +35,7 @@ tracks, outside this core count.
 | TextEdit | Usable tested slice | L | Editable-dialog integration, styled text, other fonts/alignment, word selection/autoscroll, TEHandle/private scrap ABI. |
 | Scrap | Usable tested slice | M | Disk Scrap.dat, original counted-MacRoman/private TextEdit scrap and process suspend/resume integration. |
 | Dialogs / alerts | Narrow foundation | L | General DLOG, editable/user items, tab focus, item mutation, modeless/filter callback contracts and alert stages. |
-| Files / HFS persistence | Usable tested slice | XL | File creation and fork write/resize, catalog/extents growth, flush/recovery, full metadata operations, eject/unmount and early boot/system/workspace migration to HFS-B (P15). |
+| Files / HFS persistence | Native HFS-B read/write slice | L | General streaming public fork-write/resize APIs, full metadata operations, eject/unmount, exclusive device access and the graphical Filesystem utility. Shared HFS-B allocation/tree growth, rollback, boot and image cutover are implemented; classic HFS exchange remains available. |
 | Standard File / aliases | No public manager | L | Open/save dialogs and filters/hooks, alias records/resolution across moves and ownership of replies/resources. |
 | Processes / application life | Usable tested slice | L | Blocked/wakeup states, document/quit parameters, native workers, relocation, legacy cooperative Thread Manager (P2), segments, CLAP sessions (P11) and process isolation (P13). |
 | Apple events / core IPC | No public manager | L | Descriptors/coercion, handlers, open-document/print/quit events, replies/timeouts and process routing. |
@@ -46,17 +44,17 @@ M means a bounded extension of a working manager; L means substantial lifecycle/
 
 ## Delivery sequence
 
-**Next: P15 HFS-B system cutover**, using the existing no_std applications for
-boot/launch acceptance. The R1–R6 sequence below describes subsequent Toolbox
-delivery; its numbering does not put it ahead of the agreed platform sequence.
-Start with the serialized
-format/test vectors and loader-budget audit, then formatter/reader, writable
-backend, ROM blessing/boot and image cutover with the required regression gates.
+**Next: driver/module SDK foundations**, exercised by StuffIt and vhost mounts,
+then the host clipboard extension. P15's native boot/image cutover is verified
+using the existing no_std applications. The R1–R6 sequence below describes
+subsequent Toolbox delivery; its numbering does not put it ahead of the agreed
+platform sequence.
 
 The agreed implementation order is:
 
-1. **P15:** shared HFS-B core, Linux tooling, built-in kernel/ROM support and
-   native System-volume cutover. Keep bootstrap storage self-contained.
+1. **P15 (native cutover verified):** shared HFS-B core, Linux tooling, built-in
+   kernel/ROM support and native System-volume cutover. Keep bootstrap storage
+   self-contained and its acceptance gates passing.
 2. **P14 plus necessary P6 foundations:** define the driver/module SDK, class
    contracts, DRVR/DABI validation, loading and owned registration. Prove that
    interface with **P16 StuffIt archive mounts** and **P17 external vhost mounts**,
@@ -365,7 +363,7 @@ extracting input, network or display; bring in the required P6 loader subset.
 
 ### P15 — HFS-B and early system migration
 
-Status: **implementation in progress; boot/cutover gates pending**. Follow the supplied
+Status: **native boot/default-image cutover verified, 2026-10-20; follow-on filesystem APIs remain**. Follow the supplied
 [HFS-B specification](HFS-B.md). HFS-B is
 a separate native UTF-8, dual-fork format alongside unchanged classic HFS, not an
 extension of HFS's name keys or date fields. Move native workspaces to HFS-B early,

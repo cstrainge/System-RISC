@@ -3,6 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
+from system7_paths import dist_dir
 import re
 import subprocess
 
@@ -25,7 +26,7 @@ def fields(line):
 
 def main():
     RESULTS.mkdir(parents=True,exist_ok=True)
-    source=ROOT/'build/system7/dist/System.rsrc'
+    source=dist_dir()/'System.rsrc'
     bundle=json.loads((ROOT/'provenance/system7-font-bundle.json').read_text())
     packed={(kind.decode('mac_roman'),rid):hashlib.sha256(data).hexdigest()
             for kind,rid,_,_,data in resources(source.read_bytes())}

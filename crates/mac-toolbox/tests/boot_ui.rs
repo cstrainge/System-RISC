@@ -36,7 +36,7 @@ fn render(root: &Path, width: usize, height: usize, mut pixels: Vec<u32>,
           draw: impl FnOnce(&mut SurfacePort<'_>))
           -> Vec<u8>
 {
-    let system = fs::read(root.join("build/system7/dist/System.rsrc")).unwrap();
+    let system = fs::read(mac_build::paths::dist_dir(root).join("System.rsrc")).unwrap();
     let application = mac_formats::resource::encode(&[]).unwrap();
     mac_system::testing::with_resource_forks(&system, &application, |services| {
         let mut surface = mac_abi::Surface { pixels: pixels.as_mut_ptr(),
@@ -118,7 +118,7 @@ fn boot_art_panel_and_mounted_volume_info_match_public_toolbox_services()
          .unwrap()
     });
     same(region(&info, 38, 53, 32, 32), icon, "volume Info must show its normal driver icon");
-    let (v, _) = mac_system::testing::with_file_disk(&root.join("build/system7/dist/system7.hfsb"),
+    let (v, _) = mac_system::testing::with_file_disk(&mac_build::paths::dist_dir(&root).join("system7.hfsb"),
                                                      true,
                                                      Default::default(),
                                                      |services| {

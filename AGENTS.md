@@ -20,12 +20,16 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
 - Prune obsolete generated HD images at check boundaries, including on failure.
   Include HFS and other raw disk formats; retain only current build/live VM disks
   and original reference media. Reports and screenshots do not require old disks.
-- The next implementation priority is P15: bootable HFS-B, bounded resource
-  loading and the default System-volume cutover. Complete it before std migration
-  or further feature/dependency expansion; include its necessary file/resource,
-  block and ROM prerequisites. Existing no_std apps supply the initial gate.
-  Follow docs/HFS-B.md and docs/CORE-TOOLBOX-ROADMAP.md; shared-crate/tooling
-  verification does not complete resident/ROM boot and cutover acceptance.
+- Tests build their installation under a separate build/media root from the
+  regular desktop. Propagate SYSTEM7_BUILD_DIR through all builders, guest
+  launchers and acceptance readers; never hardcode the normal installation in
+  a check. Native guest builds use the optimized release profile, including for
+  the regular launcher; a host debug xtask must not imply a debug guest.
+- P15's native HFS-B boot/default-image cutover is verified. Preserve its shared
+  read/write core, resident/ROM boot, bounded resource-loading and public-SDK
+  acceptance gates; host-only verification is insufficient for storage changes.
+  Existing no_std apps remain the initial launch gate. Follow docs/HFS-B.md and
+  docs/CORE-TOOLBOX-ROADMAP.md for explicit budgets and remaining filesystem APIs.
 - HFS-B versions are whole integers (`1`, `2`, `3`), each implying one complete
   disk and Unicode contract. Changing Unicode requires a new filesystem version
   and rebuilding all affected file/name/index representations with collision

@@ -1,15 +1,19 @@
 # HFS-B: native UTF-8 filesystem
 
-Priority: **the very next implementation milestone**, including the ROM boot and
-default System-volume cutover. Complete it before std migration and other feature/
-dependency expansion; necessary storage, resource-loader and boot prerequisites
-are part of this work. Existing no_std apps provide the initial launch gate.
-Implementation is in progress: the shared crate, Linux tooling, resident
-integration, ROM boot and native image builder are present. Cold-boot and public
-SDK checks are running against the HFS-B default image. Complete regression and
-cutover acceptance remain required; a host-only filesystem is not this milestone.
+Status: **native boot and default System-volume cutover verified, 2026-10-20**.
+The shared safe read/write crate, Linux tooling, resident services, ROM and image
+builder use HFS-B v1. The full `cargo xtask check` gate has passed: 17 ROM cases,
+all shipped application launches, public-SDK persistence/rollback and large-fork
+tests, mixed classic HFS mounts and original-system visual comparisons. Existing
+no_std applications supply this gate; std migration is a later milestone.
 
-Status: implementation in progress; this spec remains the acceptance contract.
+This spec remains the acceptance contract. General streaming userspace fork
+writes, resource-fork editing, eject/unmount, exclusive raw-device services and
+the graphical Filesystem application remain follow-on work. The shared core and
+Linux tool already provide streaming read/write access to both forks. The
+current whole-data-file SDK writer stages at most4MiB, and resident resource
+loading has a4MiB selected-payload budget on the current8MiB heap, independent of
+total fork length. See [the implemented storage architecture](../ARCHITECTURE.md#native-hfs-b-storage).
 
 User-state preservation across regenerated images includes both
 `System Folder/Preferences` and `Documents`. The Linux tool provides recursive,
@@ -194,10 +198,10 @@ conversion is still out of scope. Prune superseded generated images after checks
 ## Decision status
 
 All five high-level decisions are settled: maximum name length, case behavior,
-normalization, timestamps and boot. Exact serialized layouts and the cutover's
-implementation/evidence remain delivery work. The byte-accurate version-one
-layout is now in [HFS-B-FORMAT.md](HFS-B-FORMAT.md); integration and boot acceptance
-must pass before native startup support is considered delivered.
+normalization, timestamps and boot. The byte-accurate version-one layout is in
+[HFS-B-FORMAT.md](HFS-B-FORMAT.md), with implemented codecs and conformance tests.
+Native startup and default-image cutover acceptance have passed; later format
+changes still require a whole-number version and rebuilding affected media.
 
 ## Volume identity
 

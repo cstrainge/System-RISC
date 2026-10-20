@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from system7_paths import dist_dir, describe
 import subprocess
 from PIL import Image
 
@@ -74,7 +75,7 @@ def main():
             'total_different_pixels':sum(page['different_pixels'] for page in pages),
             'resource_validation':validation.stdout.strip().splitlines(),
             'original_resource_validation':original_validation.stdout.strip().splitlines(),
-            'bundled_artifacts':[{'path':str(path.relative_to(ROOT)), 'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in [ROOT/'build/system7/dist/System.rsrc',ROOT/'build/system7/dist/Finder.rsrc',ROOT/'System7/system/assets/icons/system7-indexed-display.bin']],
+            'bundled_artifacts':[{'path':describe(path), 'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in [dist_dir()/'System.rsrc',dist_dir()/'Finder.rsrc',ROOT/'System7/system/assets/icons/system7-indexed-display.bin']],
             'method':'Whole-page exact RGB comparison, no masks, using the current bundled System/Finder resource forks, the original source snapshots and original synthetic full-palette families. Display and transformation tables are measured separately from resource decoding.'}
     (RESULTS/'icon-checks.json').write_text(json.dumps(report,indent=2)+'\n')
     print(f'Icons: {report["passed_cases"]}/{report["total_cases"]} cases; '

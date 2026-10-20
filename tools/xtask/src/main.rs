@@ -2,7 +2,9 @@ mod disk;
 mod smoke;
 mod boot;
 
-use std::{env, fs,
+use std::{env,
+          ffi::OsStr,
+          fs,
           path::{Path, PathBuf},
           process::{Command, ExitCode}};
 
@@ -20,20 +22,46 @@ struct Workspace
 
 impl Workspace
 {
-    fn new() -> Self
+    fn new(build: Option<PathBuf>, checking: bool) -> Result<Self>
     {
         let root =
             Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
         let repo = root.parent().unwrap().to_path_buf();
-        let build = repo.join("build/system7");
-        Self { root,
-               repo,
-               build }
+        let build = match build
+        {
+            Some(path) => env::current_dir()?.join(path),
+            None =>
+            {
+                let normal = mac_build::paths::build_dir(&repo);
+                if checking { normal.join("check") } else { normal }
+            }
+        };
+        fs::create_dir_all(&build)?;
+        let build = build.canonicalize()?;
+        if build.starts_with(&root)
+        {
+            return Err(error("build output must be outside the OS source repository"));
+        }
+        Ok(Self { root,
+                  repo,
+                  build })
+    }
+
+    fn command(&self, program: impl AsRef<OsStr>) -> Command
+    {
+        let mut command = Command::new(program);
+        command.env(mac_build::paths::BUILD_DIR_ENV, &self.build);
+        command
+    }
+
+    fn describe(&self, path: &Path) -> String
+    {
+        path.strip_prefix(&self.repo).unwrap_or(path).display().to_string()
     }
 
     fn cargo(&self) -> Command
     {
-        let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+        let mut command = self.command(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
         command.current_dir(&self.root);
         command
     }
@@ -105,7 +133,7 @@ impl Workspace
                 }
             }
         }
-        let report = json!({"target": TARGET, "toolchain": {"cargo": output(self.cargo().arg("--version"))?, "rustc": output(Command::new("rustc").arg("--version"))?}, "packages": reports});
+        let report = json!({"target": TARGET, "guest_profile": "release", "build_dir": self.build, "toolchain": {"cargo": output(self.cargo().arg("--version"))?, "rustc": output(Command::new("rustc").arg("--version"))?}, "packages": reports});
         write_json(&self.build.join("dist/build.json"), &report)?;
         Ok(reports)
     }
@@ -114,8 +142,9 @@ impl Workspace
     {
         let checked = run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test",
                                              name, "--", "--ignored"]));
-        let cleaned = run(Command::new("python3").current_dir(&self.repo)
-                                                 .arg("System7/scripts/prune_system7_images.py"));
+        let cleaned = run(self.command("python3")
+                              .current_dir(&self.repo)
+                              .arg("System7/scripts/prune_system7_images.py"));
         checked?;
         cleaned?;
         Ok(())
@@ -123,11 +152,12 @@ impl Workspace
 
     fn check(&self) -> Result<()>
     {
-        run(Command::new("python3").current_dir(&self.root)
-                                   .args(["-m", "unittest", "discover", "-s", "scripts/tests",
-                                          "-p", "test_prune_system7_images.py"]))?;
-        run(Command::new("python3").current_dir(&self.repo)
-                                   .arg("System7/scripts/prune_system7_images.py"))?;
+        run(self.command("python3")
+                .current_dir(&self.root)
+                .args(["-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"]))?;
+        run(self.command("python3")
+                .current_dir(&self.repo)
+                .arg("System7/scripts/prune_system7_images.py"))?;
         run(self.cargo().args(["fmt", "--all", "--", "--check"]))?;
         run(self.cargo().args(["test", "--locked", "--workspace", "--exclude", "mac-finder",
                                "--exclude", "quickdraw-test", "--exclude",
@@ -140,8 +170,9 @@ impl Workspace
         run(self.cargo().args(["test", "--locked", "--release", "-p", "mac-toolbox", "--test",
                                "hfs_b", "allocated_native_fork", "--", "--ignored"]))?;
         let reports = self.build()?;
-        run(Command::new("python3").current_dir(&self.repo)
-                                   .arg("System7/scripts/check_system7_boundaries.py"))?;
+        run(self.command("python3")
+                .current_dir(&self.repo)
+                .arg("System7/scripts/check_system7_boundaries.py"))?;
         let boundaries: Value =
             serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
                                                              toolbox-boundaries.json"))?)?;
@@ -169,14 +200,16 @@ impl Workspace
                                                  .join("results/system7/\
                                                         userspace-conformance-checks.json"))?)?;
         let boot = boot::check(self)?;
-        run(Command::new("python3").current_dir(&self.repo)
-                                   .args(["System7/scripts/system7_vm.py", "check",
-                                          "--no-build"]))?;
+        run(self.command("python3")
+                .current_dir(&self.repo)
+                .args(["System7/scripts/system7_vm.py", "check", "--no-build", "--build-dir"])
+                .arg(&self.build))?;
         let desktop: Value = serde_json::from_slice(&fs::read(self.repo
                                                                   .join("results/system7/\
                                                                          desktop-checks.json"))?)?;
-        run(Command::new("python3").current_dir(&self.repo)
-                                   .arg("System7/scripts/check_wdef_pixels.py"))?;
+        run(self.command("python3")
+                .current_dir(&self.repo)
+                .arg("System7/scripts/check_wdef_pixels.py"))?;
         let appearance: Value =
             serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
                                                              wdef-appearance-checks.json"))?)?;
@@ -194,7 +227,7 @@ impl Workspace
                                         "System7/scripts/check_system7_resources.py",
                                         "results/system7/resource-manager-checks.json")]
         {
-            run(Command::new("python3").current_dir(&self.repo).arg(script))?;
+            run(self.command("python3").current_dir(&self.repo).arg(script))?;
             quickdraw.insert(name.into(),
                              serde_json::from_slice(&fs::read(self.repo.join(report))?)?);
         }
@@ -209,12 +242,12 @@ impl Workspace
                                         "System7/scripts/check_finder_volumes.py",
                                         "results/system7/finder-volume-checks.json")]
         {
-            run(Command::new("python3").current_dir(&self.repo).arg(script))?;
+            run(self.command("python3").current_dir(&self.repo).arg(script))?;
             finder.insert(name.into(), serde_json::from_slice(&fs::read(self.repo.join(report))?)?);
         }
-        run(Command::new("python3").current_dir(&self.repo)
-                                   .args(["System7/scripts/check_system7_files.py",
-                                          "--skip-clippy"]))?;
+        run(self.command("python3")
+                .current_dir(&self.repo)
+                .args(["System7/scripts/check_system7_files.py", "--skip-clippy"]))?;
         let filesystem: Value =
             serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
                                                              filesystem-checks.json"))?)?;
@@ -304,8 +337,46 @@ fn main() -> ExitCode
 
 fn execute() -> Result<()>
 {
-    let workspace = Workspace::new();
-    let args: Vec<String> = env::args().skip(1).collect();
+    let mut args = Vec::new();
+    let mut build = None;
+    let mut input = env::args().skip(1);
+    while let Some(arg) = input.next()
+    {
+        if arg == "--build-dir"
+        {
+            if build.is_some()
+            {
+                return Err(error("--build-dir may only be supplied once"));
+            }
+            build =
+                Some(PathBuf::from(input.next()
+                                        .ok_or_else(|| error("--build-dir needs a directory"))?));
+        }
+        else
+        {
+            args.push(arg);
+        }
+    }
+    let checking =
+        args.first().is_some_and(|s| matches!(s.as_str(), "check" | "test" | "boot-check"));
+    let workspace = Workspace::new(build, checking)?;
+    let lease = if args.first().is_some_and(|s| {
+                                   matches!(s.as_str(),
+                                            "build"
+                                            | "image"
+                                            | "rom"
+                                            | "boot"
+                                            | "boot-check"
+                                            | "check"
+                                            | "test")
+                               })
+    {
+        Some(BuildLease::acquire(&workspace.build)?)
+    }
+    else
+    {
+        None
+    };
     match args.as_slice()
     {
         [command] if command == "build" =>
@@ -320,11 +391,12 @@ fn execute() -> Result<()>
         [command] if command == "check" || command == "test" =>
         {
             let checked = workspace.check();
+            drop(lease);
             // A failed compatibility check must not strand its writable disk
             // copies. Preserve the check's error after cleanup has run.
-            let cleaned = run(Command::new("python3").current_dir(&workspace.repo)
-                                                     .arg("System7/scripts/prune_system7_images.\
-                                                           py"));
+            let cleaned = run(workspace.command("python3")
+                                       .current_dir(&workspace.repo)
+                                       .arg("System7/scripts/prune_system7_images.py"));
             checked?;
             cleaned?;
         }
@@ -387,4 +459,41 @@ fn help()
               FILE   Validate a native MacBinary file\n  cargo xtask package MANIFEST ELF OUT  \
               Package a native application\n  cargo xtask check          Host, disk, ABI, ROM \
               boot and graphical desktop checks");
+    println!("\n  --build-dir DIRECTORY     Override all build/media output (also \
+              SYSTEM7_BUILD_DIR)\n  check defaults to build/system7/check; normal builds use \
+              build/system7");
+}
+
+/// Keep cleanup away from active output and reject two writers to the same
+/// profile. The OS lock releases on crashes; a subsequent owner replaces pid.
+struct BuildLease
+{
+    _lock: fs::File,
+    pid:   PathBuf
+}
+impl BuildLease
+{
+    fn acquire(directory: &Path) -> Result<Self>
+    {
+        let lock = fs::OpenOptions::new().read(true)
+                                         .write(true)
+                                         .create(true)
+                                         .truncate(false)
+                                         .open(directory.join(".build.lock"))?;
+        lock.try_lock()
+            .map_err(|e| {
+                error(format!("build directory {} is already in use: {e}", directory.display()))
+            })?;
+        let pid = directory.join("pid");
+        fs::write(&pid, format!("{}\n", std::process::id()))?;
+        Ok(Self { _lock: lock,
+                  pid })
+    }
+}
+impl Drop for BuildLease
+{
+    fn drop(&mut self)
+    {
+        let _ = fs::remove_file(&self.pid);
+    }
 }

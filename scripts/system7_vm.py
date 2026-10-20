@@ -6,14 +6,17 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import time
+import uuid
 
 from riscv_vm import native_executable, qmp as send_qmp, windows_path
+from system7_paths import BUILD_DIR_ENV, build_dir, dist_dir, describe
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE = ROOT / 'working/system7-vm'
-DIST = ROOT / 'build/system7/dist'
+DIST = dist_dir()
 
 
 def qmp(command, arguments=None, endpoint=None):
@@ -23,7 +26,8 @@ def qmp(command, arguments=None, endpoint=None):
 
 
 def build():
-    subprocess.run(['cargo', 'xtask', 'image'], cwd=ROOT / 'System7', check=True)
+    subprocess.run(['cargo', 'xtask', 'image', '--build-dir', str(build_dir())],
+                   cwd=ROOT / 'System7', check=True)
 
 
 def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
@@ -38,6 +42,14 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     native = frontend in ('native', 'native-headless')
     if native and not native_executable():
         raise FileNotFoundError('Portable qemu-system-riscv64.exe missing; use --frontend gtk')
+    if native:
+        try:
+            connection = socket.create_connection(('127.0.0.1', qmp_port), timeout=.5)
+        except (ConnectionRefusedError, TimeoutError):
+            pass
+        else:
+            connection.close()
+            raise RuntimeError(f'QMP port {qmp_port} is already in use; choose --qmp-port for this VM')
     shutil.copyfile(DIST / 'bootrom.bin', state / 'bootrom.bin')
     disk = state / 'system7.qcow2'
     base_hash = hashlib.sha256((DIST / 'system7.qcow2').read_bytes()).hexdigest()
@@ -61,7 +73,8 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                'native-headless': 'none'}[frontend]
     serial = state / 'serial.log'
     serial.write_text('')
-    args = [executable, '-name', 'System RISC - Finder', '-machine', 'virt', '-cpu', 'rv64',
+    identity = str(uuid.uuid4())
+    args = [executable, '-uuid', identity, '-name', 'System RISC - Finder', '-machine', 'virt', '-cpu', 'rv64',
             '-m', '128M', '-smp', '1', '-bios', 'none',
             '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + host_path(state / 'bootrom.bin'),
             '-drive', 'if=none,id=startup,format=qcow2,readonly=' + ('off' if writable else 'on') + ',file=' + host_path(disk),
@@ -106,14 +119,19 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                            + '\n' + (state / 'qemu.log').read_text())
     except BaseException:
         try:
-            qmp('quit', endpoint=endpoint)
+            # A failed launch (including a competing port bind) must never quit
+            # a different VM that happens to answer at this endpoint.
+            if process.poll() is None and qmp('query-uuid', endpoint=endpoint)['UUID'] == identity:
+                qmp('quit', endpoint=endpoint)
         except (OSError, ValueError, RuntimeError):
+            pass
+        if process.poll() is None:
             process.terminate()
         process.wait(timeout=10)
         raise
 
 
-def start(frontend='auto', rebuild=True):
+def start(frontend='auto', rebuild=True, qmp_port=4447):
     try:
         status = qmp('query-status')
     except (OSError, ValueError, RuntimeError):
@@ -125,14 +143,14 @@ def start(frontend='auto', rebuild=True):
         build()
     if frontend == 'auto':
         frontend = 'native' if native_executable() else 'gtk'
-    process, _ = launch(STATE, frontend, writable=True, preserve=True)
+    process, _ = launch(STATE, frontend, writable=True, preserve=True, qmp_port=qmp_port)
     print(json.dumps({'pid': process.pid, 'frontend': 'native-gtk' if frontend == 'native' else frontend,
-                      'bootrom': str((STATE / 'bootrom.bin').relative_to(ROOT)),
-                      'disk': str((STATE / 'system7.qcow2').relative_to(ROOT))}))
+                      'bootrom': describe(STATE / 'bootrom.bin'),
+                      'disk': describe(STATE / 'system7.qcow2'), 'build_dir': str(build_dir())}))
     print((STATE / 'serial.log').read_text())
 
 
-def check(rebuild=True):
+def check(rebuild=True, state=None):
     """Cold disk boot and real virtio input in an independent headless guest."""
     from check_system7_desktop import check_events
     if rebuild:
@@ -142,7 +160,7 @@ def check(rebuild=True):
     report_path = results / 'desktop-checks.json'
     report_path.write_text(json.dumps({'status': 'running'}, indent=2) + '\n')
     before = hashlib.sha256((DIST / 'system7.qcow2').read_bytes()).hexdigest()
-    state = results / 'desktop-vm'
+    state = state or build_dir() / f'desktop-vm-{os.getpid()}'
     try:
         process, endpoint = launch(state)
     except BaseException as error:
@@ -162,7 +180,7 @@ def check(rebuild=True):
                   'qemu': subprocess.check_output(['qemu-system-riscv64', '--version'], text=True).splitlines()[0],
                   'disk_unchanged': True, 'disk_sha256': before,
                   'rom_sha256': hashlib.sha256((DIST / 'bootrom.bin').read_bytes()).hexdigest(),
-                  'serial': str((state / 'serial.log').relative_to(ROOT)),
+                  'serial': describe(state / 'serial.log'),
                   'command': json.loads((state / 'command.json').read_text())}
         report_path.write_text(json.dumps(report, indent=2) + '\n')
         print(f'PASS: flash ROM -> blessed HFS-B System -> Finder; {len(checks)} desktop checks')
@@ -179,25 +197,42 @@ def check(rebuild=True):
 
 
 def main():
+    global STATE, DIST
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    sub.add_parser('build')
+    build_parser = sub.add_parser('build')
     launch_parser = sub.add_parser('start')
     launch_parser.add_argument('--frontend', choices=['auto', 'native', 'gtk', 'headless'], default='auto')
     launch_parser.add_argument('--no-build', action='store_true')
+    launch_parser.add_argument('--qmp-port', type=int, default=4447,
+                               help='Native Windows QMP port; choose another for a second VM')
     check_parser = sub.add_parser('check')
     check_parser.add_argument('--no-build', action='store_true')
-    sub.add_parser('status')
-    sub.add_parser('stop')
+    status_parser = sub.add_parser('status')
+    stop_parser = sub.add_parser('stop')
     shot = sub.add_parser('screenshot')
     shot.add_argument('path')
+    for command in (build_parser, launch_parser, check_parser, status_parser, stop_parser, shot):
+        command.add_argument('--build-dir', type=Path,
+                             help='Build/media root (contains dist/); defaults to a separate root for check')
+        command.add_argument('--state-dir', type=Path,
+                             help='Working VM state; custom builds default to BUILD_DIR/vm')
     args = parser.parse_args()
+    if args.build_dir:
+        os.environ[BUILD_DIR_ENV] = str(args.build_dir.resolve())
+    elif args.action == 'check':
+        os.environ[BUILD_DIR_ENV] = str(build_dir() / 'check')
+    DIST = dist_dir()
+    if args.state_dir:
+        STATE = args.state_dir.resolve()
+    elif build_dir() != ROOT / 'build/system7':
+        STATE = build_dir() / 'vm'
     if args.action == 'build':
         build()
     elif args.action == 'start':
-        start(args.frontend, not args.no_build)
+        start(args.frontend, not args.no_build, args.qmp_port)
     elif args.action == 'check':
-        check(not args.no_build)
+        check(not args.no_build, args.state_dir.resolve() if args.state_dir else None)
     elif args.action == 'status':
         print(json.dumps(qmp('query-status')))
     elif args.action == 'stop':

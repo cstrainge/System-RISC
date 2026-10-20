@@ -50,7 +50,7 @@ fn finder_menus_and_trash_are_resource_based_and_persist_across_disk_boots()
                1,
                "modal Ctrl-N escaped to Finder");
     let (volume, _) =
-        mac_system::testing::with_file_disk(&root.join("build/system7/dist/system7.hfsb"),
+        mac_system::testing::with_file_disk(&mac_build::paths::dist_dir(&root).join("system7.hfsb"),
                                             true,
                                             Default::default(),
                                             |services| {

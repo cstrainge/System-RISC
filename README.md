@@ -60,11 +60,11 @@ cargo xtask inspect ../build/system7/dist/Finder.bin
 cargo xtask check
 ```
 
-For the graphical desktop, from the repository root:
+For the graphical desktop, from the outer workspace:
 
 ```sh
 python3 System7/scripts/system7_vm.py start
-python3 System7/scripts/system7_vm.py check --no-build
+python3 System7/scripts/system7_vm.py check
 python3 System7/scripts/system7_vm.py stop
 ```
 
@@ -77,6 +77,41 @@ launches default to fresh read-only disks. `cargo xtask check` removes obsolete 
 before and after the gate; reports, screenshots and original reference media
 remain. Its QMP port is4447;
 the classic Mac and old QuickDraw machines keep their own state and ports.
+
+Normal builds use `build/system7`; full checks, `boot-check` and the launcher's `check` command
+default to `build/system7/check`. Checks build their own ROM, applications and
+disk there, and every Rust/Python acceptance reader uses that installation.
+Rebuilding or starting the normal desktop can run alongside the checks. Build
+profiles reject concurrent writers to the same output directory. Cleanup keeps
+each profile's current installation and removes obsolete fixture disks.
+
+Override the build/media root when needed (paths with spaces are supported):
+
+```sh
+python3 System7/scripts/system7_vm.py start --build-dir /tmp/my-system-risc --qmp-port 4448
+python3 System7/scripts/system7_vm.py status --build-dir /tmp/my-system-risc
+python3 System7/scripts/system7_vm.py stop --build-dir /tmp/my-system-risc
+# From System7/:
+cargo xtask image --build-dir /tmp/my-system-risc
+```
+
+A custom profile keeps its working VM in `BUILD_DIR/vm`; `--state-dir` overrides
+that separately. Use a different `--qmp-port` for each simultaneous native Windows
+VM; Linux headless/GTK VMs use a socket in their own state directory. The
+`SYSTEM7_BUILD_DIR` environment variable selects the same build root for direct
+test/capture commands; relative environment paths are outer-workspace-relative,
+while command-line paths are relative to the current directory. Keep build
+directories outside the OS source repository. `check --no-build` uses the check
+profile's existing installation, or the explicit `--build-dir` you supply.
+When the normal build root comes from the environment, checks still use its
+separate `check/` child; an explicit `--build-dir` selects the exact check root.
+
+Guest System, ROM, definitions and applications always build with `--release`:
+optimization level 3, full LTO, one codegen unit, and abort-on-panic. Debug symbols
+remain in host build artifacts for investigation; packaged native code contains
+only loadable segments. The launcher's initial `dev` line describes the host
+`xtask` utility, not the guest OS.
+
 Click a window to activate it, drag its title, resize from the lower-right,
 close from the upper-left, and zoom the volume window from the upper-right.
 **N** opens/selects the startup-volume window; **Ctrl-W** closes the front window.

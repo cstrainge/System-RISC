@@ -12,6 +12,13 @@ def prune():
     results.mkdir(parents=True, exist_ok=True)
     build = ROOT / 'build/system7'
     dist = build / 'dist'
+    # Each xtask build profile has one current packaged installation. Preserve
+    # that installation, including the separate check profile and user-chosen
+    # profiles, rather than mistaking another profile's base disk for a fixture.
+    current = {dist}
+    for inventory in build.rglob('build.json'):
+        if inventory.parent.name == 'dist':
+            current.add(inventory.parent)
     protected = []
     # Keep an entire capture while any of its VM or fixture owners is still alive.
     # A reused live PID can conservatively retain a little extra media.
@@ -22,13 +29,13 @@ def prune():
             except (OSError, ValueError):
                 continue
             relative = pid.relative_to(base)
-            protected.append(base / relative.parts[0])
+            protected.append(base if len(relative.parts) == 1 else base / relative.parts[0])
     candidates = []
     for base in (results, build):
         for path in base.rglob('*'):
             if path.suffix not in ('.hfs', '.hfsb', '.hfs-b', '.qcow2', '.raw', '.img', '.hda', '.dsk') and path.name != 'bootrom.bin':
                 continue
-            if path.parent == dist and path.name in ('system7.hfsb', 'system7.qcow2', 'bootrom.bin'):
+            if path.parent in current and path.name in ('system7.hfsb', 'system7.qcow2', 'bootrom.bin'):
                 continue
             if path.is_symlink() or not path.is_file():
                 continue

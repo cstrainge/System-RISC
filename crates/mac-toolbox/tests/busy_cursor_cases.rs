@@ -42,8 +42,17 @@ pub fn run(system: &System<'_>, clock: impl Fn() -> u64) -> Result<(), i32>
     assert_eq!(system.processes().count().map_err(|e| e.0)?,
                1,
                "CPU-only phase must have no cooperating background presenter");
-    system.log("BUSY_STAGE spin\n")?;
     let start = clock();
+    let mut stamp = *b"BUSY_CLOCK start=00000000000000000000\n";
+    let end = stamp.len() - 1;
+    let mut value = start;
+    for digit in stamp[b"BUSY_CLOCK start=".len()..end].iter_mut().rev()
+    {
+        *digit = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
+    system.log("BUSY_STAGE spin\n")?;
+    system.log(core::str::from_utf8(&stamp).unwrap())?;
     while clock().wrapping_sub(start) < 25_000_000
     {
         core::hint::spin_loop();

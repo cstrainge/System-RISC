@@ -1,5 +1,5 @@
 """Drive real SDK stalls; Rust owns cursor pixels, restoration and repaint acceptance."""
-import argparse,json,time
+import argparse,json,re,time
 from pathlib import Path
 import capture_system7_conformance as packaging
 from capture_system7_applications_ui import Driver
@@ -20,12 +20,25 @@ def capture(output):
             time.sleep(.005)
         raise TimeoutError(stage+'\n'+driver.log()[-6000:])
     def frame(name,point=(350,300)):
+        def clock():
+            raw=vm.qmp('human-monitor-command',{'command-line':'xp /1gx 0x0200bff8'},endpoint)
+            values=re.findall(r'0x([0-9a-fA-F]{16})',raw)
+            if len(values)!=1:raise RuntimeError('Cannot read guest monotonic timer: '+raw)
+            return int(values[0],16)
+        before=clock() if name=='short-work' else None
         path=output/(name+'.ppm');vm.qmp('screendump',{'filename':str(path)},endpoint)
-        frames.append({'name':name,'frame':path.name,'point':point,'state':driver.state()})
-    def begin(stage):driver.key('spc');wait(stage)
+        after=clock() if name=='short-work' else None
+        frames.append({'name':name,'frame':path.name,'point':point,'state':driver.state(),
+                       'clock_before':before,'clock_after':after})
+    def begin(stage):
+        # The stage marker is the acknowledgement. Driver.key's generic delay
+        # plus a host sleep can move an early screenshot past the stall limit.
+        driver.send([{'type':'key','data':{'key':{'type':'qcode','data':'spc'},'down':down}}
+                     for down in (True,False)])
+        wait(stage)
     try:
         wait('idle');driver.move(350,300);time.sleep(.9);frame('idle')
-        begin('spin');time.sleep(.12);frame('short-work')
+        begin('spin');frame('short-work')
         time.sleep(.5)
         for i in range(6):frame('spin-'+str(i));time.sleep(.12)
         wait('recovered');frame('recovered')

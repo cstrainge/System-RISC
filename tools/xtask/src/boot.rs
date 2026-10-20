@@ -26,7 +26,7 @@ pub fn package_rom(workspace: &Workspace) -> Result<Value>
     }
     OpenOptions::new().write(true).open(&rom)?.set_len(32 * 1024 * 1024)?;
     fs::copy(&elf, dist.join("bootrom.elf"))?;
-    let report = json!({"image": "build/system7/dist/bootrom.bin", "elf": "build/system7/dist/bootrom.elf", "flash_base": 0x20000000u64, "payload_size": length, "flash_bank_size": 32 * 1024 * 1024, "sha256": package::sha256(&fs::read(rom)?), "source": "System7/bootrom", "execution": "M-mode execute-in-place from read-only QEMU virt pflash"});
+    let report = json!({"image": workspace.describe(&rom), "elf": workspace.describe(&dist.join("bootrom.elf")), "flash_base": 0x20000000u64, "payload_size": length, "flash_bank_size": 32 * 1024 * 1024, "sha256": package::sha256(&fs::read(rom)?), "source": "System7/bootrom", "execution": "M-mode execute-in-place from read-only QEMU virt pflash"});
     write_json(&dist.join("bootrom.json"), &report)?;
     println!("Packaged boot ROM: {length} bytes in 32 MiB flash bank.");
     Ok(report)
@@ -133,7 +133,7 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, disks: &[(&Path, &s
         return Err(error(format!("unexpected ROM result for {name}:\n{log}")));
     }
     println!("ROM check {name}: passed");
-    Ok(json!({"name": name, "status": "passed", "booted": boots, "command": launch, "expected_markers": expected, "serial": serial.strip_prefix(&workspace.repo)?.display().to_string(), "log": log}))
+    Ok(json!({"name": name, "status": "passed", "booted": boots, "command": launch, "expected_markers": expected, "serial": workspace.describe(&serial), "log": log}))
 }
 
 fn clone_raw(source: &Path, destination: &Path) -> Result<()>

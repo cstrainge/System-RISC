@@ -73,6 +73,26 @@ class ImageCleanupTests(unittest.TestCase):
         self.assertFalse(dead.exists())
         self.assertIn('results/system7/live', report['protected_live_captures'])
 
+    def test_current_build_profiles_survive_other_profiles_cleanup(self):
+        keep = []
+        for profile in ('check', 'custom-run'):
+            self.write(f'build/system7/{profile}/dist/build.json', b'{}')
+            keep.extend(self.write(f'build/system7/{profile}/dist/{name}')
+                        for name in ('system7.hfsb', 'system7.qcow2', 'bootrom.bin'))
+        old = self.write('build/system7/check/boot-checks/unblessed.hfsb')
+        self.prune()
+        self.assertTrue(all(path.exists() for path in keep))
+        self.assertFalse(old.exists())
+
+    def test_active_top_level_builder_is_protected_until_it_releases_output(self):
+        owner = self.write('build/system7/pid', str(os.getpid()).encode())
+        active = self.write('build/system7/image-work/system7.hfsb')
+        self.prune()
+        self.assertTrue(active.exists())
+        owner.unlink()
+        self.prune()
+        self.assertFalse(active.exists())
+
     def test_another_owner_can_remove_a_candidate_during_cleanup(self):
         disappearing = self.write('results/system7/completing/disk.hfsb')
         unlink = Path.unlink

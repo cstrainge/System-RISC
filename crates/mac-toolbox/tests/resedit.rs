@@ -234,7 +234,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                1,
                "inspection must not launch a second app");
     let (volume, _) =
-        mac_system::testing::with_file_disk(&root.join("build/system7/dist/system7.hfsb"),
+        mac_system::testing::with_file_disk(&mac_build::paths::dist_dir(&root).join("system7.hfsb"),
                                             true,
                                             Default::default(),
                                             |services| {
@@ -258,7 +258,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
     let source =
         serde_json::from_slice::<serde_json::Value>(include_bytes!("data/standard-file/\
                                                                     provenance.json")).unwrap();
-    let system_fork = fs::read(root.join("build/system7/dist/System.rsrc")).unwrap();
+    let system_fork = fs::read(mac_build::paths::dist_dir(&root).join("System.rsrc")).unwrap();
     mac_system::testing::with_resource_forks(&system_fork,
                                              &resource::encode(&[]).unwrap(),
                                              |services| {
@@ -330,7 +330,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                                           .unwrap();
     assert!(!rejected.status.success());
     assert!(!output.join("must-not-exist.json").exists());
-    let original=macbinary::decode(&fs::read(root.join("build/system7/dist/QuickDraw Test.bin")).unwrap()).unwrap();
+    let original=macbinary::decode(&fs::read(mac_build::paths::dist_dir(&root).join("QuickDraw Test.bin")).unwrap()).unwrap();
     mac_build::package::rebuild(&output.join("resources.json"), &output.join("rebuilt")).unwrap();
     let rebuilt =
         macbinary::decode(&fs::read(output.join("rebuilt/QuickDraw Test.bin")).unwrap()).unwrap();
@@ -355,7 +355,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
     {
         let mut expected = vec![0xffffffu32; 16 * 16];
         let application =
-            fs::read(root.join(format!("build/system7/dist/{package}.rsrc"))).unwrap();
+            fs::read(mac_build::paths::dist_dir(&root).join(format!("{package}.rsrc"))).unwrap();
         mac_system::testing::with_resource_forks(&system_fork, &application, |services| {
             let mut surface = mac_abi::Surface { pixels: expected.as_mut_ptr(),
                                                  width:  16,
@@ -393,7 +393,8 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         assert_eq!(&image[(80 * 640 + 500) * 3..(80 * 640 + 500) * 3 + 3],
                    &[255; 3],
                    "browser background must be white");
-        let bytes = fs::read(root.join(format!("build/system7/dist/{package}.rsrc"))).unwrap();
+        let bytes =
+            fs::read(mac_build::paths::dist_dir(&root).join(format!("{package}.rsrc"))).unwrap();
         let entries = resource::decode(&bytes).unwrap();
         let item = entries.iter().find(|item| item.kind == kind).unwrap();
         let mut expected = vec![0xffffffu32; 128 * 128];
@@ -421,7 +422,8 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         let name = format!("{package}-hex");
         let row = frames.iter().find(|r| r["name"] == name).unwrap();
         let image = pixels(&output.join(row["frame"].as_str().unwrap()));
-        let fork = fs::read(root.join(format!("build/system7/dist/{package}.rsrc"))).unwrap();
+        let fork =
+            fs::read(mac_build::paths::dist_dir(&root).join(format!("{package}.rsrc"))).unwrap();
         let entries = resource::decode(&fork).unwrap();
         let code = entries.iter().find(|r| r.kind == *b"RV64" && r.id == 0).unwrap();
         assert!(code.data.starts_with(b"RV64"), "native executable must be visible as RV64 0");
@@ -620,7 +622,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         assert!(observation(&name)["log"].as_str().unwrap().contains("mode=disassembly"));
         // Independently locate executable segments using the loader's parser;
         // compare the visible instruction rows with resident Monaco rendering.
-        let fork = resource::decode(&fs::read(root.join(format!("build/system7/dist/{package}.\
+        let fork = resource::decode(&fs::read(mac_build::paths::dist_dir(&root).join(format!("{package}.\
                                                                  rsrc"))).unwrap()).unwrap();
         let bytes = &fork.iter().find(|r| r.kind == *b"RV64" && r.id == 0).unwrap().data;
         let descriptor =
@@ -648,7 +650,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         assert!(actual == expected, "{package} native instructions must use Monaco");
     }
     let icon_provenance:serde_json::Value=serde_json::from_slice(&fs::read(root.join("System7/apps/resedit/assets/provenance.json")).unwrap()).unwrap();
-    let fork = fs::read(root.join("build/system7/dist/ResEdit.rsrc")).unwrap();
+    let fork = fs::read(mac_build::paths::dist_dir(&root).join("ResEdit.rsrc")).unwrap();
     mac_system::testing::with_resource_forks(&resource::encode(&[]).unwrap(), &fork, |services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
         assert!(system.resources()

@@ -6,7 +6,7 @@ fn built_disk_dates_match_package_metadata_and_the_real_image_creation_clock()
 {
     use std::{fs, path::PathBuf};
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
-    let dist = root.join("build/system7/dist");
+    let dist = mac_build::paths::dist_dir(&root);
     let report: serde_json::Value =
         serde_json::from_slice(&fs::read(dist.join("disk.json")).unwrap()).unwrap();
     let start = report["image_started_unix"].as_i64().unwrap();

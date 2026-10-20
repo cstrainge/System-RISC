@@ -2,6 +2,7 @@
 //! Binary encoders/decoders live in the no_std mac-formats crate.
 pub mod manifest;
 pub mod package;
+pub mod paths;
 
 use std::{env, fs, path::Path};
 

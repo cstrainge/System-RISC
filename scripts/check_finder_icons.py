@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from system7_paths import dist_dir, describe
 import subprocess
 from PIL import Image, ImageChops
 ROOT=Path(__file__).resolve().parents[2]
@@ -43,7 +44,7 @@ def main():
     report={'status':'passed'if all(r['status']=='passed'for r in records)else'failed','method':'Production Finder icon_view.rs placement, caption and selection policy with resident font/icon engines and current System resources; full original item-area and mounted-volume desktop-cell RGB comparisons, no pixel masks or tolerances',
             'font':'Original Geneva9, family3, pointsize9, face0','grid':[64,52],'icon_first_rect':[16,28,48,60],'label_baseline_offset':42,'cases':records,
             'total_compared_pixels':sum(r['compared_pixels']for r in records),'total_different_pixels':sum(r['different_pixels']for r in records),
-            'artifacts':[{'path':str(p.relative_to(ROOT)),'sha256':sha(p)}for p in [ROOT/'build/system7/dist/System.rsrc',ROOT/'System7/finder/src/icon_view.rs',ROOT/'System7/system/examples/finder_reference.rs']],
+            'artifacts':[{'path':describe(p),'sha256':sha(p)}for p in [dist_dir()/'System.rsrc',ROOT/'System7/finder/src/icon_view.rs',ROOT/'System7/system/examples/finder_reference.rs']],
             'scope':'Exact bounded original fixture states, including long-name grid spacing. Scrollbars/info-band evidence are tracked separately; this is not a claim of full Finder behavior.'}
     path=ROOT/'results/system7/finder-icon-checks.json';path.write_text(json.dumps(report,indent=2)+'\n')
     print(f'Finder icons: {sum(r["status"]=="passed"for r in records)}/{len(records)} cases; {report["total_compared_pixels"]} pixels, {report["total_different_pixels"]} differences')

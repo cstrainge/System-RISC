@@ -69,8 +69,9 @@ fn main()
 {
     let args: Vec<_> = env::args().collect();
     assert!(args.len() >= 3, "finder_reference CASE OUTPUT.ppm [NAME ...]");
-    let mut resources =
-        resource::decode(&fs::read("build/system7/dist/System.rsrc").unwrap()).unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap();
+    let dist = mac_build::paths::dist_dir(root);
+    let mut resources = resource::decode(&fs::read(dist.join("System.rsrc")).unwrap()).unwrap();
     let fonts = FontManager::take_resources(&mut resources);
     let desktop = args[1].starts_with("desktop");
     let (width, height) = if desktop { (640, 480) } else { (404, 188) };
