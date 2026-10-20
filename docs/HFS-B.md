@@ -23,12 +23,20 @@ difference: **names are UTF-8, not UTF-16.**
 - Catalog B-tree keys use UTF-8 name bytes instead of UTF-16 units.
 - **[DECIDE]** Max name length: 255 bytes (simplest, mirrors HFS+'s 255-unit
   cap) vs. 255 Unicode code points (friendlier, needs counting on insert).
-- **[DECIDE]** Case behavior: classic HFS is case-insensitive. HFS-B should
-  almost certainly stay case-insensitive (the whole system assumes it), but
-  say so explicitly: compare case-insensitively, preserve case as stored.
-- **[DECIDE]** Normalization: HFS+ stored names as given (no normalization).
-  Recommend the same — store bytes as given, compare per the case rule —
-  and document it, because two byte-distinct names can look identical.
+- **Decided — case behavior:** case-insensitive with Unicode-aware, locale-
+  independent default case folding, and case-preserving storage/listings.
+  Use the default non-Turkic mappings from Unicode's
+  [case-folding data](https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt);
+  no Turkish-i tailoring and no dependency on the current UI/process locale.
+  Pin the folding-data version in the format contract so catalog ordering does
+  not change silently on a Unicode/library update. Creation/collision checks and
+  lookup use the same comparison; preserve stored spelling rather than replacing
+  names with their folded forms. Normalization remains a separate open decision.
+- **[DECIDE]** Normalization: current recommendation is to store UTF-8 bytes
+  as supplied and document the comparison policy, since byte-distinct names can
+  look identical. This would differ from HFS+'s decomposed storage
+  ([TN1150](https://developer.apple.com/library/archive/technotes/tn/tn1150.html)).
+  No normalization policy is settled by the case-folding decision above.
 - 32-bit allocation blocks minimum; 64-bit file sizes. No 2 GiB ceiling.
 - **[DECIDE]** Timestamps: keep the 1904 Mac epoch (continuity with the rest
   of the system) but say the precision explicitly — recommend 64-bit
@@ -62,7 +70,13 @@ a second filesystem.
    catalog well enough to find the blessed System Folder. Bigger change,
    touches the most trusted code in the system.
 
-Option 1 first; option 2 is a later gate if ever.
+Current recommendation: option 1 first, with option 2 as a later gate. The boot
+decision remains open.
+
+## Remaining decisions
+
+Four decisions remain: maximum name length, normalization, timestamp precision/
+representation, and boot policy. Case behavior above is settled.
 
 ## Volume identity
 
@@ -82,7 +96,12 @@ Option 1 first; option 2 is a later gate if ever.
    forks back, verify against the HFS behavior.
 4. Fill past 2 GiB and 4 GiB boundaries; verify sizes and extents.
 5. Case-insensitivity: create `Makefile`, verify `makefile` resolves to it,
-   original case preserved in listings.
+   original case preserved in listings. Create `CAFÉ`, verify `café` resolves
+   to the same file ID, and reject creating `café` as a second entry in that
+   directory. Repeat with the spellings reversed; preserve the original stored
+   spelling. Repeat across remount and different process/UI locales. Default
+   non-Turkic behavior must also hold: `I`/`i` compare equal, while `I`/`ı` do
+   not; locale changes must never alter collisions or B-tree lookup ordering.
 6. Unmount/remount: catalog intact, no repair needed on clean unmount.
 7. Boot regression: system still boots from HFS with HFS-B present but
    unmounted-at-boot (option 1).

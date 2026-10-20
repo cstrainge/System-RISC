@@ -77,6 +77,8 @@ R2 and R4 can progress independently once their relevant R1 contracts are ready.
 Platform numbers identify workstreams, not execution order. P15's HFS-B workspace
 cutover is an early storage priority, ahead of broad std filesystem/hosted-toolchain
 work. Keep the HFS boot volume initially; do not wait for HFS-B boot support.
+This is the current workspace-first recommendation; P15's final boot policy
+remains an open spec decision.
 System growth is already a near-term concern: remove fixed small resource-loader
 ceilings as an early storage gate, independently of the chosen boot filesystem.
 
@@ -319,7 +321,10 @@ Status: backlog; implement the supplied [HFS-B specification](HFS-B.md). HFS-B i
 a separate native UTF-8, dual-fork format alongside unchanged classic HFS, not an
 extension of HFS's name keys or date fields. Move native workspaces to HFS-B early,
 before P8's broader filesystem workloads and P12 hosted tools depend on classic
-HFS limits. Initially boot System/Finder from HFS and mount HFS-B after boot.
+HFS limits. The current recommendation is HFS boot with HFS-B mounted afterward;
+the final boot decision remains open alongside name length, normalization and
+timestamps. Case behavior is settled: Unicode-aware default folding independent
+of locale, no Turkish-i tailoring, and preservation of stored case.
 
 At this planning checkpoint System.rsrc is 3,084,317 bytes, while ROM startup,
 startup resource transfer, resident resource loading and APPL loading enforce
@@ -334,10 +339,11 @@ and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
 
 1. Freeze a byte-accurate versioned layout and test vectors before image creation:
    signature (proposed HB), volume header, allocation bitmap, catalog/extents/
-   attributes trees and fork records. Resolve the spec's open name limit (bytes
-   versus code points), pinned case-insensitive comparison/case preservation,
-   normalization policy and 64-bit 1904-epoch timestamp precision. HFS+ actually
-   uses decomposed Unicode ([TN1150](https://developer.apple.com/library/archive/technotes/tn/tn1150.html));
+   attributes trees and fork records. Encode the decided locale-independent,
+   non-Turkic Unicode folding and case-preserving behavior with a pinned data
+   version. Resolve the four remaining decisions: name limit (bytes versus code
+   points), normalization, timestamp representation/precision and boot policy.
+   HFS+ uses decomposed Unicode ([TN1150](https://developer.apple.com/library/archive/technotes/tn/tn1150.html));
    storing UTF-8 bytes as supplied must be an explicit HFS-B choice, not an
    inherited HFS+ assumption. Keep classic HFS serialization unchanged.
 2. Add a safe no_std format/backend plus host formatter/validator and resident
@@ -359,15 +365,18 @@ and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
    the format. Copy/import preserves both forks and metadata; do not transform
    the original HFS disk in place or require a live-conversion tool for cutover.
 5. Canonical acceptance lives in crates/mac-toolbox/tests through public SDK
-   services: mixed HFS/HFS-B mounts, 200-byte UTF-8/emoji/CJK names, case lookup,
+   services: mixed HFS/HFS-B mounts, 200-byte UTF-8/emoji/CJK names, case lookup
+   and CAFÉ/café collision/ID-equivalent lookup with stored spelling preserved
+   across remount/locales, default non-Turkic I/i behavior,
    fork round-trips, actual file I/O crossing 2/4 GiB boundaries, malformed media,
    write failures and clean remount. Test long MacRoman legacy-name truncation
    separately from unrepresentable names returning BAD_ARGUMENT; verify ID/index
    reachability without ambiguous short-name aliases. Preserve HFS boot and
    original legacy tests. Use private generated disks and prune them after checks.
 
-Bootable HFS-B/blessed-folder discovery in the ROM is a later independent gate,
-not a prerequisite for the early workspace switch. Keep the built-in block
+Under the workspace-first recommendation, bootable HFS-B/blessed-folder discovery
+in the ROM is a later independent gate, not a prerequisite for the early workspace
+switch. Finalize boot policy explicitly. Keep the built-in block
 driver filesystem-neutral; host-directory mounts remain a separate workstream.
 
 ## Planned application tooling
