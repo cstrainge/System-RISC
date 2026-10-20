@@ -14,9 +14,10 @@ Terminal with preference-defined base environments and checked session identity.
 adds hardware process protection. Ordinary CLI/std support does not establish
 either compiler hosting or memory isolation.
 
-[P15 HFS-B](CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-workspace-migration) is the
-early native workspace/storage target for broader std file support. Keep HFS
-boot and its legacy projection unchanged; validate the new format's full-name,
+[P15 HFS-B](CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-system-migration) is the
+early boot/system/workspace target for broader std file support. After its
+formatter/boot/write-integrity gate, normal builds require HFS-B startup media.
+Keep mounted classic HFS behavior unchanged; validate the new format's full-name,
 64-bit size/time and dual-fork services instead of extending HFS storage limits.
 Audit the existing 4 MiB resource-loading and staged-write ceilings early as part
 of that work. A larger filesystem or std-linked binary cannot bypass an unchanged

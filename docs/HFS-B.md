@@ -2,8 +2,8 @@
 
 Status: spec for agent implementation. HFS-B is a new volume format that lives
 *alongside* classic HFS. HFS stays frozen as the treaty surface for legacy
-apps; HFS-B is the native filesystem for the toolchain workspace, large files,
-and everything the 31-char MacRoman world cannot express. This is the same
+apps; HFS-B is the native startup/System/workspace filesystem after cutover,
+supporting large files and names the 31-char MacRoman world cannot express. This is the same
 play Apple ran with HFS+: fork the format, keep both mountable, never stretch
 the old one in place.
 
@@ -86,30 +86,45 @@ a second filesystem.
 
 ## Boot story
 
-**[DECIDE]** Two options:
+**Decided — bootable and required after cutover:** the boot ROM must recognize
+HFS-B, locate its blessed System Folder and load System/Finder resources from
+that volume. System mounts the same selected volume with its native writable
+backend; startup must not depend on a second HFS disk supplying resources.
 
-1. **Workspaces only (recommended for now):** the boot ROM keeps reading HFS
-   only; HFS-B volumes mount after boot. The blessed System Folder stays on
-   HFS; toolchain workspaces live on HFS-B. Smallest change, no boot risk.
-2. **Bootable HFS-B:** the boot ROM learns the HFS-B volume header and
-   catalog well enough to find the blessed System Folder. Bigger change,
-   touches the most trusted code in the system.
+An early workspace/mixed-volume slice may precede ROM support during bring-up,
+but workspace-only support is not the finished target. Schedule boot support
+early, before std/toolchain storage assumptions settle around classic HFS.
 
-Current recommendation: option 1 first, with option 2 as a later gate. The boot
-decision remains open.
+The cutover gate requires formatter/validator support, actual HFS-B cold boot
+through Finder, launch of all shipped apps, correct fork/metadata persistence
+after remount, malformed-media rejection and write/flush-failure tests. Include
+the growing System resource fork beyond the old 4 MiB loader ceiling with bounded
+memory use. Once this gate passes, image builds and normal startup require an
+HFS-B primary System volume and install the blessed System Folder there. Make
+the requirement explicit in build/startup validation; incompatible startup media
+fails clearly rather than silently selecting an HFS build or fallback volume.
 
-## Remaining decisions
+Classic HFS remains mountable, unchanged, for legacy/reference media and file
+exchange. Transitional HFS boot checks, if retained, are named recovery/bring-up
+profiles rather than a parallel default OS target. Build fresh HFS-B images and
+import assets through verified fork/metadata-preserving paths; live in-place
+conversion is still out of scope. Prune superseded generated images after checks.
 
-One decision remains: boot policy. Maximum name length, case behavior,
-normalization and timestamp representation above are settled.
+## Decision status
+
+All five high-level decisions are settled: maximum name length, case behavior,
+normalization, timestamps and boot. Exact serialized layouts and the cutover's
+implementation/evidence remain delivery work; no HFS-B support exists merely
+because these decisions are recorded.
 
 ## Volume identity
 
 - New volume signature distinct from HFS (`BD`) and HFS+ (`H+`). Suggest
   `HB` ("HFS-B") in the volume header.
 - The Finder shows HFS-B volumes normally; Get Info reports the format.
-- The blessed-System-Folder ritual works on either format (option 1: HFS
-  only for boot, HFS-B for everything else).
+- HFS-B supports blessed-System-Folder discovery and becomes the required normal
+  startup format at cutover. Classic HFS discovery remains relevant to mounted
+  legacy media and any explicitly retained transitional boot profile.
 
 ## Acceptance
 
@@ -144,8 +159,12 @@ normalization and timestamp representation above are settled.
    Include canonical combining-mark ordering and case-fold/normalization edge
    cases. Circled `①` and plain `1` stay distinct; NFC must not become NFKC.
 6. Unmount/remount: catalog intact, no repair needed on clean unmount.
-7. Boot regression: system still boots from HFS with HFS-B present but
-   unmounted-at-boot (option 1).
+7. Boot: cold boot an HFS-B-only disk through its blessed System Folder to
+   Finder and launch all shipped apps. With both formats present, use the selected
+   HFS-B installation consistently; reject missing/bad blessing, malformed trees,
+   missing/incompatible System/Finder and media that do not satisfy the required
+   startup format. Verify System resource forks beyond 4 MiB, boot-to-runtime
+   mount identity, persistence through reboot, and mixed-volume HFS access.
 8. Timestamps: exact microsecond round-trips for volume/file/folder metadata,
    create/modify operations and remounts, including 2026 and dates beyond classic
    HFS's 2040 boundary. Verify epoch zero, Unix-epoch conversion, fractional-second

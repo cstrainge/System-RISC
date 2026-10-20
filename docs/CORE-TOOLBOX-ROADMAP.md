@@ -25,7 +25,7 @@ The practical next target is a native document application that can open, edit, 
 | TextEdit | Usable tested slice | L | Editable-dialog integration, styled text, other fonts/alignment, word selection/autoscroll, TEHandle/private scrap ABI. |
 | Scrap | Usable tested slice | M | Disk Scrap.dat, original counted-MacRoman/private TextEdit scrap and process suspend/resume integration. |
 | Dialogs / alerts | Narrow foundation | L | General DLOG, editable/user items, tab focus, item mutation, modeless/filter callback contracts and alert stages. |
-| Files / HFS persistence | Usable tested slice | XL | File creation and fork write/resize, catalog/extents growth, flush/recovery, full metadata operations, eject/unmount and early native HFS-B workspace migration (P15). |
+| Files / HFS persistence | Usable tested slice | XL | File creation and fork write/resize, catalog/extents growth, flush/recovery, full metadata operations, eject/unmount and early boot/system/workspace migration to HFS-B (P15). |
 | Standard File / aliases | No public manager | L | Open/save dialogs and filters/hooks, alias records/resolution across moves and ownership of replies/resources. |
 | Processes / application life | Usable tested slice | L | Blocked/wakeup states, document/quit parameters, native workers, relocation, legacy cooperative Thread Manager (P2), segments, CLAP sessions (P11) and process isolation (P13). |
 | Apple events / core IPC | No public manager | L | Descriptors/coercion, handlers, open-document/print/quit events, replies/timeouts and process routing. |
@@ -74,11 +74,12 @@ R2 and R4 can progress independently once their relevant R1 contracts are ready.
 
 ## Planned platform work
 
-Platform numbers identify workstreams, not execution order. P15's HFS-B workspace
-cutover is an early storage priority, ahead of broad std filesystem/hosted-toolchain
-work. Keep the HFS boot volume initially; do not wait for HFS-B boot support.
-This is the current workspace-first recommendation; P15's final boot policy
-remains an open spec decision.
+Platform numbers identify workstreams, not execution order. P15's HFS-B system/
+workspace cutover is an early storage priority, ahead of broad std filesystem/
+hosted-toolchain work. Bootable HFS-B is required for the target: after its boot/
+write-integrity gate, new normal images must put System/Finder on HFS-B. Keep
+classic HFS mountable for compatibility; HFS boot is transitional, not the final
+default build.
 System growth is already a near-term concern: remove fixed small resource-loader
 ceilings as an early storage gate, independently of the chosen boot filesystem.
 
@@ -315,14 +316,15 @@ legacy DRVR entry contracts remain separate. Modules stay resident until reboot
 initially; reset/removal still requires request/DMA cleanup. See
 [the driver plan](DRIVERS.md) for metadata and extraction acceptance.
 
-### P15 — HFS-B and early workspace migration
+### P15 — HFS-B and early system migration
 
 Status: backlog; implement the supplied [HFS-B specification](HFS-B.md). HFS-B is
 a separate native UTF-8, dual-fork format alongside unchanged classic HFS, not an
 extension of HFS's name keys or date fields. Move native workspaces to HFS-B early,
 before P8's broader filesystem workloads and P12 hosted tools depend on classic
-HFS limits. The current recommendation is HFS boot with HFS-B mounted afterward;
-only the final boot decision remains open. Timestamps are unsigned 64-bit
+HFS limits. HFS-B must be bootable and becomes the required normal startup format
+after the cutover gate below; a workspace-only slice is transitional. All five
+high-level spec decisions are settled. Timestamps are unsigned 64-bit
 microseconds since 1904-01-01 UTC, with checked native/std/legacy conversions.
 Stored names use NFC UTF-8 with an inclusive 255-byte limit per component after
 normalization. Search
@@ -338,7 +340,7 @@ loading and bounded/targeted reads where appropriate. Include the separate
 whole-data-file writer limit in the native write-service audit. Do not merely
 raise one constant or accept an unbounded fork-sized allocation. Require real
 boot/resource/app fixtures beyond 4 MiB while retaining malformed/budget rejection
-and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
+and UI/performance gates. The HFS-B boot gate must exercise those larger forks.
 
 1. Freeze a byte-accurate versioned layout and test vectors before image creation:
    signature (proposed HB), volume header, allocation bitmap, catalog/extents/
@@ -346,9 +348,9 @@ and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
    non-Turkic Unicode folding and case-preserving behavior with a pinned data
    version, NFC storage and canonical caseless lookup, plus the inclusive
    255-byte post-normalization UTF-8 stored-name limit and unsigned 64-bit
-   microseconds from the 1904 Mac epoch. Resolve the remaining boot decision.
-   HFS-B uses its own NFC contract rather than HFS+'s decomposed storage. Keep classic HFS
-   serialization unchanged.
+   microseconds from the 1904 Mac epoch. Include HFS-B blessing/startup metadata.
+   HFS-B uses its own NFC contract rather than HFS+'s decomposed storage. Keep
+   classic HFS serialization unchanged.
 2. Add a safe no_std format/backend plus host formatter/validator and resident
    mount/read support over the shared block interface. Use distinct signature
    dispatch, bounded checked B-tree/extent parsing and the same File/Resource
@@ -361,13 +363,18 @@ and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
    Use bounded page/path updates rather than rebuilding every tree per edit.
    Journaling and live HFS conversion remain outside this first spec. Reported
    error rollback is not a claim of power-loss atomicity.
-4. Make a freshly formatted HFS-B volume the default native workspace in image/
-   test tooling; keep HFS as the startup/reference format. Route std/native file
-   work, resource publication, Fonts and CLAP/APPL inspection through format-
-   independent services. Finder lists both volumes normally and Get Info reports
-   the format. Copy/import preserves both forks and metadata; do not transform
-   the original HFS disk in place or require a live-conversion tool for cutover.
-5. Canonical acceptance lives in crates/mac-toolbox/tests through public SDK
+4. Add ROM HFS-B header/catalog/extent reads and blessed-folder discovery. Load
+   System/Finder from the selected HFS-B installation, then hand off the same
+   volume identity to System's writable backend. Do not depend on HFS files or
+   optional disk-loaded modules to read the primary boot volume.
+5. Cut over image/test tooling once formatter validation, HFS-B-only cold boot,
+   all shipped app launches, fork/metadata remount persistence and malformed/
+   write-failure gates pass. New normal builds require an HFS-B startup/workspace
+   volume; reject incompatible media clearly instead of silently falling back.
+   Route std/native files, resources, Fonts and CLAP/APPL handling through shared
+   services. Finder lists both formats and Get Info identifies them. Copy/import
+   preserves forks/metadata; live in-place HFS conversion is not required.
+6. Canonical acceptance lives in crates/mac-toolbox/tests through public SDK
    services: mixed HFS/HFS-B mounts, 200-byte UTF-8/emoji/CJK names, 255/256-byte
    post-NFC create/rename boundaries including multibyte/decomposed input, case lookup
    and CAFÉ/café collision/ID-equivalent lookup with stored spelling preserved
@@ -377,13 +384,14 @@ and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
    fork round-trips, actual file I/O crossing 2/4 GiB boundaries, malformed media,
    write failures and clean remount. Test long MacRoman legacy-name truncation
    separately from unrepresentable names returning BAD_ARGUMENT; verify ID/index
-   reachability without ambiguous short-name aliases. Preserve HFS boot and
-   original legacy tests. Use private generated disks and prune them after checks.
+   reachability without ambiguous short-name aliases. Verify blessing, boot-to-
+   runtime identity and selection with both disks present; retain original HFS
+   compatibility tests. Any retained HFS boot check is an explicit transitional/
+   recovery profile. Use private generated disks and prune them after checks.
 
-Under the workspace-first recommendation, bootable HFS-B/blessed-folder discovery
-in the ROM is a later independent gate, not a prerequisite for the early workspace
-switch. Finalize boot policy explicitly. Keep the built-in block
-driver filesystem-neutral; host-directory mounts remain a separate workstream.
+Bootable HFS-B and the default-image cutover are required deliverables of this
+early workstream. Keep the built-in block driver filesystem-neutral;
+host-directory mounts remain a separate workstream.
 
 ## Planned application tooling
 

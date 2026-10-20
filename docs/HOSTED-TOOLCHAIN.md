@@ -15,7 +15,7 @@ self-hosting gate, not the first milestone.
 - Inventory source/path lengths, encoding/case behavior, random-access and large
   file I/O, rename/locking/sync, temporary storage and working directories. The
   current classic HFS name limits and bounded whole-file writer are not a general
-  compiler workspace. Use [P15 HFS-B](CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-workspace-migration)
+  compiler workspace. Use [P15 HFS-B](CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-system-migration)
   for the early native workspace migration, with required semantics and explicit
   resource-fork publication support; do not shorten names
   lossily or assume every ELF/debug/archive file fits the current 4 MiB limits.
