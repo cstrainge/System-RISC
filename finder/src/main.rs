@@ -194,7 +194,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                 menus::OPEN => browser.open_selection(system),
                 menus::GET_INFO =>
                 {
-                    match browser.selection(system)
+                    match browser.info_selection(system)
                     {
                         Some(identity) => info.open(system, identity),
                         None => Ok(())
@@ -264,7 +264,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                 {
                     // A shortcut captured before the selection's menu policy
                     // updates arrives as KeyDown. Resolve it from current state.
-                    if let Some(identity) = browser.selection(system)
+                    if let Some(identity) = browser.info_selection(system)
                     {
                         let _ = try_action(system, &mut alerts, info.open(system, identity))?;
                     }

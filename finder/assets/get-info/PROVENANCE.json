@@ -92,5 +92,11 @@
     ],
     "rectangle_layout": "top,left,bottom,right big-endian i16; absent child is all zero",
     "font": "original fvew font1,size9; source label stylesbold/rightjustified"
+  },
+  "volume_layout": {
+    "source": "../working/finder-get-info-reference/66766577-11511.bin",
+    "source_sha256": "ba6eb1ab62317bd1e719d42a20b919b68fe61864aa42110ef7cd99e04a93c4e4",
+    "layout_sha256": "69a1b22b2e91cf797dbd3f31c9c7dd43be880cec5586786265cfa90a7bcd84af",
+    "policy": "Original disk fvew 11511 rectangle projection. Native Kind reports mounted filesystem/version; Size reports capacity/free. Volume rename and comments are read-only until supported by the File Manager."
   }
 }

@@ -78,7 +78,9 @@ fn clock_uses_current_native_time_and_checked_classic_epoch()
                                                 .unwrap()
                                                 .as_secs() as i64;
         assert!((before..=after).contains(&now.unix_seconds()));
-        assert_eq!(mac_toolbox::Timestamp::from_mac_seconds(now.mac_seconds().unwrap()), now);
+        assert_eq!(mac_toolbox::Timestamp::from_mac_seconds(now.mac_seconds().unwrap()).unix_seconds(), now.unix_seconds());
+        assert_eq!(mac_toolbox::Timestamp::from_mac_microseconds(now.mac_microseconds().unwrap()),
+                   now);
     });
 }
 

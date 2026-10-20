@@ -155,6 +155,8 @@ fn editable_info_windows_persist_through_real_filesystem_commits_and_cold_boot()
     let file_cnid = file_fields["cnid"].parse::<u32>().unwrap();
     let folder_fields = fields(open("folder-empty"));
     let folder_cnid = folder_fields["cnid"].parse::<u32>().unwrap();
+    let volume = file_fields["volume"];
+    assert_eq!(folder_fields["volume"], volume);
     assert_eq!(file_fields["folder"], "0");
     assert_eq!(folder_fields["folder"], "1");
     assert_ne!(file_cnid, folder_cnid);
@@ -191,13 +193,13 @@ fn editable_info_windows_persist_through_real_filesystem_commits_and_cold_boot()
     assert_eq!(errors.len(), 2);
     assert!(errors.iter().all(|line| fields(line)["status"] == "-11"));
     assert!(!boot2.contains("FINDER_INFO_ERROR "));
-    assert!(boot1.contains(&format!("FINDER_INFO_RENAMED volume=1 cnid={file_cnid} name=z \
-                                     file\n")));
-    assert!(boot1.contains(&format!("FINDER_INFO_RENAMED volume=1 cnid={folder_cnid} name=z \
-                                     folder\n")));
+    assert!(boot1.contains(&format!("FINDER_INFO_RENAMED volume={volume} cnid={file_cnid} \
+                                     name=z file\n")));
+    assert!(boot1.contains(&format!("FINDER_INFO_RENAMED volume={volume} cnid={folder_cnid} \
+                                     name=z folder\n")));
     assert_eq!(fields(open("cold-file-reopened"))["cnid"], file_fields["cnid"]);
     assert_eq!(fields(open("cold-folder-reopened"))["cnid"], folder_fields["cnid"]);
-    assert!(boot1.contains("items=3 logical=6912 allocated=16384\n"));
+    assert!(boot1.contains("items=3 logical=6912 allocated=12288\n"));
     for (name, expected_locked, expected_stationery) in [("file-locked", 1, 0),
                                                          ("file-locked-stationery-attempt", 1, 0),
                                                          ("file-stationery", 0, 1),
@@ -214,12 +216,12 @@ fn editable_info_windows_persist_through_real_filesystem_commits_and_cold_boot()
     {
         let(snapshot,activity)=mac_system::testing::with_file_disk(&output.join(name),true,Default::default(),|services|{
             let system=unsafe{System::from_raw(services)}.unwrap();let files=system.files();
-            let file=files.lookup(1,ROOT_ID,"0 Info Cases/z file").unwrap();let folder=files.lookup(1,ROOT_ID,"0 Info Cases/z folder").unwrap();
+            let file=files.lookup(system.files().volume_at(0).unwrap().id,ROOT_ID,"0 Info Cases/z file").unwrap();let folder=files.lookup(system.files().volume_at(0).unwrap().id,ROOT_ID,"0 Info Cases/z folder").unwrap();
             assert_eq!((file.id,folder.id),(file_cnid,folder_cnid));assert_eq!(file.is_locked(),locked);assert!(file.is_stationery());
-            assert_eq!(file.data_length,36);assert_eq!(file.resource_length,0);assert_eq!(file.created,3_875_209_985);assert_eq!(file.modified,file.created);
-            let mut file_comment=String::new();files.comment(1,file.id,&mut file_comment).unwrap();assert_eq!(file_comment,"native comment\rsecond line","locked editing changed the comment");
-            let mut folder_comment=String::new();files.comment(1,folder.id,&mut folder_comment).unwrap();assert_eq!(folder_comment,"folder comment\rsecond line");
-            let mut opened=files.open(1,file.id,Fork::Data).unwrap();let mut bytes=[0;36];assert_eq!(opened.read(&mut bytes).unwrap(),36);assert_eq!(&bytes[..24],b"Native Get Info fixture\r");
+            assert_eq!(file.data_length,36);assert_eq!(file.resource_length,0);assert_eq!(file.created_at(),mac_toolbox::Timestamp::from_mac_seconds(3_875_209_985));assert_eq!(file.modified,file.created);
+            let mut file_comment=String::new();files.comment(system.files().volume_at(0).unwrap().id,file.id,&mut file_comment).unwrap();assert_eq!(file_comment,"native comment\rsecond line","locked editing changed the comment");
+            let mut folder_comment=String::new();files.comment(system.files().volume_at(0).unwrap().id,folder.id,&mut folder_comment).unwrap();assert_eq!(folder_comment,"folder comment\rsecond line");
+            let mut opened=files.open(system.files().volume_at(0).unwrap().id,file.id,Fork::Data).unwrap();let mut bytes=[0;36];assert_eq!(opened.read(&mut bytes).unwrap(),36);assert_eq!(&bytes[..24],b"Native Get Info fixture\r");
             serde_json::json!({"file_cnid":file.id,"folder_cnid":folder.id,"locked":file.is_locked(),"stationery":file.is_stationery(),"file_comment":file_comment,"folder_comment":folder_comment,"creation":file.created,"modification":file.modified})
         }).unwrap();
         assert_eq!(activity.writes, 0);

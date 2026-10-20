@@ -10,16 +10,16 @@ From the `System7` workspace:
 ```sh
 cargo xtask rom
 cargo xtask boot
-cargo xtask boot ../build/system7/dist/system7.hfs
+cargo xtask boot ../build/system7/dist/system7.hfsb
 cargo xtask boot-check
 ```
 
 `rom` produces `../build/system7/dist/bootrom.elf` and `bootrom.bin`. The
-executable payload is about 40 KiB; the raw image is padded to the **32 MiB**
+executable payload is about 220 KiB; the raw image is padded to the **32 MiB**
 bank size required by QEMU. Debug information stays in the host ELF artifact.
 
 `boot` without a disk path rebuilds System/Finder and the generated 500 MiB
-HFS/qcow2 volume. With a disk path it builds just the ROM and opens that disk.
+HFS-B/qcow2 volume. With a disk path it builds just the ROM and opens that disk.
 Both flash and disk are attached **read-only**. QEMU runs headless with its
 UART connected to the terminal; Ctrl+C stops it. It does not change the
 currently visible QuickDraw or classic-Mac QEMU sessions.
@@ -30,26 +30,30 @@ currently visible QuickDraw or classic-Mac QEMU sessions.
    data from flash to RAM, clear BSS, and initialize the firmware allocator.
 2. Scan the board's eight virtio-MMIO slots for block devices. Negotiate modern
    virtio, initialize a split request queue, and read sectors with bounded waits.
-3. Look for an unpartitioned classic HFS volume or `Apple_HFS` entries in a
-   512-byte Apple partition map. Try eligible volumes in disk/partition order.
-4. Read the master directory block's `drFndrInfo[0]` blessed directory ID. Find
-   that actual directory record in the catalog. Its name is not significant.
-5. Find `System` inside that directory, requiring file type `zsys`. Read its
-   resource fork through its extents, including ordinary overflow extent records.
-6. Validate `NABI` resource 0 as a compatible native System. Validate `RV64`
-   resource 0 as a supported segment stream, including bounds and permissions.
-7. Zero the reservation, copy initialized segments, execute `fence.i`, and call the native
-   entry with `BootInfo`, logging and a read-only startup-volume callback.
-8. System reads Finder from that same blessed folder through the callback,
-   validates and loads it, initializes graphics/input, and loads native WDEF/CDEF
-   executables from resources. It prints `BOOT_SYSTEM_READY`, launches Finder,
-   and remains in the application's event loop. Finder prints `DESKTOP_READY`
-   after opening and painting its windows. If System returns, firmware validates
-   its resident service table and then parks.
+3. Find unpartitioned HFS-B volumes or `System_RISC_HFS_B` entries in a512-byte
+   Apple partition map. Classic HFS remains mountable by System but is rejected
+   as the native startup format with a recreate-disk diagnostic.
+4. Read the checked HFS-B header's blessed catalog ID. Resolve that actual folder;
+   its name is not significant. Disk version1 fixes the Unicode17.0.0 contract.
+5. Find `System` (`zsys`) and `Finder` (`FNDR`) within the blessed folder.
+   Read their resource maps and selected NABI/RV64/RLOC payloads through bounded
+   fork ranges, never by copying an entire resource fork.
+6. Validate both executable descriptors, segment bounds, roles, ABI and relocation
+   plans. Display the original Happy Mac, copy/zero the System reservation,
+   execute `fence.i`, and enter System with firmware block callbacks and the
+   selected disk/partition identity.
+7. System mounts the same volume using its resident File Manager, loads resources
+   and Finder, and configures its framebuffer. Its resource-based welcome panel
+   reuses the desktop background. Seven completed initialization stages fill a
+   striped progress bar by changing only newly filled pixels. No artificial
+   boot delay or per-tick full-screen redraw is introduced.
+8. System loads definition resources, publishes services and launches Finder in
+   its OS thread. Valid boots reach `DESKTOP_READY`. Firmware callbacks remain
+   available for resident disk I/O; there is no whole-fork startup callback.
 
 Invalid volumes or startup files produce a specific UART rejection and the
 search continues. If nothing boots, `BOOT_NO_SYSTEM` is printed and the ROM
-parks. Traps, allocation failures and panics have distinct diagnostic markers.
+shows the original question-mark disk and parks. Traps, allocation failures and panics have distinct diagnostic markers.
 An original 68k System file does not satisfy this native executable contract.
 
 ## Hardware and initial limits
@@ -62,17 +66,20 @@ An original 68k System file does not satisfy this native executable contract.
   System loading excludes this entire high-memory region and the FDT.
   System's own 8 MiB heap is within its executable reservation;
   `BootInfo` currently reports total RAM, not a general memory map.
-- The System reservation must fit `0x80200000..0x87000000`. System resource
-  forks are limited to 4 MiB to bound firmware memory use. The ROM borrows the
-  resource map and loads only the executable; fonts and visual resources are
-  interpreted by System after startup.
-- Startup discovery uses read-only HFS access. The shared `mac-hfs` crate follows checked linked
-  leaf records, supports fragmented resource/catalog forks with overflow
-  extents, and rejects invalid bounds, cycles and missing records.
-- Limits: 128 APM entries, 65,536 leaf-scan iterations per search, and 1,024
-  overflow extents. Growth of the extents-overflow tree beyond its own initial
-  three extents is unsupported. HFS+, GPT/MBR, SCSI and legacy virtio are not
-  implemented. Unsupported media produces a rejection, not a partial boot.
+- The System reservation must fit `0x80200000..0x87000000`. ROM owns one pinned
+  640×480 RAM framebuffer inside its low2MiB reservation until System takes over.
+- Resource maps are limited to256KiB and selected payloads to4MiB per load. A
+  resource fork may be larger: unselected bytes/padding are not read or allocated.
+  Explicit metadata/resource budgets bound work rather than total fork length.
+  Resident sector caching bounds repeated metadata I/O, including native Windows
+  QEMU reads over the WSL filesystem; bootstrap need not extend its25-second
+  launcher deadline to compensate for redundant reads.
+- `mac-filesystem` dispatches classic HFS and HFS-B through shared block traits.
+  HFS-B headers, catalog/extent/attribute trees, names and writes are implemented
+  by `mac-hfs-b`, also used by the Linux host tool and image builder. Boot uses
+  read-only operations. APM enumeration is bounded to128 entries. Unsupported
+  format/Unicode versions, dirty headers and malformed maps are rejected.
+- The ROM has no HFS+, GPT/MBR, SCSI, legacy virtio or general memory-map support.
 - Segment permissions are validated; no MMU/PMP protection is installed
   in this initial M-mode firmware.
 
@@ -91,7 +98,8 @@ record write/flush errors; later rollback errors must not hide the initial cause
 ## Verification
 
 `cargo xtask boot-check` cold-starts QEMU using the ROM and attached disks. Its
-cases cover no disk, raw HFS, qcow2 HFS, a renamed blessed folder, no blessing,
+cases cover no disk, raw HFS-B, qcow2 HFS-B, a renamed blessed folder, no blessing,
+a System resource fork beyond4MiB, classic-HFS startup rejection,
 missing System or Finder, malformed segments, obsolete ELF/NABI layouts, wrong
 executable role, a firmware-overlapping
 memory reservation, an Apple partition map, and fallback after an unblessed
@@ -116,11 +124,12 @@ checks plus the original packaging, disk roundtrip and native ABI tests.
 - [Virtio 1.2 specification](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html)
 - [Apple: HFS data organization](https://dev.os9.ca/techpubs/mac/Files/Files-99.html)
 
-The ABI5 firmware opens supported block devices before choosing a startup
+The ABI6 firmware opens supported block devices before choosing a startup
 volume, retains their queues, and lends System disk-info/read/write/flush
-callbacks. System mounts non-startup HFS volumes through the same interface.
-The startup callback still reads executable resource forks from the blessed
-folder. Resident File Manager calls are serialized by the firmware-context owner.
+callbacks. System mounts HFS-B and non-startup classic HFS volumes through the
+same interface. Resident startup reads use the File Manager; there is no
+whole-fork startup callback. File Manager calls are serialized by the
+firmware-context owner.
 Virtio OUT and negotiated FLUSH support durable catalog/Trash operations; readonly
 media stay readonly. An uncertain completion poisons the device queue to prevent
 reusing descriptors while DMA may still be active. The desktop launcher attaches

@@ -4,6 +4,7 @@
 #![feature(alloc_error_handler)]
 extern crate alloc;
 mod virtio_blk;
+mod screen;
 
 use alloc::vec::Vec;
 use core::{alloc::Layout,
@@ -13,11 +14,11 @@ use core::{alloc::Layout,
            ptr::{addr_of_mut, read_volatile, write_volatile}};
 
 use linked_list_allocator::LockedHeap;
-use mac_abi::{BAD_ARGUMENT, BootInfo, Header, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, OK, Status,
-              SystemEntry, SystemServices};
+use mac_abi::{BAD_ARGUMENT, BootInfo, Header, NOT_FOUND, NOT_SUPPORTED, OK, Status, SystemEntry,
+              SystemServices};
+use mac_filesystem::{BlockDevice, Error, Partition, Result, Volume, WritableBlockDevice};
 use mac_formats::{native::{Descriptor, Role, image},
-                  resource, text};
-use mac_hfs::{BlockDevice, Error, Partition, Result, Volume, WritableBlockDevice};
+                  resource};
 
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
@@ -101,20 +102,44 @@ struct Startup
 fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
 {
     let mut volume = Volume::mount(disk, partition)?;
-    serial!("HFS: volume '{}' at sector {}", text::decode(&volume.name), partition.start);
+    if volume.format != mac_filesystem::Format::HfsB
+    {
+        return Err(Error("native boot requires HFS-B; recreate System disk"));
+    }
+    serial!("HFS-B: volume '{}' at sector {}",
+            core::str::from_utf8(&volume.name).unwrap_or("?"),
+            partition.start);
     let folder = volume.blessed_folder()?;
-    serial!("HFS: blessed folder '{}' CNID={}", text::decode(&folder.name), folder.id);
+    serial!("HFS-B: blessed folder '{}' CNID={}",
+            core::str::from_utf8(&folder.name).unwrap_or("?"),
+            folder.id);
     let file = volume.find_file(folder.id, b"System")?;
     if file.file_type != *b"zsys"
     {
         return Err(Error("startup file is not type zsys"));
     }
-    let fork = volume.read_resources(&file, 4 * 1024 * 1024)?;
-    let resources = resource::decode_borrowed(&fork)?;
+    let mut fork = file.resources;
+    let resources =
+        resource::stream::read_selected(fork.length,
+                                        Default::default(),
+                                        |kind, id| {
+                                            id == 0 && (kind == *b"NABI" || kind == *b"RV64")
+                                        },
+                                        |offset, output| {
+                                            let n = volume.read(&mut fork, offset, output)?;
+                                            if n == output.len()
+                                            {
+                                                Ok(())
+                                            }
+                                            else
+                                            {
+                                                Err(Error("short startup resource read"))
+                                            }
+                                        })?;
     let abi = resources.iter()
                        .find(|r| r.kind == *b"NABI" && r.id == 0)
                        .ok_or(Error("System has no native ABI resource"))?;
-    let descriptor = Descriptor::decode(abi.data)?;
+    let descriptor = Descriptor::decode(&abi.data)?;
     if descriptor.role != Role::System || descriptor.abi_version != mac_abi::ABI_VERSION
     {
         return Err(Error("startup executable is not a compatible System"));
@@ -129,9 +154,47 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     let code = resources.into_iter()
                         .find(|r| r.kind == *b"RV64" && r.id == 0)
                         .ok_or(Error("System has no RV64 executable resource"))?
-                        .data
-                        .to_vec();
+                        .data;
     let image = image::decode(&code, &descriptor)?;
+    // A bootable installation includes a compatible Finder. Validate its code
+    // and relocation plan before displaying Happy Mac or entering System.
+    let finder = volume.find_file(folder.id, b"Finder")?;
+    if finder.file_type != *b"FNDR"
+    {
+        return Err(Error("startup Finder does not have type FNDR"));
+    }
+    let mut fork = finder.resources;
+    let finder =
+        resource::stream::read_selected(fork.length,
+                                        Default::default(),
+                                        |kind, id| {
+                                            id == 0 && matches!(&kind, b"NABI" | b"RV64" | b"RLOC")
+                                        },
+                                        |offset, output| {
+                                            let n = volume.read(&mut fork, offset, output)?;
+                                            if n == output.len()
+                                            {
+                                                Ok(())
+                                            }
+                                            else
+                                            {
+                                                Err(Error("short Finder resource read"))
+                                            }
+                                        })?;
+    let get = |kind| {
+        finder.iter()
+              .find(|r| r.kind == kind)
+              .ok_or(Error("startup Finder code metadata is missing"))
+    };
+    let abi = Descriptor::decode(&get(*b"NABI")?.data)?;
+    if abi.role != Role::Application
+       || abi.abi_version != mac_abi::ABI_VERSION
+       || abi.load_base != 0x81000000
+       || abi.load_limit > 0x82000000
+    {
+        return Err(Error("startup Finder is incompatible; rebuild System disk"));
+    }
+    image::LoadPlan::new(&get(*b"RV64")?.data, &abi, Some(&get(*b"RLOC")?.data), abi.load_base)?;
     Ok(Startup { descriptor,
                  code,
                  image })
@@ -139,10 +202,8 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
 
 struct BootVolume
 {
-    disks:        *mut virtio_blk::Disk,
-    disk_count:   usize,
-    startup_disk: usize,
-    partition:    Partition
+    disks:      *mut virtio_blk::Disk,
+    disk_count: usize
 }
 
 unsafe extern "C" fn disk_info(context: *mut (), index: u32, output: *mut mac_abi::DiskInfo)
@@ -254,52 +315,6 @@ unsafe extern "C" fn flush_disk(context: *mut (), index: u32) -> Status
 }
 
 
-unsafe extern "C" fn read_startup(context: *mut (), name: *const u8, name_length: usize,
-                                  output: *mut u8, capacity: usize, length: *mut usize)
-                                  -> Status
-{
-    if context.is_null()
-       || name.is_null()
-       || length.is_null()
-       || name_length == 0
-       || name_length > 31
-    {
-        return BAD_ARGUMENT;
-    }
-    let context = unsafe { &mut *context.cast::<BootVolume>() };
-    let name = unsafe { core::slice::from_raw_parts(name, name_length) };
-    let result = (|| -> Result<()> {
-        let disk = unsafe { &mut *context.disks.add(context.startup_disk) };
-        let mut volume = Volume::mount(disk, context.partition)?;
-        let folder = volume.blessed_folder()?;
-        let file = volume.find_file(folder.id, name)?;
-        unsafe {
-            *length = file.resources.length as usize;
-        }
-        if output.is_null()
-        {
-            return Ok(());
-        }
-        if capacity < file.resources.length as usize
-        {
-            return Err(Error("startup output buffer is too small"));
-        }
-        let bytes = volume.read_resources(&file, 4 * 1024 * 1024)?;
-        unsafe {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len());
-        }
-        Ok(())
-    })();
-    match result
-    {
-        Ok(()) => OK,
-        Err(error) =>
-        {
-            serial!("STARTUP_READ_FAILED: {}", error);
-            if error.0 == "startup output buffer is too small" { NO_MEMORY } else { NOT_FOUND }
-        }
-    }
-}
 
 fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize, partition: Partition)
          -> Result<()>
@@ -320,26 +335,24 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize, pa
     unsafe {
         asm!("fence.i", options(nostack));
     }
+    screen::happy();
+    serial!("BOOT_VISUAL_HAPPY");
     serial!("BOOT: entering System at 0x{:x}", plan.entry());
     let entry: SystemEntry = unsafe { core::mem::transmute(plan.entry() as usize) };
-    let mut context = BootVolume { disks: disks.as_mut_ptr(),
-                                   disk_count: disks.len(),
-                                   startup_disk: disk_index,
-                                   partition };
+    let mut context = BootVolume { disks:      disks.as_mut_ptr(),
+                                   disk_count: disks.len() };
     let context_pointer = (&mut context as *mut BootVolume).cast();
     let info = BootInfo { header:                  Header::for_type::<BootInfo>(),
                           ram_base:                0x80000000,
                           ram_size:                128 * 1024 * 1024,
                           log:                     Some(log),
-                          startup_context:         context_pointer,
-                          read_startup:            Some(read_startup),
                           storage_context:         context_pointer,
                           disk_info:               Some(disk_info),
                           read_sector:             Some(read_sector),
                           write_sector:            Some(write_sector),
                           flush_disk:              Some(flush_disk),
                           startup_disk:            disk_index as u32,
-                          reserved:                0,
+                          flags:                   mac_abi::BOOT_GRAPHICAL,
                           startup_partition_start: partition.start };
     let table = unsafe { entry(&info) };
     let address = table as usize as u64;
@@ -373,7 +386,8 @@ extern "C" fn boot_main() -> !
                          addr_of_mut!(__heap_end) as usize - addr_of_mut!(__heap_start) as usize);
     }
     serial!("System RISC Boot ROM v1 at 0x{:x}", boot_main as *const () as usize);
-    serial!("Searching virtio disks for a blessed HFS System Folder...");
+    let _ = screen::init();
+    serial!("Searching virtio disks for a blessed HFS-B System Folder...");
     let mut disks = Vec::new();
     for slot in 1..=8
     {
@@ -396,7 +410,7 @@ extern "C" fn boot_main() -> !
     }
     for disk_index in 0..disks.len()
     {
-        let partitions = match mac_hfs::partitions(&mut disks[disk_index])
+        let partitions = match mac_filesystem::partitions(&mut disks[disk_index])
         {
             Ok(partitions) => partitions,
             Err(error) =>
@@ -422,6 +436,8 @@ extern "C" fn boot_main() -> !
             }
         }
     }
+    screen::missing();
+    serial!("BOOT_VISUAL_MISSING");
     serial!("BOOT_NO_SYSTEM: searched {} disk(s); no bootable native System found", disks.len());
     halt()
 }

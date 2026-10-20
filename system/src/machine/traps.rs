@@ -196,6 +196,8 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 Ok(now) =>
                 {
                     call.unix_seconds = now.unix_seconds();
+                    call.microseconds = now.subsec_microseconds();
+                    call.reserved = 0;
                     OK as i64
                 }
                 Err(status) => status as i64

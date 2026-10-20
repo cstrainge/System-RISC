@@ -134,6 +134,11 @@ fn mac_date(unix_seconds: u64) -> Result<u32>
 pub fn rebuild(manifest_path: &Path, out: &Path) -> Result<Value>
 {
     let manifest = Manifest::read(manifest_path)?;
+    if !manifest.created.is_multiple_of(1_000_000) || !manifest.modified.is_multiple_of(1_000_000)
+    {
+        return Err(error("MacBinary cannot represent fractional timestamps; use a native fork \
+                          bundle to preserve microseconds"));
+    }
     if !manifest.archive
     {
         return Err(error("rebuild requires an archive manifest"));
@@ -157,8 +162,14 @@ pub fn rebuild(manifest_path: &Path, out: &Path) -> Result<Value>
                          file_type: crate::manifest::fourcc(&manifest.file_type)?,
                          creator: crate::manifest::fourcc(&manifest.creator)?,
                          flags: manifest.file_flags,
-                         created: manifest.created,
-                         modified: manifest.modified,
+                         created: u32::try_from(manifest.created / 1_000_000).map_err(|_| {
+                                      error("creation date is outside MacBinary's 32-bit seconds \
+                                             range")
+                                  })?,
+                         modified: u32::try_from(manifest.modified / 1_000_000).map_err(|_| {
+                                       error("modification date is outside MacBinary's 32-bit \
+                                              seconds range")
+                                   })?,
                          data,
                          resources };
     fs::create_dir_all(out)?;

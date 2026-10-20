@@ -244,10 +244,10 @@ pub(crate) fn resources() -> Option<crate::toolbox::resources::manager::Manager<
                                                           fonts()?.resources()))
 }
 
-fn launch(info: &BootInfo) -> mac_formats::Result<()>
+fn launch(_info: &BootInfo) -> mac_formats::Result<()>
 {
-    let mut system = crate::loader::resources(&crate::loader::read_startup(info, "System")?)?;
-    let finder = crate::loader::resources(&crate::loader::read_startup(info, "Finder")?)?;
+    let mut system = crate::loader::read_startup("System")?;
+    let finder = crate::loader::read_startup("Finder")?;
     let finder_entry = crate::loader::application(&finder)?;
     let (base, limit) = crate::loader::reservation(&finder)?;
     IMAGES[0].call_once(|| {
@@ -259,33 +259,42 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                             base,
                             limit }
              });
+    let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system);
+    serial!("FONTS_READY: families={} resources loaded from System", fonts.catalog().len());
+    let mut boot_screen = crate::boot_screen::BootScreen::begin(&system, &fonts)?;
     if !crate::platform::setup_framebuffer()
     {
         return Err(mac_formats::Error("RAM framebuffer is unavailable"));
     }
-    let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system);
-    serial!("FONTS_READY: families={} resources loaded from System", fonts.catalog().len());
+    serial!("BOOT_PANEL_READY stages=7");
     // Immutable publication is acquire/release synchronized by Once. Runtime
     // readers never spin or take a mutable catalog guard.
     FONTS.call_once(|| fonts);
+    boot_screen.completed(1);
     let files = RESOURCE_FILES.call_once(|| {
                                   crate::toolbox::resources::manager::Files { system,
                                                                               application: finder }
                               });
+    boot_screen.completed(2);
     let definitions = crate::loader::Definitions::new(files);
+    boot_screen.completed(3);
     let runtime =
         crate::toolbox::runtime::Desktop::new(definitions).map_err(|_| {
                                               mac_formats::Error("Toolbox initialization failed")
                                           })?;
+    boot_screen.completed(4);
     DESKTOP.publish(runtime).map_err(|_| mac_formats::Error("desktop already published"))?;
+    boot_screen.completed(5);
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", &SERVICES as *const SystemServices as usize);
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
     let thread=crate::machine::scheduler::spawn(1,0,finder_entry).map_err(|_|mac_formats::Error("Finder thread creation failed"))?;
+    boot_screen.completed(6);
     with_desktop(|desktop| desktop.started(1, thread)).map_err(|_| {
                                                           mac_formats::Error("Finder context \
                                                                               initialization \
                                                                               failed")
                                                       })?;
+    boot_screen.completed(7);
     crate::machine::scheduler::start()
 }
 
@@ -304,6 +313,10 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
         return ptr::null();
     }
     let info = unsafe { &*info };
+    if info.flags & !mac_abi::BOOT_GRAPHICAL != 0
+    {
+        return ptr::null();
+    }
     use core::sync::atomic::Ordering;
     // Secondary harts and repeated entry cannot replace live manager state or
     // race allocator initialization. Failed initialization is not retried over
@@ -344,7 +357,7 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
         return ptr::null();
     }
     serial!("System: native service table ready");
-    if info.read_startup.is_none()
+    if info.flags & mac_abi::BOOT_GRAPHICAL == 0
     {
         return &HEADLESS_SERVICES;
     }

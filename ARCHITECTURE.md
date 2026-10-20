@@ -164,22 +164,38 @@ relative to the selected blessed installation. Their shared module loader keeps
 discovery and entry-contract validation distinct; folder placement alone never
 authorizes execution.
 
-## Planned native HFS-B storage
+## Native HFS-B storage
 
-[P15](docs/CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-system-migration) schedules
-an early boot/system/workspace switch to [HFS-B](docs/HFS-B.md), alongside unchanged
-classic HFS through the same resident File/Resource Manager services. HFS-B is
-bootable and becomes mandatory for new normal startup images after formatter,
-ROM-to-Finder boot and write-integrity acceptance. HFS boot is transitional;
-classic HFS remains mountable for compatibility. Native UTF-8 names and full
-size/time values are preserved; legacy conversion/truncation belongs at each
-adapter boundary. Live in-place conversion remains outside the first spec.
+[P15](docs/CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-system-migration) implements
+bootable [HFS-B](docs/HFS-B.md) for normal System/workspace images. ROM requires
+an HFS-B installation and System mounts that same selected disk/partition.
+`mac-filesystem` dispatches HFS-B and unchanged classic HFS through common block
+traits and resident File/Resource Manager services. Classic HFS remains available
+for reference media and file exchange; live in-place conversion is out of scope.
 
-One planned no_std `mac-hfs-b` crate owns format codecs and filesystem algorithms
-for Linux tools, boot ROM, System and the System RISC Filesystem utility. Common
-block traits separate platform storage access from that implementation. The native
-utility is a std Toolbox app using checked disk/volume services; Linux tools use
-std file/device adapters. See [shared crate and tooling requirements](docs/HFS-B.md#shared-format-crate-and-tooling).
+The safe no_std `mac-hfs-b` crate owns codecs, formatting, validation, catalog,
+allocation, both forks and all native filesystem algorithms. Linux tooling,
+image builds, ROM and System share it. Version1 pins Unicode17.0.0, NFC storage,
+canonical caseless comparison, 255-byte names and 1904-epoch microsecond dates.
+The Linux adapter supplies sector-file I/O, locking and streaming host copy;
+platform I/O and UI do not belong in the shared crate. The future System RISC
+Filesystem utility will use public Toolbox services and the same core.
+
+Fork lengths and read offsets stay64-bit through the public File Manager. The
+shared core and Linux tool stream reads/writes without whole-fork allocation.
+The current atomic whole-data-file SDK writer still stages at most4MiB; larger
+streamed/random userspace writes need a separate service rather than raising its
+buffer limit. Resource startup reads validate a bounded map and allocate selected
+payloads only, with an explicit4MiB aggregate selected-payload budget on the
+current8MiB heap. This is not a total-fork-size limit or an unbounded allocation:
+ROM selects executable metadata/code, and inspectors read individual ranges.
+A bounded64-sector cache avoids rereading unchanged metadata, updates after
+successful writes and clears on failed reads/writes/flushes so recovery sees the
+actual media. File-backed resource-fork editing remains future Resource Manager work.
+
+Documents and versioned JSON Preferences use the lossless offline copy-in/copy-out
+workflow in the [host tool](tools/hfs-b/README.md). Preserve user bundles outside
+generated-media cleanup; do not retain obsolete HD images for that purpose.
 
 ## Planned archive and host-directory volumes
 
@@ -242,7 +258,7 @@ and embedded font strikes. Its result is included in `toolchain-checks.json`.
 
 ## Filesystem and Finder ownership
 
-ABI5 extends BootInfo to104bytes with firmware disk-info/read/write/flush callbacks
+BootInfo is88bytes with firmware disk-info/read/write/flush callbacks
 and startup volume identity. DiskInfo carries capacity, read-only state and the
 driver icon resource identity. System serializes firmware access through its I/O
 owner guard and dedicated synchronous execution stack. The I/O service context
@@ -250,18 +266,18 @@ is not independently runnable; its interrupt guard serializes current one-hart
 access without declaring opaque firmware state Send. The File Manager owns
 mounted-volume IDs, catalog traversal, application-owned independent fork marks
 and mutation policy. Native dispatch captures AppId before the handoff; foreign
-read/seek/tell/close calls fail, and exit closes only the app's marks. Its bounded
-HFS engine rebuilds catalog/thread/index/map records within existing fork reservations. New Folder,
+read/seek/tell/close calls fail, and exit closes only the app's marks. Classic HFS retains its bounded catalog/extent engine. Native HFS-B uses the same
+shared read/write crate as the Linux formatter and ROM, including tree and fork growth. New Folder,
 Trash, Put Away and recursive Empty Trash persist to the actual device; failed
 writes/flushes trigger rollback and failed rollback poisons further mutations.
 This is not a crash-atomic journal. Bounded native ordinary data-fork saves now
 stage bytes in an owned generation-tagged writer and publish a copy-on-write
 fork after its payload flush. Replacement preserves CNID and resource fork;
-reported failures retain the old live file. Resource-fork writing and catalog-fork
-growth remain future work. System owns StandardGetFile/StandardPutFile dialogs,
+reported failures retain the old live file. HFS-B supports both forks and growing catalogs internally; public SDK resource-fork
+editing remains future work. System owns StandardGetFile/StandardPutFile dialogs,
 including filtering, destination navigation and replacement confirmation; the
 Rust interface lives in toolbox/standard-file. See docs/RESEDIT.md for limits. Neither SDK nor Finder links
-the HFS engine. Finder aggregates actual per-volume Trash directories in a
+either filesystem engine. Finder aggregates actual per-volume Trash directories in a
 virtual window and keeps selection identities as (volume,CNID) pairs.
 
 The desktop is a retained application scene below windows and the menu bar.

@@ -4,6 +4,7 @@
 Canonical contract assertions execute in Rust userspace on RV64. Python supplies
 only build/package/clone/boot/input/frame/serial transport and artifact identities.
 """
+from hfs_b_tool import Image as NativeImage
 import argparse
 import json
 import os
@@ -38,22 +39,14 @@ def capture(output):
     children = [child(output, fixture, binary)
                 for fixture, binary in [('process-worker', 'ProcessWorker'),
                                         ('process-spinner', 'ProcessSpinner')]]
-    env = dict(os.environ, HOME=str(private / 'hfs-state'), TZ='UTC')
-    tools = vm.ROOT / '.toolchains/hfsutils/rootfs/usr/bin'
 
-    def hfs(name, *args, check=True):
-        return subprocess.run([str(tools / name), *map(str, args)], env=env,
-                              check=check, capture_output=True, text=True)
     raw = private / 'conformance.raw'
-    hfs('hmount', raw)
-    try:
-        hfs('hmkdir', ':Applications', check=False)
-        for package, _ in children:
-            hfs('hcopy', '-m', package, ':Applications:')
-        hfs('hmkdir', ':Copies')
-        hfs('hcopy', '-m', children[0][0], ':Copies:')
-    finally:
-        hfs('humount')
+    fs = NativeImage(raw)
+    fs.mkdir('/Applications', exist_ok=True)
+    for package, _ in children:
+        fs.import_macbinary(package, '/Applications')
+    fs.mkdir('/Copies')
+    fs.import_macbinary(children[0][0], '/Copies')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)
     vm.DIST = private

@@ -4,15 +4,15 @@
 mod resource;
 use alloc::{string::String, vec::Vec};
 mod scan;
+mod cache;
 
 use mac_abi::{files::*, *};
+use mac_filesystem::{BlockDevice, CatalogEntry, Fork, MutationError, Partition, Volume,
+                     WritableBlockDevice};
 pub use mac_formats::macbinary::MacFile;
-use mac_formats::text;
-use mac_hfs::{BlockDevice, CatalogEntry, Fork, MutationError, Partition, Volume,
-              WritableBlockDevice};
 
 pub const MAX_DISKS: u32 = 32;
-pub const MAX_VOLUMES: usize = 128;
+pub const MAX_VOLUMES: usize = crate::toolbox::handles::Kind::Volumes.capacity();
 pub const MAX_OPEN_FILES: usize = crate::toolbox::handles::Kind::Files.capacity();
 use crate::toolbox::handles::{Kind, Table};
 mod write;
@@ -57,7 +57,8 @@ struct Device
 {
     storage: BootStorage,
     index:   u32,
-    info:    DiskInfo
+    info:    DiskInfo,
+    cache:   cache::Cache
 }
 impl BlockDevice for Device
 {
@@ -72,13 +73,26 @@ impl BlockDevice for Device
         {
             return Err(mac_hfs::Error("sector outside device"));
         }
+        if self.cache.get(sector, output)
+        {
+            return Ok(());
+        }
         let status = unsafe {
             (self.storage.read_sector)(self.storage.context,
                                        self.index,
                                        sector,
                                        output.as_mut_ptr())
         };
-        if status == OK { Ok(()) } else { Err(mac_hfs::Error("firmware sector read failed")) }
+        if status == OK
+        {
+            self.cache.put(sector, output);
+            Ok(())
+        }
+        else
+        {
+            self.cache.clear();
+            Err(mac_hfs::Error("firmware sector read failed"))
+        }
     }
 }
 impl WritableBlockDevice for Device
@@ -106,7 +120,18 @@ impl WritableBlockDevice for Device
                                                  sector,
                                                  input.as_ptr())
         };
-        if status == OK { Ok(()) } else { Err(mac_hfs::Error("firmware sector write failed")) }
+        if status == OK
+        {
+            self.cache.put(sector, input);
+            Ok(())
+        }
+        else
+        {
+            // A reported failure may have written part of this sector. Never
+            // hide it behind cached bytes during recovery or subsequent reads.
+            self.cache.clear();
+            Err(mac_hfs::Error("firmware sector write failed"))
+        }
     }
 
     fn flush(&mut self) -> mac_hfs::Result<()>
@@ -114,7 +139,15 @@ impl WritableBlockDevice for Device
         let callback =
             self.storage.flush_disk.ok_or(mac_hfs::Error("device has no flush callback"))?;
         let status = unsafe { callback(self.storage.context, self.index) };
-        if status == OK { Ok(()) } else { Err(mac_hfs::Error("firmware disk flush failed")) }
+        if status == OK
+        {
+            Ok(())
+        }
+        else
+        {
+            self.cache.clear();
+            Err(mac_hfs::Error("firmware disk flush failed"))
+        }
     }
 }
 struct Mounted
@@ -123,7 +156,7 @@ struct Mounted
     partition:        Partition,
     info:             VolumeInfo,
     poisoned:         bool,
-    scanner:          Option<mac_hfs::scan::CatalogScanner>,
+    scanner:          Option<mac_filesystem::scan::CatalogScanner>,
     catalog_revision: u64
 }
 struct OpenFile
@@ -136,7 +169,7 @@ struct OpenFile
 }
 pub struct Manager
 {
-    volumes:              Vec<Mounted>,
+    volumes:              Table<Mounted>,
     handles:              Table<OpenFile>,
     writes:               Table<write::Pending>,
     pub rejected_volumes: u32
@@ -145,7 +178,7 @@ impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { volumes:          Vec::new(),
+        Self { volumes:          Table::new(Kind::Volumes),
                handles:          Table::new(Kind::Files),
                writes:           Table::new(Kind::FileWrites),
                rejected_volumes: 0 }
@@ -153,12 +186,21 @@ impl Default for Manager
 }
 fn io<T>(result: mac_hfs::Result<T>) -> Result<T, Status>
 {
-    result.map_err(|_| NOT_SUPPORTED)
+    result.map_err(|e| {
+                       if e == mac_filesystem::INVALID_REQUEST
+                       {
+                           BAD_ARGUMENT
+                       }
+                       else
+                       {
+                           NOT_SUPPORTED
+                       }
+                   })
 }
 fn utf8_name(bytes: &[u8], output: &mut [u8]) -> u32
 {
-    let name = text::decode(bytes);
-    // Names are at most 31 Mac Roman bytes; supplied fixed buffers fit all UTF8.
+    let name = core::str::from_utf8(bytes).unwrap_or("");
+    // Backend names are validated UTF-8; native names fit 255 bytes after NFC.
     let mut n = name.len().min(output.len());
     while !name.is_char_boundary(n)
     {
@@ -180,7 +222,8 @@ fn metadata(volume: u32, entry: &CatalogEntry) -> CatalogInfo
                       child_count: entry.child_count,
                       created: entry.created,
                       modified: entry.modified,
-                      backup: entry.backup,
+                      backup: entry.backup.unwrap_or(0),
+                      backup_present: u32::from(entry.backup.is_some()),
                       finder_info: entry.finder_info,
                       ..Default::default() };
     if !entry.directory
@@ -216,8 +259,9 @@ impl Manager
             }
             let mut device = Device { storage,
                                       index,
-                                      info };
-            let partitions = match mac_hfs::partitions(&mut device)
+                                      info,
+                                      cache: Default::default() };
+            let partitions = match mac_filesystem::partitions(&mut device)
             {
                 Ok(p) => p,
                 Err(_) =>
@@ -242,13 +286,20 @@ impl Manager
                     return Err(NO_MEMORY);
                 }
                 let mut summary =
-                    VolumeInfo { id: result.volumes.len() as u32 + 1,
+                    VolumeInfo { id: 0,
                                  disk: index,
                                  partition_start: partition.start,
                                  total_bytes: volume.allocation_bytes,
                                  free_bytes: volume.free_bytes,
                                  created: volume.created,
                                  modified: volume.modified,
+                                 filesystem: match volume.format
+                                 {
+                                     mac_filesystem::Format::Hfs => FILESYSTEM_HFS,
+                                     mac_filesystem::Format::HfsB => FILESYSTEM_HFS_B
+                                 },
+                                 filesystem_version: u32::from(volume.format.version()),
+                                 blessed_folder: volume.blessed_id,
                                  attributes: volume.attributes,
                                  read_only: u16::from(info.read_only != 0
                                                       || storage.write_sector.is_none()
@@ -262,14 +313,22 @@ impl Manager
                                  icon_id: info.icon_id,
                                  ..Default::default() };
                 summary.name_length = utf8_name(&volume.name, &mut summary.name);
-                result.volumes.push(Mounted { device: Device { storage,
-                                                               index,
-                                                               info },
-                                              partition,
-                                              info: summary,
-                                              poisoned: false,
-                                              scanner: volume.catalog_scanner().ok(),
-                                              catalog_revision: scan::next_revision()? });
+                let mounted = Mounted { device: Device { storage,
+                                                         index,
+                                                         info,
+                                                         cache: Default::default() },
+                                        partition,
+                                        info: summary,
+                                        poisoned: false,
+                                        scanner: volume.catalog_scanner().ok(),
+                                        catalog_revision: scan::next_revision()? };
+                result.volumes
+                      .insert_with(|id| {
+                          let mut mounted = mounted;
+                          mounted.info.id = id;
+                          mounted
+                      })
+                      .map_err(|_| NO_MEMORY)?;
             }
         }
         Err(NO_MEMORY)
@@ -277,7 +336,7 @@ impl Manager
 
     fn mounted(&mut self, id: u32) -> Result<&mut Mounted, Status>
     {
-        self.volumes.get_mut(id.checked_sub(1).ok_or(NOT_FOUND)? as usize).ok_or(NOT_FOUND)
+        self.volumes.get_mut(id).ok_or(NOT_FOUND)
     }
 
     fn with_volume<T>(&mut self, id: u32,
@@ -332,12 +391,8 @@ impl Manager
                         }
                         continue;
                     }
-                    let name = text::encode(component).map_err(|_| BAD_ARGUMENT)?;
-                    if name.len() > 31
-                    {
-                        return Err(BAD_ARGUMENT);
-                    }
-                    entry = required(io(v.lookup(entry.id, &name))?)?;
+                    let name = component.as_bytes();
+                    entry = required(io(v.lookup(entry.id, name))?)?;
                 }
                 if path.ends_with('/') && !entry.directory
                 {
@@ -367,7 +422,7 @@ impl Manager
                         components.reverse();
                         return Ok(alloc::format!("/{}", components.join("/")));
                     }
-                    let name = text::decode(&entry.name);
+                    let name = String::from_utf8(entry.name).map_err(|_| IO_ERROR)?;
                     // Native path convention has slash separators and cannot encode slash names.
                     if name.contains('/')
                     {
@@ -422,12 +477,12 @@ impl Manager
     fn mutation(&mut self, call: &mut FileCall, name: &str, output: &mut [u8])
                 -> Result<(), Status>
     {
-        let when = u32::try_from(call.position).map_err(|_| BAD_ARGUMENT)?;
+        let when = call.position;
         if matches!(call.operation, TRASH_DIRECTORY | SET_LOCKED | SET_STATIONERY) && call.index > 1
         {
             return Err(BAD_ARGUMENT);
         }
-        let name = text::encode(name).map_err(|_| BAD_ARGUMENT)?;
+        let name = name.as_bytes();
         let mut protected = Vec::new();
         protected.try_reserve_exact(MAX_OPEN_FILES).map_err(|_| NO_MEMORY)?;
         for (_, file) in self.handles.iter()
@@ -459,25 +514,25 @@ impl Manager
         {
             NEW_FOLDER =>
             {
-                volume.create_folder(if call.cnid == 0 { ROOT_ID } else { call.cnid }, &name, when)
+                volume.create_folder(if call.cnid == 0 { ROOT_ID } else { call.cnid }, name, when)
                       .map(Some)
             }
             TRASH_DIRECTORY =>
             {
                 volume.trash_directory(call.index != 0,
-                                       if when == 0 { volume.modified } else { when })
+                                       when)
                       .map(Some)
             }
             COMMENT => volume.comment(call.cnid).and_then(|bytes| {
-                let comment = text::decode(&bytes);
+                let comment = core::str::from_utf8(&bytes).map_err(|_|MutationError::Io)?;
                 call.length = comment.len() as u64;
                 if output.len() < comment.len() { return Err(MutationError::NoMemory); }
                 output[..comment.len()].copy_from_slice(comment.as_bytes());
                 call.transferred = comment.len();
                 Ok(None)
             }),
-            SET_COMMENT => volume.set_comment(call.cnid, &name, when, &protected).map(|()| None),
-            RENAME => volume.rename(call.cnid, &name, when, &protected).map(Some),
+            SET_COMMENT => volume.set_comment(call.cnid, name, when, &protected).map(|()| None),
+            RENAME => volume.rename(call.cnid, name, when, &protected).map(Some),
             SET_LOCKED => volume.set_locked(call.cnid, call.index != 0, when, &protected).map(Some),
             SET_STATIONERY =>
             {
@@ -607,7 +662,8 @@ impl Manager
             VOLUME_COUNT => call.index = self.volumes.len() as u32,
             VOLUME_INDEX =>
             {
-                call.volume_info = self.volumes.get(call.index as usize).ok_or(NOT_FOUND)?.info
+                call.volume_info =
+                    self.volumes.iter().nth(call.index as usize).ok_or(NOT_FOUND)?.1.info
             }
             VOLUME_INFO => call.volume_info = self.mounted(call.volume)?.info,
             CATALOG => call.entry = metadata(call.volume, &self.entry(call.volume, call.cnid)?),

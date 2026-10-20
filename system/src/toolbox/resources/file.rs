@@ -1,5 +1,5 @@
 //! Bounded file-backed metadata without changing the resident resource chain.
-use alloc::{collections::BTreeSet, vec, vec::Vec};
+use alloc::vec::Vec;
 
 use mac_abi::{resources::*, *};
 use mac_formats::resource::Resource;
@@ -43,96 +43,15 @@ pub(crate) fn read_selected(length: u64, mut select: impl FnMut(ResourceKey) -> 
     {
         return Err(NOT_FOUND);
     }
-    bounded(0, 16, length)?;
-    let mut header = [0; 16];
-    read(0, &mut header)?;
-    let data = u64::from(long(&header, 0)?);
-    let map_at = u64::from(long(&header, 4)?);
-    let data_len = u64::from(long(&header, 8)?);
-    let map_len = u64::from(long(&header, 12)?);
-    bounded(data, data_len, length)?;
-    bounded(map_at, map_len, length)?;
-    if data < 16 || map_at < 16 || data < map_at + map_len && map_at < data + data_len
-    {
-        return Err(BAD_ARGUMENT);
-    }
-    // Classic reference/name offsets are16-bit; allow larger trailing name data
-    // within an explicit metadata allocation limit.
-    if map_len > 256 * 1024
-    {
-        return Err(NO_MEMORY);
-    }
-    let mut map = vec![0; map_len as usize];
-    read(map_at, &mut map)?;
-    let types = usize::from(word(&map, 24)?);
-    let names = usize::from(word(&map, 26)?);
-    if types < 28 || names < 28 || names > map.len()
-    {
-        return Err(BAD_ARGUMENT);
-    }
-    let count = word(&map, types)?;
-    let count = if count == u16::MAX { 0 } else { usize::from(count) + 1 };
-    let mut previous_end = types + 2 + count * 8;
-    if previous_end > names
-    {
-        return Err(BAD_ARGUMENT);
-    }
-    let mut selected = Vec::new();
-    let mut seen = BTreeSet::new();
-    for index in 0..count
-    {
-        let at = types + 2 + index * 8;
-        let kind: [u8; 4] =
-            map.get(at..at + 4).ok_or(BAD_ARGUMENT)?.try_into().map_err(|_| BAD_ARGUMENT)?;
-        let number = usize::from(word(&map, at + 4)?) + 1;
-        let refs = types + usize::from(word(&map, at + 6)?);
-        let end = refs + number * 12;
-        if refs < previous_end || end > names
-        {
-            return Err(BAD_ARGUMENT);
-        }
-        previous_end = end;
-        for record in map[refs..end].as_chunks::<12>().0
-        {
-            let name = word(record, 2)?;
-            if name != u16::MAX
-            {
-                let start = names + usize::from(name);
-                let len = usize::from(*map.get(start).ok_or(BAD_ARGUMENT)?);
-                map.get(start + 1..start + 1 + len).ok_or(BAD_ARGUMENT)?;
-            }
-            let offset = u64::from(u32::from_be_bytes([0, record[5], record[6], record[7]]));
-            bounded(offset, 4, data_len)?;
-            let key = ResourceKey { kind,
-                                    id: word(record, 0)? as i16 };
-            if select(key)
-            {
-                if !seen.insert((key.kind, key.id))
-                {
-                    return Err(BAD_ARGUMENT);
-                }
-                selected.push((key, offset, record[4]));
-            }
-        }
-    }
-    let mut output = Vec::new();
-    let mut remaining = limit;
-    for (key, offset, attributes) in selected
-    {
-        let mut size = [0; 4];
-        read(data + offset, &mut size)?;
-        let size = u64::from(u32::from_be_bytes(size));
-        bounded(offset + 4, size, data_len)?;
-        remaining = remaining.checked_sub(size as usize).ok_or(BAD_ARGUMENT)?;
-        let mut value = vec![0; size as usize];
-        read(data + offset + 4, &mut value)?;
-        output.push(Resource { kind: key.kind,
-                               id: key.id,
-                               attributes,
-                               name: None,
-                               data: value });
-    }
-    Ok(output)
+    let mut io_error = None;
+    mac_formats::resource::stream::read_selected(length,
+        mac_formats::resource::stream::Budget {payload_bytes:limit,..Default::default()},
+        |kind,id| select(ResourceKey {kind,id}),
+        |offset,output| read(offset,output).map_err(|status| {
+            io_error=Some(status);
+            mac_formats::Error("resource storage read failed")
+        }))
+        .map_err(|error| io_error.unwrap_or(if error.0.contains("budget") || error.0.contains("allocation") {NO_MEMORY} else {BAD_ARGUMENT}))
 }
 
 fn decode(data: &[u8]) -> Result<VersionInfo, Status>

@@ -1,8 +1,10 @@
 //! Architecture-neutral sector storage shared by filesystems and disk tools.
 #![no_std]
 #![forbid(unsafe_code)]
-
+extern crate alloc;
+mod partitions;
 pub use mac_formats::{Error, Result};
+pub use partitions::{ApplePartition, apple_partitions};
 pub const SECTOR_SIZE: usize = 512;
 
 pub trait BlockDevice

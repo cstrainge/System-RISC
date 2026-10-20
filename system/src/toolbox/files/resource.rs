@@ -39,8 +39,62 @@ fn read_icon(length: u64, id: i16, resident: crate::toolbox::resources::manager:
 }
 
 
+#[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
 impl Manager
 {
+    /// Startup reads use the same mounted filesystem service as later launches.
+    /// ROM supplies block I/O, never an opaque whole-fork copying callback.
+    pub(crate) fn startup_resources(&mut self, name: &str)
+                                    -> Result<Vec<mac_formats::resource::Resource>, Status>
+    {
+        let id = self.volumes
+                     .iter()
+                     .find(|(_, v)| v.info.startup != 0)
+                     .map(|(id, _)| id)
+                     .ok_or(NOT_FOUND)?;
+        self.with_volume(id, |volume| {
+                let folder = io(volume.blessed_folder())?;
+                let file = io(volume.find_file(folder.id, name.as_bytes()))?;
+                Self::load_resources(volume, file.resources)
+            })
+    }
+
+    fn load_resources(volume: &mut Volume<'_, Device>, mut fork: Fork)
+                      -> Result<Vec<mac_formats::resource::Resource>, Status>
+    {
+        crate::toolbox::resources::file::read_selected(fork.length,
+                                                       |_| true,
+                                                       4 * 1024 * 1024,
+                                                       |offset, output| {
+                                                           let n = io(volume.read(&mut fork,
+                                                                                  offset, output))?;
+                                                           if n == output.len()
+                                                           {
+                                                               Ok(())
+                                                           }
+                                                           else
+                                                           {
+                                                               Err(IO_ERROR)
+                                                           }
+                                                       })
+    }
+
+    pub(crate) fn application_resources(
+        &mut self, volume: u32, cnid: u32)
+        -> Result<(CatalogInfo, Vec<mac_formats::resource::Resource>), Status>
+    {
+        self.with_volume(volume, |v| {
+                let mut e = required(io(v.entry(cnid))?)?;
+                let info = metadata(volume, &e);
+                if info.kind != FILE || info.file_type != *b"APPL"
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                let fork = e.resources.take().ok_or(NOT_FOUND)?;
+                Ok((info, Self::load_resources(v, fork)?))
+            })
+    }
+
     /// Decode a file's custom icon, then its bundle's selected icon family.
     /// Executable resources are never loaded by this path.
     pub(crate) fn file_icon(&mut self, volume: u32, cnid: u32,

@@ -127,8 +127,8 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
     assert!(hex_lines[0].starts_with("00000010 00 ff 41"));
     let before = fs::read(&disk).unwrap();
     let (_,activity)=mac_system::testing::with_file_disk(&disk,true,Default::default(),|services| {
-        let system=unsafe {System::from_raw(services)}.unwrap();let files=system.files();let catalog=files.lookup(1,2,"Sample").unwrap();
-        let a=system.resources().open_file(1,catalog.id).unwrap();let b=system.resources().open_file(1,catalog.id).unwrap();
+        let system=unsafe {System::from_raw(services)}.unwrap();let files=system.files();let catalog=files.lookup(system.files().volume_at(0).unwrap().id,2,"Sample").unwrap();
+        let a=system.resources().open_file(system.files().volume_at(0).unwrap().id,catalog.id).unwrap();let b=system.resources().open_file(system.files().volume_at(0).unwrap().id,catalog.id).unwrap();
         assert_eq!(a.type_count().unwrap(),type_count);
         let mut actual=Vec::new();
         for t in 0..a.type_count().unwrap() {let kind=a.type_at(t).unwrap();for i in 0..a.count(kind).unwrap() {
@@ -174,11 +174,11 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
             let mut header=Vec::new();code::loader(&a,&source,|line|header.push(line.to_owned()));assert!(header[5].starts_with("RLOC: 0 patches"));
         }
         drop(a);assert_eq!(b.type_count().unwrap(),type_count);drop(b);
-        for _ in 0..80 {drop(system.resources().open_file(1,catalog.id).unwrap());}
-        let empty=files.lookup(1,2,"Empty").unwrap();assert_eq!(system.resources().open_file(1,empty.id).unwrap().type_count().unwrap(),0);
-        let broken=files.lookup(1,2,"Broken").unwrap();assert!(system.resources().open_file(1,broken.id).is_err());
+        for _ in 0..80 {drop(system.resources().open_file(system.files().volume_at(0).unwrap().id,catalog.id).unwrap());}
+        let empty=files.lookup(system.files().volume_at(0).unwrap().id,2,"Empty").unwrap();assert_eq!(system.resources().open_file(system.files().volume_at(0).unwrap().id,empty.id).unwrap().type_count().unwrap(),0);
+        let broken=files.lookup(system.files().volume_at(0).unwrap().id,2,"Broken").unwrap();assert!(system.resources().open_file(system.files().volume_at(0).unwrap().id,broken.id).is_err());
         // Failed opens also release their owned marks rather than exhaust slots.
-        for _ in 0..80 {assert!(system.resources().open_file(1,broken.id).is_err());}
+        for _ in 0..80 {assert!(system.resources().open_file(system.files().volume_at(0).unwrap().id,broken.id).is_err());}
         let mut lines=Vec::new();assert!(preview::structured(*b"STR#",&[0,2,1,b'A',1,0x8e],|s|lines.push(s.to_owned())).unwrap());assert_eq!(lines,["1: A","2: é"]);
         assert!(preview::structured(*b"STR#",&[0,1,3,b'A'],|_|()).is_err());
         let mut menu=Vec::new();preview::structured(*b"MENU",&expected.iter().find(|r|r.kind==*b"MENU").unwrap().data,|s|menu.push(s.to_owned())).unwrap();assert!(menu.iter().any(|s|s.contains("Quit")));assert!(menu.iter().any(|s|s.contains("key 81")));
@@ -233,7 +233,18 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                      .count(),
                1,
                "inspection must not launch a second app");
-    assert!(serial.contains("RESEDIT_OPEN volume=1"));
+    let (volume, _) =
+        mac_system::testing::with_file_disk(&root.join("build/system7/dist/system7.hfsb"),
+                                            true,
+                                            Default::default(),
+                                            |services| {
+                                                let system =
+                                                    unsafe {
+                                                        mac_toolbox::System::from_raw(services)
+                                                    }.unwrap();
+                                                system.files().volume_at(0).unwrap().id
+                                            }).unwrap();
+    assert!(serial.contains(&format!("RESEDIT_OPEN volume={volume} ")));
     assert!(serial.contains("QD_DEMO_READY page=2 transfer\n"));
     assert!(serial.contains("PROCESS_EXIT app=3\n"));
     assert_eq!(fs::read(output.join("native-resources.json")).unwrap(),

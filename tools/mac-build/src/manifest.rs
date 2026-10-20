@@ -22,9 +22,10 @@ pub struct Manifest
     #[serde(default)]
     pub file_flags:    u16,
     #[serde(default)]
-    pub created:       u32,
+    /// Microseconds since 1904-01-01, matching native catalog metadata.
+    pub created:       u64,
     #[serde(default)]
-    pub modified:      u32,
+    pub modified:      u64,
     pub name:          String,
     /// Cargo executable name, when the Macintosh filename contains spaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]

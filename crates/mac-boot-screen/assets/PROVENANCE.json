@@ -1,0 +1,28 @@
+{
+  "source": "../downloads/roms/Quadra-650.ROM",
+  "source_sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca",
+  "encoding": "32 rows of 32 bits, MSB first, followed by 128-byte mask; 1 is black in data and opaque in mask",
+  "resources": [
+    {
+      "file": "happy-mac.icn",
+      "rom_offset": 6130,
+      "bytes": 256,
+      "sha256": "8286873b585dbf8340e767832055839f6a5247aa2140974ca9ea14f0b9b2937d"
+    },
+    {
+      "file": "blank-disk.icn",
+      "rom_offset": 6386,
+      "bytes": 256,
+      "sha256": "f8388cdcdc65bfec726d4b02303887c6af99a702492296e0b9b22a8c4b37616f"
+    },
+    {
+      "file": "missing-disk.icn",
+      "rom_offset": 6642,
+      "bytes": 256,
+      "sha256": "822c0d3823fe1af4923d9c68a0a800047f89046eb1156b9a69ef48d2cf153261"
+    }
+  ],
+  "rea_evidence": "ev_fd0dc2b535d5defde30822cbb45e993b06f8db2fabd9b22d781585ff83a8c00a",
+  "runtime_reference": "results/system7/rom-boot-reference/boot-035.png and missing-292.png",
+  "scope": "Exact static ROM bytes; masks and pixels corroborated by private q800 runtime captures, not inferred from another ROM revision."
+}

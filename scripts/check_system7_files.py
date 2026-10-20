@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify resident read-only filesystem APIs and actual immutable HFS forks."""
+"""Verify resident filesystem reads against unchanged native and original media."""
 import argparse
 import datetime
 import hashlib
@@ -31,7 +31,8 @@ def main():
     report = {"status": "running", "generated_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "read_only": True, "host_input_injected": False, "checks": [], "disk_reads": [],
               "limits": {"devices": 32, "volumes": 128, "open_forks": 64, "path_utf8_bytes": 4096},
-              "limitations": ["Classic HFS only; no HFS+ or write services", "512-byte sectors/APM only",
+              "limitations": ["This script checks reads; write/rollback acceptance runs in the SDK tests",
+                              "HFS-B v1 and classic HFS; no HFS+", "512-byte sectors/APM only",
                               "No hotplug/unmount; extents-overflow tree itself must fit inline extents",
                               "Native paths use slash syntax; slash-containing names require catalog/CNID operations",
                               "Seek restricted to [0, fork_length]"]}
@@ -64,7 +65,7 @@ def main():
     try:
         run("hfs-fixtures", base + ["-p", "mac-hfs"])
         run("resident-and-sdk", base + ["-p", "mac-system", "--lib", "toolbox::files", "--", "--nocapture"])
-        disk_case("generated-native-hfs", ROOT / "build/system7/dist/system7.hfs", ROOT / "build/system7/dist/System.rsrc")
+        disk_case("generated-native-hfs-b", ROOT / "build/system7/dist/system7.hfsb", ROOT / "build/system7/dist/System.rsrc")
         if args.original.exists() and args.original_system.exists():
             blob = args.original_system.read_bytes()
             data_size, size = struct.unpack_from(">II", blob, 83)

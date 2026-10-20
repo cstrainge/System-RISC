@@ -44,7 +44,14 @@ fn real_image_streaming_macbinary_import_and_independent_remount()
             v.create(system.id, name, true, Timestamp(42)).unwrap();
         }
         v.bless(system.id, Timestamp(42)).unwrap();
-        id = import_macbinary(&mut v, system.id, &file).unwrap().id;
+        let copied_at = Timestamp::from_unix(1_792_528_000, 123_456).unwrap();
+        id = import_macbinary_at(&mut v, system.id, &file, "Application", copied_at).unwrap().id;
+        assert_eq!(v.entry(system.id).unwrap().modified,
+                   copied_at,
+                   "copying an old application modifies its destination now");
+        assert_eq!(v.header().modified, copied_at.0);
+        assert_eq!(v.entry(id).unwrap().created, Timestamp::from_legacy(file.created));
+        assert_eq!(v.entry(id).unwrap().modified, Timestamp::from_legacy(file.modified));
         let e = v.entry(id).unwrap();
         assert_eq!(&e.finder_info[..4], b"APPL");
         let mut output = Vec::new();

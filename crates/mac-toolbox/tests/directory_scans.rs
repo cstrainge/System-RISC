@@ -115,7 +115,9 @@ fn collect(system: &System<'_>, parent: u32) -> (Entries, usize, usize)
     let mut pending = 0;
     for steps in 1..1024
     {
-        match system.files().scan_directory(1, parent, &mut cursor).unwrap()
+        match system.files()
+                    .scan_directory(system.files().volume_at(0).unwrap().id, parent, &mut cursor)
+                    .unwrap()
         {
             ScanStep::Entry { catalog,
                               data_allocated,
@@ -127,7 +129,9 @@ fn collect(system: &System<'_>, parent: u32) -> (Entries, usize, usize)
             ScanStep::Pending => pending += 1,
             ScanStep::Done =>
             {
-                assert_eq!(system.files().scan_directory(1, parent, &mut cursor),
+                assert_eq!(system.files().scan_directory(system.files().volume_at(0).unwrap().id,
+                                                         parent,
+                                                         &mut cursor),
                            Ok(ScanStep::Done));
                 return (entries, steps + 1, pending);
             }
@@ -141,21 +145,39 @@ fn incremental_directory_entries_match_catalog_and_allocation_with_one_leaf_per_
     let fixture = Fixture::new();
     let (expected, _) =
         fixture.run(|system| {
-                   let parent = system.files().lookup(1, ROOT_ID, "Target").unwrap();
+                   let parent =
+                       system.files()
+                             .lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Target")
+                             .unwrap();
                    let mut entries = BTreeMap::new();
                    for index in 0..3
                    {
-                       let catalog = system.files().child(1, parent.id, index).unwrap();
-                       let physical = system.files().allocation_info(1, catalog.id).unwrap();
+                       let catalog =
+                           system.files()
+                                 .child(system.files().volume_at(0).unwrap().id, parent.id, index)
+                                 .unwrap();
+                       let physical =
+                           system.files()
+                                 .allocation_info(system.files().volume_at(0).unwrap().id,
+                                                  catalog.id)
+                                 .unwrap();
                        entries.insert(catalog.id,
                                       (catalog, physical.data_bytes, physical.resource_bytes));
                    }
                    entries
                });
-    let (_, baseline) = fixture.run(|system| system.files().lookup(1, ROOT_ID, "Target").unwrap());
+    let (_, baseline) =
+        fixture.run(|system| {
+                   system.files()
+                         .lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Target")
+                         .unwrap()
+               });
     let ((actual, steps, pending), activity) =
         fixture.run(|system| {
-                   let parent = system.files().lookup(1, ROOT_ID, "Target").unwrap();
+                   let parent =
+                       system.files()
+                             .lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Target")
+                             .unwrap();
                    collect(system, parent.id)
                });
     assert_eq!(actual, expected);
@@ -166,7 +188,9 @@ fn incremental_directory_entries_match_catalog_and_allocation_with_one_leaf_per_
     assert_eq!(activity.writes, 0);
     assert_eq!(activity.flushes, 0);
     fixture.run(|system| {
-               let empty = system.files().lookup(1, ROOT_ID, "Empty").unwrap();
+               let empty = system.files()
+                                 .lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Empty")
+                                 .unwrap();
                assert!(collect(system, empty.id).0.is_empty());
            });
 }
@@ -177,27 +201,47 @@ fn directory_scan_mutation_remount_and_binding_guards_prevent_mixed_totals()
     let ((saved, parent), _) =
         fixture.run(|system| {
                    let files = system.files();
-                   let parent = files.lookup(1, ROOT_ID, "Target").unwrap().id;
+                   let parent =
+                       files.lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Target")
+                            .unwrap()
+                            .id;
                    let mut cursor = DirectoryCursor::default();
-                   let _ = files.scan_directory(1, parent, &mut cursor).unwrap();
+                   let _ = files.scan_directory(system.files().volume_at(0).unwrap().id,
+                                                parent,
+                                                &mut cursor)
+                                .unwrap();
                    let unchanged = cursor;
-                   assert_eq!(files.scan_directory(1, ROOT_ID, &mut cursor),
+                   assert_eq!(files.scan_directory(system.files().volume_at(0).unwrap().id,
+                                                   ROOT_ID,
+                                                   &mut cursor),
                               Err(Error(BAD_ARGUMENT)));
                    assert_eq!(cursor, unchanged);
-                   let _ = files.catalog(1, parent).unwrap(); // ordinary reads do not invalidate
-                   files.scan_directory(1, parent, &mut cursor).unwrap();
-                   files.new_folder(1, parent, "Added", WHEN).unwrap();
+                   let _ = files.catalog(system.files().volume_at(0).unwrap().id, parent).unwrap(); // ordinary reads do not invalidate
+                   files.scan_directory(system.files().volume_at(0).unwrap().id,
+                                        parent,
+                                        &mut cursor)
+                        .unwrap();
+                   files.new_folder(system.files().volume_at(0).unwrap().id, parent, "Added", WHEN)
+                        .unwrap();
                    let before = cursor;
-                   assert_eq!(files.scan_directory(1, parent, &mut cursor), Err(Error(SCAN_STALE)));
+                   assert_eq!(files.scan_directory(system.files().volume_at(0).unwrap().id,
+                                                   parent,
+                                                   &mut cursor),
+                              Err(Error(SCAN_STALE)));
                    assert_eq!(cursor, before);
                    assert_eq!(collect(system, parent).0.len(), 4);
                    let mut fresh = DirectoryCursor::default();
-                   files.scan_directory(1, parent, &mut fresh).unwrap();
+                   files.scan_directory(system.files().volume_at(0).unwrap().id,
+                                        parent,
+                                        &mut fresh)
+                        .unwrap();
                    (fresh, parent)
                });
     fixture.run(|system| {
                let mut cursor = saved;
-               assert_eq!(system.files().scan_directory(1, parent, &mut cursor),
+               assert_eq!(system.files().scan_directory(system.files().volume_at(0).unwrap().id,
+                                                        parent,
+                                                        &mut cursor),
                           Err(Error(SCAN_STALE)));
            });
 }
@@ -208,7 +252,7 @@ fn forged_scan_cursor_fields_are_rejected_through_public_native_client()
     fixture.run(|system| {
                use mac_abi::files::{FileScanCall, SCAN_DIRECTORY};
                let mut call = FileScanCall { operation: SCAN_DIRECTORY,
-                                             volume: 1,
+                                             volume: system.files().volume_at(0).unwrap().id,
                                              directory: ROOT_ID,
                                              ..Default::default() };
                system.client().file_scan(&mut call).unwrap();
@@ -250,7 +294,9 @@ fn corrupted_catalog_cycles_and_offset_tables_fail_without_walking_the_chain()
         let (_, baseline) = fixture.run(|_| ());
         let (result, activity) =
             fixture.run(|system| {
-                       system.files().scan_directory(1, ROOT_ID, &mut DirectoryCursor::default())
+                       system.files().scan_directory(system.files().volume_at(0).unwrap().id,
+                                                     ROOT_ID,
+                                                     &mut DirectoryCursor::default())
                    });
         assert_eq!(result, Err(Error(IO_ERROR)));
         assert!(activity.reads - baseline.reads <= 1);
@@ -297,7 +343,9 @@ fn malformed_physical_lengths_cannot_be_reported_as_completed_folder_totals()
                let mut cursor = DirectoryCursor::default();
                for _ in 0..256
                {
-                   match system.files().scan_directory(1, parent, &mut cursor)
+                   match system.files().scan_directory(system.files().volume_at(0).unwrap().id,
+                                                       parent,
+                                                       &mut cursor)
                    {
                        Err(Error(IO_ERROR)) => return,
                        Ok(ScanStep::Pending) =>
@@ -315,11 +363,19 @@ fn native_and_legacy_incremental_entries_share_cursor_and_physical_metadata()
     let fixture = Fixture::new();
     fixture.run_with_gate(|system, gate| {
                use mac_abi::files::{FileScanCall, SCAN_DIRECTORY, SCAN_DONE, SCAN_ENTRY};
-               let parent = system.files().lookup(1, ROOT_ID, "Target").unwrap().id;
-               let item = system.files().lookup(1, parent, "Alpha").unwrap();
-               system.files().rename(1, item.id, "Café Ω", WHEN).unwrap();
+               let parent =
+                   system.files()
+                         .lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Target")
+                         .unwrap()
+                         .id;
+               let item = system.files()
+                                .lookup(system.files().volume_at(0).unwrap().id, parent, "Alpha")
+                                .unwrap();
+               system.files()
+                     .rename(system.files().volume_at(0).unwrap().id, item.id, "Café Ω", WHEN)
+                     .unwrap();
                let mut native = FileScanCall { operation: SCAN_DIRECTORY,
-                                               volume: 1,
+                                               volume: system.files().volume_at(0).unwrap().id,
                                                directory: parent,
                                                ..Default::default() };
                let mut legacy = native;

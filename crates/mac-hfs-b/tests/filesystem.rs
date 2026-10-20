@@ -135,7 +135,7 @@ fn format_forks_precise_metadata_and_remount()
     let mut v = mount(&mut d);
     let e = v.entry(id).unwrap();
     assert_eq!(e.created, Timestamp(123_456));
-    assert_eq!(e.modified, Timestamp(10));
+    assert_eq!(e.modified, Timestamp(2_000_003));
     assert_eq!(v.comment(id).unwrap(), "résumé 😀");
     assert_eq!(v.blessed_folder().unwrap().name, "System Folder");
     let mut resource = [0; 8];
@@ -335,4 +335,48 @@ fn byte_contract_versions_dirty_state_and_failed_undo()
             assert!(Volume::mount(&mut disk, p, Budget::default()).is_err());
         }
     }
+}
+#[test]
+fn atomic_save_trash_restore_and_batch_delete()
+{
+    let mut disk = formatted();
+    let mut volume = mount(&mut disk);
+    let folder = volume.create(2, "Documents", true, Timestamp(1)).unwrap();
+    let file = volume.save_data(DataSave { parent:    folder.id,
+                                           name:      "File",
+                                           expected:  0,
+                                           file_type: *b"TEXT",
+                                           creator:   *b"RUST",
+                                           when:      Timestamp(2) },
+                                b"original")
+                     .unwrap();
+    volume.write_fork(file.id, ForkKind::Resource, 0, b"resources", Timestamp(3)).unwrap();
+    let replaced = volume.save_data(DataSave { parent:    folder.id,
+                                               name:      "FILE",
+                                               expected:  file.id,
+                                               file_type: *b"TEXT",
+                                               creator:   *b"RUST",
+                                               when:      Timestamp(4) },
+                                    b"new")
+                         .unwrap();
+    assert_eq!(replaced.id, file.id);
+    assert_eq!(replaced.created, Timestamp(2));
+    assert_eq!(replaced.name, "File");
+    let mut bytes = [0; 9];
+    volume.read_fork(file.id, ForkKind::Resource, 0, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"resources");
+    let trash = volume.create(2, "Trash", true, Timestamp(5)).unwrap();
+    let moved = volume.move_to_trash(file.id, trash.id, Timestamp(6)).unwrap();
+    assert_eq!(moved.parent, trash.id);
+    let restored = volume.put_away(file.id, Timestamp(7)).unwrap();
+    assert_eq!(restored.parent, folder.id);
+    assert_eq!(restored.resources.length, 9);
+    assert_eq!(volume.remove(folder.id, Timestamp(8)), Err(Error::Protected));
+    volume.remove_many(&[folder.id, file.id], Timestamp(9)).unwrap();
+    volume.check().unwrap();
+    assert_eq!(volume.entry(folder.id).unwrap_err(), Error::NotFound);
+    let scanner = volume.catalog_scanner();
+    volume.create(2, "Change", false, Timestamp(10)).unwrap();
+    drop(volume);
+    assert!(matches!(scanner.next(&mut disk, 2, None), Err(Error::Stale)));
 }

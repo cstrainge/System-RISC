@@ -71,7 +71,8 @@ pub struct Dialog
     pub popup:           bool,
     pub ancestors:       Vec<CatalogInfo>,
     pub typeahead:       String,
-    pub typed_at:        u32
+    pub typed_at:        u32,
+    name_format:         mac_filesystem::Format
 }
 impl Dialog
 {
@@ -99,7 +100,8 @@ impl Dialog
         }
         else
         {
-            self.selected.is_some_and(|i| self.entries[i].is_directory()) || valid_name(self.name())
+            self.selected.is_some_and(|i| self.entries[i].is_directory())
+            || valid_name(self.name_format, self.name())
         }
     }
 
@@ -140,16 +142,18 @@ fn file(files: &mut Files, operation: u32, volume: u32, cnid: u32, index: u32, n
     files.request_owned(0, &mut c, name, &mut [])?;
     Ok(c)
 }
-fn valid_name(name: &str) -> bool
+fn valid_name(format: mac_filesystem::Format, name: &str) -> bool
 {
-    mac_formats::text::encode(name).is_ok_and(|b| {
-                                       !b.is_empty()
-                                       && b.len() <= 31
-                                       && !b.contains(&0)
-                                       && !b.contains(&b':')
-                                       && b != b"."
-                                       && b != b".."
-                                   })
+    format.prepare_name(name).is_ok()
+}
+fn name_format(files: &mut Files, volume: u32) -> Result<mac_filesystem::Format, Status>
+{
+    match file(files, files::VOLUME_INFO, volume, 0, 0, "")?.volume_info.filesystem
+    {
+        files::FILESYSTEM_HFS => Ok(mac_filesystem::Format::Hfs),
+        files::FILESYSTEM_HFS_B => Ok(mac_filesystem::Format::HfsB),
+        _ => Err(NOT_SUPPORTED)
+    }
 }
 fn inline(bytes: &[u8], length: u32) -> Result<&str, Status>
 {
@@ -209,10 +213,6 @@ impl Manager
             }
             let prompt = inline(&call.prompt, call.prompt_length)?;
             let name = inline(&call.name, call.name_length)?;
-            if call.mode == PUT && !name.is_empty() && !valid_name(name)
-            {
-                return Err(BAD_ARGUMENT);
-            }
             self.slots.reserve().map_err(|_| NO_MEMORY)?;
             let mut editor =
                 Editor::new(Rect::new(15, 157, 4111, 173), Rect::new(15, 157, 227, 173))?;
@@ -227,6 +227,11 @@ impl Manager
             {
                 call.volume
             };
+            let name_format = name_format(files, volume)?;
+            if call.mode == PUT && !name.is_empty() && !valid_name(name_format, name)
+            {
+                return Err(BAD_ARGUMENT);
+            }
             let directory = if call.directory == 0 { ROOT_ID } else { call.directory };
             let mut types = Vec::new();
             let n = call.type_count.max(0) as usize;
@@ -262,7 +267,8 @@ impl Manager
                                  popup: false,
                                  ancestors: Vec::new(),
                                  typeahead: String::new(),
-                                 typed_at: 0 };
+                                 typed_at: 0,
+                                 name_format };
             Self::load(&mut d, files)?;
             call.handle = self.slots.insert(d).map_err(|_| NO_MEMORY)?;
         }
@@ -294,6 +300,8 @@ impl Manager
     {
         let mut entries = Vec::new();
         let mut ancestors = Vec::new();
+        let format =
+            if d.location.0 == 0 { d.name_format } else { name_format(files, d.location.0)? };
         if d.location.0 == 0
         {
             let n = file(files, files::VOLUME_COUNT, 0, 0, 0, "")?.index;
@@ -312,7 +320,7 @@ impl Manager
             {
                 return Err(BAD_ARGUMENT);
             }
-            for i in 0..u32::from(directory.child_count)
+            for i in 0..directory.child_count
             {
                 let e =
                     file(files, files::DIRECTORY_ENTRY, d.location.0, d.location.1, i, "")?.entry;
@@ -347,6 +355,7 @@ impl Manager
             }
         }
         d.entries = entries;
+        d.name_format = format;
         d.icons.clear();
         d.ancestors = ancestors;
         d.selected = if d.mode == GET && !d.entries.is_empty() { Some(0) } else { None };
@@ -486,7 +495,7 @@ impl Manager
                 }
                 else
                 {
-                    if d.location.0 == 0 || !valid_name(d.name())
+                    if d.location.0 == 0 || !valid_name(d.name_format, d.name())
                     {
                         return Err(BAD_ARGUMENT);
                     }
@@ -518,8 +527,10 @@ impl Manager
                             let mut e = CatalogInfo { volume: d.location.0,
                                                       parent: d.location.1,
                                                       ..Default::default() };
-                            e.name[..d.name().len()].copy_from_slice(d.name().as_bytes());
-                            e.name_length = d.name().len() as u32;
+                            let (name, _) =
+                                d.name_format.prepare_name(d.name()).map_err(|_| BAD_ARGUMENT)?;
+                            e.name[..name.len()].copy_from_slice(&name);
+                            e.name_length = name.len() as u32;
                             d.result = e;
                             d.state = ACCEPTED;
                         }
@@ -630,7 +641,7 @@ impl Manager
                     candidate.push_str(&d.name()[..start]);
                     candidate.push(c);
                     candidate.push_str(&d.name()[end..]);
-                    if valid_name(&candidate)
+                    if valid_name(d.name_format, &candidate)
                     {
                         d.editor.key(c)?;
                         d.selected = None;

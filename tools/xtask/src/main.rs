@@ -135,6 +135,10 @@ impl Workspace
                                "panic-test", "--exclude", "resedit", "--exclude", "abi-smoke",
                                "--exclude", "bootrom", "--exclude", "native-wdef", "--exclude",
                                "native-cdef", "--exclude", "native-mdef"]))?;
+        // The large-fork fixture writes every logical block through the shared
+        // core, then verifies 64-bit File Manager transport through the SDK.
+        run(self.cargo().args(["test", "--locked", "--release", "-p", "mac-toolbox", "--test",
+                               "hfs_b", "allocated_native_fork", "--", "--ignored"]))?;
         let reports = self.build()?;
         run(Command::new("python3").current_dir(&self.repo)
                                    .arg("System7/scripts/check_system7_boundaries.py"))?;
@@ -147,7 +151,7 @@ impl Workspace
         {
             self.private_guest_test(test)?;
         }
-        for test in ["dates", "resedit", "menus", "finder_trash", "file_writes_guest",
+        for test in ["dates", "boot_ui", "resedit", "menus", "finder_trash", "file_writes_guest",
                      "deferred_close", "get_info_ui", "events", "clipboard", "textedit_graphical",
                      "typing", "processes", "application_ui", "retained_update", "event_latency",
                      "cursor_graphical", "busy_cursor", "panic_graphical"]
@@ -246,7 +250,7 @@ impl Workspace
                                                                         panic-checks.json"))?)?;
         let report = json!({
             "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"processes":processes,"application_ui":application_ui,"retained_update":retained_update,"event_latency":event_latency,"cursors":cursors,"panics":panics,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
-            "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, resource menus/alerts, captured Event/Scrap and monochrome TextEdit services with Finder exercisers, bounded durable HFS catalog/Trash writes and read-only Resource Manager. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
+            "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS-B, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, resource menus/alerts, captured Event/Scrap and monochrome TextEdit services with Finder exercisers, shared native HFS-B read/write services with UTF-8 names and microsecond dates, unchanged classic HFS exchange access, and read-only resource-fork inspection. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
         });
         let path = self.repo.join("results/system7/toolchain-checks.json");
         write_json(&path, &report)?;
@@ -376,7 +380,7 @@ fn help()
 {
     println!("System7 build tools\n\n  cargo xtask rebuild MANIFEST OUT  Rebuild a ResEdit \
               resource archive\n  cargo xtask build          Build System, Finder, applications \
-              and boot ROM\n  cargo xtask image          Build a separate 500 MiB HFS disk and \
+              and boot ROM\n  cargo xtask image          Build a separate 500 MiB HFS-B disk and \
               qcow2\n  cargo xtask rom            Build the read-only flash ROM\n  cargo xtask \
               boot [DISK]    Boot from a read-only raw/qcow2 disk; serial console\n  cargo xtask \
               boot-check     Verify ROM disk boot and rejection cases\n  cargo xtask inspect \

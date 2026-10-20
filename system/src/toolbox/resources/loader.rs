@@ -2,38 +2,24 @@
 use alloc::vec::Vec;
 use core::arch::asm;
 
-use mac_abi::{BAD_ARGUMENT, BootInfo, DefinitionEntry, NOT_FOUND, OK, Status};
+use mac_abi::{BAD_ARGUMENT, DefinitionEntry, NOT_FOUND, Status};
 use mac_formats::{Error, Result,
                   code::{CodeRegistry, NoTranslator},
                   native::{Descriptor, Role, image},
-                  resource::{self, Resource},
+                  resource::Resource,
                   text};
 
-pub fn read_startup(info: &BootInfo, name: &str) -> Result<Vec<u8>>
+pub fn read_startup(name: &str) -> Result<Vec<Resource>>
 {
-    let read = info.read_startup.ok_or(Error("startup volume access is unavailable"))?;
-    let mut length = 0usize;
-    let status = unsafe {
-        read(info.startup_context, name.as_ptr(), name.len(), core::ptr::null_mut(), 0, &mut length)
-    };
-    if status != OK || length == 0 || length > 4 * 1024 * 1024
-    {
-        return Err(Error("startup resource fork is missing or too large"));
-    }
-    let mut output = alloc::vec![0; length];
-    let status = unsafe {
-        read(info.startup_context,
-             name.as_ptr(),
-             name.len(),
-             output.as_mut_ptr(),
-             output.len(),
-             &mut length)
-    };
-    if status != OK || length != output.len()
-    {
-        return Err(Error("startup resource fork read failed"));
-    }
-    Ok(output)
+    crate::kernel::with_files(|files| files.startup_resources(name)).map_err(|_| {
+                                                                        Error("startup filesystem \
+                                                                               service is \
+                                                                               unavailable")
+                                                                    })?
+                                                                    .map_err(|_| {
+                                                                        Error("startup resource \
+                                                                               loading failed")
+                                                                    })
 }
 
 fn application_parts(resources: &[Resource]) -> Result<(Descriptor, &[u8], image::Image)>
@@ -177,10 +163,6 @@ impl Definitions
     }
 }
 
-pub fn resources(bytes: &[u8]) -> Result<Vec<Resource>>
-{
-    resource::decode(bytes)
-}
 pub fn status(error: Error) -> Status
 {
     if error.0.contains("translation")

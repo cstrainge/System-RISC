@@ -31,7 +31,33 @@ fn substitute<const N: usize>(source: &str, values: &[&str]) -> Result<Text<N>, 
     }
     Ok(result)
 }
-pub(super) fn title(system: &System<'_>, name: &str) -> Result<Text<256>, Status>
+pub(super) fn filesystem(system: &System<'_>, volume: &files::VolumeInfo)
+                         -> Result<Text<256>, Status>
+{
+    let filesystem = files::Filesystem::of(volume).map_err(error)?;
+    if let Some(version) = filesystem.version()
+    {
+        let mut bytes = [0; 128];
+        let mut number = Text::<16>::default();
+        write!(&mut number, "{version}").map_err(|_| NO_MEMORY)?;
+        substitute(text(system, 46, &mut bytes)?, &[filesystem.name(), number.as_str()])
+    }
+    else
+    {
+        let mut result = Text::default();
+        result.write_str(filesystem.name()).map_err(|_| NO_MEMORY)?;
+        Ok(result)
+    }
+}
+pub(super) fn volume_location(system: &System<'_>, volume: &files::VolumeInfo)
+                              -> Result<Text<768>, Status>
+{
+    let mut bytes = [0; 128];
+    let mut number = Text::<16>::default();
+    write!(&mut number, "{}", volume.disk).map_err(|_| NO_MEMORY)?;
+    substitute(text(system, 47, &mut bytes)?, &[number.as_str()])
+}
+pub(super) fn title(system: &System<'_>, name: &str) -> Result<Text<768>, Status>
 {
     let mut bytes = [0; 512];
     let source = system.resources().application().string(3091, &mut bytes).map_err(error)?;
@@ -158,6 +184,12 @@ impl Info
     fn size_text(&self, system: &System<'_>) -> Result<Text<256>, Status>
     {
         let mut bytes = [0; 512];
+        if let Some(volume) = self.volume_info
+        {
+            let total = crate::browser::disk_size_text(volume.total_bytes);
+            let free = crate::browser::disk_size_text(volume.free_bytes);
+            return substitute(text(system, 45, &mut bytes)?, &[total.as_str(), free.as_str()]);
+        }
         if let Some(status) = self.job.as_ref().and_then(|job| job.error)
         {
             let mut number = Text::<32>::default();

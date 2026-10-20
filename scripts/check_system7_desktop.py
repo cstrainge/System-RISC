@@ -94,7 +94,7 @@ def check_events(endpoint, serial_path, results):
         return lambda s:s['windows']==str(count) and (front is None or s['front']==str(front))
 
     try:
-        passed('mounted startup volume opens its real HFS root folder',
+        passed('mounted startup volume opens its real HFS-B root folder',
                lambda s:s['windows']=='1' and int(s['front']) != 0 and s['first']=='8,46,412,234' and int(s['updates'])>=1)
         wait_log('FINDER_VOLUME id=')
         root_id = int(state()['front'])

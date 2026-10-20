@@ -4,6 +4,7 @@
 Python packages generated fixtures, injects physical input and retains frames,
 serial and media identities. Canonical Rust tests own correctness acceptance.
 """
+from hfs_b_tool import Image as NativeImage
 import argparse
 import binascii
 import json
@@ -26,14 +27,7 @@ def prepare(output):
     raw = private / 'fixtures.raw'
     subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                     str(vm.DIST / 'system7.qcow2'), str(raw)], check=True)
-    state = private / 'hfs-state'
-    state.mkdir()
-    env = dict(os.environ, HOME=str(state), TZ='UTC')
-    tools = vm.ROOT / '.toolchains/hfsutils/rootfs/usr/bin'
 
-    def hfs(name, *arguments):
-        subprocess.run([str(tools / name), *map(str, arguments)], env=env,
-                       check=True, capture_output=True)
 
     def file(name, content, destination):
         header = bytearray(128)
@@ -48,20 +42,17 @@ def prepare(output):
         struct.pack_into('>H', header, 124, binascii.crc_hqx(header[:124], 0))
         path = private / (name.replace(' ', '-') + '.bin')
         path.write_bytes(header + content + bytes((-len(content)) % 128))
-        hfs('hcopy', '-m', path, destination)
-    hfs('hmount', raw)
-    try:
-        hfs('hmkdir', ':0 Info Cases')
-        hfs('hmkdir', ':0 Info Cases:Plain Folder')
-        hfs('hmkdir', ':0 Info Cases:Nested Folder')
-        hfs('hmkdir', ':0 Info Cases:Nested Folder:Child Folder')
-        file('Plain File', b'Native Get Info fixture\r'.ljust(36, b'!'), ':0 Info Cases:')
-        file('Leaf File', bytes((index * 17) & 255 for index in range(1234)),
-             ':0 Info Cases:Nested Folder:')
-        file('Deep File', bytes((index * 31) & 255 for index in range(5678)),
-             ':0 Info Cases:Nested Folder:Child Folder:')
-    finally:
-        hfs('humount')
+        fs.import_macbinary(path, destination)
+    fs = NativeImage(raw)
+    fs.mkdir('/0 Info Cases')
+    fs.mkdir('/0 Info Cases/Plain Folder')
+    fs.mkdir('/0 Info Cases/Nested Folder')
+    fs.mkdir('/0 Info Cases/Nested Folder/Child Folder')
+    file('Plain File', b'Native Get Info fixture\r'.ljust(36, b'!'), '/0 Info Cases')
+    file('Leaf File', bytes((index * 17) & 255 for index in range(1234)),
+         '/0 Info Cases/Nested Folder')
+    file('Deep File', bytes((index * 31) & 255 for index in range(5678)),
+         '/0 Info Cases/Nested Folder/Child Folder')
     shutil.copyfile(vm.DIST / 'bootrom.bin', private / 'bootrom.bin')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)
@@ -218,7 +209,10 @@ def capture(output, windows=False):
         select_case(120)
         previous = driver.log().count('FINDER_INFO_REUSED ')
         driver.key('i', ('ctrl',))
-        driver.wait('FINDER_INFO_REUSED ', previous)
+        log = driver.wait('FINDER_INFO_REUSED ', previous)
+        marker = f'FINDER_FOLDER_READY window={cases_window}\n'
+        selected = log.rindex('FINDER_INFO_REUSED ')
+        driver.wait(marker, log[:selected].count(marker))
         frame('file-reused')
         driver.click(430, 122)
         driver.key('a', ('ctrl',))
@@ -238,8 +232,9 @@ def capture(output, windows=False):
         frame('file-renamed')
         close_info()
         frame('browser-file-renamed')
+        totals = driver.log().count('FINDER_INFO_TOTALS ')
         open_info(120, 'Plain Folder', True)
-        driver.wait('items=0 logical=0 allocated=0\n')
+        driver.wait('FINDER_INFO_TOTALS ', totals)
         frame('folder-empty')
         text('folder comment\rsecond line')
         close_info()
@@ -252,8 +247,9 @@ def capture(output, windows=False):
         rename_redraw('z folder')
         frame('folder-renamed')
         close_info()
+        totals = driver.log().count('FINDER_INFO_TOTALS ')
         open_info(56, 'Nested Folder', True)
-        driver.wait('items=3 logical=6912 allocated=16384\n')
+        driver.wait('FINDER_INFO_TOTALS ', totals)
         frame('nested-totals')
         close_info()
         stop('boot-1.log')

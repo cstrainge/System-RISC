@@ -157,7 +157,7 @@ fn volume_icon(volume: &VolumeInfo) -> i16
 }
 fn folder_icon(volume: &VolumeInfo, entry: &CatalogInfo) -> i16
 {
-    let blessed = u32::from_be_bytes(volume.finder_info[..4].try_into().unwrap());
+    let blessed = volume.blessed_folder;
     if entry.id == blessed
     {
         return standard::SYSTEM_FOLDER;
@@ -180,6 +180,10 @@ fn folder_icon(volume: &VolumeInfo, entry: &CatalogInfo) -> i16
 }
 pub(crate) fn entry_icon(system: &System<'_>, volume: &VolumeInfo, entry: &CatalogInfo) -> Icon
 {
+    if entry.id == ROOT_ID
+    {
+        return volume_icon(volume).into();
+    }
     if entry.is_directory()
     {
         return folder_icon(volume, entry).into();
@@ -982,6 +986,21 @@ impl Browser
         self.windows.iter().flatten().find(|w| w.window == front)?.selected
     }
 
+    pub fn info_selection(&self, system: &System<'_>) -> Option<Location>
+    {
+        if self.desktop_active
+        {
+            self.desktop_selection.map(|volume| {
+                                      Location { volume,
+                                                 folder: ROOT_ID }
+                                  })
+        }
+        else
+        {
+            self.selection(system)
+        }
+    }
+
     pub fn current_folder(&self, system: &System<'_>) -> Option<Location>
     {
         if self.desktop_active
@@ -1027,7 +1046,7 @@ impl Browser
         {
             return false;
         };
-        let blessed = u32::from_be_bytes(volume.finder_info[..4].try_into().unwrap());
+        let blessed = volume.blessed_folder;
         let Ok(entry) = system.files().catalog(selection.volume, selection.folder)
         else
         {

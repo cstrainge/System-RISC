@@ -4,6 +4,7 @@
 This file sends physical QMP input and retains serial/frames. Canonical Rust
 tests own acceptance decisions. It never changes the visible desktop VM.
 """
+from hfs_b_tool import Image as NativeImage
 import argparse
 import json
 import os
@@ -149,20 +150,10 @@ def icon_disk(output):
     (output / 'icon-fixture.json').write_text(json.dumps({
         'application': 'QuickDraw Test', 'icon_id': 9433,
         'package_sha256': packaging.sha(package), 'resource_length': fork_length}, indent=2) + '\n')
-    state = private / 'hfs-state'
-    state.mkdir()
-    env = dict(os.environ, HOME=str(state))
-    tools = vm.ROOT / '.toolchains/hfsutils/rootfs/usr/bin'
-    def hfs(name, *args):
-        subprocess.run([str(tools / name), *map(str, args)], env=env,
-                       check=True, capture_output=True)
-    hfs('hmount', raw)
-    try:
-        hfs('hdel', ':Applications:QuickDraw Test')
-        hfs('hcopy', '-m', package, ':Applications:')
-        hfs('hcopy', '-m', package, ':Applications:Z QuickDraw Copy')
-    finally:
-        hfs('humount')
+    fs = NativeImage(raw)
+    fs.remove('/Applications/QuickDraw Test')
+    fs.import_macbinary(package, '/Applications')
+    fs.import_macbinary(package, '/Applications', name='Z QuickDraw Copy')
     shutil.copyfile(vm.DIST / 'bootrom.bin', private / 'bootrom.bin')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)

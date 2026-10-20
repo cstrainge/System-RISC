@@ -70,60 +70,68 @@ pub const SEEK_END: u32 = 2;
 pub const FILE: u32 = 0;
 pub const DIRECTORY: u32 = 1;
 pub const ROOT_ID: u32 = 2;
+pub const FILESYSTEM_HFS: u32 = 1;
+pub const FILESYSTEM_HFS_B: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VolumeInfo
 {
-    pub id:              u32,
-    pub disk:            u32,
-    pub partition_start: u64,
-    pub total_bytes:     u64,
-    pub free_bytes:      u64,
-    pub created:         u32,
-    pub modified:        u32,
-    pub attributes:      u16,
-    pub read_only:       u16,
-    pub startup:         u32,
-    pub icon_kind:       [u8; 4],
-    pub icon_id:         i16,
-    pub reserved:        u16,
-    pub finder_info:     [u8; 32],
-    pub name_length:     u32,
-    pub name:            [u8; 96]
+    pub id:                 u32,
+    pub disk:               u32,
+    pub partition_start:    u64,
+    pub total_bytes:        u64,
+    pub free_bytes:         u64,
+    pub created:            u64,
+    pub modified:           u64,
+    pub filesystem:         u32,
+    pub filesystem_version: u32,
+    pub blessed_folder:     u32,
+    pub attributes:         u16,
+    pub read_only:          u16,
+    pub startup:            u32,
+    pub icon_kind:          [u8; 4],
+    pub icon_id:            i16,
+    pub reserved:           u16,
+    pub finder_info:        [u8; 32],
+    pub name_length:        u32,
+    pub name:               [u8; 256]
 }
 impl Default for VolumeInfo
 {
     fn default() -> Self
     {
-        Self { id:              0,
-               disk:            0,
-               partition_start: 0,
-               total_bytes:     0,
-               free_bytes:      0,
-               created:         0,
-               modified:        0,
-               attributes:      0,
-               read_only:       1,
-               startup:         0,
-               icon_kind:       [0; 4],
-               icon_id:         0,
-               reserved:        0,
-               finder_info:     [0; 32],
-               name_length:     0,
-               name:            [0; 96] }
+        Self { id:                 0,
+               disk:               0,
+               partition_start:    0,
+               total_bytes:        0,
+               free_bytes:         0,
+               created:            0,
+               modified:           0,
+               filesystem:         0,
+               filesystem_version: 0,
+               blessed_folder:     0,
+               attributes:         0,
+               read_only:          1,
+               startup:            0,
+               icon_kind:          [0; 4],
+               icon_id:            0,
+               reserved:           0,
+               finder_info:        [0; 32],
+               name_length:        0,
+               name:               [0; 256] }
     }
 }
 impl VolumeInfo
 {
     pub const fn created_at(&self) -> crate::dates::Timestamp
     {
-        crate::dates::Timestamp::from_mac_seconds(self.created)
+        crate::dates::Timestamp::from_mac_microseconds(self.created)
     }
 
     pub const fn modified_at(&self) -> crate::dates::Timestamp
     {
-        crate::dates::Timestamp::from_mac_seconds(self.modified)
+        crate::dates::Timestamp::from_mac_microseconds(self.modified)
     }
 
     pub fn name(&self) -> &str
@@ -144,13 +152,14 @@ pub struct CatalogInfo
     pub file_type:       [u8; 4],
     pub creator:         [u8; 4],
     pub flags:           u16,
-    pub child_count:     u16,
-    pub created:         u32,
-    pub modified:        u32,
-    pub backup:          u32,
+    pub child_count:     u32,
+    pub created:         u64,
+    pub modified:        u64,
+    pub backup:          u64,
+    pub backup_present:  u32,
     pub finder_info:     [u8; 32],
     pub name_length:     u32,
-    pub name:            [u8; 128]
+    pub name:            [u8; 256]
 }
 impl Default for CatalogInfo
 {
@@ -169,26 +178,27 @@ impl Default for CatalogInfo
                created:         0,
                modified:        0,
                backup:          0,
+               backup_present:  0,
                finder_info:     [0; 32],
                name_length:     0,
-               name:            [0; 128] }
+               name:            [0; 256] }
     }
 }
 impl CatalogInfo
 {
     pub const fn created_at(&self) -> crate::dates::Timestamp
     {
-        crate::dates::Timestamp::from_mac_seconds(self.created)
+        crate::dates::Timestamp::from_mac_microseconds(self.created)
     }
 
     pub const fn modified_at(&self) -> crate::dates::Timestamp
     {
-        crate::dates::Timestamp::from_mac_seconds(self.modified)
+        crate::dates::Timestamp::from_mac_microseconds(self.modified)
     }
 
     pub const fn backed_up_at(&self) -> crate::dates::Timestamp
     {
-        crate::dates::Timestamp::from_mac_seconds(self.backup)
+        crate::dates::Timestamp::from_mac_microseconds(self.backup)
     }
 
     pub fn name(&self) -> &str
@@ -350,7 +360,7 @@ pub struct DataWriteCall
     pub volume:        u32,
     pub parent:        u32,
     pub expected_cnid: u32,
-    pub when:          u32,
+    pub when:          u64,
     pub file_type:     [u8; 4],
     pub creator:       [u8; 4],
     pub length:        usize,

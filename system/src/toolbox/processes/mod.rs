@@ -103,46 +103,9 @@ pub fn read_application(
     -> Result<(mac_abi::files::CatalogInfo, alloc::vec::Vec<mac_formats::resource::Resource>),
               Status>
 {
-    use mac_abi::files::*;
-    crate::kernel::with_files(|files| {
-        let mut call = FileCall { operation: CATALOG,
-                                  volume,
-                                  cnid,
-                                  ..Default::default() };
-        files.request(&mut call, "", &mut [])?;
-        if call.entry.kind != FILE || call.entry.file_type != *b"APPL"
-        {
-            return Err(BAD_ARGUMENT);
-        }
-        let size = call.entry.resource_length as usize;
-        if size == 0 || size > 4 * 1024 * 1024
-        {
-            return Err(BAD_ARGUMENT);
-        }
-        let mut data = alloc::vec![0u8;size];
-        let mut open = FileCall { operation: OPEN,
-                                  volume,
-                                  cnid,
-                                  fork: RESOURCE_FORK,
-                                  ..Default::default() };
-        files.request(&mut open, "", &mut [])?;
-        let mut read = FileCall { operation: READ,
-                                  handle: open.handle,
-                                  ..Default::default() };
-        let result = files.request(&mut read, "", &mut data);
-        let mut close = FileCall { operation: CLOSE,
-                                   handle: open.handle,
-                                   ..Default::default() };
-        let closed = files.request(&mut close, "", &mut []);
-        result?;
-        closed?;
-        if read.transferred != data.len()
-        {
-            return Err(IO_ERROR);
-        }
-        let resources = crate::loader::resources(&data).map_err(crate::loader::status)?;
-        Ok((call.entry, resources))
-    }).map_err(|e| e.status())?
+    crate::kernel::with_files(|files| files.application_resources(volume, cnid)).map_err(|e| {
+                                                                                    e.status()
+                                                                                })?
 }
 
 impl Default for Manager

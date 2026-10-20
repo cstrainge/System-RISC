@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Private real-app ResEdit transport; Rust owns round-trip and pixel acceptance."""
+from hfs_b_tool import Image as NativeImage
 import argparse
 import hashlib
 import json
@@ -149,14 +150,9 @@ def capture(output):
         # Extract only after QEMU has released and flushed this private disk.
     raw=output/'saved.raw'
     subprocess.run(['qemu-img','convert','-f','qcow2','-O','raw','-S','4k',str(output/'vm/system7.qcow2'),str(raw)],check=True)
-    state=output/'hfs-state';state.mkdir()
-    env=dict(os.environ,HOME=str(state),TZ='UTC');tools=vm.ROOT/'.toolchains/hfsutils/rootfs/usr/bin'
-    def hfs(tool,*args):subprocess.run([str(tools/tool),*map(str,args)],env=env,check=True,capture_output=True)
-    hfs('hmount',raw)
-    try:
-        hfs('hcopy','-r',':Applications:QuickDraw Test.json',output/'native-resources.json')
-        hfs('hcopy','-r',':Applications:exports:QuickDraw Test.json',output/'native-subfolder-resources.json')
-    finally:hfs('humount')
+    fs = NativeImage(raw)
+    fs.extract('/Applications/QuickDraw Test.json', output / 'native-resources.json')
+    fs.extract('/Applications/exports/QuickDraw Test.json', output / 'native-subfolder-resources.json')
     for path in [raw,output/'vm/system7.qcow2',output/'vm/bootrom.bin']:path.unlink(missing_ok=True)
     report={'frames':frames,'damage_samples':damage_samples,'token':token,'base_before':baseline,'base_after':hashlib.sha256((vm.DIST/'system7.qcow2').read_bytes()).hexdigest(),'assertion_owner':'mac-toolbox/tests/resedit.rs'}
     (output/'capture.json').write_text(json.dumps(report,indent=2)+'\n')

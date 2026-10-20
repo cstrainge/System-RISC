@@ -10,6 +10,8 @@ members = [
     "crates/mac-hfs",
     "crates/mac-block",
     "crates/mac-hfs-b",
+    "crates/mac-filesystem",
+    "crates/mac-boot-screen",
     "toolbox/*",
     "system",
     "finder",
@@ -36,6 +38,8 @@ mac-formats = { path = "crates/mac-formats" }
 mac-hfs = { path = "crates/mac-hfs" }
 mac-block = { path = "crates/mac-block" }
 mac-hfs-b = { path = "crates/mac-hfs-b" }
+mac-filesystem = { path = "crates/mac-filesystem" }
+mac-boot-screen = { path = "crates/mac-boot-screen" }
 mac-build = { path = "tools/mac-build" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

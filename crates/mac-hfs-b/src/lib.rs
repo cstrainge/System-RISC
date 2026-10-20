@@ -26,7 +26,8 @@ pub enum Error
     Budget,
     NoMemory,
     Io,
-    RollbackFailed
+    RollbackFailed,
+    Stale
 }
 pub type Result<T> = core::result::Result<T, Error>;
 impl core::fmt::Display for Error
@@ -47,7 +48,8 @@ impl core::fmt::Display for Error
                         Self::Budget => "HFS-B operation exceeds supplied work budget",
                         Self::NoMemory => "HFS-B allocation failed",
                         Self::Io => "HFS-B storage operation failed",
-                        Self::RollbackFailed => "HFS-B rollback failed; volume requires check"
+                        Self::RollbackFailed => "HFS-B rollback failed; volume requires check",
+                        Self::Stale => "HFS-B catalog changed; restart enumeration"
                     })
     }
 }

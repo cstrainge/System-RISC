@@ -125,7 +125,9 @@ fn application_icons_use_their_own_bundle_family_sizes_colors_and_masks()
             let before_count = system.quickdraw().icons().count().unwrap();
             for (name, large, small) in [("Black", 0, 0xffffff), ("White", 0xffffff, 0)]
             {
-                let file = system.files().lookup(1, 2, name).unwrap();
+                let file = system.files()
+                                 .lookup(system.files().volume_at(0).unwrap().id, 2, name)
+                                 .unwrap();
                 for (size, color) in [(32, large), (16, small)]
                 {
                     let mut pixels = vec![0x123456; 40 * 40];
@@ -136,7 +138,10 @@ fn application_icons_use_their_own_bundle_family_sizes_colors_and_masks()
                                                          clip:   Rect::new(0, 0, 40, 40) };
                     let connection =
                         unsafe { mac_traps::SurfaceConnection::new(&mut surface, services.trap) };
-                    SurfacePort::new(connection).plot_file_icon(1,
+                    SurfacePort::new(connection).plot_file_icon(system.files()
+                                                                      .volume_at(0)
+                                                                      .unwrap()
+                                                                      .id,
                                                                 file.id,
                                                                 Rect::new(4,
                                                                           4,
@@ -163,7 +168,9 @@ fn application_icons_use_their_own_bundle_family_sizes_colors_and_masks()
                     }
                 }
             }
-            let broken = system.files().lookup(1, 2, "Broken").unwrap();
+            let broken = system.files()
+                               .lookup(system.files().volume_at(0).unwrap().id, 2, "Broken")
+                               .unwrap();
             let mut pixels = vec![0x123456; 32 * 32];
             let mut surface = mac_abi::Surface { pixels: pixels.as_mut_ptr(),
                                                  width:  32,
@@ -173,14 +180,17 @@ fn application_icons_use_their_own_bundle_family_sizes_colors_and_masks()
             let connection =
                 unsafe { mac_traps::SurfaceConnection::new(&mut surface, services.trap) };
             let mut port = SurfacePort::new(connection);
-            assert_eq!(port.plot_file_icon(1,
+            assert_eq!(port.plot_file_icon(system.files().volume_at(0).unwrap().id,
                                            broken.id,
                                            Rect::new(0, 0, 32, 32),
                                            IconFlags::default())
                            .unwrap_err()
                            .0,
                        mac_abi::BAD_ARGUMENT);
-            assert_eq!(port.plot_file_icon(1, 2, Rect::new(0, 0, 32, 32), IconFlags::default())
+            assert_eq!(port.plot_file_icon(system.files().volume_at(0).unwrap().id,
+                                           2,
+                                           Rect::new(0, 0, 32, 32),
+                                           IconFlags::default())
                            .unwrap_err()
                            .0,
                        mac_abi::NOT_FOUND);
@@ -201,7 +211,9 @@ fn custom_document_icons_are_read_without_bundle_or_executable_loading()
     let (_, activity) =
         with_file_disk(&disk.path, true, DiskFaults::default(), |services| {
             let system = unsafe { System::from_raw(services) }.unwrap();
-            let file = system.files().lookup(1, 2, "Custom Document").unwrap();
+            let file = system.files()
+                             .lookup(system.files().volume_at(0).unwrap().id, 2, "Custom Document")
+                             .unwrap();
             assert_eq!(file.file_type, *b"TEXT");
             for size in [16, 32]
             {
@@ -214,7 +226,10 @@ fn custom_document_icons_are_read_without_bundle_or_executable_loading()
                                                                        size as i16) };
                 let connection =
                     unsafe { mac_traps::SurfaceConnection::new(&mut surface, services.trap) };
-                SurfacePort::new(connection).plot_file_icon(1,
+                SurfacePort::new(connection).plot_file_icon(system.files()
+                                                                  .volume_at(0)
+                                                                  .unwrap()
+                                                                  .id,
                                                             file.id,
                                                             Rect::new(0, 0, size as i16,
                                                                       size as i16),

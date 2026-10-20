@@ -63,15 +63,13 @@ extern "C" fn main() -> !
                           ram_base:                0x80000000,
                           ram_size:                128 * 1024 * 1024,
                           log:                     Some(log),
-                          startup_context:         core::ptr::null_mut(),
-                          read_startup:            None,
                           storage_context:         core::ptr::null_mut(),
                           disk_info:               None,
                           read_sector:             None,
                           write_sector:            None,
                           flush_disk:              None,
                           startup_disk:            0,
-                          reserved:                0,
+                          flags:                   0,
                           startup_partition_start: 0 };
     let system_entry: SystemEntry = unsafe { core::mem::transmute(SYSTEM_ENTRY) };
     let finder_entry: ApplicationEntry = unsafe { core::mem::transmute(FINDER_ENTRY) };

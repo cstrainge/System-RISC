@@ -8,3 +8,5 @@ publish.workspace = true
 mac-build.workspace = true
 mac-formats.workspace = true
 serde_json.workspace = true
+mac-hfs-b = { path = "../../crates/mac-hfs-b" }
+hfs-b = { path = "../hfs-b" }

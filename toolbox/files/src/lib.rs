@@ -7,6 +7,47 @@ pub use mac_abi::{dates::Timestamp,
                   files::{COMMENT_MAX_BYTES, CatalogInfo, ROOT_ID, VolumeInfo}};
 pub use mac_traps::{Client, Error, Result};
 pub use scan::{DirectoryCursor, SCAN_STALE, ScanStep};
+/// Native filesystem identity reported by the mounted backend. Classic HFS has
+/// no explicit filesystem version field; HFS-B uses whole-number versions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Filesystem
+{
+    Hfs,
+    HfsB
+    {
+        version: u16
+    }
+}
+impl Filesystem
+{
+    pub fn of(volume: &VolumeInfo) -> Result<Self>
+    {
+        match volume.filesystem
+        {
+            FILESYSTEM_HFS if volume.filesystem_version==0=>Ok(Self::Hfs),
+            FILESYSTEM_HFS_B if volume.filesystem_version != 0=>Ok(Self::HfsB {version:u16::try_from(volume.filesystem_version).map_err(|_|Error(mac_abi::BAD_ABI))?}),
+            _=>Err(Error(mac_abi::BAD_ABI))
+        }
+    }
+
+    pub const fn name(self) -> &'static str
+    {
+        match self
+        {
+            Self::Hfs => "HFS",
+            Self::HfsB { .. } => "HFS-B"
+        }
+    }
+
+    pub const fn version(self) -> Option<u16>
+    {
+        match self
+        {
+            Self::Hfs => None,
+            Self::HfsB { version } => Some(version)
+        }
+    }
+}
 #[derive(Clone, Copy)]
 pub struct Files<'a>
 {
@@ -102,12 +143,12 @@ impl<'a> Files<'a>
     fn set_flag(self, operation: u32, volume: u32, cnid: u32, value: bool, when: Timestamp)
                 -> Result<CatalogInfo>
     {
-        let time = when.mac_seconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        let time = when.mac_microseconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
         Ok(self.call(FileCall { operation,
                                 volume,
                                 cnid,
                                 index: u32::from(value),
-                                position: u64::from(time),
+                                position: time,
                                 ..Default::default() },
                      "")?
                .entry)
@@ -191,11 +232,11 @@ impl<'a> Files<'a>
     fn mutation(self, operation: u32, volume: u32, cnid: u32, name: &str, when: Timestamp)
                 -> Result<FileCall>
     {
-        let time = when.mac_seconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        let time = when.mac_microseconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
         self.call(FileCall { operation,
                              volume,
                              cnid,
-                             position: time as u64,
+                             position: time,
                              ..Default::default() },
                   name)
     }
@@ -208,17 +249,18 @@ impl<'a> Files<'a>
 
     pub fn trash_directory(self, volume: u32, create: bool) -> Result<CatalogInfo>
     {
-        self.trash_directory_at(volume, create, Timestamp::from_mac_seconds(0))
+        let when = if create { self.client.now()? } else { Timestamp::from_mac_seconds(0) };
+        self.trash_directory_at(volume, create, when)
     }
 
     pub fn trash_directory_at(self, volume: u32, create: bool, when: Timestamp)
                               -> Result<CatalogInfo>
     {
-        let time = when.mac_seconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        let time = when.mac_microseconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
         Ok(self.call(FileCall { operation: TRASH_DIRECTORY,
                                 volume,
                                 index: u32::from(create),
-                                position: time as u64,
+                                position: time,
                                 ..Default::default() },
                      "")?
                .entry)
@@ -407,7 +449,7 @@ impl<'a> Files<'a>
                                        creator: spec.creator,
                                        length,
                                        when: spec.modified
-                                                 .mac_seconds()
+                                                 .mac_microseconds()
                                                  .ok_or(Error(mac_abi::BAD_ARGUMENT))?,
                                        ..Default::default() };
         self.client.data_write(&mut call, spec.name, &[])?;

@@ -51,8 +51,10 @@ pub fn filesystem(system: &mac_toolbox::System<'_>) -> Result<(), Failure>
         require(entry.created_at().unix_seconds() == 1_767_225_600, "2026 catalog creation")?;
         require(entry.modified_at().unix_seconds() == 1_792_326_896, "2026 catalog modification")?;
         require(entry.backed_up_at().unix_seconds() == 1_798_761_599, "2026 catalog backup")?;
-        require(entry.created_at().mac_seconds() == Some(entry.created)
-                && entry.created > i32::MAX as u32,
+        require(entry.created_at().mac_microseconds() == Some(entry.created)
+                && entry.created_at()
+                        .mac_seconds()
+                        .is_some_and(|seconds| seconds > i32::MAX as u32),
                 "unsigned classic metadata")?;
     }
     struct Path

@@ -7,6 +7,7 @@ use crate::{copy,
             tree::{self, Node, Page, Store},
             *};
 mod writes;
+pub use writes::DataSave;
 mod check;
 pub use check::CheckReport;
 
@@ -217,11 +218,57 @@ pub struct Volume<'a, D: BlockDevice>
     header:    Header,
     budget:    Budget
 }
+/// A bounded name-ordered scan snapshot. A mutation invalidates it explicitly.
+pub struct CatalogScanner
+{
+    partition: Partition,
+    revision:  u64,
+    budget:    Budget
+}
+enum MoveOrigin
+{
+    Keep,
+    Save,
+    Clear
+}
+impl CatalogScanner
+{
+    pub fn next(&self, disk: &mut impl BlockDevice, parent: u32, after: Option<u32>)
+                -> Result<Option<Entry>>
+    {
+        let mut volume = Volume::mount(disk, self.partition, self.budget)?;
+        if volume.header.revision != self.revision
+        {
+            return Err(Error::Stale);
+        }
+        let bookmark = if let Some(id) = after
+        {
+            let e = volume.entry(id)?;
+            if e.parent != parent
+            {
+                return Err(Error::Invalid);
+            }
+            Some(e.name)
+        }
+        else
+        {
+            None
+        };
+        volume.next_child(parent, bookmark.as_deref())
+    }
+}
 impl<'a, D: BlockDevice> Volume<'a, D>
 {
     pub fn header(&self) -> &Header
     {
         &self.header
+    }
+
+    pub fn catalog_scanner(&self) -> CatalogScanner
+    {
+        CatalogScanner { partition: self.partition,
+                         revision:  self.header.revision,
+                         budget:    self.budget }
     }
 
     pub fn mount(disk: &'a mut D, partition: Partition, budget: Budget) -> Result<Self>
@@ -737,8 +784,8 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
 
     pub fn bless(&mut self, id: u32, when: Timestamp) -> Result<()>
     {
-        let e = self.entry(id)?;
-        if !e.directory || id == 2
+        // Zero explicitly clears the blessing without invalidating checksums.
+        if id != 0 && (!self.entry(id)?.directory || id == 2)
         {
             return Err(Error::Invalid);
         }
@@ -748,8 +795,12 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         tx.commit()
     }
 
+    /// Restore object dates verbatim. `when` timestamps the destination volume's
+    /// catalog change independently, so importing an old file cannot backdate it.
+    #[allow(clippy::too_many_arguments,
+            reason = "verbatim fork metadata plus a separate catalog-change clock")]
     pub fn set_metadata(&mut self, id: u32, flags: u16, finder_info: [u8; 32], created: Timestamp,
-                        modified: Timestamp, backup: Option<Timestamp>)
+                        modified: Timestamp, backup: Option<Timestamp>, when: Timestamp)
                         -> Result<Entry>
     {
         let mut e = self.entry(id)?;
@@ -760,14 +811,14 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         e.backup = backup;
         let mut tx = self.transaction()?;
         tx.entry(&e)?;
-        tx.header.modified = modified.0;
+        tx.header.modified = when.0;
         tx.commit()?;
         Ok(e)
     }
 
     pub fn set_comment(&mut self, id: u32, comment: &str, when: Timestamp) -> Result<()>
     {
-        let mut e = self.entry(id)?;
+        let e = self.entry(id)?;
         if e.flags & 1 != 0
         {
             return Err(Error::Protected);
@@ -776,15 +827,71 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         {
             return Err(Error::Invalid);
         }
-        e.modified = when;
+        if self.comment(id)? == comment
+        {
+            return Ok(());
+        }
         let mut tx = self.transaction()?;
         tx.put(2, &attr_key(id, 0), comment.as_bytes())?;
-        tx.entry(&e)?;
         tx.header.modified = when.0;
         tx.commit()
     }
 
+    /// Finder flags are metadata, not a modification of either fork. Preserve
+    /// the object's dates while recording the volume's catalog-change time.
+    pub fn set_finder_metadata(&mut self, id: u32, flags: u16, finder_info: [u8; 32],
+                               when: Timestamp)
+                               -> Result<Entry>
+    {
+        let mut e = self.entry(id)?;
+        if e.flags == flags && e.finder_info == finder_info
+        {
+            return Ok(e);
+        }
+        e.flags = flags;
+        e.finder_info = finder_info;
+        let mut tx = self.transaction()?;
+        tx.entry(&e)?;
+        tx.header.modified = when.0;
+        tx.commit()?;
+        Ok(e)
+    }
+
     pub fn rename(&mut self, id: u32, parent: u32, name: &str, when: Timestamp) -> Result<Entry>
+    {
+        self.relocate(id, parent, name, when, MoveOrigin::Keep)
+    }
+
+    pub fn move_to_trash(&mut self, id: u32, trash: u32, when: Timestamp) -> Result<Entry>
+    {
+        let e = self.entry(id)?;
+        if e.parent == trash
+        {
+            return Ok(e);
+        }
+        let folder = self.entry(trash)?;
+        if !folder.directory || folder.parent != 2 || names::comparison(&folder.name)? != "trash"
+        {
+            return Err(Error::Invalid);
+        }
+        self.relocate(id, trash, &e.name, when, MoveOrigin::Save)
+    }
+
+    pub fn put_away(&mut self, id: u32, when: Timestamp) -> Result<Entry>
+    {
+        let root = self.header.roots[2];
+        let origin = tree::get(self, root, 2, &attr_key(id, 1))?.ok_or(Error::NotFound)?;
+        if origin.len() < 6 || origin.len() != 6 + u16_at(&origin, 4)? as usize
+        {
+            return Err(Error::Corrupt);
+        }
+        let parent = u32_at(&origin, 0)?;
+        let e = self.entry(id)?;
+        self.relocate(id, parent, &e.name, when, MoveOrigin::Clear)
+    }
+
+    fn relocate(&mut self, id: u32, parent: u32, name: &str, when: Timestamp, origin: MoveOrigin)
+                -> Result<Entry>
     {
         let mut e = self.entry(id)?;
         if id == 2 || e.flags & 1 != 0
@@ -832,10 +939,25 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
             return Err(Error::Protected);
         }
         let old_key = name_key(e.parent, &e.name)?;
+        let mut saved_origin = Vec::new();
+        if matches!(origin, MoveOrigin::Save)
+        {
+            saved_origin.try_reserve_exact(6 + e.name.len()).map_err(|_| Error::NoMemory)?;
+            saved_origin.extend_from_slice(&e.parent.to_be_bytes());
+            saved_origin.extend_from_slice(&(e.name.len() as u16).to_be_bytes());
+            saved_origin.extend_from_slice(e.name.as_bytes());
+            e.finder_info[28..32].copy_from_slice(&e.parent.to_be_bytes());
+        }
         e.parent = parent;
         e.name = name;
-        e.modified = when;
         let mut tx = self.transaction()?;
+        match origin
+        {
+            MoveOrigin::Keep =>
+            {}
+            MoveOrigin::Save => tx.put(2, &attr_key(id, 1), &saved_origin)?,
+            MoveOrigin::Clear => tx.remove(2, &attr_key(id, 1))?
+        }
         tx.remove(0, &old_key)?;
         tx.put(0, &name_key(parent, &e.name)?, &id.to_be_bytes())?;
         tx.entry(&e)?;

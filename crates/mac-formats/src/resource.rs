@@ -3,7 +3,8 @@ use alloc::{collections::{BTreeMap, BTreeSet},
             vec,
             vec::Vec};
 
-use crate::{Error, Result, be16, be32, slice};
+use crate::{Error, Result};
+pub mod stream;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resource
@@ -145,95 +146,14 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Resource>>
 
 pub fn decode_borrowed(bytes: &[u8]) -> Result<Vec<ResourceRef<'_>>>
 {
-    let data_offset = be32(bytes, 0)? as usize;
-    let map_offset = be32(bytes, 4)? as usize;
-    let data_length = be32(bytes, 8)? as usize;
-    let map_length = be32(bytes, 12)? as usize;
-    if data_offset < 16 || map_offset < 16
-    {
-        return Err(Error("resource region overlaps header"));
-    }
-    let data = slice(bytes, data_offset, data_length)?;
-    let map = slice(bytes, map_offset, map_length)?;
-    if data_offset < map_offset + map_length && map_offset < data_offset + data_length
-    {
-        return Err(Error("overlapping resource regions"));
-    }
-    let type_offset = be16(map, 24)? as usize;
-    let names_offset = be16(map, 26)? as usize;
-    if type_offset < 28 || names_offset < 28
-    {
-        return Err(Error("resource list overlaps map header"));
-    }
-    let types = slice(map, type_offset, map.len().saturating_sub(type_offset))?;
-    let names = slice(map, names_offset, map.len().saturating_sub(names_offset))?;
-    let count = be16(types, 0)?;
-    let count = if count == 65535 { 0 } else { count as usize + 1 };
-    slice(types, 2, count * 8)?;
-    let mut previous_ref_end = 2 + count * 8;
-    if type_offset + previous_ref_end > names_offset
-    {
-        return Err(Error("type list overlaps names"));
-    }
-    let mut resources = Vec::new();
-    let mut keys = BTreeSet::new();
-    let mut kinds = BTreeSet::new();
-    for i in 0..count
-    {
-        let entry = 2 + i * 8;
-        let kind: [u8; 4] = slice(types, entry, 4)?.try_into().unwrap();
-        if !kinds.insert(kind)
-        {
-            return Err(Error("duplicate resource type list"));
-        }
-        let number = be16(types, entry + 4)? as usize + 1;
-        let ref_offset = be16(types, entry + 6)? as usize;
-        if ref_offset < previous_ref_end
-        {
-            return Err(Error("reference lists overlap or are out of order"));
-        }
-        let ref_end = ref_offset.checked_add(number * 12).ok_or(Error("reference overflow"))?;
-        if type_offset + ref_end > names_offset
-        {
-            return Err(Error("reference list overlaps names"));
-        }
-        previous_ref_end = ref_end;
-        let references = slice(types, ref_offset, number * 12)?;
-        for j in 0..number
-        {
-            let r = &references[j * 12..j * 12 + 12];
-            let id = be16(r, 0)? as i16;
-            if !keys.insert((kind, id))
-            {
-                return Err(Error("duplicate resource type and ID"));
-            }
-            let name_offset = be16(r, 2)?;
-            let name = if name_offset == 65535
-            {
-                None
-            }
-            else
-            {
-                let start = name_offset as usize;
-                let len = *names.get(start).ok_or(Error("truncated resource name"))? as usize;
-                Some(slice(names, start + 1, len)?)
-            };
-            let start = u32::from_be_bytes([0, r[5], r[6], r[7]]) as usize;
-            let len = be32(data, start)? as usize;
-            resources.push(ResourceRef { kind,
-                                         id,
-                                         name,
-                                         attributes: r[4],
-                                         data: slice(data, start + 4, len)? });
-        }
-    }
-    Ok(resources)
+    stream::borrowed(bytes)
 }
 
 #[cfg(test)]
 mod tests
 {
     use super::*;
+    use crate::{be16, be32};
 
     #[test]
     fn borrowed_resources_share_validated_payload_storage()

@@ -5,6 +5,7 @@ Build/package a private Finder, replace it only on a cloned disk, boot the real
 ROM/System graphically (headless display), and retain serial/outcome evidence.
 Rust owns every compatibility assertion and the acceptance marker.
 """
+from hfs_b_tool import Image as NativeImage
 import argparse
 import hashlib
 import json
@@ -37,38 +38,28 @@ def private_disk(output):
     raw = private / 'file-writes.raw'
     subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                     str(vm.DIST / 'system7.qcow2'), str(raw)], check=True)
-    state = private / 'hfs-state'
-    state.mkdir()
-    env = dict(os.environ, HOME=str(state), TZ='UTC')
-    tools = vm.ROOT / '.toolchains/hfsutils/rootfs/usr/bin'
 
-    def hfs(name, *args):
-        subprocess.run([str(tools / name), *map(str, args)], env=env, check=True,
-                       stdout=subprocess.PIPE)
-    hfs('hmount', raw)
-    try:
-        hfs('hdel', ':System Folder:Finder')
-        hfs('hcopy', '-m', packaged / 'Finder.bin', ':System Folder:')
-        # Generated MacBinary test file, no original payload is modified.
-        import struct
-        header = bytearray(128)
-        name = b'Write Sample'
-        header[1] = len(name)
-        header[2:2+len(name)] = name
-        header[65:69] = b'TEXT'
-        header[69:73] = b'TEST'
-        struct.pack_into('>II', header, 83, 1700, 900)
-        struct.pack_into('>II', header, 91, 3875171696, 3875171696)
-        import binascii
-        header[122:124] = bytes([129, 129])
-        struct.pack_into('>H', header, 124, binascii.crc_hqx(header[:124], 0))
-        data = bytes((i*17)&255 for i in range(1700))
-        resource = bytes((i*31)&255 for i in range(900))
-        sample = output / 'write-sample.bin'
-        sample.write_bytes(header + data + bytes((-len(data))%128) + resource + bytes((-len(resource))%128))
-        hfs('hcopy', '-m', sample, ':')
-    finally:
-        hfs('humount')
+    fs = NativeImage(raw)
+    fs.remove('/System Folder/Finder')
+    fs.import_macbinary(packaged / 'Finder.bin', '/System Folder')
+    # Generated MacBinary test file, no original payload is modified.
+    import struct
+    header = bytearray(128)
+    name = b'Write Sample'
+    header[1] = len(name)
+    header[2:2+len(name)] = name
+    header[65:69] = b'TEXT'
+    header[69:73] = b'TEST'
+    struct.pack_into('>II', header, 83, 1700, 900)
+    struct.pack_into('>II', header, 91, 3875171696, 3875171696)
+    import binascii
+    header[122:124] = bytes([129, 129])
+    struct.pack_into('>H', header, 124, binascii.crc_hqx(header[:124], 0))
+    data = bytes((i*17)&255 for i in range(1700))
+    resource = bytes((i*31)&255 for i in range(900))
+    sample = output / 'write-sample.bin'
+    sample.write_bytes(header + data + bytes((-len(data))%128) + resource + bytes((-len(resource))%128))
+    fs.import_macbinary(sample, '/')
     shutil.copyfile(vm.DIST / 'bootrom.bin', private / 'bootrom.bin')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)

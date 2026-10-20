@@ -4,11 +4,13 @@ Priority: **the very next implementation milestone**, including the ROM boot and
 default System-volume cutover. Complete it before std migration and other feature/
 dependency expansion; necessary storage, resource-loader and boot prerequisites
 are part of this work. Existing no_std apps provide the initial launch gate.
-Implementation is in progress: the shared crate and Linux tooling are being
-verified. Resident integration, ROM boot and default-image cutover remain required
-delivery gates; a host-only filesystem does not complete this milestone.
+Implementation is in progress: the shared crate, Linux tooling, resident
+integration, ROM boot and native image builder are present. Cold-boot and public
+SDK checks are running against the HFS-B default image. Complete regression and
+cutover acceptance remain required; a host-only filesystem is not this milestone.
 
 Status: implementation in progress; this spec remains the acceptance contract.
+
 User-state preservation across regenerated images includes both
 `System Folder/Preferences` and `Documents`. The Linux tool provides recursive,
 path-based copy-in/copy-out, independent of catalog IDs. Exported bundles preserve
@@ -202,6 +204,10 @@ must pass before native startup support is considered delivered.
 - New volume signature distinct from HFS (`BD`) and HFS+ (`H+`). Suggest
   `HB` ("HFS-B") in the volume header.
 - The Finder shows HFS-B volumes normally; Get Info reports the format.
+- Finder Get Info also supports mounted volumes, showing filesystem identity and
+  its actual whole-number on-disk version through public Toolbox metadata,
+  alongside capacity/free space. Classic HFS has no explicit version field;
+  do not invent a fractional version or infer the filesystem from a filename.
 - HFS-B supports blessed-System-Folder discovery and becomes the required normal
   startup format at cutover. Classic HFS discovery remains relevant to mounted
   legacy media and any explicitly retained transitional boot profile.
@@ -245,6 +251,16 @@ must pass before native startup support is considered delivered.
    missing/incompatible System/Finder and media that do not satisfy the required
    startup format. Verify System resource forks beyond 4 MiB, boot-to-runtime
    mount identity, persistence through reboot, and mixed-volume HFS access.
+   Before System takes over the display, ROM shows the original Happy Mac after
+   validating a bootable installation, or the original missing-disk artwork when
+   none is found. Verify both states in private VM boots, with resource/reference
+   provenance for the original pixels and a checked display handoff to System.
+   Kernel startup follows the user-supplied `boot-sample.png`: centered white
+   panel with black border/shadow, Happy Mac, "Welcome to System RISC" and a
+   striped progress bar over the same background/pattern as the current desktop.
+   Reuse the desktop background source rather than copying the sample's background.
+   Drive progress from
+   real completed initialization stages and repaint only changed progress bounds.
 8. Timestamps: exact microsecond round-trips for volume/file/folder metadata,
    create/modify operations and remounts, including 2026 and dates beyond classic
    HFS's 2040 boundary. Verify epoch zero, Unix-epoch conversion, fractional-second

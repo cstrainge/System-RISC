@@ -10,8 +10,9 @@ pub(super) struct Pending
     pub expected_cnid: u32,
     file_type:         [u8; 4],
     creator:           [u8; 4],
-    when:              u32,
+    when:              u64,
     name:              Vec<u8>,
+    comparison:        Vec<u8>,
     length:            usize,
     data:              Vec<u8>
 }
@@ -48,16 +49,13 @@ impl Manager
             {
                 return Err(NO_MEMORY);
             }
-            let name = text::encode(name).map_err(|_| BAD_ARGUMENT)?;
-            if name.is_empty()
-               || name.len() > 31
-               || name.contains(&0)
-               || name.contains(&b':')
-               || name == b"."
-               || name == b".."
+            let format = match self.mounted(call.volume)?.info.filesystem
             {
-                return Err(BAD_ARGUMENT);
-            }
+                FILESYSTEM_HFS => mac_filesystem::Format::Hfs,
+                FILESYSTEM_HFS_B => mac_filesystem::Format::HfsB,
+                _ => return Err(BAD_ABI)
+            };
+            let (name, comparison) = format.prepare_name(name).map_err(|_| BAD_ARGUMENT)?;
             let parent = if call.parent == 0 { ROOT_ID } else { call.parent };
             let directory = self.entry(call.volume, parent)?;
             if !directory.directory
@@ -71,7 +69,7 @@ impl Manager
             if self.writes.iter().any(|(_, p)| {
                                      p.volume == call.volume
                                      && p.parent == parent
-                                     && mac_hfs::names_equal(&p.name, &name)
+                                     && format.keys_equal(&p.comparison, &comparison)
                                  })
             {
                 return Err(SERVICE_BUSY);
@@ -88,6 +86,7 @@ impl Manager
                                                 creator: call.creator,
                                                 when: call.when,
                                                 name,
+                                                comparison,
                                                 length: call.length,
                                                 data: bytes })
                               .map_err(|_| NO_MEMORY)?;
@@ -137,14 +136,15 @@ impl Manager
                 }
                 mounted.catalog_revision = scan::next_revision()?;
                 let mut volume = io(Volume::mount(&mut mounted.device, mounted.partition))?;
-                let result = volume.save_data(mac_hfs::DataSave { parent:    pending.parent,
-                                                                  name:      &pending.name,
-                                                                  expected:  pending.expected_cnid,
-                                                                  file_type: pending.file_type,
-                                                                  creator:   pending.creator,
-                                                                  when:      pending.when },
-                                              &pending.data,
-                                              &protected);
+                let result =
+                    volume.save_data(mac_filesystem::DataSave { parent:    pending.parent,
+                                                                name:      &pending.name,
+                                                                expected:  pending.expected_cnid,
+                                                                file_type: pending.file_type,
+                                                                creator:   pending.creator,
+                                                                when:      pending.when },
+                                     &pending.data,
+                                     &protected);
                 mounted.scanner = volume.catalog_scanner().ok();
                 match result
                 {

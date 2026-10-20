@@ -1,7 +1,6 @@
-//! Initial host HFS adapter. Never touches the installed classic-Mac disk.
-//! Future native disk apps will use guest File Manager/block-device services.
+//! Native System-volume builder using the shared HFS-B filesystem.
 use std::{env,
-          fs::{self, File, OpenOptions},
+          fs::{self, File},
           path::{Path, PathBuf},
           process::Command,
           time::{SystemTime, UNIX_EPOCH}};
@@ -41,135 +40,92 @@ impl Drop for Scratch
     }
 }
 
-struct Hfs
+/// Offline native edits use the same crate as the formatter and resident OS.
+pub(super) fn edit<R>(image: &Path,
+                      apply: impl FnOnce(&mut mac_hfs_b::Volume<'_, hfs_b::Image>) -> Result<R>)
+                      -> Result<R>
 {
-    tools: PathBuf,
-    home:  PathBuf
-}
-impl Hfs
-{
-    fn call(&self, tool: &str, args: &[&std::ffi::OsStr]) -> Result<String>
-    {
-        output(Command::new(self.tools.join(tool)).args(args)
-                                                  .env("HOME", &self.home)
-                                                  .env("TZ", "UTC"))
-    }
-}
-impl Drop for Hfs
-{
-    fn drop(&mut self)
-    {
-        let _ = Command::new(self.tools.join("humount")).env("HOME", &self.home)
-                                                        .env("TZ", "UTC")
-                                                        .output();
-    }
-}
-
-fn tool_path(workspace: &Workspace) -> Result<PathBuf>
-{
-    let tools =
-        env::var_os("SYSTEM7_HFSUTILS").map(PathBuf::from).unwrap_or_else(|| {
-                                                              workspace.repo.join(".toolchains/\
-                                                                                   hfsutils/rootfs/\
-                                                                                   usr/bin")
-                                                          });
-    for tool in
-        ["hformat", "hmount", "hmkdir", "hattrib", "hcopy", "hls", "humount", "hdel", "hrename"]
-    {
-        if !tools.join(tool).is_file()
-        {
-            return Err(error(format!("missing {}: run python3 ../scripts/install_hfsutils.py \
-                                      or set SYSTEM7_HFSUTILS",
-                                     tools.join(tool).display())));
-        }
-    }
-    Ok(tools)
-}
-
-/// Offline fixture edits, using private hfsutils mount state.
-pub(super) fn edit(workspace: &Workspace, image: &Path, home: &Path,
-                   commands: &[Vec<std::ffi::OsString>])
-                   -> Result<()>
-{
-    fs::create_dir_all(home)?;
-    let hfs = Hfs { tools: tool_path(workspace)?,
-                    home:  home.to_path_buf() };
-    hfs.call("hmount", &[image.as_os_str()])?;
-    for command in commands
-    {
-        let tool = command[0].to_str().ok_or_else(|| error("invalid HFS command"))?;
-        hfs.call(tool, &command[1..].iter().map(|s| s.as_os_str()).collect::<Vec<_>>())?;
-    }
-    hfs.call("humount", &[])?;
-    Ok(())
+    let mut image = hfs_b::Image::open(image, true)?;
+    let partition = image.partition();
+    let mut volume = mac_hfs_b::Volume::mount(&mut image, partition, Default::default())?;
+    apply(&mut volume)
 }
 
 pub fn image(workspace: &Workspace) -> Result<Value>
 {
     let started = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let tools = tool_path(workspace)?;
     let scratch = Scratch::create(&workspace.build)?;
-    let raw = scratch.path.join("system7.hfs");
-    OpenOptions::new().write(true).create_new(true).open(&raw)?.set_len(DISK_SIZE)?;
-    let home = scratch.path.join("hfs-state");
-    fs::create_dir(&home)?;
-    let hfs = Hfs { tools,
-                    home };
-    hfs.call("hformat", &["-l".as_ref(), "System RISC".as_ref(), raw.as_os_str()])?;
-    for directory in [":System Folder", ":Applications", ":Documents", ":System Folder:Preferences"]
+    let raw = scratch.path.join("system7.hfsb");
+    let mut image = hfs_b::Image::create(&raw, DISK_SIZE)?;
+    let partition = image.partition();
+    let when = match env::var("SOURCE_DATE_EPOCH")
     {
-        hfs.call("hmkdir", &[directory.as_ref()])?;
+        Ok(value) => mac_hfs_b::time::Timestamp::from_unix(value.parse()?, 0)?,
+        Err(env::VarError::NotPresent) => hfs_b::now()?,
+        Err(e) => return Err(e.into())
+    };
+    let mut uuid = [0; 16];
+    use std::io::Read;
+    File::open("/dev/urandom")?.read_exact(&mut uuid)?;
+    mac_hfs_b::format(&mut image,
+                      partition,
+                      mac_hfs_b::FormatOptions { name: "System RISC",
+                                                 created: when,
+                                                 uuid },
+                      Default::default())?;
+    let mut volume = mac_hfs_b::Volume::mount(&mut image, partition, Default::default())?;
+    let system = volume.create(2, "System Folder", true, when)?.id;
+    let applications = volume.create(2, "Applications", true, when)?.id;
+    volume.create(2, "Documents", true, when)?;
+    for name in ["Drivers", "Extensions", "Fonts", "Control Panels", "Preferences"]
+    {
+        volume.create(system, name, true, when)?;
     }
     let mut verified = Vec::new();
-    for (directory, name) in [("System Folder", "System"),
-                              ("System Folder", "Finder"),
-                              ("Applications", "QuickDraw Test"),
-                              ("Applications", "TextEdit Exerciser"),
-                              ("Applications", "Cursor Test"),
-                              ("Applications", "Panic Test"),
-                              ("Applications", "ResEdit")]
+    for (parent, directory, name) in [(system, "System Folder", "System"),
+                                      (system, "System Folder", "Finder"),
+                                      (applications, "Applications", "QuickDraw Test"),
+                                      (applications, "Applications", "TextEdit Exerciser"),
+                                      (applications, "Applications", "Cursor Test"),
+                                      (applications, "Applications", "Panic Test"),
+                                      (applications, "Applications", "ResEdit")]
     {
-        let source = workspace.build.join("dist").join(format!("{name}.bin"));
-        let original = macbinary::decode(&fs::read(&source)?)?;
-        let expected = package::inspect(&fs::read(&source)?)?;
-        hfs.call("hcopy", &["-m".as_ref(), source.as_os_str(), format!(":{directory}:").as_ref()])?;
-        let extracted = scratch.path.join(format!("{name}-roundtrip.bin"));
-        hfs.call("hcopy",
-                 &["-m".as_ref(), format!(":{directory}:{name}").as_ref(), extracted.as_os_str()])?;
-        let copied = macbinary::decode(&fs::read(&extracted)?)?;
-        if original.name != copied.name
-           || original.file_type != copied.file_type
-           || original.creator != copied.creator
-           || original.data != copied.data
-           || original.resources != copied.resources
-           || original.created != copied.created
-           || original.modified != copied.modified
+        let bytes = fs::read(workspace.build.join("dist").join(format!("{name}.bin")))?;
+        let original = macbinary::decode(&bytes)?;
+        let entry = hfs_b::import_macbinary_at(&mut volume, parent, &original, name, when)?;
+        let mut data = Vec::new();
+        let mut resources = Vec::new();
+        hfs_b::read_stream(&mut volume, entry.id, mac_hfs_b::ForkKind::Data, &mut data)?;
+        hfs_b::read_stream(&mut volume, entry.id, mac_hfs_b::ForkKind::Resource, &mut resources)?;
+        if data != original.data
+           || resources != original.resources
+           || entry.created.0 != u64::from(original.created) * 1_000_000
+           || entry.modified.0 != u64::from(original.modified) * 1_000_000
+           || entry.finder_info[..4] != original.file_type
+           || entry.finder_info[4..8] != original.creator
+           || entry.finder_info[8..10] != original.flags.to_be_bytes()
         {
-            return Err(error(format!("HFS fork or metadata roundtrip failed for {name}")));
+            return Err(error(format!("HFS-B fork or metadata roundtrip failed for {name}")));
         }
-        if package::inspect(&fs::read(&extracted)?)?["code_sha256"] != expected["code_sha256"]
-        {
-            return Err(error("extracted native executable differs"));
-        }
-        verified.push(json!({"path": format!("{directory}/{name}"), "file_type": text::decode(&copied.file_type), "creator": text::decode(&copied.creator), "data_length": copied.data.len(), "resource_length": copied.resources.len(), "resource_fork_sha256": package::sha256(&copied.resources), "fork_and_metadata_roundtrip": "passed"}));
+        verified.push(json!({"path":format!("{directory}/{name}"),"cnid":entry.id,"file_type":text::decode(&original.file_type),
+            "creator":text::decode(&original.creator),"data_length":data.len(),"resource_length":resources.len(),
+            "resource_fork_sha256":package::sha256(&resources),"fork_and_metadata_roundtrip":"passed"}));
     }
-    hfs.call("hattrib", &["-b".as_ref(), ":System Folder".as_ref()])?;
-    let listing =
-        hfs.call("hls", &["-l".as_ref(), ":System Folder".as_ref(), ":Applications".as_ref()])?;
-    hfs.call("humount", &[])?;
-    drop(hfs);
-    let mut header = [0; 512];
-    use std::io::{Read, Seek, SeekFrom};
-    let mut disk = File::open(&raw)?;
-    disk.seek(SeekFrom::Start(1024))?;
-    disk.read_exact(&mut header)?;
-    let blessed_id = u32::from_be_bytes(header[92..96].try_into().unwrap());
-    let created = u32::from_be_bytes(header[2..6].try_into().unwrap());
-    let modified = u32::from_be_bytes(header[6..10].try_into().unwrap());
-    if &header[..2] != b"BD" || blessed_id == 0 || disk.metadata()?.len() != DISK_SIZE
+    volume.bless(system, when)?;
+    let checked = volume.check()?;
+    let h = volume.header().clone();
+    drop(volume);
+    drop(image);
+    // A fresh mount, not the formatter's retained state, verifies the blessing.
+    let mut image = hfs_b::Image::open(&raw, false)?;
+    let mut volume = mac_hfs_b::Volume::mount(&mut image, partition, Default::default())?;
+    if volume.blessed_folder()?.id != system
     {
-        return Err(error("invalid HFS volume or missing System Folder blessing"));
+        return Err(error("HFS-B blessing did not survive remount"));
     }
+    volume.check()?;
+    drop(volume);
+    drop(image);
     let qcow = scratch.path.join("system7.qcow2");
     run(Command::new("qemu-img").args(["convert", "-f", "raw", "-O", "qcow2"])
                                 .arg(&raw)
@@ -186,13 +142,17 @@ pub fn image(workspace: &Workspace) -> Result<Value>
         return Err(error("qcow2 virtual size mismatch"));
     }
     let dist = workspace.build.join("dist");
-    // Existing images here are generated artifacts; active guest disks will
-    // live separately as overlays when a real disk bootstrap is introduced.
-    fs::rename(&raw, dist.join("system7.hfs"))?;
+    fs::rename(&raw, dist.join("system7.hfsb"))?;
     fs::rename(&qcow, dist.join("system7.qcow2"))?;
     let finished = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let report = json!({"raw": "build/system7/dist/system7.hfs", "qcow2": "build/system7/dist/system7.qcow2", "virtual_size": DISK_SIZE, "layout": "unpartitioned HFS", "volume_name": "System RISC", "created": created, "modified": modified, "image_started_unix": started, "image_finished_unix": finished, "time_basis": "UTC", "blessed_system_folder_id": blessed_id, "files": verified, "listing": listing, "qcow2_check": "passed", "raw_qcow2_comparison": "passed", "riscv_disk_boot_available": true, "boot_rom": "build/system7/dist/bootrom.bin"});
+    let report = json!({"raw":"build/system7/dist/system7.hfsb","qcow2":"build/system7/dist/system7.qcow2",
+        "virtual_size":DISK_SIZE,"layout":"unpartitioned HFS-B","filesystem":"HFS-B","filesystem_version":1,
+        "unicode_version":"17.0.0","volume_name":h.name,"created":h.created,"modified":h.modified,
+        "image_started_unix":started,"image_finished_unix":finished,"time_basis":"1904 epoch microseconds, UTC",
+        "blessed_system_folder_id":system,"files":verified,"catalog_files":checked.files,"catalog_directories":checked.directories,
+        "qcow2_check":"passed","raw_qcow2_comparison":"passed","riscv_disk_boot_available":true,"boot_rom":"build/system7/dist/bootrom.bin"});
     write_json(&dist.join("disk.json"), &report)?;
-    println!("Built 500 MiB HFS/qcow2; System, Finder and Applications fork roundtrips passed.");
+    println!("Built 500 MiB HFS-B v1/qcow2; all application forks, metadata, blessing and \
+              structural checks passed.");
     Ok(report)
 }

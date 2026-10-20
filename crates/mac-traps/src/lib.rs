@@ -83,7 +83,11 @@ impl<'a> Client<'a>
     {
         let mut call = dates::ClockCall::default();
         status(self.invoke(CLOCK, &mut call))?;
-        Ok(dates::Timestamp::from_unix_seconds(call.unix_seconds))
+        if call.reserved != 0
+        {
+            return Err(Error(BAD_ABI));
+        }
+        dates::Timestamp::from_unix_parts(call.unix_seconds,call.microseconds).ok_or(Error(BAD_ABI))
     }
 
     pub fn monotonic_nanoseconds(self) -> Result<u64>

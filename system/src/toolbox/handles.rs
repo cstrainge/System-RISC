@@ -25,7 +25,8 @@ pub(crate) enum Kind
     FileWrites,
     StandardFiles,
     ScrollBoxes,
-    Controls
+    Controls,
+    Volumes
 }
 impl Kind
 {
@@ -33,6 +34,7 @@ impl Kind
     {
         match self
         {
+            Self::Volumes => 128,
             Self::ScrollBoxes => 96,
             Self::Controls => 256,
             Self::Memory => 512,
@@ -46,6 +48,7 @@ impl Kind
     {
         match self
         {
+            Self::Volumes => Self::Controls.first_slot() + Self::Controls.capacity() as u32,
             Self::Controls => Self::ScrollBoxes.first_slot() + Self::ScrollBoxes.capacity() as u32,
             Self::ScrollBoxes =>
             {
@@ -72,6 +75,7 @@ impl Kind
             | Self::StandardFiles
             | Self::ScrollBoxes
             | Self::Controls => u16::MAX,
+            Self::Volumes => u16::MAX,
             Self::Windows => 255
         }
     }
@@ -87,6 +91,11 @@ pub(crate) struct Table<T>
 }
 impl<T> Table<T>
 {
+    pub(crate) fn len(&self) -> usize
+    {
+        self.iter().count()
+    }
+
     pub(crate) fn new(kind: Kind) -> Self
     {
         Self { kind,

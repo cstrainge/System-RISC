@@ -5,6 +5,7 @@ Only the guest's monotonic clock is used for dispatch samples. Host QMP arrival,
 Windows/WSL transport and host display presentation are outside those intervals.
 Python supplies input and observations; Rust owns correctness acceptance.
 """
+from hfs_b_tool import Image as NativeImage
 import argparse
 import json
 import os
@@ -26,18 +27,10 @@ def capture(output, windows=False):
               for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
     private, binary = packaging.private_disk(output, 'event-latency')
     spinner, spinner_elf = child(output, 'process-spinner', 'ProcessSpinner')
-    env = dict(os.environ, HOME=str(private / 'hfs-state'), TZ='UTC')
-    tools = vm.ROOT / '.toolchains/hfsutils/rootfs/usr/bin'
 
-    def hfs(name, *args):
-        subprocess.run([str(tools / name), *map(str, args)], env=env, check=True,
-                       capture_output=True)
     raw = private / 'conformance.raw'
-    hfs('hmount', raw)
-    try:
-        hfs('hcopy', '-m', spinner, ':Applications:')
-    finally:
-        hfs('humount')
+    fs = NativeImage(raw)
+    fs.import_macbinary(spinner, '/Applications')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)
     vm.DIST = private

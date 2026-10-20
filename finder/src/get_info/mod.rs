@@ -31,6 +31,7 @@ struct Info
     window:         u32,
     identity:       Location,
     entry:          files::CatalogInfo,
+    volume_info:    Option<files::VolumeInfo>,
     layout:         Layout,
     name:           EditorId,
     comments:       EditorId,
@@ -89,13 +90,19 @@ impl Info
 {
     fn create(system: &System<'_>, identity: Location) -> Result<Self, Status>
     {
-        let entry = system.files().catalog(identity.volume, identity.folder).map_err(error)?;
+        let mut entry = system.files().catalog(identity.volume, identity.folder).map_err(error)?;
         let volume = system.files().volume(identity.volume).map_err(error)?;
         let folder = entry.is_directory();
+        let is_volume = entry.id == files::ROOT_ID;
+        if is_volume
+        {
+            entry.created = volume.created;
+            entry.modified = volume.modified;
+        }
         // This first native profile uses ordinary file/folder original geometry.
         // APPL metadata is visible, but its memory-requirements extension is deferred.
         let document = !folder && entry.file_type == *b"TEXT";
-        let layout = Layout::load(system, folder, document)?;
+        let layout = Layout::load(system, folder, document, is_volume)?;
         let title = draw::title(system, entry.name())?;
         let window = system.new_window(Rect::new(8, 46, 8 + layout.width, 46 + layout.height),
                                        title.as_str(),
@@ -146,6 +153,10 @@ impl Info
                                       &mut bytes)
                               .map_err(error)?;
             kind.write_str(label).map_err(|_| NO_MEMORY)?;
+            if is_volume
+            {
+                kind = draw::filesystem(system, &volume)?;
+            }
             let mut version = Text::default();
             version.write_str(draw::text(system, 10, &mut bytes)?).map_err(|_| NO_MEMORY)?;
             stage = "metadata";
@@ -190,42 +201,49 @@ impl Info
                 }
             }
             let icon = crate::browser::entry_icon(system, &volume, &entry);
-            let location =
-                draw::location(system, identity.volume, entry.parent).unwrap_or_else(|_| {
-                                                                         let mut value =
-                                                                             Text::default();
-                                                                         let _ =
-                                                                             value.write_str("…");
-                                                                         value
-                                                                     });
-            let mut info =
-                Self { window,
-                       identity,
-                       entry,
-                       layout,
-                       name,
-                       comments,
-                       focus: Focus::Comments,
-                       dirty_name: false,
-                       dirty_comments: false,
-                       read_only: volume.read_only != 0,
-                       active: true,
-                       controls: [None; 2],
-                       status: None,
-                       metadata_error: metadata_status,
-                       changed: false,
-                       allocated: allocation.data_bytes
-                                            .checked_add(allocation.resource_bytes)
-                                            .ok_or(BAD_ARGUMENT)?,
-                       logical: entry.data_length
-                                     .checked_add(entry.resource_length)
-                                     .ok_or(BAD_ARGUMENT)?,
-                       job: folder.then(|| totals::Job::new(identity.volume, identity.folder)),
-                       kind,
-                       version,
-                       description,
-                       location,
-                       icon };
+            let location = (if is_volume
+                           {
+                               draw::volume_location(system, &volume)
+                           }
+                           else
+                           {
+                               draw::location(system, identity.volume, entry.parent)
+                           }).unwrap_or_else(|_| {
+                                 let mut value = Text::default();
+                                 let _ = value.write_str("…");
+                                 value
+                             });
+            let mut info = Self { window,
+                                  identity,
+                                  entry,
+                                  volume_info: is_volume.then_some(volume),
+                                  layout,
+                                  name,
+                                  comments,
+                                  focus: Focus::Comments,
+                                  dirty_name: false,
+                                  dirty_comments: false,
+                                  read_only: volume.read_only != 0,
+                                  active: true,
+                                  controls: [None; 2],
+                                  status: None,
+                                  metadata_error: metadata_status,
+                                  changed: false,
+                                  allocated: allocation.data_bytes
+                                                       .checked_add(allocation.resource_bytes)
+                                                       .ok_or(BAD_ARGUMENT)?,
+                                  logical: entry.data_length
+                                                .checked_add(entry.resource_length)
+                                                .ok_or(BAD_ARGUMENT)?,
+                                  job: (folder && !is_volume).then(|| {
+                                                                 totals::Job::new(identity.volume,
+                                                                                  identity.folder)
+                                                             }),
+                                  kind,
+                                  version,
+                                  description,
+                                  location,
+                                  icon };
             for (index, check) in [Check::Locked, Check::Stationery].into_iter().enumerate()
             {
                 let state = info.control(system, check, false)?;
@@ -273,7 +291,8 @@ impl Info
 
     fn editable(&self, focus: Focus) -> bool
     {
-        !self.read_only
+        self.volume_info.is_none()
+        && !self.read_only
         && !self.entry.is_locked()
         && (focus != Focus::Name || !self.entry.is_name_locked())
     }

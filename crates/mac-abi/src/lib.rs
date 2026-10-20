@@ -45,15 +45,6 @@ pub struct ResourceKey
     pub id:   i16
 }
 
-/// Return required fork length through `length`; a null output performs a size query.
-pub type ReadStartupFn = unsafe extern "C" fn(context: *mut (),
-                                              name: *const u8,
-                                              name_length: usize,
-                                              output: *mut u8,
-                                              capacity: usize,
-                                              length: *mut usize)
-                                              -> Status;
-
 /// Firmware block devices remain available while System is running. Device
 /// ordinals are stable; NOT_FOUND terminates enumeration. Reads transfer one
 /// 512-byte sector into caller-owned writable storage.
@@ -103,7 +94,8 @@ impl Header
     }
 }
 
-/// Supplied by the bootstrap; the loader owns the stack and zeroes ELF BSS.
+pub const BOOT_GRAPHICAL: u32 = 1;
+/// Supplied by the bootstrap; the loader owns the stack and zeroes native BSS.
 #[repr(C)]
 pub struct BootInfo
 {
@@ -111,15 +103,13 @@ pub struct BootInfo
     pub ram_base:                u64,
     pub ram_size:                u64,
     pub log:                     Option<LogFn>,
-    pub startup_context:         *mut (),
-    pub read_startup:            Option<ReadStartupFn>,
     pub storage_context:         *mut (),
     pub disk_info:               Option<DiskInfoFn>,
     pub read_sector:             Option<ReadSectorFn>,
     pub write_sector:            Option<WriteSectorFn>,
     pub flush_disk:              Option<FlushDiskFn>,
     pub startup_disk:            u32,
-    pub reserved:                u32,
+    pub flags:                   u32,
     pub startup_partition_start: u64
 }
 
@@ -236,7 +226,9 @@ mod tests
         assert_eq!(core::mem::size_of::<Header>(), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_base), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, log), 24);
-        assert_eq!(core::mem::size_of::<BootInfo>(), 104);
+        assert_eq!(core::mem::size_of::<BootInfo>(), 88);
+        assert_eq!(core::mem::offset_of!(BootInfo, storage_context), 32);
+        assert_eq!(core::mem::offset_of!(BootInfo, startup_partition_start), 80);
         assert_eq!(core::mem::offset_of!(SystemServices, trap), 8);
         assert_eq!(core::mem::size_of::<SystemServices>(), 24);
         assert!(Header::for_type::<SystemServices>().supports::<SystemServices>());

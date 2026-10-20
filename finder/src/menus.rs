@@ -39,7 +39,7 @@ pub fn update(system: &System<'_>, browser: &Browser) -> Result<(), Status>
     for (id, item, enabled) in [(1252, 1, browser.can_new_folder(system)),
                                 (1252, 2, browser.can_open(system)),
                                 (1252, 4, system.window(0).is_ok()),
-                                (1252, 6, browser.selection(system).is_some()),
+                                (1252, 6, browser.info_selection(system).is_some()),
                                 (1252, 10, browser.can_put_away(system)),
                                 (1253, 6, browser.can_trash(system)),
                                 (1253, 9, true),

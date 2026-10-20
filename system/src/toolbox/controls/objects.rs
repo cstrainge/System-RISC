@@ -318,10 +318,10 @@ impl Manager
         call.step = o.spec.step;
         call.page = o.spec.page;
         call.result = i32::from(part);
-        call.flags = u32::from(o.tracking.is_some()) * TRACKING
-                     | u32::from(handled) * HANDLED
-                     | u32::from(action) * ACTION
-                     | u32::from(changed) * CHANGED;
+        call.flags = (u32::from(o.tracking.is_some()) * TRACKING)
+                     | (u32::from(handled) * HANDLED)
+                     | (u32::from(action) * ACTION)
+                     | (u32::from(changed) * CHANGED);
         if changed || operation == DRAW_OBJECT
         {
             let mut state = o.spec.call(if o.scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD });

@@ -68,10 +68,11 @@ fn legacy_info_mutations_convert_strings_only_at_the_trap_boundary()
     with_file_disk(&fixture.path, false, DiskFaults::default(), |services| {
         use mac_abi::files::*;
         let system = unsafe { System::from_raw(services) }.unwrap();
-        let original = system.files().lookup(1, 2, "Sample").unwrap();
+        let original =
+            system.files().lookup(system.files().volume_at(0).unwrap().id, 2, "Sample").unwrap();
         let name = b"\x04Caf\x8e";
         let mut call = FileCall { operation: RENAME,
-                                  volume: 1,
+                                  volume: system.files().volume_at(0).unwrap().id,
                                   cnid: original.id,
                                   name: name.as_ptr(),
                                   name_length: name.len(),
@@ -86,14 +87,20 @@ fn legacy_info_mutations_convert_strings_only_at_the_trap_boundary()
         assert_eq!(&call.entry.name[..call.entry.name_length as usize], name);
         assert_eq!(call.name, name.as_ptr());
         assert_eq!(call.name_length, name.len());
-        assert_eq!(system.files().catalog(1, original.id).unwrap().name(), "Café");
+        assert_eq!(system.files()
+                         .catalog(system.files().volume_at(0).unwrap().id, original.id)
+                         .unwrap()
+                         .name(),
+                   "Café");
         let comment = b"\x08Caf\x8e\rTwo";
         call.operation = SET_COMMENT;
         call.name = comment.as_ptr();
         call.name_length = comment.len();
         assert_eq!(invoke(&mut call), 0);
         let mut native = String::new();
-        system.files().comment(1, original.id, &mut native).unwrap();
+        system.files()
+              .comment(system.files().volume_at(0).unwrap().id, original.id, &mut native)
+              .unwrap();
         assert_eq!(native, "Café\rTwo");
         let mut output = [0; 256];
         call.operation = COMMENT;
@@ -109,7 +116,10 @@ fn legacy_info_mutations_convert_strings_only_at_the_trap_boundary()
         call.operation = SET_LOCKED;
         assert_eq!(invoke(&mut call), 0);
         assert_eq!(&call.entry.name[..call.entry.name_length as usize], name);
-        assert!(system.files().catalog(1, original.id).unwrap().is_locked());
+        assert!(system.files()
+                      .catalog(system.files().volume_at(0).unwrap().id, original.id)
+                      .unwrap()
+                      .is_locked());
     }).unwrap();
     fs::remove_file(fixture.path).unwrap();
 }
@@ -122,25 +132,47 @@ fn arbitrary_file_versions_are_utf8_scoped_and_read_only()
     let (_, activity) =
         with_file_disk(&fixture.path, true, DiskFaults::default(), |services| {
             let system = unsafe { System::from_raw(services) }.unwrap();
-            let file = system.files().lookup(1, 2, "Sample").unwrap();
+            let file = system.files()
+                             .lookup(system.files().volume_at(0).unwrap().id, 2, "Sample")
+                             .unwrap();
             let count = system.resources().system().count(*b"vers").unwrap();
-            let version = system.resources().file_version(1, file.id, 1).unwrap();
+            let version = system.resources()
+                                .file_version(system.files().volume_at(0).unwrap().id, file.id, 1)
+                                .unwrap();
             assert_eq!(version.short(), "Café");
             assert_eq!(version.long(), "Apple");
             assert_eq!(version.number, [0x12, 0x34, 0x80, 0]);
             assert_eq!(system.resources().system().count(*b"vers").unwrap(), count);
-            assert_eq!(system.resources().file_version(1, file.id, 3).unwrap_err().0,
+            assert_eq!(system.resources()
+                             .file_version(system.files().volume_at(0).unwrap().id, file.id, 3)
+                             .unwrap_err()
+                             .0,
                        mac_abi::NOT_FOUND);
-            assert_eq!(system.resources().file_version(1, file.id, 2).unwrap_err().0,
+            assert_eq!(system.resources()
+                             .file_version(system.files().volume_at(0).unwrap().id, file.id, 2)
+                             .unwrap_err()
+                             .0,
                        mac_abi::BAD_ARGUMENT);
-            let bad = system.files().lookup(1, 2, "Malformed").unwrap();
-            assert_eq!(system.resources().file_version(1, bad.id, 1).unwrap_err().0,
+            let bad = system.files()
+                            .lookup(system.files().volume_at(0).unwrap().id, 2, "Malformed")
+                            .unwrap();
+            assert_eq!(system.resources()
+                             .file_version(system.files().volume_at(0).unwrap().id, bad.id, 1)
+                             .unwrap_err()
+                             .0,
                        mac_abi::BAD_ARGUMENT);
-            assert_eq!(system.resources().file_version(1, 2, 1).unwrap_err().0, mac_abi::NOT_FOUND);
+            assert_eq!(system.resources()
+                             .file_version(system.files().volume_at(0).unwrap().id, 2, 1)
+                             .unwrap_err()
+                             .0,
+                       mac_abi::NOT_FOUND);
             let mut call =
                 mac_abi::resources::FileVersionCall { operation:
                                                           mac_abi::resources::FILE_VERSION,
-                                                      volume: 1,
+                                                      volume: system.files()
+                                                                    .volume_at(0)
+                                                                    .unwrap()
+                                                                    .id,
                                                       cnid: file.id,
                                                       id: 1,
                                                       ..Default::default() };

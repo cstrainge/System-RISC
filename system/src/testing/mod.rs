@@ -195,6 +195,8 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                         Ok(time) =>
                         {
                             call.unix_seconds = time.as_secs() as i64;
+                            call.microseconds=time.subsec_micros();
+                            call.reserved=0;
                             OK as i64
                         }
                         Err(_) => NOT_SUPPORTED as i64
@@ -483,16 +485,24 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
 /// tests. Context and manager are kept live together until the callback returns.
 pub fn with_disk<R>(bytes: &[u8], run: impl FnOnce(&SystemServices) -> R) -> R
 {
-    struct Disk<'a>(&'a [u8]);
+    with_disks(&[bytes], 0, run)
+}
+/// Mount several immutable sector sources and retain the actual startup disk
+/// ordinal. All filesystem dispatch and volume identity comes from the service.
+pub fn with_disks<R>(bytes: &[&[u8]], startup_disk: u32, run: impl FnOnce(&SystemServices) -> R)
+                     -> R
+{
+    struct Disk<'a>(&'a [&'a [u8]]);
     unsafe extern "C" fn info(context: *mut (), index: u32, out: *mut DiskInfo) -> Status
     {
-        if index != 0
+        let disks = unsafe { &*context.cast::<Disk<'_>>() };
+        let Some(disk) = disks.0.get(index as usize)
+        else
         {
             return NOT_FOUND;
-        }
-        let disk = unsafe { &*context.cast::<Disk<'_>>() };
+        };
         unsafe {
-            *out = DiskInfo { sector_count: disk.0.len() as u64 / 512,
+            *out = DiskInfo { sector_count: disk.len() as u64 / 512,
                               read_only: 1,
                               ..Default::default() }
         };
@@ -500,17 +510,18 @@ pub fn with_disk<R>(bytes: &[u8], run: impl FnOnce(&SystemServices) -> R) -> R
     }
     unsafe extern "C" fn read(context: *mut (), index: u32, sector: u64, out: *mut u8) -> Status
     {
-        if index != 0
+        let disks = unsafe { &*context.cast::<Disk<'_>>() };
+        let Some(disk) = disks.0.get(index as usize)
+        else
         {
             return NOT_FOUND;
-        }
-        let disk = unsafe { &*context.cast::<Disk<'_>>() };
+        };
         let Some(start) = usize::try_from(sector).ok().and_then(|n| n.checked_mul(512))
         else
         {
             return BAD_ARGUMENT;
         };
-        let Some(bytes) = start.checked_add(512).and_then(|end| disk.0.get(start..end))
+        let Some(bytes) = start.checked_add(512).and_then(|end| disk.get(start..end))
         else
         {
             return BAD_ARGUMENT;
@@ -519,19 +530,17 @@ pub fn with_disk<R>(bytes: &[u8], run: impl FnOnce(&SystemServices) -> R) -> R
         OK
     }
     let mut disk = Disk(bytes);
-    let boot = BootInfo { header:                  Header::for_type::<BootInfo>(),
-                          ram_base:                0,
-                          ram_size:                0,
-                          log:                     None,
-                          startup_context:         core::ptr::null_mut(),
-                          read_startup:            None,
-                          storage_context:         core::ptr::from_mut(&mut disk).cast(),
-                          disk_info:               Some(info),
-                          read_sector:             Some(read),
-                          write_sector:            None,
-                          flush_disk:              None,
-                          startup_disk:            0,
-                          reserved:                0,
+    let boot = BootInfo { header: Header::for_type::<BootInfo>(),
+                          ram_base: 0,
+                          ram_size: 0,
+                          log: None,
+                          storage_context: core::ptr::from_mut(&mut disk).cast(),
+                          disk_info: Some(info),
+                          read_sector: Some(read),
+                          write_sector: None,
+                          flush_disk: None,
+                          startup_disk,
+                          flags: 0,
                           startup_partition_start: 0 };
     with_services(|services| {
         let storage =
@@ -682,15 +691,13 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
                           ram_base:                0,
                           ram_size:                0,
                           log:                     None,
-                          startup_context:         core::ptr::null_mut(),
-                          read_startup:            None,
                           storage_context:         core::ptr::from_mut(&mut disk).cast(),
                           disk_info:               Some(info),
                           read_sector:             Some(read),
                           write_sector:            Some(write),
                           flush_disk:              Some(flush),
                           startup_disk:            0,
-                          reserved:                0,
+                          flags:                   0,
                           startup_partition_start: 0 };
     let result = with_services(|services| {
         let storage=unsafe{crate::toolbox::files::BootStorage::from_boot_info(&boot)}.expect("file storage callbacks");

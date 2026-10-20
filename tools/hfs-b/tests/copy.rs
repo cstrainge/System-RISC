@@ -57,7 +57,7 @@ fn preferences_documents_and_application_forks_roundtrip_into_fresh_image()
             info[..8].copy_from_slice(b"TEXTTERM");
             info[8..10].copy_from_slice(&0x0804u16.to_be_bytes());
             v.set_comment(file.id, "Keep this 😀", time).unwrap();
-            v.set_metadata(file.id, 1, info, time, time, Some(Timestamp(0))).unwrap();
+            v.set_metadata(file.id, 1, info, time, time, Some(Timestamp(0)), time).unwrap();
             copy_out(&mut v, prefs.id, &scratch.0.join("Preferences")).unwrap();
             let documents = resolve(&mut v, "/Documents").unwrap();
             copy_out(&mut v, documents.id, &scratch.0.join("Saved Documents")).unwrap();

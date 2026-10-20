@@ -173,6 +173,7 @@ fn import_entry<D: WritableBlockDevice>(v: &mut Volume<'_, D>, parent: u32, sour
 {
     visit(depth, left)?;
     let info = ordinary(source)?;
+    let when = crate::now()?;
     if info.is_dir()
        && let Some(m) = metadata(source)?
     {
@@ -214,7 +215,7 @@ fn import_entry<D: WritableBlockDevice>(v: &mut Volume<'_, D>, parent: u32, sour
                 }
             }
         }
-        let e = target(v, parent, name, directory, created, replace)?;
+        let e = target(v, parent, name, directory, when, replace)?;
         if directory
         {
             for path in entries
@@ -226,17 +227,17 @@ fn import_entry<D: WritableBlockDevice>(v: &mut Volume<'_, D>, parent: u32, sour
         {
             for (kind, file) in [(ForkKind::Data, "data"), (ForkKind::Resource, "resources")]
             {
-                write_stream(v, e.id, kind, File::open(source.join(file))?, modified)?;
+                write_stream(v, e.id, kind, File::open(source.join(file))?, when)?;
             }
         }
-        v.set_comment(e.id, comment, modified)?;
-        return Ok(v.set_metadata(e.id, flags, finder_info, created, modified, backup)?);
+        v.set_comment(e.id, comment, when)?;
+        return Ok(v.set_metadata(e.id, flags, finder_info, created, modified, backup, when)?);
     }
     let name = source.file_name().and_then(|n| n.to_str()).ok_or("host filename must be UTF-8")?;
     let modified = host_time(info.modified()?)?;
     let created = host_time(info.created().unwrap_or(info.modified()?))?;
     let entries = if info.is_dir() { children(source, *left)? } else { Vec::new() };
-    let e = target(v, parent, name, info.is_dir(), created, replace)?;
+    let e = target(v, parent, name, info.is_dir(), when, replace)?;
     if info.is_dir()
     {
         for path in entries
@@ -246,9 +247,9 @@ fn import_entry<D: WritableBlockDevice>(v: &mut Volume<'_, D>, parent: u32, sour
     }
     else
     {
-        write_stream(v, e.id, ForkKind::Data, File::open(source)?, modified)?;
+        write_stream(v, e.id, ForkKind::Data, File::open(source)?, when)?;
     }
-    Ok(v.set_metadata(e.id, e.flags, e.finder_info, created, modified, e.backup)?)
+    Ok(v.set_metadata(e.id, e.flags, e.finder_info, created, modified, e.backup, when)?)
 }
 /// Copy an ordinary host tree or an extracted lossless bundle into a directory.
 /// Existing directories merge; replacing existing files requires explicit opt-in.

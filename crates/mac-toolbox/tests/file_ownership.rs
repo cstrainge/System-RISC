@@ -50,9 +50,11 @@ fn with_system(run: impl FnOnce(&System<'_>))
 fn open(system: &System<'_>, owner: u64) -> u32
 {
     with_owner(owner, || {
-        let entry = system.files().lookup(1, ROOT_ID, "Folder/Café").unwrap();
+        let entry = system.files()
+                          .lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Folder/Café")
+                          .unwrap();
         let mut call = FileCall { operation: OPEN,
-                                  volume: 1,
+                                  volume: system.files().volume_at(0).unwrap().id,
                                   cnid: entry.id,
                                   fork: DATA_FORK,
                                   ..Default::default() };
@@ -129,9 +131,11 @@ fn exit_releases_only_its_handles_and_old_ids_do_not_alias_relaunch()
         {
             exited.push(open(system, 11));
         }
-        let entry = system.files().lookup(1, ROOT_ID, "Folder/Café").unwrap();
+        let entry = system.files()
+                          .lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Folder/Café")
+                          .unwrap();
         let mut call = FileCall { operation: OPEN,
-                                  volume: 1,
+                                  volume: system.files().volume_at(0).unwrap().id,
                                   cnid: entry.id,
                                   fork: DATA_FORK,
                                   ..Default::default() };
@@ -167,12 +171,18 @@ fn exit_releases_only_its_handles_and_old_ids_do_not_alias_relaunch()
 fn separate_apps_have_independent_marks_and_foreign_sdk_values_are_rejected()
 {
     with_system(|system| {
-        let entry = system.files().lookup(1, ROOT_ID, "Folder/Café").unwrap();
+        let entry = system.files()
+                          .lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Folder/Café")
+                          .unwrap();
         let mut first = with_owner(11, || {
-                            system.files().open(1, entry.id, mac_toolbox::files::Fork::Data)
+                            system.files().open(system.files().volume_at(0).unwrap().id,
+                                                entry.id,
+                                                mac_toolbox::files::Fork::Data)
                         }).unwrap();
         let mut second = with_owner(22, || {
-                             system.files().open(1, entry.id, mac_toolbox::files::Fork::Data)
+                             system.files().open(system.files().volume_at(0).unwrap().id,
+                                                 entry.id,
+                                                 mac_toolbox::files::Fork::Data)
                          }).unwrap();
         let mut bytes = [0; 8];
         assert_eq!(with_owner(11, || first.read(&mut bytes)), Ok(8));

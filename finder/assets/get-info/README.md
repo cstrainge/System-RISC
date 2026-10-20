@@ -14,3 +14,10 @@ Ordinary file/folder controls and geometry were checked against that runtime.
 The APPL memory panel and application-specific stationery icon compositing are
 outside this first UI profile; the generic stationery family is original System
 icon resource -3985. Dates use checked Gregorian conversion with resource names.
+
+Mounted volumes use original disk fvew11511 and its native rectangle projection.
+Kind identifies the actual mounted filesystem and whole version; Size shows
+capacity/free space without recursively scanning the disk. Volume dates come
+from the header. Rename/comments remain disabled until the resident volume API
+supports them. Pixel/runtime acceptance for this disk variant is separate from
+the existing file/folder capture gate.

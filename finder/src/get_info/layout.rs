@@ -24,9 +24,14 @@ pub struct Layout
 }
 impl Layout
 {
-    pub fn load(system: &System<'_>, folder: bool, document: bool) -> Result<Self, Status>
+    pub fn load(system: &System<'_>, folder: bool, document: bool, volume: bool)
+                -> Result<Self, Status>
     {
-        let id = if folder
+        let id = if volume
+        {
+            11511
+        }
+        else if folder
         {
             11261
         }

@@ -42,6 +42,8 @@ version = "0.1.0"
 dependencies = [
  "linked_list_allocator",
  "mac-abi",
+ "mac-boot-screen",
+ "mac-filesystem",
  "mac-formats",
  "mac-hfs",
 ]
@@ -201,6 +203,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-boot-screen"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+]
+
+[[package]]
 name = "mac-build"
 version = "0.1.0"
 dependencies = [
@@ -213,6 +222,16 @@ dependencies = [
 [[package]]
 name = "mac-code-resource"
 version = "0.1.0"
+
+[[package]]
+name = "mac-filesystem"
+version = "0.1.0"
+dependencies = [
+ "mac-block",
+ "mac-formats",
+ "mac-hfs",
+ "mac-hfs-b",
+]
 
 [[package]]
 name = "mac-finder"
@@ -253,7 +272,9 @@ dependencies = [
  "libm",
  "linked_list_allocator",
  "mac-abi",
+ "mac-boot-screen",
  "mac-build",
+ "mac-filesystem",
  "mac-formats",
  "mac-hfs",
  "mac-toolbox",
@@ -279,10 +300,13 @@ name = "mac-toolbox"
 version = "0.1.0"
 dependencies = [
  "disc-v",
+ "hfs-b",
  "mac-abi",
+ "mac-block",
  "mac-build",
  "mac-code-resource",
  "mac-formats",
+ "mac-hfs-b",
  "mac-system",
  "mac-text",
  "mac-traps",
@@ -701,8 +725,10 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "hfs-b",
  "mac-build",
  "mac-formats",
+ "mac-hfs-b",
  "serde_json",
 ]
 

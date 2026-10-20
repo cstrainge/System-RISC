@@ -19,10 +19,12 @@ fn legacy_file_names_and_paths_roundtrip_through_real_hfs()
 {
     mac_system::testing::with_disk(include_bytes!("data/files/dates-2026.hfs"), |services| {
         let system = unsafe { mac_toolbox::System::from_raw(services) }.unwrap();
-        let native = system.files().lookup(1, 2, "Folder/Café").unwrap();
+        let native = system.files()
+                           .lookup(system.files().volume_at(0).unwrap().id, 2, "Folder/Café")
+                           .unwrap();
         let name = b"\x0bFolder/Caf\x8e";
         let mut call = FileCall { operation: LOOKUP,
-                                  volume: 1,
+                                  volume: system.files().volume_at(0).unwrap().id,
                                   cnid: 2,
                                   name: name.as_ptr(),
                                   name_length: name.len(),

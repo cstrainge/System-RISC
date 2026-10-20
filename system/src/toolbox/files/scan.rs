@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use mac_abi::{files::*, *};
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
-use mac_hfs::scan::{Cursor, ScanError, Step};
+use mac_filesystem::scan::{Cursor, ScanError, Step};
 
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
 use super::{Manager, metadata};

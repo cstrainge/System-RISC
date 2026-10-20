@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
     'image_cleanup', Path(__file__).resolve().parents[1] / 'prune_system7_images.py')
@@ -39,16 +40,19 @@ class ImageCleanupTests(unittest.TestCase):
     def test_generated_formats_removed_without_deleting_current_media_or_evidence(self):
         old = [self.write(f'results/system7/finished/disk{suffix}')
                for suffix in ['.hfs', '.hfsb', '.hfs-b', '.qcow2', '.raw', '.img', '.hda', '.dsk']]
-        old += [self.write('build/system7/failed/disk.hfs'),
+        old += [self.write('build/system7/dist/system7.hfs'),
+                self.write('build/system7/dist/obsolete/system7.hfsb'),
+                self.write('build/system7/dist/obsolete/bootrom.bin'),
+                self.write('build/system7/failed/disk.hfs'),
                 self.write('results/system7/finished/bootrom.bin'),
                 self.write('working/system7-vm/system7-previous-123.qcow2')]
         keep = [self.write(name) for name in [
-            'build/system7/dist/system7.hfs', 'build/system7/dist/system7.qcow2',
+            'build/system7/dist/system7.hfsb', 'build/system7/dist/system7.qcow2',
             'build/system7/dist/bootrom.bin', 'working/system7-vm/system7.qcow2',
             'original-media/Macintosh.hfs',
             'System7/crates/mac-toolbox/tests/data/original.hfs',
             'results/system7/finished/report.json', 'results/system7/finished/frame.png',
-            'results/system7/finished/serial.log', 'build/system7/dist/system7.hfsb']]
+            'results/system7/finished/serial.log']]
         link = self.root / 'results/system7/finished/reference.hfs'
         link.symlink_to(keep[4])
         report = self.prune()
@@ -68,6 +72,20 @@ class ImageCleanupTests(unittest.TestCase):
         self.assertTrue(live.exists())
         self.assertFalse(dead.exists())
         self.assertIn('results/system7/live', report['protected_live_captures'])
+
+    def test_another_owner_can_remove_a_candidate_during_cleanup(self):
+        disappearing = self.write('results/system7/completing/disk.hfsb')
+        unlink = Path.unlink
+        def remove_elsewhere(path, *args, **kwargs):
+            if path == disappearing:
+                unlink(path)
+                raise FileNotFoundError(path)
+            return unlink(path, *args, **kwargs)
+        with patch.object(Path, 'unlink', remove_elsewhere):
+            report = self.prune()
+        self.assertFalse(disappearing.exists())
+        self.assertEqual(report['removed_files'], 0)
+        self.assertEqual(report['allocated_bytes_freed'], 0)
 
 
 if __name__ == '__main__':

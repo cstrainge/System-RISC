@@ -1898,21 +1898,10 @@ fn control(command: &DrawCommand) -> crate::toolbox::controls::ControlDefinition
 
 fn background(canvas: &mut Canvas)
 {
-    // This compositor starts with a fresh, full-screen canvas. Its fixed
-    // checkerboard repeats every two rows; copy those rows instead of evaluating
-    // the pattern independently for every background pixel on every frame.
-    let width = canvas.width;
-    for y in 0..2
+    if let Some(mut raster) =
+        mac_boot_screen::Raster::new(canvas.pixels, canvas.width, canvas.height)
     {
-        for x in 0..width
-        {
-            canvas.pixels[y * width + x] = if (x + y) & 1 == 0 { 0x878787 } else { 0xc0c0c0 };
-        }
-    }
-    for y in 2..canvas.height
-    {
-        let start = (y & 1) * width;
-        canvas.pixels.copy_within(start..start + width, y * width);
+        raster.background();
     }
 }
 

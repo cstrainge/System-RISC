@@ -13,7 +13,7 @@ def prune():
     build = ROOT / 'build/system7'
     dist = build / 'dist'
     protected = []
-    # Keep an entire capture while any of its QEMU processes is still alive.
+    # Keep an entire capture while any of its VM or fixture owners is still alive.
     # A reused live PID can conservatively retain a little extra media.
     for base in (results, build):
         for pid in base.rglob('pid'):
@@ -26,9 +26,11 @@ def prune():
     candidates = []
     for base in (results, build):
         for path in base.rglob('*'):
-            if path.is_symlink() or not path.is_file() or path.is_relative_to(dist):
-                continue
             if path.suffix not in ('.hfs', '.hfsb', '.hfs-b', '.qcow2', '.raw', '.img', '.hda', '.dsk') and path.name != 'bootrom.bin':
+                continue
+            if path.parent == dist and path.name in ('system7.hfsb', 'system7.qcow2', 'bootrom.bin'):
+                continue
+            if path.is_symlink() or not path.is_file():
                 continue
             if any(path.is_relative_to(directory) for directory in protected):
                 continue
@@ -38,10 +40,15 @@ def prune():
     removed = []
     freed = 0
     for path in candidates:
-        stat = path.stat()
+        try:
+            stat = path.stat()
+            path.unlink()
+        except FileNotFoundError:
+            # A fixture owner or another cleanup may finish between enumeration
+            # and deletion. Already removed media needs no further work.
+            continue
         removed.append(str(path.relative_to(ROOT)))
         freed += stat.st_blocks * 512
-        path.unlink()
     report = {'removed_files': len(removed), 'allocated_bytes_freed': freed,
               'protected_live_captures': [str(p.relative_to(ROOT)) for p in protected],
               'files': removed}

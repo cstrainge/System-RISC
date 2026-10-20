@@ -17,12 +17,12 @@ fn built_disk_dates_match_package_metadata_and_the_real_image_creation_clock()
                 "disk metadata{} is outside its real creation interval{start}..={finish}",
                 date.unix_seconds());
     };
-    let (_, activity) = mac_system::testing::with_file_disk(&dist.join("system7.hfs"), true, Default::default(), |services| {
+    let (_, activity) = mac_system::testing::with_file_disk(&dist.join("system7.hfsb"), true, Default::default(), |services| {
         let system = unsafe { mac_toolbox::System::from_raw(services) }.unwrap();
         let files = system.files();
         let volume = files.volume_at(0).unwrap();
-        assert_eq!(u64::from(volume.created), report["created"].as_u64().unwrap());
-        assert_eq!(u64::from(volume.modified), report["modified"].as_u64().unwrap());
+        assert_eq!(volume.created, report["created"].as_u64().unwrap());
+        assert_eq!(volume.modified, report["modified"].as_u64().unwrap());
         within_build(volume.created_at());
         within_build(volume.modified_at());
         for path in ["", "System Folder", "Applications", "Documents", "System Folder/Preferences"] {
@@ -37,10 +37,10 @@ fn built_disk_dates_match_package_metadata_and_the_real_image_creation_clock()
             let catalog = files.lookup(volume.id, 2, path).unwrap();
             let package = mac_formats::macbinary::decode(&fs::read(dist.join(format!("{name}.bin"))).unwrap()).unwrap();
             let metadata: serde_json::Value = serde_json::from_slice(&fs::read(dist.join(format!("{name}.json"))).unwrap()).unwrap();
-            assert_eq!(catalog.created, package.created, "{path}: creation changed on import");
-            assert_eq!(catalog.modified, package.modified, "{path}: modification changed on import");
-            assert_eq!(u64::from(catalog.created), metadata["created"].as_u64().unwrap());
-            assert_eq!(u64::from(catalog.modified), metadata["modified"].as_u64().unwrap());
+            assert_eq!(catalog.created, u64::from(package.created)*1_000_000, "{path}: creation changed on import");
+            assert_eq!(catalog.modified, u64::from(package.modified)*1_000_000, "{path}: modification changed on import");
+            assert_eq!(catalog.created/1_000_000, metadata["created"].as_u64().unwrap());
+            assert_eq!(catalog.modified/1_000_000, metadata["modified"].as_u64().unwrap());
             let packaged_at = metadata["packaged_at_unix"].as_i64().unwrap();
             assert!(packaged_at <= start, "{path}: packaged after image creation started");
             let expected = metadata["source_date_epoch"].as_i64().unwrap_or(packaged_at);
@@ -58,7 +58,7 @@ fn dates_2026_survive_real_hfs_and_userspace_file_traps()
         let system = unsafe { mac_toolbox::System::from_raw(services) }.unwrap();
         let files = system.files();
         let volume = files.volume_at(0).unwrap();
-        assert_eq!(volume.created, 3_850_070_400);
+        assert_eq!(volume.created, 3_850_070_400_000_000);
         assert_eq!(volume.created_at().unix_seconds(), 1_767_225_600);
         assert_eq!(volume.modified_at().unix_seconds(), 1_792_326_896);
         for entry in [files.catalog(volume.id, 2).unwrap(),
@@ -68,8 +68,8 @@ fn dates_2026_survive_real_hfs_and_userspace_file_traps()
             assert_eq!(entry.created_at().unix_seconds(), 1_767_225_600);
             assert_eq!(entry.modified_at().unix_seconds(), 1_792_326_896);
             assert_eq!(entry.backed_up_at().unix_seconds(), 1_798_761_599);
-            assert!(entry.created > i32::MAX as u32);
-            assert_eq!(entry.created_at().mac_seconds(), Some(entry.created));
+            assert!(entry.created_at().mac_seconds().unwrap() > i32::MAX as u32);
+            assert_eq!(entry.created_at().mac_microseconds(), Some(entry.created));
         }
         let mut path = String::new();
         files.path(volume.id, 19, &mut path).unwrap();

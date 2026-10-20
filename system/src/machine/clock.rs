@@ -11,5 +11,6 @@ pub(crate) fn now() -> Result<Timestamp, Status>
         let high = core::ptr::read_volatile(0x00101004 as *const u32);
         (u64::from(high) << 32) | u64::from(low)
     };
-    Ok(Timestamp::from_unix_seconds((nanos / 1_000_000_000) as i64))
+    Timestamp::from_unix_parts((nanos / 1_000_000_000) as i64,
+                               ((nanos % 1_000_000_000) / 1000) as u32).ok_or(mac_abi::BAD_ARGUMENT)
 }

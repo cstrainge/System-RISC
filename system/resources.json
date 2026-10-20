@@ -8463,6 +8463,42 @@
         "format": "file",
         "path": "assets/visual/61637572--6078.bin"
       }
+    },
+    {
+      "type": "STR ",
+      "id": 129,
+      "symbol": "BOOT_WELCOME",
+      "payload": {
+        "format": "pstring",
+        "text": "Welcome to System RISC"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 32740,
+      "symbol": "BOOT_HAPPY_MAC",
+      "payload": {
+        "format": "file",
+        "path": "../crates/mac-boot-screen/assets/happy-mac.icn"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 32741,
+      "symbol": "BOOT_MISSING_DISK",
+      "payload": {
+        "format": "file",
+        "path": "../crates/mac-boot-screen/assets/missing-disk.icn"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 32742,
+      "symbol": "BOOT_BLANK_DISK",
+      "payload": {
+        "format": "file",
+        "path": "../crates/mac-boot-screen/assets/blank-disk.icn"
+      }
     }
   ]
 }

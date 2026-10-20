@@ -422,12 +422,17 @@ and UI/performance gates. The HFS-B boot gate must exercise those larger forks.
    System/Finder from the selected HFS-B installation, then hand off the same
    volume identity to System's writable backend. Do not depend on HFS files or
    optional disk-loaded modules to read the primary boot volume.
+   ROM displays original Happy Mac artwork after boot validation and the original
+   missing-disk artwork if no bootable installation is found; capture both before
+   System entry and verify display ownership/handoff without duplicate drivers.
 5. Cut over image/test tooling once formatter validation, HFS-B-only cold boot,
    all shipped app launches, fork/metadata remount persistence and malformed/
    write-failure gates pass. New normal builds require an HFS-B startup/workspace
    volume; reject incompatible media clearly instead of silently falling back.
    Route std/native files, resources, Fonts and CLAP/APPL handling through shared
-   services. Finder lists both formats and Get Info identifies them. Copy/import
+   services. Finder lists both formats and Get Info identifies them.
+   Volume Get Info reports the mounted filesystem and actual whole-number version
+   through public Toolbox metadata, plus capacity/free space. Copy/import
    preserves forks/metadata; live in-place HFS conversion is not required.
 6. Canonical acceptance lives in crates/mac-toolbox/tests through public SDK
    services: mixed HFS/HFS-B mounts, 200-byte UTF-8/emoji/CJK names, 255/256-byte

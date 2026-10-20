@@ -1,5 +1,16 @@
 //! Both forks use copy-on-write payload blocks and bounded metadata commits.
 use super::*;
+/// Whole-data-fork publication for document transactions. Larger files use the
+/// ordinary streaming interface; this operation has the caller's I/O budget.
+pub struct DataSave<'a>
+{
+    pub parent:    u32,
+    pub name:      &'a str,
+    pub expected:  u32,
+    pub file_type: [u8; 4],
+    pub creator:   [u8; 4],
+    pub when:      Timestamp
+}
 fn append(out: &mut Vec<Extent>, e: Extent, limit: usize) -> Result<()>
 {
     if e.count == 0
@@ -106,6 +117,95 @@ impl<D: WritableBlockDevice> Transaction<'_, '_, D>
 }
 impl<'a, D: WritableBlockDevice> Volume<'a, D>
 {
+    pub fn save_data(&mut self, spec: DataSave<'_>, data: &[u8]) -> Result<Entry>
+    {
+        if data.len() > self.budget.io_bytes
+        {
+            return Err(Error::Budget);
+        }
+        let name = names::normalize(spec.name)?;
+        let mut parent = self.entry(spec.parent)?;
+        if !parent.directory
+        {
+            return Err(Error::Invalid);
+        }
+        if parent.flags & 1 != 0
+        {
+            return Err(Error::Protected);
+        }
+        let (mut entry, created) = match self.lookup(spec.parent, &name)
+        {
+            Ok(e) =>
+            {
+                if spec.expected == 0
+                {
+                    return Err(Error::Exists);
+                }
+                if e.id != spec.expected || e.directory
+                {
+                    return Err(Error::Invalid);
+                }
+                if e.flags & 1 != 0
+                {
+                    return Err(Error::Protected);
+                }
+                (e, false)
+            }
+            Err(Error::NotFound) if spec.expected == 0 =>
+            {
+                (Entry { id: self.header.next_id,
+                         parent: spec.parent,
+                         name,
+                         directory: false,
+                         flags: 0,
+                         children: 0,
+                         created: spec.when,
+                         modified: spec.when,
+                         backup: None,
+                         finder_info: [0; 32],
+                         data: Fork::default(),
+                         resources: Fork::default() },
+                 true)
+            }
+            Err(e) => return Err(e)
+        };
+        let old = self.extent_list(entry.id, ForkKind::Data, &entry.data)?;
+        let limit = self.budget.extents;
+        let mut new = Vec::new();
+        let mut tx = self.transaction()?;
+        if created
+        {
+            tx.header.next_id = tx.header.next_id.checked_add(1).ok_or(Error::Full)?;
+        }
+        for chunk in data.chunks(4096)
+        {
+            let mut page = [0; 4096];
+            page[..chunk.len()].copy_from_slice(chunk);
+            let block = tx.allocate()?;
+            write_page(tx.volume.disk, tx.volume.partition, block, &page)?;
+            append(&mut new,
+                   Extent { start: block,
+                            count: 1 },
+                   limit)?;
+        }
+        tx.volume.disk.flush()?;
+        tx.free_range(&old, 0, entry.data.blocks)?;
+        entry.modified = spec.when;
+        if created
+        {
+            entry.finder_info[..4].copy_from_slice(&spec.file_type);
+            entry.finder_info[4..8].copy_from_slice(&spec.creator);
+            tx.put(0, &name_key(spec.parent, &entry.name)?, &entry.id.to_be_bytes())?;
+            parent.children = parent.children.checked_add(1).ok_or(Error::Full)?;
+        }
+        tx.replace_fork(&mut entry, ForkKind::Data, &old, &new, data.len() as u64)?;
+        parent.modified = spec.when;
+        tx.entry(&parent)?;
+        tx.header.modified = spec.when.0;
+        tx.commit()?;
+        Ok(entry)
+    }
+
     /// Bounded random-access writes to either fork, preserving the other fork.
     /// Gaps and newly exposed bytes are zero-filled. Large writes stream through
     /// repeated calls; the limit bounds work per call, not total fork length.
@@ -249,41 +349,111 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
     /// deletion, allowing tools/services to bound traversal and cancellation.
     pub fn remove(&mut self, id: u32, when: Timestamp) -> Result<()>
     {
-        let mut e = self.entry(id)?;
-        if id == 2 || id == self.header.blessed || e.flags & 1 != 0
+        self.remove_many(&[id], when)
+    }
+
+    /// Atomically remove an explicit set, including all children of any listed
+    /// directory. Preflight and metadata staging are bounded by caller budgets.
+    pub fn remove_many(&mut self, ids: &[u32], when: Timestamp) -> Result<()>
+    {
+        if ids.is_empty()
         {
-            return Err(Error::Protected);
+            return Ok(());
         }
-        if e.directory && e.children != 0
+        if ids.len() > self.budget.io_bytes / 512
         {
-            return Err(Error::Protected);
+            return Err(Error::Budget);
         }
-        let mut parent = self.entry(e.parent)?;
-        if parent.flags & 1 != 0
+        let mut sorted = Vec::new();
+        sorted.try_reserve_exact(ids.len()).map_err(|_| Error::NoMemory)?;
+        sorted.extend_from_slice(ids);
+        sorted.sort_unstable();
+        if sorted.windows(2).any(|w| w[0] == w[1])
         {
-            return Err(Error::Protected);
+            return Err(Error::Invalid);
         }
-        let data = self.extent_list(id, ForkKind::Data, &e.data)?;
-        let resources = self.extent_list(id, ForkKind::Resource, &e.resources)?;
-        let mut tx = self.transaction()?;
-        tx.free_range(&data, 0, e.data.blocks)?;
-        tx.free_range(&resources, 0, e.resources.blocks)?;
-        tx.replace_fork(&mut e, ForkKind::Data, &data, &[], 0)?;
-        tx.replace_fork(&mut e, ForkKind::Resource, &resources, &[], 0)?;
-        tx.remove(0, &id_key(id))?;
-        tx.remove(0, &name_key(e.parent, &e.name)?)?;
-        for kind in 0..=1
+        let mut prepared = Vec::new();
+        let mut parents = Vec::new();
+        prepared.try_reserve_exact(ids.len()).map_err(|_| Error::NoMemory)?;
+        parents.try_reserve_exact(ids.len()).map_err(|_| Error::NoMemory)?;
+        let mut total_extents = 0;
+        for &id in ids
         {
-            match tx.remove(2, &attr_key(id, kind))
+            let e = self.entry(id)?;
+            if id == 2 || id == self.header.blessed || e.flags & 1 != 0
             {
-                Ok(()) | Err(Error::NotFound) =>
-                {}
-                Err(e) => return Err(e)
+                return Err(Error::Protected);
+            }
+            let data = self.extent_list(id, ForkKind::Data, &e.data)?;
+            let resources = self.extent_list(id, ForkKind::Resource, &e.resources)?;
+            total_extents += data.len() + resources.len();
+            if total_extents > self.budget.extents
+            {
+                return Err(Error::Budget);
+            }
+            parents.push(e.parent);
+            prepared.push((e, data, resources));
+        }
+        parents.sort_unstable();
+        let removed_children =
+            |id: u32| parents.partition_point(|&v| v <= id) - parents.partition_point(|&v| v < id);
+        for (e, _, _) in &prepared
+        {
+            if e.directory && removed_children(e.id) != e.children as usize
+            {
+                return Err(Error::Protected);
             }
         }
-        parent.children = parent.children.checked_sub(1).ok_or(Error::Corrupt)?;
-        parent.modified = when;
-        tx.entry(&parent)?;
+        let mut updates = Vec::new();
+        for (i, &id) in parents.iter().enumerate()
+        {
+            if (i > 0 && parents[i - 1] == id) || sorted.binary_search(&id).is_ok()
+            {
+                continue;
+            }
+            let mut parent = self.entry(id)?;
+            if parent.flags & 1 != 0
+            {
+                return Err(Error::Protected);
+            }
+            parent.children =
+                parent.children.checked_sub(removed_children(id) as u32).ok_or(Error::Corrupt)?;
+            parent.modified = when;
+            updates.try_reserve(1).map_err(|_| Error::NoMemory)?;
+            updates.push(parent);
+        }
+        let mut tx = self.transaction()?;
+        for (e, data, resources) in prepared
+        {
+            for (kind, extents) in [(ForkKind::Data, data), (ForkKind::Resource, resources)]
+            {
+                tx.free_range(&extents, 0, e.fork(kind).blocks)?;
+                let mut logical = 0;
+                for (i, extent) in extents.iter().enumerate()
+                {
+                    if i >= 8
+                    {
+                        tx.remove(1, &overflow_key(e.id, kind, logical))?;
+                    }
+                    logical += u64::from(extent.count);
+                }
+            }
+            tx.remove(0, &id_key(e.id))?;
+            tx.remove(0, &name_key(e.parent, &e.name)?)?;
+            for kind in 0..=1
+            {
+                match tx.remove(2, &attr_key(e.id, kind))
+                {
+                    Ok(()) | Err(Error::NotFound) =>
+                    {}
+                    Err(e) => return Err(e)
+                }
+            }
+        }
+        for parent in updates
+        {
+            tx.entry(&parent)?;
+        }
         tx.header.modified = when.0;
         tx.commit()
     }

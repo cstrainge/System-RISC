@@ -5,6 +5,7 @@ Build/package a private Finder, replace it only on a cloned disk, boot the real
 ROM/System graphically (headless display), and retain serial/outcome evidence.
 Rust owns every compatibility assertion and the acceptance marker.
 """
+from hfs_b_tool import Image as NativeImage
 import argparse
 import hashlib
 import json
@@ -37,20 +38,10 @@ def private_disk(output, fixture_name='conformance'):
     raw = private / 'conformance.raw'
     subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                     str(vm.DIST / 'system7.qcow2'), str(raw)], check=True)
-    state = private / 'hfs-state'
-    state.mkdir()
-    env = dict(os.environ, HOME=str(state), TZ='UTC')
-    tools = vm.ROOT / '.toolchains/hfsutils/rootfs/usr/bin'
 
-    def hfs(name, *args):
-        subprocess.run([str(tools / name), *map(str, args)], env=env, check=True,
-                       stdout=subprocess.PIPE)
-    hfs('hmount', raw)
-    try:
-        hfs('hdel', ':System Folder:Finder')
-        hfs('hcopy', '-m', packaged / 'Finder.bin', ':System Folder:')
-    finally:
-        hfs('humount')
+    fs = NativeImage(raw)
+    fs.remove('/System Folder/Finder')
+    fs.import_macbinary(packaged / 'Finder.bin', '/System Folder')
     shutil.copyfile(vm.DIST / 'bootrom.bin', private / 'bootrom.bin')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)

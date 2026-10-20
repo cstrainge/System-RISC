@@ -49,8 +49,20 @@ fn finder_menus_and_trash_are_resource_based_and_persist_across_disk_boots()
     assert_eq!(log("before-reboot").matches("FINDER_NEW_FOLDER ").count(),
                1,
                "modal Ctrl-N escaped to Finder");
-    assert!(log("trashed").contains("FINDER_TRASHED volume=1"), "drag did not move item to Trash");
-    assert!(log("put-away").contains("FINDER_PUT_AWAY volume=1"));
+    let (volume, _) =
+        mac_system::testing::with_file_disk(&root.join("build/system7/dist/system7.hfsb"),
+                                            true,
+                                            Default::default(),
+                                            |services| {
+                                                let system =
+                                                    unsafe {
+                                                        mac_toolbox::System::from_raw(services)
+                                                    }.unwrap();
+                                                system.files().volume_at(0).unwrap().id
+                                            }).unwrap();
+    assert!(log("trashed").contains(&format!("FINDER_TRASHED volume={volume} ")),
+            "drag did not move item to Trash");
+    assert!(log("put-away").contains(&format!("FINDER_PUT_AWAY volume={volume} ")));
     assert_eq!(log("trashed-again").matches("FINDER_TRASHED ").count(),
                2,
                "Ctrl-Backspace did not use real Trash");
@@ -125,10 +137,10 @@ fn finder_menus_and_trash_are_resource_based_and_persist_across_disk_boots()
     }
     mac_system::testing::with_file_disk(Path::new(report["private_disk"].as_str().unwrap()),true,Default::default(),|services|{
         let system=unsafe{mac_toolbox::System::from_raw(services)}.unwrap();
-        let trash=system.files().trash_directory(1,false).unwrap();assert_eq!(trash.child_count,0);
-        assert_eq!(system.files().lookup(1,2,"untitled folder"),Err(mac_toolbox::Error(mac_toolbox::NOT_FOUND)));
-        assert!(system.files().lookup(1,2,"System Folder/System").is_ok());
-        assert!(system.files().lookup(1,2,"System Folder/Finder").is_ok());
+        let trash=system.files().trash_directory(system.files().volume_at(0).unwrap().id,false).unwrap();assert_eq!(trash.child_count,0);
+        assert_eq!(system.files().lookup(system.files().volume_at(0).unwrap().id,2,"untitled folder"),Err(mac_toolbox::Error(mac_toolbox::NOT_FOUND)));
+        assert!(system.files().lookup(system.files().volume_at(0).unwrap().id,2,"System Folder/System").is_ok());
+        assert!(system.files().lookup(system.files().volume_at(0).unwrap().id,2,"System Folder/Finder").is_ok());
     }).unwrap();
     let accepted = serde_json::json!({"status":"passed","boots":3,"alert_original_pixels":checked,"pixel_differences":0,"scope":"real Finder menu/drag/shortcut/PutAway/modal confirmation and persistent HFS Trash","capture":report});
     let bytes = serde_json::to_vec_pretty(&accepted).unwrap();

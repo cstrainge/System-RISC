@@ -19,8 +19,10 @@ bench = false
 [dependencies]
 spinning_top = "=0.2.5"
 mac-abi.workspace = true
+mac-boot-screen.workspace = true
 mac-formats.workspace = true
 mac-hfs.workspace = true
+mac-filesystem.workspace = true
 ttf-parser = { version = "0.25.1", default-features = false, features = ["no-std-float"] }
 ab_glyph_rasterizer = { version = "0.1.10", default-features = false, features = ["libm"] }
 libm = "0.2"

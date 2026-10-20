@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cold-boot two real HFS volumes and compare native Finder icons with System7."""
+"""Cold-boot real HFS-B/HFS volumes and compare native Finder icons with System7."""
 import hashlib,json,os,re,struct,subprocess,time
 from pathlib import Path
 from PIL import Image,ImageChops
@@ -90,8 +90,10 @@ def main():
   result={'case':name,'compared_pixels':actual.width*actual.height,'different_pixels':different,'masked_pixels':0,'native_rect':list(rect),'original_rect':list(expected_rect),'original':str(expected_path.relative_to(ROOT)),'original_sha256':sha(expected_path)};report['comparisons'].append(result)
   assert different==0,f'{name}: {different} pixel differences'
  try:
-  assert 'FINDER_VOLUME id=1 name=System RISC'in log()and'FINDER_VOLUME id=2 name=Second Volume'in log(),log()
-  report['checks'].append('Both actual attached HFS volumes enumerated through resident File Manager')
+  volumes = {name: int(identifier) for identifier, name in re.findall(r'^FINDER_VOLUME id=(\d+) name=(.*)$', log(), re.M)}
+  assert {'System RISC', 'Second Volume'} <= volumes.keys(), log()
+  assert len(set(volumes.values())) == len(volumes), 'mounted volumes aliased an object ID'
+  report['checks'].append('Actual HFS-B startup and classic HFS exchange volumes enumerated through resident File Manager')
   click(600,104,True);click(600,104,True)
   wait(lambda s:s.get('windows')=='2','second volume opens')
   parent_id=state_now()['front']

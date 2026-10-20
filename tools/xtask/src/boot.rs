@@ -143,13 +143,6 @@ fn clone_raw(source: &Path, destination: &Path) -> Result<()>
                                 .arg(destination))
 }
 
-fn patch(path: &Path, position: u64, bytes: &[u8]) -> Result<()>
-{
-    let mut file = OpenOptions::new().write(true).open(path)?;
-    file.seek(SeekFrom::Start(position))?;
-    file.write_all(bytes)?;
-    Ok(())
-}
 
 fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alteration: &str)
                   -> Result<()>
@@ -159,6 +152,18 @@ fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alterat
     let mut resources = resource::decode(&file.resources)?;
     match alteration
     {
+        "large-fork" =>
+        {
+            // Grow actual resident payloads as well as the fork's unused tail.
+            // ROM selects executable resources; System must load this additional
+            // resource within its explicit selected-payload memory budget.
+            resources.push(resource::Resource { kind:       *b"TEST",
+                                                id:         32760,
+                                                name:
+                                                    Some(b"Large-fork boot acceptance".to_vec()),
+                                                attributes: 0,
+                                                data:       vec![0x5a; 1024 * 1024] });
+        }
         "code" => resources.iter_mut().find(|r| r.kind == *b"RV64").unwrap().data[0] = 0,
         "elf-resource" =>
         {
@@ -186,16 +191,18 @@ fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alterat
         _ => return Err(error("unknown System alteration"))
     }
     file.resources = resource::encode(&resources)?;
-    let transport = directory.join(format!("System-{alteration}.bin"));
-    fs::write(&transport, macbinary::encode(&file)?)?;
-    disk::edit(workspace,
-               image,
-               &directory.join(format!("hfs-{alteration}")),
-               &[vec!["hdel".into(), ":System Folder:System".into()],
-                 vec!["hcopy".into(),
-                      "-m".into(),
-                      transport.into_os_string(),
-                      ":System Folder:".into()]])
+    if alteration == "large-fork"
+    {
+        file.resources.resize(5 * 1024 * 1024 + 17, 0x77);
+    }
+    let _ = directory;
+    disk::edit(image, |volume| {
+        let folder = volume.blessed_folder()?.id;
+        let old = volume.lookup(folder, "System")?;
+        volume.remove(old.id, hfs_b::now()?)?;
+        hfs_b::import_macbinary(volume, folder, &file)?;
+        Ok(())
+    })
 }
 
 /// Wrap the generated volume in an actual Apple partition map.
@@ -223,8 +230,8 @@ fn apm(source: &Path, destination: &Path) -> Result<()>
             out.seek(SeekFrom::Current(count as i64))?;
         }
     }
-    for (index, start, sectors, kind) in
-        [(1u64, 1u32, 2u32, "Apple_partition_map"), (2, 2048, (length / 512) as u32, "Apple_HFS")]
+    for (index, start, sectors, kind) in [(1u64, 1u32, 2u32, "Apple_partition_map"),
+                                          (2, 2048, (length / 512) as u32, "System_RISC_HFS_B")]
     {
         let mut entry = [0; 512];
         entry[..2].copy_from_slice(b"PM");
@@ -250,7 +257,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
 {
     let directory = workspace.build.join("boot-checks");
     fs::create_dir_all(&directory)?;
-    let raw = workspace.build.join("dist/system7.hfs");
+    let raw = workspace.build.join("dist/system7.hfsb");
     let qcow = workspace.build.join("dist/system7.qcow2");
     let hash_before = package::sha256(&fs::read(&qcow)?);
     let mut cases = vec![case(workspace,
@@ -261,61 +268,85 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                               false)?,
                          case(workspace,
                               &directory,
-                              "raw-hfs",
+                              "raw-hfs-b",
                               &[(&raw, "raw")],
                               &["System RISC Boot ROM v1 at 0x200", "CNID=16",
                                 "System: native service table ready", "BOOT_SYSTEM_READY:"],
                               true)?,
                          case(workspace,
                               &directory,
-                              "qcow2-hfs",
+                              "qcow2-hfs-b",
                               &[(&qcow, "qcow2")],
                               &["BOOT_SYSTEM_READY:"],
                               true)?,];
-    let renamed = directory.join("renamed.hfs");
+    let large = directory.join("large-system-fork.hfsb");
+    clone_raw(&raw, &large)?;
+    altered_system(workspace, &directory, &large, "large-fork")?;
+    cases.push(case(workspace,
+                    &directory,
+                    "system-resource-fork-over-4mib",
+                    &[(&large, "raw")],
+                    &["BOOT_SYSTEM_READY:", "DESKTOP_READY:"],
+                    true)?);
+    let classic = workspace.root.join("crates/mac-toolbox/tests/data/files/dates-2026.hfs");
+    cases.push(case(workspace,
+                    &directory,
+                    "classic-hfs-is-not-native-startup",
+                    &[(&classic, "raw")],
+                    &["native boot requires HFS-B; recreate System disk", "BOOT_NO_SYSTEM:"],
+                    false)?);
+    let renamed = directory.join("renamed.hfsb");
     clone_raw(&raw, &renamed)?;
-    disk::edit(workspace,
-               &renamed,
-               &directory.join("hfs-rename"),
-               &[vec!["hrename".into(), ":System Folder".into(), ":Renamed Startup".into()]])?;
+    disk::edit(&renamed, |v| {
+        let id = v.blessed_folder()?.id;
+        v.rename(id, 2, "Renamed Startup", hfs_b::now()?)?;
+        Ok(())
+    })?;
     cases.push(case(workspace,
                     &directory,
                     "renamed-blessed-folder",
                     &[(&renamed, "raw")],
                     &["blessed folder 'Renamed Startup' CNID=16", "BOOT_SYSTEM_READY:"],
                     true)?);
-    let unblessed = directory.join("unblessed.hfs");
+    let unblessed = directory.join("unblessed.hfsb");
     clone_raw(&raw, &unblessed)?;
-    patch(&unblessed, 1024 + 92, &[0; 4])?;
+    disk::edit(&unblessed, |v| {
+        v.bless(0, hfs_b::now()?)?;
+        Ok(())
+    })?;
     cases.push(case(workspace,
                     &directory,
                     "unblessed",
                     &[(&unblessed, "raw")],
-                    &["volume has no blessed System Folder", "BOOT_NO_SYSTEM:"],
+                    &["blessed System Folder CNID is missing", "BOOT_NO_SYSTEM:"],
                     false)?);
-    let missing = directory.join("missing.hfs");
+    let missing = directory.join("missing.hfsb");
     clone_raw(&raw, &missing)?;
-    disk::edit(workspace,
-               &missing,
-               &directory.join("hfs-missing"),
-               &[vec!["hdel".into(), ":System Folder:System".into()]])?;
+    disk::edit(&missing, |v| {
+        let parent = v.blessed_folder()?.id;
+        let id = v.lookup(parent, "System")?.id;
+        v.remove(id, hfs_b::now()?)?;
+        Ok(())
+    })?;
     cases.push(case(workspace,
                     &directory,
                     "missing-system",
                     &[(&missing, "raw")],
                     &["startup file is missing", "BOOT_NO_SYSTEM:"],
                     false)?);
-    let missing_finder = directory.join("missing-finder.hfs");
+    let missing_finder = directory.join("missing-finder.hfsb");
     clone_raw(&raw, &missing_finder)?;
-    disk::edit(workspace,
-               &missing_finder,
-               &directory.join("hfs-missing-finder"),
-               &[vec!["hdel".into(), ":System Folder:Finder".into()]])?;
+    disk::edit(&missing_finder, |v| {
+        let parent = v.blessed_folder()?.id;
+        let id = v.lookup(parent, "Finder")?.id;
+        v.remove(id, hfs_b::now()?)?;
+        Ok(())
+    })?;
     cases.push(case(workspace,
                     &directory,
                     "missing-finder",
                     &[(&missing_finder, "raw")],
-                    &["FINDER_LOAD_FAILED:", "BOOT_NO_SYSTEM:"],
+                    &["startup file is missing", "BOOT_NO_SYSTEM:"],
                     false)?);
     for (alteration, expected) in [("code", "invalid RV64 segment resource header"),
                                    ("elf-resource", "ELF-backed code resources are unsupported"),
@@ -323,7 +354,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                                    ("role", "not a compatible System"),
                                    ("address", "reservation overlaps firmware")]
     {
-        let path = directory.join(format!("bad-{alteration}.hfs"));
+        let path = directory.join(format!("bad-{alteration}.hfsb"));
         clone_raw(&raw, &path)?;
         altered_system(workspace, &directory, &path, alteration)?;
         cases.push(case(workspace,
@@ -333,7 +364,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                         &[expected, "BOOT_NO_SYSTEM:"],
                         false)?);
     }
-    let partitioned = directory.join("partitioned.hfs");
+    let partitioned = directory.join("partitioned.hfsb");
     apm(&raw, &partitioned)?;
     cases.push(case(workspace,
                     &directory,
@@ -346,9 +377,9 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     &directory,
                     "disk-fallback",
                     &[(&unblessed, "raw"), (&raw, "raw")],
-                    &["volume has no blessed System Folder", "BOOT_SYSTEM_READY:"],
+                    &["blessed System Folder CNID is missing", "BOOT_SYSTEM_READY:"],
                     true)?);
-    let malformed = directory.join("bad-code.hfs");
+    let malformed = directory.join("bad-code.hfsb");
     cases.push(case(workspace,
                     &directory,
                     "invalid-system-fallback",
@@ -359,7 +390,7 @@ pub fn check(workspace: &Workspace) -> Result<Value>
     {
         return Err(error("boot checks changed the generated qcow2"));
     }
-    let report = json!({"status": "passed", "method": "QEMU cold reset to read-only pflash; virtio-block reads HFS and loads System, Finder, WDEF and CDEF resources entirely inside the guest", "cases": cases, "disk_boot_tested": true, "finder_launched": true, "rom": serde_json::from_slice::<Value>(&fs::read(workspace.build.join("dist/bootrom.json"))?)?, "qcow2_unchanged": true, "qemu": output(Command::new("qemu-system-riscv64").arg("--version"))?});
+    let report = json!({"status": "passed", "method": "QEMU cold reset to read-only pflash; virtio-block reads HFS-B and loads System, Finder, WDEF and CDEF resources entirely inside the guest", "cases": cases, "disk_boot_tested": true, "finder_launched": true, "rom": serde_json::from_slice::<Value>(&fs::read(workspace.build.join("dist/bootrom.json"))?)?, "qcow2_unchanged": true, "qemu": output(Command::new("qemu-system-riscv64").arg("--version"))?});
     write_json(&workspace.repo.join("results/system7/boot-checks.json"), &report)?;
     println!("{} ROM boot checks passed.", cases.len());
     Ok(report)

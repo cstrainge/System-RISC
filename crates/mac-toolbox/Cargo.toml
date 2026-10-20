@@ -30,3 +30,6 @@ mac-code-resource = { path = "../mac-code-resource" }
 mac-build.workspace = true
 mac-text = { path = "../mac-text" }
 disc-v = { version = "=0.1.3", default-features = false }
+mac-hfs-b = { path = "../mac-hfs-b" }
+mac-block.workspace = true
+hfs-b = { path = "../../tools/hfs-b" }

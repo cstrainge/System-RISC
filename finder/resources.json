@@ -2270,7 +2270,10 @@
           "This disk is read-only.",
           "This item is locked or in use.",
           "The disk is full.",
-          "The item couldn't be saved."
+          "The item couldn't be saved.",
+          "^0 total\r^1 free",
+          "^0, version ^1",
+          "Block device ^0"
         ]
       }
     },
@@ -2282,6 +2285,24 @@
       "payload": {
         "format": "file",
         "path": "assets/visual/61637572-6500.bin"
+      }
+    },
+    {
+      "type": "gInf",
+      "id": 11511,
+      "symbol": "GET_INFO_DISK_GINF",
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/layout-11511.bin"
+      }
+    },
+    {
+      "type": "fvew",
+      "id": 11511,
+      "symbol": "GET_INFO_DISK_FVEW",
+      "payload": {
+        "format": "file",
+        "path": "assets/get-info/fvew-11511.bin"
       }
     }
   ]

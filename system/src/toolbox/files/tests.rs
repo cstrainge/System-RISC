@@ -141,8 +141,15 @@ fn manager(context: &mut Context) -> Manager
                                startup_disk:            1,
                                startup_partition_start: 8 }).unwrap()
 }
-fn call(manager: &mut Manager, operation: u32, volume: u32, id: u32) -> FileCall
+fn volume_id(manager: &Manager, index: usize) -> u32
 {
+    manager.volumes.iter().nth(index).unwrap().0
+}
+/// Unit fixtures address their generated volumes by one-based ordinal here;
+/// actual requests always carry the generation-tagged ID issued by the manager.
+fn call(manager: &mut Manager, operation: u32, ordinal: u32, id: u32) -> FileCall
+{
+    let volume = if ordinal == 0 { 0 } else { volume_id(manager, (ordinal - 1) as usize) };
     let mut c = FileCall { operation,
                            volume,
                            cnid: id,
@@ -177,17 +184,17 @@ fn discovers_every_disk_partition_and_preserves_raw_metadata()
     assert_eq!(v.partition_start, 8);
     assert_eq!(v.total_bytes, 58 * 512);
     assert_eq!(v.free_bytes, 20 * 512);
-    assert_eq!(v.created, 42);
+    assert_eq!(v.created, 42_000_000);
     let d = call(&mut m, CATALOG, 1, 16).entry;
     assert!(d.is_directory());
     assert_eq!(d.finder_info, [0xa7; 32]);
-    assert_eq!(d.created, 12345);
+    assert_eq!(d.created, 12_345_000_000);
     let f = call(&mut m, CATALOG, 1, 19).entry;
     assert_eq!(f.name(), "Café");
     assert_eq!(f.file_type, *b"TEXT");
     assert_eq!(f.creator, *b"TEST");
     assert_eq!(f.flags, 1);
-    assert_eq!(f.created, 555);
+    assert_eq!(f.created, 555_000_000);
     assert_eq!(&f.finder_info[16..], &[0x31; 16]);
     assert_eq!((f.data_length, f.resource_length), (600, 7));
 }
@@ -197,14 +204,14 @@ fn traverses_parent_utf8_lookup_paths_and_rejects_bad_inputs()
     let mut context = Context { disks: vec![disk()] };
     let mut m = manager(&mut context);
     let mut c = FileCall { operation: LOOKUP,
-                           volume: 1,
+                           volume: volume_id(&m, 0),
                            ..Default::default() };
     m.request(&mut c, "/folder/./CAFÉ", &mut []).unwrap();
     assert_eq!(c.entry.id, 19);
     assert_eq!(call(&mut m, PARENT, 1, 19).entry.id, 16);
     assert_eq!(call(&mut m, PARENT, 1, 2).entry.id, 2);
     let mut path = FileCall { operation: PATH,
-                              volume: 1,
+                              volume: volume_id(&m, 0),
                               cnid: 19,
                               ..Default::default() };
     let mut output = [0xa5; 80];
@@ -223,7 +230,7 @@ fn traverses_parent_utf8_lookup_paths_and_rejects_bad_inputs()
     assert_eq!(m.request(&mut c, "absent", &mut []), Err(NOT_FOUND));
     assert_eq!(m.request(&mut c, "🦀", &mut []), Err(BAD_ARGUMENT));
     let mut child = FileCall { operation: DIRECTORY_ENTRY,
-                               volume: 1,
+                               volume: volume_id(&m, 0),
                                cnid: 16,
                                index: 1,
                                ..Default::default() };
@@ -269,7 +276,7 @@ fn independent_fork_marks_seek_eof_close_stale_handles_and_capacity()
     let newer = call(&mut m, OPEN, 1, 19).handle;
     assert_ne!(newer, a);
     let mut resource = FileCall { operation: OPEN,
-                                  volume: 1,
+                                  volume: volume_id(&m, 0),
                                   cnid: 19,
                                   fork: RESOURCE_FORK,
                                   ..Default::default() };
@@ -282,7 +289,7 @@ fn independent_fork_marks_seek_eof_close_stale_handles_and_capacity()
         call(&mut m, OPEN, 1, 19);
     }
     let mut overflow = FileCall { operation: OPEN,
-                                  volume: 1,
+                                  volume: volume_id(&m, 0),
                                   cnid: 19,
                                   ..Default::default() };
     assert_eq!(m.request(&mut overflow, "", &mut []), Err(NO_MEMORY));
@@ -356,7 +363,7 @@ fn actual_disk_catalog_and_both_forks()
     assert_eq!(call(&mut manager, VOLUME_COUNT, 0, 0).index, 1);
     assert_eq!(call(&mut manager, VOLUME_INFO, 1, 0).volume_info.startup, 1);
     let mut open = FileCall { operation: OPEN,
-                              volume: 1,
+                              volume: volume_id(&manager, 0),
                               cnid: entry.id,
                               fork: RESOURCE_FORK,
                               ..Default::default() };
@@ -456,7 +463,7 @@ fn public_safe_client_crosses_actual_filecall_and_drop_releases_handles()
     API.with(|fixture| assert!(fixture.borrow().manager.handles.iter().next().is_none()));
     // Untrusted scalar fields do not let safe callers supply unrelated raw pointers.
     let mut raw = FileCall { operation: LOOKUP,
-                             volume: 1,
+                             volume: volume.id,
                              cnid: 2,
                              name: core::ptr::dangling(),
                              name_length: usize::MAX,
@@ -529,7 +536,7 @@ fn bounded_discovery_empty_system_invalid_ids_and_parent_cycles_are_explicit()
     let mut context = Context { disks: vec![cyclic] };
     let mut manager = manager(&mut context);
     let mut path = FileCall { operation: PATH,
-                              volume: 1,
+                              volume: volume_id(&manager, 0),
                               cnid: 16,
                               ..Default::default() };
     assert_eq!(manager.request(&mut path, "", &mut [0; 128]), Err(NOT_SUPPORTED));

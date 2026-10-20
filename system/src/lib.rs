@@ -35,3 +35,6 @@ pub(crate) mod test_mdef;
 extern crate std;
 #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
 pub mod testing;
+
+#[cfg(target_arch = "riscv64")]
+mod boot_screen;

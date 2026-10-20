@@ -137,11 +137,10 @@ unsafe extern "C" fn(*const BootInfo) -> *const SystemServices
 
 System is initialized once on one hart, before concurrent execution. The
 bootstrap supplies RAM information, an optional logging callback, and an optional
-startup-volume context/read callback. The latter reads a named file's resource
-fork from the same blessed folder selected during boot; null output queries its
-length. It remains valid while System/Finder execute. System initializes its
-own heap, graphics, input and window services, loads Finder and calls its entry.
-This call normally remains in Finder's event loop. Without the startup callback,
+firmware block-device interface and selected startup disk/partition identity.
+System mounts that disk through its resident File Manager and reads maps and
+selected resource payloads with bounded allocations. There is no whole-fork
+firmware callback. BootInfo.flags bit0 requests graphical startup; without it
 System returns a non-graphical service table for the isolated ABI smoke test.
 Incompatible arguments return null. The System image stays resident.
 
@@ -200,25 +199,38 @@ names are not substitutes for classic 68k Handle, GrafPort or MacRoman records.
 The separate QEMU ABI smoke harness materializes the exact packaged segment
 resources through the shared load planner into raw memory images. QEMU loads
 those raw reservations for the small ABI harness. The [boot ROM](bootrom/README.md)
-separately tests real virtio/HFS/resource/segment loading; System loads Finder and
-definition resources through its startup callback. Normal disk-boot checks wait
+separately tests real virtio/HFS-B/resource/segment loading; System loads Finder and
+definition resources through its resident filesystem service. Normal disk-boot checks wait
 for `DESKTOP_READY`. Rebuild the complete unreleased system on format changes.
 See [CODE-RESOURCES.md](CODE-RESOURCES.md) for executable resource families.
 
-ABI5 BootInfo adds optional write_sector and flush_disk callbacks to the storage
-contract introduced by ABI4. Its size is104bytes on RV64; SystemServices remains
-24bytes. Device ordinals stay stable while System runs; NOT_FOUND ends device
-enumeration. Each read or write transfers exactly512bytes; flush is an explicit
-durability barrier. Callback contexts and DMA queues remain firmware-owned and
-are serialized by the resident owner guard. DiskInfo is24bytes and carries sector
-count, read-only state and the driver icon resource identity. Missing write/flush
-callbacks make a volume read-only. Rebuild all native modules together for ABI5.
+The current BootInfo is88bytes on RV64; SystemServices remains24bytes. BootInfo
+contains RAM/log information, firmware disk-info/read/write/flush callbacks,
+startup disk/partition identity and flags. Device ordinals remain stable while
+System runs; NOT_FOUND ends enumeration. Each read/write transfers exactly512
+bytes; flush is an explicit durability barrier. Callback contexts and DMA queues
+remain firmware-owned and are serialized by the resident owner guard. DiskInfo
+is24bytes and carries sector count, read-only state and driver icon identity.
+Missing write/flush callbacks make storage read-only. Unknown native artifacts
+must be rebuilt together; no earlier BootInfo layout is decoded.
+
+Native catalog and volume names have256-byte UTF8 buffers, enough for255-byte
+NFC names plus a spare byte. Catalog dates are unsigned64-bit microseconds since
+1904, with a separate backup-presence flag so the actual epoch is representable.
+VolumeInfo carries filesystem kind and whole filesystem version (HFS has no
+explicit disk version; HFS-B currently reports1) and an explicit blessed-folder
+CNID; HFS-B does not overload the Finder-info bytes to carry its blessing.
+CatalogInfo and VolumeInfo are
+each368bytes; FileCall is832bytes on RV64. Native clock results carry signed Unix
+seconds and a checked microsecond fraction; classic seconds projections are
+explicit and reject dates outside their32-bit range.
+
 Window and retained drawing titles accept768 UTF8 bytes, enough for all255
-MacRoman characters after conversion. All inline font/resource/control title
-buffers use the same capacity. File/volume name buffers remain sized for HFS31.
+MacRoman characters after conversion. Legacy Pascal/MacRoman conversion remains
+at the trap boundary; native application interfaces expose Rust strings.
 
 FILE requests and metadata are defined in mac-abi/src/files.rs. File IDs are
-opaque mounted-volume IDs plus persistent HFS catalog IDs; open handles include
+opaque mounted-volume IDs plus persistent catalog IDs; volume and open handles include
 a generation. Reads copy into caller storage, and both forks have independent
 marks. Native slash paths are distinct from classic colon paths. CONTROL requests
 use mac-abi/src/controls.rs and dispatch CDEF0 (standard controls) or CDEF1
@@ -282,12 +294,14 @@ New native packages stamp their MacBinary Created and Modified fields with the
 actual packaging time in UTC. An explicit `SOURCE_DATE_EPOCH` overrides that
 time for reproducible packages; an absent value never means Unix epoch zero.
 Lossless archive rebuilds preserve the archived dates. Package reports record
-the chosen dates, wall-clock packaging time and optional source epoch. HFS image
+the chosen dates, wall-clock packaging time and optional source epoch. HFS-B image
 creation preserves file dates on import, creates the volume and initial folders
 at the real build time, and records its UTC creation interval for SDK validation.
 Finder Get Info displays the catalog timestamps rather than a synthetic date.
 
-Native Rust `Timestamp` holds signed64-bit Unix seconds. HFS/MacBinary dates are
+Native Rust `Timestamp` holds signed64-bit Unix seconds plus a checked microsecond
+fraction. Native HFS-B dates and exported manifest dates are unsigned64-bit
+microseconds since1904. External classic HFS/MacBinary dates are
 unsigned32-bit seconds since1904; File Manager metadata provides `created_at`,
 `modified_at` and `backed_up_at` Rust timestamp accessors. Conversion is checked,
 including dates in2026 and across Unix's signed32-bit boundary. The last legacy
@@ -334,9 +348,11 @@ substitution, modal input routing, default Return, cancel Escape and button
 press/leave/reentry/release. General DLOG/edit-text/user-items/alert stages remain
 unimplemented. Unsupported resource items fail before creating a window.
 
-CLOCK0x10018 returns signed64-bit Unix wall-clock seconds. The QEMU virt adapter
+CLOCK0x10018 returns signed64-bit Unix wall-clock seconds, a u32 microsecond
+fraction less than1,000,000, and a zero reserved u32. The QEMU virt adapter
 serializes Goldfish TIME_LOW/TIME_HIGH reads; no HFS epoch is imposed on native
-Timestamp. HFS writes explicitly check conversion to unsigned1904 seconds.
+Timestamp. Classic HFS writes explicitly check conversion to unsigned1904 seconds;
+HFS-B writes preserve the complete microsecond value.
 Resource STRING operation10 decodes STR or zero-based STR# to UTF8; only the
 paired Pascal Resource trap returns a Pascal/MacRoman result.
 

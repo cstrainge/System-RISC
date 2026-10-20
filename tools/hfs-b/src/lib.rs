@@ -126,16 +126,20 @@ pub fn import_macbinary_named<D: WritableBlockDevice>(volume: &mut Volume<'_, D>
                                                       name: &str)
                                                       -> HostResult<Entry>
 {
-    let e = volume.create(parent, name, false, Timestamp::from_legacy(file.created))?;
+    import_macbinary_at(volume, parent, file, name, now()?)
+}
+/// Import file dates verbatim while timestamping destination changes separately.
+pub fn import_macbinary_at<D: WritableBlockDevice>(volume: &mut Volume<'_, D>, parent: u32,
+                                                   file: &mac_formats::macbinary::MacFile,
+                                                   name: &str, when: Timestamp)
+                                                   -> HostResult<Entry>
+{
+    let e = volume.create(parent, name, false, when)?;
     for (kind, data) in [(ForkKind::Data, &file.data), (ForkKind::Resource, &file.resources)]
     {
         for (index, chunk) in data.chunks(64 * 1024).enumerate()
         {
-            volume.write_fork(e.id,
-                              kind,
-                              (index * 64 * 1024) as u64,
-                              chunk,
-                              Timestamp::from_legacy(file.modified))?;
+            volume.write_fork(e.id, kind, (index * 64 * 1024) as u64, chunk, when)?;
         }
     }
     let mut info = [0; 32];
@@ -147,7 +151,8 @@ pub fn import_macbinary_named<D: WritableBlockDevice>(volume: &mut Volume<'_, D>
                            info,
                            Timestamp::from_legacy(file.created),
                            Timestamp::from_legacy(file.modified),
-                           None)?)
+                           None,
+                           when)?)
 }
 pub fn write_stream<D: WritableBlockDevice>(volume: &mut Volume<'_, D>, id: u32, kind: ForkKind,
                                             mut input: impl Read, when: Timestamp)
