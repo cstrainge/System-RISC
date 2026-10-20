@@ -34,6 +34,9 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   Accumulate exact damage, preserve occlusion and clipping, and leave unrelated
   pixels and drawing work untouched. Movement damages both old and new bounds;
   a local update must never implicitly invalidate the desktop or parent window.
+
+Performance bar: the code must not do unnecessary work. Full recomputation is the last resort, not the default: prefer bounded invalidation over full repaints, early-out on no-change, cache what doesn't move, and never do per-event work when per-change work will do. "Input happened" is not "pixels changed." When in doubt, the Cursor Test's responsiveness and the present() trace timings are the benchmarks — the mouse is the profiler.
+
 - Use the supplied rustfmt.toml. Run checks appropriate to the change and report
   actual coverage and remaining gaps. A passing subset is not full Toolbox or
   original 68k application compatibility.
