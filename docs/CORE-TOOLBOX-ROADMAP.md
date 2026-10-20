@@ -17,7 +17,7 @@ The practical next target is a native document application that can open, edit, 
 | QuickDraw / PICT / icons | Usable tested slice | L | Complete port/recording lifetimes, grafProcs, advanced transfers/patterns, indexed worlds and remaining PICT semantics. |
 | Color / Palette / devices | Narrow foundation | XL | Actual Palette Manager, GDevice/depth lifecycle, color matching, indexed conversions and palette animation. |
 | Fonts / Roman text | Usable tested slice | L | Measured TrueType/style pixel differences, fractional spacing/kerning, text policy, Roman word/collation/formatting services. |
-| Events / clocks | Usable tested slice | M | WaitNextEvent sleep/mouse regions, scheduler wakeups, timer/caret/double-click policy and suspend/resume. |
+| Events / clocks | Usable tested slice | M | WaitNextEvent sleep/mouse regions, scheduler wakeups, timer/caret/double-click policy, suspend/resume and extended pointer input (P3). |
 | Windows / WDEF | Usable tested slice | M | Full query/visibility/hilite/behind/refcon lifecycle, custom definition callbacks, regions and classic records. |
 | Controls / CDEF | Narrow foundation | L | Owned control objects/lists, full properties/lifetime, popup/user controls, action callbacks and keyboard focus. |
 | Menus / MDEF | Usable tested slice | M | Dynamic editing, hierarchy/popups/scrolling, complete icon/style variants, custom lifecycle and flashing. |
@@ -127,6 +127,21 @@ translated 68k execution is a separate prerequisite for the original-app gate.
   callbacks, disposal, stale/foreign IDs and exit cleanup. Add a translated 68k
   probe using the original traps and repeat coexistence tests on one, two and
   four harts while another application makes independent progress.
+
+### P3 — Extended pointer input
+
+Status: backlog. Add secondary mouse buttons and horizontal/vertical wheel input
+through a versioned native Toolbox event interface. Preserve classic event
+records, masks, primary-button state and ordering; unmodified legacy apps do not
+receive unfamiliar events or synthetic clicks/keys. Optional compatibility
+behavior needs explicit, verified support.
+
+Resident scrollable UI handles wheel actions through shared services; native
+applications can receive extended input and provide resource-based context menus.
+Specify targeting, modality/capture, precision, single-consumer routing and
+bounded coalescing. Include Finder, ResEdit, TextEdit and Standard File acceptance,
+classic event/polling regressions, and cursor/repaint/dispatch performance gates.
+See [the extended pointer contract](../EVENTS.md#planned-extended-pointer-input).
 
 ## Planned application tooling
 

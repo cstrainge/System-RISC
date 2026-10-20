@@ -57,6 +57,67 @@ threads and per-application event ownership remain the THREADING.md scheduler
 gate. Shared service guards preserve that implementation path but do not claim
 that scheduling exists today.
 
+## Planned extended pointer input
+
+Status: backlog; the current hardware decoder handles the left button only and
+does not decode wheel input. Track delivery in
+[roadmap P3](docs/CORE-TOOLBOX-ROADMAP.md#p3--extended-pointer-input).
+Right-button and wheel support must extend native services without changing the
+classic application's input contract.
+
+- Keep the classic 16-byte EventRecord, event numbers, masks, message fields and
+  modifier meanings intact. `Button`, `StillDown` and `btnState` continue to
+  describe only the primary button. Extra-button transitions must not generate
+  classic mouse-down/up events, change primary-button polling, or interfere
+  with primary-button double-click/drag tracking. Preserve left-click behavior.
+- Provide a separately versioned native event contract through the Toolbox,
+  with explicit button identity/state, signed horizontal/vertical scroll deltas,
+  defined units/precision, pointer position, modifiers and monotonic timestamps.
+  Do not squeeze extra event kinds into the existing 16-bit retrieval masks or
+  reuse reserved classic event bits. Expose feature discovery and subscription;
+  keep future pointer devices possible without making applications decode evdev.
+- Decode device packets once into hardware-independent input. Preserve ordered
+  button edges and signed wheel values, including negative values, high-resolution
+  residuals and horizontal scrolling. Avoid counting both coarse and high-resolution
+  reports of the same movement. Reconcile held state on device removal/capture
+  loss without leaving buttons stuck or releasing another device's held button.
+- Route to the eligible window/view under the pointer, respecting application
+  ownership, modality, activation and active tracking/capture. Define those
+  policies explicitly, including nested scroll views and keyboard-focus behavior.
+  A resident control may consume a wheel action or delegate it to its app, but
+  one action must not scroll twice. Secondary clicks request context actions in
+  supporting native UI; they do not implicitly invoke primary-button actions.
+- Legacy applications receive only their classic event projection by default;
+  unsupported extra input is ignored. System-owned dialogs and scrollable
+  controls can handle extended input internally through semantic operations.
+  Arbitrary legacy custom views require explicit, verified compatibility support;
+  do not infer a scrollbar and synthesize clicks or arrow keys. Any optional
+  right-click/Control-click mapping must be an explicit compatibility policy,
+  separate from the current host Ctrl-to-Command keyboard mapping.
+- Standard native scroll boxes, TextEdit, Standard File, Finder and ResEdit
+  should adopt wheel handling through their shared services. Context menus use
+  the resident Menu Manager and resource-based commands, with application
+  participation; a secondary click alone cannot reveal arbitrary app actions.
+- Accumulate compatible adjacent wheel deltas within a bounded budget, retaining
+  units, target and ordering relative to button/key/focus transitions. Preserve
+  edge events under wheel load and bound work per drain. Ignore zero/no-change
+  input and repaint only changed content or controls; never recompose merely
+  because a pointer packet arrived.
+
+Acceptance: public SDK conformance tests for both native delivery and unchanged
+classic records/polling/masks; right/left chords, drags, capture, modal and
+cross-app routing; wheel direction, precision, limits, horizontal/nested scrolling,
+no duplicate handling, unplug cleanup and sustained-load fairness. Compare the
+classic projection to retained original-system primary-button captures. Add a
+translated 68k event/polling probe when the adapter exists. Private QEMU tests
+must demonstrate usable Finder/ResEdit scrolling and context actions, bounded
+repainting, responsive cursors and measured sub-millisecond dispatch latency
+under the declared test load; host display latency is measured separately.
+
+Apple's [Event Record reference](https://leopard-adc.pepas.com/documentation/mac/Toolbox/Toolbox-45.html)
+defines the classic boundary. Extended pointer semantics above are System RISC
+design requirements, not claims of original System 7 behavior.
+
 Primary references: Apple's [PostEvent documentation](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-66.html)
 and [Event Manager overview](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-56.html).
 The original executable probes resolve mask, overflow and bitmap details in this
