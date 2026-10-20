@@ -8,6 +8,12 @@ remain usable without std. Kernel, machine adapters, resource definitions and th
 minimal ABI/transport remain `no_std`. This plan does not install a new toolchain
 or implement a std backend.
 
+The application policy includes [P11 CLAP commands](TERMINAL.md), hosted by
+Terminal with preference-defined base environments and checked session identity.
+[P12](HOSTED-TOOLCHAIN.md) extends this to hosted Rust tools; [P13](PROCESS-ISOLATION.md)
+adds hardware process protection. Ordinary CLI/std support does not establish
+either compiler hosting or memory isolation.
+
 ## Current evidence and gaps
 
 At this planning checkpoint the host has rustc nightly 1.101.0, commit
@@ -152,6 +158,12 @@ a linked std stub as an implemented service.
 | Test harness and doctests | Host Rust tests plus custom SDK/QEMU guests | Start with a deterministic guest runner. Port the pinned libtest backend/options separately; handle aborting cases in separate processes/VMs. A host cargo test result does not execute the std target. |
 
 ## Panic, exit and ownership rules
+
+CLAP startup requires a validated Terminal session even for redirected child
+streams. Environment defaults originate in Terminal's JSON preferences; process
+and child snapshots/overrides follow P11, including env_clear without losing the
+out-of-band session. Distinguish APPL activation from creation of a new CLAP child
+in Command; do not bypass terminal-only policy merely because stdout is a pipe.
 
 First use `panic_abort`. Normal returns and ordinary scope exits still run Rust
 Drop; `process::exit` and abort have different cleanup contracts and cannot

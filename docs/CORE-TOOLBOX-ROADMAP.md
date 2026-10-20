@@ -27,7 +27,7 @@ The practical next target is a native document application that can open, edit, 
 | Dialogs / alerts | Narrow foundation | L | General DLOG, editable/user items, tab focus, item mutation, modeless/filter callback contracts and alert stages. |
 | Files / HFS persistence | Usable tested slice | XL | File creation and fork write/resize, catalog/extents growth, flush/recovery, full metadata operations and eject/unmount. |
 | Standard File / aliases | No public manager | L | Open/save dialogs and filters/hooks, alias records/resolution across moves and ownership of replies/resources. |
-| Processes / application life | Usable tested slice | L | Blocked/wakeup states, document/quit parameters, native workers, relocation, legacy cooperative Thread Manager (P2) and segments. |
+| Processes / application life | Usable tested slice | L | Blocked/wakeup states, document/quit parameters, native workers, relocation, legacy cooperative Thread Manager (P2), segments, CLAP sessions (P11) and process isolation (P13). |
 | Apple events / core IPC | No public manager | L | Descriptors/coercion, handlers, open-document/print/quit events, replies/timeouts and process routing. |
 
 M means a bounded extension of a working manager; L means substantial lifecycle/behavior work or a new manager; XL means a broad storage/device foundation. These are relative planning judgments, not engineer-weeks or measured completion fractions. Parallel work and new original-system findings can change the order.
@@ -256,6 +256,56 @@ rasterizers and bounded shared caches; apps use Rust Toolbox interfaces. Gate
 each format with provenance-backed fixtures, public SDK drawing/measurement,
 malformed-input and color/monochrome tests, and responsiveness/cache limits.
 See [the OpenType/color plan](FONTS.md#opentype-outlines-layout-and-variations).
+
+### P11 — Terminal and CLAP applications
+
+Status: backlog. Add CLAP as the file type for terminal-only std applications,
+with a resource-based Terminal APPL. System validates a Terminal session before
+command entry; Finder routes CLAP opens to Terminal, and each invocation creates
+its own process. Commands have normal argv/cwd/streams/status and child lifecycle.
+
+Terminal's versioned JSON preferences define the base environment. New sessions
+snapshot it; children inherit effective parent state with explicit overrides,
+without mutating siblings or retroactively changing running processes. Define
+terminal input/emulation, resize, bounded scrollback, pipes/readiness and shutdown.
+See [the Terminal/CLAP plan](TERMINAL.md) for build, ownership and guest gates.
+
+### P12 — Hosted Rust toolchain
+
+Status: backlog. Run cross-built rustc, Cargo, linker and packaging tools as CLAPs
+inside System RISC, then build and run local CLAP/APPL programs. Requires P8/P11,
+general workspace storage/resource-fork writing, process/pipe support, measured
+RAM/image limits and P13 protection. Qualify native LLVM/runtime dependencies,
+build scripts and proc-macro module loading explicitly. Offline builds precede
+P7-backed registry/TLS fetching; compiler self-hosting is a later gate. See
+[the hosted-toolchain plan](HOSTED-TOOLCHAIN.md).
+
+### P13 — Process isolation
+
+Status: backlog. Replace trusted shared M-mode application execution with
+per-process virtual address spaces and user/kernel privilege separation. Protect
+APPL and CLAP memory, stacks/TLS, kernel/devices and syscall buffers; safely route
+app-provided resource callbacks and terminate faulting processes through System
+reporting. Retain generation/owner checks alongside hardware protection.
+
+Implement one-hart boot/MMU/trap/loader/copy-user foundations, then lifecycle/IPC
+and P1 TLB/reclamation concurrency. Kernel extensions and drivers remain trusted
+in-kernel code, outside the app isolation boundary. See
+[the process-isolation plan](PROCESS-ISOLATION.md) for actual-fault guest gates.
+
+### P14 — Loadable kernel drivers
+
+Status: backlog. Keep the bootstrap block driver built into System; extract input,
+network, display and other backends into in-kernel P6 driver modules. Require the
+DRVR package marker and a build-generated DABI contract metadata resource before
+loading. Validate driver/kernel API versions, architecture, entry layout,
+required services/features and device-class contracts before entry/device claims.
+
+Define typed class interfaces, shared generation-tagged identities, bounded
+interrupt/deferred work and a quiesced ROM-to-System block handoff. Native and
+legacy DRVR entry contracts remain separate. Modules stay resident until reboot
+initially; reset/removal still requires request/DMA cleanup. See
+[the driver plan](DRIVERS.md) for metadata and extraction acceptance.
 
 ## Planned application tooling
 

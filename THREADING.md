@@ -45,6 +45,12 @@ This is a trusted shared M-mode address space without an MMU or protection
 boundary. Owner checks prevent accidental cross-application object access through
 services; they cannot constrain arbitrary application pointers or machine code.
 
+[P13](docs/PROCESS-ISOLATION.md) tracks the replacement with protected app address
+spaces, user-mode execution, checked syscall copies and fault-local cleanup.
+[P11 CLAPs](docs/TERMINAL.md) have their own process/OS-thread identities inside a
+Terminal session; they never execute on the Terminal app's UI thread. P6/P14
+extensions and drivers intentionally remain trusted kernel code.
+
 ## Execution identities
 
 The scheduler must supply a trusted execution context at trap entry:

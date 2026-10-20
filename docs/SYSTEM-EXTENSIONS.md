@@ -5,6 +5,12 @@ No kernel-extension loader or native control-panel API is implemented by this
 document. Native Rust extensions may execute in the kernel; their configuration
 UI remains an application using the public Toolbox.
 
+[P14 driver extraction](DRIVERS.md) uses this module machinery for in-kernel
+device drivers. The minimal block path stays built into System; other backends
+become modules. Driver loading additionally requires the DRVR marker and generated
+DABI contract metadata before entry. These modules remain trusted kernel code,
+distinct from [P13 isolated applications](PROCESS-ISOLATION.md).
+
 ## Native control panels
 
 Native panels are resource-based Rust applications installed in the blessed
@@ -32,8 +38,9 @@ report errors. No private preference files that bypass shared synchronization.
 
 - Package native extension code as independently linked executable resources in
   classic resource-fork files installed in System Folder/Extensions. Declare a
-  native `INIT` entry and its extension calling convention explicitly; never cast
-  an application or WDEF entry to the extension ABI. Metadata declares stable
+  native `INIT` entry and its extension calling convention explicitly; driver
+  packages instead use the P14 DRVR entry and mandatory DABI contract. Never cast
+  an application or WDEF entry to either ABI. Metadata declares stable
   identity, Cargo version, CPU/ABI requirements, dependencies, startup phase,
   provided services/hooks and optional panel/settings linkage. Resolve the exact
   metadata layout in FORMAT.md when implementing it, retaining provenance here.

@@ -7,6 +7,11 @@ panic macros. The platform default panic path must display the System-owned bomb
 dialog. This migration is planned; the applications below still use the working
 no_std entry/panic path until the target/sysroot/runtime replacement is verified.
 
+[P11](../docs/TERMINAL.md) plans a Terminal APPL hosting new terminal-only CLAP
+applications. Terminal preferences define their base environment; commands run
+as separate processes in validated sessions. [P12](../docs/HOSTED-TOOLCHAIN.md)
+then stages hosted Rust compiler/build tools. These are not installed apps yet.
+
 `cargo xtask image` builds and packages these applications into the startup
 volume's `Applications` folder. Each application has its own native entry point,
 Cargo-generated `vers`, `RV64` code, `NABI` descriptor, `MENU`/`MCMD` commands,

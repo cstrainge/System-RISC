@@ -92,6 +92,16 @@ It reuses compact segments/RLOC rather than ELF or app-entry dispatch. Original
 registration or legacy panel hosting. Those require their own loader/lifecycle
 and compatibility gates; runtime resource inspection must remain non-executing.
 
+## Planned native driver contract metadata
+
+[P14](docs/DRIVERS.md) requires a native DRVR package/code resource plus a
+build-generated DABI metadata resource describing driver API, target, required
+kernel services, entry/request layouts and device-class contracts. The loader
+rejects absent/incompatible metadata before entry. Exact layouts remain future
+FORMAT.md work; existing compact code envelopes and legacy DRVR calling profiles
+do not themselves implement native driver loading. DABI is data for inspection,
+including a future resource-based ResEdit viewer, not another executable family.
+
 ## Standard WDEF reconstruction
 
 [Retained analysis](../analysis/wdef-standard.md) records the System 7.6.1 source

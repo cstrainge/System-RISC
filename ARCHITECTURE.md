@@ -130,6 +130,21 @@ apps may use std while System, definitions and kernel extensions stay no_std.
 The plan stages runtime, concurrency, document/Finder and network acceptance;
 neither a custom target nor a linked unsupported backend establishes std support.
 
+## Planned terminal, hosted tools, isolation and drivers
+
+[P11](docs/TERMINAL.md) adds a Terminal APPL and terminal-only CLAP process class,
+with checked session ownership and JSON preference-defined base environments.
+[P12](docs/HOSTED-TOOLCHAIN.md) stages hosted Rust tools after the actual std,
+storage, child-process and linker prerequisites.
+
+[P13](docs/PROCESS-ISOLATION.md) replaces the current shared M-mode app execution
+with protected user processes and checked syscall/callback boundaries. This is
+planned hardware protection, separate from today's owner/generation checks.
+[P14](docs/DRIVERS.md) keeps block storage built in and moves other drivers into
+trusted in-kernel extension modules. Driver packages require DRVR classification
+and mandatory DABI build-contract metadata checked before code entry; resource
+inspection alone never loads them. Kernel modules are not isolated user apps.
+
 ## Classic applications
 
 Original A-line trap identities remain separate from the native request numbers.
