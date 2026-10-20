@@ -79,3 +79,14 @@ prerequisites; no simulated successful Clipboard/Scrap.dat file exists. Translat
 Manager conversions, private/application scrap exchange, suspend/resume ownership,
 TextEdit style-scrap conversion and dialog editing integration remain open. The
 service does not translate arbitrary `styl` offsets alongside native Unicode.
+
+## Planned host clipboard extension
+
+[P18](../../../../docs/HOST-CLIPBOARD.md) adds optional bidirectional host sharing
+after the HFS-B and initial storage-driver validation sequence. A separate kernel
+extension negotiates a compatible host bridge and uses typed resident Scrap
+subscriptions/snapshots; application APIs stay unchanged. The existing generation
+is not a complete change notification because puts do not advance it. Plan an
+internal mutation revision, consistent clear/put export batching and origin/session
+tokens without changing captured compatibility semantics. Host I/O occurs outside
+Scrap/desktop locks; absent or disconnected bridges preserve local operation.

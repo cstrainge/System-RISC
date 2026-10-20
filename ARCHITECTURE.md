@@ -177,6 +177,15 @@ explicit contract separate from actual block exports. Both drivers require
 DRVR/DABI validation. Shared Linux tools reuse the container codec. Host sharing
 and archive mounts follow P15; neither is required to boot the native System.
 
+The agreed implementation sequence is built-in HFS-B and shared tooling, then
+the driver/module interface proven by StuffIt and vhost mounts, then the
+[P18 host clipboard extension](docs/HOST-CLIPBOARD.md). The extension detects a
+compatible virtual-host bridge and synchronizes the resident Scrap service;
+apps retain their ordinary Toolbox APIs. Without the bridge, the guest clipboard
+continues locally. Typed change subscriptions, revision/origin tracking and
+bounded asynchronous transfers prevent echo loops and per-input work. This
+sequence precedes broader driver extraction and userspace std migration.
+
 ## Classic applications
 
 Original A-line trap identities remain separate from the native request numbers.

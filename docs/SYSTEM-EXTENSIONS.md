@@ -11,6 +11,13 @@ become modules. Driver loading additionally requires the DRVR marker and generat
 DABI contract metadata before entry. These modules remain trusted kernel code,
 distinct from [P13 isolated applications](PROCESS-ISOLATION.md).
 
+The agreed first implementation sequence is P15 built-in HFS-B/tooling, the
+necessary driver/module loader and SDK exercised by P16 StuffIt and P17 vhost
+mounts, then the [P18 host clipboard extension](HOST-CLIPBOARD.md). Use the latter
+to prove typed resident hooks, host-capability detection and extension lifetime
+beyond storage. Deliver the required loader/service subset before the broader
+control-panel suite; these initial kernel modules do not depend on userspace std.
+
 ## Native control panels
 
 Native panels are resource-based Rust applications installed in the blessed

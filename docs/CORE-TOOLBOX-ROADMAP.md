@@ -16,9 +16,11 @@ foundation before std application migration, new drivers/extensions or further
 feature/resource growth. Necessary File/Resource Manager, block and ROM changes
 belong to this milestone; P15 does not wait for the full P1/P6/P8/P14 workstreams.
 
-After that cutover, resume the native document-app and Toolbox delivery sequence
-below. Sound, printing, networking, full non-Roman scripts, disk formatting and
-VM/device compatibility remain separate expansion tracks, outside this core count.
+After that cutover, establish the driver interface with StuffIt and vhost mounts,
+then deliver the host clipboard extension, in the sequence below. Native
+document-app/Toolbox work and std migration follow those initial validation gates.
+Sound, printing, networking and full non-Roman scripts remain separate expansion
+tracks, outside this core count.
 
 | Workstream | Current native surface | Remaining effort | Important gaps |
 | --- | --- | --- | --- |
@@ -46,9 +48,28 @@ M means a bounded extension of a working manager; L means substantial lifecycle/
 
 **Next: P15 HFS-B system cutover**, using the existing no_std applications for
 boot/launch acceptance. The R1–R6 sequence below describes subsequent Toolbox
-delivery; its numbering does not put it ahead of P15. Start with the serialized
+delivery; its numbering does not put it ahead of the agreed platform sequence.
+Start with the serialized
 format/test vectors and loader-budget audit, then formatter/reader, writable
 backend, ROM blessing/boot and image cutover with the required regression gates.
+
+The agreed implementation order is:
+
+1. **P15:** shared HFS-B core, Linux tooling, built-in kernel/ROM support and
+   native System-volume cutover. Keep bootstrap storage self-contained.
+2. **P14 plus necessary P6 foundations:** define the driver/module SDK, class
+   contracts, DRVR/DABI validation, loading and owned registration. Prove that
+   interface with **P16 StuffIt archive mounts** and **P17 external vhost mounts**,
+   including the vhost filesystem/block-device driver pair. These are working
+   loadable test implementations, not just mock providers or built-in shortcuts.
+3. **P18 plus its P6 service hooks:** a host clipboard extension detects a
+   compatible virtual-host bridge and shares the resident Scrap service with the
+   host. Prove extension lifecycle and change notification beyond storage.
+
+Take only the scheduler, resource-loader and typed-service prerequisites needed
+for each gate; the full P6 control-panel suite, SMP, networking and std port are
+not prerequisites. Resume broader driver extraction, std and Toolbox delivery
+after this sequence. Each milestone remains subject to its runtime acceptance.
 
 ### R1 — Service lifetimes and waits
 
@@ -240,7 +261,8 @@ wait scheduling provide foundations, not a std port. Inventory compiler/target
 selection and all std platform backends, pin a maintained sysroot patch/build,
 and bridge normal Rust startup to resource-based loading.
 
-After P15, prioritize S0/S1 application build/runtime support: std becomes the default for
+After the agreed storage/driver/clipboard sequence, prioritize S0/S1 application
+build/runtime support: std becomes the default for
 every native userspace app, including Finder and all apps/*. Remove no_std,
 no_main, handwritten entry and panic-handler macros as each app migrates. The
 platform's default std panic hook calls the System-owned bomb dialog without
@@ -332,6 +354,8 @@ interrupt/deferred work and a quiesced ROM-to-System block handoff. Native and
 legacy DRVR entry contracts remain separate. Modules stay resident until reboot
 initially; reset/removal still requires request/DMA cleanup. See
 [the driver plan](DRIVERS.md) for metadata and extraction acceptance.
+After P15, prove the initial interface with P16/P17 storage drivers before
+extracting input, network or display; bring in the required P6 loader subset.
 
 ### P15 — HFS-B and early system migration
 
@@ -441,6 +465,17 @@ it. One versioned host file stores both guest forks and metadata, transparently
 to apps. Share its codec with Linux packing/validation tools; specify portable
 names, stable identity, external-change conflicts, root confinement and checked
 write/flush guarantees. See [the vhost plan](HOST-FOLDERS.md).
+
+### P18 — Virtual host clipboard extension
+
+Status: backlog, following the working P16/P17 driver-interface gates. Add a
+P6 kernel extension that negotiates a compatible host clipboard bridge and
+shares clipboard changes in both directions through the resident Scrap service.
+Absent/unsupported bridges leave the local clipboard working. Start with Unicode
+text, preserve legacy conversions at their trap boundary, and use per-change
+notifications with revision/origin tracking to prevent echo loops and stale
+updates. Qualify real Linux/native Windows host paths and bounded asynchronous
+transfers. See [the clipboard extension plan](HOST-CLIPBOARD.md).
 
 ## Planned application tooling
 

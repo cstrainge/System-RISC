@@ -17,6 +17,11 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   block and ROM prerequisites. Existing no_std apps supply the initial gate.
   Follow docs/HFS-B.md and docs/CORE-TOOLBOX-ROADMAP.md; planning does not mean
   implementation has begun.
+- The agreed sequence after P15 is the driver/module interface, exercised by
+  StuffIt volumes and the vhost filesystem/block-device pair, then the virtual
+  host clipboard extension. Bring in the necessary P6 loader/service machinery
+  for these milestones; input/network/display extraction and std migration follow
+  this initial storage/extension validation sequence.
 - Canonical new Toolbox compatibility assertions belong in
   `crates/mac-toolbox/tests` and exercise the public SDK through real services.
   Capture scripts may collect evidence; Rust owns new acceptance decisions.

@@ -46,7 +46,9 @@ seconds exist, with finer wall-clock precision still to define. Networking is
 ## Application build and default panic contract
 
 S0/S1 build/runtime support is a prerequisite for the userspace migration and an
-early delivery priority after P15's storage cutover. The default application
+early delivery priority after the agreed P15 storage, P14/P16/P17 driver/mount
+and P18 host-clipboard validation sequence. Those initial no_std kernel modules
+do not depend on the app std port. The default application
 build must select the std-capable System RISC target/sysroot and supply startup,
 allocation and panic integration.
 The build must fail clearly if the required platform sysroot is absent; it must

@@ -83,12 +83,20 @@ load the block driver that reads those same files.
 
 1. Define driver contracts/DABI validation, the resident registry and built-in
    block-provider interface. Test ROM-to-System handoff and boot failure paths.
-2. Extract input first, preserving mouse/key timing and device reset behavior.
+2. Prove the filesystem and device contracts with loadable StuffIt and external
+   vhost mounts (P16/P17), including the vhost filesystem/block-device pair.
+   Bring in the required P6 loader/dependency/service subset; the complete
+   control-panel suite is not a prerequisite. Keep native HFS-B and bootstrap
+   block storage built in. Exercise malformed modules, I/O failure, leases,
+   cancellation and stale IDs against real providers before freezing the SDK.
+3. Add the [host clipboard extension](HOST-CLIPBOARD.md) through P6's typed Scrap
+   and host-bridge services, validating the extension interface beyond storage.
+4. Extract input, preserving mouse/key timing and device reset behavior.
    Keep emergency diagnostics available if an optional driver fails.
-3. Extract network and display through their class interfaces with P7 and the
+5. Extract network and display through their class interfaces with P7 and the
    compositor. Minimal bootstrap display/diagnostics may remain until a validated
    replacement is ready; it must not become a permanent duplicate driver stack.
-4. Add other device classes and additional hardware through the same contracts.
+6. Add other device classes and additional hardware through the same contracts.
    Common class interfaces can first serve built-in implementations while P6
    loading is developed; dynamic packaging must not fork service semantics.
 
