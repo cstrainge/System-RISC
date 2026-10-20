@@ -60,7 +60,7 @@ impl Desktop
     }
 
     /// Advance only the foreground cursor, without swapping app-local UI state
-    /// or posting synthetic events. A sleeping event consumer presents changes.
+    /// or posting synthetic events. The timer presents through the cursor overlay.
     pub(super) fn tick_cursor(&mut self) -> bool
     {
         let now = Self::when();
@@ -85,6 +85,15 @@ impl Desktop
     {
         let pointer_activity = self.poll_inputs();
         let cursor_activity = self.tick_cursor();
+        let now = Self::when();
+        self.cursor_dirty |=
+            self.responsiveness
+                .tick(self.foreground, now, waiting.iter().any(|(app, _)| *app == self.foreground));
+        if self.responsiveness.active()
+        {
+            self.cursor_dirty |= self.busy_cursor.animation_tick(now);
+        }
+        self.present_cursor_overlay();
         self.route_events();
         let pointer_consumer = if waiting.iter().any(|(app, _)| *app == self.foreground)
         {
@@ -362,6 +371,7 @@ impl Desktop
         }
         self.processes.activate(id)?;
         self.foreground = id;
+        self.cursor_dirty |= self.responsiveness.foreground(id, Self::when());
         for (window, owner) in &self.window_owners
         {
             if *owner == id

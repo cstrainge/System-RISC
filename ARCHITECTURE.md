@@ -200,6 +200,17 @@ overlays. Observer counters expose scene compositions and menu-bar rasterization
 so SDK trace acceptance checks that cursor motion changes neither and that
 window tracking reuses the unchanged bar.
 
+After half a second without a foreground event-loop poll, System temporarily
+overlays the original System `acur` -6078 animated watch at six ticks per frame.
+Applications blocked in event waits are exempt; background work does not affect
+the foreground. Native event retrieval/peek and classic OS-event retrieval/peek
+refresh progress. Clock, drawing and other service traffic do not mask a stalled
+event loop. The override never edits application cursor state or visibility depth;
+polling again or switching foreground restores the app-owned policy. The timer
+presents only cursor damage, even when all application threads run without
+yielding. Long interrupt-masked kernel services cannot be observed until they
+return; this policy does not turn those services into preemptible operations.
+
 ## Application-local namespaces
 
 Window IDs are checked against the caller's owner in the shared registry. Other

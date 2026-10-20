@@ -39,6 +39,8 @@ pub struct Desktop
     desktop:         DesktopLayer,
     menus:           super::menus::Manager,
     cursors:         super::quickdraw::cursors::Cursors,
+    busy_cursor:     super::quickdraw::cursors::Cursors,
+    responsiveness:  super::quickdraw::responsiveness::Responsiveness,
     text_cursor:     mac_abi::quickdraw::MonoCursor,
     worlds:          super::quickdraw::worlds::Worlds,
     classic_font:    mac_abi::quickdraw::FontSelection,
@@ -170,6 +172,17 @@ impl Desktop
             &crate::kernel::resources().ok_or(NOT_SUPPORTED)?
                 .get(mac_abi::resources::SYSTEM, ResourceKey { kind: *b"CURS", id: 1 })?.1.data)?;
         serial!("VIRTIO_INPUT=READY devices={}", devices);
+        let mut busy_cursor = super::quickdraw::cursors::Cursors::default();
+        busy_cursor.resource_request(&mut mac_abi::quickdraw::CursorResourceCall {
+            operation: mac_abi::quickdraw::CURSOR_RESOURCE_ANIMATE,
+            scope: mac_abi::resources::SYSTEM,
+            id: -6078,
+            interval: 6,
+            ..Default::default()
+        }, Point::default(), Self::when(), |kind, id, scope| {
+            crate::kernel::resources()?.get(scope, ResourceKey { kind, id }).ok()
+                .map(|(_, resource)| resource.data.to_vec())
+        })?;
         serial!("UI_OBSERVER address={} bytes=128 version=1",
                 super::quickdraw::observer::address());
         Ok(Self { first_window: WindowId(0),
@@ -180,6 +193,8 @@ impl Desktop
                   menus: super::menus::Manager::new(mdef, crate::machine::traps::gateway),
                   desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
                   cursors: Default::default(),
+                  busy_cursor,
+                  responsiveness: Default::default(),
                   text_cursor,
                   worlds: Default::default(),
                   classic_font: Default::default(),
@@ -1406,6 +1421,8 @@ impl Desktop
 
     fn next_with_presence(&mut self, mask: u16, remove: bool) -> (Event, bool)
     {
+        self.cursor_dirty |= self.responsiveness.foreground(self.foreground, Self::when());
+        self.cursor_dirty |= self.responsiveness.polled(self.owner, Self::when());
         self.poll_inputs();
         let when = Self::when();
         self.route_events();
@@ -1643,28 +1660,50 @@ impl Desktop
         }
         if full || self.cursor_dirty || !damaged.is_empty()
         {
-            let text_cursor = self.text_cursor_at_mouse().then_some(self.text_cursor);
-            let bounds = self.cursors.bounds(self.events.mouse, text_cursor);
-            let back = platform::back_buffer();
-            let mut canvas = Canvas::new(back, 640, 480);
-            let under = super::quickdraw::overlay::CursorUnder::capture(&canvas, bounds);
-            self.cursors.draw_auto(&mut canvas, self.events.mouse, text_cursor);
-            if full
-            {
-                platform::present(canvas.pixels);
-            }
-            else
-            {
-                platform::present_rects(canvas.pixels,
-                                        damaged.into_iter().chain([self.cursor_bounds, bounds]));
-            }
-            under.restore(&mut canvas);
-            self.cursor_bounds = bounds;
-            self.cursor_dirty = false;
-            self.presentations = self.presentations.wrapping_add(1);
+            self.compose_cursor(full, damaged);
         }
         self.publish_observation();
         self.enter(caller);
+    }
+
+    /// Timer-owned presentation never enters application drawing or replays a
+    /// scene. It remains available when every app thread is CPU bound.
+    fn present_cursor_overlay(&mut self)
+    {
+        if !self.cursor_dirty
+        {
+            return;
+        }
+        let caller = self.owner;
+        self.enter(self.foreground);
+        self.compose_cursor(false, Vec::new());
+        self.publish_observation();
+        self.enter(caller);
+    }
+
+    fn compose_cursor(&mut self, full: bool, damaged: Vec<Rect>)
+    {
+        let text_cursor = self.text_cursor_at_mouse().then_some(self.text_cursor);
+        let cursor =
+            if self.responsiveness.active() { &mut self.busy_cursor } else { &mut self.cursors };
+        let text_cursor = if self.responsiveness.active() { None } else { text_cursor };
+        let bounds = cursor.bounds(self.events.mouse, text_cursor);
+        let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
+        let under = super::quickdraw::overlay::CursorUnder::capture(&canvas, bounds);
+        cursor.draw_auto(&mut canvas, self.events.mouse, text_cursor);
+        if full
+        {
+            platform::present(canvas.pixels);
+        }
+        else
+        {
+            platform::present_rects(canvas.pixels,
+                                    damaged.into_iter().chain([self.cursor_bounds, bounds]));
+        }
+        under.restore(&mut canvas);
+        self.cursor_bounds = bounds;
+        self.cursor_dirty = false;
+        self.presentations = self.presentations.wrapping_add(1);
     }
 
     fn publish_observation(&mut self)

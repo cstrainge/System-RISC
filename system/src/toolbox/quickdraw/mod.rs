@@ -7,6 +7,7 @@ pub mod cursor;
 pub mod overlay;
 pub mod menu_cache;
 pub mod observer;
+pub mod responsiveness;
 pub mod font;
 pub mod fonts;
 
