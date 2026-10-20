@@ -322,9 +322,10 @@ a separate native UTF-8, dual-fork format alongside unchanged classic HFS, not a
 extension of HFS's name keys or date fields. Move native workspaces to HFS-B early,
 before P8's broader filesystem workloads and P12 hosted tools depend on classic
 HFS limits. The current recommendation is HFS boot with HFS-B mounted afterward;
-the final boot decision remains open alongside name length, normalization and
-timestamps. Case behavior is settled: Unicode-aware default folding independent
-of locale, no Turkish-i tailoring, and preservation of stored case.
+the final boot decision remains open alongside normalization and timestamps.
+Names are limited to 255 UTF-8 bytes per component. Case behavior is settled:
+Unicode-aware default folding independent of locale, no Turkish-i tailoring,
+and preservation of stored case.
 
 At this planning checkpoint System.rsrc is 3,084,317 bytes, while ROM startup,
 startup resource transfer, resident resource loading and APPL loading enforce
@@ -341,8 +342,9 @@ and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
    signature (proposed HB), volume header, allocation bitmap, catalog/extents/
    attributes trees and fork records. Encode the decided locale-independent,
    non-Turkic Unicode folding and case-preserving behavior with a pinned data
-   version. Resolve the four remaining decisions: name limit (bytes versus code
-   points), normalization, timestamp representation/precision and boot policy.
+   version, plus the inclusive 255-byte UTF-8 stored-name limit. Resolve the three
+   remaining decisions: normalization, timestamp representation/precision and
+   boot policy.
    HFS+ uses decomposed Unicode ([TN1150](https://developer.apple.com/library/archive/technotes/tn/tn1150.html));
    storing UTF-8 bytes as supplied must be an explicit HFS-B choice, not an
    inherited HFS+ assumption. Keep classic HFS serialization unchanged.
@@ -365,7 +367,8 @@ and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
    the format. Copy/import preserves both forks and metadata; do not transform
    the original HFS disk in place or require a live-conversion tool for cutover.
 5. Canonical acceptance lives in crates/mac-toolbox/tests through public SDK
-   services: mixed HFS/HFS-B mounts, 200-byte UTF-8/emoji/CJK names, case lookup
+   services: mixed HFS/HFS-B mounts, 200-byte UTF-8/emoji/CJK names, 255/256-byte
+   create/rename boundaries including multibyte characters, case lookup
    and CAFÉ/café collision/ID-equivalent lookup with stored spelling preserved
    across remount/locales, default non-Turkic I/i behavior,
    fork round-trips, actual file I/O crossing 2/4 GiB boundaries, malformed media,

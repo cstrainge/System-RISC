@@ -21,8 +21,11 @@ catalog B-tree, extents overflow B-tree, attributes) with one deliberate
 difference: **names are UTF-8, not UTF-16.**
 
 - Catalog B-tree keys use UTF-8 name bytes instead of UTF-16 units.
-- **[DECIDE]** Max name length: 255 bytes (simplest, mirrors HFS+'s 255-unit
-  cap) vs. 255 Unicode code points (friendlier, needs counting on insert).
+- **Decided — maximum name length:** 255 UTF-8 bytes per file or directory
+  name component, inclusive. This counts encoded bytes, not Unicode code points
+  or grapheme clusters, and excludes the catalog's length/header fields. Reject
+  over-limit names without truncating or splitting a UTF-8 sequence. The limit
+  applies to stored names, not expanded case-folded comparison sequences.
 - **Decided — case behavior:** case-insensitive with Unicode-aware, locale-
   independent default case folding, and case-preserving storage/listings.
   Use the default non-Turkic mappings from Unicode's
@@ -75,8 +78,8 @@ decision remains open.
 
 ## Remaining decisions
 
-Four decisions remain: maximum name length, normalization, timestamp precision/
-representation, and boot policy. Case behavior above is settled.
+Three decisions remain: normalization, timestamp precision/representation, and
+boot policy. Maximum name length and case behavior above are settled.
 
 ## Volume identity
 
@@ -92,6 +95,11 @@ representation, and boot policy. Case behavior above is settled.
 2. Create files with 200-byte UTF-8 names (incl. emoji and CJK); native
    calls round-trip the full names; legacy calls return 31-char MacRoman
    truncations; files open by ID regardless.
+   Boundary cases accept 255-byte ASCII and valid multibyte names, and reject
+   256-byte names on create and rename without changing the catalog. For example,
+   63 four-byte emoji plus three ASCII bytes fits; 64 four-byte emoji exceeds
+   the limit. Preserve valid UTF-8 and full names through lookup and remount;
+   case-fold expansion must not reject a valid stored name within 255 bytes.
 3. Resource forks round-trip: write a dual-fork file on HFS-B, read both
    forks back, verify against the HFS behavior.
 4. Fill past 2 GiB and 4 GiB boundaries; verify sizes and extents.
