@@ -8,11 +8,14 @@ members = [
     "crates/mac-code-resource",
     "crates/mac-text",
     "crates/mac-hfs",
+    "crates/mac-block",
+    "crates/mac-hfs-b",
     "toolbox/*",
     "system",
     "finder",
     "apps/*",
     "tools/mac-build",
+    "tools/hfs-b",
     "tools/xtask",
     "tests/abi-smoke",
     "bootrom",
@@ -31,6 +34,8 @@ mac-abi = { path = "crates/mac-abi" }
 mac-toolbox = { path = "crates/mac-toolbox" }
 mac-formats = { path = "crates/mac-formats" }
 mac-hfs = { path = "crates/mac-hfs" }
+mac-block = { path = "crates/mac-block" }
+mac-hfs-b = { path = "crates/mac-hfs-b" }
 mac-build = { path = "tools/mac-build" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

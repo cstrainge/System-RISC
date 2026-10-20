@@ -6,31 +6,11 @@ extern crate alloc;
 mod volume;
 use alloc::vec::Vec;
 
+pub use mac_block::{BlockDevice, Partition, WritableBlockDevice};
 pub use mac_formats::{Error, Result};
 pub use volume::{CatalogEntry, File, Folder, Fork, Volume,
                  mutation::{DataSave, MutationError, MutationResult},
                  names_equal, scan};
-
-pub trait BlockDevice
-{
-    fn sector_count(&self) -> u64;
-    fn read_sector(&mut self, sector: u64, output: &mut [u8; 512]) -> Result<()>;
-}
-
-/// Durable write capabilities. Reads remain independently usable on read-only media.
-pub trait WritableBlockDevice: BlockDevice
-{
-    fn is_read_only(&self) -> bool;
-    fn write_sector(&mut self, sector: u64, input: &[u8; 512]) -> Result<()>;
-    fn flush(&mut self) -> Result<()>;
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Partition
-{
-    pub start:   u64,
-    pub sectors: u64
-}
 
 pub(crate) fn bytes(data: &[u8], offset: usize, length: usize) -> Result<&[u8]>
 {

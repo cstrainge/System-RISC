@@ -24,8 +24,12 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   loading and the default System-volume cutover. Complete it before std migration
   or further feature/dependency expansion; include its necessary file/resource,
   block and ROM prerequisites. Existing no_std apps supply the initial gate.
-  Follow docs/HFS-B.md and docs/CORE-TOOLBOX-ROADMAP.md; planning does not mean
-  implementation has begun.
+  Follow docs/HFS-B.md and docs/CORE-TOOLBOX-ROADMAP.md; shared-crate/tooling
+  verification does not complete resident/ROM boot and cutover acceptance.
+- HFS-B versions are whole integers (`1`, `2`, `3`), each implying one complete
+  disk and Unicode contract. Changing Unicode requires a new filesystem version
+  and rebuilding all affected file/name/index representations with collision
+  checks; the Unicode header field is validation, not an independent selector.
 - The agreed sequence after P15 is the driver/module interface, exercised by
   StuffIt volumes and the vhost filesystem/block-device pair, then the virtual
   host clipboard extension. Bring in the necessary P6 loader/service machinery

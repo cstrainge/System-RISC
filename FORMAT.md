@@ -1,5 +1,10 @@
 # Native resource executable format, version 1
 
+The separate native disk contract is documented in
+[HFS-B on-disk format, version 1](docs/HFS-B-FORMAT.md). Its format version also
+fixes its Unicode name contract; changing those tables requires rebuilding every
+affected file/name/index representation, not changing an independent setting.
+
 The container is a classic Macintosh file. Its resource fork uses the standard
 big-endian resource header, data area, map, type/reference lists and Pascal names.
 The data fork is currently empty. Host transport uses MacBinary II with a valid

@@ -38,7 +38,7 @@ class ImageCleanupTests(unittest.TestCase):
 
     def test_generated_formats_removed_without_deleting_current_media_or_evidence(self):
         old = [self.write(f'results/system7/finished/disk{suffix}')
-               for suffix in ['.hfs', '.qcow2', '.raw', '.img', '.hda', '.dsk']]
+               for suffix in ['.hfs', '.hfsb', '.hfs-b', '.qcow2', '.raw', '.img', '.hda', '.dsk']]
         old += [self.write('build/system7/failed/disk.hfs'),
                 self.write('results/system7/finished/bootrom.bin'),
                 self.write('working/system7-vm/system7-previous-123.qcow2')]
@@ -48,7 +48,7 @@ class ImageCleanupTests(unittest.TestCase):
             'original-media/Macintosh.hfs',
             'System7/crates/mac-toolbox/tests/data/original.hfs',
             'results/system7/finished/report.json', 'results/system7/finished/frame.png',
-            'results/system7/finished/serial.log']]
+            'results/system7/finished/serial.log', 'build/system7/dist/system7.hfsb']]
         link = self.root / 'results/system7/finished/reference.hfs'
         link.symlink_to(keep[4])
         report = self.prune()

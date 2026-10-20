@@ -6,3 +6,4 @@ publish.workspace = true
 
 [dependencies]
 mac-formats.workspace = true
+mac-block.workspace = true

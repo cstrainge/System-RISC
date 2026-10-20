@@ -365,7 +365,7 @@ extracting input, network or display; bring in the required P6 loader subset.
 
 ### P15 — HFS-B and early system migration
 
-Status: **next implementation milestone; not implemented**. Follow the supplied
+Status: **implementation in progress; boot/cutover gates pending**. Follow the supplied
 [HFS-B specification](HFS-B.md). HFS-B is
 a separate native UTF-8, dual-fork format alongside unchanged classic HFS, not an
 extension of HFS's name keys or date fields. Move native workspaces to HFS-B early,

@@ -144,6 +144,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hfs-b"
+version = "0.1.0"
+dependencies = [
+ "mac-block",
+ "mac-formats",
+ "mac-hfs-b",
+ "serde_json",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -184,6 +194,13 @@ name = "mac-abi"
 version = "0.1.0"
 
 [[package]]
+name = "mac-block"
+version = "0.1.0"
+dependencies = [
+ "mac-formats",
+]
+
+[[package]]
 name = "mac-build"
 version = "0.1.0"
 dependencies = [
@@ -217,7 +234,15 @@ dependencies = [
 name = "mac-hfs"
 version = "0.1.0"
 dependencies = [
+ "mac-block",
  "mac-formats",
+]
+
+[[package]]
+name = "mac-hfs-b"
+version = "0.1.0"
+dependencies = [
+ "mac-block",
 ]
 
 [[package]]

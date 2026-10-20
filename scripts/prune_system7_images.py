@@ -28,7 +28,7 @@ def prune():
         for path in base.rglob('*'):
             if path.is_symlink() or not path.is_file() or path.is_relative_to(dist):
                 continue
-            if path.suffix not in ('.hfs', '.qcow2', '.raw', '.img', '.hda', '.dsk') and path.name != 'bootrom.bin':
+            if path.suffix not in ('.hfs', '.hfsb', '.hfs-b', '.qcow2', '.raw', '.img', '.hda', '.dsk') and path.name != 'bootrom.bin':
                 continue
             if any(path.is_relative_to(directory) for directory in protected):
                 continue

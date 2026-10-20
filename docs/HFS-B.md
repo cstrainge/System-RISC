@@ -4,9 +4,12 @@ Priority: **the very next implementation milestone**, including the ROM boot and
 default System-volume cutover. Complete it before std migration and other feature/
 dependency expansion; necessary storage, resource-loader and boot prerequisites
 are part of this work. Existing no_std apps provide the initial launch gate.
-This priority schedules implementation; the format/backend is not implemented yet.
+Implementation is in progress: the shared crate and Linux tooling are being
+verified. Resident integration, ROM boot and default-image cutover remain required
+delivery gates; a host-only filesystem does not complete this milestone.
 
-Status: spec for agent implementation. HFS-B is a new volume format that lives
+Status: implementation in progress; this spec remains the acceptance contract.
+HFS-B is a new volume format that lives
 *alongside* classic HFS. HFS stays frozen as the treaty surface for legacy
 apps; HFS-B is the native startup/System/workspace filesystem after cutover,
 supporting large files and names the 31-char MacRoman world cannot express. This is the same
@@ -22,7 +25,7 @@ the old one in place.
 
 ## Shared format crate and tooling
 
-Plan `crates/mac-hfs-b` as the common Rust filesystem implementation for Linux
+Use `crates/mac-hfs-b` as the common Rust filesystem implementation for Linux
 tools, boot ROM, resident System and the System RISC Filesystem application.
 It is `no_std` with bounded/fallible alloc where required and forbids unsafe
 code. It contains the on-disk codecs, name normalization/comparison, timestamp
@@ -106,6 +109,14 @@ encoding and normalization: **stored names are NFC-normalized UTF-8.**
   compare `NFD(DefaultCaseFold(NFD(name)))`, with the decided non-Turkic default
   folding. This comparison form is internal and need not fit the stored-name
   byte limit. Do not substitute lowercase or a locale-dependent collation.
+  The filesystem version implies the Unicode version: format 1 uses Unicode
+  17.0.0, as specified in [the serialized contract](HFS-B-FORMAT.md). A future
+  filesystem version is a whole number (`1`, `2`, `3`), with no major/minor/patch
+  or fractional forms such as `1.2` or `2.0`. A Unicode upgrade requires a new
+  filesystem version and regeneration of all
+  affected file representations, catalog leaf/internal keys and indexes, with
+  new-collision checks. The header's Unicode field only validates the implied
+  contract; changing it alone cannot upgrade a volume.
   Validate the resulting NFC stored name against 255 bytes before committing
   changes; failure leaves the catalog unchanged. Bound input/normalization work
   separately without treating 255 input bytes as the stored-name limit.
@@ -173,8 +184,9 @@ conversion is still out of scope. Prune superseded generated images after checks
 
 All five high-level decisions are settled: maximum name length, case behavior,
 normalization, timestamps and boot. Exact serialized layouts and the cutover's
-implementation/evidence remain delivery work; no HFS-B support exists merely
-because these decisions are recorded.
+implementation/evidence remain delivery work. The byte-accurate version-one
+layout is now in [HFS-B-FORMAT.md](HFS-B-FORMAT.md); integration and boot acceptance
+must pass before native startup support is considered delivered.
 
 ## Volume identity
 
