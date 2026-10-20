@@ -221,7 +221,11 @@ changes still require a whole-number version and rebuilding affected media.
 1. Format an HFS-B volume; mount alongside an HFS volume.
 2. Create files with 200-byte UTF-8 names (incl. emoji and CJK); native
    calls round-trip the full names; legacy calls return 31-char MacRoman
-   truncations; files open by ID regardless.
+   truncations for representable names; files open by ID regardless.
+   Unrepresentable names return BAD_ARGUMENT, including when the unrepresentable
+   character is beyond the 31-character prefix. Check catalog/index reads,
+   incremental directory scans and Standard File results without changing stored
+   names; native reads after remount still return the full name.
    Boundary cases accept 255-byte ASCII and valid multibyte names, and reject
    256-byte names on create and rename without changing the catalog. For example,
    63 four-byte emoji plus three ASCII bytes fits; 64 four-byte emoji exceeds

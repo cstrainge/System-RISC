@@ -34,11 +34,25 @@ fn inline_input(bytes: &mut [u8], length: &mut u32) -> Result<(), Status>
 }
 fn inline_output(bytes: &mut [u8], length: &mut u32) -> Result<(), Status>
 {
+    inline_output_with_limit(bytes, length, 255)
+}
+/// Str31 is a legacy filesystem-name projection, never a catalog mutation.
+fn inline_name_output(bytes: &mut [u8], length: &mut u32) -> Result<(), Status>
+{
+    inline_output_with_limit(bytes, length, 31)
+}
+fn inline_output_with_limit(bytes: &mut [u8], length: &mut u32, limit: usize)
+                            -> Result<(), Status>
+{
     let text =
         core::str::from_utf8(bytes.get(..*length as usize).ok_or(BAD_ARGUMENT)?).map_err(|_| {
                                                                                     BAD_ARGUMENT
                                                                                 })?;
-    let encoded = encode(text)?;
+    // Validate the entire name before projecting it: an unrepresentable suffix
+    // must still fail, even when it lies beyond the returned Str31 prefix.
+    let mut encoded = encode(text)?;
+    encoded.truncate(limit + 1);
+    encoded[0] = (encoded.len() - 1) as u8;
     if encoded.len() > bytes.len()
     {
         return Err(BAD_ARGUMENT);
@@ -141,7 +155,7 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                     if call.operation != mac_abi::standard_file::DISPOSE
                        && call.state == mac_abi::standard_file::ACCEPTED
                     {
-                        inline_output(&mut call.entry.name, &mut call.entry.name_length)?;
+                        inline_name_output(&mut call.entry.name, &mut call.entry.name_length)?;
                     }
                     *original = call;
                 }
@@ -369,7 +383,7 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                     {
                         if call.operation == files::COMMIT_DATA_WRITE
                         {
-                            inline_output(&mut call.entry.name, &mut call.entry.name_length)?;
+                            inline_name_output(&mut call.entry.name, &mut call.entry.name_length)?;
                         }
                         call.name = original.name;
                         call.name_length = original.name_length;
@@ -386,7 +400,7 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                     {
                         if call.step == files::SCAN_ENTRY
                         {
-                            inline_output(&mut call.entry.name, &mut call.entry.name_length)?;
+                            inline_name_output(&mut call.entry.name, &mut call.entry.name_length)?;
                         }
                         *original = call;
                     }
@@ -428,8 +442,8 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                     {
                         files::VOLUME_INDEX | files::VOLUME_INFO =>
                         {
-                            inline_output(&mut call.volume_info.name,
-                                          &mut call.volume_info.name_length)?
+                            inline_name_output(&mut call.volume_info.name,
+                                               &mut call.volume_info.name_length)?
                         }
                         files::CATALOG
                         | files::DIRECTORY_ENTRY
@@ -443,7 +457,7 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                         | files::SET_LOCKED
                         | files::SET_STATIONERY =>
                         {
-                            inline_output(&mut call.entry.name, &mut call.entry.name_length)?
+                            inline_name_output(&mut call.entry.name, &mut call.entry.name_length)?
                         }
                         files::PATH | files::COMMENT =>
                         {

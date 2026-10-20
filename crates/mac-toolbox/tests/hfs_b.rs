@@ -82,6 +82,139 @@ impl Drop for Fixture
     }
 }
 
+fn legacy<T>(gate: mac_abi::TrapGate, trap: u32, call: &mut T) -> i64
+{
+    // The request and its nested buffers remain live for the synchronous trap.
+    unsafe { gate(trap, core::ptr::from_mut(call).cast(), size_of::<T>()) }
+}
+
+#[test]
+fn legacy_names_project_to_str31_without_changing_native_names_or_disk()
+{
+    use mac_abi::{files::*, standard_file as sf, traps::*};
+    use mac_system::{testing::standard_file_action, toolbox::standard_file::Action};
+
+    let fixture = Fixture::new();
+    // Include both sides of Str31, multibyte UTF-8, and the maximum stored name.
+    for (character, roman, count) in [('a', b'a', 30),
+                                      ('a', b'a', 31),
+                                      ('a', b'a', 32),
+                                      ('é', 0x8e, 31),
+                                      ('é', 0x8e, 32),
+                                      ('a', b'a', 255)]
+    {
+        let name = character.to_string().repeat(count);
+        fixture.run(false, DiskFaults::default(), |system, volume| {
+                   system.files().rename(volume, fixture.file, &name, WHEN).unwrap();
+               });
+        let before = fs::read(&fixture.disk).unwrap();
+        with_file_disk(&fixture.disk, true, DiskFaults::default(), |services| {
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            let volume = system.files().volume_at(0).unwrap().id;
+            let native = system.files().lookup(volume, ROOT_ID, &name).unwrap();
+            assert_eq!(native.name(), name);
+            let mut projected = native;
+            projected.name.fill(0);
+            let length = count.min(31);
+            projected.name[0] = length as u8;
+            projected.name[1..=length].fill(roman);
+            projected.name_length = (length + 1) as u32;
+            let mut pascal = vec![roman; count + 1];
+            pascal[0] = count as u8;
+            for operation in [CATALOG, DIRECTORY_ENTRY, LOOKUP]
+            {
+                let mut call =
+                    FileCall { operation,
+                               volume,
+                               cnid: if operation == CATALOG { native.id } else { ROOT_ID },
+                               name: pascal.as_ptr(),
+                               name_length: pascal.len(),
+                               ..Default::default() };
+                assert_eq!(legacy(services.trap, PSTRING_FILE, &mut call), 0);
+                assert_eq!(call.entry, projected, "operation {operation}, name {name}");
+            }
+            let mut scan = FileScanCall { operation: SCAN_DIRECTORY,
+                                          volume,
+                                          directory: ROOT_ID,
+                                          ..Default::default() };
+            for _ in 0..1024
+            {
+                assert_eq!(legacy(services.trap, PSTRING_FILE, &mut scan), 0);
+                if scan.step != SCAN_PENDING
+                {
+                    break;
+                }
+            }
+            assert_eq!(scan.step, SCAN_ENTRY);
+            assert_eq!(scan.entry, projected);
+            let mut dialog = sf::StandardFileCall { volume,
+                                                    directory: ROOT_ID,
+                                                    ..Default::default() };
+            assert_eq!(legacy(services.trap, PSTRING_STANDARD_FILE, &mut dialog), 0);
+            standard_file_action(Action::Open(0), 0).unwrap();
+            dialog.operation = sf::POLL;
+            assert_eq!(legacy(services.trap, PSTRING_STANDARD_FILE, &mut dialog), 0);
+            assert_eq!(dialog.state, sf::ACCEPTED);
+            assert_eq!(dialog.entry, projected);
+            dialog.operation = sf::DISPOSE;
+            assert_eq!(legacy(services.trap, PSTRING_STANDARD_FILE, &mut dialog), 0);
+            // The projected name is not needed to open a file by its identity.
+            let mut open = FileCall { operation: OPEN,
+                                      volume,
+                                      cnid: projected.id,
+                                      ..Default::default() };
+            assert_eq!(legacy(services.trap, PSTRING_FILE, &mut open), 0);
+            let mut bytes = [0; 13];
+            open.operation = READ;
+            open.output = bytes.as_mut_ptr();
+            open.capacity = bytes.len();
+            assert_eq!(legacy(services.trap, PSTRING_FILE, &mut open), 0);
+            assert_eq!(open.transferred, bytes.len());
+            assert_eq!(&bytes, b"original data");
+            open.operation = CLOSE;
+            assert_eq!(legacy(services.trap, PSTRING_FILE, &mut open), 0);
+            assert_eq!(system.files().catalog(volume, native.id).unwrap(), native);
+            assert_eq!(system.files().lookup(volume, ROOT_ID, &name).unwrap(), native);
+        }).unwrap();
+        assert_eq!(fs::read(&fixture.disk).unwrap(), before, "projection changed stored bytes");
+        fixture.run(true, DiskFaults::default(), |system, volume| {
+                   assert_eq!(system.files().catalog(volume, fixture.file).unwrap().name(), name);
+               });
+    }
+}
+
+#[test]
+fn legacy_name_projection_rejects_unrepresentable_characters_even_after_str31()
+{
+    use mac_abi::{files::*, traps::PSTRING_FILE};
+    let fixture = Fixture::new();
+    for name in ["🦀".to_owned(), format!("{}🦀", "a".repeat(31))]
+    {
+        fixture.run(false, DiskFaults::default(), |system, volume| {
+                   system.files().rename(volume, fixture.file, &name, WHEN).unwrap();
+               });
+        let before = fs::read(&fixture.disk).unwrap();
+        with_file_disk(&fixture.disk, true, DiskFaults::default(), |services| {
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            let volume = system.files().volume_at(0).unwrap().id;
+            for operation in [CATALOG, DIRECTORY_ENTRY]
+            {
+                let mut call =
+                    FileCall { operation,
+                               volume,
+                               cnid: if operation == CATALOG { fixture.file } else { ROOT_ID },
+                               ..Default::default() };
+                let untouched = call.entry;
+                assert_eq!(legacy(services.trap, PSTRING_FILE, &mut call),
+                           mac_abi::BAD_ARGUMENT as i64);
+                assert_eq!(call.entry, untouched, "failed conversion published a partial name");
+            }
+            assert_eq!(system.files().catalog(volume, fixture.file).unwrap().name(), name);
+        }).unwrap();
+        assert_eq!(fs::read(&fixture.disk).unwrap(), before);
+    }
+}
+
 #[test]
 fn native_names_precise_dates_and_large_forks_survive_real_remount()
 {
