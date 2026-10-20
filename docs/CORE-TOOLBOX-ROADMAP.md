@@ -128,6 +128,23 @@ translated 68k execution is a separate prerequisite for the original-app gate.
   probe using the original traps and repeat coexistence tests on one, two and
   four harts while another application makes independent progress.
 
+## Planned application tooling
+
+### A1 — ResEdit resource-editor extensions
+
+Status: backlog. Replace static viewer dispatch with independently linked
+`RSSC` editor resources embedded in ResEdit itself, following the original
+`@TYPE` editor naming convention. Every built-in viewer uses the same contract
+as custom editors. Provide a versioned module/host ABI, an idiomatic Rust layer,
+and a sample editor that can be added without browser source changes.
+
+Reuse relocatable native code resources and public Toolbox services; preserve
+whole-pane editor ownership, bounded repainting and inspection without executing
+the inspected file's code. Read-only extensions can ship before Resource Manager
+write-back. Original 68k extensions separately need translation and a host-API
+adapter. See [ResEdit's extension plan](RESEDIT.md#planned-resource-editor-extension-api)
+for lifecycle, compatibility and acceptance requirements.
+
 ## Evidence and limits
 
 The current consolidated regression report is `results/system7/toolchain-checks.json` outside the repository. It establishes accepted subsets, not missing selectors. The original comparison profile remains English/Roman System 7.6.1, one 640×480 display. Native UTF8 string/Pascal conversion pairs do not establish original A-line ABI or legacy record layout. The native scheduler supports one hart and fixed executable reservations; that is separate from blocking, Rust std, protected memory and multi-hart support.

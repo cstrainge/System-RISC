@@ -128,6 +128,60 @@ Alias resolution and the original custom hook/filter callbacks require later
 Alias Manager/custom-dialog work; unresolved aliases return an explicit error.
 The initial slice does not claim full Standard File Package compatibility.
 
+## Planned resource-editor extension API
+
+Status: backlog; viewers currently use statically linked Rust dispatch. Move
+every individual viewer/editor, including the generic hex fallback, into its own
+independently linked code resource embedded in ResEdit's resource fork through
+`resources.json`. Adding an editor must require no browser source changes.
+
+The original contract is documented in Chapter 7, “The Programmatic Interface,”
+of [Apple's ResEdit Reference](https://developer.apple.com/library/archive/documentation/mac/pdf/ResEditReference.pdf).
+Editors and pickers are executable `RSSC` resources: an editor's name is
+`@TYPE`, a picker's is `TYPE`, and a subeditor's is `$TYPE`. Native extensions
+should retain this discoverable resource model. Executable editors are distinct
+from data-driven `TMPL` templates and `PICK` picker descriptions. Original 68k
+editors additionally require translation and the original ResEdit host-API
+adapter; native Rust extension support alone does not provide that compatibility.
+
+- Publish a versioned, size-checked C-compatible module/host contract with a
+  safe, idiomatic Rust wrapper and a sample custom resource editor. Keep Rust
+  trait objects, allocator-owned values and compiler-specific layouts behind
+  each side's ABI boundary. Define capabilities and deterministic selection and
+  fallback rules before freezing the contract.
+- Register `RSSC` and its calling convention in the executable-resource registry.
+  Reuse the native descriptor, compact segment stream and RLOC machinery;
+  modules must load at different addresses. Specify per-instance mutable state
+  and BSS isolation. Keep code alive until all instances and callbacks finish.
+- The host supplies resource identity, metadata and bounded reads, plus the
+  window and pane bounds. Each module owns its entire pane: layout, controls,
+  scrolling, input, focus and resize behavior. Use public Toolbox services and
+  standard CDEF controls. Damage stays within the changed object; scrolling
+  must leave fixed headers and unrelated panes untouched.
+- Use checked opaque session identities and owned Toolbox objects, with explicit
+  creation, selection-change, event, drawing and disposal lifetimes. Resident
+  objects continue to use the shared generation-tagged facility and owner checks.
+  Do not invoke extension callbacks while holding resident manager locks.
+  Panics use System-owned crash reporting.
+- Resolve editor code only from ResEdit's own installed resources. Viewing an
+  inspected file's `RSSC`, CODE or other executable resource never runs it.
+  Validate module descriptors and ABI compatibility before entry; unavailable
+  or unsupported editors fall back to the resource-based hex viewer. Malformed
+  resource bytes remain inspectable as data. Native modules are application
+  code, not a process-isolation boundary.
+- Ship the read-only module lifecycle first, preserving lossless JSON export.
+  Define dirty-state, cancel/revert and save responsibilities for later editing;
+  resource-fork write-back remains blocked on Resource Manager write support.
+
+Acceptance includes a custom-type editor installed through the manifest without
+changing browser code, all existing viewers using the same extension contract,
+relocation and two simultaneous instances with independent state, rejected ABI
+and malformed-module cases, inspection without execution, safe teardown and
+System-owned panic reporting. Put shared Toolbox conformance assertions in
+`crates/mac-toolbox/tests` through the public SDK; use ResEdit integration tests
+for extension discovery and dispatch. Retain pixel/scroll comparisons and bounded
+repaint timings, and document how to build and embed the sample editor.
+
 ## Evidence and acceptance
 
 Original behavior comes from Inside Macintosh: Files, Standard File Package,

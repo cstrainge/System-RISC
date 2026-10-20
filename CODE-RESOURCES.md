@@ -72,6 +72,17 @@ resource families retain their declared translation contracts. ResEdit recognize
 all registered families and displays native envelope disassembly plus NABI/RLOC
 metadata, while untranslated payloads remain inspectable as hex.
 
+## Planned ResEdit editor resources
+
+ResEdit's [extension workstream](docs/RESEDIT.md#planned-resource-editor-extension-api)
+will register executable `RSSC` resources and a ResEdit-specific calling
+convention. Each native editor will use the existing compact code-resource
+format and relocation path, with its own versioned host interface. This is
+planned, not an implemented registry family or loader contract. Merely reading
+an `RSSC` resource must never prepare or execute it; installed editor discovery
+is separate from inspecting a target file. Original 68k `RSSC` compatibility
+requires the translator and original ResEdit API adapter.
+
 ## Standard WDEF reconstruction
 
 [Retained analysis](../analysis/wdef-standard.md) records the System 7.6.1 source
