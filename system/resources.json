@@ -8475,6 +8475,46 @@
     },
     {
       "type": "ICN#",
+      "id": 32730,
+      "symbol": "DRIVERS_FOLDER_LARGE_MONO",
+      "name": "Drivers folder",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/drivers/49434e23-32730.bin"
+      }
+    },
+    {
+      "type": "icl8",
+      "id": 32730,
+      "symbol": "DRIVERS_FOLDER_LARGE_COLOR",
+      "name": "Drivers folder",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/drivers/69636c38-32730.bin"
+      }
+    },
+    {
+      "type": "ics#",
+      "id": 32730,
+      "symbol": "DRIVERS_FOLDER_SMALL_MONO",
+      "name": "Drivers folder",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/drivers/69637323-32730.bin"
+      }
+    },
+    {
+      "type": "ics8",
+      "id": 32730,
+      "symbol": "DRIVERS_FOLDER_SMALL_COLOR",
+      "name": "Drivers folder",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/drivers/69637338-32730.bin"
+      }
+    },
+    {
+      "type": "ICN#",
       "id": 32740,
       "symbol": "BOOT_HAPPY_MAC",
       "payload": {

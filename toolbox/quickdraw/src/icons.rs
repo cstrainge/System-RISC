@@ -129,7 +129,7 @@ impl crate::SurfacePort<'_>
         self.connection.icon(scope, id, destination, flags.bits()?)
     }
 }
-/// Standard System resource identities from Inside Macintosh's icon tables.
+/// Well-known System icon families, including original Macintosh IDs and native additions.
 pub mod standard
 {
     pub const DOCUMENT: i16 = -4000;
@@ -145,6 +145,8 @@ pub mod standard
     pub const PREFERENCES_FOLDER: i16 = -3974;
     pub const EXTENSIONS_FOLDER: i16 = -3973;
     pub const FONTS_FOLDER: i16 = -3968;
+    /// System RISC's Drivers folder, with its own large/small color/mono family.
+    pub const DRIVERS_FOLDER: i16 = 32730;
 }
 
 impl crate::graphics::GraphicsPort<'_>

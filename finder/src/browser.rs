@@ -166,6 +166,7 @@ fn folder_icon(volume: &VolumeInfo, entry: &CatalogInfo) -> i16
     {
         match entry.name()
         {
+            "Drivers" => return standard::DRIVERS_FOLDER,
             "Fonts" => return standard::FONTS_FOLDER,
             "Extensions" => return standard::EXTENSIONS_FOLDER,
             "Control Panels" => return standard::CONTROL_PANELS_FOLDER,
