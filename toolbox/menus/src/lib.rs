@@ -85,15 +85,30 @@ impl<'a> Menus<'a>
 
     pub fn selection(self, event: &Event) -> Result<Option<Selection>>
     {
-        if event.kind != EventKind::MenuCommand
+        let mut call = match event.kind
         {
-            return Ok(None);
+            EventKind::MenuCommand =>
+            {
+                MenuCall { operation: COMMAND,
+                           menu_id: (event.message >> 16) as i16,
+                           item: event.message as u16,
+                           ..Default::default() }
+            }
+            EventKind::KeyDown | EventKind::AutoKey if event.modifiers & mac_abi::CMD_KEY != 0 =>
+            {
+                MenuCall { operation: KEY,
+                           value: u32::from(event.character()),
+                           ..Default::default() }
+            }
+            _ => return Ok(None)
+        };
+        // Input can arrive before the application commits a selection's menu
+        // policy. Resolve an unconsumed key now, after preceding queued events.
+        match self.client.menu(&mut call)
+        {
+            Err(Error(mac_abi::NOT_FOUND)) if call.operation == KEY => return Ok(None),
+            result => result?
         }
-        let mut call = MenuCall { operation: COMMAND,
-                                  menu_id: (event.message >> 16) as i16,
-                                  item: event.message as u16,
-                                  ..Default::default() };
-        self.client.menu(&mut call)?;
         Ok(Some(Selection { menu_id: call.menu_id,
                             item:    call.item,
                             command: call.command }))

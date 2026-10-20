@@ -296,3 +296,42 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
     }
     std::fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","transport":"public SDK-only guest / loaded MDEF / real virtio input", "commands":2,"disabled_native_keys_exactly_once":2,"frames":14,"original_uncached_sizes":8,"native_keyed_pixels":2000,"original_exact_rgb_pixels":111184,"native_keyless_label_pixels":width*16,"scope":"click/key selection, disabled key/item/cancel/barswitch, exact restoration, three original File popup crops, original normal Apple title and selected File title; native authored label matches public font rendering"})).unwrap()).unwrap();
 }
+
+
+#[test]
+fn queued_command_keys_resolve_using_current_resource_menu_policy()
+{
+    let fork = include_bytes!("data/original-menus.rsrc");
+    let oracle: serde_json::Value =
+        serde_json::from_str(include_str!("data/original-menu-metadata.json")).unwrap();
+    let menu = oracle["menus"].as_array().unwrap().iter().find(|m| m["id"] == 257).unwrap();
+    let item =
+        menu["items"].as_array().unwrap().iter().find(|i| i["key"].as_u64().unwrap() != 0).unwrap();
+    let index = item["index"].as_u64().unwrap() as u16;
+    let event = Event { kind: EventKind::KeyDown,
+                        message: item["key"].as_u64().unwrap() as u32,
+                        modifiers: mac_toolbox::events::CMD_KEY,
+                        ..Default::default() };
+    mac_system::testing::menus::with_resources(fork, fork, |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let menus = system.menus();
+        menus.install_menu_resource(mac_abi::resources::APPLICATION, 257).unwrap();
+        menus.set_item_enabled(257, index, false).unwrap();
+        assert_eq!(menus.selection(&event).unwrap(), None);
+        // The key was already queued while disabled. Prior selection handling
+        // enables the item before this same event reaches the application's loop.
+        menus.set_item_enabled(257, index, true).unwrap();
+        let selected = menus.selection(&event).unwrap().unwrap();
+        assert_eq!((selected.menu_id, selected.item), (257, index));
+        assert_eq!(menus.selection(&Event { kind: EventKind::KeyUp,
+                                            ..event })
+                        .unwrap(),
+                   None);
+        assert_eq!(menus.selection(&Event { modifiers: 0,
+                                            ..event })
+                        .unwrap(),
+                   None);
+        menus.set_item_enabled(257, index, false).unwrap();
+        assert_eq!(menus.selection(&event).unwrap(), None);
+    });
+}

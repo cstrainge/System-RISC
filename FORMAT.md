@@ -310,7 +310,11 @@ MENU0x10016 carries `mac-abi/src/menus.rs::MenuCall`. MENU/fmnu resources define
 items; an optional same-ID MCMD resource supplies one big-endian command per
 item. MDEF0 is an independent native code resource at0x82300000..0x82400000.
 Native EventKind14 carries MenuCommand: high16 bits menuID, low16 one-based item.
-Ctrl key equivalents use the same event path. This is a native extension, not a
+Ctrl key equivalents use the same event path. A KEY query resolves an unconsumed
+command-key character against the current enabled resource items without changing
+menu state or repainting. The Rust selection helper uses it for queued KeyDown/
+AutoKey events after the application handles preceding selection changes. This
+is a native extension, not a
 claim that original MenuSelect/WindowRecord contracts execute unchanged.
 
 ABI6 extends the native MDEF state with explicit icon scope/ID/flags and a

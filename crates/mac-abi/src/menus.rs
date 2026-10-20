@@ -6,6 +6,8 @@ pub const SET_ENABLED: u32 = 2;
 pub const SET_CHECKED: u32 = 3;
 pub const COMMAND: u32 = 4;
 pub const LAYOUT: u32 = 5;
+/// Resolve a command-key character against current enabled resource items.
+pub const KEY: u32 = 6;
 pub const MAX_ITEMS: usize = 31;
 pub const MDEF: u32 = u32::from_be_bytes(*b"MDEF");
 pub const MEASURE: i16 = 0;

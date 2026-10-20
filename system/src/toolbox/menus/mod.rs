@@ -64,6 +64,15 @@ impl Manager
     {
         match call.operation
         {
+            KEY =>
+            {
+                let key = u8::try_from(call.value).map_err(|_| BAD_ARGUMENT)?;
+                let selection = self.key(key).ok_or(NOT_FOUND)?;
+                call.menu_id = selection.menu_id;
+                call.item = selection.item;
+                call.command = selection.command;
+                Ok(false)
+            }
             INSTALL =>
             {
                 if self.menus.len() >= 8
