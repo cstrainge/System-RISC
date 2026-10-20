@@ -214,6 +214,13 @@ wait scheduling provide foundations, not a std port. Inventory compiler/target
 selection and all std platform backends, pin a maintained sysroot patch/build,
 and bridge normal Rust startup to resource-based loading.
 
+Prioritize S0/S1 application build/runtime support: std becomes the default for
+every native userspace app, including Finder and all apps/*. Remove no_std,
+no_main, handwritten entry and panic-handler macros as each app migrates. The
+platform's default std panic hook calls the System-owned bomb dialog without
+app setup, including when take_hook restores the default. All six existing apps
+must build/launch through that path; a single opt-in sample is insufficient.
+
 Deliver pointer allocation/runtime first, then worker threads/TLS/blocking,
 general files/streams/paths/child processes and P7 sockets. Keep the std backend
 on a core-only ABI/transport path independent of mac-toolbox; both call the same

@@ -1,8 +1,10 @@
 # Rust standard library bring-up
 
 Status: design/backlog, tracked as [platform workstream P8](CORE-TOOLBOX-ROADMAP.md#p8--rust-standard-library).
-The goal is normal Rust applications using `std`, including Finder, alongside
-`no_std` Toolbox clients. Kernel, machine adapters, resource definitions and the
+The goal is ordinary `std` for every native userspace application, including
+Finder and all `apps/*`; userspace applications must no longer need `#![no_std]`,
+`#![no_main]`, a handwritten `_start` or a panic-handler macro. Toolbox libraries
+remain usable without std. Kernel, machine adapters, resource definitions and the
 minimal ABI/transport remain `no_std`. This plan does not install a new toolchain
 or implement a std backend.
 
@@ -22,6 +24,48 @@ bounded transactional data-file creation exist; generic writable file streams,
 pipes and std descriptors do not. Monotonic nanoseconds and signed Unix wall
 seconds exist, with finer wall-clock precision still to define. Networking is
 [P7](NETWORKING.md), not an existing socket backend.
+
+## Application build and default panic contract
+
+S0/S1 build/runtime support is a prerequisite for the userspace migration and an
+early delivery priority. The default application build must select the std-capable
+System RISC target/sysroot and supply startup, allocation and panic integration.
+The build must fail clearly if the required platform sysroot is absent; it must
+not silently select bare-metal or a stub implementation. System, boot ROM and
+definition/extension modules retain explicit no_std build roles.
+
+Keep `resources.json`, Cargo-derived versions, icons, code resources and RLOC as
+the normal packaging flow. Applications use normal `fn main()` (including the
+standard Termination contract), and safe access to the loader-initialized Toolbox
+client. The generated/platform startup adapter owns service-table initialization
+and the existing native loader entry; this ABI plumbing is not app boilerplate.
+Host tools/build scripts remain host std programs.
+
+The platform's **default std panic hook** calls the resident crash-report service,
+which owns the classic bomb dialog, complete retained report, scrolling and event
+handling. No per-app macro, initialization call or `set_hook` is required. This
+must be the actual platform default, not merely a startup-installed custom hook:
+standard [take_hook behavior](https://doc.rust-lang.org/std/panic/fn.take_hook.html)
+must restore the same dialog-producing default. Retain normal explicit custom
+hook behavior, including taking/calling the previous hook.
+
+Forward available panic message/payload and source location, app identity and
+actual thread identity/name; include available backtrace information with its
+coverage stated. Preserve the current long Unicode report and explicit
+truncation/failure markers. Stream through the minimal ABI without depending on
+mac-toolbox, stdio/terminal initialization or application repaint/event callbacks.
+System retains and displays the report even after the failed app is stopped.
+Initialize the bridge before app/runtime code can panic; specify recursive,
+simultaneous-worker, early-startup and allocation-failure reporting paths without
+requiring healthy heap/TLS/UI state in the dying app. If reporting cannot enter
+the service, use a bounded emergency diagnostic/termination path rather than
+recursive panics or silent success.
+
+With the initial panic-abort profile, the default path reports then terminates
+the failing application and its workers, preserving System's dialog and other
+apps. This is not unwinding or kernel-panic recovery. Remove the existing custom
+`#[panic_handler]` macros from apps only as their std build lands; do not strip
+them from today's working no_std builds before the platform replacement exists.
 
 ## Platform boundary
 
@@ -133,6 +177,11 @@ cannot turn kernel panic into recoverable app failure.
    clock and System-owned panic integration. Exercise Box/Vec/String, formatting,
    output, timing and a Toolbox window using the same std binary. Add seeded
    collections after the pinned runtime's randomness gate is established.
+   Make std the application-role default and migrate Finder, QuickDraw Test,
+   TextEdit Exerciser, Cursor Test, Panic Test and ResEdit to normal main without
+   no_std/no_main/custom entry/panic macros. Their existing Toolbox workflows
+   need not wait for std filesystem or networking support. Apply the same rule
+   to future standalone native applications, including P6 control panels.
 3. **S2 — Real concurrency:** worker spawn/join, TLS/destructors, park/wake,
    synchronization/channels and sleeping. Other apps and the UI progress while
    workers block or compute without traps. Test one hart first; P1 SMP is not a
@@ -140,7 +189,8 @@ cannot turn kernel panic into recoverable app failure.
 4. **S3 — Documents and child processes:** general files, native paths, args/env,
    streams/pipes, process status/wait and Command. A std app creates/edits/reopens
    a document, launches a separate copy with arguments and captures its output.
-   Test failures and reboot persistence, then migrate Finder in bounded slices.
+   Test failures and reboot persistence; adopt broader std file/process features
+   in the already std-based Finder in bounded slices.
 5. **S4 — Networked std apps:** P7 backend, resolution and local TCP/UDP/IPv6
    tests, then TLS/HTTPS with its real prerequisites. No public Internet needed
    for acceptance. Wider executor/getrandom ecosystem qualification follows.
@@ -169,6 +219,13 @@ ThreadIds and residency without per-event production logging.
 Publish per-module compile/runtime/error/concurrency status and toolchain hashes
 with each milestone. A Finder build using std plus graphical document workflow
 is the application gate, not proof of process/network/unwind completeness.
+Require a new ordinary-main sample that panics without registering a hook, plus
+Panic Test's short/long Unicode cases through the platform default. Verify hook
+replacement and take_hook restoration, worker panic, early/failed reporting and
+that the System dialog remains interactive while another app makes progress.
+The userspace migration gate requires all six current applications to build,
+launch and retain their existing graphical/ownership regressions through the
+default application build. Compiling one opt-in std sample does not meet it.
 Measure image/RAM growth, idle wakeups, syscall and lock durations, and Cursor
 Test/input/present responsiveness under worker, filesystem and network load.
 No std adapter should poll queues, redraw windows or spin in a blocked call when

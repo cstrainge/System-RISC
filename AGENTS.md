@@ -24,6 +24,12 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
 - Keep the native runtime suitable for a future Rust std platform layer; Toolbox
   clients remain usable without std. Keep CPU-specific code in machine adapters:
   RISC-V is current, x86 is a future target. See THREADING.md for unmet gates.
+- P8 makes std the default for every native userspace application, including
+  Finder and apps/*. Build/startup plumbing belongs to the platform, not app
+  no_std/no_main/entry/panic boilerplate. The platform default std panic hook
+  calls the System-owned bomb dialog without app opt-in. Migrate apps only with
+  verified target/sysroot/runtime support; retain no_std for kernel, minimal
+  ABI/transport, Toolbox bindings and independently loaded low-level modules.
 - All system preferences use versioned JSON with typed access and safe concurrent
   transactions. Persistence requires writable storage; do not fake success.
 - Every resident Toolbox manager must issue and validate object IDs through

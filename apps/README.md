@@ -1,5 +1,12 @@
 # Native applications
 
+Application target policy: [P8](../docs/RUST-STD.md#application-build-and-default-panic-contract)
+makes std the default for all native userspace apps, including Finder. Applications
+will use normal main without no_std/no_main, custom loader entries or per-app
+panic macros. The platform default panic path must display the System-owned bomb
+dialog. This migration is planned; the applications below still use the working
+no_std entry/panic path until the target/sysroot/runtime replacement is verified.
+
 `cargo xtask image` builds and packages these applications into the startup
 volume's `Applications` folder. Each application has its own native entry point,
 Cargo-generated `vers`, `RV64` code, `NABI` descriptor, `MENU`/`MCMD` commands,
