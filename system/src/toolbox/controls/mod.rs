@@ -13,6 +13,7 @@ enum State
 /// Retained immutable definition state, loader-validated entry and service gate.
 pub struct Drawing
 {
+    pub id:    u32,
     state:     State,
     entry:     DefinitionEntry,
     gate:      TrapGate,
@@ -104,6 +105,49 @@ pub fn definition_id(call: &ControlCall) -> Result<i16, Status>
         _ => Err(NOT_SUPPORTED)
     }
 }
+/// Validate CDEF state without allocating a retained drawing.
+pub fn validate(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
+                -> Result<(), Status>
+{
+    let id = definition_id(call)?;
+    if id == 1
+       && (call.scrollbar.maximum < 0
+           || call.scrollbar.value < 0
+           || call.scrollbar.value > call.scrollbar.maximum
+           || call.scrollbar.bounds.is_empty())
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    if id == 0 && (call.standard.bounds.is_empty()
+        || call.standard.title_length as usize > call.standard.title.len()
+        || core::str::from_utf8(&call.standard.title[..(call.standard.title_length as usize).min(call.standard.title.len())]).is_err()) {
+        return Err(BAD_ARGUMENT);
+    }
+    let object = if id == 1
+    {
+        (&mut call.scrollbar as *mut ScrollbarState).cast()
+    }
+    else
+    {
+        (&mut call.standard as *mut ControlDefinitionState).cast()
+    };
+    let mut validation = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+                                          kind: CDEF,
+                                          id,
+                                          variation: if id == 0 { call.procedure } else { 0 },
+                                          message: VALIDATE_DEFINITION,
+                                          reserved: 0,
+                                          param: 0,
+                                          object,
+                                          gate,
+                                          surface: core::ptr::null_mut() };
+    let status = super::resources::definitions::invoke(entry, &mut validation);
+    if status < 0
+    {
+        return Err(status as Status);
+    }
+    Ok(())
+}
 /// Validate and resolve a typed request. No per-control geometry lives here.
 pub fn prepare(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
                -> Result<Option<Drawing>, Status>
@@ -132,31 +176,9 @@ pub fn prepare(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
     }
     if matches!(call.operation, DRAW_SCROLLBAR | DRAW_STANDARD)
     {
-        let object = if id == 1
-        {
-            (&mut call.scrollbar as *mut ScrollbarState).cast()
-        }
-        else
-        {
-            (&mut call.standard as *mut ControlDefinitionState).cast()
-        };
-        let mut validation =
-            DefinitionCall { header: Header::for_type::<DefinitionCall>(),
-                             kind: CDEF,
-                             id,
-                             variation: if id == 0 { call.procedure } else { 0 },
-                             message: VALIDATE_DEFINITION,
-                             reserved: 0,
-                             param: 0,
-                             object,
-                             gate,
-                             surface: core::ptr::null_mut() };
-        let status = super::resources::definitions::invoke(entry, &mut validation);
-        if status < 0
-        {
-            return Err(status as Status);
-        }
-        return Ok(Some(Drawing { state: if id == 1
+        validate(call, entry, gate)?;
+        return Ok(Some(Drawing { id: 0,
+                                 state: if id == 1
                                  {
                                      State::Scrollbar(call.scrollbar)
                                  }
@@ -262,7 +284,8 @@ mod tests
                                      maximum: 100,
                                      active: 1,
                                      ..Default::default() };
-        let drawing = Drawing { state:     State::Scrollbar(state),
+        let drawing = Drawing { id:        0,
+                                state:     State::Scrollbar(state),
                                 variation: 0,
                                 entry:     crate::test_scrollbar::scrollbar_definition,
                                 gate:      crate::toolbox::quickdraw::surface_gate };
@@ -376,3 +399,4 @@ mod sdk_tests
 
 pub mod scrollbox;
 pub mod scrollbox_native;
+pub mod objects;

@@ -34,6 +34,7 @@ pub struct Desktop
 {
     standard_file:   super::standard_file::Manager,
     scroll_boxes:    super::controls::scrollbox::Manager,
+    controls:        super::controls::objects::Manager,
     crash:           super::crashes::Manager,
     dialogs:         super::dialogs::DialogState,
     desktop:         DesktopLayer,
@@ -189,6 +190,7 @@ impl Desktop
                   crash: Default::default(),
                   standard_file: Default::default(),
                   scroll_boxes: Default::default(),
+                  controls: Default::default(),
                   dialogs: Default::default(),
                   menus: super::menus::Manager::new(mdef, crate::machine::traps::gateway),
                   desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
@@ -369,6 +371,7 @@ impl Desktop
                     return NOT_FOUND;
                 }
                 self.scroll_boxes.remove_window(id.0);
+                self.controls.remove_window(id.0);
                 self.content.retain(|content| content.id != id);
                 self.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
@@ -671,8 +674,125 @@ impl Desktop
         Ok(None)
     }
 
+    fn managed_control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Result<(), Status>
+    {
+        use mac_abi::controls::*;
+        let window = if matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+        {
+            call.window
+        }
+        else
+        {
+            self.controls.window(call.id, self.owner)?
+        };
+        if window != 0 && !self.owns(WindowId(window))
+        {
+            return Err(if self.windows.window(WindowId(window)).is_some()
+                       {
+                           ACCESS_DENIED
+                       }
+                       else
+                       {
+                           NOT_FOUND
+                       });
+        }
+        let definition = self.controls.definition(call, self.owner)?;
+        let entry = self.control_definition(definition)?;
+        // A deactivated/hidden owner cannot continue a capture after app switching.
+        if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
+           && window != 0
+           && (self.owner != self.foreground
+               || self.windows.active_window() != Some(WindowId(window)))
+        {
+            call.operation = CANCEL_TRACKING;
+        }
+        let drawing =
+            self.controls.request(self.owner, call, entry, crate::machine::traps::gateway)?;
+        if call.operation == DISPOSE_OBJECT
+        {
+            let mut removed = Vec::new();
+            for content in self.content
+                               .iter_mut()
+                               .chain(self.pending_content.iter_mut())
+                               .filter(|c| c.id.0 == window)
+            {
+                content.commands.retain(|command| {
+                                    if let RenderCommand::Control(d) = command
+                                       && d.id == call.id
+                                    {
+                                        removed.push(d.bounds());
+                                        return false;
+                                    }
+                                    true
+                                });
+            }
+            for bounds in removed
+            {
+                self.content_changed_rect(window, bounds);
+            }
+        }
+        if let Some(drawing) = drawing
+        {
+            if window == 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let bounds = drawing.bounds();
+            let used = self.retained_bytes();
+            let size = drawing.storage();
+            let content = self.content_mut(window)?;
+            let old = content.commands
+                             .iter_mut()
+                             .find(|c| matches!(c, RenderCommand::Control(d) if d.id == call.id));
+            let old_bounds = if let Some(command) = old
+            {
+                if used - command.storage() + size > MAX_RETAINED_BYTES
+                {
+                    return Err(NO_MEMORY);
+                }
+                let old_bounds = if let RenderCommand::Control(d) = command
+                {
+                    d.bounds()
+                }
+                else
+                {
+                    unreachable!()
+                };
+                *command = RenderCommand::Control(drawing);
+                Some(old_bounds)
+            }
+            else
+            {
+                if used + size > MAX_RETAINED_BYTES || content.commands.len() >= 512
+                {
+                    return Err(NO_MEMORY);
+                }
+                content.commands.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                content.commands.push(RenderCommand::Control(drawing));
+                None
+            };
+            if let Some(old) = old_bounds
+               && old != bounds
+            {
+                self.content_changed_rect(window, old);
+            }
+            self.content_changed_rect(window, bounds);
+            // A control state change commits its own pixels before returning.
+            // Full window updates remain private until EndUpdate.
+            if !self.pending_content.iter().any(|c| c.id.0 == window)
+            {
+                self.present();
+            }
+        }
+        Ok(())
+    }
+
     pub fn control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Status
     {
+        if call.operation >= mac_abi::controls::CREATE_STANDARD
+        {
+            return self.managed_control(call).map_or_else(|e| e, |_| OK);
+        }
         if !call.surface.is_null()
         {
             return BAD_ARGUMENT;
@@ -1098,6 +1218,7 @@ impl Desktop
             Action::Close(id) =>
             {
                 self.scroll_boxes.remove_window(id.0);
+                self.controls.remove_window(id.0);
                 self.content.retain(|content| content.id != id);
                 self.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);

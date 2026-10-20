@@ -34,7 +34,30 @@ pub fn open(system: &System<'_>) -> Result<u32, Status>
     let title = system.resources().application().string(128, &mut title).map_err(|e| e.0)?;
     system.new_window(Rect::new(word(2), word(0), word(6), word(4)), title, (400, 280), word(8))
 }
-pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32) -> Result<(), Status>
+pub fn selector(system: &System<'_>, index: usize)
+                -> Result<mac_toolbox::controls::StandardState, Status>
+{
+    let mut bytes = [0; 128];
+    let label = system.resources()
+                      .application()
+                      .indexed_string(2000, index as u32, &mut bytes)
+                      .map_err(mac_traps_error_status)?;
+    let left = 2 + index as i16 * 56;
+    let mut state =
+        mac_toolbox::controls::StandardState::new(Rect::new(left, 1, left + 53, 22), label);
+    state.font = FontSelection { family: 3,
+                                 size:   9,
+                                 face:   BOLD };
+    Ok(state)
+}
+fn mac_traps_error_status(error: mac_toolbox::Error) -> Status
+{
+    error.0
+}
+
+pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32,
+            selectors: &[mac_toolbox::controls::ControlId; 10])
+            -> Result<(), Status>
 {
     let r = system.window(id)?.bounds;
     let (w, h) = (r.right - r.left, r.bottom - r.top);
@@ -47,11 +70,12 @@ pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32) -> Result<
         port.colors(0xffffff, 0xffffff)?;
         port.paint_rect(Rect::new(0, 0, w, h))?;
         port.colors(0, 0xffffff)?;
-        for i in 0..10
+        for (index, id) in selectors.iter().enumerate()
         {
-            let mut bytes = [0; 128];
-            let label = system.resources().application().indexed_string(2000, i, &mut bytes)?;
-            text(port, 3 + i as i16 * 56, 15, label).map_err(mac_traps_error)?;
+            system.controls()
+                  .control(*id)
+                  .update(mac_toolbox::controls::StandardKind::WindowFontButton,
+                          selector(system, index).map_err(mac_traps_error)?)?;
         }
         port.move_to(point(0, 23))?;
         port.line_to(point(w, 23))?;

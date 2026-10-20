@@ -26,9 +26,19 @@ fn run(system: &System<'_>) -> Result<(), Status>
               .map_err(|e| e.0)?;
     }
     let window = demo::open(system)?;
+    let mut selectors = [controls::ControlId(0); 10];
+    for (index, id) in selectors.iter_mut().enumerate()
+    {
+        *id = system.controls()
+                    .create_standard(WindowId(window),
+                                     controls::StandardKind::WindowFontButton,
+                                     demo::selector(system, index)?)
+                    .map_err(|e| e.0)?
+                    .into_id();
+    }
     let mut page = 0;
     let mut icon_offset = 0;
-    demo::draw(system, window, page, icon_offset)?;
+    demo::draw(system, window, page, icon_offset, &selectors)?;
     system.log("QUICKDRAW_TEST_READY\n")?;
     loop
     {
@@ -43,7 +53,7 @@ fn run(system: &System<'_>) -> Result<(), Status>
             if selection.menu_id == 129 && (1..=10).contains(&selection.item)
             {
                 page = (selection.item - 1) as u8;
-                demo::draw(system, window, page, icon_offset)?;
+                demo::draw(system, window, page, icon_offset, &selectors)?;
             }
             continue;
         }
@@ -88,16 +98,26 @@ fn run(system: &System<'_>) -> Result<(), Status>
         if event.kind == EventKind::MouseDown && event.message == window
         {
             let bounds = system.window(window)?.bounds;
-            let y = event.where_.v - bounds.top;
-            if (0..23).contains(&y)
+            let local = Point { h: event.where_.h - bounds.left,
+                                v: event.where_.v - bounds.top };
+            for (index, id) in selectors.into_iter().enumerate()
             {
-                page = ((event.where_.h - bounds.left).max(0) / 56).min(9) as u8;
-                redraw = true;
+                if system.controls()
+                         .control(id)
+                         .track(local, |_| {
+                             page = index as u8;
+                             redraw = true;
+                             Ok(())
+                         })
+                         .map_err(|e| e.0)?
+                {
+                    break;
+                }
             }
         }
         if redraw
         {
-            demo::draw(system, window, page, icon_offset)?;
+            demo::draw(system, window, page, icon_offset, &selectors)?;
         }
     }
 }

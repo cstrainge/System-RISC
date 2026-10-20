@@ -1,4 +1,4 @@
-use mac_toolbox::{controls::{Part, StandardKind, StandardState},
+use mac_toolbox::{controls::{ControlId, StandardKind, StandardState},
                   quickdraw::cursors::StandardCursor};
 
 use super::*;
@@ -6,6 +6,7 @@ use super::*;
 pub struct CodeViewer
 {
     key:    Option<ResourceKey>,
+    radios: Option<[ControlId; 2]>,
     index:  Option<super::super::code::Index>,
     hex:    bool,
     source: Option<super::super::code::Source>
@@ -32,13 +33,33 @@ impl CodeViewer
         Ok(state)
     }
 
-    fn radios(&self, ctx: &Context<'_, '_>) -> ToolboxResult<()>
+    fn radios(&mut self, ctx: &Context<'_, '_>) -> ToolboxResult<()>
     {
-        for hex in [true, false]
+        if self.radios.is_some_and(|ids| {
+                          ctx.system
+                             .controls()
+                             .control(ids[0])
+                             .info()
+                             .map_or(true, |info| info.window != ctx.window)
+                      })
         {
-            ctx.system
-               .controls()
-               .draw_standard_state(ctx.window, StandardKind::Radio, self.state(ctx, hex)?)?;
+            self.radios = None;
+        }
+        if self.radios.is_none()
+        {
+            let create = |hex| {
+                ctx.system
+                   .controls()
+                   .create_standard(ctx.window, StandardKind::Radio, self.state(ctx, hex)?)
+            };
+            let hex = create(true)?;
+            let disassembly = create(false)?;
+            self.radios = Some([hex.into_id(), disassembly.into_id()]);
+        }
+        for (id, hex) in self.radios.unwrap().into_iter().zip([true, false])
+        {
+            let control = ctx.system.controls().control(id);
+            control.update(StandardKind::Radio, self.state(ctx, hex)?)?;
         }
         Ok(())
     }
@@ -142,54 +163,26 @@ impl Viewer for CodeViewer
 
     fn mouse(&mut self, ctx: &Context<'_, '_>, point: Point) -> ToolboxResult<Interaction>
     {
-        for hex in [true, false]
+        for (id, hex) in self.radios.unwrap_or([ControlId(0); 2]).into_iter().zip([true, false])
         {
-            let mut state = self.state(ctx, hex)?;
-            if ctx.system.controls().standard_hit(StandardKind::Radio, state, point)? != Part::Check
+            if id.0 == 0
             {
                 continue;
             }
-            let origin = ctx.system.windows().info(ctx.window)?.bounds;
-            let mut highlight = None;
-            let accepted = loop
+            let mut accepted = false;
+            if ctx.system.controls().control(id).track(point, |_| {
+                                                     accepted = true;
+                                                     Ok(())
+                                                 })?
             {
-                let input = ctx.system.events().input_state()?;
-                let point = Point { h: input.mouse.h - origin.left,
-                                    v: input.mouse.v - origin.top };
-                let inside =
-                    ctx.system.controls().standard_hit(StandardKind::Radio, state, point)?
-                    == Part::Check;
-                let down = input.modifiers & events::BTN_STATE == 0;
-                if highlight != Some(inside && down)
+                if accepted && self.hex != hex
                 {
-                    state.highlighted = u32::from(inside && down);
-                    ctx.system
-                       .controls()
-                       .draw_standard_state(ctx.window, StandardKind::Radio, state)?;
-                    // Present this animation state before acknowledging it. A
-                    // zero-mask poll preserves queued application events.
-                    ctx.system.events().wait_event(0, 0)?;
-                    let mut log = Text::<96>::new();
-                    let _ = writeln!(log,
-                                     "RESEDIT_RADIO_READY hex={} pressed={}",
-                                     u32::from(hex),
-                                     state.highlighted);
-                    ctx.system.log(log.as_str()).map_err(Error)?;
-                    highlight = Some(inside && down);
+                    self.hex = hex;
+                    ctx.control.scroll_to(0)?;
+                    return Ok(Interaction::Redraw);
                 }
-                if !down
-                {
-                    break inside;
-                }
-                ctx.system.events().wait_event(0, 1)?;
-            };
-            if accepted && self.hex != hex
-            {
-                self.hex = hex;
-                ctx.control.scroll_to(0)?;
-                return Ok(Interaction::Redraw);
+                return Ok(Interaction::None);
             }
-            return Ok(Interaction::None);
         }
         if ctx.control.info()?.spec.scrollbar.contains(point)
         {

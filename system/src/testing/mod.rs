@@ -12,6 +12,7 @@ struct Session
 {
     standard_file: crate::toolbox::standard_file::Manager,
     scroll_boxes:  crate::toolbox::controls::scrollbox::Manager,
+    controls:      crate::toolbox::controls::objects::Manager,
     crashes:       crate::toolbox::crashes::Manager,
     events:        crate::toolbox::events::EventManager,
     scrap:         crate::toolbox::scrap::Manager,
@@ -46,7 +47,8 @@ impl Default for Session
                                                              data: data.to_vec() });
         }
         let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources);
-        Self { scroll_boxes: Default::default(),
+        Self { controls: Default::default(),
+               scroll_boxes: Default::default(),
                standard_file: Default::default(),
                crashes: Default::default(),
                events: crate::toolbox::events::EventManager::new(),
@@ -426,6 +428,23 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
         }))},
         CONTROL =>
         unsafe {
+            let call = match request::<mac_abi::controls::ControlCall>(pointer, size) {
+                Ok(c) => c, Err(e) => return e as i64,
+            };
+            if call.operation >= mac_abi::controls::CREATE_STANDARD {
+                return SESSION.with(|slot| {
+                    let mut session = slot.borrow_mut();
+                    let manager = &mut session.as_mut().unwrap().controls;
+                    let owner = files::current_owner();
+                    let result = (|| {
+                        let entry = if manager.definition(call, owner)? == 0 {
+                            crate::test_cdef::standard_control_definition
+                        } else { crate::test_scrollbar::scrollbar_definition };
+                        manager.request(owner, call, entry, host_gate).map(|_| ())
+                    })();
+                    result.map_or_else(|e| e as i64, |_| 0)
+                });
+            }
             crate::toolbox::controls::native::dispatch(number,
                                                        pointer,
                                                        size,

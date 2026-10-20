@@ -168,10 +168,33 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     }
     assert!(retired, "window generations must retire rather than wrap into event flags");
     scroll_boxes(system, gate)?;
+    managed_controls(system, gate)?;
     system.log("HANDLE_REUSE_USERSPACE_PASS windows=40 native=9 legacy=3 retirement=passed \
                 foreign=passed\n")
           .map_err(Failure::Service)?;
     system.log("OWNERSHIP_USERSPACE_PASS scope=40 early_returns=16 stale=passed transfer=passed\n")
+          .map_err(Failure::Service)
+}
+
+fn managed_controls(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>
+{
+    use mac_toolbox::controls::{StandardKind, StandardState};
+    let window = create(system)?;
+    super::managed_controls::tracking(system, window.id())?;
+    super::managed_controls::reuse(system, window.id(), gate)?;
+    let state = StandardState::new(Rect::new(8, 8, 128, 32), "Parent cleanup");
+    let owned = system.controls().create_standard(window.id(), StandardKind::Button, state)?;
+    let stale = owned.id();
+    drop(window);
+    assert!(matches!(owned.control().info(), Err(Error(NOT_FOUND))));
+    let replacement_window = create(system)?;
+    let replacement =
+        system.controls().create_standard(replacement_window.id(), StandardKind::Button, state)?;
+    assert_eq!(replacement.id().0 & 0xffff, stale.0 & 0xffff);
+    assert_ne!(replacement.id(), stale);
+    drop(owned);
+    assert!(replacement.control().info().is_ok());
+    system.log("MANAGED_CONTROL_OWNERSHIP_PASS parent_cleanup=passed reuse=passed legacy=passed\n")
           .map_err(Failure::Service)
 }
 

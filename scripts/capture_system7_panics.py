@@ -26,8 +26,9 @@ def capture(output, windows=False):
     snapshots = []
     reports = []
 
-    def frame(name):
-        driver.move(16, 444)
+    def frame(name, park=True):
+        if park:
+            driver.move(16, 444)
         time.sleep(.1)
         path = output / (name + '.ppm')
         vm.qmp('screendump', {'filename': str(path)}, endpoint)
@@ -69,6 +70,22 @@ def capture(output, windows=False):
         driver.wait(' name=Applications\n')
         launch()
         frame('panic-app-ready')
+        driver.move(172, 250)
+        scene = int(driver.state()['scene_rev'])
+        driver.button(True)
+        driver.wait_state(lambda state: int(state['scene_rev']) > scene)
+        frame('panic-button-held', False)
+        scene = int(driver.state()['scene_rev'])
+        driver.move(16, 444)
+        driver.wait_state(lambda state: int(state['scene_rev']) > scene)
+        frame('panic-button-left', False)
+        scene = int(driver.state()['scene_rev'])
+        driver.move(172, 250)
+        driver.wait_state(lambda state: int(state['scene_rev']) > scene)
+        frame('panic-button-reentered', False)
+        driver.move(16, 444)
+        driver.button(False)
+        frame('panic-button-cancelled')
         previous = driver.log().count('CRASH_REPORT_READY ')
         # Ordinary app button; short panic captures formatted values and location.
         driver.click(172, 250)

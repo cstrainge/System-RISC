@@ -501,14 +501,29 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                 let original = get!(mac_abi::controls::ControlCall);
                 let mut call = *original;
                 if matches!(call.operation,
-                            mac_abi::controls::DRAW_STANDARD | mac_abi::controls::HIT_STANDARD)
+                            mac_abi::controls::DRAW_STANDARD
+                            | mac_abi::controls::HIT_STANDARD
+                            | mac_abi::controls::CREATE_STANDARD)
+                   || (call.operation == mac_abi::controls::CONFIGURE_OBJECT
+                       && !call.standard.bounds.is_empty())
                 {
                     inline_input(&mut call.standard.title, &mut call.standard.title_length)?;
                 }
                 let status = invoke!(call);
                 if status == OK as i64
                 {
-                    call.standard = original.standard;
+                    if call.operation >= mac_abi::controls::CREATE_STANDARD
+                    {
+                        if !call.standard.bounds.is_empty()
+                        {
+                            inline_output(&mut call.standard.title,
+                                          &mut call.standard.title_length)?;
+                        }
+                    }
+                    else
+                    {
+                        call.standard = original.standard;
+                    }
                     *original = call;
                 }
                 Ok(status)

@@ -83,6 +83,26 @@ fn application_panics_show_complete_diagnostics_and_leave_the_desktop_usable()
         let entry = snapshots.iter().find(|entry| entry["name"] == name).unwrap();
         frame(&output.join(entry["frame"].as_str().unwrap()))
     };
+    for name in ["panic-button-held", "panic-button-left", "panic-button-reentered",
+                 "panic-button-cancelled"]
+    {
+        let entry = snapshots.iter().find(|entry| entry["name"] == name).unwrap();
+        let prefix = &serial[..entry["serial_length"].as_u64().unwrap() as usize];
+        assert!(!prefix.contains("PANIC_TEST_TRIGGER"),
+                "{name}: action fired before accepted release");
+    }
+    for name in ["panic-button-held", "panic-button-reentered"]
+    {
+        assert!(region(&image(name), 124, 244, 136, 256).iter().all(|&byte| byte == 0),
+                "{name}: standard button did not highlight");
+    }
+    for name in ["panic-button-left", "panic-button-cancelled"]
+    {
+        assert_eq!(region(&image(name), 110, 235, 235, 265),
+                   region(&image("panic-app-ready"), 110, 235, 235, 265),
+                   "{name}: button did not restore its normal CDEF pixels");
+    }
+    assert_eq!(serial.matches("PANIC_TEST_TRIGGER kind=short\n").count(), 1);
     let bomb = fs::read(root.join("System7/system/assets/crashes/classic-bomb.icon")).unwrap();
     assert_eq!(bomb.len(), 128);
     let original_bomb: Vec<u8> =
@@ -117,7 +137,7 @@ fn application_panics_show_complete_diagnostics_and_leave_the_desktop_usable()
     let acceptance = serde_json::json!({"status":"passed", "original_bomb_pixels":3 * 32 * 32,
         "complete_report_bytes":long_bytes, "cases":["formatted location and values", "Unicode",
         "long report", "Home and End scrolling", "lossless cross-app clipboard", "app-only exit",
-        "normal application after panic"], "capture":capture, "output":output});
+        "normal application after panic", "button press leave reenter cancel and release"], "capture":capture, "output":output});
     let bytes = serde_json::to_vec_pretty(&acceptance).unwrap();
     fs::write(output.join("rust-acceptance.json"), &bytes).unwrap();
     fs::write(root.join("results/system7/panic-checks.json"), bytes).unwrap();

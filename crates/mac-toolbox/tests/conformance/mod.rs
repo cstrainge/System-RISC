@@ -1,5 +1,6 @@
 //! Shared, no-std userspace conformance functions. The caller supplies a live
 //! aggregate System; both host adapters and an RV64 ECALL runner can call these.
+pub mod managed_controls;
 use mac_toolbox::{System,
                   quickdraw::{Point, Rect}};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

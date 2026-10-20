@@ -19,22 +19,12 @@ pub struct Location
 #[derive(Clone, Copy, Default)]
 struct FolderWindow
 {
-    location: Location,
-    window:   u32,
-    selected: Option<Location>,
-    scroll:   i16,
-    scroll_h: i16
-}
-#[derive(Clone, Copy)]
-struct ScrollTrack
-{
+    location:   Location,
     window:     u32,
-    bounds:     Rect,
-    horizontal: bool,
-    initial:    i16,
-    maximum:    i16,
-    anchor:     Point,
-    last:       i16
+    selected:   Option<Location>,
+    scroll:     i16,
+    scroll_h:   i16,
+    scrollbars: [controls::ControlId; 2]
 }
 #[derive(Clone, Copy)]
 struct IconDrag
@@ -49,7 +39,6 @@ pub struct Browser
     desktop_selection: Option<u32>,
     desktop_active:    bool,
     last_click:        Option<(u32, u32, u32, u32)>,
-    tracking:          Option<ScrollTrack>,
     trash_selected:    bool,
     drag:              Option<IconDrag>,
     trash_hover:       bool,
@@ -425,8 +414,31 @@ impl Browser
                                    },
                                    (180, 100),
                                    8)?;
+        let create = |bounds| {
+            system.controls()
+                  .create_scrollbar(WindowId(id),
+                                    controls::ScrollbarState { bounds,
+                                                               ..Default::default() },
+                                    1,
+                                    1)
+                  .map_err(error)
+        };
+        let bars = (|| {
+            Ok::<_, Status>([create(vertical_scrollbar(404, 188))?,
+                             create(horizontal_scrollbar(404, 188))?])
+        })();
+        let bars = match bars
+        {
+            Ok(bars) => bars,
+            Err(e) =>
+            {
+                let _ = system.close_window(id);
+                return Err(e);
+            }
+        };
         self.windows[slot] = Some(FolderWindow { location,
                                                  window: id,
+                                                 scrollbars: bars.map(|bar| bar.into_id()),
                                                  ..Default::default() });
         self.redraw_all(system)?;
         let mut line = Text::<256>::default();
@@ -581,20 +593,30 @@ impl Browser
                       width,
                       count,
                       if window.location == Location::default() { None } else { Some(&volume) })?;
-            system.controls()
-                  .draw_scrollbar(WindowId(id),
-                                  vertical_scrollbar(width, height),
-                                  window.scroll,
-                                  (extent.v - height + 15).max(0),
-                                  active)
-                  .map_err(error)?;
-            system.controls()
-                  .draw_scrollbar(WindowId(id),
-                                  horizontal_scrollbar(width, height),
-                                  window.scroll_h,
-                                  (extent.h - width + 15).max(0),
-                                  active)
-                  .map_err(error)?;
+            for (index, bounds, value, maximum, step, page) in [(0,
+                                                                 vertical_scrollbar(width, height),
+                                                                 window.scroll,
+                                                                 (extent.v - height + 15).max(0),
+                                                                 52,
+                                                                 (height - 35).max(1)),
+                                                                (1,
+                                                                 horizontal_scrollbar(width,
+                                                                                      height),
+                                                                 window.scroll_h,
+                                                                 (extent.h - width + 15).max(0),
+                                                                 64,
+                                                                 (width - 15).max(1))]
+            {
+                let control = system.controls().control(window.scrollbars[index]);
+                control.update_scrollbar(controls::ScrollbarState { bounds,
+                                                                    value: value.min(maximum),
+                                                                    maximum,
+                                                                    active: u32::from(active),
+                                                                    ..Default::default() },
+                                         step,
+                                         page)
+                       .map_err(error)?;
+            }
             Ok(())
         })();
         system.end_update(id)?;
@@ -606,7 +628,6 @@ impl Browser
 
     pub fn click(&mut self, system: &System<'_>, event: Event) -> Result<(), Status>
     {
-        self.tracking = None;
         self.drag = None;
         let mut target = None;
         if event.message == 0
@@ -652,59 +673,29 @@ impl Browser
             if p.h >= bounds.right - bounds.left - icon_view::SCROLLBAR
                || p.v >= bounds.bottom - bounds.top - icon_view::SCROLLBAR
             {
-                let horizontal = p.v >= bounds.bottom - bounds.top - 15;
-                let (max_h, max_v) = self.limits(system, window, bounds)?;
-                let value = if horizontal { window.scroll_h } else { window.scroll };
-                let maximum = if horizontal { max_h } else { max_v };
-                let control_bounds = if horizontal
+                for (index, id) in window.scrollbars.into_iter().enumerate()
                 {
-                    horizontal_scrollbar(bounds.right - bounds.left, bounds.bottom - bounds.top)
+                    if system.controls()
+                             .control(id)
+                             .track(p, |action| {
+                                 if let Some(folder) = self.windows[slot].as_mut()
+                                 {
+                                     if index == 1
+                                     {
+                                         folder.scroll_h = action.scrollbar.value;
+                                     }
+                                     else
+                                     {
+                                         folder.scroll = action.scrollbar.value;
+                                     }
+                                 }
+                                 self.draw(system, window.window).map_err(Error)
+                             })
+                             .map_err(error)?
+                    {
+                        break;
+                    }
                 }
-                else
-                {
-                    vertical_scrollbar(bounds.right - bounds.left, bounds.bottom - bounds.top)
-                };
-                let part = system.controls()
-                                 .scrollbar_hit(WindowId(window.window),
-                                                control_bounds,
-                                                value,
-                                                maximum,
-                                                true,
-                                                p)
-                                 .map_err(error)?;
-                if part == mac_toolbox::controls::SCROLL_THUMB
-                {
-                    self.tracking = Some(ScrollTrack { window: window.window,
-                                                       bounds: control_bounds,
-                                                       horizontal,
-                                                       initial: value,
-                                                       maximum,
-                                                       anchor: p,
-                                                       last: value });
-                }
-                let step = if horizontal { 64 } else { 52 };
-                let page = if horizontal
-                {
-                    bounds.right - bounds.left - 15
-                }
-                else
-                {
-                    bounds.bottom - bounds.top - 35
-                };
-                let delta = match part
-                {
-                    mac_toolbox::controls::SCROLL_UP => -step,
-                    mac_toolbox::controls::SCROLL_DOWN => step,
-                    mac_toolbox::controls::SCROLL_PAGE_UP => -page,
-                    mac_toolbox::controls::SCROLL_PAGE_DOWN => page,
-                    _ => 0
-                };
-                if let Some(w) = self.windows[slot].as_mut()
-                {
-                    let position = if horizontal { &mut w.scroll_h } else { &mut w.scroll };
-                    *position = position.saturating_add(delta).clamp(0, maximum);
-                }
-                self.draw(system, window.window)?;
                 return Ok(());
             }
             let mut layout = Layout::new(bounds.right - bounds.left);
@@ -814,46 +805,6 @@ impl Browser
                     self.draw_desktop(system)?;
                 }
             }
-        }
-        let Some(track) = self.tracking
-        else
-        {
-            return Ok(());
-        };
-        let Ok(window) = system.window(track.window)
-        else
-        {
-            self.tracking = None;
-            return Ok(());
-        };
-        let point = Point { h: event.where_.h - window.bounds.left,
-                            v: event.where_.v - window.bounds.top };
-        let value = system.controls()
-                          .scrollbar_track_value(WindowId(track.window),
-                                                 track.bounds,
-                                                 track.initial,
-                                                 track.maximum,
-                                                 track.anchor,
-                                                 point)
-                          .map_err(error)?;
-        if value != track.last
-           && let Some(folder) =
-               self.windows.iter_mut().flatten().find(|w| w.window == track.window)
-        {
-            if track.horizontal
-            {
-                folder.scroll_h = value;
-            }
-            else
-            {
-                folder.scroll = value;
-            }
-            self.tracking.as_mut().unwrap().last = value;
-            self.draw(system, track.window)?;
-        }
-        if event.kind == EventKind::MouseUp
-        {
-            self.tracking = None;
         }
         Ok(())
     }

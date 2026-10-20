@@ -58,7 +58,7 @@ impl WindowDefinitionState
 
 pub const CDEF: u32 = u32::from_be_bytes(*b"CDEF");
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ControlDefinitionState
 {
     pub bounds:       Rect,

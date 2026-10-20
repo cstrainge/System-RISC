@@ -216,8 +216,24 @@ FILE requests and metadata are defined in mac-abi/src/files.rs. File IDs are
 opaque mounted-volume IDs plus persistent HFS catalog IDs; open handles include
 a generation. Reads copy into caller storage, and both forks have independent
 marks. Native slash paths are distinct from classic colon paths. CONTROL requests
-use mac-abi/src/controls.rs and dispatch CDEF1; their inline state does not expose
-classic ControlHandle or WindowRecord ABI.
+use mac-abi/src/controls.rs and dispatch CDEF0 (standard controls) or CDEF1
+(scrollbars); their inline state does not expose classic ControlHandle or
+WindowRecord ABI. CONTROL and PSTRING_CONTROL share resident managed objects:
+operations10/11 create standard/scrollbar objects;12 configures,13 queries,
+14 disposes,15 draws,16 begins tracking,17 polls and18 cancels. ControlCall now
+also carries id/flags/ticks/step/page. Rebuild all modules for this unreleased
+layout; there is no old-size decoder. IDs use the central generation facility
+with a distinct Controls namespace; close/app exit retires parent-owned objects.
+The Pascal trap converts standard-control title input/output while retaining the
+same identity/owner checks. Rust apps use only the UTF-8 SDK surface.
+
+Tracking flags report held/tracking, handled, action and visual/value change.
+Buttons/checks/radios report an action only on release inside the original part;
+leave/re-enter changes only their highlight, and cancel/disable/resize/deactivation
+ends tracking without activation. Scrollbars use CDEF1 hit/thumb math with bounded
+arrow/page repetition. Managed drawing replaces the retained command for its ID
+and damages only old/new control bounds. Unchanged polls do not append commands
+or invalidate content. See [the managed control SDK](toolbox/controls/README.md).
 
 WINDOW operation8 (`SET_GROW_ICON_CLIP`) adds no structure fields: request.bounds
 is a window-local clip for automatic WDEF grow drawing when reserved=0.

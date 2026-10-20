@@ -74,13 +74,13 @@ def capture(output):
             draw_key('end');frame(package+'-disassembly-end')
             draw_key('home')
             # Exercise actual CDEF0 radio press/leave/release cancellation.
-            pressed='RESEDIT_RADIO_READY hex=1 pressed=1\n'
-            released='RESEDIT_RADIO_READY hex=1 pressed=0\n'
-            before=driver.log().count(pressed)
-            driver.move(398,70);driver.button(True);driver.wait(pressed,before)
+            # Capture the settled frame; Rust checks CDEF press/leave pixels.
+            driver.move(398,70);scene=int(driver.state()['scene_rev']);driver.button(True)
+            driver.wait_state(lambda state:int(state['scene_rev'])>scene)
             frame(package+'-hex-radio-held',False)
-            before=driver.log().count(released)
-            driver.move(16,444);driver.wait(released,before)
+            scene=int(driver.state()['scene_rev'])
+            driver.move(16,444)
+            driver.wait_state(lambda state:int(state['scene_rev'])>scene)
             frame(package+'-hex-radio-left',False)
             before=driver.log().count('RESEDIT_DRAW_READY\n');driver.button(False)
             driver.wait('RESEDIT_DRAW_READY\n',before);frame(package+'-hex-radio-cancelled')

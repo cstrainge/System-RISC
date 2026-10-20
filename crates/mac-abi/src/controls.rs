@@ -5,6 +5,20 @@ pub const HIT_SCROLLBAR: u32 = 1;
 pub const TRACK_SCROLLBAR: u32 = 2;
 pub const DRAW_STANDARD: u32 = 3;
 pub const HIT_STANDARD: u32 = 4;
+pub const CREATE_STANDARD: u32 = 10;
+pub const CREATE_SCROLLBAR: u32 = 11;
+pub const CONFIGURE_OBJECT: u32 = 12;
+pub const INFO_OBJECT: u32 = 13;
+pub const DISPOSE_OBJECT: u32 = 14;
+pub const DRAW_OBJECT: u32 = 15;
+pub const BEGIN_TRACKING: u32 = 16;
+pub const POLL_TRACKING: u32 = 17;
+pub const CANCEL_TRACKING: u32 = 18;
+pub const BUTTON_DOWN: u32 = 1;
+pub const TRACKING: u32 = 2;
+pub const HANDLED: u32 = 4;
+pub const ACTION: u32 = 8;
+pub const CHANGED: u32 = 16;
 /// Native CDEF state validation before retained drawing; no surface required.
 pub const VALIDATE_DEFINITION: i16 = 5;
 pub const BUTTON_PART: i16 = 10;
@@ -29,6 +43,11 @@ pub struct ScrollbarState
 #[derive(Clone, Copy, Default)]
 pub struct ControlCall
 {
+    pub id:        u32,
+    pub flags:     u32,
+    pub ticks:     u64,
+    pub step:      i16,
+    pub page:      i16,
     pub operation: u32,
     pub window:    u32,
     pub scrollbar: ScrollbarState,

@@ -59,6 +59,10 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   namespaces centrally and keep ownership checks separate. Keep validation in
   resident storage for both native Rust and legacy trap callers.
 - Generate application vers resources from Cargo's resolved package version.
+- Apps use managed Control Manager objects for standard buttons, checkboxes,
+  radios and scrollbars, with CDEF-owned drawing/geometry and resident tracking,
+  highlighting/cancellation. Use managed scroll boxes for compound views; do not
+  duplicate control hit testing or press/release loops inside applications.
 - Repainting is bounded by the changed object: cursor, control, or window area.
   Accumulate exact damage, preserve occlusion and clipping, and leave unrelated
   pixels and drawing work untouched. Movement damages both old and new bounds;

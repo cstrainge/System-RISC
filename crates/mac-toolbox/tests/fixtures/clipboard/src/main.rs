@@ -36,11 +36,11 @@ unsafe extern "C" fn trace(number: u32, pointer: *mut (), size: usize) -> i64
     {
         // SAFETY: same synchronous typed SDK request contract as above.
         let call = unsafe { &*pointer.cast::<mac_abi::controls::ControlCall>() };
-        if call.operation == mac_abi::controls::TRACK_SCROLLBAR
+        if call.operation == mac_abi::controls::POLL_TRACKING
         {
             TRACKS.fetch_add(1, Ordering::Relaxed);
         }
-        if call.operation == mac_abi::controls::DRAW_SCROLLBAR
+        if call.operation == mac_abi::controls::CONFIGURE_OBJECT
            && call.scrollbar.bounds.bottom - call.scrollbar.bounds.top
               > call.scrollbar.bounds.right - call.scrollbar.bounds.left
         {

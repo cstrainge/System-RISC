@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import time
 import system7_vm as vm
+from capture_system7_applications_ui import Driver
 
 
 def capture(output):
@@ -27,7 +28,9 @@ def capture(output):
             {'type':'key','data':{'key':{'type':'qcode','data':code},'down':False}}]}, endpoint)
     try:
         key('q'); wait('QD_DEMO_READY page=1')
-        key('0'); wait('QD_DEMO_READY page=10 png')
+        # Select PNG through the installed managed header button.
+        Driver(endpoint, serial).click(572, 86)
+        wait('QD_DEMO_READY page=10 png')
         # Ensure the retained scene has reached the framebuffer before transport.
         time.sleep(.15)
         vm.qmp('screendump', {'filename': str(output / 'finder-png.ppm')}, endpoint)

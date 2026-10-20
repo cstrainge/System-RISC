@@ -2,9 +2,7 @@
 //! all windows, drawing, fonts, controls and Scrap operations use the Toolbox SDK.
 use core::fmt::{self, Write};
 
-use mac_toolbox::{controls::{SCROLL_DOWN, SCROLL_PAGE_DOWN, SCROLL_PAGE_UP, SCROLL_THUMB,
-                             SCROLL_UP},
-                  quickdraw::fonts::FontSelection,
+use mac_toolbox::{quickdraw::fonts::FontSelection,
                   scrap::{FlavorInfo, ScrapInfo, TEXT},
                   *};
 const HEADER: i16 = 20;
@@ -29,15 +27,6 @@ enum Mode
     Binary,
     Oversized
 }
-#[derive(Clone, Copy)]
-struct Tracking
-{
-    horizontal: bool,
-    bounds:     Rect,
-    initial:    i16,
-    maximum:    i16,
-    anchor:     Point
-}
 pub struct Viewer
 {
     pub window: u32,
@@ -48,21 +37,23 @@ pub struct Viewer
     length:     usize,
     scroll:     Point,
     extent:     Point,
-    tracking:   Option<Tracking>
+    scrollbars: [controls::ControlId; 2],
+    tracking:   Option<usize>
 }
 impl Default for Viewer
 {
     fn default() -> Self
     {
-        Self { window:   0,
-               snapshot: None,
-               first:    FlavorInfo::default(),
-               mode:     Mode::Empty,
-               text:     [0; TEXT_CAPACITY],
-               length:   0,
-               scroll:   Point::default(),
-               extent:   Point::default(),
-               tracking: None }
+        Self { window:     0,
+               snapshot:   None,
+               first:      FlavorInfo::default(),
+               mode:       Mode::Empty,
+               text:       [0; TEXT_CAPACITY],
+               length:     0,
+               scroll:     Point::default(),
+               extent:     Point::default(),
+               scrollbars: [controls::ControlId(0); 2],
+               tracking:   None }
     }
 }
 fn error(error: mac_toolbox::Error) -> Status
@@ -119,9 +110,35 @@ impl Viewer
             let title = crate::ui::text(system, TITLE, &mut bytes)?;
             let (bounds, procedure) = window_layout(system)?;
             self.window = system.new_window(bounds, title, (160, 80), procedure)?;
+            let width = bounds.right - bounds.left;
+            let height = bounds.bottom - bounds.top;
+            let create = |bounds| {
+                system.controls()
+                      .create_scrollbar(WindowId(self.window),
+                                        controls::ScrollbarState { bounds,
+                                                                   ..Default::default() },
+                                        LINE_HEIGHT,
+                                        1)
+                      .map_err(error)
+            };
+            let bars = (|| {
+                Ok::<_, Status>([create(vertical(width, height))?,
+                                 create(horizontal(width, height))?])
+            })();
+            let bars = match bars
+            {
+                Ok(bars) => bars,
+                Err(e) =>
+                {
+                    let _ = system.close_window(self.window);
+                    self.window = 0;
+                    return Err(e);
+                }
+            };
+            self.scrollbars = bars.map(|bar| bar.into_id());
             self.scroll = Point::default();
-            self.tracking = None;
             self.snapshot = None;
+            self.tracking = None;
         }
         system.select_window(self.window)?;
         self.draw(system)
@@ -143,7 +160,6 @@ impl Viewer
         self.length = 0;
         self.extent = Point::default();
         self.scroll = Point::default();
-        self.tracking = None;
         if info.flavors != 0
         {
             self.first = system.scrap().flavor_at(0).map_err(error)?;
@@ -193,7 +209,6 @@ impl Viewer
             Err(NOT_FOUND) =>
             {
                 self.window = 0;
-                self.tracking = None;
                 return Ok(());
             }
             Err(status) => return Err(status)
@@ -305,20 +320,24 @@ impl Viewer
             }
             port.clip_rect(Rect::new(0, 0, width, height)).map_err(error)?;
             let active = system.window(0)?.id == self.window;
-            system.controls()
-                  .draw_scrollbar(WindowId(self.window),
-                                  vertical(width, height),
-                                  self.scroll.v,
-                                  limits.v,
-                                  active)
-                  .map_err(error)?;
-            system.controls()
-                  .draw_scrollbar(WindowId(self.window),
-                                  horizontal(width, height),
-                                  self.scroll.h,
-                                  limits.h,
-                                  active)
-                  .map_err(error)?;
+            for (index, bounds, value, maximum, page) in
+                [(0,
+                  vertical(width, height),
+                  self.scroll.v,
+                  limits.v,
+                  (height - HEADER - BAR).max(1)),
+                 (1, horizontal(width, height), self.scroll.h, limits.h, (width - BAR).max(1))]
+            {
+                let control = system.controls().control(self.scrollbars[index]);
+                control.update_scrollbar(controls::ScrollbarState { bounds,
+                                                                    value,
+                                                                    maximum,
+                                                                    active: u32::from(active),
+                                                                    ..Default::default() },
+                                         LINE_HEIGHT,
+                                         page)
+                       .map_err(error)?;
+            }
             Ok(())
         })();
         system.end_update(self.window)?;
@@ -344,75 +363,72 @@ impl Viewer
         let point = Point { h: event.where_.h - window.bounds.left,
                             v: event.where_.v - window.bounds.top };
         let limits = self.limits(width, height);
-        if let Some(track) = self.tracking
-           && matches!(event.kind, EventKind::Null | EventKind::MouseUp)
+        if let Some(index) = self.tracking
+           && matches!(event.kind, EventKind::Null | EventKind::MouseUp | EventKind::Activate)
         {
-            let value = system.controls()
-                              .scrollbar_track_value(WindowId(self.window),
-                                                     track.bounds,
-                                                     track.initial,
-                                                     track.maximum,
-                                                     track.anchor,
-                                                     point)
-                              .map_err(error)?;
-            let previous = if track.horizontal { self.scroll.h } else { self.scroll.v };
-            if track.horizontal
+            let control = system.controls().control(self.scrollbars[index]);
+            if event.kind == EventKind::Activate
+               && event.message == self.window
+               && event.modifiers & ACTIVE_FLAG == 0
             {
-                self.scroll.h = value;
-            }
-            else
-            {
-                self.scroll.v = value;
-            }
-            if event.kind == EventKind::MouseUp
-            {
+                control.cancel().map_err(error)?;
                 self.tracking = None;
+                return Ok(true);
             }
-            if value != previous
+            if event.kind != EventKind::Activate
             {
-                self.draw(system)?;
+                let input = system.events().input_state().map_err(error)?;
+                let state = control.poll_tracking(point,
+                                                  event.kind != EventKind::MouseUp
+                                                  && input.modifiers & events::BTN_STATE == 0,
+                                                  input.uptime_ticks)
+                                   .map_err(error)?;
+                if !state.tracking
+                {
+                    self.tracking = None;
+                }
+                if state.action
+                {
+                    if index == 1
+                    {
+                        self.scroll.h = state.scrollbar.value;
+                    }
+                    else
+                    {
+                        self.scroll.v = state.scrollbar.value;
+                    }
+                    self.draw(system)?;
+                }
+                return Ok(true);
             }
-            return Ok(true);
         }
         if event.kind == EventKind::MouseDown && event.message == self.window
         {
-            let horizontal_bar = point.v >= height - BAR;
-            let bounds =
-                if horizontal_bar { horizontal(width, height) } else { vertical(width, height) };
-            let maximum = if horizontal_bar { limits.h } else { limits.v };
-            let value = if horizontal_bar { self.scroll.h } else { self.scroll.v };
-            let part =
-                system.controls()
-                      .scrollbar_hit(WindowId(self.window), bounds, value, maximum, true, point)
-                      .map_err(error)?;
-            let page = if horizontal_bar { width - BAR } else { height - HEADER - BAR };
-            let delta = match part
+            let input = system.events().input_state().map_err(error)?;
+            for (index, id) in self.scrollbars.into_iter().enumerate()
             {
-                SCROLL_UP => -LINE_HEIGHT,
-                SCROLL_DOWN => LINE_HEIGHT,
-                SCROLL_PAGE_UP => -page,
-                SCROLL_PAGE_DOWN => page,
-                _ => 0
-            };
-            let value = value.saturating_add(delta).clamp(0, maximum);
-            if horizontal_bar
-            {
-                self.scroll.h = value;
+                let state = system.controls()
+                                  .control(id)
+                                  .begin_tracking(point, input.uptime_ticks)
+                                  .map_err(error)?;
+                if state.handled
+                {
+                    self.tracking = state.tracking.then_some(index);
+                    if state.action
+                    {
+                        if index == 1
+                        {
+                            self.scroll.h = state.scrollbar.value;
+                        }
+                        else
+                        {
+                            self.scroll.v = state.scrollbar.value;
+                        }
+                        self.draw(system)?;
+                    }
+                    return Ok(true);
+                }
             }
-            else
-            {
-                self.scroll.v = value;
-            }
-            if part == SCROLL_THUMB
-            {
-                self.tracking = Some(Tracking { horizontal: horizontal_bar,
-                                                bounds,
-                                                initial: value,
-                                                maximum,
-                                                anchor: point });
-            }
-            self.draw(system)?;
-            return Ok(true);
         }
         if matches!(event.kind, EventKind::KeyDown | EventKind::AutoKey)
            && system.window(0)?.id == self.window

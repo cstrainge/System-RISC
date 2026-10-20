@@ -300,18 +300,14 @@ impl Info
                 port.frame_rect(self.layout.comments).map_err(error)?;
             }
             system.textedit().draw(self.comments, WindowId(self.window)).map_err(error)?;
-            for check in [Check::Locked, Check::Stationery]
+            for (index, check) in [Check::Locked, Check::Stationery].into_iter().enumerate()
             {
-                let highlighted =
-                    self.pressed.is_some_and(|pressed| pressed.check == check && pressed.inside);
-                let state = self.control(system, check, highlighted)?;
-                if state.bounds != Rect::ZERO
+                if let Some(id) = self.controls[index]
                 {
-                    system.controls()
-                          .draw_standard_state(WindowId(self.window),
-                                               controls::StandardKind::WindowFontCheckbox,
-                                               state)
-                          .map_err(error)?;
+                    let control = system.controls().control(id);
+                    control.update(controls::StandardKind::WindowFontCheckbox,
+                                   self.control(system, check, false)?)
+                           .map_err(error)?;
                 }
             }
             Ok(())

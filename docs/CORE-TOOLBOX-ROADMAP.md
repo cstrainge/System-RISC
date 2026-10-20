@@ -31,7 +31,7 @@ tracks, outside this core count.
 | Fonts / Roman text | Usable tested slice | L | Measured TrueType/style pixel differences, fractional spacing/kerning, text policy, Roman word/collation/formatting services; emoji fallback (P4), Fonts folder (P9), OpenType/color (P10). |
 | Events / clocks | Usable tested slice | M | WaitNextEvent sleep/mouse regions, scheduler wakeups, timer/caret/double-click policy, suspend/resume and extended pointer input (P3). |
 | Windows / WDEF | Usable tested slice | M | Full query/visibility/hilite/behind/refcon lifecycle, custom definition callbacks, regions and classic records. |
-| Controls / CDEF | Narrow foundation | L | Owned control objects/lists, full properties/lifetime, popup/user controls, action callbacks and keyboard focus. |
+| Controls / CDEF | Managed standard controls | L | Buttons/checks/radios/scrollbars have owned IDs and resident tracking; full control lists/properties, popup/user controls, action callbacks and keyboard focus remain. |
 | Menus / MDEF | Usable tested slice | M | Dynamic editing, hierarchy/popups/scrolling, complete icon/style variants, custom lifecycle, flashing and System-owned Apple menu (P5). |
 | List Manager / LDEF | No public manager | L | Cells, owned data, selection, scrolling, clicks/double-clicks, drawing and LDEF callbacks. |
 | TextEdit | Usable tested slice | L | Editable-dialog integration, styled text, other fonts/alignment, word selection/autoscroll, TEHandle/private scrap ABI. |

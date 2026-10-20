@@ -110,6 +110,17 @@ impl Workspace
         Ok(reports)
     }
 
+    fn private_guest_test(&self, name: &str) -> Result<()>
+    {
+        let checked = run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test",
+                                             name, "--", "--ignored"]));
+        let cleaned = run(Command::new("python3").current_dir(&self.repo)
+                                                 .arg("System7/scripts/prune_system7_images.py"));
+        checked?;
+        cleaned?;
+        Ok(())
+    }
+
     fn check(&self) -> Result<()>
     {
         run(Command::new("python3").current_dir(&self.root)
@@ -132,19 +143,16 @@ impl Workspace
                                                              toolbox-boundaries.json"))?)?;
         let image = disk::image(self)?;
         let smoke = smoke::check(self, &reports)?;
-        run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test",
-                               "userspace_graphical", "--", "--ignored"]))?;
-        run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test",
-                               "window_interactions", "--", "--ignored"]))?;
-        run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", "finder_png",
-                               "--", "--ignored"]))?;
+        for test in ["userspace_graphical", "window_interactions", "finder_png"]
+        {
+            self.private_guest_test(test)?;
+        }
         for test in ["dates", "resedit", "menus", "finder_trash", "file_writes_guest",
                      "deferred_close", "get_info_ui", "events", "clipboard", "textedit_graphical",
                      "typing", "processes", "application_ui", "retained_update", "event_latency",
                      "cursor_graphical", "busy_cursor", "panic_graphical"]
         {
-            run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", test,
-                                   "--", "--ignored"]))?;
+            self.private_guest_test(test)?;
         }
         let resource_desktop: Value =
             serde_json::from_slice(&fs::read(self.repo.join("results/system7/\

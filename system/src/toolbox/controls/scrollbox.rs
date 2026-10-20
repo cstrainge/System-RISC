@@ -3,7 +3,9 @@
 #![forbid(unsafe_code)]
 use alloc::{sync::Arc, vec::Vec};
 
-use mac_abi::{controls::*, scrollbox::*, *};
+use mac_abi::{controls::*,
+              scrollbox::{BUTTON_DOWN, CHANGED, TRACKING, *},
+              *};
 
 use crate::toolbox::{handles::{Kind, Table},
                      quickdraw::{Canvas, fonts::FontManager, fonts_service}};

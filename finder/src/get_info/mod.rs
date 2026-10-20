@@ -26,12 +26,6 @@ enum Check
     Locked,
     Stationery
 }
-#[derive(Clone, Copy)]
-struct Pressed
-{
-    check:  Check,
-    inside: bool
-}
 struct Info
 {
     window:         u32,
@@ -45,7 +39,7 @@ struct Info
     dirty_comments: bool,
     read_only:      bool,
     active:         bool,
-    pressed:        Option<Pressed>,
+    controls:       [Option<controls::ControlId>; 2],
     status:         Option<Status>,
     metadata_error: Option<Status>,
     changed:        bool,
@@ -204,7 +198,7 @@ impl Info
                                                                              value.write_str("…");
                                                                          value
                                                                      });
-            let info =
+            let mut info =
                 Self { window,
                        identity,
                        entry,
@@ -216,7 +210,7 @@ impl Info
                        dirty_comments: false,
                        read_only: volume.read_only != 0,
                        active: true,
-                       pressed: None,
+                       controls: [None; 2],
                        status: None,
                        metadata_error: metadata_status,
                        changed: false,
@@ -232,6 +226,20 @@ impl Info
                        description,
                        location,
                        icon };
+            for (index, check) in [Check::Locked, Check::Stationery].into_iter().enumerate()
+            {
+                let state = info.control(system, check, false)?;
+                if !state.bounds.is_empty()
+                {
+                    info.controls[index] =
+                        Some(system.controls()
+                                   .create_standard(WindowId(window),
+                                                    controls::StandardKind::WindowFontCheckbox,
+                                                    state)
+                                   .map_err(error)?
+                                   .into_id());
+                }
+            }
             stage = "activate";
             info.activate_editor(system)?;
             stage = "draw";
@@ -475,17 +483,6 @@ impl Controller
         {
             info.draw(system)?;
             return Ok(true);
-        }
-        if matches!(event.kind, EventKind::Null | EventKind::MouseUp)
-        {
-            for info in self.windows.iter_mut().flatten()
-            {
-                if info.pressed.is_some()
-                {
-                    info.track(system, event)?;
-                    return Ok(true);
-                }
-            }
         }
         let front = system.window(0).ok().map(|w| w.id);
         let Some(slot) =

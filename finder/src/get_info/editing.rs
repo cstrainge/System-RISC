@@ -1,6 +1,5 @@
 //! Edits remain in resident TextEdits until a deliberate transactional commit.
-use mac_toolbox::{controls::{Part, StandardKind},
-                  textedit::CursorMovement};
+use mac_toolbox::textedit::CursorMovement;
 
 use super::*;
 impl Info
@@ -228,104 +227,67 @@ impl Info
                 return self.draw(system);
             }
         }
-        for check in [Check::Locked, Check::Stationery]
+        for (index, check) in [Check::Locked, Check::Stationery].into_iter().enumerate()
         {
-            let state = self.control(system, check, false)?;
-            if state.bounds == Rect::ZERO
+            let Some(id) = self.controls[index]
+            else
             {
                 continue;
-            }
-            if system.controls()
-                     .standard_hit(StandardKind::WindowFontCheckbox, state, point)
-                     .map_err(error)?
-               == Part::Check
+            };
+            let handled = system.controls()
+                                .control(id)
+                                .track(point, |_| {
+                                    self.commit(system).map_err(Error)?;
+                                    self.toggle(system, check).map_err(Error)
+                                })
+                                .map_err(error)?;
+            if handled
             {
-                if let Err(status) = self.commit(system)
-                {
-                    return self.fail(system, status);
-                }
-                self.pressed = Some(Pressed { check,
-                                              inside: true });
-                return self.draw(system);
+                return Ok(());
             }
         }
         Ok(())
     }
 
-    pub(super) fn track(&mut self, system: &System<'_>, event: Event) -> Result<(), Status>
+    fn toggle(&mut self, system: &System<'_>, check: Check) -> Result<(), Status>
     {
-        let Some(pressed) = self.pressed
-        else
+        let when = system.now().map_err(error)?;
+        let result = match check
         {
-            return Ok(());
-        };
-        let window = system.window(self.window)?;
-        let point = if event.kind == EventKind::Null
-        {
-            system.events().mouse().map_err(error)?
-        }
-        else
-        {
-            event.where_
-        };
-        let point = Point { h: point.h - window.bounds.left,
-                            v: point.v - window.bounds.top };
-        let state = self.control(system, pressed.check, false)?;
-        let inside = system.controls()
-                           .standard_hit(StandardKind::WindowFontCheckbox, state, point)
-                           .map_err(error)?
-                     == Part::Check;
-        if event.kind == EventKind::MouseUp
-        {
-            self.pressed = None;
-            if inside
+            Check::Locked =>
             {
-                let when = system.now().map_err(error)?;
-                let result = match pressed.check
-                {
-                    Check::Locked =>
-                    {
-                        system.files().set_locked(self.identity.volume,
-                                                  self.identity.folder,
-                                                  !self.entry.is_locked(),
-                                                  when)
-                    }
-                    Check::Stationery =>
-                    {
-                        system.files().set_stationery(self.identity.volume,
-                                                      self.identity.folder,
-                                                      !self.entry.is_stationery(),
-                                                      when)
-                    }
-                };
-                match result
-                {
-                    Ok(entry) =>
-                    {
-                        self.entry = entry;
-                        let volume = system.files().volume(self.identity.volume).map_err(error)?;
-                        self.icon = crate::browser::entry_icon(system, &volume, &self.entry);
-                        self.status = None;
-                        self.changed = true;
-                        self.activate_editor(system)?;
-                    }
-                    Err(error) => return self.fail(system, error.0)
-                }
-                let mut log = Text::<128>::default();
-                let _ = writeln!(&mut log,
-                                 "FINDER_INFO_FLAGS locked={} stationery={}",
-                                 u8::from(self.entry.is_locked()),
-                                 u8::from(self.entry.is_stationery()));
-                system.log(log.as_str())?;
+                system.files().set_locked(self.identity.volume,
+                                          self.identity.folder,
+                                          !self.entry.is_locked(),
+                                          when)
             }
-            return self.draw(system);
-        }
-        if inside != pressed.inside
+            Check::Stationery =>
+            {
+                system.files().set_stationery(self.identity.volume,
+                                              self.identity.folder,
+                                              !self.entry.is_stationery(),
+                                              when)
+            }
+        };
+        match result
         {
-            self.pressed = Some(Pressed { inside,
-                                          ..pressed });
-            self.draw(system)?;
+            Ok(entry) =>
+            {
+                self.entry = entry;
+                let volume = system.files().volume(self.identity.volume).map_err(error)?;
+                self.icon = crate::browser::entry_icon(system, &volume, &self.entry);
+                self.status = None;
+                self.changed = true;
+                self.activate_editor(system)?;
+            }
+            Err(error) => return self.fail(system, error.0)
         }
-        Ok(())
+        let mut log = Text::<128>::default();
+        let _ = writeln!(&mut log,
+                         "FINDER_INFO_FLAGS locked={} stationery={}",
+                         u8::from(self.entry.is_locked()),
+                         u8::from(self.entry.is_stationery()));
+        system.log(log.as_str())?;
+        self.draw(system)
     }
 }
