@@ -112,6 +112,9 @@ impl Workspace
 
     fn check(&self) -> Result<()>
     {
+        run(Command::new("python3").current_dir(&self.root)
+                                   .args(["-m", "unittest", "discover", "-s", "scripts/tests",
+                                          "-p", "test_prune_system7_images.py"]))?;
         run(Command::new("python3").current_dir(&self.repo)
                                    .arg("System7/scripts/prune_system7_images.py"))?;
         run(self.cargo().args(["fmt", "--all", "--", "--check"]))?;
@@ -239,8 +242,6 @@ impl Workspace
         });
         let path = self.repo.join("results/system7/toolchain-checks.json");
         write_json(&path, &report)?;
-        run(Command::new("python3").current_dir(&self.repo)
-                                   .arg("System7/scripts/prune_system7_images.py"))?;
         println!("System/Finder toolchain checks passed: {}", path.display());
         Ok(())
     }
@@ -304,7 +305,17 @@ fn execute() -> Result<()>
             workspace.build()?;
             disk::image(&workspace)?;
         }
-        [command] if command == "check" || command == "test" => workspace.check()?,
+        [command] if command == "check" || command == "test" =>
+        {
+            let checked = workspace.check();
+            // A failed compatibility check must not strand its writable disk
+            // copies. Preserve the check's error after cleanup has run.
+            let cleaned = run(Command::new("python3").current_dir(&workspace.repo)
+                                                     .arg("System7/scripts/prune_system7_images.\
+                                                           py"));
+            checked?;
+            cleaned?;
+        }
         [command] if command == "rom" =>
         {
             workspace.guest_build(&["bootrom"])?;
