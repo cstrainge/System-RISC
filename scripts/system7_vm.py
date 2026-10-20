@@ -157,7 +157,7 @@ def check(rebuild=True):
         checks = check_events(endpoint, state / 'serial.log', results)
         after = hashlib.sha256((DIST / 'system7.qcow2').read_bytes()).hexdigest()
         assert before == after, 'generated disk changed during desktop checks'
-        report = {'status': 'passed', 'boot': 'cold reset through read-only pflash and blessed HFS disk',
+        report = {'status': 'passed', 'boot': 'cold reset through read-only pflash and blessed HFS-B disk',
                   'finder': 'separate executable loaded by System', 'checks': checks,
                   'qemu': subprocess.check_output(['qemu-system-riscv64', '--version'], text=True).splitlines()[0],
                   'disk_unchanged': True, 'disk_sha256': before,
@@ -165,7 +165,7 @@ def check(rebuild=True):
                   'serial': str((state / 'serial.log').relative_to(ROOT)),
                   'command': json.loads((state / 'command.json').read_text())}
         report_path.write_text(json.dumps(report, indent=2) + '\n')
-        print(f'PASS: flash ROM -> blessed HFS System -> Finder; {len(checks)} desktop checks')
+        print(f'PASS: flash ROM -> blessed HFS-B System -> Finder; {len(checks)} desktop checks')
     except BaseException as error:
         report_path.write_text(json.dumps({'status': 'failed', 'stage': 'desktop checks',
                                           'error': str(error),

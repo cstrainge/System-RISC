@@ -327,7 +327,7 @@ fn actual_disk_catalog_and_both_forks()
     let f = File::open(path).unwrap();
     let n = f.metadata().unwrap().len();
     let mut d = HostDisk(f, n);
-    let p = mac_hfs::partitions(&mut d).unwrap()[0];
+    let p = mac_filesystem::partitions(&mut d).unwrap()[0];
     let mut v = Volume::mount(&mut d, p).unwrap();
     let folder = v.blessed_folder().unwrap();
     let entry = v.lookup(folder.id, b"System").unwrap().unwrap();
@@ -350,7 +350,7 @@ fn actual_disk_catalog_and_both_forks()
         assert_eq!(offset, fork.length);
     }
     assert_eq!(v.entry(entry.id).unwrap().unwrap().id, entry.id);
-    // Repeat through the resident manager, not just the HFS parser. Sector reads
+    // Repeat through the resident manager, not just the filesystem parser. Sector reads
     // stay streamed from this immutable host file; no 500 MiB disk copy is made.
     let storage = BootStorage { context:                 (&mut d as *mut HostDisk).cast(),
                                 disk_info:               host_info,
