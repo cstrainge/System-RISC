@@ -25,7 +25,7 @@ The practical next target is a native document application that can open, edit, 
 | TextEdit | Usable tested slice | L | Editable-dialog integration, styled text, other fonts/alignment, word selection/autoscroll, TEHandle/private scrap ABI. |
 | Scrap | Usable tested slice | M | Disk Scrap.dat, original counted-MacRoman/private TextEdit scrap and process suspend/resume integration. |
 | Dialogs / alerts | Narrow foundation | L | General DLOG, editable/user items, tab focus, item mutation, modeless/filter callback contracts and alert stages. |
-| Files / HFS persistence | Usable tested slice | XL | File creation and fork write/resize, catalog/extents growth, flush/recovery, full metadata operations and eject/unmount. |
+| Files / HFS persistence | Usable tested slice | XL | File creation and fork write/resize, catalog/extents growth, flush/recovery, full metadata operations, eject/unmount and early native HFS-B workspace migration (P15). |
 | Standard File / aliases | No public manager | L | Open/save dialogs and filters/hooks, alias records/resolution across moves and ownership of replies/resources. |
 | Processes / application life | Usable tested slice | L | Blocked/wakeup states, document/quit parameters, native workers, relocation, legacy cooperative Thread Manager (P2), segments, CLAP sessions (P11) and process isolation (P13). |
 | Apple events / core IPC | No public manager | L | Descriptors/coercion, handlers, open-document/print/quit events, replies/timeouts and process routing. |
@@ -73,6 +73,10 @@ A deliberately selected original 68k test app runs translated with real records,
 R2 and R4 can progress independently once their relevant R1 contracts are ready. R3 can begin its filesystem engine alongside R2, but its end-to-end open/save exit needs the dialog/control services. R6 ABI work can begin earlier against selected APIs; its integrated application acceptance depends on the earlier slices and a working translator.
 
 ## Planned platform work
+
+Platform numbers identify workstreams, not execution order. P15's HFS-B workspace
+cutover is an early storage priority, ahead of broad std filesystem/hosted-toolchain
+work. Keep the HFS boot volume initially; do not wait for HFS-B boot support.
 
 ### P1 — Multi-hart execution (SMP)
 
@@ -306,6 +310,52 @@ interrupt/deferred work and a quiesced ROM-to-System block handoff. Native and
 legacy DRVR entry contracts remain separate. Modules stay resident until reboot
 initially; reset/removal still requires request/DMA cleanup. See
 [the driver plan](DRIVERS.md) for metadata and extraction acceptance.
+
+### P15 — HFS-B and early workspace migration
+
+Status: backlog; implement the supplied [HFS-B specification](HFS-B.md). HFS-B is
+a separate native UTF-8, dual-fork format alongside unchanged classic HFS, not an
+extension of HFS's name keys or date fields. Move native workspaces to HFS-B early,
+before P8's broader filesystem workloads and P12 hosted tools depend on classic
+HFS limits. Initially boot System/Finder from HFS and mount HFS-B after boot.
+
+1. Freeze a byte-accurate versioned layout and test vectors before image creation:
+   signature (proposed HB), volume header, allocation bitmap, catalog/extents/
+   attributes trees and fork records. Resolve the spec's open name limit (bytes
+   versus code points), pinned case-insensitive comparison/case preservation,
+   normalization policy and 64-bit 1904-epoch timestamp precision. HFS+ actually
+   uses decomposed Unicode ([TN1150](https://developer.apple.com/library/archive/technotes/tn/tn1150.html));
+   storing UTF-8 bytes as supplied must be an explicit HFS-B choice, not an
+   inherited HFS+ assumption. Keep classic HFS serialization unchanged.
+2. Add a safe no_std format/backend plus host formatter/validator and resident
+   mount/read support over the shared block interface. Use distinct signature
+   dispatch, bounded checked B-tree/extent parsing and the same File/Resource
+   Manager services. Native clients receive full UTF-8 names and metadata;
+   expand the current 128-byte catalog name buffer and legacy-width timestamp
+   transport rather than silently truncating. Preserve existing 64-bit fork
+   lengths/offsets throughout all backend operations.
+3. Implement writable files, both forks, allocation/tree growth, metadata and
+   clean unmount/remount with explicit write/flush-error and dirty-volume policy.
+   Use bounded page/path updates rather than rebuilding every tree per edit.
+   Journaling and live HFS conversion remain outside this first spec. Reported
+   error rollback is not a claim of power-loss atomicity.
+4. Make a freshly formatted HFS-B volume the default native workspace in image/
+   test tooling; keep HFS as the startup/reference format. Route std/native file
+   work, resource publication, Fonts and CLAP/APPL inspection through format-
+   independent services. Finder lists both volumes normally and Get Info reports
+   the format. Copy/import preserves both forks and metadata; do not transform
+   the original HFS disk in place or require a live-conversion tool for cutover.
+5. Canonical acceptance lives in crates/mac-toolbox/tests through public SDK
+   services: mixed HFS/HFS-B mounts, 200-byte UTF-8/emoji/CJK names, case lookup,
+   fork round-trips, actual file I/O crossing 2/4 GiB boundaries, malformed media,
+   write failures and clean remount. Test long MacRoman legacy-name truncation
+   separately from unrepresentable names returning BAD_ARGUMENT; verify ID/index
+   reachability without ambiguous short-name aliases. Preserve HFS boot and
+   original legacy tests. Use private generated disks and prune them after checks.
+
+Bootable HFS-B/blessed-folder discovery in the ROM is a later independent gate,
+not a prerequisite for the early workspace switch. Keep the built-in block
+driver filesystem-neutral; host-directory mounts remain a separate workstream.
 
 ## Planned application tooling
 

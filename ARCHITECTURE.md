@@ -145,6 +145,16 @@ trusted in-kernel extension modules. Driver packages require DRVR classification
 and mandatory DABI build-contract metadata checked before code entry; resource
 inspection alone never loads them. Kernel modules are not isolated user apps.
 
+## Planned native HFS-B storage
+
+[P15](docs/CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-workspace-migration) schedules
+an early native/workspace switch to [HFS-B](docs/HFS-B.md), mounted alongside
+unchanged classic HFS through the same resident File/Resource Manager services.
+HFS remains the initial boot format. Native UTF-8 names and full size/time values
+are preserved; legacy conversion/truncation belongs at each adapter boundary.
+Format decisions, read/write integrity and mixed-volume SDK tests precede the
+workspace cutover. Bootable HFS-B and live conversion are separate later gates.
+
 ## Classic applications
 
 Original A-line trap identities remain separate from the native request numbers.
