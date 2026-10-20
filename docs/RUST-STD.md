@@ -15,7 +15,9 @@ adds hardware process protection. Ordinary CLI/std support does not establish
 either compiler hosting or memory isolation.
 
 [P15 HFS-B](CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-system-migration) is the
-early boot/system/workspace target for broader std file support. After its
+immediate implementation priority, before the P8 application/sysroot migration.
+Use the current no_std apps to establish its boot/launch gate; do not make P15
+depend on std support. HFS-B is the boot/system/workspace target. After its
 formatter/boot/write-integrity gate, normal builds require HFS-B startup media.
 Keep mounted classic HFS behavior unchanged; validate the new format's full-name,
 64-bit size/time and dual-fork services instead of extending HFS storage limits.
@@ -44,8 +46,9 @@ seconds exist, with finer wall-clock precision still to define. Networking is
 ## Application build and default panic contract
 
 S0/S1 build/runtime support is a prerequisite for the userspace migration and an
-early delivery priority. The default application build must select the std-capable
-System RISC target/sysroot and supply startup, allocation and panic integration.
+early delivery priority after P15's storage cutover. The default application
+build must select the std-capable System RISC target/sysroot and supply startup,
+allocation and panic integration.
 The build must fail clearly if the required platform sysroot is absent; it must
 not silently select bare-metal or a stub implementation. System, boot ROM and
 definition/extension modules retain explicit no_std build roles.

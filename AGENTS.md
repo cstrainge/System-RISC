@@ -11,6 +11,12 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
 - Prune obsolete generated HD images at check boundaries, including on failure.
   Include HFS and other raw disk formats; retain only current build/live VM disks
   and original reference media. Reports and screenshots do not require old disks.
+- The next implementation priority is P15: bootable HFS-B, bounded resource
+  loading and the default System-volume cutover. Complete it before std migration
+  or further feature/dependency expansion; include its necessary file/resource,
+  block and ROM prerequisites. Existing no_std apps supply the initial gate.
+  Follow docs/HFS-B.md and docs/CORE-TOOLBOX-ROADMAP.md; planning does not mean
+  implementation has begun.
 - Canonical new Toolbox compatibility assertions belong in
   `crates/mac-toolbox/tests` and exercise the public SDK through real services.
   Capture scripts may collect evidence; Rust owns new acceptance decisions.

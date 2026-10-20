@@ -8,7 +8,17 @@ All 17 workstreams have remaining work. Ten have usable tested native slices, fo
 
 Core date/time, fixed/fract arithmetic, queue and truthful Gestalt/availability utilities are cross-cutting R1 work rather than separately counted manager groups. General Rust std support remains a separate platform effort alongside these services.
 
-The practical next target is a native document application that can open, edit, save and reopen files, with proper resource dialogs and idle waits. Sound, printing, networking, full non-Roman scripts, disk formatting and VM/device compatibility are separate expansion tracks; they are not hidden inside this core count.
+The immediate next implementation milestone is P15: bootable HFS-B, bounded
+resource loading beyond the current small ceilings, and the default System-volume
+cutover. System already approaches the resource-loader ceiling; dependency growth
+must not force repeated emergency limit increases. Complete this storage
+foundation before std application migration, new drivers/extensions or further
+feature/resource growth. Necessary File/Resource Manager, block and ROM changes
+belong to this milestone; P15 does not wait for the full P1/P6/P8/P14 workstreams.
+
+After that cutover, resume the native document-app and Toolbox delivery sequence
+below. Sound, printing, networking, full non-Roman scripts, disk formatting and
+VM/device compatibility remain separate expansion tracks, outside this core count.
 
 | Workstream | Current native surface | Remaining effort | Important gaps |
 | --- | --- | --- | --- |
@@ -33,6 +43,12 @@ The practical next target is a native document application that can open, edit, 
 M means a bounded extension of a working manager; L means substantial lifecycle/behavior work or a new manager; XL means a broad storage/device foundation. These are relative planning judgments, not engineer-weeks or measured completion fractions. Parallel work and new original-system findings can change the order.
 
 ## Delivery sequence
+
+**Next: P15 HFS-B system cutover**, using the existing no_std applications for
+boot/launch acceptance. The R1–R6 sequence below describes subsequent Toolbox
+delivery; its numbering does not put it ahead of P15. Start with the serialized
+format/test vectors and loader-budget audit, then formatter/reader, writable
+backend, ROM blessing/boot and image cutover with the required regression gates.
 
 ### R1 — Service lifetimes and waits
 
@@ -75,9 +91,10 @@ R2 and R4 can progress independently once their relevant R1 contracts are ready.
 ## Planned platform work
 
 Platform numbers identify workstreams, not execution order. P15's HFS-B system/
-workspace cutover is an early storage priority, ahead of broad std filesystem/
-hosted-toolchain work. Bootable HFS-B is required for the target: after its boot/
-write-integrity gate, new normal images must put System/Finder on HFS-B. Keep
+workspace cutover is the very next implementation priority, ahead of all other
+expansion tracks except its own prerequisites. Bootable HFS-B is required for the
+target: after its boot/write-integrity gate, new normal images must put
+System/Finder on HFS-B. Keep
 classic HFS mountable for compatibility; HFS boot is transitional, not the final
 default build.
 System growth is already a near-term concern: remove fixed small resource-loader
@@ -223,7 +240,7 @@ wait scheduling provide foundations, not a std port. Inventory compiler/target
 selection and all std platform backends, pin a maintained sysroot patch/build,
 and bridge normal Rust startup to resource-based loading.
 
-Prioritize S0/S1 application build/runtime support: std becomes the default for
+After P15, prioritize S0/S1 application build/runtime support: std becomes the default for
 every native userspace app, including Finder and all apps/*. Remove no_std,
 no_main, handwritten entry and panic-handler macros as each app migrates. The
 platform's default std panic hook calls the System-owned bomb dialog without
@@ -318,7 +335,8 @@ initially; reset/removal still requires request/DMA cleanup. See
 
 ### P15 — HFS-B and early system migration
 
-Status: backlog; implement the supplied [HFS-B specification](HFS-B.md). HFS-B is
+Status: **next implementation milestone; not implemented**. Follow the supplied
+[HFS-B specification](HFS-B.md). HFS-B is
 a separate native UTF-8, dual-fork format alongside unchanged classic HFS, not an
 extension of HFS's name keys or date fields. Move native workspaces to HFS-B early,
 before P8's broader filesystem workloads and P12 hosted tools depend on classic

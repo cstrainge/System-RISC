@@ -1,5 +1,11 @@
 # HFS-B: native UTF-8 filesystem
 
+Priority: **the very next implementation milestone**, including the ROM boot and
+default System-volume cutover. Complete it before std migration and other feature/
+dependency expansion; necessary storage, resource-loader and boot prerequisites
+are part of this work. Existing no_std apps provide the initial launch gate.
+This priority schedules implementation; the format/backend is not implemented yet.
+
 Status: spec for agent implementation. HFS-B is a new volume format that lives
 *alongside* classic HFS. HFS stays frozen as the treaty surface for legacy
 apps; HFS-B is the native startup/System/workspace filesystem after cutover,
