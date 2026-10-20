@@ -4,6 +4,7 @@ use std::{fs::{File, OpenOptions},
           path::Path};
 
 use mac_hfs_b::{time::Timestamp, *};
+pub mod copy;
 pub type HostResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub struct Image
 {
