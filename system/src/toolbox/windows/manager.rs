@@ -10,7 +10,8 @@ use super::definition::{self, WindowDefinitionState};
 use crate::toolbox::{events::*,
                      handles::{Kind, Table},
                      quickdraw::{Canvas, Point, Rect, SurfaceExt,
-                                 geometry::{sect_rect, union_rect}}};
+                                 geometry::{sect_rect, union_rect},
+                                 region::{BooleanOp, Region}}};
 
 pub const MAX_WINDOWS: usize = Kind::Windows.capacity();
 pub use mac_abi::WindowId;
@@ -808,6 +809,25 @@ impl WindowManager
                  -> Option<Action>
     {
         let tracking = self.tracking?;
+        // Snapshot geometry only on release. Mouse motion keeps its existing
+        // outline-only path and never builds content visibility regions.
+        let previous = if released
+        {
+            match tracking
+            {
+                Tracking::Drag { window,
+                                 .. }
+                | Tracking::Grow { window,
+                                 .. }
+                | Tracking::Zoom { window,
+                                 .. } => self.window(window).copied().map(|w| (w, self.order)),
+                _ => None
+            }
+        }
+        else
+        {
+            None
+        };
         let mut action = None;
         match tracking
         {
@@ -938,11 +958,93 @@ impl WindowManager
         {
             self.tracking = None;
         }
-        if action.is_some() && !matches!(action, Some(Action::CloseRequest(_)))
+        if let (Some(action @ (Action::Drag(_) | Action::Resize(_))), Some((window, order))) =
+            (action, previous)
+        {
+            self.invalidate_geometry_exposure(&window, &order, action);
+        }
+        else if action.is_some() && !matches!(action, Some(Action::CloseRequest(_)))
         {
             self.invalidate_all();
         }
         action
+    }
+
+    fn local_visibility(&self, id: WindowId, order: &[WindowId], previous: Option<&Window>)
+                        -> Region
+    {
+        let window_at = |id| previous.filter(|w| w.id == id).or_else(|| self.window(id));
+        let Some(window) = window_at(id).filter(|w| !w.hidden)
+        else
+        {
+            return Region::new();
+        };
+        let Some(index) = order.iter().position(|other| *other == id)
+        else
+        {
+            return Region::new();
+        };
+        let mut visible =
+            Region::from_rect(window.bounds).combine(&Region::from_rect(Rect::new(0, 20, 640,
+                                                                                  480)),
+                                                     BooleanOp::Intersection);
+        for front in &order[index + 1..]
+        {
+            if let Some(front) = window_at(*front).filter(|w| !w.hidden)
+            {
+                for piece in front.structure_pieces()
+                {
+                    visible = visible.combine(&Region::from_rect(*piece), BooleanOp::Difference);
+                    if visible.is_empty()
+                    {
+                        return visible;
+                    }
+                }
+            }
+        }
+        // Visible screen coordinates and bounded window positions guarantee
+        // these local coordinates fit the existing i16 QuickDraw contract.
+        visible.offset(-window.bounds.left, -window.bounds.top).unwrap_or_default()
+    }
+
+    fn invalidate_geometry_exposure(&mut self, previous: &Window,
+                                    old_order: &[WindowId; MAX_WINDOWS], action: Action)
+    {
+        let affected =
+            self.window(previous.id)
+                .map_or(previous.structure(), |w| union_rect(previous.structure(), w.structure()));
+        for index in 0..self.len
+        {
+            let id = self.order[index];
+            if id != previous.id
+               && self.window(id).is_none_or(|w| {
+                                     let mut overlap = Rect::ZERO;
+                                     !sect_rect(w.bounds, affected, &mut overlap)
+                                 })
+            {
+                continue;
+            }
+            if matches!(action,Action::Resize(target) if target==id)
+            {
+                // A size change requires the owner to lay out its content even
+                // when shrinking exposes no new local pixels.
+                if let Some(w) = self.window(id)
+                {
+                    self.invalidate(id, w.local_bounds());
+                }
+                continue;
+            }
+            let before = self.local_visibility(id, &old_order[..self.len], Some(previous));
+            let after = self.local_visibility(id, &self.order[..self.len], None);
+            let exposed = after.combine(&before, BooleanOp::Difference);
+            for band in exposed.bands()
+            {
+                for span in &band.spans
+                {
+                    self.invalidate(id, Rect::new(span.left, band.top, span.right, band.bottom));
+                }
+            }
+        }
     }
 
     pub fn set_title(&mut self, id: WindowId, title: &str) -> bool
@@ -1333,6 +1435,8 @@ mod tests
         let mut expected = original;
         expected.offset(40, 35);
         assert_eq!(wm.window(b).unwrap().bounds, expected);
+        assert!(wm.window(b).unwrap().damage.is_none(),
+                "moving a fully visible front window must preserve its local content");
         assert!(wm.next_update(&events, 3).is_some());
     }
 
