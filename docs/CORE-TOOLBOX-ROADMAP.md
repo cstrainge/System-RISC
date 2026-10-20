@@ -322,10 +322,10 @@ a separate native UTF-8, dual-fork format alongside unchanged classic HFS, not a
 extension of HFS's name keys or date fields. Move native workspaces to HFS-B early,
 before P8's broader filesystem workloads and P12 hosted tools depend on classic
 HFS limits. The current recommendation is HFS boot with HFS-B mounted afterward;
-the final boot decision remains open alongside normalization and timestamps.
-Names are limited to 255 UTF-8 bytes per component. Case behavior is settled:
-Unicode-aware default folding independent of locale, no Turkish-i tailoring,
-and preservation of stored case.
+the final boot decision remains open alongside timestamps. Stored names use NFC
+UTF-8 with an inclusive 255-byte limit per component after normalization. Search
+uses canonical caseless matching with Unicode default folding independent of
+locale, no Turkish-i tailoring, and preservation of case in the stored NFC name.
 
 At this planning checkpoint System.rsrc is 3,084,317 bytes, while ROM startup,
 startup resource transfer, resident resource loading and APPL loading enforce
@@ -342,12 +342,11 @@ and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
    signature (proposed HB), volume header, allocation bitmap, catalog/extents/
    attributes trees and fork records. Encode the decided locale-independent,
    non-Turkic Unicode folding and case-preserving behavior with a pinned data
-   version, plus the inclusive 255-byte UTF-8 stored-name limit. Resolve the three
-   remaining decisions: normalization, timestamp representation/precision and
-   boot policy.
-   HFS+ uses decomposed Unicode ([TN1150](https://developer.apple.com/library/archive/technotes/tn/tn1150.html));
-   storing UTF-8 bytes as supplied must be an explicit HFS-B choice, not an
-   inherited HFS+ assumption. Keep classic HFS serialization unchanged.
+   version, NFC storage and canonical caseless lookup, plus the inclusive
+   255-byte post-normalization UTF-8 stored-name limit. Resolve the two remaining
+   decisions: timestamp representation/precision and boot policy. HFS-B uses its
+   own NFC contract rather than HFS+'s decomposed storage. Keep classic HFS
+   serialization unchanged.
 2. Add a safe no_std format/backend plus host formatter/validator and resident
    mount/read support over the shared block interface. Use distinct signature
    dispatch, bounded checked B-tree/extent parsing and the same File/Resource
@@ -368,9 +367,10 @@ and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
    the original HFS disk in place or require a live-conversion tool for cutover.
 5. Canonical acceptance lives in crates/mac-toolbox/tests through public SDK
    services: mixed HFS/HFS-B mounts, 200-byte UTF-8/emoji/CJK names, 255/256-byte
-   create/rename boundaries including multibyte characters, case lookup
+   post-NFC create/rename boundaries including multibyte/decomposed input, case lookup
    and CAFÉ/café collision/ID-equivalent lookup with stored spelling preserved
-   across remount/locales, default non-Turkic I/i behavior,
+   in NFC across remount/locales, composed/decomposed collisions, canonical
+   combining-mark ordering and default non-Turkic I/i behavior,
    fork round-trips, actual file I/O crossing 2/4 GiB boundaries, malformed media,
    write failures and clean remount. Test long MacRoman legacy-name truncation
    separately from unrepresentable names returning BAD_ARGUMENT; verify ID/index

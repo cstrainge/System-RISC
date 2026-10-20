@@ -17,15 +17,16 @@ the old one in place.
 ## On-disk format
 
 Base the layout on HFS+'s structure (volume header, allocation bitmap,
-catalog B-tree, extents overflow B-tree, attributes) with one deliberate
-difference: **names are UTF-8, not UTF-16.**
+catalog B-tree, extents overflow B-tree, attributes), with HFS-B's own name
+encoding and normalization: **stored names are NFC-normalized UTF-8.**
 
 - Catalog B-tree keys use UTF-8 name bytes instead of UTF-16 units.
 - **Decided — maximum name length:** 255 UTF-8 bytes per file or directory
   name component, inclusive. This counts encoded bytes, not Unicode code points
   or grapheme clusters, and excludes the catalog's length/header fields. Reject
   over-limit names without truncating or splitting a UTF-8 sequence. The limit
-  applies to stored names, not expanded case-folded comparison sequences.
+  applies after NFC normalization, not to the input's original byte count or
+  expanded case-folded comparison sequences.
 - **Decided — case behavior:** case-insensitive with Unicode-aware, locale-
   independent default case folding, and case-preserving storage/listings.
   Use the default non-Turkic mappings from Unicode's
@@ -34,12 +35,21 @@ difference: **names are UTF-8, not UTF-16.**
   Pin the folding-data version in the format contract so catalog ordering does
   not change silently on a Unicode/library update. Creation/collision checks and
   lookup use the same comparison; preserve stored spelling rather than replacing
-  names with their folded forms. Normalization remains a separate open decision.
-- **[DECIDE]** Normalization: current recommendation is to store UTF-8 bytes
-  as supplied and document the comparison policy, since byte-distinct names can
-  look identical. This would differ from HFS+'s decomposed storage
-  ([TN1150](https://developer.apple.com/library/archive/technotes/tn/tn1150.html)).
-  No normalization policy is settled by the case-folding decision above.
+  names with their folded forms. Stored spelling is normalized as specified below.
+- **Decided — normalization:** use Unicode NFC for stored names and normalize
+  all incoming name components before lookup, create, rename or collision checks.
+  Follow [UAX #15](https://www.unicode.org/reports/tr15/) and pin normalization
+  data with the format's folding version. Preserve case in the NFC stored name;
+  never store a folded search key in place of the display name. NFC performs
+  canonical normalization, not NFKC compatibility normalization.
+  For comparison, use Unicode
+  [canonical caseless matching](https://unicode.org/versions/Unicode18.0.0/core-spec/chapter-3/):
+  compare `NFD(DefaultCaseFold(NFD(name)))`, with the decided non-Turkic default
+  folding. This comparison form is internal and need not fit the stored-name
+  byte limit. Do not substitute lowercase or a locale-dependent collation.
+  Validate the resulting NFC stored name against 255 bytes before committing
+  changes; failure leaves the catalog unchanged. Bound input/normalization work
+  separately without treating 255 input bytes as the stored-name limit.
 - 32-bit allocation blocks minimum; 64-bit file sizes. No 2 GiB ceiling.
 - **[DECIDE]** Timestamps: keep the 1904 Mac epoch (continuity with the rest
   of the system) but say the precision explicitly — recommend 64-bit
@@ -78,8 +88,8 @@ decision remains open.
 
 ## Remaining decisions
 
-Three decisions remain: normalization, timestamp precision/representation, and
-boot policy. Maximum name length and case behavior above are settled.
+Two decisions remain: timestamp precision/representation and boot policy.
+Maximum name length, case behavior and normalization above are settled.
 
 ## Volume identity
 
@@ -100,6 +110,9 @@ boot policy. Maximum name length and case behavior above are settled.
    63 four-byte emoji plus three ASCII bytes fits; 64 four-byte emoji exceeds
    the limit. Preserve valid UTF-8 and full names through lookup and remount;
    case-fold expansion must not reject a valid stored name within 255 bytes.
+   Measure these boundaries after NFC: longer decomposed input that composes
+   within 255 bytes is accepted; a name exceeding 255 bytes after normalization
+   is rejected even if the original input fit.
 3. Resource forks round-trip: write a dual-fork file on HFS-B, read both
    forks back, verify against the HFS behavior.
 4. Fill past 2 GiB and 4 GiB boundaries; verify sizes and extents.
@@ -110,6 +123,14 @@ boot policy. Maximum name length and case behavior above are settled.
    spelling. Repeat across remount and different process/UI locales. Default
    non-Turkic behavior must also hold: `I`/`i` compare equal, while `I`/`ı` do
    not; locale changes must never alter collisions or B-tree lookup ordering.
+   Normalization: create decomposed `cafe\u{0301}`, list NFC `café`, and resolve
+   composed/decomposed and uppercase equivalents to the same file ID. Reject
+   equivalent duplicate creates or renames onto another entry without losing
+   either file. A case-only or canonically equivalent rename of the same file
+   retains its ID and stores the requested case in NFC. Repeat through remount,
+   native and legacy adapters, and path components.
+   Include canonical combining-mark ordering and case-fold/normalization edge
+   cases. Circled `①` and plain `1` stay distinct; NFC must not become NFKC.
 6. Unmount/remount: catalog intact, no repair needed on clean unmount.
 7. Boot regression: system still boots from HFS with HFS-B present but
    unmounted-at-boot (option 1).
