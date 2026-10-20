@@ -9,6 +9,15 @@ verified. Resident integration, ROM boot and default-image cutover remain requir
 delivery gates; a host-only filesystem does not complete this milestone.
 
 Status: implementation in progress; this spec remains the acceptance contract.
+User-state preservation across regenerated images includes both
+`System Folder/Preferences` and `Documents`. The Linux tool provides recursive,
+path-based copy-in/copy-out, independent of catalog IDs. Exported bundles preserve
+both forks, Finder metadata, comments, Unicode names and precise dates; restoring
+them merges directories, with explicit opt-in to replace existing files. Keep
+these user exports separately from generated disk cleanup. Preferences remain
+versioned JSON; this is file preservation, not a compatibility migration.
+See [host-tool commands](../tools/hfs-b/README.md).
+
 HFS-B is a new volume format that lives
 *alongside* classic HFS. HFS stays frozen as the treaty surface for legacy
 apps; HFS-B is the native startup/System/workspace filesystem after cutover,

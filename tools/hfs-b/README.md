@@ -34,13 +34,17 @@ streams the selected fork without overwriting an existing output file.
 
 ## Preserve user state across a System rebuild
 
-Export both Preferences and Documents from the old **offline** image before
-rebuilding; restore into the fresh generated image afterward:
+Export both Preferences and Documents from the old **offline working volume**
+before rebuilding; restore into the fresh generated image afterward. The VM's
+writable disk contains runtime changes; the pristine `dist` base does not. For
+the normal desktop's qcow2 working disk:
 
 ```sh
-cargo run -p hfs-b -- copy-out ../build/system7/dist/system7.hfsb '/System Folder/Preferences' ../working/saved-preferences
-cargo run -p hfs-b -- copy-out ../build/system7/dist/system7.hfsb /Documents ../working/saved-documents
-# Rebuild the System volume here.
+python3 scripts/system7_vm.py stop
+qemu-img convert -f qcow2 -O raw -S 4k ../working/system7-vm/system7.qcow2 ../working/user-state.hfsb
+cargo run -p hfs-b -- copy-out ../working/user-state.hfsb '/System Folder/Preferences' ../working/saved-preferences
+cargo run -p hfs-b -- copy-out ../working/user-state.hfsb /Documents ../working/saved-documents
+# Rebuild and check the pristine System volume here.
 cargo run -p hfs-b -- copy-in ../build/system7/dist/system7.hfsb ../working/saved-preferences '/System Folder' --replace
 cargo run -p hfs-b -- copy-in ../build/system7/dist/system7.hfsb ../working/saved-documents / --replace
 cargo run -p hfs-b -- check ../build/system7/dist/system7.hfsb
@@ -49,7 +53,17 @@ cargo run -p hfs-b -- check ../build/system7/dist/system7.hfsb
 Preferences remain versioned JSON owned by their services. These commands preserve
 the user folders independently of regenerated System/application binaries. They do
 not retain old disk images or migrate incompatible preference schemas. Recreate
-the qcow2 from the updated raw image before launching it.
+the qcow2 from the updated raw image before launching it:
+
+```sh
+qemu-img convert -f raw -O qcow2 ../build/system7/dist/system7.hfsb ../build/system7/dist/restored.qcow2
+mv ../build/system7/dist/restored.qcow2 ../build/system7/dist/system7.qcow2
+python3 scripts/system7_vm.py start --no-build
+```
+
+After verifying both exports and the restored volume, remove the temporary
+`user-state.hfsb`; keep the folder bundles. This is an explicit offline workflow,
+not automatic saving or a claim that the launcher preserves state on rebuild yet.
 
 Never modify an image being used by a VM. Host writers take an exclusive file
 lock; that does not replace coordination with external VM processes. Recursive
