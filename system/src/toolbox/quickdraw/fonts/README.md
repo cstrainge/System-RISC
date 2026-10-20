@@ -38,6 +38,14 @@ The implementation uses the safe, `no_std` configurations of
 for soft-float RV64IMAC. Macintosh cmap interpretation follows Apple's
 [TrueType reference](https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6cmap.html).
 
+## Planned installed and modern fonts
+
+Planned installation and modern-font work is detailed in
+[Fonts folder, OpenType and color glyphs](../../../../../docs/FONTS.md): boot-time
+Fonts discovery (P9), modern outlines/shaping/variations and color tables (P10),
+then live catalog refresh. The current immutable System-only catalog remains the
+implemented baseline. The built-in emoji fallback below is the related P4 track.
+
 ## Original-system verification
 
 `python3 scripts/check_quickdraw_fonts.py` renders the same text, baselines,

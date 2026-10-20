@@ -16,7 +16,7 @@ The practical next target is a native document application that can open, edit, 
 | Resource Manager | Narrow foundation | L | Open/current/close resource files, mutable chains, resource handles and detach/purge; add/write/update after fork writes. |
 | QuickDraw / PICT / icons | Usable tested slice | L | Complete port/recording lifetimes, grafProcs, advanced transfers/patterns, indexed worlds and remaining PICT semantics. |
 | Color / Palette / devices | Narrow foundation | XL | Actual Palette Manager, GDevice/depth lifecycle, color matching, indexed conversions and palette animation. |
-| Fonts / Roman text | Usable tested slice | L | Measured TrueType/style pixel differences, fractional spacing/kerning, text policy, Roman word/collation/formatting services; native emoji fallback (P4). |
+| Fonts / Roman text | Usable tested slice | L | Measured TrueType/style pixel differences, fractional spacing/kerning, text policy, Roman word/collation/formatting services; emoji fallback (P4), Fonts folder (P9), OpenType/color (P10). |
 | Events / clocks | Usable tested slice | M | WaitNextEvent sleep/mouse regions, scheduler wakeups, timer/caret/double-click policy, suspend/resume and extended pointer input (P3). |
 | Windows / WDEF | Usable tested slice | M | Full query/visibility/hilite/behind/refcon lifecycle, custom definition callbacks, regions and classic records. |
 | Controls / CDEF | Narrow foundation | L | Owned control objects/lists, full properties/lifetime, popup/user controls, action callbacks and keyboard focus. |
@@ -228,6 +228,34 @@ resident services. Start with panic_abort and explicit unsupported operations;
 unwinding/backtraces and wider ecosystem support retain separate gates. SMP is
 not required for the first std threads. See [the module map and staged plan](RUST-STD.md)
 for current evidence, service requirements, Finder migration and guest tests.
+
+### P9 — System Fonts folder
+
+Status: backlog. Build a Fonts folder inside the blessed System Folder and load
+installed font suitcases/files through the resident Font Manager. Resolve the
+active installation by identity; provide native folder lookup and legacy
+FindFolder behavior. Keep System-bundled UI/emoji fonts as dependable fallbacks.
+
+Preserve source-local resource/family associations, handle duplicates explicitly,
+and share validated payloads across apps. Start with boot-time catalog discovery
+and restart-required installation; live refresh/removal needs snapshot lifetime
+and generation/cache gates. Include resource-based Finder icons, original install
+behavior, public SDK enumeration/rendering and private boot tests. See
+[the font installation plan](FONTS.md#fonts-folder-and-discovery).
+
+### P10 — OpenType and color fonts
+
+Status: backlog. Support standalone OpenType fonts/collections, TrueType and
+CFF/CFF2 outlines, native GSUB/GPOS/GDEF shaping and variable-font selection.
+Add COLR/CPAL v0/v1, CBDT/CBLC, sbix and a bounded font-SVG profile in measured
+slices; publish table/encoding coverage rather than inferring support from a
+filename. Integrate shared text runs, metrics, TextEdit and P4 emoji fallback.
+
+Keep classic MacRoman rendering and APIs stable. System owns parsers, shapers,
+rasterizers and bounded shared caches; apps use Rust Toolbox interfaces. Gate
+each format with provenance-backed fixtures, public SDK drawing/measurement,
+malformed-input and color/monochrome tests, and responsiveness/cache limits.
+See [the OpenType/color plan](FONTS.md#opentype-outlines-layout-and-variations).
 
 ## Planned application tooling
 
