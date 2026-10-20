@@ -369,10 +369,17 @@ and UI/performance gates. The HFS-B boot gate must exercise those larger forks.
    microseconds from the 1904 Mac epoch. Include HFS-B blessing/startup metadata.
    HFS-B uses its own NFC contract rather than HFS+'s decomposed storage. Keep
    classic HFS serialization unchanged.
-2. Add a safe no_std format/backend plus host formatter/validator and resident
-   mount/read support over the shared block interface. Use distinct signature
-   dispatch, bounded checked B-tree/extent parsing and the same File/Resource
-   Manager services. Native clients receive full UTF-8 names and metadata;
+2. Build the shared safe no_std mac-hfs-b crate and Linux create/format/check
+   tooling, then resident/ROM mount/read adapters. Linux tools, kernel and the
+   future System RISC Filesystem app reuse the same codecs, formatter, validator,
+   name rules and filesystem algorithms through a common block interface.
+   Keep platform I/O and UI outside the crate; extract shared block traits rather
+   than importing classic HFS parsing. mac-build/xtask image creation uses this
+   same implementation. The native std app uses public Toolbox device/volume
+   services and cannot block the early crate/Linux/kernel milestone. See
+   [tooling and reuse requirements](HFS-B.md#shared-format-crate-and-tooling).
+   Use distinct signature dispatch, bounded checked B-tree/extent parsing and
+   the same File/Resource Manager services. Native clients receive full UTF-8 names and metadata;
    expand the current 128-byte catalog name buffer and second/legacy-width date
    transport rather than silently truncating names or microseconds. Preserve
    existing 64-bit fork lengths/offsets throughout all backend operations.
@@ -405,7 +412,10 @@ and UI/performance gates. The HFS-B boot gate must exercise those larger forks.
    reachability without ambiguous short-name aliases. Verify blessing, boot-to-
    runtime identity and selection with both disks present; retain original HFS
    compatibility tests. Any retained HFS boot check is an explicit transitional/
-   recovery profile. Use private generated disks and prune them after checks.
+   recovery profile. Cross-check Linux-created volumes in the guest and guest-
+   modified/formatted volumes with the Linux tool; require codec/vector parity,
+   read-only/exclusive access and incomplete-format failure tests. Use private
+   generated disks and prune them after checks.
 
 Bootable HFS-B and the default-image cutover are required deliverables of this
 early workstream. Keep the built-in block driver filesystem-neutral;

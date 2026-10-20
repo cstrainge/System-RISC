@@ -20,6 +20,59 @@ the old one in place.
 - HFS-B is not a compatibility format. No legacy app ever needs to read it
   directly; the File Manager projects a legacy view (below) when asked.
 
+## Shared format crate and tooling
+
+Plan `crates/mac-hfs-b` as the common Rust filesystem implementation for Linux
+tools, boot ROM, resident System and the System RISC Filesystem application.
+It is `no_std` with bounded/fallible alloc where required and forbids unsafe
+code. It contains the on-disk codecs, name normalization/comparison, timestamp
+conversion, layout planning, formatter, structural validator, tree/extent logic
+and read/write operations. No host paths, Linux syscalls, QEMU commands, UI,
+global device state or private kernel dependencies belong in the core crate.
+
+Supply storage through shared architecture-neutral block read/write/flush traits
+with explicit geometry, bounds and read-only/error behavior. Extract the common
+interface from classic mac-hfs into a small shared block crate as needed; do not
+make HFS-B depend on the classic HFS parser or introduce competing I/O contracts.
+Callers supply clock/identity inputs and allocation/scratch budgets. Keep read,
+write, format and check profiles separable so the ROM need not carry a complete
+formatter or repair utility. Profiles share the same codecs and invariants.
+
+Deliver a Linux Rust command-line tool under `tools/hfs-b` early in P15. Its
+planned create/format/check operations must create a sized image, format a chosen
+image or unmounted volume range, initialize headers/bitmap/trees/dual-fork/root
+metadata, and validate it using the shared crate. Add list/import/export/bless
+operations needed to build complete startup images while preserving resources,
+Finder metadata, normalized names and precise dates. Raw image/file and device
+access are thin Linux std adapters; qcow2 transport/conversion stays outside the
+filesystem core. Keep per-image state local rather than relying on hfsutils or
+host-global mount state; existing HFS tools cannot encode the new format.
+
+mac-build/xtask must reuse the same crate/tooling to produce HFS-B startup/test
+images. Record format/tool versions and build provenance; use the chosen fixed
+test clock/identity inputs for reproducible format vectors. Do not invent a
+second Python implementation of the layout or formatter for image building.
+
+The resource-based System RISC Filesystem app is a std userspace application
+using the public Toolbox for device access, exclusive/unmounted-volume ownership,
+progress/cancellation and remount coordination. It can link the same format crate
+for image inspection, planning and formatting through a checked SDK block adapter;
+resident operations can invoke that crate through the same service contracts.
+It must not call private kernel drivers, write an actively mounted filesystem
+behind its manager, or reimplement serializers/name rules in the UI. Provide a
+native disk/volume service for the required access and generation-checked leases.
+The GUI app follows P8 readiness; the shared crate, Linux tools and kernel/ROM
+support are immediate P15 work and do not wait for the GUI or std port.
+
+Acceptance must cross these boundaries: format on Linux, inspect/mount/read/write
+through System, remount and check with the Linux tool; format through the native
+utility/service and check on Linux when that app is delivered. Compare known
+serialized vectors and malformed-input decisions across consumers. Exercise flush
+failures, read-only/exclusive access, incomplete formatting/cancellation and range
+bounds through the real adapters. Canonical resident assertions remain in
+crates/mac-toolbox/tests; shared crate tests supplement them without replacing
+the public-SDK and real-boot gates.
+
 ## On-disk format
 
 Base the layout on HFS+'s structure (volume header, allocation bitmap,

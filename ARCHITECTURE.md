@@ -156,6 +156,12 @@ classic HFS remains mountable for compatibility. Native UTF-8 names and full
 size/time values are preserved; legacy conversion/truncation belongs at each
 adapter boundary. Live in-place conversion remains outside the first spec.
 
+One planned no_std `mac-hfs-b` crate owns format codecs and filesystem algorithms
+for Linux tools, boot ROM, System and the System RISC Filesystem utility. Common
+block traits separate platform storage access from that implementation. The native
+utility is a std Toolbox app using checked disk/volume services; Linux tools use
+std file/device adapters. See [shared crate and tooling requirements](docs/HFS-B.md#shared-format-crate-and-tooling).
+
 ## Classic applications
 
 Original A-line trap identities remain separate from the native request numbers.
