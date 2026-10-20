@@ -71,3 +71,55 @@ Resident unit tests additionally execute the hint programs and render text from
 all 17 original sfnt faces, test compound/accented glyphs and clipping, reject
 malformed families and unbounded point sizes, and check original runtime metric
 goldens. Host and RV64 builds use the same engine.
+
+## Planned built-in emoji fallback
+
+Status: backlog; the current service renders glyphs individually and does not
+provide emoji fallback or sequence shaping. Track this as
+[roadmap P4](../../../../../docs/CORE-TOOLBOX-ROADMAP.md#p4--built-in-emoji-fallback).
+Implement it in the resident font/text renderer so all native Toolbox text
+clients share one implementation and one System-owned asset set.
+
+- Prefer the selected font when it provides a usable glyph or shaped emoji
+  sequence. Otherwise resolve supported emoji through a built-in fallback set
+  bundled as System resources. Test actual coverage before substituting the
+  selected font's missing-glyph box; do not replace ordinary supported text.
+- Resolve whole emoji sequences, including skin-tone modifiers, variation
+  selectors, flags, keycaps and zero-width-joiner sequences. Respect explicit
+  text versus emoji presentation; characters such as digits must not become
+  colored emoji merely because they participate in some emoji sequences.
+  Pin the supported Unicode data version and asset repertoire at implementation
+  time, following [UTS #51](https://www.unicode.org/reports/tr51/).
+  Define deterministic behavior for unsupported sequences and invisible format
+  characters without claiming complete Unicode shaping support.
+- Select redistributable artwork with retained license, source/version and
+  hashes. Document the resource packaging and supported sizes; include metrics
+  and sequence lookup data. Load and share the immutable assets in System,
+  rather than embedding a decoder or copies of the artwork in applications.
+- Measurement and drawing must resolve the same runs and advances. Define
+  baseline, ascent/descent, ink bounds, line spacing, scaling, color/alpha,
+  monochrome destinations and transfer-mode behavior. Include ink overhang in
+  damage and clipping. Preserve existing family-metric queries and classic
+  text metrics; expose additional native layout information where needed.
+- Native TextEdit caret movement, deletion, selection, hit testing and wrapping
+  must respect emoji grapheme boundaries, using pinned
+  [UAX #29](https://www.unicode.org/reports/tr29/) data. Preserve original UTF-8
+  text in clipboard/save operations; rendered images are not replacement text.
+  This requires shared layout/segmentation work, beyond glyph rasterization.
+- Preserve legacy Pascal/MacRoman conversion and byte-based TextEdit contracts.
+  Existing MacRoman pixels, widths, style effects and clipping remain regression
+  gates. Emoji are a native Unicode extension, not a new interpretation of
+  legacy byte values or an implicit private encoding.
+- Keep the ordinary text path cheap. Index sequence coverage, cache bounded
+  fallback glyphs/runs with size and rendering state in their keys, and avoid
+  asset decoding on every draw. Synchronize shared cache mutation for concurrent
+  app threads. Repaint only affected text/selection/caret bounds.
+
+Acceptance lives in `crates/mac-toolbox/tests` through public SDK services:
+selected-font precedence, fallback coverage, mixed text, sequence/presentation
+cases, measure/draw agreement, baseline/clipping/scaling, color and monochrome
+destinations, editing and lossless text round-trips, unsupported sequences,
+concurrent clients and bounded cache use. Add a graphical TextEdit/QuickDraw
+sample and retain existing original-system MacRoman comparisons. Measure warm
+and cold rendering plus local-edit repaint cost; emoji must not introduce full
+window repaints or degrade Cursor Test responsiveness.
