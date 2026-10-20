@@ -172,6 +172,25 @@ projection. Verify original behavior rather than hardcoding the conventional
 menu ID. Cover empty/cleared bars, app switching, crash cleanup, ownership and
 bounded menu-cache invalidation. See [the Menu Manager plan](../system/src/toolbox/menus/README.md#planned-system-owned-apple-menu).
 
+### P6 — Control panels and kernel extensions
+
+Status: backlog. Provide resource-based Rust control-panel applications and a
+`no_std` Rust System-extension SDK whose modules can execute in the kernel.
+Keep panel UI on application threads; expose typed resident configuration,
+service/hook registration and versioned JSON preferences through Rust interfaces.
+
+Load independently relocatable extension resources from the blessed installation
+with checked ABI/dependencies, explicit startup phases, staged registration and
+an extensions-disabled boot mode. Use shared generation-tagged identities and
+synchronized ownership. Initially pin modules until reboot; unloading, workers
+and SMP each require their lifecycle/scheduler gates. Kernel panic reporting is
+fatal and distinct from application crash cleanup.
+
+Preserve a separate original `cdev`/`INIT` compatibility track, including hybrid
+files and translated legacy callbacks. Add sample extension/panel, Extensions
+Manager, public SDK tests and private boot/failure/performance probes. See
+[the control-panel and extension plan](SYSTEM-EXTENSIONS.md).
+
 ## Planned application tooling
 
 ### A1 — ResEdit resource-editor extensions

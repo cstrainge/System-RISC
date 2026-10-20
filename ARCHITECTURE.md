@@ -98,6 +98,18 @@ queries nested inside a definition. Resource data moved into the font manager
 remains visible through the System resource scope. The current trusted M-mode
 environment has shared memory; these checks are ABI validation, not process isolation.
 
+## Planned control panels and kernel extensions
+
+[Platform workstream P6](docs/CORE-TOOLBOX-ROADMAP.md#p6--control-panels-and-kernel-extensions)
+plans kernel-resident Rust extension modules with a small `no_std` SDK, typed
+service/hook registration and relocatable resource packaging. Resource-based
+control panels remain ordinary Toolbox applications on their own OS threads,
+configuring resident services through versioned JSON preferences. See the
+[design and delivery gates](docs/SYSTEM-EXTENSIONS.md) for boot phases,
+dependencies, registration ownership, disabled-startup recovery, fatal kernel
+panic behavior and the separate legacy cdev/INIT adapter track. None of this
+implies a loader, hot unloading or fault isolation exists today.
+
 ## Classic applications
 
 Original A-line trap identities remain separate from the native request numbers.

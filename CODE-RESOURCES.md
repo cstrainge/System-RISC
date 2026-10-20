@@ -83,6 +83,15 @@ an `RSSC` resource must never prepare or execute it; installed editor discovery
 is separate from inspecting a target file. Original 68k `RSSC` compatibility
 requires the translator and original ResEdit API adapter.
 
+## Planned System extensions and control panels
+
+[The System-extension plan](docs/SYSTEM-EXTENSIONS.md) defines a future native
+`INIT` module calling convention and resource metadata for kernel services.
+It reuses compact segments/RLOC rather than ELF or app-entry dispatch. Original
+`INIT`/`cdev` classification above does not implement boot discovery, kernel
+registration or legacy panel hosting. Those require their own loader/lifecycle
+and compatibility gates; runtime resource inspection must remain non-executing.
+
 ## Standard WDEF reconstruction
 
 [Retained analysis](../analysis/wdef-standard.md) records the System 7.6.1 source
