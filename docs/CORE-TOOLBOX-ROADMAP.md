@@ -27,7 +27,7 @@ The practical next target is a native document application that can open, edit, 
 | Dialogs / alerts | Narrow foundation | L | General DLOG, editable/user items, tab focus, item mutation, modeless/filter callback contracts and alert stages. |
 | Files / HFS persistence | Usable tested slice | XL | File creation and fork write/resize, catalog/extents growth, flush/recovery, full metadata operations and eject/unmount. |
 | Standard File / aliases | No public manager | L | Open/save dialogs and filters/hooks, alias records/resolution across moves and ownership of replies/resources. |
-| Processes / application life | Usable tested slice | L | Blocked/wakeup states, document/quit parameters, native workers, relocation and legacy cooperative contexts/segments. |
+| Processes / application life | Usable tested slice | L | Blocked/wakeup states, document/quit parameters, native workers, relocation, legacy cooperative Thread Manager (P2) and segments. |
 | Apple events / core IPC | No public manager | L | Descriptors/coercion, handlers, open-document/print/quit events, replies/timeouts and process routing. |
 
 M means a bounded extension of a working manager; L means substantial lifecycle/behavior work or a new manager; XL means a broad storage/device foundation. These are relative planning judgments, not engineer-weeks or measured completion fractions. Parallel work and new original-system findings can change the order.
@@ -98,6 +98,35 @@ separate platform workstream alongside the Toolbox delivery sequence.
 See [THREADING.md](../THREADING.md#delivery-gates) for the synchronization and
 execution contracts. A successful multi-hart boot with parked secondary harts
 does not satisfy this milestone.
+
+### P2 — Legacy Thread Manager (cooperative threads)
+
+Status: backlog; required for legacy application compatibility. This can progress
+alongside P1, using the application's existing preemptive OS thread as its host.
+It depends on legacy context/callback switching and blocking/wakeup foundations;
+translated 68k execution is a separate prerequisite for the original-app gate.
+
+- Inventory and capture the installed System 7.6.1 Thread Manager version,
+  Gestalt availability, `_ThreadDispatch` selectors and error behavior.
+  [Apple's Thread Manager manual](https://leopard-adc.pepas.com/documentation/macos8/pdf/ThreadManager.pdf)
+  guides the inventory; the pinned original runtime resolves version differences.
+- Cover `NewThread`, `DisposeThread`, directed/any-thread yields, thread state,
+  pools and stack queries, critical sections, custom scheduling, switch and
+  termination callbacks. Advertise only implemented styles and selectors.
+- Preserve original register/FPU/stack context and A5/global-data sharing,
+  including documented custom switch behavior. Capture which Toolbox/low-memory
+  fields are shared or saved; do not make all application globals thread private.
+- Preserve original reserved ThreadID aliases. Other context IDs use the shared
+  generation-tagged facility with separate application ownership validation.
+- Only one cooperative context within an application executes at a time, even
+  on a multi-hart System. Legacy critical sections govern that application's
+  Thread Manager scheduling; they never disable kernel preemption of the app.
+  A legacy context that never yields must not prevent other applications running.
+- Acceptance: original-system probes followed by canonical public SDK tests for
+  scheduling order, explicit yields, stop/wake, context and shared globals,
+  callbacks, disposal, stale/foreign IDs and exit cleanup. Add a translated 68k
+  probe using the original traps and repeat coexistence tests on one, two and
+  four harts while another application makes independent progress.
 
 ## Evidence and limits
 
