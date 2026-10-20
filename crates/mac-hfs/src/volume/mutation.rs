@@ -343,7 +343,10 @@ fn build_tree(tree: &mut Tree, catalog: bool, desktop: bool) -> MutationResult<V
         return Err(MutationError::Exists);
     }
     let mut nodes = Vec::new();
-    reserve(&mut nodes, tree.capacity.min(TREE_MAX / 512))?;
+    // On-disk capacity includes free nodes. Reserving the entire tree here
+    // needlessly demanded a contiguous 512 KiB during even a tiny Save Again.
+    // Start with metadata nodes and grow fallibly for the nodes actually used.
+    reserve(&mut nodes, 1 + tree.maps.len())?;
     nodes.push(tree.header);
     nodes.extend_from_slice(&tree.maps);
     let mut level = Vec::new();
@@ -402,6 +405,7 @@ fn build_tree(tree: &mut Tree, catalog: bool, desktop: bool) -> MutationResult<V
         reserve(&mut level, 1)?;
         level.push(Level { id,
                            key: copy(&tree.records[at][..key_bytes])? });
+        nodes.try_reserve(1).map_err(|_| MutationError::NoMemory)?;
         nodes.push(node);
         at = end;
     }
@@ -441,6 +445,7 @@ fn build_tree(tree: &mut Tree, catalog: bool, desktop: bool) -> MutationResult<V
             reserve(&mut parents, 1)?;
             parents.push(Level { id,
                                  key: copy(&level[at].key)? });
+            nodes.try_reserve(1).map_err(|_| MutationError::NoMemory)?;
             nodes.push(node);
             at = end;
         }
