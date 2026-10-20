@@ -30,7 +30,7 @@ impl super::Desktop
                && matches!(call.operation, CUT | PASTE)
                && self.owner == self.foreground
             {
-                self.redraw |= self.cursors.obscure(self.events.mouse);
+                self.cursor_dirty |= self.cursors.obscure(self.events.mouse);
             }
             return status;
         }
@@ -39,26 +39,29 @@ impl super::Desktop
             let status = self.textedit.request_with_fonts(call, input, output, fonts);
             if status == OK && matches!(call.operation, SET_CURSOR_ENABLED | DISPOSE)
             {
-                self.redraw = true;
+                self.cursor_dirty = true;
             }
             if status == OK
                && matches!(call.operation, KEY | NAVIGATE)
                && self.owner == self.foreground
             {
-                self.redraw |= self.cursors.obscure(self.events.mouse);
+                self.cursor_dirty |= self.cursors.obscure(self.events.mouse);
             }
             return status;
         }
-        self.draw_textedit(call).map_or_else(|status| status, |()| OK)
+        self.draw_textedit(call, fonts).map_or_else(|status| status, |()| OK)
     }
 
-    fn draw_textedit(&mut self, call: &mut TextEditCall) -> Result<(), Status>
+    fn draw_textedit(&mut self, call: &mut TextEditCall,
+                     fonts: &crate::toolbox::quickdraw::fonts::FontManager)
+                     -> Result<(), Status>
     {
         // Stage a complete retained update before changing any visible drawing.
         // The original port, including its nonrectangular clip, stays untouched.
         let mut port = self.content_mut(call.window.0)?.port.clone();
         let editor = self.textedit.inspect(call.id).ok_or(NOT_FOUND)?;
         let info = editor.info();
+        let vertical_ink = fonts.vertical_ink_bounds(crate::toolbox::quickdraw::fonts_service::selection(editor.font())).ok().flatten();
         let view = Region::from_rect(info.view);
         port.state.clip = Some(port.state.clip.as_ref().map_or_else(|| view.clone(),
                                                                     |clip| {
@@ -85,7 +88,8 @@ impl super::Desktop
             let mut text = String::new();
             text.try_reserve_exact(source.len()).map_err(|_| NO_MEMORY)?;
             text.push_str(source);
-            commands.push(RenderCommand::Text { font: editor.font(),
+            commands.push(RenderCommand::Text { vertical_ink,
+                                                font: editor.font(),
                                                 baseline: Point { h: info.dest
                                                                          .left
                                                                          .saturating_add(1),
@@ -151,7 +155,7 @@ impl super::Desktop
         }
         content.commands.try_reserve(commands.len()).map_err(|_| NO_MEMORY)?;
         content.commands.extend(commands);
-        self.content_changed(call.window.0);
+        self.content_changed_rect(call.window.0, info.view);
         let staged = self.pending_content.iter().any(|content| content.id == call.window);
         self.textedit.bind_cursor(call.id, call.window, port, staged)?;
         call.info = info;

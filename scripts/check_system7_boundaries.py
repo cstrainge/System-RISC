@@ -111,7 +111,7 @@ def check(args):
     for name in ['mac-finder', 'quickdraw-test', 'textedit-exerciser', 'cursor-test', 'panic-test', 'resedit']:
         direct = sorted(packages[dep['pkg']]['name'] for dep in nodes[by_name[name]]['deps']
                         if any(kind['kind'] is None for kind in dep['dep_kinds']))
-        expected = ['disc-v', 'mac-text', 'mac-toolbox'] if name == 'resedit' else ['mac-toolbox']
+        expected = ['disc-v', 'mac-code-resource', 'mac-text', 'mac-toolbox'] if name == 'resedit' else ['mac-toolbox']
         assert direct == expected, (name, 'runtime must use only the aggregate Toolbox', direct)
         manifest = Path(packages[by_name[name]]['manifest_path'])
         source = (manifest.parent / 'src/main.rs').read_text()
@@ -145,6 +145,8 @@ def check(args):
     system_symbols = subprocess.check_output(
         [nm, '--defined-only', '--demangle', str(release / 'System')], text=True)
     assert 'mac_system::toolbox' in system_symbols, 'System symbols missing; rebuild without stripping'
+    assert 'mac_formats::elf::' not in system_symbols, 'System must not contain an ELF loader'
+    assert not normal_dependencies(by_name['mac-code-resource']), 'wire codec must remain allocation-free and independent of services'
     assert 'standard_window_definition' not in system_symbols, 'WDEF implementation belongs to the resource'
     assert 'standard_control_definition' not in system_symbols, 'CDEF implementation belongs to the resource'
     assert 'standard_menu_definition' not in system_symbols, 'MDEF implementation belongs to the resource'

@@ -104,6 +104,7 @@ def capture(output, windows=False):
         def stage(name, action, settle=.25):
             nonlocal before
             start = len(driver.log())
+            state_before = driver.state()
             now = time.monotonic()
             action()
             action_seconds = time.monotonic() - now
@@ -124,6 +125,7 @@ def capture(output, windows=False):
                 after = settled
             evidence = delta(before, after)
             evidence.update(name=name, seconds=time.monotonic() - now,
+                            state_before=state_before, state_after=driver.state(),
                             action_seconds=action_seconds,
                             quiescent=quiescent,
                             serial=driver.log()[start:])

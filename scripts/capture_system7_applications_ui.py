@@ -15,6 +15,7 @@ import time
 
 import capture_system7_conformance as packaging
 import system7_vm as vm
+import system7_observer as observer
 
 
 # Fresh 404px Finder folder, resource-backed Geneva names and 64px icon cells.
@@ -37,6 +38,17 @@ class Driver:
     def log(self):
         return self.serial.read_text(errors='replace')
 
+    def state(self):
+        return observer.read(self.endpoint, self.serial)
+
+    def wait_state(self, predicate):
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            current = self.state()
+            if predicate(current):return current
+            time.sleep(.01)
+        raise TimeoutError('Guest did not acknowledge input: ' + str(self.state()))
+
     def wait(self, marker, previous=0):
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
@@ -55,14 +67,9 @@ class Driver:
         vm.qmp('input-send-event', {'events': events}, self.endpoint)
 
     def move(self, x, y):
-        marker = f' mouse={x},{y} '
-        previous = self.log().count(marker)
-        states = [line for line in self.log().splitlines() if line.startswith('WM_STATE ')]
-        already_there = bool(states and marker in states[-1])
         self.send([{'type': 'abs', 'data': {'axis': 'x', 'value': (x * 32767 + 638) // 639}},
                    {'type': 'abs', 'data': {'axis': 'y', 'value': (y * 32767 + 478) // 479}}])
-        if not already_there:
-            self.wait(marker, previous)
+        self.wait_state(lambda state: state['mouse'] == f'{x},{y}')
 
     def button(self, down):
         self.send([{'type': 'btn', 'data': {'button': 'left', 'down': down}}])
@@ -190,6 +197,7 @@ def capture(output, remap_icon=False, windows=False):
         path = output / (name + '.ppm')
         vm.qmp('screendump', {'filename': str(path)}, endpoint)
         snapshots.append({'name': name, 'frame': path.name,
+                          'state': driver.state(),
                           'serial_length': len(driver.log().encode())})
 
     def activate(row, app):

@@ -194,6 +194,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-code-resource"
+version = "0.1.0"
+
+[[package]]
 name = "mac-finder"
 version = "0.1.0"
 dependencies = [
@@ -205,6 +209,7 @@ dependencies = [
 name = "mac-formats"
 version = "0.1.0"
 dependencies = [
+ "mac-code-resource",
  "mac-text",
 ]
 
@@ -251,6 +256,7 @@ dependencies = [
  "disc-v",
  "mac-abi",
  "mac-build",
+ "mac-code-resource",
  "mac-formats",
  "mac-system",
  "mac-text",
@@ -399,6 +405,7 @@ version = "0.1.0"
 dependencies = [
  "disc-v",
  "mac-build",
+ "mac-code-resource",
  "mac-text",
  "mac-toolbox",
 ]

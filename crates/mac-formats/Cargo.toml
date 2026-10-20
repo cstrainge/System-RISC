@@ -5,4 +5,5 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+mac-code-resource = { path = "../mac-code-resource" }
 mac-text = { path = "../mac-text" }

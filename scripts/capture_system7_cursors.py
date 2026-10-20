@@ -89,11 +89,11 @@ def capture(output, windows=False):
         def axis(x, y):
             return [{'type': 'abs', 'data': {'axis': 'x', 'value': (x * 32767 + 638) // 639}},
                     {'type': 'abs', 'data': {'axis': 'y', 'value': (y * 32767 + 478) // 479}}]
-        marker = ' mouse=351,350 '
-        previous = driver.log().count(marker)
+        previous = int(driver.state()['input_seq'])
         driver.send(axis(352, 350))
         driver.send(axis(351, 350))
-        driver.wait(marker, previous)
+        driver.wait_state(lambda state: int(state['input_seq']) >= previous + 2
+                          and state['mouse'] == '351,350')
         frame('editor-returned', [351, 350])
         driver.move(350, 52)
         frame('title-bar-base', [350, 52])

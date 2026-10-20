@@ -30,6 +30,10 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   namespaces centrally and keep ownership checks separate. Keep validation in
   resident storage for both native Rust and legacy trap callers.
 - Generate application vers resources from Cargo's resolved package version.
+- Repainting is bounded by the changed object: cursor, control, or window area.
+  Accumulate exact damage, preserve occlusion and clipping, and leave unrelated
+  pixels and drawing work untouched. Movement damages both old and new bounds;
+  a local update must never implicitly invalidate the desktop or parent window.
 - Use the supplied rustfmt.toml. Run checks appropriate to the change and report
   actual coverage and remaining gaps. A passing subset is not full Toolbox or
   original 68k application compatibility.

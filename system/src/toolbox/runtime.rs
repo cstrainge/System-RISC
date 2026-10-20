@@ -51,13 +51,20 @@ pub struct Desktop
     content:         Vec<Content>,
     pending_content: Vec<Content>,
     content_cache:   super::quickdraw::content_cache::ContentCache,
+    menu_cache:      super::quickdraw::menu_cache::MenuBarCache,
     decoders:        [Decoder; 2],
     pub revision:    u32,
     pub updates:     u32,
     last_key:        u8,
     last_action:     &'static str,
     redraw:          bool,
-    last_logged:     u32,
+    content_damage:  Vec<(WindowId, super::quickdraw::region::Region)>,
+    cursor_dirty:    bool,
+    cursor_bounds:   Rect,
+    activity:        u64,
+    last_observed:   (u64, u32, u64),
+    presentations:   u64,
+    compositions:    u64,
     cdef:            DefinitionEntry,
     mdef:            DefinitionEntry,
     owner:           u64,
@@ -111,11 +118,40 @@ impl Desktop
     /// move the pointer and present the previously committed scene meanwhile.
     fn content_changed(&mut self, id: u32)
     {
-        if id != mac_abi::quickdraw::DESKTOP_TARGET
-           && !self.pending_content.iter().any(|content| content.id.0 == id)
+        if let Some(window) = self.windows.window(WindowId(id))
         {
-            self.content_cache.invalidate(id);
-            self.redraw = true;
+            self.content_changed_rect(id, window.local_bounds());
+        }
+    }
+
+    fn content_changed_rect(&mut self, id: u32, rect: Rect)
+    {
+        use super::quickdraw::{geometry::sect_rect,
+                               region::{BooleanOp, Region}};
+        if self.pending_content.iter().any(|content| content.id.0 == id)
+        {
+            return;
+        }
+        let Some(window) = self.windows.window(WindowId(id))
+        else
+        {
+            return;
+        };
+        let mut bounds = Rect::ZERO;
+        if !sect_rect(rect, window.local_bounds(), &mut bounds)
+        {
+            return;
+        }
+        self.content_cache.invalidate(id);
+        let region = Region::from_rect(bounds);
+        if let Some((_, previous)) =
+            self.content_damage.iter_mut().find(|(window, _)| window.0 == id)
+        {
+            *previous = previous.combine(&region, BooleanOp::Union);
+        }
+        else
+        {
+            self.content_damage.push((WindowId(id), region));
         }
     }
 
@@ -134,6 +170,8 @@ impl Desktop
             &crate::kernel::resources().ok_or(NOT_SUPPORTED)?
                 .get(mac_abi::resources::SYSTEM, ResourceKey { kind: *b"CURS", id: 1 })?.1.data)?;
         serial!("VIRTIO_INPUT=READY devices={}", devices);
+        serial!("UI_OBSERVER address={} bytes=128 version=1",
+                super::quickdraw::observer::address());
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
                   standard_file: Default::default(),
@@ -153,13 +191,20 @@ impl Desktop
                   content: Vec::new(),
                   pending_content: Vec::new(),
                   content_cache: Default::default(),
+                  menu_cache: Default::default(),
                   decoders: [Decoder::new(), Decoder::new()],
                   revision: 0,
                   updates: 0,
                   last_key: 0,
                   last_action: "READY",
                   redraw: true,
-                  last_logged: u32::MAX,
+                  content_damage: Vec::new(),
+                  cursor_dirty: true,
+                  cursor_bounds: Rect::ZERO,
+                  activity: 0,
+                  last_observed: (u64::MAX, u32::MAX, u64::MAX),
+                  presentations: 0,
+                  compositions: 0,
                   cdef,mdef,owner:1,foreground:1,locals:alloc::vec![local::Saved::new(1,mdef)],window_owners:Vec::new(),
                   processes:super::processes::Manager::new(),
                   app_menu:super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,crate::kernel::resources().ok_or(NOT_SUPPORTED)?)? })
@@ -188,8 +233,9 @@ impl Desktop
             return self.app_menu.query(call).map_or_else(|e| e, |_| OK);
         }
         let result = self.menus.request(call, resources);
-        if matches!(result, Ok(true))
+        if matches!(result, Ok(true)) && self.owner == self.foreground
         {
+            self.menu_cache.invalidate();
             self.redraw = true;
         }
         result.map_or_else(|status| status, |_| OK)
@@ -241,6 +287,7 @@ impl Desktop
             };
         }
         let id = WindowId(request.id);
+        let active_before = self.windows.active_window();
         match operation
         {
             NEW_WINDOW =>
@@ -464,8 +511,12 @@ impl Desktop
         }
         self.route_events();
         self.window_owners.retain(|(id, _)| self.windows.window(*id).is_some());
-        self.revision = self.revision.wrapping_add(1);
-        if operation != BEGIN_UPDATE
+        if operation == END_UPDATE
+        {
+            self.content_changed(id.0);
+        }
+        else if !matches!(operation, BEGIN_UPDATE | INVALIDATE_WINDOW | SET_CLOSE_DEFERRED)
+                  && (operation != SELECT_WINDOW || self.windows.active_window() != active_before)
         {
             self.redraw = true;
         }
@@ -540,20 +591,31 @@ impl Desktop
         }
         if call.operation == DISPOSE && window != 0
         {
+            let mut removed = Vec::new();
             for content in self.content
                                .iter_mut()
                                .chain(self.pending_content.iter_mut())
                                .filter(|content| content.id.0 == window)
             {
                 content.commands.retain(|command| {
+                    if let RenderCommand::ScrollBox(drawing) = command
+                       && drawing.id == call.id
+                    {
+                        removed.extend(drawing.bounds());
+                    }
                     !matches!(command, RenderCommand::ScrollBox(drawing) if drawing.id == call.id)
                 });
             }
-            self.content_changed(window);
+            for rect in removed
+            {
+                self.content_changed_rect(window, rect);
+            }
         }
 
         if let Some(drawing) = drawing
         {
+            let bounds = drawing.bounds();
+            let mut old_bounds = None;
             let used = self.retained_bytes();
             let size = drawing.storage();
             let id = drawing.id;
@@ -563,6 +625,10 @@ impl Desktop
             });
             if let Some(command) = previous
             {
+                if let RenderCommand::ScrollBox(old) = command
+                {
+                    old_bounds = Some(old.bounds());
+                }
                 if used - command.storage() + size > MAX_RETAINED_BYTES
                 {
                     return Err(NO_MEMORY);
@@ -578,7 +644,10 @@ impl Desktop
                 content.commands.try_reserve(1).map_err(|_| NO_MEMORY)?;
                 content.commands.push(RenderCommand::ScrollBox(drawing));
             }
-            self.content_changed(window);
+            for rect in old_bounds.into_iter().flatten().chain(bounds)
+            {
+                self.content_changed_rect(window, rect);
+            }
             if !self.pending_content.iter().any(|content| content.id.0 == window)
             {
                 self.present();
@@ -626,8 +695,9 @@ impl Desktop
             Ok(c) => c,
             Err(e) => return e
         };
+        let bounds = drawing.bounds();
         content.commands.push(RenderCommand::Control(drawing));
-        self.content_changed(call.window);
+        self.content_changed_rect(call.window, bounds);
         OK
     }
 
@@ -673,7 +743,6 @@ impl Desktop
             if committed
             {
                 self.content_cache.invalidate(DESKTOP_TARGET);
-                self.revision = self.revision.wrapping_add(1);
                 self.last_action = "DESKTOP";
                 self.redraw = true;
                 self.present();
@@ -748,7 +817,7 @@ impl Desktop
                   -> Result<(), Status>
     {
         let changed = self.cursors.request(call, colors, self.events.mouse)?;
-        self.redraw |= changed && self.owner == self.foreground;
+        self.cursor_dirty |= changed && self.owner == self.foreground;
         Ok(())
     }
 
@@ -767,7 +836,7 @@ impl Desktop
                                                         .ok()
                                                         .map(|(_, resource)| resource.data.clone())
                                            })?;
-        self.redraw |= changed && self.owner == self.foreground;
+        self.cursor_dirty |= changed && self.owner == self.foreground;
         Ok(())
     }
 
@@ -894,7 +963,8 @@ impl Desktop
                                                     baseline: call.baseline,
                                                     text:     String::from(text),
                                                     color:    call.color,
-                                                    port:     content.port.clone() });
+                                                    port:     content.port.clone(),
+                                                    vertical_ink: fonts.vertical_ink_bounds(fonts_service::selection(call.selection)).ok().flatten() });
         self.content_changed(call.window);
         Ok(())
     }
@@ -1054,13 +1124,17 @@ impl Desktop
             // bring the pointer back before the next framebuffer is painted.
             self.observe_cursor_motion(point);
         }
-        self.revision = self.revision.wrapping_add(1);
+        self.activity = self.activity.wrapping_add(1);
         // Key delivery does not change window pixels. Repainting here stalls
         // dispatch on an obsolete frame before the application handles the key.
-        // Pointer input can change the cursor, menu or window tracking state.
+        // Pointer movement damages the cursor, not the retained scene. Tracking
+        // overlays or a changed stacking plane have their own scene damage.
         if !matches!(input, Input::Key { .. })
         {
-            self.redraw = true;
+            self.cursor_dirty = true;
+            self.redraw |= self.windows.is_tracking()
+                           || self.menus.is_tracking()
+                           || self.app_menu.is_tracking();
         }
         if self.crash_input(input, when)
         {
@@ -1111,10 +1185,12 @@ impl Desktop
                 {
                     if self.app_menu.begin(point)
                     {
+                        self.redraw = true;
                         return;
                     }
                     if self.menus.begin(point)
                     {
+                        self.redraw = true;
                         return;
                     }
                     let hit = self.windows.find_window(point);
@@ -1128,6 +1204,13 @@ impl Desktop
                     if let Some(id) = hit.window
                     {
                         let active = active_before == Some(id);
+                        self.redraw |= !active
+                                       || matches!(hit.part,
+                                                   WindowPart::Drag
+                                                   | WindowPart::Grow
+                                                   | WindowPart::GoAway
+                                                   | WindowPart::ZoomIn
+                                                   | WindowPart::ZoomOut);
                         // DragWindow activates a background window only after a
                         // successful release; Command-drag preserves its plane.
                         if hit.part != WindowPart::Drag
@@ -1387,15 +1470,28 @@ impl Desktop
     {
         crate::trace::record(crate::trace::PRESENT, self.owner, 0, 0, 0, 0);
         self.tick_cursor();
-        if !self.redraw && self.last_logged == self.revision
+        if !self.redraw && !self.cursor_dirty && self.content_damage.is_empty()
         {
+            self.publish_observation();
             return;
         }
         let caller = self.owner;
         self.enter(self.foreground);
+        // A tracked popup/outline is above content. Its backing scene must be
+        // recomposed if an application changes pixels beneath that overlay.
+        self.redraw |= !self.content_damage.is_empty()
+                       && (self.menus.is_tracking()
+                           || self.app_menu.is_tracking()
+                           || self.windows.is_tracking());
+        let full = self.redraw;
+        if full || !self.content_damage.is_empty()
+        {
+            self.revision = self.revision.wrapping_add(1);
+            self.compositions = self.compositions.wrapping_add(1);
+        }
+        let mut damaged = Vec::new();
         if self.redraw
         {
-            let text_cursor = self.text_cursor_at_mouse().then_some(self.text_cursor);
             let started = crate::trace::clock();
             let updating = self.windows.back_to_front().filter(|w| w.updating).count();
             let back = platform::back_buffer();
@@ -1406,7 +1502,8 @@ impl Desktop
             let desktop_visible = self.processes.get(1).is_ok_and(|p| p.info.hidden == 0);
             let cache_budget =
                 super::quickdraw::content_cache::PIXEL_BUDGET.saturating_sub(self.scroll_boxes
-                                                                                 .raster_storage());
+                                                                                 .raster_storage())
+                    .saturating_sub(super::quickdraw::menu_cache::BYTES);
             self.content_cache.set_budget(cache_budget);
             self.content_cache.begin_frame();
             self.content_cache.retain(|id| {
@@ -1477,12 +1574,18 @@ impl Desktop
 
                         })
             });
-            self.menus.draw(&mut canvas);
-            self.app_menu.draw_bar(&mut canvas);
+            self.menu_cache.paint(&mut canvas,
+                                  (self.foreground,
+                                   self.menus.selected_menu(),
+                                   self.app_menu.is_tracking()),
+                                  |canvas| {
+                                      self.menus.draw_bar(canvas);
+                                      self.app_menu.draw_bar(canvas);
+                                  });
+            self.menus.draw_popup(&mut canvas);
             self.app_menu.draw_popup(&mut canvas);
-            self.cursors.draw_auto(&mut canvas, self.events.mouse, text_cursor);
-            platform::present(back);
             self.redraw = false;
+            self.content_damage.clear();
             crate::trace::record(crate::trace::RENDER,
                                  caller,
                                  started,
@@ -1490,27 +1593,110 @@ impl Desktop
                                  updating as u64,
                                  self.revision as u64);
         }
-        if self.last_logged != self.revision
+        else if !self.content_damage.is_empty()
         {
-            self.last_logged = self.revision;
-            let r = self.windows.window(self.first_window).map_or(Rect::ZERO, |w| w.bounds);
-            serial!("WM_STATE rev={} action={} windows={} front={} key={} mouse={},{} \
-                     first={},{},{},{} updates={} dropped={}",
-                    self.revision,
-                    self.last_action,
-                    self.windows.count(),
-                    self.windows.front_window().unwrap_or_default().0,
-                    self.last_key,
-                    self.events.mouse.h,
-                    self.events.mouse.v,
-                    r.left,
-                    r.top,
-                    r.right,
-                    r.bottom,
-                    self.updates,
-                    self.events.dropped);
+            let started = crate::trace::clock();
+            let damage = core::mem::take(&mut self.content_damage);
+            let fonts = crate::kernel::fonts();
+            let cdef = self.cdef;
+            let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
+            for (id, region) in damage
+            {
+                let Some(window) = self.windows.window(id)
+                else
+                {
+                    continue;
+                };
+                let Some(content) = self.content.iter().find(|content| content.id == id)
+                else
+                {
+                    continue;
+                };
+                self.windows.for_each_visible_rect(id, |visible| {
+                    for band in region.bands()
+                    {
+                        for span in &band.spans
+                        {
+                            let mut bounds = Rect::new(span.left, band.top, span.right, band.bottom);
+                            bounds.offset(window.bounds.left, window.bounds.top);
+                            let mut clip = Rect::ZERO;
+                            if !super::quickdraw::geometry::sect_rect(bounds, visible, &mut clip) { continue; }
+                            canvas.reset_port();
+                            canvas.set_clip(clip);
+                            canvas.set_origin(window.bounds.left, window.bounds.top);
+                            canvas.paint_rect(window.local_bounds(), WHITE);
+                            crate::kernel::with_resource_owner(u64::from(window.refcon), || {
+                                content.paint(&mut canvas, fonts, |canvas, command| paint(canvas, command, cdef));
+                            });
+                            window.paint_content_overlay(&mut canvas);
+                            damaged.push(clip);
+                        }
+                    }
+                });
+            }
+            crate::trace::record(crate::trace::RENDER,
+                                 caller,
+                                 started,
+                                 crate::trace::clock().wrapping_sub(started),
+                                 0,
+                                 self.revision as u64);
         }
+        if full || self.cursor_dirty || !damaged.is_empty()
+        {
+            let text_cursor = self.text_cursor_at_mouse().then_some(self.text_cursor);
+            let bounds = self.cursors.bounds(self.events.mouse, text_cursor);
+            let back = platform::back_buffer();
+            let mut canvas = Canvas::new(back, 640, 480);
+            let under = super::quickdraw::overlay::CursorUnder::capture(&canvas, bounds);
+            self.cursors.draw_auto(&mut canvas, self.events.mouse, text_cursor);
+            if full
+            {
+                platform::present(canvas.pixels);
+            }
+            else
+            {
+                platform::present_rects(canvas.pixels,
+                                        damaged.into_iter().chain([self.cursor_bounds, bounds]));
+            }
+            under.restore(&mut canvas);
+            self.cursor_bounds = bounds;
+            self.cursor_dirty = false;
+            self.presentations = self.presentations.wrapping_add(1);
+        }
+        self.publish_observation();
         self.enter(caller);
+    }
+
+    fn publish_observation(&mut self)
+    {
+        if self.last_observed == (self.activity, self.revision, self.presentations)
+        {
+            return;
+        }
+        let r = self.windows.window(self.first_window).map_or(Rect::ZERO, |w| w.bounds);
+        let pair = |a: i16, b: i16| u64::from(a as u16) | (u64::from(b as u16) << 16);
+        let mut action = [0; 16];
+        let name = self.last_action.as_bytes();
+        action[..name.len()].copy_from_slice(name);
+        super::quickdraw::observer::publish([self.activity,
+                                             u64::from(self.revision),
+                                             pair(self.events.mouse.h, self.events.mouse.v),
+                                             self.windows.count() as u64,
+                                             u64::from(self.windows
+                                                           .front_window()
+                                                           .unwrap_or_default()
+                                                           .0),
+                                             u64::from(self.last_key),
+                                             pair(r.left, r.top),
+                                             pair(r.right, r.bottom),
+                                             u64::from(self.updates),
+                                             u64::from(self.events.dropped),
+                                             u64::from_le_bytes(action[..8].try_into().unwrap()),
+                                             u64::from_le_bytes(action[8..].try_into().unwrap()),
+                                             self.menu_cache.paints,
+                                             self.presentations,
+                                             self.compositions]);
+        self.last_observed = (self.activity, self.revision, self.presentations);
     }
 }
 

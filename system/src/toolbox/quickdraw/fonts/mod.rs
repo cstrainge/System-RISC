@@ -298,6 +298,27 @@ impl FontManager
         self.metrics_with_preference(selection, FontPreference::BitmapPreferred)
     }
 
+    /// Conservative ink extent for retained bitmap text, cached with the draw
+    /// command. Outline/hinted text retains its ordinary clipped drawing path.
+    #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
+    pub(crate) fn vertical_ink_bounds(&self, selection: FontSelection)
+                                      -> Result<Option<(i32, i32)>, Status>
+    {
+        let face = self.resolve(selection, FontPreference::BitmapPreferred)?;
+        if face.size == 0
+        {
+            return Ok(None);
+        }
+        let font =
+            super::font::BitmapFont::parse(&face.resource.data).ok_or(mac_abi::BAD_ARGUMENT)?;
+        let (top, bottom) = font.vertical_ink_bounds();
+        let scale = f32::from(face.selection.size) / f32::from(face.size);
+        // Outline/shadow synthesis extends ink by at most two pixels; the
+        // underline is at baseline+1. Include these without trusting line metrics.
+        Ok(Some(((libm::floorf(top as f32 * scale) as i32).min(0) - 2,
+                 (libm::ceilf(bottom as f32 * scale) as i32).max(2) + 2)))
+    }
+
     pub fn metrics_with_preference(&self, selection: FontSelection, preference: FontPreference)
                                    -> Result<FontMetrics, Status>
     {

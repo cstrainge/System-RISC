@@ -4,6 +4,9 @@ pub mod drawing;
 pub use drawing::{BLACK, Canvas, WHITE};
 pub use geometry::{Point, Rect};
 pub mod cursor;
+pub mod overlay;
+pub mod menu_cache;
+pub mod observer;
 pub mod font;
 pub mod fonts;
 

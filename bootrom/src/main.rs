@@ -15,8 +15,7 @@ use core::{alloc::Layout,
 use linked_list_allocator::LockedHeap;
 use mac_abi::{BAD_ARGUMENT, BootInfo, Header, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, OK, Status,
               SystemEntry, SystemServices};
-use mac_formats::{elf,
-                  native::{Descriptor, Role},
+use mac_formats::{native::{Descriptor, Role, image},
                   resource, text};
 use mac_hfs::{BlockDevice, Error, Partition, Result, Volume, WritableBlockDevice};
 
@@ -96,7 +95,7 @@ struct Startup
 {
     descriptor: Descriptor,
     code:       Vec<u8>,
-    image:      elf::Image
+    image:      image::Image
 }
 
 fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
@@ -132,7 +131,7 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
                         .ok_or(Error("System has no RV64 executable resource"))?
                         .data
                         .to_vec();
-    let image = elf::decode(&code, descriptor.load_base, descriptor.load_limit)?;
+    let image = image::decode(&code, &descriptor)?;
     Ok(Startup { descriptor,
                  code,
                  image })
@@ -305,24 +304,24 @@ unsafe extern "C" fn read_startup(context: *mut (), name: *const u8, name_length
 fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize, partition: Partition)
          -> Result<()>
 {
+    let plan = image::LoadPlan::new(&startup.code, &startup.descriptor, None,
+                                    startup.descriptor.load_base)?;
     for segment in &startup.image.segments
     {
-        serial!("LOAD: 0x{:x} file={} memory={} flags={}", segment.address, segment.file_size,
-                segment.memory_size, segment.flags);
-        unsafe {
-            core::ptr::copy_nonoverlapping(startup.code.as_ptr().add(segment.offset as usize),
-                                           segment.address as *mut u8,
-                                           segment.file_size as usize);
-            core::ptr::write_bytes((segment.address + segment.file_size) as *mut u8,
-                                   0,
-                                   (segment.memory_size - segment.file_size) as usize);
-        }
+        serial!("LOAD: 0x{:x} bytes={} flags={}",
+                startup.descriptor.load_base + segment.offset,
+                segment.length,
+                segment.flags);
     }
+    let output = unsafe {
+        core::slice::from_raw_parts_mut(startup.descriptor.load_base as *mut u8, plan.length())
+    };
+    plan.write(output)?;
     unsafe {
         asm!("fence.i", options(nostack));
     }
-    serial!("BOOT: entering System at 0x{:x}", startup.image.entry);
-    let entry: SystemEntry = unsafe { core::mem::transmute(startup.image.entry as usize) };
+    serial!("BOOT: entering System at 0x{:x}", plan.entry());
+    let entry: SystemEntry = unsafe { core::mem::transmute(plan.entry() as usize) };
     let mut context = BootVolume { disks: disks.as_mut_ptr(),
                                    disk_count: disks.len(),
                                    startup_disk: disk_index,

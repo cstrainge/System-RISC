@@ -117,6 +117,32 @@ impl Window
         self.state.grow_box
     }
 
+    /// Definition-owned content adornments are above retained application
+    /// drawing. Preserve the compositor's damage clip, including grow-strip
+    /// restrictions supplied by applications that do not use both scrollbars.
+    #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
+    pub(crate) fn paint_content_overlay(&self, canvas: &mut Canvas<'_>)
+    {
+        let origin = canvas.origin();
+        let previous = canvas.clip();
+        let mut clip = previous;
+        if let Some(mut grow) = self.grow_icon_clip
+        {
+            grow.offset(self.bounds.left, self.bounds.top);
+            if !sect_rect(grow, previous, &mut clip)
+            {
+                return;
+            }
+        }
+        canvas.set_origin(0, 0);
+        canvas.set_clip(clip);
+        let mut copy = *self;
+        let mut surface = Surface::from_canvas(canvas);
+        copy.call(definition::DRAW_GROW_ICON, 0, &mut surface);
+        canvas.set_clip(previous);
+        canvas.set_origin(origin.h, origin.v);
+    }
+
     fn call(&mut self, message: i16, param: i64, surface: *mut Surface) -> i64
     {
         let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),

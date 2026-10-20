@@ -5,6 +5,7 @@ members = [
     "crates/mac-toolbox",
     "crates/mac-traps",
     "crates/mac-formats",
+    "crates/mac-code-resource",
     "crates/mac-text",
     "crates/mac-hfs",
     "toolbox/*",

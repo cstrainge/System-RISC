@@ -2,48 +2,10 @@
 //! Native envelopes load directly; 68k resources automatically request translation.
 use alloc::vec::Vec;
 
+pub use crate::code_types::*;
 use crate::{Error, Result,
             native::{Descriptor, Role},
             resource::Resource};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallingConvention
-{
-    WindowDefinition,
-    ControlDefinition,
-    MenuDefinition,
-    MenuBarDefinition,
-    ListDefinition,
-    CodeSegment,
-    CodeJumpTable,
-    Initializer,
-    Driver,
-    FunctionKey,
-    ControlPanel,
-    Package,
-    Procedure,
-    Patch,
-    Decompressor,
-    AdbDriver,
-    Custom
-}
-
-pub const STANDARD_CODE_TYPES: &[([u8; 4], CallingConvention)] =
-    &[(*b"WDEF", CallingConvention::WindowDefinition),
-      (*b"CDEF", CallingConvention::ControlDefinition),
-      (*b"MDEF", CallingConvention::MenuDefinition),
-      (*b"MBDF", CallingConvention::MenuBarDefinition),
-      (*b"LDEF", CallingConvention::ListDefinition),
-      (*b"CODE", CallingConvention::CodeSegment),
-      (*b"INIT", CallingConvention::Initializer),
-      (*b"DRVR", CallingConvention::Driver),
-      (*b"FKEY", CallingConvention::FunctionKey),
-      (*b"cdev", CallingConvention::ControlPanel),
-      (*b"PACK", CallingConvention::Package),
-      (*b"proc", CallingConvention::Procedure),
-      (*b"ptch", CallingConvention::Patch),
-      (*b"dcmp", CallingConvention::Decompressor),
-      (*b"ADBS", CallingConvention::AdbDriver)];
 
 pub struct TranslationRequest<'a>
 {
@@ -71,8 +33,9 @@ impl CodeTranslator for NoTranslator
 
 pub struct NativeCode
 {
-    pub descriptor: Descriptor,
-    pub elf:        Vec<u8>
+    pub descriptor:  Descriptor,
+    pub code:        Vec<u8>,
+    pub relocations: Vec<u8>
 }
 
 pub struct CodeRegistry
@@ -137,17 +100,37 @@ impl CodeRegistry
                                                                    convention })?;
             &translated
         };
-        if payload.len() < 32
+        if payload.get(32..36) == Some(b"\x7fELF")
+        {
+            return Err(Error("obsolete ELF-backed code envelope; rebuild the system"));
+        }
+        let size = crate::native::DESCRIPTOR_SIZE;
+        if payload.len() < size
         {
             return Err(Error("truncated native code resource"));
         }
-        let descriptor = Descriptor::decode(&payload[..32])?;
+        let descriptor = Descriptor::decode(&payload[..size])?;
         if descriptor.role != Role::CodeResource
         {
             return Err(Error("native resource has the wrong executable role"));
         }
+        let body = &payload[size..];
+        let end = crate::native::image::inspect(body.len(),
+                                                &descriptor,
+                                                |at, out| {
+                                                    out.copy_from_slice(crate::slice(body,
+                                                                                     at,
+                                                                                     out.len())?);
+                                                    Ok(())
+                                                },
+                                                |_| {})?;
+        crate::native::image::LoadPlan::new(&body[..end],
+                                            &descriptor,
+                                            Some(&body[end..]),
+                                            descriptor.load_base)?;
         Ok(NativeCode { descriptor,
-                        elf: payload[32..].to_vec() })
+                        code: body[..end].to_vec(),
+                        relocations: body[end..].to_vec() })
     }
 }
 
@@ -168,12 +151,15 @@ mod tests
             {
                 assert_eq!(request.convention, CallingConvention::CodeJumpTable);
             }
-            let mut bytes = Descriptor { role:        Role::CodeResource,
-                                         abi_version: crate::native::ABI_VERSION,
-                                         load_base:   0x82000000,
-                                         load_limit:  0x82100000 }.encode()?
-                                                                  .to_vec();
-            bytes.extend_from_slice(b"ELF prepared by translator");
+            let descriptor = Descriptor { role:        Role::CodeResource,
+                                          abi_version: crate::native::ABI_VERSION,
+                                          load_base:   0x82000000,
+                                          load_limit:  0x82100000,
+                                          entry:       0x82000000 };
+            let mut bytes = descriptor.encode()?.to_vec();
+            bytes.extend(crate::native::image::encode(&descriptor,
+                                                      [(0, 5, [0x82, 0x80].as_slice())])?);
+            bytes.extend_from_slice(b"RLC1\0\0\0\0");
             Ok(bytes)
         }
     }

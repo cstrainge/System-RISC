@@ -98,6 +98,7 @@ def capture(output, windows=False):
         path = output / (name + '.ppm')
         vm.qmp('screendump', {'filename': str(path)}, endpoint)
         observations.append({'name': name, 'frame': path.name,
+                             'state': driver.state(),
                              'boot': len(launches), 'serial_length': len(driver.log().encode())})
 
     def text(value):
@@ -129,15 +130,12 @@ def capture(output, windows=False):
         driver.wait('FINDER_CLICK_HANDLED\n', previous + 1)
 
     def select_case(x):
-        states = [line for line in driver.log().splitlines() if line.startswith('WM_STATE ')]
-        front = int(re.search(r' front=(\d+) ', states[-1]).group(1))
+        front = int(driver.state()['front'])
         if front != cases_window:
             # Classic inactive content clicks can only activate their window.
             # Activate through the exposed title first, then select its icon.
-            marker = f' front={cases_window} '
-            previous = driver.log().count(marker)
             driver.click(280, 52)
-            driver.wait(marker, previous)
+            driver.wait_state(lambda state: int(state['front']) == cases_window)
         previous = driver.log().count('FINDER_CLICK_HANDLED\n')
         driver.click(x, 106)
         driver.wait('FINDER_CLICK_HANDLED\n', previous)

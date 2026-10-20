@@ -12,13 +12,22 @@ from capture_system7_applications_ui import Driver
 from extract_standard_wdef_assets import resources
 from export_resedit_json import exports
 import system7_vm as vm
+from capture_system7_event_trace import decode, delta
 
 
 def capture(output):
     output=Path(output).resolve();output.mkdir(parents=True,exist_ok=False)
     baseline=hashlib.sha256((vm.DIST/'system7.qcow2').read_bytes()).hexdigest()
     process,endpoint=vm.launch(output/'vm',writable=True)
-    driver=Driver(endpoint,output/'vm/serial.log');frames=[]
+    driver=Driver(endpoint,output/'vm/serial.log');frames=[];damage_samples=[]
+    trace=re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=1',driver.log())
+    def snapshot(label):
+        if not trace:return None
+        address,size=map(int,trace.groups());path=output/(label+'.bin')
+        vm.qmp('stop',endpoint=endpoint)
+        try:vm.qmp('pmemsave',{'val':address,'size':size,'filename':str(path)},endpoint)
+        finally:vm.qmp('cont',endpoint=endpoint)
+        return decode(path)
     def click(x,y):
         before=driver.log().count('RESEDIT_DRAW_READY\n');driver.click(x,y)
         driver.wait('RESEDIT_DRAW_READY\n',before)
@@ -65,20 +74,29 @@ def capture(output):
             draw_key('end');frame(package+'-disassembly-end')
             draw_key('home')
             # Exercise actual CDEF0 radio press/leave/release cancellation.
-            driver.move(398,70);driver.button(True);frame(package+'-hex-radio-held',False)
-            driver.move(16,444);frame(package+'-hex-radio-left',False)
+            pressed='RESEDIT_RADIO_READY hex=1 pressed=1\n'
+            released='RESEDIT_RADIO_READY hex=1 pressed=0\n'
+            before=driver.log().count(pressed)
+            driver.move(398,70);driver.button(True);driver.wait(pressed,before)
+            frame(package+'-hex-radio-held',False)
+            before=driver.log().count(released)
+            driver.move(16,444);driver.wait(released,before)
+            frame(package+'-hex-radio-left',False)
             before=driver.log().count('RESEDIT_DRAW_READY\n');driver.button(False)
             driver.wait('RESEDIT_DRAW_READY\n',before);frame(package+'-hex-radio-cancelled')
             click(330,60);frame(package+'-hex')
             # Drag the actual CDEF thumb across its full track. No virtual row
             # positions are injected; Rust checks the resulting viewport.
-            driver.move(604,153);driver.button(True);frame(package+'-hex-thumb-held',False)
+            driver.move(604,251);driver.button(True);frame(package+'-hex-thumb-held',False)
             driver.move(604,402);before=driver.log().count('RESEDIT_DRAW_READY\n');driver.button(False)
             driver.wait('RESEDIT_DRAW_READY\n',before)
             frame(package+'-hex-end')
             draw_key('home');click(604,418);frame(package+'-hex-down')
             # Timed one-row key repaints include row fill and resident commit.
+            before_trace=snapshot(package+'-scroll-before')
             for i in range(8):draw_key('down')
+            after_trace=snapshot(package+'-scroll-after')
+            if before_trace is not None:damage_samples.append({'package':package,**delta(before_trace,after_trace)})
             frame(package+'-hex-key-scroll')
             click(460,60);frame(package+'-disassembly-restored')
     try:
@@ -111,7 +129,7 @@ def capture(output):
         if not candidates:raise RuntimeError('No complete ResEdit export')
         token,data,_=candidates[-1];(output/'resources.json').write_bytes(data)
         open_dialog();driver.key('up',('ctrl',));pick('System Folder');pick('System');opened('System')
-        for kind in [b'ICON',b'cicn',b'RV64',b'NABI',b'WDEF',b'NFNT']:
+        for kind in [b'ICON',b'cicn',b'RV64',b'NABI',b'CDEF',b'MDEF',b'WDEF',b'NFNT']:
             choose_type('System',kind)
         click(276,418);frame('System-resources-down')
         def resize(anchor,target,name):
@@ -140,7 +158,7 @@ def capture(output):
         hfs('hcopy','-r',':Applications:exports:QuickDraw Test.json',output/'native-subfolder-resources.json')
     finally:hfs('humount')
     for path in [raw,output/'vm/system7.qcow2',output/'vm/bootrom.bin']:path.unlink(missing_ok=True)
-    report={'frames':frames,'token':token,'base_before':baseline,'base_after':hashlib.sha256((vm.DIST/'system7.qcow2').read_bytes()).hexdigest(),'assertion_owner':'mac-toolbox/tests/resedit.rs'}
+    report={'frames':frames,'damage_samples':damage_samples,'token':token,'base_before':baseline,'base_after':hashlib.sha256((vm.DIST/'system7.qcow2').read_bytes()).hexdigest(),'assertion_owner':'mac-toolbox/tests/resedit.rs'}
     (output/'capture.json').write_text(json.dumps(report,indent=2)+'\n')
 
 if __name__=='__main__':

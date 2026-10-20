@@ -91,7 +91,7 @@ generates resource identifiers and linker layouts from their manifests, and
 packages their executables and resources. `image` also creates a separate
 500 MiB HFS volume and qcow2 image. `check` performs formatting checks, host unit
 tests, both cross-builds, HFS fork/metadata roundtrips, qcow2 checks and byte
-comparison, isolated headless QEMU execution of both packaged ELF payloads,
+comparison, isolated headless QEMU execution of both packaged native images,
 and cold boots through the ROM from actual attached disks. It also tests the
 graphical desktop with QMP input through the actual virtio keyboard/tablet and
 compares framebuffer regions for exposure and close/reopen behavior. It also
@@ -122,12 +122,13 @@ before accepting a reader. Use `--nm PATH` or `SYSTEM7_NM` to select a tool,
 and a failed check, rather than skipping symbol validation.
 
 The separate ABI check extracts executable resource 0 from each MacBinary package and
-loads those ELF files using QEMU's generic loader. A small RV64 harness calls
+loads the decoded, zero-filled segment images using QEMU's raw generic loader.
+A small RV64 harness calls
 System, gets its service table, launches Finder through its entry point, and
 checks rejection of incompatible ABI headers and null application arguments.
 It exits with `ABI_SMOKE_PASS` on success. This exercises actual independently
 linked RISC-V code and their shared interface. **It does not boot from HFS.**
-The ROM checks additionally exercise the real virtio/HFS/resource/ELF loading
+The ROM checks additionally exercise the real virtio/HFS/resource/segment loading
 path, renamed blessed folders, Apple partition maps, disk fallback, and startup
 file rejection. `cargo xtask boot` opens a serial console and boots the generated
 disk read-only. `cargo xtask boot PATH` builds just the ROM and uses an existing
@@ -169,6 +170,7 @@ System7/
     mac-abi/               Versioned native service/entry-point contracts
     mac-traps/             Typed transport over the loader-supplied trap gate
     mac-toolbox/           Rust service bindings and Toolbox facade
+    mac-code-resource/     Allocation-free native descriptor/segment contract
     mac-formats/           no_std + alloc binary formats, reusable in guests
     mac-hfs/               no_std + alloc HFS reader with caller-provided sector I/O
   toolbox/
@@ -201,7 +203,7 @@ points; it contains no standard definition implementation. Host tests reuse thos
 same source files without linking them into production System.
 
 `mac-formats` has no filesystem or subprocess dependencies. Its resource fork,
-MacBinary, text, native descriptor and ELF code can be reused by a future
+MacBinary, text, native image and relocation code can be reused by a future
 native disk utility once a guest allocator exists. `tools/xtask/src/disk.rs`
 is an initial **host adapter** around hfsutils. A native disk application will
 need broader HFS write APIs. The File Manager exposes mounted-volume/catalog/fork
@@ -359,7 +361,8 @@ Definitions support:
 - `menu`: basic classic `MENU` resources, including item terminators.
 - `hex`: arbitrary binary resource data, such as `SIZE`.
 - `file`: binary data read relative to the manifest, for icons and other assets.
-- `native_code`: descriptor plus stripped native ELF for an executable resource.
+- `native_code`: build-time native ELF converted to a descriptor, compact segment
+  stream and RLOC table for a relocatable executable definition resource.
 
 Each definition has a four-byte `type`, signed 16-bit `id`, unique uppercase
 `symbol`, optional Mac Roman `name`, and optional resource `attributes`.
@@ -372,8 +375,9 @@ The packager reserves:
 
 | Resource | Meaning |
 | --- | --- |
-| `'RV64'` ID 0 | ELF64 little-endian RISC-V executable, stripped for runtime |
-| `'NABI'` ID 0 | Our native format version, image role, service ABI and reserved memory range |
+| `'RV64'` ID 0 | Version-1 header and initialized R/W/X segment records; no ELF container |
+| `'NABI'` ID 0 | Native format version, role, service ABI, reserved memory range and entry point |
+| `'RLOC'` ID 0 | Relocation patches for applications; definitions carry the table inline |
 | `'vers'` ID 1 | Generated classic version resource from Cargo package version |
 
 `RV64` and `NABI` are new project formats. Existing 68k `CODE` resources retain

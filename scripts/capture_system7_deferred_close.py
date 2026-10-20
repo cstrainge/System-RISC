@@ -3,6 +3,7 @@
 import argparse,hashlib,json,re,shutil,time
 from pathlib import Path
 import system7_vm as vm
+import system7_observer as observer
 from capture_system7_window_tracking import private_probe_disk
 
 def capture(output):
@@ -24,12 +25,11 @@ def capture(output):
     def move(x,y):
         send([{'type':'abs','data':{'axis':'x','value':(x*32767+638)//639}},
               {'type':'abs','data':{'axis':'y','value':(y*32767+478)//479}}])
-        wait(lambda:any(line.startswith('WM_STATE ') and f'mouse={x},{y} ' in line+' ' for line in lines()[-12:]))
+        wait(lambda:observer.read(endpoint,serial)['mouse']==f'{x},{y}')
     def button(down):
-        states=[line for line in lines() if line.startswith('WM_STATE ')]
-        previous=int(dict(part.split('=',1)for part in states[-1].split()[1:])['rev'])
+        previous=int(observer.read(endpoint,serial)['input_seq'])
         send([{'type':'btn','data':{'button':'left','down':down}}])
-        wait(lambda:any(line.startswith('WM_STATE ') and int(dict(part.split('=',1)for part in line.split()[1:])['rev'])>previous for line in lines()[-12:]))
+        wait(lambda:int(observer.read(endpoint,serial)['input_seq'])>previous)
     def key(code):
         send([{'type':'key','data':{'key':{'type':'qcode','data':code},'down':True}},
               {'type':'key','data':{'key':{'type':'qcode','data':code},'down':False}}])

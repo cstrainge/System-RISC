@@ -297,7 +297,14 @@ impl<'a> ResourceView<'a>
         }
         self.kind = match &item.info.key.kind
         {
-            b"RV64" | b"CODE" => Kind::Code,
+            kind if *kind == *b"RV64"
+                    || mac_code_resource::code_types::STANDARD_CODE_TYPES.iter()
+                                                                         .any(|(code, _)| {
+                                                                             code == kind
+                                                                         }) =>
+            {
+                Kind::Code
+            }
             b"RLOC" => Kind::Relocations,
             b"MENU" if item.info.length <= 32768 => Kind::Menu,
             b"STR " | b"STR#" if item.info.length <= 32768 => Kind::Strings,

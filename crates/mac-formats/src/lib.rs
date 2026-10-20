@@ -10,21 +10,7 @@ pub mod native;
 pub mod resource;
 pub mod text;
 
-use core::fmt;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Error(pub &'static str);
-impl fmt::Display for Error
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    {
-        f.write_str(self.0)
-    }
-}
-impl core::error::Error for Error
-{
-}
-pub type Result<T> = core::result::Result<T, Error>;
+pub use mac_code_resource::{Error, Result};
 
 pub(crate) fn slice(bytes: &[u8], offset: usize, length: usize) -> Result<&[u8]>
 {
@@ -41,3 +27,5 @@ pub(crate) fn be32(bytes: &[u8], offset: usize) -> Result<u32>
 }
 
 pub mod code;
+pub use mac_code_resource::code_types;
+pub mod relocation;

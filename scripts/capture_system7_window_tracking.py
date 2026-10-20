@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import system7_vm as vm
+import system7_observer as observer
 
 
 def private_probe_disk(output, menus=False, deferred=False):
@@ -61,9 +62,7 @@ def capture(output, probe=False, menus=False):
     observations = []
 
     def state():
-        lines = [line for line in serial.read_text(errors='replace').split('\n')[:-1]
-                 if line.startswith('WM_STATE ')]
-        return dict(field.split('=', 1) for field in lines[-1].split()[1:]) if lines else {}
+        return observer.read(endpoint, serial)
 
     def wait(predicate):
         deadline = time.monotonic() + 10
@@ -85,14 +84,14 @@ def capture(output, probe=False, menus=False):
         wait(lambda current: current.get('mouse') == f'{x},{y}')
 
     def button(down):
-        previous = int(state()['rev'])
+        previous = int(state()['input_seq'])
         send([{'type': 'btn', 'data': {'button': 'left', 'down': down}}])
-        wait(lambda current: int(current['rev']) > previous)
+        wait(lambda current: int(current['input_seq']) > previous)
 
     def key_transition(code, down):
-        previous = int(state()['rev'])
+        previous = int(state()['input_seq'])
         send([{'type':'key','data':{'key':{'type':'qcode','data':code},'down':down}}])
-        wait(lambda current: int(current['rev']) > previous)
+        wait(lambda current: int(current['input_seq']) > previous)
 
     def snapshot(name):
         # Let SDK scene commits following a release reach the compositor.

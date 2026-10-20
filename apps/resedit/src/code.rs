@@ -1,7 +1,8 @@
-//! Allocation-free ELF64 executable indexing. Only PT_LOAD + PF_X bytes are code.
+//! Allocation-free native segment indexing; only executable segment bytes are code.
 #![forbid(unsafe_code)]
 use core::fmt::Write;
 
+use mac_code_resource::{DESCRIPTOR_SIZE, Descriptor, image};
 use mac_toolbox::{BAD_ARGUMENT, Error, IO_ERROR, ResourceKey, ToolboxResult,
                   resources::ResourceFile};
 
@@ -25,12 +26,11 @@ struct Mark
 }
 pub struct Index
 {
-    segments:  [Segment; MAX_SEGMENTS],
-    count:     usize,
-    marks:     [Mark; MAX_MARKS],
-    marked:    usize,
-    pub rows:  u32,
-    pub entry: u64
+    segments: [Segment; MAX_SEGMENTS],
+    count:    usize,
+    marks:    [Mark; MAX_MARKS],
+    marked:   usize,
+    pub rows: u32
 }
 fn bad() -> Error
 {
@@ -46,17 +46,9 @@ fn read_exact(read: &mut impl FnMut(usize, &mut [u8]) -> ToolboxResult<usize>, a
     }
     Ok(())
 }
-fn le16(b: &[u8], at: usize) -> u16
-{
-    u16::from_le_bytes([b[at], b[at + 1]])
-}
 fn le32(b: &[u8], at: usize) -> u32
 {
     u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}
-fn le64(b: &[u8], at: usize) -> u64
-{
-    u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
 }
 struct Stream<F>
 {
@@ -101,78 +93,35 @@ impl<F: FnMut(usize, &mut [u8]) -> ToolboxResult<usize>> Stream<F>
 }
 impl Index
 {
-    pub fn build(length: usize, mut read: impl FnMut(usize, &mut [u8]) -> ToolboxResult<usize>)
+    pub fn build(length: usize, descriptor: &Descriptor,
+                 mut read: impl FnMut(usize, &mut [u8]) -> ToolboxResult<usize>)
                  -> ToolboxResult<Self>
     {
-        if length < 64
-        {
-            return Err(bad());
-        }
-        let mut header = [0; 64];
-        read_exact(&mut read, 0, &mut header)?;
-        if &header[..7] != b"\x7fELF\x02\x01\x01"
-           || le16(&header, 16) != 2
-           || le16(&header, 18) != 243
-           || le32(&header, 20) != 1
-           || le16(&header, 52) != 64
-           || le16(&header, 54) != 56
-        {
-            return Err(bad());
-        }
-        let phoff = usize::try_from(le64(&header, 32)).map_err(|_| bad())?;
-        let count = usize::from(le16(&header, 56));
-        if count == 0
-           || count > MAX_SEGMENTS
-           || phoff.checked_add(count * 56).is_none_or(|n| n > length)
-        {
-            return Err(bad());
-        }
         let mut index = Self { segments: [Segment::default(); MAX_SEGMENTS],
                                count:    0,
                                marks:    [Mark::default(); MAX_MARKS],
                                marked:   0,
-                               rows:     0,
-                               entry:    le64(&header, 24) };
+                               rows:     0 };
         let mut total = 0usize;
-        for i in 0..count
-        {
-            let mut ph = [0; 56];
-            read_exact(&mut read, phoff + i * 56, &mut ph)?;
-            if le32(&ph, 0) != 1 || le32(&ph, 4) & 1 == 0
-            {
-                continue;
-            }
-            let offset = usize::try_from(le64(&ph, 8)).map_err(|_| bad())?;
-            let size = usize::try_from(le64(&ph, 32)).map_err(|_| bad())?;
-            let address = le64(&ph, 16);
-            if size as u64 > le64(&ph, 40)
-               || offset.checked_add(size).is_none_or(|n| n > length)
-               || address.checked_add(size as u64).is_none()
-            {
-                return Err(bad());
-            }
-            if size == 0
-            {
-                continue;
-            }
-            for s in &index.segments[..index.count]
-            {
-                if address < s.address + s.length as u64 && s.address < address + size as u64
-                {
-                    return Err(bad());
-                }
-            }
-            index.segments[index.count] = Segment { offset,
-                                                    length: size,
-                                                    address };
-            index.count += 1;
-            total = total.checked_add(size).ok_or_else(bad)?;
-        }
-        if index.count == 0
-           || !index.segments[..index.count].iter().any(|s| {
-                                                       index.entry >= s.address
-                                                       && index.entry < s.address + s.length as u64
-                                                   })
+        let end = image::inspect(length,
+                                 descriptor,
+                                 |at, out| {
+                                     read_exact(&mut read, at, out).map_err(|_| {
+                                         mac_code_resource::Error("code resource read failed")
+                                     })
+                                 },
+                                 |s| {
+                                     if s.flags & image::EXECUTE != 0
+                                     {
+                                         index.segments[index.count] =
+                                             Segment { offset:  s.data_offset,
+                                                       length:  s.length,
+                                                       address: descriptor.load_base + s.offset };
+                                         index.count += 1;
+                                         total += s.length;
+                                     }
+                                 }).map_err(|_| bad())?;
+        if end != length
         {
             return Err(bad());
         }
@@ -263,63 +212,127 @@ impl Index
 /// Loader metadata stays visible above the native instructions; full relocation
 /// records also have their own structured resource viewer.
 pub const HEADER_ROWS: u32 = 7;
-pub fn loader(file: &ResourceFile<'_>, entry: u64, mut emit: impl FnMut(&str))
+#[derive(Clone, Copy)]
+pub struct Source
 {
+    pub descriptor:  Descriptor,
+    pub key:         ResourceKey,
+    pub offset:      usize,
+    pub length:      usize,
+    pub relocations: Option<(usize, usize)>
+}
+impl Source
+{
+    pub fn open(file: &ResourceFile<'_>, key: ResourceKey, length: usize) -> ToolboxResult<Self>
+    {
+        let mut data = [0; DESCRIPTOR_SIZE];
+        let embedded = key.kind != *b"RV64";
+        let abi = if embedded
+        {
+            key
+        }
+        else
+        {
+            ResourceKey { kind: *b"NABI",
+                          id:   0 }
+        };
+        if !embedded && file.get(abi)?.info.length != DESCRIPTOR_SIZE
+        {
+            return Err(bad());
+        }
+        if file.read(abi, 0, &mut data)? != data.len()
+        {
+            return Err(bad());
+        }
+        let descriptor = Descriptor::decode(&data).map_err(|_| bad())?;
+        if embedded && descriptor.role != mac_code_resource::Role::CodeResource
+        {
+            return Err(bad());
+        }
+        let offset = if embedded { DESCRIPTOR_SIZE } else { 0 };
+        let available = length.checked_sub(offset).ok_or_else(bad)?;
+        let end =
+            image::inspect(available,
+                           &descriptor,
+                           |at, out| {
+                               match file.read(key, offset + at, out)
+                               {
+                                   Ok(size) if size == out.len() => Ok(()),
+                                   _ => Err(mac_code_resource::Error("code resource read failed"))
+                               }
+                           },
+                           |_| {}).map_err(|_| bad())?;
+        if !embedded && end != length
+        {
+            return Err(bad());
+        }
+        let relocations = embedded.then_some((offset + end, available - end));
+        let source = Self { descriptor,
+                            key,
+                            offset,
+                            length: end,
+                            relocations };
+        if embedded
+        {
+            source.relocation_rows(file)?;
+        }
+        Ok(source)
+    }
+
+    pub fn read(&self, file: &ResourceFile<'_>, at: usize, out: &mut [u8]) -> ToolboxResult<usize>
+    {
+        if at > self.length
+        {
+            return Err(bad());
+        }
+        let size = out.len().min(self.length - at);
+        file.read(self.key, self.offset + at, &mut out[..size])
+    }
+
+    fn relocation_rows(&self, file: &ResourceFile<'_>) -> ToolboxResult<u32>
+    {
+        if let Some((at, length)) = self.relocations
+        {
+            relocation_count(length, |offset, out| file.read(self.key, at + offset, out))
+        }
+        else
+        {
+            let key = ResourceKey { kind: *b"RLOC",
+                                    id:   0 };
+            relocation_count(file.get(key)?.info.length, |offset, out| file.read(key, offset, out))
+        }
+    }
+}
+pub fn loader(file: &ResourceFile<'_>, source: &Source, mut emit: impl FnMut(&str))
+{
+    let d = source.descriptor;
     emit("RV64 executable (linked addresses)");
     let mut line = Text::<128>::new();
-    let _ = write!(line, "Entry: 0x{entry:08x}");
+    let _ = write!(line, "Entry: 0x{:08x}", d.entry);
     emit(line.as_str());
-    let mut data = [0; 32];
-    let descriptor = file.read(ResourceKey { kind: *b"NABI",
-                                             id:   0 },
-                               0,
-                               &mut data);
-    if descriptor == Ok(32) && &data[..4] == b"RVN1"
+    let mut line = Text::<128>::new();
+    let _ = write!(line,
+                   "NABI: format {} role {} ABI {}",
+                   mac_code_resource::FORMAT_VERSION,
+                   d.role as u16,
+                   d.abi_version);
+    emit(line.as_str());
+    for (label, value) in [("Load base", d.load_base), ("Load limit", d.load_limit)]
     {
         let mut line = Text::<128>::new();
-        let _ = write!(line,
-                       "NABI: format {} role {} ABI {}",
-                       u16::from_be_bytes([data[4], data[5]]),
-                       u16::from_be_bytes([data[6], data[7]]),
-                       u32::from_be_bytes(data[8..12].try_into().unwrap()));
+        let _ = write!(line, "{label}: 0x{value:08x}");
         emit(line.as_str());
-        for (label, at) in [("Load base", 16), ("Load limit", 24)]
+    }
+    match source.relocation_rows(file)
+    {
+        Ok(count) =>
         {
             let mut line = Text::<128>::new();
-            let _ = write!(line,
-                           "{label}: 0x{:08x}",
-                           u64::from_be_bytes(data[at..at + 8].try_into().unwrap()));
+            let _ = write!(line, "RLOC: {} patches", count - 1);
             emit(line.as_str());
         }
-    }
-    else
-    {
-        emit("NABI: absent or malformed");
-        emit("");
-        emit("");
-    }
-    let key = ResourceKey { kind: *b"RLOC",
-                            id:   0 };
-    match file.get(key)
-    {
-        Ok(info) =>
-        {
-            match relocation_count(info.info.length, |at, out| file.read(key, at, out))
-            {
-                Ok(count) =>
-                {
-                    let mut line = Text::<128>::new();
-                    let _ = write!(line, "RLOC: {} patches (select RLOC to inspect)", count - 1);
-                    emit(line.as_str());
-                }
-                Err(_) => emit("RLOC: malformed relocation table")
-            }
-        }
-        Err(error) if error.0 == mac_toolbox::NOT_FOUND =>
-        {
-            emit("RLOC: absent (fixed-address image)")
-        }
-        Err(_) => emit("RLOC: unavailable")
+        Err(e) if e.0 == mac_toolbox::NOT_FOUND => emit("RLOC: absent (fixed-address image)"),
+        Err(_) => emit("RLOC: malformed relocation table")
     }
     emit("");
 }

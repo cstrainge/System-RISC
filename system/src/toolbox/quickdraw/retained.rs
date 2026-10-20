@@ -18,11 +18,12 @@ pub enum RenderCommand
     Bitmap(super::bitmaps_service::BitmapDrawing),
     Text
     {
-        font:     mac_abi::quickdraw::FontSelection,
-        baseline: Point,
-        text:     String,
-        color:    u32,
-        port:     service::Port
+        font:         mac_abi::quickdraw::FontSelection,
+        baseline:     Point,
+        text:         String,
+        color:        u32,
+        port:         service::Port,
+        vertical_ink: Option<(i32, i32)>
     }
 }
 impl RenderCommand
@@ -77,11 +78,26 @@ impl RenderCommand
                          baseline,
                          text,
                          color,
-                         port } =>
+                         port,
+                         vertical_ink } =>
             {
                 if let Some(fonts) = fonts
                 {
                     service::with_clip(canvas, port, |canvas| {
+                        // Reject clipped-out text before decoding/rasterizing its
+                        // glyphs. A narrow viewport update must not execute the
+                        // fixed header's font renderer merely to discard pixels.
+                        if let Some((top, bottom)) = vertical_ink
+                        {
+                            let baseline = i32::from(baseline.v) + i32::from(canvas.origin().v);
+                            let top = baseline + top;
+                            let bottom = baseline + bottom;
+                            if top >= i32::from(canvas.clip().bottom)
+                               || bottom <= i32::from(canvas.clip().top)
+                            {
+                                return;
+                            }
+                        }
                         let _ = fonts.draw(fonts_service::selection(*font),
                                            canvas,
                                            *baseline,

@@ -35,9 +35,10 @@ scaled to the whole resource; the first and last rows remain reachable.
 Structured/icon previews have a 32 KiB display limit; larger resources remain
 available as hex and export completely. Inspection never executes code.
 
-The native System executable is **RV64 resource 0**, containing a little-endian
-RISC-V ELF64 image, rather than a classic CODE resource. Native RV64 (and CODE
-containing a valid RV64 ELF) defaults to disassembly in Monaco 9. The code viewer's
+The native System executable is **RV64 resource 0**, containing the compact
+RV64 segment stream, rather than a classic CODE resource. Native RV64 and native
+envelopes in every registered code family (WDEF, CDEF, MDEF, LDEF, CODE, INIT,
+DRVR, PACK and others) default to disassembly in Monaco 9. The code viewer's
 Hex Dump and Disassembly radio buttons switch views and return to the top. These
 are standard CDEF0 radio controls, including press/leave/release cancellation;
 Disassembly is disabled for non-RV64 code. There is no View menu.
@@ -49,18 +50,20 @@ controls, content, mouse input and keyboard behavior. Implementations live in
 Viewers share optional metadata and scrolling helpers, rather than a fixed
 browser-owned header or format switch.
 
-The instruction viewer decodes only file-backed executable PT_LOAD segments,
-using linked virtual addresses and skipping data segments and the ELF header.
+The instruction viewer decodes only executable segment bytes, using linked
+addresses and skipping non-executable data and all resource metadata.
 It supports compressed and regular instructions, discontinuous executable
 segments, unknown encodings and truncated final instructions. A bounded sparse
 index and 4 KiB read cache support arbitrary scrolling without decoding from
 the beginning on every repaint. The allocation-free parser accepts up to 256
-program headers; malformed or unsupported images fall back to hex. The decoder
+segment records; malformed or unsupported images fall back to hex. The decoder
 is [disc-v 0.1.3](https://github.com/swenson/disc-v), `no_std`, with vector and
 vendor table features disabled; it requires no application allocator.
 
-The code preview starts with the entry point, NABI version/role/load range and
-RLOC patch count. These are linked addresses, not an attached running process's
+The code viewer keeps the entry point, NABI version/role/load range and RLOC
+patch count fixed above the scroll box. Only bytes or instructions scroll.
+Embedded definitions read their own NABI/RLOC envelope, not the enclosing
+System descriptor. These are linked addresses, not an attached running process's
 relocated addresses. Select NABI for its descriptor or RLOC for a separately
 scrollable list of offsets and 32/64-bit pointer widths. System has no RLOC:
 it is fixed-linked. Relocatable applications carry RLOC alongside RV64/NABI.
@@ -147,7 +150,7 @@ cargo xtask check
 Coverage includes all resource fields and both forks, malformed maps, invalid
 code that must never execute, unusual type/name bytes, payloads over 1 MiB,
 original icon hashes, actual icon pixels, Monaco hex/disassembly pixels,
-compressed instruction/checkpoint boundaries, malformed ELF and full-range
+compressed instruction/checkpoint boundaries, malformed segment streams and full-range
 scrolling through native CDEFs, cached-row pixel equivalence, radio control
 press/cancel/select pixels, timed one-row fill-and-commit, native saves extracted from a stopped
 private QEMU disk, archive rebuild, running-app inspection, filters, modal

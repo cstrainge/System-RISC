@@ -83,9 +83,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-code-resource"
+version = "0.1.0"
+
+[[package]]
 name = "mac-formats"
 version = "0.1.0"
 dependencies = [
+ "mac-code-resource",
  "mac-text",
 ]
 

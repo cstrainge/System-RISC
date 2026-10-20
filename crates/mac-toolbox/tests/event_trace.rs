@@ -46,6 +46,7 @@ fn physical_events_are_delivered_once_and_noop_activation_has_no_update_storm()
         assert_eq!(stage["quiescent"], true, "{} never reached a quiet gap", stage["name"]);
         assert_eq!(stage["overwritten"], 0, "bounded trace lost records: {}", stage["name"]);
         let log = stage["serial"].as_str().unwrap();
+        assert!(!log.contains("WM_STATE "), "{}: input path wrote UART state logs", stage["name"]);
         for marker in ["SYSTEM_PANIC", "SYSTEM_TRAP:", "SYSTEM_ALLOCATION_FAILED", "_ERROR"]
         {
             assert!(!log.contains(marker), "{}: {log}", stage["name"]);
@@ -90,6 +91,32 @@ fn physical_events_are_delivered_once_and_noop_activation_has_no_update_storm()
                             .iter()
                             .any(|r| matches!(r[2].as_u64(), Some(2 | 4 | 7))),
             "idle Finder generated events or full-screen compositions");
+    let motion = stage("pointer-motion")["records"].as_array().unwrap();
+    assert!(!motion.iter().any(|r| r[2] == 7),
+            "cursor motion must not replay window content or the desktop");
+    let copies: Vec<_> = motion.iter().filter(|r| r[2] == 14).collect();
+    assert!(!copies.is_empty(), "cursor movement was never presented");
+    for copy in copies
+    {
+        assert!(copy[5].as_u64().unwrap() <= 16 * 16,
+                "cursor-only presentation copied outside old/new cursor bounds: {copy}");
+        let start = copy[6].as_u64().unwrap();
+        let end = copy[7].as_u64().unwrap();
+        assert!((end >> 32) - (start >> 32) <= 16
+                && (end & 0xffff_ffff) - (start & 0xffff_ffff) <= 16,
+                "cursor-only copy exceeded cursor dimensions: {copy}");
+    }
+    let before = &stage("pointer-motion")["state_before"];
+    let after = &stage("pointer-motion")["state_after"];
+    for field in ["scene_rev", "compositions", "menu_paints"]
+    {
+        assert_eq!(before[field], after[field], "cursor motion changed {field}");
+    }
+    assert_ne!(before["input_seq"], after["input_seq"], "physical input was not acknowledged");
+    let drag = stage("drag-editor");
+    assert_ne!(drag["state_before"]["compositions"], drag["state_after"]["compositions"]);
+    assert_eq!(drag["state_before"]["menu_paints"], drag["state_after"]["menu_paints"],
+               "unchanged menu bar was rerasterized while tracking a window");
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&serde_json::json!({
         "status":"passed", "scenarios":stages.len(), "assertion_owner":"mac-toolbox/tests/event_trace.rs",
         "scope":"Real SDK application consumption; no repeated text delivery or no-op activation damage",

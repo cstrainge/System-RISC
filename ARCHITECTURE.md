@@ -47,15 +47,17 @@ Finder. Background applications retain independently scheduled execution.
 Original presentation and actual multi-app input behavior have their own
 [launch-slice acceptance gate](TOOLBOX-PLAN.md#first-native-application-launch-slice).
 
-The loader validates APPL NABI/RV64 resources and ELF segments. System and
-independently loaded definitions retain fixed ranges; Finder owns
+The loader validates NABI descriptors, compact RV64 segment streams and RLOC
+patches. ELF is confined to build-time extraction. System retains its fixed board
+reservation; independently loaded definitions relocate into a disjoint module
+pool, and Finder owns
 `0x81000000..0x82000000`. Native application manifests specify preferred ranges.
-The image registry reserves each application's actual page-aligned extent and
+The image registry reserves each application's full declared page-aligned span and
 can relocate new `RLOC` packages into a free span in `0x83000000..0x87000000`.
 All pointer patches validate before destination memory is written. Different
 files get separate code/data/BSS, including copies of the same executable.
 An eight-slot immutable image cache includes Finder; relaunch of a stopped file
-resets its segments. Launch of a running volume/CNID activates its existing
+zeros its reservation and restores its segments. Launch of a running volume/CNID activates its existing
 process. This does not provide MMU isolation, hot replacement, general dynamic
 linking or original68k translation. Native code remains trusted shared M-mode.
 
@@ -166,6 +168,37 @@ raster snapshots, pixel shifting and repeat timing. The thin controls SDK
 supplies exposed rows and pumps tracking events. Viewport double buffers and
 compositor caches share a bounded budget. See `docs/SCROLL_BOX.md` and
 `analysis/desktop-compositor.md` at the repository root.
+
+Stable window content commits accumulate exact local damage, intersect it with
+the Window Manager's visible fragments, and replay only through those clips.
+Scroll boxes damage their viewport and CDEF scrollbar, including previous bounds
+when moved or disposed. Standard controls damage their own bounds. EndUpdate
+publishes the window content area without invalidating other windows or chrome.
+Definition-owned grow adornments remain above content and respect both damage
+and application clipping. Structural scene changes still use the full compositor;
+they must not be requested for ordinary content updates or cursor activity.
+
+The compositor's backing scene contains no cursor pixels. A 16x16 save-under
+temporarily holds the pixels covered by the cursor while presenting its overlay,
+then restores the backing scene. Motion, shape/visibility changes and animation
+publish only old/new cursor rectangles without scene replay. Scene damage under
+a cursor updates its backing pixels before compositing the current cursor.
+The opt-in event trace records the actual framebuffer-copy rectangles, enabling
+public SDK tests to reject cursor-triggered scene replays and scroll damage
+outside the viewport/bar rather than relying only on unchanged screenshots.
+
+Scene revision advances on composition, independently of physical input and
+cursor presentation. Ordinary input does not write UART state messages. Test
+transports read a System-owned atomic UI observer through QMP physical-memory
+inspection; its separate input sequence acknowledges consumption, and its
+sequence lock rejects snapshots overlapping publication without pausing the
+guest. This adds no application trap. An unchanged foreground menu bar is a
+cached layer keyed by application and menu selection; menu/resource changes and
+application-menu refresh invalidate it. Its fixed 53 KiB reservation is deducted
+from the shared compositor budget. Popups remain separate definition-owned
+overlays. Observer counters expose scene compositions and menu-bar rasterizations
+so SDK trace acceptance checks that cursor motion changes neither and that
+window tracking reuses the unchanged bar.
 
 ## Application-local namespaces
 

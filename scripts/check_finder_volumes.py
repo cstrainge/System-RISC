@@ -4,6 +4,7 @@ import hashlib,json,os,re,struct,subprocess,time
 from pathlib import Path
 from PIL import Image,ImageChops
 import system7_vm as vm
+import system7_observer as observer
 ROOT=Path(__file__).resolve().parents[2]
 OUT=ROOT/'results/system7/finder-volumes'
 
@@ -59,8 +60,7 @@ def main():
  process,endpoint=vm.launch(OUT/'vm',extra_disks=[image]);serial=OUT/'vm/serial.log'
  def log():return serial.read_text(errors='replace')
  def state_now():
-  rows=[s for s in log().split('\n')[:-1]if s.startswith('WM_STATE ')]
-  return dict(v.split('=',1)for v in rows[-1].split()[1:])if rows else{}
+  return observer.read(endpoint, serial)
  def wait(predicate,name):
   deadline=time.monotonic()+10
   while time.monotonic()<deadline:
@@ -76,12 +76,12 @@ def main():
   previous=log().count("FINDER_CLICK_HANDLED")
   move(x,y)
   for down in [True,False]:
-   before=int(state_now()['rev']);send([{'type':'btn','data':{'button':'left','down':down}}]);wait(lambda s:int(s.get('rev','0'))>before,'button')
+   before=int(state_now()['input_seq']);send([{'type':'btn','data':{'button':'left','down':down}}]);wait(lambda s:int(s.get('input_seq','0'))>before,'button')
   if handled:wait(lambda s:log().count('FINDER_CLICK_HANDLED')>previous,'Finder handles click')
  def key(code,ctrl=False):
   def k(code,down):return{'type':'key','data':{'key':{'type':'qcode','data':code},'down':down}}
   events=([k('ctrl',True)]if ctrl else[])+[k(code,True),k(code,False)]+([k('ctrl',False)]if ctrl else[])
-  before=int(state_now()['rev']);send(events);wait(lambda s:int(s.get('rev','0'))>=before+len(events),'keyboard')
+  before=int(state_now()['input_seq']);send(events);wait(lambda s:int(s.get('input_seq','0'))>=before+len(events),'keyboard')
  def screenshot(name):
   move(16,460);time.sleep(.05);p=OUT/(name+'.png');vm.qmp('screendump',{'filename':str(p),'format':'png'},endpoint);return Image.open(p).convert('RGB')
  def compare(name,native,reference,rect,expected_rect):
@@ -127,9 +127,9 @@ def main():
   # vertical cap have identical original pixels after translation to new bounds.
   ready=log().count(f'FINDER_FOLDER_READY window={parent_id}')
   move(423,245)
-  revision=int(state_now()['rev']);send([{'type':'btn','data':{'button':'left','down':True}}]);wait(lambda s:int(s.get('rev','0'))>revision,'begin resize')
+  revision=int(state_now()['input_seq']);send([{'type':'btn','data':{'button':'left','down':True}}]);wait(lambda s:int(s.get('input_seq','0'))>revision,'begin resize')
   move(487,297)
-  revision=int(state_now()['rev']);send([{'type':'btn','data':{'button':'left','down':False}}]);wait(lambda s:int(s.get('rev','0'))>revision,'end resize')
+  revision=int(state_now()['input_seq']);send([{'type':'btn','data':{'button':'left','down':False}}]);wait(lambda s:int(s.get('input_seq','0'))>revision,'end resize')
   wait(lambda s:log().count(f'FINDER_FOLDER_READY window={parent_id}')>ready,'Finder redraws resized window')
   resized=screenshot('native-resized')
   compare('resized-scrollbar-and-grow',resized,'reference-large-icons-normal',(477,271,493,303),(397,203,413,235))

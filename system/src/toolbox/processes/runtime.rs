@@ -52,7 +52,7 @@ impl Desktop
 
     pub(super) fn observe_cursor_motion(&mut self, point: Point)
     {
-        self.redraw |= self.cursors.mouse_moved(point);
+        self.cursor_dirty |= self.cursors.mouse_moved(point);
         for local in &mut self.locals
         {
             local.cursors.mouse_moved(point);
@@ -75,7 +75,7 @@ impl Desktop
                 .find(|local| local.id == self.foreground)
                 .is_some_and(|local| local.cursors.animation_tick(now))
         };
-        self.redraw |= changed;
+        self.cursor_dirty |= changed;
         changed
     }
 
@@ -316,6 +316,7 @@ impl Desktop
 
     fn refresh_app_menu(&mut self)
     {
+        self.menu_cache.invalidate();
         let entries: Vec<_> = self.processes
                                   .entries
                                   .iter()

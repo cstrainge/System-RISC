@@ -20,6 +20,15 @@ pub struct Drawing
 }
 impl Drawing
 {
+    pub fn bounds(&self) -> Rect
+    {
+        match &self.state
+        {
+            State::Standard(s) => s.bounds,
+            State::Scrollbar(s) => s.bounds
+        }
+    }
+
     pub fn storage(&self) -> usize
     {
         core::mem::size_of::<Self>()
@@ -35,7 +44,20 @@ impl Drawing
 
     pub fn paint(&self, canvas: &mut Canvas)
     {
+        let mut bounds = self.bounds();
+        bounds.offset(canvas.origin().h, canvas.origin().v);
+        let mut clip = Rect::ZERO;
+        if !crate::toolbox::quickdraw::geometry::sect_rect(bounds, canvas.clip(), &mut clip)
+        {
+            return;
+        }
+        let previous = canvas.clip();
+        clip.offset(-canvas.origin().h, -canvas.origin().v);
+        canvas.set_clip(clip);
         let _ = self.paint_checked(canvas);
+        let mut restore = previous;
+        restore.offset(-canvas.origin().h, -canvas.origin().v);
+        canvas.set_clip(restore);
     }
 
     fn paint_checked(&self, canvas: &mut Canvas) -> Result<(), Status>

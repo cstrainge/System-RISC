@@ -5,9 +5,10 @@ use super::*;
 #[derive(Default)]
 pub struct CodeViewer
 {
-    key:   Option<ResourceKey>,
-    index: Option<super::super::code::Index>,
-    hex:   bool
+    key:    Option<ResourceKey>,
+    index:  Option<super::super::code::Index>,
+    hex:    bool,
+    source: Option<super::super::code::Source>
 }
 impl CodeViewer
 {
@@ -50,9 +51,16 @@ impl Viewer for CodeViewer
         {
             self.key = Some(ctx.item.info.key);
             ctx.system.quickdraw().cursors().set_standard(StandardCursor::Watch)?;
-            self.index = super::super::code::Index::build(ctx.item.info.length, |at, out| {
-                             ctx.file.read(ctx.item.info.key, at, out)
-                         }).ok();
+            self.source = super::super::code::Source::open(ctx.file, ctx.item.info.key,
+                                                           ctx.item.info.length).ok();
+            self.index = self.source.as_ref().and_then(|source| {
+                                                 super::super::code::Index::build(source.length,
+                                                                         &source.descriptor,
+                                                                         |at, out| {
+                                                                             source.read(ctx.file,
+                                                                                         at, out)
+                                                                         }).ok()
+                                             });
             self.hex = self.index.is_none();
             ctx.system.quickdraw().cursors().init()?;
         }
@@ -64,9 +72,42 @@ impl Viewer for CodeViewer
         }
         else
         {
-            self.index.as_ref().unwrap().rows.saturating_add(super::super::code::HEADER_ROWS)
+            self.index.as_ref().unwrap().rows
         };
-        let view = ctx.prepare(count, HEX_FONT)?;
+        // The immutable loader header is outside the managed scroll viewport.
+        let header_height = super::super::code::HEADER_ROWS as i16 * 14;
+        let mut row = 0;
+        let mut error = None;
+        if let Some(source) = &self.source
+        {
+            super::super::code::loader(ctx.file, source, |line| {
+                if let Err(e) =
+                    ctx.system.quickdraw().graphics(ctx.window).text(HEX_FONT,
+                                                                     Point { h: ctx.area.left + 4,
+                                                                             v: ctx.area.top
+                                                                                + 93
+                                                                                + row * 14 },
+                                                                     line,
+                                                                     0)
+                {
+                    error = Some(e);
+                }
+                row += 1;
+            });
+        }
+        else
+        {
+            ctx.text(4, 93, "Legacy code: hex only")?;
+        }
+        if let Some(e) = error
+        {
+            return Err(e);
+        }
+        let mut spec = ctx.spec(count, HEX_FONT);
+        spec.viewport.top += header_height;
+        spec.scrollbar.top += header_height;
+        ctx.control.configure(spec)?;
+        let view = ctx.control.invalidate()?;
         self.fill(ctx, view.missing.clone())?;
         ctx.control.draw()?;
         Ok(view)
@@ -79,31 +120,17 @@ impl Viewer for CodeViewer
             return hex::HexViewer.fill(ctx, rows);
         }
         let index = self.index.as_ref().ok_or(Error(BAD_ARGUMENT))?;
-        let header = super::super::code::HEADER_ROWS;
+        let source = self.source.as_ref().ok_or(Error(BAD_ARGUMENT))?;
+        let mut row = rows.start;
         let mut error = None;
-        let mut emit = |row, line: &str| {
-            if rows.contains(&row)
-               && let Err(e) = ctx.row(row, line)
-            {
-                error = Some(e);
-            }
-        };
-        if rows.start < header
-        {
-            let mut row = 0;
-            super::super::code::loader(ctx.file, index.entry, |line| {
-                emit(row, line);
-                row += 1;
-            });
-        }
-        let first = rows.start.saturating_sub(header);
-        let end = rows.end.saturating_sub(header);
-        let mut row = header + first;
-        index.lines(first,
-                    end - first,
-                    |at, out| ctx.file.read(ctx.item.info.key, at, out),
+        index.lines(rows.start,
+                    rows.end - rows.start,
+                    |at, out| source.read(ctx.file, at, out),
                     |line| {
-                        emit(row, line);
+                        if let Err(e) = ctx.row(row, line)
+                        {
+                            error = Some(e);
+                        }
                         row += 1;
                     })?;
         if let Some(e) = error
@@ -139,6 +166,15 @@ impl Viewer for CodeViewer
                     ctx.system
                        .controls()
                        .draw_standard_state(ctx.window, StandardKind::Radio, state)?;
+                    // Present this animation state before acknowledging it. A
+                    // zero-mask poll preserves queued application events.
+                    ctx.system.events().wait_event(0, 0)?;
+                    let mut log = Text::<96>::new();
+                    let _ = writeln!(log,
+                                     "RESEDIT_RADIO_READY hex={} pressed={}",
+                                     u32::from(hex),
+                                     state.highlighted);
+                    ctx.system.log(log.as_str()).map_err(Error)?;
                     highlight = Some(inside && down);
                 }
                 if !down
@@ -155,7 +191,14 @@ impl Viewer for CodeViewer
             }
             return Ok(Interaction::None);
         }
-        Ok(ctx.scroll_hit(point))
+        if ctx.control.info()?.spec.scrollbar.contains(point)
+        {
+            Ok(Interaction::Scroll(point))
+        }
+        else
+        {
+            Ok(Interaction::None)
+        }
     }
 
     fn mode(&self) -> &'static str

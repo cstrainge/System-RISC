@@ -4,7 +4,9 @@ use std::{fs::{self, File},
           time::{Duration, Instant}};
 
 use mac_build::{Result, error, package};
-use mac_formats::{macbinary, resource};
+use mac_formats::{macbinary,
+                  native::{Descriptor, image::LoadPlan},
+                  resource};
 use serde_json::{Value, json};
 
 use crate::{TARGET, Workspace, output, run};
@@ -22,7 +24,16 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
         let code = resources.iter()
                             .find(|r| r.kind == *b"RV64" && r.id == 0)
                             .ok_or_else(|| error("native executable missing"))?;
-        fs::write(out.join(format!("{name}.elf")), &code.data)?;
+        let descriptor = Descriptor::decode(&resources.iter()
+                                                      .find(|r| r.kind == *b"NABI" && r.id == 0)
+                                                      .ok_or_else(|| error("native ABI missing"))?
+                                                      .data)?;
+        let relocations =
+            resources.iter().find(|r| r.kind == *b"RLOC" && r.id == 0).map(|r| r.data.as_slice());
+        let plan = LoadPlan::new(&code.data, &descriptor, relocations, descriptor.load_base)?;
+        let mut memory = vec![0; plan.length()];
+        plan.write(&mut memory)?;
+        fs::write(out.join(format!("{name}.raw")), memory)?;
     }
     run(workspace.cargo()
                  .args(["build", "--locked", "--release", "--target", TARGET, "--target-dir"])
@@ -41,9 +52,13 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
            .args(["-display", "none", "-monitor", "none", "-nic", "none", "-serial"])
            .arg(format!("file:{}", serial.display()))
            .arg("-device")
-           .arg(format!("loader,file={}", out.join("System.elf").display()))
+           .arg(format!("loader,file={},addr={},force-raw=on",
+                        out.join("System.raw").display(),
+                        reports[0]["load_base"].as_u64().unwrap()))
            .arg("-device")
-           .arg(format!("loader,file={}", out.join("Finder.elf").display()))
+           .arg(format!("loader,file={},addr={},force-raw=on",
+                        out.join("Finder.raw").display(),
+                        reports[1]["load_base"].as_u64().unwrap()))
            .stdin(Stdio::null())
            .stdout(Stdio::null())
            .stderr(Stdio::from(File::create(&stderr)?));
@@ -78,5 +93,5 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
         }
     }
     print!("{log}");
-    Ok(json!({"status": "passed", "method": "RV64 ELF payloads extracted from MacBinary resource forks; QEMU generic loader plus a small ABI test harness", "qemu": output(Command::new("qemu-system-riscv64").arg("--version"))?, "serial": "build/system7/abi-smoke/serial.log", "harness_sha256": package::sha256(&fs::read(kernel)?), "checks": ["System entry publishes service table", "Finder calls System log service", "Finder rejects null and incompatible service tables", "System rejects incompatible BootInfo"], "disk_boot_tested": false, "userspace_conformance": {"source": "System7/crates/mac-toolbox/tests/conformance", "geometry_contracts": 20, "original_oval_records": 267, "original_handle_observations": 48, "original_pointer_observations": 3, "original_scrap_contracts": 18, "native_scrap_contracts": 17,  "transport": "public SDK through actual RV64 ECALL"}}))
+    Ok(json!({"status": "passed", "method": "Native segment resources validated and materialized by LoadPlan; QEMU raw-memory loader plus ABI test harness", "qemu": output(Command::new("qemu-system-riscv64").arg("--version"))?, "serial": "build/system7/abi-smoke/serial.log", "harness_sha256": package::sha256(&fs::read(kernel)?), "checks": ["System entry publishes service table", "Finder calls System log service", "Finder rejects null and incompatible service tables", "System rejects incompatible BootInfo"], "disk_boot_tested": false, "userspace_conformance": {"source": "System7/crates/mac-toolbox/tests/conformance", "geometry_contracts": 20, "original_oval_records": 267, "original_handle_observations": 48, "original_pointer_observations": 3, "original_scrap_contracts": 18, "native_scrap_contracts": 17,  "transport": "public SDK through actual RV64 ECALL"}}))
 }

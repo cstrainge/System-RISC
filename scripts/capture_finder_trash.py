@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import time
 import system7_vm as vm
+import system7_observer as observer
 
 
 def capture(output):
@@ -19,8 +20,7 @@ def capture(output):
     serial=state_dir/'serial.log'
     observations=[]
     def state():
-        lines=[line for line in serial.read_text(errors='replace').split('\n')[:-1] if line.startswith('WM_STATE ')]
-        return dict(field.split('=',1) for field in lines[-1].split()[1:]) if lines else {}
+        return observer.read(endpoint, serial)
     def wait(predicate):
         deadline=time.monotonic()+10
         while time.monotonic()<deadline:
@@ -34,14 +34,14 @@ def capture(output):
               {'type':'abs','data':{'axis':'y','value':(y*32767+478)//479}}])
         wait(lambda s:s.get('mouse')==f'{x},{y}')
     def button(down):
-        before=int(state()['rev']);send([{'type':'btn','data':{'button':'left','down':down}}])
-        wait(lambda s:int(s.get('rev','0'))>before)
+        before=int(state()['input_seq']);send([{'type':'btn','data':{'button':'left','down':down}}])
+        wait(lambda s:int(s.get('input_seq','0'))>before)
     def click(x,y):move(x,y);button(True);button(False);time.sleep(.12)
     def key(code,ctrl=False):
         def event(k,d):return {'type':'key','data':{'key':{'type':'qcode','data':k},'down':d}}
         sequence=([event('ctrl',True)] if ctrl else [])+[event(code,True),event(code,False)]+([event('ctrl',False)] if ctrl else [])
-        before=int(state()['rev']);send(sequence)
-        wait(lambda s:int(s.get('rev','0'))>=before+len(sequence));time.sleep(.25)
+        before=int(state()['input_seq']);send(sequence)
+        wait(lambda s:int(s.get('input_seq','0'))>=before+len(sequence));time.sleep(.25)
     def snapshot(name):
         time.sleep(.2);path=output/(name+'.ppm');vm.qmp('screendump',{'filename':str(path)},endpoint)
         observations.append({'name':name,'frame':path.name,'state':state(),'log':serial.read_text(errors='replace')})

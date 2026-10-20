@@ -265,6 +265,17 @@ impl Manager
 
     pub fn draw(&self, canvas: &mut Canvas)
     {
+        self.draw_bar(canvas);
+        self.draw_popup(canvas);
+    }
+
+    pub fn selected_menu(&self) -> Option<i16>
+    {
+        self.active.map(|index| self.menus[index].state.menu_id)
+    }
+
+    pub fn draw_bar(&self, canvas: &mut Canvas)
+    {
         canvas.reset_port();
         if self.menus.is_empty()
         {
@@ -282,6 +293,11 @@ impl Manager
             let mut surface = Surface::from_canvas(canvas);
             self.call(&mut state, DRAW_BAR, 0, &mut surface);
         }
+    }
+
+    pub fn draw_popup(&self, canvas: &mut Canvas)
+    {
+        canvas.reset_port();
         if let Some(index) = self.active
         {
             let mut state = *self.menus[index].state;

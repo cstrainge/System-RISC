@@ -101,17 +101,8 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     let editor_state = |name: &str| {
         prefix(name).lines().rev().find(|line| line.starts_with("FINDER_TEXTEDIT_STATE ")).unwrap()
     };
-    let front = |name: &str| {
-        prefix(name).lines()
-                    .rev()
-                    .find(|line| line.starts_with("WM_STATE "))
-                    .unwrap()
-                    .split_whitespace()
-                    .find_map(|field| field.strip_prefix("front="))
-                    .unwrap()
-                    .parse::<u32>()
-                    .unwrap()
-    };
+    let front =
+        |name: &str| observation(name)["state"]["front"].as_str().unwrap().parse::<u32>().unwrap();
     assert!(prefix("applications-folder").contains(" name=Applications\n"));
     let fixture: Value =
         serde_json::from_slice(&fs::read(output.join("icon-fixture.json")).unwrap()).unwrap();

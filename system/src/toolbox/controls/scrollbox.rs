@@ -50,6 +50,11 @@ pub struct Drawing
 }
 impl Drawing
 {
+    pub fn bounds(&self) -> [Rect; 2]
+    {
+        [self.bounds, self.bar.bounds()]
+    }
+
     pub fn storage(&self) -> usize
     {
         self.raster.pixels.capacity() * 4 + self.raster.valid.capacity() + self.bar.storage()

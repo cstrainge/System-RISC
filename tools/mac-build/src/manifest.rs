@@ -393,7 +393,8 @@ impl Manifest
         let d = Descriptor { role,
                              abi_version: self.abi_version,
                              load_base: address(&self.load_base)?,
-                             load_limit: address(&self.load_limit)? };
+                             load_limit: address(&self.load_limit)?,
+                             entry: address(&self.load_base)? };
         if d.load_base & 4095 != 0 || d.load_limit & 4095 != 0
         {
             return Err(error("load reservations must be page aligned"));
@@ -444,16 +445,20 @@ impl Manifest
         let mut resources = Vec::new();
         if !self.archive
         {
+            let mut descriptor = self.descriptor()?;
+            let image = mac_formats::elf::decode(elf, descriptor.load_base, descriptor.load_limit)?;
+            descriptor.entry = image.entry;
+            let code = compact_code(elf, &image, &descriptor)?;
             resources.extend([Resource { kind:       *b"RV64",
                                          id:         0,
                                          name:       Some(b"Native executable".to_vec()),
                                          attributes: 0,
-                                         data:       elf.to_vec() },
+                                         data:       code },
                               Resource { kind:       *b"NABI",
                                          id:         0,
                                          name:       Some(b"Native ABI".to_vec()),
                                          attributes: 0,
-                                         data:       self.descriptor()?.encode()?.to_vec() }]);
+                                         data:       descriptor.encode()?.to_vec() }]);
             let mut version = version_header(&self.cargo_version)?.to_vec();
             version.extend(text::pstring(&self.cargo_version)?);
             version.extend(text::pstring(&self.description)?);
@@ -553,16 +558,20 @@ impl Manifest
                                       load_limit } =>
                 {
                     let source = path.parent().unwrap().join(source);
-                    let stripped = source.with_extension("runtime.elf");
-                    crate::package::strip_runtime(&source, &stripped)?;
-                    let code = fs::read(stripped)?;
-                    let descriptor = Descriptor { role:        Role::CodeResource,
-                                                  abi_version: self.abi_version,
-                                                  load_base:   address(load_base)?,
-                                                  load_limit:  address(load_limit)? };
-                    mac_formats::elf::decode(&code, descriptor.load_base, descriptor.load_limit)?;
+                    let elf = fs::read(&source)?;
+                    let mut descriptor = Descriptor { role:        Role::CodeResource,
+                                                      abi_version: self.abi_version,
+                                                      load_base:   address(load_base)?,
+                                                      load_limit:  address(load_limit)?,
+                                                      entry:       address(load_base)? };
+                    let image = mac_formats::elf::decode(&elf, descriptor.load_base,
+                                                         descriptor.load_limit)?;
+                    descriptor.entry = image.entry;
+                    let relocations = mac_formats::elf::relocation::extract(&elf, &image, descriptor.load_base)?
+                        .ok_or_else(|| error("definition requires relocation-capable linking"))?;
                     let mut payload = descriptor.encode()?.to_vec();
-                    payload.extend(code);
+                    payload.extend(compact_code(&elf, &image, &descriptor)?);
+                    payload.extend(relocations);
                     payload
                 }
             };
@@ -579,6 +588,21 @@ impl Manifest
     }
 }
 
+fn compact_code(bytes: &[u8], image: &mac_formats::elf::Image, descriptor: &Descriptor)
+                -> Result<Vec<u8>>
+{
+    Ok(mac_formats::native::image::encode(descriptor,
+                                          image.segments.iter().map(|s| {
+                                                                   (s.address
+                                                                    - descriptor.load_base,
+                                                                    s.flags,
+                                                                    &bytes[s.offset as usize
+                                                                           ..(s.offset
+                                                                              + s.file_size)
+                                                                             as usize])
+                                                               }))?)
+}
+
 #[cfg(test)]
 mod tests
 {
@@ -588,12 +612,33 @@ mod tests
         Manifest::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../finder/resources.json")).unwrap()
     }
 
+    fn elf_fixture() -> Vec<u8>
+    {
+        let mut b = vec![0; 124];
+        b[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        b[16..18].copy_from_slice(&2u16.to_le_bytes());
+        b[18..20].copy_from_slice(&243u16.to_le_bytes());
+        b[20..24].copy_from_slice(&1u32.to_le_bytes());
+        b[24..32].copy_from_slice(&0x81000000u64.to_le_bytes());
+        b[32..40].copy_from_slice(&64u64.to_le_bytes());
+        b[52..54].copy_from_slice(&64u16.to_le_bytes());
+        b[54..56].copy_from_slice(&56u16.to_le_bytes());
+        b[56..58].copy_from_slice(&1u16.to_le_bytes());
+        b[64..68].copy_from_slice(&1u32.to_le_bytes());
+        b[68..72].copy_from_slice(&5u32.to_le_bytes());
+        b[72..80].copy_from_slice(&120u64.to_le_bytes());
+        b[80..88].copy_from_slice(&0x81000000u64.to_le_bytes());
+        b[88..96].copy_from_slice(&0x81000000u64.to_le_bytes());
+        b[96..104].copy_from_slice(&4u64.to_le_bytes());
+        b[104..112].copy_from_slice(&8u64.to_le_bytes());
+        b
+    }
     #[test]
     fn compiles_real_menu_strings_and_version()
     {
         let m = manifest();
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../finder/resources.json");
-        let resources = m.compile_resources(&path, b"ELF").unwrap();
+        let resources = m.compile_resources(&path, &elf_fixture()).unwrap();
         let menu = &resources.iter().find(|r| r.kind == *b"MENU" && r.id == 1252).unwrap().data;
         assert_eq!(&menu[..2], &1252i16.to_be_bytes());
         assert_eq!(&menu[12..17], b"\x04File");
@@ -605,7 +650,7 @@ mod tests
         assert!(m.rust_ids().contains("FILE_MENU"));
         let mut m = manifest();
         m.cargo_version = "12.3.4".into();
-        let resources = m.compile_resources(&path, b"ELF").unwrap();
+        let resources = m.compile_resources(&path, &elf_fixture()).unwrap();
         let vers = &resources.iter().find(|r| r.kind == *b"vers").unwrap().data;
         assert_eq!(&vers[..2], &[0x12, 0x34]);
     }
@@ -628,7 +673,7 @@ mod tests
         }
         let mut manifest = manifest();
         manifest.cargo_version = "12.3.4-beta.2+build.2026".into();
-        let resources = manifest.compile_resources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../finder/resources.json"), b"ELF").unwrap();
+        let resources = manifest.compile_resources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../finder/resources.json"), &elf_fixture()).unwrap();
         let vers = &resources.iter().find(|r| r.kind == *b"vers").unwrap().data;
         assert_eq!(&vers[..6], &[0x12, 0x34, 0x60, 2, 0, 0]);
         assert_eq!(&vers[7..7 + vers[6] as usize], b"12.3.4-beta.2+build.2026");

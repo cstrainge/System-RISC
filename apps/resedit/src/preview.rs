@@ -26,13 +26,7 @@ pub fn structured(kind: [u8; 4], data: &[u8], mut line: impl FnMut(&str)) -> Res
     {
         b"NABI" =>
         {
-            if data.len() != 32
-               || &data[..4] != b"RVN1"
-               || word(data, 4)? != 1
-               || data[12..16] != [0; 4]
-            {
-                return Err(BAD_ARGUMENT);
-            }
+            mac_code_resource::Descriptor::decode(data).map_err(|_| BAD_ARGUMENT)?;
             let role = match word(data, 6)?
             {
                 1 => "System",
@@ -45,7 +39,7 @@ pub fn structured(kind: [u8; 4], data: &[u8], mut line: impl FnMut(&str)) -> Res
                            "Native ABI: {} ({role})",
                            u32::from_be_bytes(data[8..12].try_into().map_err(|_| BAD_ARGUMENT)?));
             line(text.as_str());
-            for (label, at) in [("Load base", 16), ("Load limit", 24)]
+            for (label, at) in [("Load base", 16), ("Load limit", 24), ("Entry", 32)]
             {
                 let mut text = Text::<128>::new();
                 let _ = write!(text,

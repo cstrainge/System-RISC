@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 
 import system7_vm as vm
+import system7_observer as observer
 
 
 def check_events(endpoint, serial_path, results):
@@ -13,9 +14,7 @@ def check_events(endpoint, serial_path, results):
     records = []
 
     def state():
-        lines = [line for line in serial_path.read_text(errors='replace').split('\n')[:-1]
-                 if line.startswith('WM_STATE ')]
-        return dict(field.split('=', 1) for field in lines[-1].split()[1:]) if lines else {}
+        return observer.read(endpoint, serial_path)
 
     def wait(predicate, description):
         deadline = time.monotonic() + 5
@@ -41,9 +40,9 @@ def check_events(endpoint, serial_path, results):
         wait(lambda s: s['mouse'] == f'{x},{y}', 'absolute pointer motion')
 
     def button(down):
-        before = int(state()['rev'])
+        before = int(state()['input_seq'])
         send([{'type': 'btn', 'data': {'button': 'left', 'down': down}}])
-        wait(lambda s: int(s['rev']) > before, 'button transition')
+        wait(lambda s: int(s['input_seq']) > before, 'button transition')
 
     def click(x, y):
         move(x, y)
@@ -57,14 +56,14 @@ def check_events(endpoint, serial_path, results):
         button(False)
 
     def key(code, modifiers=()):
-        before = int(state()['rev'])
+        before = int(state()['input_seq'])
         def transition(value, down):
             return {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': value}, 'down': down}}
         events = [transition(mod, True) for mod in modifiers]
         events.extend([transition(code, True), transition(code, False)])
         events.extend(transition(mod, False) for mod in reversed(modifiers))
         send(events)
-        wait(lambda s: int(s['rev']) >= before + len(events), 'keyboard transition')
+        wait(lambda s: int(s['input_seq']) >= before + len(events), 'keyboard transition')
 
     def screenshot(name):
         path = (results / name).resolve()
@@ -233,9 +232,9 @@ def check_events(endpoint, serial_path, results):
         passed('desktop volume root closes cleanly',window_count(0,0))
         key('a',('shift',))
         passed('shifted keyboard event carries uppercase character',lambda s:s['key']=='65' and s['windows']=='1')
-        before=int(state()['rev'])
+        before=int(state()['input_seq'])
         for _ in range(70):key('a')
-        passed('virtqueue descriptors recycle beyond one ring without event drops',lambda s:int(s['rev'])>=before+140 and s['dropped']=='0')
+        passed('virtqueue descriptors recycle beyond one ring without event drops',lambda s:int(s['input_seq'])>=before+140 and s['dropped']=='0')
         key('n');key('n')
         passed('repeated N selects one real root alongside About',window_count(2))
         key('q')

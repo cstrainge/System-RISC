@@ -5,64 +5,110 @@ big-endian resource header, data area, map, type/reference lists and Pascal name
 The data fork is currently empty. Host transport uses MacBinary II with a valid
 CRC-16/XMODEM header and 128-byte fork padding. File/resource names use Mac Roman.
 
-The complete executable ELF is resource `'RV64'` ID 0. A companion `'NABI'`
-resource ID 0 has exactly 32 bytes, all numeric fields big endian:
+Native executables use an `'RV64'` resource ID 0 and a companion `'NABI'`
+resource ID 0. The unreleased format is **version 1**. ELF is a build-time input,
+never a runtime resource container. The old unreleased ELF-backed layout is
+replaced, not supported by a second decoder. Rebuild ROM, System, Finder,
+applications and definitions together when this contract changes.
+
+## NABI descriptor
+
+NABI has exactly 40 bytes. All numeric fields are big endian:
 
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | Magic `RVN1` |
-| 4 | 2 | Container format version, currently 1 |
+| 4 | 2 | Format version: 1 |
 | 6 | 2 | Role: 1 = resident System, 2 = application, 3 = code resource |
-| 8 | 4 | Native System service ABI version, currently 6 |
+| 8 | 4 | Native System service ABI version: 6 |
 | 12 | 4 | Reserved, must be zero |
-| 16 | 8 | Inclusive load reservation base |
-| 24 | 8 | Exclusive load reservation limit |
+| 16 | 8 | Inclusive preferred load reservation base |
+| 24 | 8 | Exclusive preferred load reservation limit |
+| 32 | 8 | Linked entry point |
 
-The descriptor's version and ABI must be supported. The load reservation must
-fit available guest RAM and must not overlap the bootstrap, other resident
-images, stacks or heaps. The build verifies non-overlapping System/Finder
-reservations; an actual loader must check all resident allocations.
+The role, ABI and reservation meanings are unchanged. Entry is explicit because
+there is no ELF header at runtime. It must be even and lie inside initialized
+executable segment bytes. Versions, reserved fields, lengths, address overflows
+and roles are checked. The obsolete 32-byte NABI layout is rejected with a rebuild
+error. There is no fallback to ELF.
 
-For applications this is the preferred link envelope, not a process identity.
-New application packages add `RLOC` ID0, generated from `--emit-relocs` output
-before stripping. It contains `RLC1`, a little-endian u32 record count, and
-8-byte records: little-endian u32 offset from the preferred base, u8 pointer
-width (4 or8), and three zero bytes. Records are ordered and nonoverlapping;
-their sources must be initialized PT_LOAD bytes and linked pointer values must
-remain within the image extent. Count is bounded at65,536. Runtime validates
-all patches before copying segments or patching relocated pointers.
+## RV64 segment stream
 
-The packager accepts internal R_RISCV_32/64 absolute pointers and internal
-PC-relative calls/addressing/branches (16..19,23..25,44,45,57); literal absolute
-symbols remain literal. Other relocation types fail packaging. A linker marker
-`__system_risc_relocation_v1=1` distinguishes new builds; older fixed binaries
-receive no relocation capability. Kernel placement uses disjoint page-aligned
-actual image spans; a copied file can move to a free application span while
-preserving relative code references. Process identity remains volume plus CNID.
+The header is followed immediately by interleaved segment records and bytes.
+All metadata is big endian; machine instructions/data retain their original byte
+order. There are no alignment paddings, section tables, ELF/program headers,
+symbol tables, dynamic-link metadata, BSS payloads or trailing bytes.
 
-The ELF must be ELF64, little endian, System V ABI, `ET_EXEC`, `EM_RISCV`,
-version 1, with 64-byte ELF and 56-byte program headers. The initial contract
-allows only the RVC flag and the soft-float calling convention. Current Rust
-builds target RV64IMAC; the ELF header alone cannot verify every instruction
-extension. Dynamic linking, an interpreter and TLS are rejected. Native modules
-are linked with relaxation disabled to avoid dependence on per-image `gp` state.
+| Header offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | Magic `RV64` |
+| 4 | 2 | Format version: 1 |
+| 6 | 2 | Segment count, 1 through 256 |
 
-For each nonempty `PT_LOAD`, the loader must:
+Each record has this layout, relative to its start:
 
-1. Validate file offsets, sizes, alignment, flags and the complete memory range.
-   Physical and virtual addresses are equal in this initial identity-mapped
-   environment. Segments must not overlap and must fit the image reservation.
-2. Copy `p_filesz` bytes from `p_offset` to `p_vaddr`.
-3. Zero the remaining `p_memsz - p_filesz` bytes, including BSS.
-4. Synchronize instruction fetch before running newly copied code (`fence.i`
-   on the target machine), and enforce segment permissions when memory
-   protection is available. Writable/executable segments are rejected.
+| Record offset | Size | Field |
+| --- | --- | --- |
+| 0 | 8 | Destination offset from NABI load base |
+| 8 | 8 | Length of initialized bytes |
+| 16 | 4 | Permissions: R = 4, W = 2, X = 1 |
+| 20 | length | Raw initialized bytes |
 
-The ELF entry must be even and within file-backed executable segment data.
-Before calling it, supply a valid stack aligned to 16 bytes and establish the
-chosen privilege/trap environment. Module entry points are C functions, with
-their first argument in `a0` and return value in `a0`, called with a valid `ra`.
-They do not initialize CPU state, a stack, hardware or their own BSS.
+The next record begins at `20 + length`, without padding. Records are ordered by
+increasing destination offset, nonempty, nonoverlapping and entirely inside the
+NABI reservation. Unknown flag bits and W+X are rejected. Permissions describe
+intent; enforcing them awaits memory protection. BSS-only segments are omitted.
+Every byte of the reservation not supplied by a record is implicitly zero,
+including inter-segment gaps and trailing BSS through the reservation limit.
+
+The loader validates the entire stream and all relocation patches before writing
+RAM. It reserves the full declared span at a disjoint actual base, zeros that
+span, copies each record to `actual_base + offset`, applies RLOC, synchronizes
+instruction fetch (`fence.i`), and enters
+`actual_base + (NABI.entry - NABI.load_base)`. Zeroing precedes copies/patches so
+initialized data and relocated pointers survive. System uses its fixed board
+reservation; applications and definitions are independently relocatable.
+
+The build still links RV64IMAC ELF64 System V `ET_EXEC` binaries, validates them
+with `elf::decode`, and extracts only initialized PT_LOAD bytes. Dynamic linking,
+interpreters, TLS, unsupported machine/ABI flags, bad alignment and overlapping
+ELF segments fail packaging. Link relaxation remains disabled. Full debug ELFs
+and stripped host artifacts can remain in build output; none is stored in a
+runtime code resource. The segment stream is the intended output shape for a
+future 68k translator too; implementing that translator is outside this change.
+
+## RLOC and native definitions
+
+RLOC is unchanged: `RLC1`, a little-endian u32 count, then 8-byte records containing
+little-endian u32 offset from the preferred base, u8 pointer width (4 or 8), and
+three zero bytes. Count is bounded at 65,536. Records are ordered and
+nonoverlapping, patch sources must lie in initialized segment bytes, and linked
+pointer values must lie inside the declared reservation or equal its exclusive
+limit (a one-past-the-end pointer).
+Relocation changes absolute internal pointers; internal PC-relative references
+move unchanged. Invalid records reject the whole load before any writes.
+
+The packager accepts internal R_RISCV_32/64 pointers and internal PC-relative
+calls/addressing/branches (16..19,23..25,44,45,57). Other relocation kinds fail.
+Application and code-resource builds emit relocations and the linker marker
+`__system_risc_relocation_v1=1`. RLOC is required for both, including an empty
+8-byte table when no absolute pointers need patching; there is no fixed-module
+fallback. System is fixed-linked and has no RLOC.
+
+A native definition stays in its original type and ID (`WDEF`, `CDEF`, `MDEF`,
+`LDEF`, etc.). Its payload is **NABI descriptor + RV64 segment stream + RLOC**.
+The segment count/lengths determine exactly where RLOC starts; the RLOC count
+fixes the envelope's end. There is no nested resource fork or ELF suffix. The
+same decoder and relocation planner serve applications and definitions. Definition
+placement is independent of linked addresses; current System allocates its
+`0x82000000..0x83000000` module pool from the top down, and records actual ranges
+for collision checks. A definition's entry ABI and variation dispatch remain
+specific to its resource family. Translation routing remains unchanged.
+
+Before entry, provide a 16-byte-aligned stack and the established privilege/trap
+environment. Module entries are C functions, taking their first argument in
+`a0`, returning in `a0`, with valid `ra`. They do not initialize hardware, stacks
+or their own BSS. All native code remains trusted shared-address-space code.
 
 The exact shared structures are in
 [`crates/mac-abi`](crates/mac-abi/src/lib.rs). Entry/service tables and definition
@@ -140,21 +186,13 @@ identity when the application shadows a System ID. Resource reads copy into
 caller-provided storage. Resource pointers, native wire structures and UTF-8
 names are not substitutes for classic 68k Handle, GrafPort or MacRoman records.
 
-The separate QEMU ABI smoke harness tests this call sequence with executable payloads
-extracted from the generated resource forks. QEMU's ELF loader performs the
-memory loading for that test. The [boot ROM](bootrom/README.md) implements and
-tests the actual virtio/HFS/resource/ELF loading path separately. System performs
-Finder and definition-resource loading through its startup callback. The normal
-disk-boot checks wait for `DESKTOP_READY`, after Finder's first update events.
-
-Runtime ELF resources omit symbols and debug sections; full linked debug ELFs
-remain in the build output. Native executable definitions use a role-3 descriptor
-followed directly by ELF bytes inside their original resource type/ID, rather
-than a nested resource fork. See [CODE-RESOURCES.md](CODE-RESOURCES.md).
-
-These interfaces are an evolving native prototype. The structure-size checks
-reject older tables that lack required fields even while the prototype ABI
-version is 5. Rebuild ROM, System, Finder and definitions together.
+The separate QEMU ABI smoke harness materializes the exact packaged segment
+resources through the shared load planner into raw memory images. QEMU loads
+those raw reservations for the small ABI harness. The [boot ROM](bootrom/README.md)
+separately tests real virtio/HFS/resource/segment loading; System loads Finder and
+definition resources through its startup callback. Normal disk-boot checks wait
+for `DESKTOP_READY`. Rebuild the complete unreleased system on format changes.
+See [CODE-RESOURCES.md](CODE-RESOURCES.md) for executable resource families.
 
 ABI5 BootInfo adds optional write_sector and flush_disk callbacks to the storage
 contract introduced by ABI4. Its size is104bytes on RV64; SystemServices remains

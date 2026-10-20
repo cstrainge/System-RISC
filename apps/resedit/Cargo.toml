@@ -12,6 +12,7 @@ bench = false
 
 [dependencies]
 mac-toolbox.workspace = true
+mac-code-resource = { path = "../../crates/mac-code-resource" }
 mac-text = { path = "../../crates/mac-text" }
 
 disc-v = { version = "=0.1.3", default-features = false }

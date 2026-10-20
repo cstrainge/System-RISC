@@ -80,11 +80,22 @@ def main():
                     assert packed['MCMD',key[1]][2]==commands, f'command table changed: {name} {key}'
                 assert data==expected, f'payload changed: {name} {key}'
                 checked.append({'type':key[0],'id':key[1],'length':len(data),'sha256':sha(data)})
-            expected_abi=(b'RVN1'+struct.pack('>HHIIQQ',1,2,manifest['abi_version'],0,
-                                          int(manifest['load_base'],16),int(manifest['load_limit'],16)))
+            runtime=ROOT/'build/system7/dist'/(name+'.runtime.elf')
+            elf=runtime.read_bytes();entry=struct.unpack_from('<Q',elf,24)[0]
+            expected_abi=(b'RVN1'+struct.pack('>HHIIQQQ',1,2,manifest['abi_version'],0,
+                                          int(manifest['load_base'],16),int(manifest['load_limit'],16),entry))
             assert packed['NABI',0][2]==expected_abi, f'application ABI/reservation changed: {name}'
             runtime=ROOT/'build/system7/dist'/(name+'.runtime.elf')
-            assert packed['RV64',0][2]==runtime.read_bytes(), f'application executable fork differs: {name}'
+            # ELF exists only on the build host. Compare the exact initialized
+            # PT_LOAD bytes against the resource records, with no extra baggage.
+            phoff=struct.unpack_from('<Q',elf,32)[0];count=struct.unpack_from('<H',elf,56)[0]
+            segments=[]
+            for i in range(count):
+                kind,flags,offset,address,_,size,_,_=struct.unpack_from('<IIQQQQQQ',elf,phoff+i*56)
+                if kind==1 and size:segments.append((address-int(manifest['load_base'],16),flags,elf[offset:offset+size]))
+            segments.sort()
+            expected=b'RV64'+struct.pack('>HH',1,len(segments))+b''.join(struct.pack('>QQI',offset,len(data),flags)+data for offset,flags,data in segments)
+            assert packed['RV64',0][2]==expected, f'application segment fork differs: {name}'
             inventory=json.loads((ROOT/'build/system7/dist'/(name+'.json')).read_text())
             for entry in inventory['resources']:
                 key=entry['type'],entry['id']

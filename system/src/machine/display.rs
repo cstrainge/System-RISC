@@ -148,20 +148,43 @@ pub fn ticks() -> u64
 }
 pub fn present(back: &[u32])
 {
+    present_rects(back, [mac_abi::Rect::new(0, 0, WIDTH as i16, HEIGHT as i16)]);
+}
+
+/// Publish only damaged screen rectangles. The compositor keeps a cursor-free
+/// backbuffer and supplies the previous/new cursor bounds along with scene damage.
+pub fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_abi::Rect>)
+{
     assert_eq!(back.len(), PIXELS);
-    let started = crate::trace::clock();
     let front = addr_of_mut!(FRAMEBUFFER) as *mut u32;
-    // RAMFB is ordinary guest RAM, not a register aperture. The compositor is
-    // its sole writer; back and front are distinct, equally sized allocations.
-    // Copy in bulk and publish through the compiler/hardware fence below.
+    for rect in rects
+    {
+        let left = rect.left.clamp(0, WIDTH as i16) as usize;
+        let right = rect.right.clamp(0, WIDTH as i16) as usize;
+        let top = rect.top.clamp(0, HEIGHT as i16) as usize;
+        let bottom = rect.bottom.clamp(0, HEIGHT as i16) as usize;
+        if left >= right || top >= bottom
+        {
+            continue;
+        }
+        let started = crate::trace::clock();
+        for y in top..bottom
+        {
+            let at = y * WIDTH + left;
+            // RAMFB is ordinary guest RAM, exclusively written by the serialized
+            // compositor. Clamped row slices stay within both distinct buffers.
+            unsafe {
+                core::ptr::copy_nonoverlapping(back.as_ptr().add(at), front.add(at), right - left);
+            }
+        }
+        crate::trace::record(crate::trace::FRAME_COPY,
+                             crate::context::current_thread_context().identity().app.0,
+                             crate::trace::clock().wrapping_sub(started),
+                             ((right - left) * (bottom - top)) as u64,
+                             ((left as u64) << 32) | top as u64,
+                             ((right as u64) << 32) | bottom as u64);
+    }
     unsafe {
-        core::ptr::copy_nonoverlapping(back.as_ptr(), front, PIXELS);
         asm!("fence iorw, iorw", options(nostack));
     }
-    crate::trace::record(crate::trace::FRAME_COPY,
-                         crate::context::current_thread_context().identity().app.0,
-                         crate::trace::clock().wrapping_sub(started),
-                         PIXELS as u64,
-                         0,
-                         0);
 }

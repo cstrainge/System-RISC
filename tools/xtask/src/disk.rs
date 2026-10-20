@@ -143,7 +143,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
         {
             return Err(error(format!("HFS fork or metadata roundtrip failed for {name}")));
         }
-        if package::inspect(&fs::read(&extracted)?)?["elf_sha256"] != expected["elf_sha256"]
+        if package::inspect(&fs::read(&extracted)?)?["code_sha256"] != expected["code_sha256"]
         {
             return Err(error("extracted native executable differs"));
         }

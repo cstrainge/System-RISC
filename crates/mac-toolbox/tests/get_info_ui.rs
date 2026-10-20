@@ -134,12 +134,12 @@ fn editable_info_windows_persist_through_real_filesystem_commits_and_cold_boot()
             assert!(!serial.contains(failure), "unexpected{failure}:\n{serial}");
         }
         assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=6"));
-        assert!(!serial.lines()
-                       .filter(|line| line.starts_with("WM_STATE "))
-                       .any(|line| fields(line).get("dropped").is_some_and(|value| *value != "0")),
-                "events dropped during editing");
     }
     let observations = report["observations"].as_array().unwrap();
+    for observation in observations
+    {
+        assert_eq!(observation["state"]["dropped"], "0", "events dropped during editing");
+    }
     assert_eq!(observations.len(), 20);
     let observation = |name: &str| observations.iter().find(|row| row["name"] == name).unwrap();
     let image = |name: &str| frame(&output.join(observation(name)["frame"].as_str().unwrap()));

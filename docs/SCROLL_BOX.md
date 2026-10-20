@@ -50,6 +50,13 @@ compositor replays viewport blits directly instead of keeping a duplicate
 whole-window cache. Viewport double-buffer reserves and whole-window caches
 share a 2 MiB budget; allocation failures return `NO_MEMORY`.
 
+A stable DRAW damages only the viewport and scrollbar, never the parent window
+or neighboring controls. Moving/reconfiguring or disposing a published control
+also damages its previous bounds. The compositor clips replay to visible damage;
+fixed headers remain outside it, and bitmap text outside the damaged vertical
+span is rejected before glyph rendering. Cursor save-under is independent of
+the scroll-box raster.
+
 Current limits are 96 controls, dimensions up to 2048 pixels subject to that
 shared budget, a 16-pixel scrollbar, positive fixed row height, and 768 UTF8 bytes
 per supplied row. Apps may choose fonts, padding and normal/selected colors.

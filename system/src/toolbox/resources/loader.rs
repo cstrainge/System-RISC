@@ -5,8 +5,7 @@ use core::arch::asm;
 use mac_abi::{BAD_ARGUMENT, BootInfo, DefinitionEntry, NOT_FOUND, OK, Status};
 use mac_formats::{Error, Result,
                   code::{CodeRegistry, NoTranslator},
-                  elf,
-                  native::{Descriptor, Role},
+                  native::{Descriptor, Role, image},
                   resource::{self, Resource},
                   text};
 
@@ -37,7 +36,7 @@ pub fn read_startup(info: &BootInfo, name: &str) -> Result<Vec<u8>>
     Ok(output)
 }
 
-fn application_parts(resources: &[Resource]) -> Result<(Descriptor, &[u8], elf::Image)>
+fn application_parts(resources: &[Resource]) -> Result<(Descriptor, &[u8], image::Image)>
 {
     let descriptor = resources.iter()
                               .find(|r| r.kind == *b"NABI" && r.id == 0)
@@ -51,13 +50,13 @@ fn application_parts(resources: &[Resource]) -> Result<(Descriptor, &[u8], elf::
     let code = resources.iter()
                         .find(|r| r.kind == *b"RV64" && r.id == 0)
                         .ok_or(Error("application executable resource is missing"))?;
-    let image = elf::decode(&code.data, descriptor.load_base, descriptor.load_limit)?;
+    let image = image::decode(&code.data, &descriptor)?;
     Ok((descriptor, &code.data, image))
 }
 pub fn application_extent(resources: &[Resource]) -> Result<u64>
 {
-    let (descriptor, _, image) = application_parts(resources)?;
-    elf::relocation::span(&image, descriptor.load_base)
+    let (descriptor, _, _) = application_parts(resources)?;
+    Ok(descriptor.load_limit - descriptor.load_base)
 }
 pub fn application(resources: &[Resource]) -> Result<usize>
 {
@@ -66,77 +65,30 @@ pub fn application(resources: &[Resource]) -> Result<usize>
 }
 pub fn application_at(resources: &[Resource], destination: u64) -> Result<usize>
 {
-    let (descriptor, bytes, image) = application_parts(resources)?;
-    let extent = elf::relocation::span(&image, descriptor.load_base)?;
+    let (descriptor, bytes, _) = application_parts(resources)?;
+    let extent = descriptor.load_limit - descriptor.load_base;
     let end = destination.checked_add(extent).ok_or(Error("application destination overflow"))?;
     if destination & 4095 != 0 || !application_region(destination, end)
     {
         return Err(Error("application destination overlaps resident images"));
     }
-    let table = resources.iter().find(|r| r.kind == *b"RLOC" && r.id == 0);
-    let patches = if let Some(table) = table
-    {
-        elf::relocation::patches(bytes, &image, &table.data, descriptor.load_base, destination)?
-    }
-    else
-    {
-        if destination != descriptor.load_base
-        {
-            return Err(Error("application relocation metadata is missing"));
-        }
-        Vec::new()
-    };
-    // All bounds, relocation types and values have been checked before any
-    // destination write. The image registry owns this disjoint physical range.
-    for segment in &image.segments
-    {
-        let address = destination + segment.address - descriptor.load_base;
-        unsafe {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr().add(segment.offset as usize),
-                                           address as *mut u8,
-                                           segment.file_size as usize);
-            core::ptr::write_bytes((address + segment.file_size) as *mut u8,
-                                   0,
-                                   (segment.memory_size - segment.file_size) as usize);
-        }
-    }
-    for patch in patches
-    {
-        unsafe {
-            if patch.width == 4
-            {
-                core::ptr::write_unaligned(patch.address as *mut u32, patch.value as u32);
-            }
-            else
-            {
-                core::ptr::write_unaligned(patch.address as *mut u64, patch.value);
-            }
-        }
-    }
-    unsafe {
-        asm!("fence.i", options(nostack));
-    }
-    Ok((destination + image.entry - descriptor.load_base) as usize)
+    let table = resources.iter()
+                         .find(|r| r.kind == *b"RLOC" && r.id == 0)
+                         .ok_or(Error("native relocation metadata is missing"))?;
+    load(&descriptor, bytes, Some(&table.data), destination)
 }
 
-fn load(descriptor: &Descriptor, bytes: &[u8]) -> Result<usize>
+fn load(descriptor: &Descriptor, bytes: &[u8], relocations: Option<&[u8]>, destination: u64)
+        -> Result<usize>
 {
-    let image = elf::decode(bytes, descriptor.load_base, descriptor.load_limit)?;
-    for segment in &image.segments
-    {
-        unsafe {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr().add(segment.offset as usize),
-                                           segment.address as *mut u8,
-                                           segment.file_size as usize);
-            core::ptr::write_bytes((segment.address + segment.file_size) as *mut u8,
-                                   0,
-                                   (segment.memory_size - segment.file_size) as usize);
-        }
-    }
+    let plan = image::LoadPlan::new(bytes, descriptor, relocations, destination)?;
+    // The image registry/definition allocator owns this disjoint RAM reservation.
+    let output = unsafe { core::slice::from_raw_parts_mut(destination as *mut u8, plan.length()) };
+    plan.write(output)?;
     unsafe {
         asm!("fence.i", options(nostack));
     }
-    Ok(image.entry as usize)
+    Ok(plan.entry() as usize)
 }
 
 struct Binding
@@ -183,25 +135,44 @@ impl Definitions
         }
         let code = self.registry.prepare(resource, origin, &mut NoTranslator)?;
         let d = &code.descriptor;
-        if d.load_base < 0x82000000
-           || d.load_limit > 0x83000000
-           || self.bindings.iter().any(|b| d.load_base < b.limit && b.base < d.load_limit)
+        let extent = d.load_limit - d.load_base;
+        if extent > 0x1000000 || extent & 4095 != 0 || d.load_base & 4095 != 0
         {
-            return Err(Error("code resource reservation overlaps resident images"));
+            return Err(Error("invalid code resource reservation"));
         }
-        let address = load(d, &code.elf)?;
+        // Definition resources are independently relocatable modules. Allocate
+        // top-down rather than depending on their build-time preferred addresses.
+        let mut base = 0x83000000u64 - extent;
+        loop
+        {
+            if base < 0x82000000
+            {
+                return Err(Error("code resource address space exhausted"));
+            }
+            let overlap = self.bindings.iter().find(|b| base < b.limit && b.base < base + extent);
+            let Some(other) = overlap
+            else
+            {
+                break;
+            };
+            base =
+                other.base.checked_sub(extent).ok_or(Error("code resource placement overflow"))?;
+        }
+        let address = load(d, &code.code, Some(&code.relocations), base)?;
         let entry: DefinitionEntry = unsafe { core::mem::transmute(address) };
         self.bindings.push(Binding { kind,
                                      id,
                                      origin,
-                                     base: d.load_base,
-                                     limit: d.load_limit,
+                                     base,
+                                     limit: base + extent,
                                      entry });
-        serial!("CODE_LOADED {}{} entry=0x{:x} origin={}",
+        serial!("CODE_LOADED {}{} entry=0x{:x} origin={} linked=0x{:x} actual=0x{:x}",
                 text::decode(&kind),
                 id,
                 address,
-                origin);
+                origin,
+                d.load_base,
+                base);
         Ok(entry)
     }
 }

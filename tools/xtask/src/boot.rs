@@ -159,7 +159,16 @@ fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alterat
     let mut resources = resource::decode(&file.resources)?;
     match alteration
     {
-        "elf" => resources.iter_mut().find(|r| r.kind == *b"RV64").unwrap().data[0] = 0,
+        "code" => resources.iter_mut().find(|r| r.kind == *b"RV64").unwrap().data[0] = 0,
+        "elf-resource" =>
+        {
+            resources.iter_mut().find(|r| r.kind == *b"RV64").unwrap().data =
+                fs::read(workspace.build.join("dist/System.runtime.elf"))?;
+        }
+        "obsolete-nabi" =>
+        {
+            resources.iter_mut().find(|r| r.kind == *b"NABI").unwrap().data.truncate(32)
+        }
         "role" | "address" =>
         {
             let abi = resources.iter_mut().find(|r| r.kind == *b"NABI").unwrap();
@@ -308,7 +317,9 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     &[(&missing_finder, "raw")],
                     &["FINDER_LOAD_FAILED:", "BOOT_NO_SYSTEM:"],
                     false)?);
-    for (alteration, expected) in [("elf", "expected ELF64"),
+    for (alteration, expected) in [("code", "invalid RV64 segment resource header"),
+                                   ("elf-resource", "ELF-backed code resources are unsupported"),
+                                   ("obsolete-nabi", "obsolete ELF-backed NABI layout"),
                                    ("role", "not a compatible System"),
                                    ("address", "reservation overlaps firmware")]
     {
@@ -337,12 +348,12 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     &[(&unblessed, "raw"), (&raw, "raw")],
                     &["volume has no blessed System Folder", "BOOT_SYSTEM_READY:"],
                     true)?);
-    let malformed = directory.join("bad-elf.hfs");
+    let malformed = directory.join("bad-code.hfs");
     cases.push(case(workspace,
                     &directory,
                     "invalid-system-fallback",
                     &[(&malformed, "raw"), (&raw, "raw")],
-                    &["expected ELF64", "BOOT_SYSTEM_READY:"],
+                    &["invalid RV64 segment resource header", "BOOT_SYSTEM_READY:"],
                     true)?);
     if package::sha256(&fs::read(&qcow)?) != hash_before
     {

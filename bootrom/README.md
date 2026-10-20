@@ -16,7 +16,7 @@ cargo xtask boot-check
 
 `rom` produces `../build/system7/dist/bootrom.elf` and `bootrom.bin`. The
 executable payload is about 40 KiB; the raw image is padded to the **32 MiB**
-bank size required by QEMU. Debug information stays in the ELF.
+bank size required by QEMU. Debug information stays in the host ELF artifact.
 
 `boot` without a disk path rebuilds System/Finder and the generated 500 MiB
 HFS/qcow2 volume. With a disk path it builds just the ROM and opens that disk.
@@ -37,8 +37,8 @@ currently visible QuickDraw or classic-Mac QEMU sessions.
 5. Find `System` inside that directory, requiring file type `zsys`. Read its
    resource fork through its extents, including ordinary overflow extent records.
 6. Validate `NABI` resource 0 as a compatible native System. Validate `RV64`
-   resource 0 as a supported ELF, including segment bounds and permissions.
-7. Copy loadable segments to RAM, zero BSS, execute `fence.i`, and call the ELF
+   resource 0 as a supported segment stream, including bounds and permissions.
+7. Zero the reservation, copy initialized segments, execute `fence.i`, and call the native
    entry with `BootInfo`, logging and a read-only startup-volume callback.
 8. System reads Finder from that same blessed folder through the callback,
    validates and loads it, initializes graphics/input, and loads native WDEF/CDEF
@@ -73,7 +73,7 @@ An original 68k System file does not satisfy this native executable contract.
   overflow extents. Growth of the extents-overflow tree beyond its own initial
   three extents is unsupported. HFS+, GPT/MBR, SCSI and legacy virtio are not
   implemented. Unsupported media produces a rejection, not a partial boot.
-- ELF segment permissions are validated; no MMU/PMP protection is installed
+- Segment permissions are validated; no MMU/PMP protection is installed
   in this initial M-mode firmware.
 
 The driver also exposes sector writes and explicit flushes to the resident File
@@ -92,7 +92,8 @@ record write/flush errors; later rollback errors must not hide the initial cause
 
 `cargo xtask boot-check` cold-starts QEMU using the ROM and attached disks. Its
 cases cover no disk, raw HFS, qcow2 HFS, a renamed blessed folder, no blessing,
-missing System or Finder, invalid ELF, wrong executable role, a firmware-overlapping
+missing System or Finder, malformed segments, obsolete ELF/NABI layouts, wrong
+executable role, a firmware-overlapping
 memory reservation, an Apple partition map, and fallback after an unblessed
 disk or invalid System. Each VM is stopped after reaching its expected UART
 marker. Valid boots wait for Finder's `DESKTOP_READY`, including loaded native

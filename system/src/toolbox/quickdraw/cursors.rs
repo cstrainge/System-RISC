@@ -318,6 +318,19 @@ impl Cursors
         self.draw_auto(canvas, mouse, None);
     }
 
+    /// Screen-space damage for the current cursor, including automatic I-beams.
+    pub fn bounds(&self, mouse: Point, ibeam: Option<MonoCursor>) -> Rect
+    {
+        if self.snapshot(mouse).flags & CURSOR_VISIBLE == 0
+        {
+            return Rect::ZERO;
+        }
+        let cursor = if self.automatic { ibeam.unwrap_or(self.image) } else { self.image };
+        let left = mouse.h.saturating_sub(cursor.hotspot.h);
+        let top = mouse.v.saturating_sub(cursor.hotspot.v);
+        Rect::new(left, top, left.saturating_add(16), top.saturating_add(16))
+    }
+
     pub fn draw_auto(&mut self, canvas: &mut Canvas<'_>, mouse: Point, ibeam: Option<MonoCursor>)
     {
         self.mouse_moved(mouse);

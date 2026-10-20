@@ -54,7 +54,7 @@ pub fn build_guest() -> Result<()>
     // Module calls use PC-relative addressing, avoiding per-image gp state.
     println!("cargo:rustc-link-arg-bin={}=--no-relax", manifest.binary_name());
     // Packaging retains a compact relocation table for independent app copies.
-    if manifest.role == "application"
+    if matches!(manifest.role.as_str(), "application" | "code_resource")
     {
         println!("cargo:rustc-link-arg-bin={}=--emit-relocs", manifest.binary_name());
         println!("cargo:rustc-link-arg-bin={}=--defsym=__system_risc_relocation_v1=1",

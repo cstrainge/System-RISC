@@ -142,6 +142,14 @@ impl<'a> BitmapFont<'a>
         word(self.data, 6).min(i16::MAX as u16) as i16
     }
 
+    /// Complete strike bitmap extent relative to the baseline. Line-layout
+    /// descent need not contain all stored ink, so it is not a drawing bound.
+    pub(super) fn vertical_ink_bounds(&self) -> (i32, i32)
+    {
+        let top = -i32::from(word(self.data, 18));
+        (top, top + i32::from(word(self.data, 14)))
+    }
+
     /// Visit original one-bit glyph pixels relative to its baseline and pen.
     pub(super) fn glyph_ink(&self, character: char, mut pixel: impl FnMut(i32, i32)) -> i16
     {

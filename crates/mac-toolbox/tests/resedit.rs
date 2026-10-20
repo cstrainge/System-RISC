@@ -36,7 +36,7 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
     let mut expected = Vec::new();
     for (kind, id, name, attributes, data) in
         [(*b"CODE", i16::MIN, None, 0xff, vec![0x4e, 0x75, 0, 255]),
-         (*b"RV64", 0, Some(b"Executable".to_vec()), 0, sample_elf()),
+         (*b"RV64", 0, Some(b"Executable".to_vec()), 0, sample_code()),
          (*b"NABI",
           0,
           None,
@@ -44,7 +44,8 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
           mac_formats::native::Descriptor { role:        mac_formats::native::Role::Application,
                                             abi_version: mac_formats::native::ABI_VERSION,
                                             load_base:   0x86800000,
-                                            load_limit:  0x87000000 }.encode()
+                                            load_limit:  0x87000000,
+                                            entry:       0x86800000 }.encode()
                                                                      .unwrap()
                                                                      .to_vec()),
          (*b"RLOC",
@@ -76,6 +77,27 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
                                  attributes,
                                  data });
     }
+    let descriptor = mac_formats::native::Descriptor { role:
+                                                           mac_formats::native::Role::CodeResource,
+                                                       abi_version: 6,
+                                                       load_base:   0x82000000,
+                                                       load_limit:  0x82100000,
+                                                       entry:       0x82000000 };
+    let native =
+        mac_formats::native::image::encode(&descriptor, [(0, 5, [0x82, 0x80].as_slice())]).unwrap();
+    let mut envelope = descriptor.encode().unwrap().to_vec();
+    envelope.extend(native);
+    envelope.extend_from_slice(b"RLC1\0\0\0\0");
+    for &(kind, _) in mac_code_resource::code_types::STANDARD_CODE_TYPES
+    {
+        expected.push(Resource { kind,
+                                 id: 77,
+                                 name: None,
+                                 attributes: 0,
+                                 data: envelope.clone() });
+    }
+    let type_count =
+        expected.iter().map(|r| r.kind).collect::<std::collections::BTreeSet<_>>().len() as u32;
     let original = MacFile { name:      b"Sample".to_vec(),
                              file_type: *b"APPL",
                              creator:   *b"TEST",
@@ -107,7 +129,7 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
     let (_,activity)=mac_system::testing::with_file_disk(&disk,true,Default::default(),|services| {
         let system=unsafe {System::from_raw(services)}.unwrap();let files=system.files();let catalog=files.lookup(1,2,"Sample").unwrap();
         let a=system.resources().open_file(1,catalog.id).unwrap();let b=system.resources().open_file(1,catalog.id).unwrap();
-        assert_eq!(a.type_count().unwrap(),12);
+        assert_eq!(a.type_count().unwrap(),type_count);
         let mut actual=Vec::new();
         for t in 0..a.type_count().unwrap() {let kind=a.type_at(t).unwrap();for i in 0..a.count(kind).unwrap() {
             let info=a.at(kind,i).unwrap();let mut data=vec![0;info.info.length];for (chunk_index,chunk) in data.chunks_mut(1024).enumerate() { assert_eq!(a.read(info.info.key,chunk_index*1024,chunk).unwrap(),chunk.len()); }
@@ -130,20 +152,28 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
         // installed app, including checkpoints and reads crossing cache edges.
         let key=ResourceKey {kind:*b"RV64",id:0};
         let size=a.get(key).unwrap().info.length;
-        let index=code::Index::build(size,|at,out|a.read(key,at,out)).unwrap();
-        assert_eq!(index.entry,0x86800000);assert_eq!(index.rows,40002);
+        let source=code::Source::open(&a,key,size).unwrap();let index=code::Index::build(source.length,&source.descriptor,|at,out|source.read(&a,at,out)).unwrap();
+        assert_eq!(source.descriptor.entry,0x86800000);assert_eq!(index.rows,40002);
         for start in [0,1,1364,1365,16383,32767,39996,40000,40001,40002] {
             let mut actual=Vec::new();index.lines(start,8,|at,out|a.read(key,at,out),|line|actual.push(line.to_owned())).unwrap();
             let expected:Vec<_>=(start..(start+8).min(40002)).map(|row| {
-                if row==40001 {"90000000 ecall".to_owned()}
+                if row==40001 {"86820000 ecall".to_owned()}
                 else if row==40000 {"8681d4c0 .byte ff".to_owned()}
                 else {format!("{:08x} {}",0x86800000u64+u64::from(row/2)*6+if row%2==0 {0}else{4},if row%2==0 {"li a0,1"}else{"ret"})}
             }).collect();assert_eq!(actual,expected,"row {start}");
         }
-        let mut loader=Vec::new();code::loader(&a,index.entry,|line|loader.push(line.to_owned()));assert_eq!(loader.len(),code::HEADER_ROWS as usize);assert!(loader[0].contains("RV64"));assert_eq!(loader[2],"NABI: format 1 role 2 ABI 6");assert_eq!(loader[3],"Load base: 0x86800000");assert_eq!(loader[4],"Load limit: 0x87000000");assert!(loader[5].starts_with("RLOC: 1 patches"));
+        let mut loader=Vec::new();code::loader(&a,&source,|line|loader.push(line.to_owned()));assert_eq!(loader.len(),code::HEADER_ROWS as usize);assert!(loader[0].contains("RV64"));assert_eq!(loader[2],"NABI: format 1 role 2 ABI 6");assert_eq!(loader[3],"Load base: 0x86800000");assert_eq!(loader[4],"Load limit: 0x87000000");assert!(loader[5].starts_with("RLOC: 1 patches"));
         let mut records=Vec::new();code::relocations(a.get(ResourceKey{kind:*b"RLOC",id:0}).unwrap().info.length,1,1,|at,out|a.read(ResourceKey{kind:*b"RLOC",id:0},at,out),|line|records.push(line.to_owned())).unwrap();assert_eq!(records,["+00000020  64-bit pointer"]);
-        assert!(code::Index::build(3,|at,out|a.read(ResourceKey{kind:*b"CODE",id:i16::MIN},at,out)).is_err());
-        drop(a);assert_eq!(b.type_count().unwrap(),12);drop(b);
+        assert!(code::Index::build(3,&source.descriptor,|at,out|a.read(ResourceKey{kind:*b"CODE",id:i16::MIN},at,out)).is_err());
+        for &(kind,_) in mac_code_resource::code_types::STANDARD_CODE_TYPES {
+            let key=ResourceKey{kind,id:77};let source=code::Source::open(&a,key,a.get(key).unwrap().info.length).unwrap();
+            assert_eq!(source.descriptor.role,mac_formats::native::Role::CodeResource);
+            let index=code::Index::build(source.length,&source.descriptor,|at,out|source.read(&a,at,out)).unwrap();
+            let mut lines=Vec::new();index.lines(0,2,|at,out|source.read(&a,at,out),|line|lines.push(line.to_owned())).unwrap();
+            assert_eq!(lines,["82000000 ret"]);
+            let mut header=Vec::new();code::loader(&a,&source,|line|header.push(line.to_owned()));assert!(header[5].starts_with("RLOC: 0 patches"));
+        }
+        drop(a);assert_eq!(b.type_count().unwrap(),type_count);drop(b);
         for _ in 0..80 {drop(system.resources().open_file(1,catalog.id).unwrap());}
         let empty=files.lookup(1,2,"Empty").unwrap();assert_eq!(system.resources().open_file(1,empty.id).unwrap().type_count().unwrap(),0);
         let broken=files.lookup(1,2,"Broken").unwrap();assert!(system.resources().open_file(1,broken.id).is_err());
@@ -343,17 +373,17 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         let fork = fs::read(root.join(format!("build/system7/dist/{package}.rsrc"))).unwrap();
         let entries = resource::decode(&fork).unwrap();
         let code = entries.iter().find(|r| r.kind == *b"RV64" && r.id == 0).unwrap();
-        assert!(code.data.starts_with(b"\x7fELF"), "native executable must be visible as RV64 0");
-        let mut expected = vec![0xffffffu32; 288 * 224];
+        assert!(code.data.starts_with(b"RV64"), "native executable must be visible as RV64 0");
+        let mut expected = vec![0xffffffu32; 288 * 196];
         mac_system::testing::with_resource_forks(&system_fork,&resource::encode(&[]).unwrap(),|services|{
             let mut surface=mac_abi::Surface{pixels:expected.as_mut_ptr(),width:288,height:224,origin:Default::default(),clip:mac_abi::Rect::new(0,0,288,224)};
             let mut connection=unsafe{mac_traps::SurfaceConnection::new(&mut surface,services.trap)};
             let mut line=0;
-            preview::hex(&code.data[..128],0,|text|{
+            preview::hex(&code.data[..112],0,|text|{
                 connection.font_draw(mac_toolbox::quickdraw::fonts::FontSelection{family:4,size:9,face:0},mac_toolbox::Point{h:0,v:12+line*14},text,0).unwrap();line+=1;
             });
         }).unwrap();
-        let actual: Vec<_> = (129..353).flat_map(|y| {
+        let actual: Vec<_> = (227..423).flat_map(|y| {
                                            image[(y * 640 + 295) * 3..(y * 640 + 583) * 3].iter()
                                                                                           .copied()
                                        })
@@ -399,7 +429,11 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
             for y in 48..425 {
                 assert_eq!(&before[(y*640+13)*3..(y*640+291)*3],&after[(y*640+13)*3..(y*640+291)*3],"{package}: scrolling preview changed navigation panes");
             }
-            for y in 130..410 {
+            // Header metadata, entry point and NABI/RLOC summary never scroll.
+            for y in 48..227 {
+                assert_eq!(&before[(y*640+291)*3..(y*640+612)*3],&after[(y*640+291)*3..(y*640+612)*3],"{package}: code header scrolled with the bytes");
+            }
+            for y in 228..410 {
                 assert_eq!(&before[((y+14)*640+292)*3..((y+14)*640+596)*3],&after[(y*640+292)*3..(y*640+596)*3],"{package}: cached rows did not shift exactly one line");
             }
         }
@@ -427,6 +461,35 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
     assert!(median_ns < 50_000_000,
             "one-row fill and commit median is {}ms",
             median_ns / 1_000_000);
+    // The trace is optional in ordinary images; a trace build also proves which
+    // framebuffer rectangles were published, beyond comparing unchanged pixels.
+    if let Some(samples) = report["damage_samples"].as_array().filter(|samples| !samples.is_empty())
+    {
+        assert_eq!(samples.len(), 2);
+        for sample in samples
+        {
+            assert_eq!(sample["overwritten"], 0);
+            let copies: Vec<_> = sample["records"].as_array()
+                                                  .unwrap()
+                                                  .iter()
+                                                  .filter(|record| record[2] == 14)
+                                                  .collect();
+            assert!(copies.len() >= 8, "missing scroll presentations: {sample}");
+            for record in copies
+            {
+                let start = record[6].as_u64().unwrap();
+                let end = record[7].as_u64().unwrap();
+                let bounds = ((start >> 32) as i16, start as i16, (end >> 32) as i16, end as i16);
+                let viewport =
+                    bounds.0 >= 292 && bounds.1 >= 227 && bounds.2 <= 612 && bounds.3 <= 426;
+                let cursor = bounds.0 >= 0 && bounds.1 >= 430 && bounds.2 <= 32 && bounds.3 <= 462;
+                assert!(viewport || cursor,
+                        "{}: scroll damaged the header or navigation outside its own area: \
+                         {bounds:?}",
+                        sample["package"]);
+            }
+        }
+    }
     mac_system::testing::with_resource_forks(&system_fork,&resource::encode(&[]).unwrap(),|services|{
         let system=unsafe{System::from_raw(services)}.unwrap();let font=mac_toolbox::quickdraw::fonts::FontSelection::default();
         for (name,title) in [("running-app-open","QuickDraw Test"),("System-49434f4e","System")] {
@@ -509,9 +572,14 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         let fork = resource::decode(&fs::read(root.join(format!("build/system7/dist/{package}.\
                                                                  rsrc"))).unwrap()).unwrap();
         let bytes = &fork.iter().find(|r| r.kind == *b"RV64" && r.id == 0).unwrap().data;
-        let elf = mac_formats::elf::decode(bytes, 0x80000000, 0x90000000).unwrap();
-        let segment = elf.segments.iter().find(|s| s.flags & 1 != 0 && s.file_size != 0).unwrap();
-        let instructions:Vec<_>=disc_v::disassemble(disc_v::Isa::Rv64,segment.address,&bytes[segment.offset as usize..(segment.offset+segment.file_size) as usize]).take(8).map(|ins|format!("{:08x} {ins}",ins.pc())).collect();
+        let descriptor =
+            mac_formats::native::Descriptor::decode(&fork.iter()
+                                                         .find(|r| r.kind == *b"NABI" && r.id == 0)
+                                                         .unwrap()
+                                                         .data).unwrap();
+        let image = mac_formats::native::image::decode(bytes, &descriptor).unwrap();
+        let segment = image.segments.iter().find(|s| s.flags & 1 != 0).unwrap();
+        let instructions:Vec<_>=disc_v::disassemble(disc_v::Isa::Rv64,descriptor.load_base + segment.offset,&bytes[segment.data_offset..segment.data_offset+segment.length]).take(8).map(|ins|format!("{:08x} {ins}",ins.pc())).collect();
         let mut expected = vec![0xffffffu32; 288 * 112];
         mac_system::testing::with_resource_forks(&system_fork,&resource::encode(&[]).unwrap(),|services|{
             let mut surface=mac_abi::Surface{pixels:expected.as_mut_ptr(),width:288,height:112,origin:Default::default(),clip:mac_abi::Rect::new(0,0,288,112)};
@@ -562,65 +630,88 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         let marker = format!("RESEDIT_RESOURCE kind={}", u32::from_be_bytes(kind));
         assert!(serial.contains(&marker), "missing viewer {kind:?}");
     }
+    let system_resources = resource::decode(&system_fork).unwrap();
+    for kind in [*b"WDEF", *b"CDEF", *b"MDEF"]
+    {
+        let name =
+            format!("System-{}", kind.iter().map(|b| format!("{b:02x}")).collect::<String>());
+        let frame = observation(&name);
+        let record = frame["log"].as_str()
+                                 .unwrap()
+                                 .lines()
+                                 .rev()
+                                 .find(|l| l.starts_with("RESEDIT_RESOURCE "))
+                                 .unwrap();
+        assert!(record.ends_with("mode=disassembly"),
+                "{kind:?} did not use native code viewer: {record}");
+        let resource = system_resources.iter().find(|r| r.kind == kind && r.id == 0).unwrap();
+        let native =
+            mac_formats::code::CodeRegistry::new().prepare(resource,
+                                                           0,
+                                                           &mut mac_formats::code::NoTranslator)
+                                                  .unwrap();
+        let image = mac_formats::native::image::decode(&native.code, &native.descriptor).unwrap();
+        let segment = image.segments.iter().find(|s| s.flags & 1 != 0).unwrap();
+        let lines:Vec<_>=disc_v::disassemble(disc_v::Isa::Rv64,native.descriptor.load_base+segment.offset,&native.code[segment.data_offset..segment.data_offset+segment.length]).take(8).map(|ins|format!("{:08x} {ins}",ins.pc())).collect();
+        let mut expected = vec![0xffffffu32; 288 * 112];
+        mac_system::testing::with_resource_forks(&system_fork,&resource::encode(&[]).unwrap(),|services| {
+            let mut surface=mac_abi::Surface{pixels:expected.as_mut_ptr(),width:288,height:112,origin:Default::default(),clip:mac_abi::Rect::new(0,0,288,112)};
+            let mut connection=unsafe{mac_traps::SurfaceConnection::new(&mut surface,services.trap)};
+            for (row,line) in lines.iter().enumerate(){connection.font_draw(mac_toolbox::quickdraw::fonts::FontSelection{family:4,size:9,face:0},mac_toolbox::Point{h:0,v:12+row as i16*14},line,0).unwrap();}
+        }).unwrap();
+        let actual = pixels(&output.join(frame["frame"].as_str().unwrap()));
+        let actual: Vec<_> = (227..339).flat_map(|y| {
+                                           actual[(y * 640 + 295) * 3..(y * 640 + 583) * 3].iter()
+                                                                                           .copied()
+                                       })
+                                       .collect();
+        let expected: Vec<_> =
+            expected.into_iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, p as u8]).collect();
+        assert_eq!(actual, expected,
+                   "{kind:?} disassembly differs from initialized executable bytes");
+    }
     fs::write(root.join("results/system7/resedit-checks.json"),serde_json::to_vec_pretty(&serde_json::json!({"passed":true,"running_app":true,"lossless_export":true,"icon_pixels":3*128*128,"radio_pixels":"CDEF0 press leave cancel select","scroll":{"samples":timings.len(),"median_ns":median_ns,"worst_ns":worst_ns,"scope":"one-row key fill plus resident commit"},"capture":report})).unwrap()).unwrap();
 }
 
-// Three load segments: mixed 32/16-bit instructions, non-code bytes, then
-// another executable segment at a discontinuous linked address.
-fn sample_elf() -> Vec<u8>
+fn sample_descriptor() -> mac_formats::native::Descriptor
 {
-    let mut bytes = vec![0; 512];
-    bytes[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
-    bytes[16..18].copy_from_slice(&2u16.to_le_bytes());
-    bytes[18..20].copy_from_slice(&243u16.to_le_bytes());
-    bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
-    bytes[24..32].copy_from_slice(&0x86800000u64.to_le_bytes());
-    bytes[32..40].copy_from_slice(&64u64.to_le_bytes());
-    bytes[52..54].copy_from_slice(&64u16.to_le_bytes());
-    bytes[54..56].copy_from_slice(&56u16.to_le_bytes());
-    bytes[56..58].copy_from_slice(&3u16.to_le_bytes());
+    mac_formats::native::Descriptor { role:        mac_formats::native::Role::Application,
+                                      abi_version: 6,
+                                      load_base:   0x86800000,
+                                      load_limit:  0x87000000,
+                                      entry:       0x86800000 }
+}
+fn sample_code() -> Vec<u8>
+{
+    let mut instructions = Vec::new();
     for _ in 0..20000
     {
-        bytes.extend_from_slice(&[0x13, 0x05, 0x10, 0, 0x82, 0x80]);
+        instructions.extend_from_slice(&[0x13, 0x05, 0x10, 0, 0x82, 0x80]);
     }
-    bytes.push(0xff);
-    let second = bytes.len();
-    bytes.extend_from_slice(&[0xff; 16]);
-    let third = bytes.len();
-    bytes.extend_from_slice(&[0x73, 0, 0, 0]);
-    for (i, (offset, address, size, flags)) in [(512, 0x86800000u64, 120001, 5),
-                                                (second, 0x88000000, 16, 6),
-                                                (third, 0x90000000, 4, 5)].into_iter()
-                                                                          .enumerate()
-    {
-        let ph = &mut bytes[64 + i * 56..120 + i * 56];
-        ph[..4].copy_from_slice(&1u32.to_le_bytes());
-        ph[4..8].copy_from_slice(&u32::to_le_bytes(flags));
-        ph[8..16].copy_from_slice(&(offset as u64).to_le_bytes());
-        ph[16..24].copy_from_slice(&address.to_le_bytes());
-        ph[32..40].copy_from_slice(&u64::to_le_bytes(size));
-        ph[40..48].copy_from_slice(&u64::to_le_bytes(size));
-    }
-    bytes
+    instructions.push(0xff);
+    mac_formats::native::image::encode(&sample_descriptor(),
+                                       [(0, 5, instructions.as_slice()),
+                                        (0x1f000, 6, [0xff; 16].as_slice()),
+                                        (0x20000, 5, [0x73, 0, 0, 0].as_slice())]).unwrap()
 }
 #[test]
-fn code_view_rejects_bad_elf_and_scrollbars_cover_large_resources()
+fn code_view_rejects_bad_segments_and_scrollbars_cover_large_resources()
 {
-    let good = sample_elf();
-    for length in [0, 1, 16, 63, 64, 119, 511, good.len() - 1]
+    let good = sample_code();
+    for length in [0, 1, 7, 8, 27, 28, good.len() - 1]
     {
-        assert!(code::Index::build(length, |at, out| {
+        assert!(code::Index::build(length, &sample_descriptor(), |at, out| {
                     let source = good.get(at..).unwrap_or(&[]);
                     let n = source.len().min(out.len());
                     out[..n].copy_from_slice(&source[..n]);
                     Ok(n)
                 }).is_err());
     }
-    for at in [0, 4, 5, 16, 18, 20, 52, 54, 57, 96]
+    for at in [0, 4, 5, 6, 7, 8, 16, 24]
     {
         let mut bad = good.clone();
         bad[at] = 0xff;
-        assert!(code::Index::build(bad.len(), |at, out| {
+        assert!(code::Index::build(bad.len(), &sample_descriptor(), |at, out| {
                     let n = out.len().min(bad.len().saturating_sub(at));
                     out[..n].copy_from_slice(&bad[at..at + n]);
                     Ok(n)

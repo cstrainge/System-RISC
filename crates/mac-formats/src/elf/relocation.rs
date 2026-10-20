@@ -177,58 +177,15 @@ pub fn extract(bytes: &[u8], image: &Image, base: u64) -> Result<Option<Vec<u8>>
     patches(bytes, image, &result, base, base)?;
     Ok(Some(result))
 }
-#[derive(Debug)]
-pub struct Patch
-{
-    pub address: u64,
-    pub value:   u64,
-    pub width:   u8
-}
-/// Validate all patches before the loader writes a single byte of application RAM.
+pub use crate::relocation::Patch;
 pub fn patches(bytes: &[u8], image: &Image, table: &[u8], base: u64, destination: u64)
                -> Result<Vec<Patch>>
 {
-    if table.get(..4) != Some(b"RLC1")
-    {
-        return Err(Error("invalid relocation resource"));
-    }
-    let count = u32le(table, 4)? as usize;
-    if count > 65536 || table.len() != 8 + count * 8
-    {
-        return Err(Error("invalid relocation count"));
-    }
-    let mut output = Vec::new();
-    let mut previous = 0;
-    let extent = span(image, base)?;
-    for (i, record) in table[8..].as_chunks::<8>().0.iter().enumerate()
-    {
-        let offset = u32le(record, 0)? as u64;
-        let width = record[4];
-        if !matches!(width, 4 | 8) || record[5..] != [0, 0, 0] || i != 0 && offset < previous
-        {
-            return Err(Error("invalid or overlapping relocation"));
-        }
-        previous = offset + u64::from(width);
-        let address = base.checked_add(offset).ok_or(Error("relocation overflow"))?;
+    crate::relocation::patches(table, base, span(image, base)?, destination, |offset, width| {
+        let address = base.checked_add(offset).ok_or(Error("relocation address overflow"))?;
         let source = file_offset(image, address, u64::from(width))?;
-        let old = if width == 4 { u64::from(u32le(bytes, source)?) } else { u64le(bytes, source)? };
-        if old < base || old > base + extent
-        {
-            return Err(Error("relocation target outside image"));
-        }
-        let value =
-            destination.checked_add(old - base).ok_or(Error("relocated pointer overflow"))?;
-        if width == 4 && value > u64::from(u32::MAX)
-        {
-            return Err(Error("32-bit relocation overflow"));
-        }
-        output.push(Patch { address:
-                                destination.checked_add(offset)
-                                           .ok_or(Error("relocation destination overflow"))?,
-                            value,
-                            width });
-    }
-    Ok(output)
+        if width == 4 { Ok(u64::from(u32le(bytes, source)?)) } else { u64le(bytes, source) }
+    })
 }
 
 #[cfg(test)]

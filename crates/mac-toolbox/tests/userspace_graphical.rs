@@ -54,6 +54,21 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
         assert!(serial.contains(definition),
                 "loaded definition evidence {definition} absent:\n{serial}");
     }
+    let mut relocated_definitions = 0;
+    for line in serial.lines().filter(|line| line.starts_with("CODE_LOADED "))
+    {
+        let value = |name: &str| {
+            line.split_whitespace()
+                .find_map(|part| part.strip_prefix(name))
+                .and_then(|v| u64::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+                .unwrap()
+        };
+        assert_ne!(value("linked="),
+                   value("actual="),
+                   "definition must run away from its linked address: {line}");
+        relocated_definitions += 1;
+    }
+    assert!(relocated_definitions >= 4, "WDEF, both CDEFs and MDEF must execute after relocation");
     let acceptance = serde_json::json!({"status":"passed","acceptance":"mac-toolbox/tests/conformance::run_all plus strings::shared/graphical","transport":"real graphical disk boot and RV64 ECALL","controls":{"cases":86,"pixels":269600,"pixel_differences":0,"hit_records":8424,"distinct_hit_tuples":1296,"hit_differences":0},"strings":"passed","dates":"passed","textedit":{"original":356,"native":20,"legacy":6,"navigation":49},"scrap":{"original":18,"native":17,"legacy":12},"capture":report,"output":output});
     fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join("results/system7/userspace-conformance-checks.json"),
