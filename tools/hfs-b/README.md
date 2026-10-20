@@ -14,8 +14,9 @@ cargo run -p hfs-b -- copy-out ../working/software.hfsb /collection ../working/s
 `copy-in IMAGE HOST_PATH [GUEST_DIRECTORY] [--replace]` recursively imports an
 ordinary host file/tree or an exported bundle. Paths inside the volume are UTF-8
 slash paths. Ordinary host files become data forks, with host dates preserved;
-they are not guessed to be MacBinary. Use `import IMAGE PARENT_ID FILE.bin` for
-MacBinary, or `put IMAGE PARENT_ID NAME DATA_FILE RESOURCE_FILE` for explicit
+they are not guessed to be MacBinary. Use
+`import IMAGE PARENT_OR_PATH FILE.bin [NAME]` for MacBinary (including a native
+UTF-8 name override), or `put IMAGE PARENT_OR_PATH NAME DATA_FILE RESOURCE_FILE` for explicit
 forks. Directories merge. Existing files require `--replace`. Symlinks and special
 host files are rejected. Copies stream in 64 KiB chunks, with bounded traversal.
 
@@ -25,6 +26,11 @@ and a `children` directory of entry bundles. Finder information, flags, comments
 full Unicode names and microsecond dates (including optional backup dates) survive
 restoration. Catalog IDs are assigned by the destination volume. The host output
 directory must not already exist, protecting earlier backups from overwrite.
+
+`stat IMAGE ID_OR_PATH` prints catalog metadata as JSON. Low-level entry and parent
+arguments also accept absolute guest paths. For an ordinary host file rather than
+a lossless bundle, use `extract IMAGE ID_OR_PATH HOST_FILE [data|resource]`; it
+streams the selected fork without overwriting an existing output file.
 
 ## Preserve user state across a System rebuild
 

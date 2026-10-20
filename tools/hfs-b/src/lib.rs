@@ -119,10 +119,14 @@ pub fn import_macbinary<D: WritableBlockDevice>(volume: &mut Volume<'_, D>, pare
                                                 file: &mac_formats::macbinary::MacFile)
                                                 -> HostResult<Entry>
 {
-    let e = volume.create(parent,
-                          &mac_formats::text::decode(&file.name),
-                          false,
-                          Timestamp::from_legacy(file.created))?;
+    import_macbinary_named(volume, parent, file, &mac_formats::text::decode(&file.name))
+}
+pub fn import_macbinary_named<D: WritableBlockDevice>(volume: &mut Volume<'_, D>, parent: u32,
+                                                      file: &mac_formats::macbinary::MacFile,
+                                                      name: &str)
+                                                      -> HostResult<Entry>
+{
+    let e = volume.create(parent, name, false, Timestamp::from_legacy(file.created))?;
     for (kind, data) in [(ForkKind::Data, &file.data), (ForkKind::Resource, &file.resources)]
     {
         for (index, chunk) in data.chunks(64 * 1024).enumerate()
