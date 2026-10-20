@@ -241,6 +241,11 @@ other applications access process services through the aggregate Toolbox SDK.
 The foreground application's ordinary menu bar changes with activation, while
 the system application menu remains available across applications.
 
+The [System-owned Apple menu workstream](docs/CORE-TOOLBOX-ROADMAP.md#p5--system-owned-apple-menu)
+adds the corresponding persistent leftmost menu, with resource-based contributions
+from the foreground application and a compatibility projection for legacy menus.
+It is planned separately from the already implemented application menu.
+
 - Enumerate running applications using stable, nonreused application
   identities. Resolve display names and icons from application resources, mark
   the foreground entry, and remove entries on exit or failed-launch cleanup.

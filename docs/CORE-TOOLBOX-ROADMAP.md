@@ -20,7 +20,7 @@ The practical next target is a native document application that can open, edit, 
 | Events / clocks | Usable tested slice | M | WaitNextEvent sleep/mouse regions, scheduler wakeups, timer/caret/double-click policy, suspend/resume and extended pointer input (P3). |
 | Windows / WDEF | Usable tested slice | M | Full query/visibility/hilite/behind/refcon lifecycle, custom definition callbacks, regions and classic records. |
 | Controls / CDEF | Narrow foundation | L | Owned control objects/lists, full properties/lifetime, popup/user controls, action callbacks and keyboard focus. |
-| Menus / MDEF | Usable tested slice | M | Dynamic editing, hierarchy/popups/scrolling, complete icon/style variants, custom lifecycle and flashing. |
+| Menus / MDEF | Usable tested slice | M | Dynamic editing, hierarchy/popups/scrolling, complete icon/style variants, custom lifecycle, flashing and System-owned Apple menu (P5). |
 | List Manager / LDEF | No public manager | L | Cells, owned data, selection, scrolling, clicks/double-clicks, drawing and LDEF callbacks. |
 | TextEdit | Usable tested slice | L | Editable-dialog integration, styled text, other fonts/alignment, word selection/autoscroll, TEHandle/private scrap ABI. |
 | Scrap | Usable tested slice | M | Disk Scrap.dat, original counted-MacRoman/private TextEdit scrap and process suspend/resume integration. |
@@ -157,6 +157,20 @@ clipping, sizing and missing-sequence policy. Cache within bounded memory and
 keep redraw local. See [the font service plan](../system/src/toolbox/quickdraw/fonts/README.md#planned-built-in-emoji-fallback)
 for public SDK acceptance and performance gates. This is a Unicode extension,
 separate from closing original System 7 font-fidelity differences in R4.
+
+### P5 — System-owned Apple menu
+
+Status: backlog. System always inserts exactly one leftmost Apple menu, alongside
+its persistent right-hand application menu. Apps contribute resource-defined
+custom items through a Rust Toolbox interface; System retains its own entries,
+tracking and dispatch. Restore contributions on foreground changes and clean
+them up on exit without removing the Apple menu.
+
+Compose legacy Apple-title MENU/MBAR content without duplication, preserving
+app-visible IDs, item indices, mutation and selection behavior through the legacy
+projection. Verify original behavior rather than hardcoding the conventional
+menu ID. Cover empty/cleared bars, app switching, crash cleanup, ownership and
+bounded menu-cache invalidation. See [the Menu Manager plan](../system/src/toolbox/menus/README.md#planned-system-owned-apple-menu).
 
 ## Planned application tooling
 

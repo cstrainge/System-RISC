@@ -22,6 +22,56 @@ path. The event preserves signed 16-bit menu IDs and one-based item indices;
 The one-byte Apple title uses original System icon family -16386 through resident
 Icon Utilities; title selection preserves its rainbow colors.
 
+## Planned System-owned Apple menu
+
+Status: backlog; drawing an installed Apple-title MENU resource does not yet
+guarantee a persistent System-owned Apple menu. Track delivery in
+[roadmap P5](../../../../docs/CORE-TOOLBOX-ROADMAP.md#p5--system-owned-apple-menu).
+
+- System always supplies exactly one leftmost Apple menu, just as it owns the
+  right-hand application menu. It remains present when an app has no menus,
+  clears/replaces its menus, switches, exits or crashes. System owns its title,
+  tracking and global entries; applications contribute their own section.
+- Provide a thin Rust Toolbox API for resource-based app contributions such as
+  About, with explicit command identity, enabled/check state, insertion/removal
+  and lifetime. Restore the foreground app's contribution on activation and
+  remove it on exit; background changes must not change the visible app section.
+  Localized labels, icons, separators and command metadata belong in resources.
+- Compose app and System sections without duplicate Apple titles or separators.
+  Keep System commands distinct from app commands and route selections once to
+  the correct owner. Capture command identity/owner during tracking; cancel or
+  validate pending selections across removal, exit and foreground changes.
+  Do not depend on shifting visible item indices as native command identity.
+- Preserve legacy MENU/MBAR installation and item-editing semantics through the
+  legacy menu-list projection. Recognize Apple-title menus by their actual
+  contract, not a hardcoded menu ID of 128; adopt their app section into the
+  composed menu instead of adding a second title. Preserve the app's expected
+  menu ID, one-based selection indices and MenuSelect/MenuKey results while
+  keeping System entries out of app command dispatch. Specify logical-to-visible
+  index mapping and legacy append/delete/query behavior before implementation.
+- Use the shared generation-tagged facility for new resident contribution/object
+  identities, with separate owner checks and cleanup. No app callbacks run under
+  manager locks or block tracking of System-owned entries. Keep app commands on
+  their own application thread; unavailable commands must not pretend to work.
+- Populate global entries through actual System services and resource templates.
+  Apple Menu Items folder contents and desk accessories require their respective
+  file/alias/launch/legacy services; do not claim those merely from listing names.
+  Cache composed layout/pixels and invalidate only changed menu bounds on actual
+  content/state changes, never on every input or event poll.
+
+Original reference: [Creating a Menu](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-98.html)
+defines an app's About item followed by a separator; ID 128 is a convention.
+[Adding Items to a Menu](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-102.html)
+describes dynamic editing and Apple Menu Items. Capture the pinned System 7.6.1
+section ordering, mutation, tracking and selection behavior, then encode public
+SDK conformance tests for empty/cleared/replaced bars, contributions, ownership,
+switch/exit/crash, stale IDs and bounded repainting. Add translated 68k MENU/MBAR
+mutation and selection probes when the adapter exists. Automatic native menu
+insertion is a System RISC ownership policy, not a claim that original apps did
+not construct Apple menus themselves.
+
+## Existing evidence and limits
+
 The aggregate userspace tests install captured menu records and run a private
 SDK-only guest with real virtio input and the loaded MDEF. Original System7.6.1
 MenuProbe captures supply strict, unmasked RGB crops for the File popup's normal,
