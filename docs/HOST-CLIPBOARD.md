@@ -12,8 +12,11 @@ Build a separately packaged kernel extension with the native INIT/module entry,
 generated contract metadata, relocatable resources and owned service/hook
 registrations. The underlying host-channel device provider uses DRVR/DABI where
 applicable; the clipboard policy extension itself follows the P6 extension
-contract. Avoid compiling host clipboard policy into each app or into the Scrap
-Manager. Keep the local Scrap implementation available without the extension.
+contract. Install the clipboard extension in `System Folder/Extensions` and any
+separately packaged host-channel driver in `System Folder/Drivers`, both under
+the selected blessed installation. Avoid compiling host clipboard policy into
+each app or into the Scrap Manager. Keep the local Scrap implementation available
+without the extension.
 
 Probe for an advertised virtual-host integration endpoint and negotiate its
 clipboard protocol/version and supported formats. A virtualization indicator

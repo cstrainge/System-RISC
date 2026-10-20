@@ -31,6 +31,9 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   host clipboard extension. Bring in the necessary P6 loader/service machinery
   for these milestones; input/network/display extraction and std migration follow
   this initial storage/extension validation sequence.
+- Install native driver packages in the blessed `System Folder/Drivers` directory
+  and System extensions in `System Folder/Extensions`. Shared module machinery
+  does not merge their discovery paths or package/entry contracts.
 - Canonical new Toolbox compatibility assertions belong in
   `crates/mac-toolbox/tests` and exercise the public SDK through real services.
   Capture scripts may collect evidence; Rust owns new acceptance decisions.

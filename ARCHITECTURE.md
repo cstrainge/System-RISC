@@ -158,6 +158,11 @@ planned hardware protection, separate from today's owner/generation checks.
 trusted in-kernel extension modules. Driver packages require DRVR classification
 and mandatory DABI build-contract metadata checked before code entry; resource
 inspection alone never loads them. Kernel modules are not isolated user apps.
+Native drivers are installed in the blessed `System Folder/Drivers` directory;
+System extensions are installed in `System Folder/Extensions`. Both paths are
+relative to the selected blessed installation. Their shared module loader keeps
+discovery and entry-contract validation distinct; folder placement alone never
+authorizes execution.
 
 ## Planned native HFS-B storage
 

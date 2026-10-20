@@ -226,8 +226,11 @@ Status: backlog. Provide resource-based Rust control-panel applications and a
 Keep panel UI on application threads; expose typed resident configuration,
 service/hook registration and versioned JSON preferences through Rust interfaces.
 
-Load independently relocatable extension resources from the blessed installation
-with checked ABI/dependencies, explicit startup phases, staged registration and
+Load independently relocatable extension resources from the blessed installation's
+`System Folder/Extensions`, with drivers discovered separately in
+`System Folder/Drivers`. Keep their discovery paths and package entry contracts
+distinct while sharing dependency resolution. Load extensions with checked
+ABI/dependencies, explicit startup phases, staged registration and
 an extensions-disabled boot mode. Use shared generation-tagged identities and
 synchronized ownership. Initially pin modules until reboot; unloading, workers
 and SMP each require their lifecycle/scheduler gates. Kernel panic reporting is
@@ -348,6 +351,9 @@ network, display and other backends into in-kernel P6 driver modules. Require th
 DRVR package marker and a build-generated DABI contract metadata resource before
 loading. Validate driver/kernel API versions, architecture, entry layout,
 required services/features and device-class contracts before entry/device claims.
+Install/discover native driver packages in the blessed `System Folder/Drivers`;
+reserve `System Folder/Extensions` for System extensions. Image tooling creates
+both directories, and loaders reject misplaced classes before entry.
 
 Define typed class interfaces, shared generation-tagged identities, bounded
 interrupt/deferred work and a quiesced ROM-to-System block handoff. Native and

@@ -10,6 +10,9 @@ device drivers. The minimal block path stays built into System; other backends
 become modules. Driver loading additionally requires the DRVR marker and generated
 DABI contract metadata before entry. These modules remain trusted kernel code,
 distinct from [P13 isolated applications](PROCESS-ISOLATION.md).
+Install driver packages in the blessed `System Folder/Drivers` directory;
+System extensions go in `System Folder/Extensions`. Shared module machinery
+does not make the two discovery paths or entry contracts interchangeable.
 
 The agreed first implementation sequence is P15 built-in HFS-B/tooling, the
 necessary driver/module loader and SDK exercised by P16 StuffIt and P17 vhost
@@ -49,8 +52,9 @@ they do not require migration code. Report the reset or required recreation.
 - Package native extension code as independently linked executable resources in
   classic resource-fork files installed in System Folder/Extensions. Declare a
   native `INIT` entry and its extension calling convention explicitly; driver
-  packages instead use the P14 DRVR entry and mandatory DABI contract. Never cast
-  an application or WDEF entry to either ABI. Metadata declares stable
+  packages are installed separately in System Folder/Drivers and use the P14
+  DRVR entry and mandatory DABI contract. Never cast an application or WDEF entry
+  to either ABI. Metadata declares stable
   identity, Cargo version, CPU/ABI requirements, dependencies, startup phase,
   provided services/hooks and optional panel/settings linkage. Resolve the exact
   metadata layout in FORMAT.md when implementing it, retaining provenance here.
@@ -111,9 +115,12 @@ code. This is not an MMU-isolation or recoverable-fault guarantee.
 ## Startup, failure and lifetime
 
 The boot ROM still locates and boots the blessed System. System discovers enabled
-extensions from that same installation after core memory/resource/file services
-are ready and before launching Finder. Define named service-ready phases and
-allowed calls per phase; initialize shared registries once before concurrent
+extensions from that installation's Extensions directory and drivers separately
+from its Drivers directory after core memory/resource/file services are ready
+and before launching Finder. Report misplaced package classes without executing
+them; do not use cross-directory fallback discovery. Resolve declared dependencies
+across both package sets in the shared registry. Define named service-ready phases
+and allowed calls per phase; initialize shared registries once before concurrent
 extension execution or secondary-hart startup.
 
 Resolve a deterministic dependency graph: reject duplicate identities, cycles,
@@ -181,6 +188,7 @@ the SDK and real resident services. Kernel-only ABI/loader tests supplement them
 private QEMU boot fixtures exercise real extension entry and callback execution.
 Cover independent relocation/data/BSS, malformed/unsupported modules, dependency
 cycles/duplicates, init rollback, stale/foreign registration IDs, panel ownership,
+separate Drivers/Extensions discovery, misplaced-package rejection before entry,
 preference conflicts/write failures, disabled boot, boot-session pinning and
 deterministic order. Run fatal-panic fixtures only in disposable test VMs and
 verify a following extensions-disabled boot can reach Finder. Record startup,

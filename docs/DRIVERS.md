@@ -6,6 +6,22 @@ Other device backends move into separately packaged drivers loaded through P6's
 extension machinery. These modules execute in the kernel, not isolated driver
 processes; they are part of the trusted kernel described by P13.
 
+## Installation and discovery
+
+Install native driver packages in the selected blessed System Folder's `Drivers`
+directory (`System Folder/Drivers`). System extensions use the separate
+`System Folder/Extensions` directory. The shared kernel module machinery does
+not make these installation locations interchangeable: discover drivers only
+in Drivers and extensions only in Extensions. Report packages placed in the
+wrong directory without invoking their code; do not search the other directory
+as a fallback. Placement in Drivers does not replace DRVR/DABI validation.
+
+The system-image builder must create both directories and place packages by
+class when disk-based module loading is implemented. Resolve declared
+dependencies across the two discovered package sets through the common module
+registry, rather than treating directory enumeration order as startup order.
+The built-in bootstrap block provider does not require a disk package.
+
 ## DRVR package and mandatory contract metadata
 
 Only a driver package marked `DRVR` may enter the driver-loading path. Use DRVR
@@ -113,6 +129,9 @@ DABI presence, malformed/conflicting descriptors, wrong architecture/ABI, missin
 services, bad entry references, relocation and rejection before side effects.
 Prove enumeration alone never executes DRVR and inspection in ResEdit stays data
 only; add a resource-based DABI viewer showing required and available contracts.
+Verify discovery from the selected blessed installation's Drivers directory,
+rejection of misplaced packages without entry, and dependency resolution with
+extensions discovered separately from Extensions.
 Test duplicate/exclusive claims, init rollback, stale completions, timeout/reset,
 driver-disabled boot, block durability and cross-app operation. Keep each module's
 code/data lifetime, one-hart/SMP synchronization, resource bounds, interrupt/queue
