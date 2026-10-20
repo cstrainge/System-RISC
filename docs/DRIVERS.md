@@ -55,6 +55,16 @@ use public Toolbox/block/file services, never private driver globals. Preserve a
 separate classic Device Manager/DRVR adapter track rather than treating legacy
 headers and native DABI as interchangeable entry contracts.
 
+Filesystem backends also use explicit contracts: block-backed volumes consume
+the block class; [StuffIt archive volumes](ARCHIVE-VOLUMES.md) consume a leased
+backing file. [Vhost shared directories](HOST-FOLDERS.md) have their own
+filesystem/block-device driver pair. The lower driver owns transport and device
+I/O; the upper driver owns fork-container and guest catalog semantics. Directory
+exports require a negotiated directory/file-operation service, distinct from the
+block interface for actual disk exports. Describe these provided/required class
+contracts in DABI and validate dependencies before publishing a volume. Neither
+archive mounts nor host directories should be forced into a fake sector model.
+
 Define bounded interrupt acknowledgement and deferred work, buffer ownership,
 I/O cancellation/timeouts, power/reset/error behavior and thread-safe publication.
 Do not call app code under driver locks or run slow device work with global

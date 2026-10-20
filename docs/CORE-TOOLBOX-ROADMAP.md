@@ -421,6 +421,27 @@ Bootable HFS-B and the default-image cutover are required deliverables of this
 early workstream. Keep the built-in block driver filesystem-neutral;
 host-directory mounts remain a separate workstream.
 
+### P16 — StuffIt archive volumes
+
+Status: backlog, after P15 and the required mount interfaces. Finder opening a
+`.sit` mounts it as an ordinary read-only volume through a file-backed filesystem
+driver. Preserve both forks and Macintosh metadata; decode on demand with bounded
+caches and work. Standard File, Resource Manager and copy-out use the existing
+public services. Qualify an explicit format/codec matrix, source leases, eject,
+integrity, unsupported formats and stale IDs. See [the archive-volume plan](ARCHIVE-VOLUMES.md).
+
+### P17 — Vhost shared-directory volumes
+
+Status: backlog, after P15. Provide a separate vhost filesystem/block-device
+driver pair: VM transport/device I/O below, guest catalog and fork semantics
+above, each with DRVR/DABI contracts. Directory exports need directory operations
+alongside the transport's actual block-export interface; do not model host paths
+as sectors. Qualify the actual Linux/native Windows QEMU transport before choosing
+it. One versioned host file stores both guest forks and metadata, transparently
+to apps. Share its codec with Linux packing/validation tools; specify portable
+names, stable identity, external-change conflicts, root confinement and checked
+write/flush guarantees. See [the vhost plan](HOST-FOLDERS.md).
+
 ## Planned application tooling
 
 ### A1 — ResEdit resource-editor extensions

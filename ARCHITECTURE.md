@@ -162,6 +162,21 @@ block traits separate platform storage access from that implementation. The nati
 utility is a std Toolbox app using checked disk/volume services; Linux tools use
 std file/device adapters. See [shared crate and tooling requirements](docs/HFS-B.md#shared-format-crate-and-tooling).
 
+## Planned archive and host-directory volumes
+
+[P16](docs/ARCHIVE-VOLUMES.md) mounts StuffIt files as read-only filesystem
+volumes with on-demand decoding and both forks intact. Finder requests a mount;
+the resident backend owns parsing, source leases and lifetime. Applications use
+ordinary File/Resource Manager services, including copying out to writable media.
+
+[P17](docs/HOST-FOLDERS.md) adds an independent vhost filesystem/block-device
+driver pair. Its device side owns host transport; its filesystem side maps a host
+directory into ordinary guest files. One versioned host container per file holds
+both forks and metadata, transparent to apps. Directory operations have an
+explicit contract separate from actual block exports. Both drivers require
+DRVR/DABI validation. Shared Linux tools reuse the container codec. Host sharing
+and archive mounts follow P15; neither is required to boot the native System.
+
 ## Classic applications
 
 Original A-line trap identities remain separate from the native request numbers.

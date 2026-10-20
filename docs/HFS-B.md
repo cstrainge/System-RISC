@@ -235,5 +235,7 @@ because these decisions are recorded.
 
 - Live conversion HFS <-> HFS-B (copy tools can come later).
 - Journaling (a later gate if crash-recovery demands it).
-- The host-directory mount driver (separate track; it can target HFS-B
-  semantics for its fork-aware format).
+- [Vhost host-directory mounts](HOST-FOLDERS.md) and
+  [StuffIt archive volumes](ARCHIVE-VOLUMES.md) are separate driver workstreams.
+  They share the public filesystem services; the host fork container follows
+  native name/metadata semantics without being an HFS-B disk image.
