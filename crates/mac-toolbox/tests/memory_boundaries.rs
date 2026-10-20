@@ -1,21 +1,21 @@
 //! Native safety contracts, distinct from original Memory Manager observations.
 #![cfg(not(target_arch = "riscv64"))]
 mod support;
-use mac_abi::{BAD_ARGUMENT, memory::*};
+use mac_abi::memory::*;
 use mac_toolbox::Error;
 #[test]
 fn byte_access_checks_bounds_preserves_buffers_and_keeps_mem_error()
 {
     support::with_system(|system| {
         let h = system.memory().handle_from_bytes(b"0123456789abcdef").unwrap();
-        assert_eq!(h.write(15, b"xx"), Err(Error(BAD_ARGUMENT)));
+        assert_eq!(h.write(15, b"xx"), Err(Error::BadArgument));
         let mut outside = [0xa5; 4];
-        assert_eq!(h.read(17, &mut outside), Err(Error(BAD_ARGUMENT)));
+        assert_eq!(h.read(17, &mut outside), Err(Error::BadArgument));
         assert_eq!(outside, [0xa5; 4]);
         assert_eq!(h.read(16, &mut outside), Ok(0));
         assert_eq!(outside, [0xa5; 4]);
         assert!(matches!(system.memory().new_handle_clear(1024 * 1024 + 1),
-                         Err(Error(MEM_FULL_ERR))));
+                         Err(Error::MemoryFull)));
         assert_eq!(system.memory().last_error().unwrap(), MEM_FULL_ERR);
         let mut bytes = [0; 16];
         assert_eq!(h.read(0, &mut bytes), Ok(16));
@@ -51,7 +51,7 @@ fn disposed_ids_never_alias_reused_slots_and_borrowed_pointers_are_cleared()
         assert_eq!(current >> 16, (old >> 16) + 1);
         call.operation = SIZE;
         call.handle = old;
-        assert_eq!(client.memory(&mut call, &[], &mut []), Err(Error(NIL_HANDLE_ERR)));
+        assert_eq!(client.memory(&mut call, &[], &mut []), Err(Error::NilHandle));
         assert!(call.input.is_null() && call.output.is_null());
         call.handle = current;
         assert_eq!(client.memory(&mut call, &[], &mut []), Ok(()));
@@ -72,7 +72,7 @@ fn handles_release_storage_at_scope_exit_and_sessions_are_independent()
                 assert_eq!(h.len(), Ok(8192));
             }
             let empty = system.memory().new_empty_handle().unwrap();
-            assert_eq!(empty.len(), Err(Error(NIL_HANDLE_ERR)));
+            assert_eq!(empty.len(), Err(Error::NilHandle));
             empty.dispose().unwrap();
         });
     }
@@ -90,10 +90,10 @@ fn application_cleanup_reclaims_zone_without_reusing_old_handle_generations()
         assert_eq!(system.memory().last_error().unwrap(), 0);
         let mut new = system.memory().handle_from_bytes(b"new application").unwrap();
         let mut output = [0xa5; 15];
-        assert_eq!(old.read(0, &mut output), Err(Error(NIL_HANDLE_ERR)));
+        assert_eq!(old.read(0, &mut output), Err(Error::NilHandle));
         assert_eq!(output, [0xa5; 15]);
-        assert_eq!(old.write(0, b"bad"), Err(Error(NIL_HANDLE_ERR)));
-        assert_eq!(old.try_dispose(), Err(Error(NIL_HANDLE_ERR)));
+        assert_eq!(old.write(0, b"bad"), Err(Error::NilHandle));
+        assert_eq!(old.try_dispose(), Err(Error::NilHandle));
         assert_eq!(new.read(0, &mut output), Ok(15));
         assert_eq!(&output, b"new application");
         new.try_dispose().unwrap();
@@ -102,7 +102,7 @@ fn application_cleanup_reclaims_zone_without_reusing_old_handle_generations()
         {
             let handle = system.memory().new_handle_clear(1024 * 1024).unwrap();
             clear_memory_services().unwrap();
-            assert_eq!(handle.len(), Err(Error(NIL_HANDLE_ERR)));
+            assert_eq!(handle.len(), Err(Error::NilHandle));
         }
     });
 }
@@ -136,7 +136,7 @@ fn full_u16_generation_range_retires_the_slot_without_reissuing_an_old_id()
         {
             call.operation = DISPOSE;
             call.handle = stale;
-            assert_eq!(client.memory(&mut call, &[], &mut []), Err(Error(NIL_HANDLE_ERR)));
+            assert_eq!(client.memory(&mut call, &[], &mut []), Err(Error::NilHandle));
         }
         call.operation = SIZE;
         call.handle = current;

@@ -1,8 +1,8 @@
 //! Safe owned handle clients. Allocations and state live in the resident System.
 #![no_std]
 #![forbid(unsafe_code)]
+use mac_abi::memory::*;
 pub use mac_abi::memory::{LOCKED, PURGEABLE_BIT, RESOURCE};
-use mac_abi::{BAD_ARGUMENT, memory::*};
 pub use mac_traps::{Client, Error, Result};
 
 #[derive(Clone, Copy)]
@@ -64,7 +64,7 @@ pub struct Handle<'a>
 }
 fn length(n: usize) -> Result<u32>
 {
-    u32::try_from(n).map_err(|_| Error(BAD_ARGUMENT))
+    u32::try_from(n).map_err(|_| Error::BadArgument)
 }
 impl<'a> Handle<'a>
 {

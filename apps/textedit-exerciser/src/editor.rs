@@ -1,14 +1,9 @@
 //! Interactive editor using only resident TextEdit and the public Toolbox SDK.
 use core::fmt::Write;
 
-use mac_toolbox::{events::{CMD_KEY, SHIFT_KEY},
-                  textedit::{CursorMovement, EditorId},
+use mac_toolbox::{textedit::{CursorMovement, EditorId},
                   *};
 
-fn error(error: Error) -> Status
-{
-    error.0
-}
 
 #[derive(Default)]
 pub struct Editor
@@ -25,25 +20,25 @@ pub struct Editor
 }
 impl Editor
 {
-    pub fn close(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn close(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         if self.window != 0
         {
-            system.textedit().dispose(self.editor).map_err(error)?;
+            system.textedit().dispose(self.editor)?;
             system.close_window(self.window)?;
             *self = Self::default();
         }
         Ok(())
     }
 
-    fn report(&mut self, system: &System<'_>) -> Result<(), Status>
+    fn report(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         if self.defer_drawing
         {
             self.report_pending = true;
             return Ok(());
         }
-        let info = system.textedit().info(self.editor).map_err(error)?;
+        let info = system.textedit().info(self.editor)?;
         let mut line = crate::Text::<128>::default();
         let _ = writeln!(&mut line,
                          "FINDER_TEXTEDIT_STATE length={} selection={}..{}",
@@ -57,7 +52,7 @@ impl Editor
         self.defer_drawing = true;
     }
 
-    pub fn flush_drawing(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn flush_drawing(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         self.defer_drawing = false;
         if core::mem::take(&mut self.draw_pending)
@@ -86,28 +81,25 @@ impl Editor
                  .is_ok_and(|info| info.selection_start != info.selection_end)
     }
 
-    pub fn open(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn open(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         self.prune(system)?;
         if self.window == 0
         {
-            let resource = system.resources()
-                                 .application()
-                                 .get(resources::ResourceKey { kind: *b"WIND",
-                                                               id:   2003 })
-                                 .map_err(error)?;
+            let resource =
+                system.resources().application().get(resources::ResourceKey { kind: *b"WIND",
+                                                                               id:   2003 })?;
             let mut bytes = [0; 20];
-            if resource.size() != bytes.len()
-               || resource.read(0, &mut bytes).map_err(error)? != bytes.len()
+            if resource.size() != bytes.len() || resource.read(0, &mut bytes)? != bytes.len()
             {
-                return Err(BAD_ARGUMENT);
+                return Err(Error::BadArgument);
             }
-            resource.release().map_err(error)?;
+            resource.release()?;
             let word = |at| i16::from_be_bytes([bytes[at], bytes[at + 1]]);
             let bounds = Rect::new(word(2), word(0), word(6), word(4));
             if word(8) != 8 || bounds.is_empty()
             {
-                return Err(BAD_ARGUMENT);
+                return Err(Error::BadArgument);
             }
             let mut title = [0; 768];
             let title = crate::text(system, 0, &mut title)?;
@@ -122,27 +114,27 @@ impl Editor
                 Err(e) =>
                 {
                     system.close_window(window)?;
-                    return Err(e.0);
+                    return Err(e);
                 }
             };
             if let Err(e) = system.textedit().set_text(editor, sample)
             {
                 let _ = system.textedit().dispose(editor);
                 system.close_window(window)?;
-                return Err(e.0);
+                return Err(e);
             }
             self.window = window;
             self.editor = editor;
         }
         system.select_window(self.window)?;
-        system.textedit().activate(self.editor, true).map_err(error)?;
-        self.ticks = system.events().ticks().map_err(error)?;
+        system.textedit().activate(self.editor, true)?;
+        self.ticks = system.events().ticks()?;
         self.draw(system)?;
         system.log("FINDER_TEXTEDIT_READY\n")?;
         self.report(system)
     }
 
-    fn prune(&mut self, system: &System<'_>) -> Result<(), Status>
+    fn prune(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         if self.window == 0
         {
@@ -152,9 +144,9 @@ impl Editor
         {
             Ok(_) =>
             {}
-            Err(NOT_FOUND) =>
+            Err(Error::NotFound) =>
             {
-                system.textedit().dispose(self.editor).map_err(error)?;
+                system.textedit().dispose(self.editor)?;
                 *self = Self::default();
             }
             Err(status) => return Err(status)
@@ -162,7 +154,7 @@ impl Editor
         Ok(())
     }
 
-    pub fn draw(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn draw(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         if self.defer_drawing
         {
@@ -175,11 +167,12 @@ impl Editor
         if size != self.size
         {
             let view = Rect::new(8, 8, size.h - 8, size.v - 24);
-            system.textedit().set_rects(self.editor, view, view).map_err(error)?;
-            system.windows()
-                  .set_grow_icon_clip(WindowId(self.window),
-                                      Some(Rect::new(size.h - 15, size.v - 15, size.h, size.v)))
-                  .map_err(error)?;
+            system.textedit().set_rects(self.editor, view, view)?;
+            system.windows().set_grow_icon_clip(WindowId(self.window),
+                                                 Some(Rect::new(size.h - 15,
+                                                                size.v - 15,
+                                                                size.h,
+                                                                size.v)))?;
             self.size = size;
             let mut line = crate::Text::<96>::default();
             let _ =
@@ -189,26 +182,25 @@ impl Editor
         // TE edits reset the blink state. Prime the caret before committing the
         // new scene, rather than presenting a hidden caret and repainting the
         // entire window again on the following null event.
-        system.textedit().idle(self.editor, self.ticks).map_err(error)?;
+        system.textedit().idle(self.editor, self.ticks)?;
         system.begin_update(self.window)?;
         let result = (|| {
             let port = system.quickdraw().graphics(WindowId(self.window));
-            port.reset().map_err(error)?;
-            port.colors(0xffffff, 0xffffff).map_err(error)?;
-            port.paint_rect(Rect::new(0, 0, size.h, size.v)).map_err(error)?;
-            system.textedit().draw(self.editor, WindowId(self.window)).map_err(error)?;
-            port.colors(0, 0xffffff).map_err(error)?;
+            port.reset()?;
+            port.colors(0xffffff, 0xffffff)?;
+            port.paint_rect(Rect::new(0, 0, size.h, size.v))?;
+            system.textedit().draw(self.editor, WindowId(self.window))?;
+            port.colors(0, 0xffffff)?;
             let mut bytes = [0; 768];
             let footer = crate::text(system, 2, &mut bytes)?;
-            port.clip_rect(Rect::new(0, size.v - 20, size.h - 16, size.v)).map_err(error)?;
+            port.clip_rect(Rect::new(0, size.v - 20, size.h - 16, size.v))?;
             port.text(quickdraw::fonts::FontSelection { family: 3,
                                                         size:   9,
                                                         face:   0 },
                       Point { h: 8,
                               v: size.v - 7 },
                       footer,
-                      0)
-                .map_err(error)?;
+                      0)?;
             Ok(())
         })();
         system.end_update(self.window)?;
@@ -216,7 +208,7 @@ impl Editor
     }
 
     pub fn command(&mut self, system: &System<'_>, command: u32, ticks: u32)
-                   -> Result<bool, Status>
+                   -> Result<bool, Error>
     {
         self.ticks = ticks;
         if !self.active(system)
@@ -228,23 +220,23 @@ impl Editor
         {
             crate::menus::CUT =>
             {
-                edit.cut(self.editor).map_err(error)?;
+                edit.cut(self.editor)?;
             }
             crate::menus::COPY =>
             {
-                edit.copy(self.editor).map_err(error)?;
+                edit.copy(self.editor)?;
             }
             crate::menus::PASTE =>
             {
-                edit.paste(self.editor).map_err(error)?;
+                edit.paste(self.editor)?;
             }
             crate::menus::CLEAR =>
             {
-                edit.delete(self.editor).map_err(error)?;
+                edit.delete(self.editor)?;
             }
             crate::menus::SELECT_ALL =>
             {
-                edit.select(self.editor, 0, u32::MAX).map_err(error)?;
+                edit.select(self.editor, 0, u32::MAX)?;
             }
             _ => return Ok(false)
         }
@@ -254,21 +246,22 @@ impl Editor
         Ok(true)
     }
 
-    pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Status>
+    pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Error>
     {
-        self.ticks = event.when;
+        self.ticks = event.input().when;
         self.prune(system)?;
         if self.window == 0
         {
             return Ok(false);
         }
         let edit = system.textedit();
-        if event.kind == EventKind::Activate
+        if matches!(event, Event::Activate { .. })
         {
-            edit.activate(self.editor, self.active(system)).map_err(error)?;
+            edit.activate(self.editor, self.active(system))?;
             self.draw(system)?;
         }
-        if event.kind == EventKind::Update && event.message == self.window
+        if matches!(event, Event::Update { .. })
+           && event.window().map_or(0, |window| window.0) == self.window
         {
             self.draw(system)?;
             return Ok(true);
@@ -279,33 +272,38 @@ impl Editor
             return Ok(false);
         }
         let window = self.window;
-        let local = |p: Point| -> Result<Point, Status> {
+        let local = |p: Point| -> Result<Point, Error> {
             let bounds = system.window(window)?.bounds;
             Ok(Point { h: p.h - bounds.left,
                        v: p.v - bounds.top })
         };
-        match event.kind
+        match event
         {
-            EventKind::MouseDown if event.message == self.window =>
+            Event::MouseDown { .. }
+                if event.window().map_or(0, |window| window.0) == self.window =>
             {
-                self.last_mouse = event.where_;
-                edit.click(self.editor, local(event.where_)?, event.modifiers & SHIFT_KEY != 0)
-                    .map_err(error)?;
+                self.last_mouse = event.input().at;
+                edit.click(self.editor,
+                           local(event.input().at)?,
+                           event.input()
+                                .modifiers
+                                .contains(mac_toolbox::events::Modifiers::SHIFT))?;
                 self.tracking = true;
                 self.draw(system)?;
                 Ok(true)
             }
-            EventKind::MouseUp if self.tracking =>
+            Event::MouseUp { .. } if self.tracking =>
             {
                 self.tracking = false;
                 Ok(true)
             }
             // A key release does not change browser policy or the filesystem.
-            EventKind::KeyUp => Ok(true),
-            EventKind::KeyDown | EventKind::AutoKey =>
+            Event::KeyUp { .. } => Ok(true),
+            Event::KeyDown { .. } =>
             {
-                let command = event.modifiers & CMD_KEY != 0;
-                let movement = match (event.message >> 8) as u8
+                let command =
+                    event.input().modifiers.contains(mac_toolbox::events::Modifiers::COMMAND);
+                let movement = match event.key().map_or(0, |key| key.code())
                 {
                     0x7b => Some(CursorMovement::Left),
                     0x7c => Some(CursorMovement::Right),
@@ -337,8 +335,11 @@ impl Editor
                 };
                 if let Some(movement) = movement
                 {
-                    edit.move_cursor(self.editor, movement, event.modifiers & SHIFT_KEY != 0)
-                        .map_err(error)?;
+                    edit.move_cursor(self.editor,
+                                     movement,
+                                     event.input()
+                                          .modifiers
+                                          .contains(mac_toolbox::events::Modifiers::SHIFT))?;
                     self.draw(system)?;
                     self.report(system)?;
                     return Ok(true);
@@ -347,27 +348,27 @@ impl Editor
                 {
                     return Ok(true);
                 }
-                let key = char::from(event.character());
+                let key = char::from(event.key().map_or('\0', |key| key.character()));
                 if key == '\r'
                    || key == '\u{8}'
                    || ('\u{1c}'..='\u{1f}').contains(&key)
                    || !key.is_control()
                 {
-                    edit.key(self.editor, key).map_err(error)?;
+                    edit.key(self.editor, key)?;
                     self.draw(system)?;
                     self.report(system)?;
                 }
                 Ok(true)
             }
-            EventKind::Null =>
+            Event::Idle { .. } =>
             {
-                let before = edit.info(self.editor).map_err(error)?;
-                if self.tracking && event.where_ != self.last_mouse
+                let before = edit.info(self.editor)?;
+                if self.tracking && event.input().at != self.last_mouse
                 {
-                    edit.click(self.editor, local(event.where_)?, true).map_err(error)?;
-                    self.last_mouse = event.where_;
+                    edit.click(self.editor, local(event.input().at)?, true)?;
+                    self.last_mouse = event.input().at;
                 }
-                let after = edit.idle(self.editor, event.when).map_err(error)?;
+                let after = edit.idle(self.editor, event.input().when)?;
                 if before != after
                 {
                     self.draw(system)?;

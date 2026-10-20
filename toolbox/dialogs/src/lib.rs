@@ -1,8 +1,9 @@
 //! Thin Rust interface to resident resource-based alerts.
 #![no_std]
 #![forbid(unsafe_code)]
-use mac_abi::{BAD_ARGUMENT, Event, WindowId, dialogs::*};
+use mac_abi::{WindowId, dialogs::*};
 pub use mac_traps::{Client, Error, Result};
+use toolbox_events::Event;
 #[derive(Clone, Copy)]
 pub struct Dialogs<'a>
 {
@@ -24,7 +25,7 @@ impl<'a> Dialogs<'a>
                                     ..Default::default() };
         if text.len() > call.text.len()
         {
-            return Err(Error(BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
         call.text[..text.len()].copy_from_slice(text.as_bytes());
         call.text_length = text.len() as u32;
@@ -37,7 +38,7 @@ impl<'a> Dialogs<'a>
     {
         let mut call = DialogCall { operation: HANDLE_EVENT,
                                     window: window.0,
-                                    event,
+                                    event: event.into_record(),
                                     ..Default::default() };
         self.client.dialog(&mut call)?;
         Ok((call.item != 0).then_some(call.item))
@@ -51,7 +52,7 @@ impl<'a> Dialogs<'a>
                                     ..Default::default() };
         if text.len() > call.text.len()
         {
-            return Err(Error(BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
         call.text[..text.len()].copy_from_slice(text.as_bytes());
         call.text_length = text.len() as u32;

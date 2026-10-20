@@ -7,7 +7,7 @@ use std::{sync::{Barrier,
           thread,
           time::{Duration, Instant}};
 
-use mac_toolbox::{Error, SERVICE_BUSY, System};
+use mac_toolbox::{Error, System};
 
 fn retry<T>(busy: &AtomicUsize, mut call: impl FnMut() -> Result<T, Error>) -> T
 {
@@ -17,7 +17,7 @@ fn retry<T>(busy: &AtomicUsize, mut call: impl FnMut() -> Result<T, Error>) -> T
         match call()
         {
             Ok(value) => return value,
-            Err(Error(SERVICE_BUSY)) =>
+            Err(Error::ServiceBusy) =>
             {
                 busy.fetch_add(1, Ordering::Relaxed);
                 assert!(Instant::now() < deadline, "resident shared service made no progress");

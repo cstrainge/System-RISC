@@ -1,9 +1,10 @@
 //! Exercise the actual Finder viewer source through the public SDK.
 #![no_std]
 #![no_main]
+use mac_toolbox::events::classic::Event;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-use mac_toolbox::{Event, EventKind, Status, System, SystemServices, events::EVERY_EVENT};
+use mac_toolbox::{EventKind, Status, System, SystemServices, events::classic::EVERY_EVENT};
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 static FILES: AtomicUsize = AtomicUsize::new(0);
 static MENUS: AtomicUsize = AtomicUsize::new(0);
@@ -51,9 +52,9 @@ unsafe extern "C" fn trace(number: u32, pointer: *mut (), size: usize) -> i64
     unsafe { ((*SERVICES.load(Ordering::Acquire)).trap)(number, pointer, size) }
 }
 
-fn require(value: bool, system: &System<'_>, message: &str) -> Result<(), Status>
+fn require(value: bool, system: &System<'_>, message: &str) -> Result<(), mac_toolbox::Error>
 {
-    if value { Ok(()) } else { system.log(message)?; Err(mac_toolbox::BAD_ARGUMENT) }
+    if value { Ok(()) } else { system.log(message)?; Err(mac_toolbox::Error::BadArgument) }
 }
 #[path = "../../../../../../finder/src/clipboard.rs"]
 mod clipboard;
@@ -70,17 +71,17 @@ mod ui
 {
     use mac_toolbox::{Status, System};
     pub fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8])
-                    -> Result<&'b str, Status>
+                    -> Result<&'b str, mac_toolbox::Error>
     {
-        system.resources().application().indexed_string(2000, index, output).map_err(|e| e.0)
+        system.resources().application().indexed_string(2000, index, output)
     }
 }
-fn run(system: &System<'_>) -> Result<(), Status>
+fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
 {
     system.log("CLIPBOARD_PROBE_START\n")?;
-    system.quickdraw().cursors().hide().map_err(|e| e.0)?;
+    system.quickdraw().cursors().hide()?;
     system.log("CLIPBOARD_PROBE_HIDDEN\n")?;
-    system.scrap().clear().map_err(|e| e.0)?;
+    system.scrap().clear()?;
     let mut viewer = clipboard::Viewer::default();
     system.log("CLIPBOARD_PROBE_CLEARED\n")?;
     viewer.open(system)?;
@@ -91,14 +92,14 @@ fn run(system: &System<'_>) -> Result<(), Status>
     let mut moved = false;
     loop
     {
-        let event = system.next_event(EVERY_EVENT)?;
+        let event = system.next_event(mac_toolbox::events::EventMask::ALL).map(mac_toolbox::Event::into_record)?;
         let before = COMMITS.load(Ordering::Relaxed);
         if event.kind != EventKind::KeyDown
         {
-            let handled = viewer.event(system, event)?;
+            let handled = viewer.event(system, event.into())?;
             if scroll_mode && event.kind == EventKind::MouseDown && !stationary
             {
-                require(system.events().button().map_err(|e| e.0)?,
+                require(system.events().button()?,
                         system, "CLIPBOARD_SCROLL_FAIL physical button not held\n")?;
                 let commits = COMMITS.load(Ordering::Relaxed);
                 let tracks = TRACKS.load(Ordering::Relaxed);
@@ -108,12 +109,12 @@ fn run(system: &System<'_>) -> Result<(), Status>
                 for _ in 0..100
                 {
                     // Real public event polling supplies the current held point.
-                    let idle = system.next_event(0)?;
-                    require(viewer.event(system, idle)?, system,
+                    let idle = system.next_event(mac_toolbox::events::EventMask::from_bits_retain(0)).map(mac_toolbox::Event::into_record)?;
+                    require(viewer.event(system, idle.into())?, system,
                             "CLIPBOARD_SCROLL_FAIL held idle was not consumed\n")?;
                     // Same shared policy call used by Finder's consumed-event
                     // branch; observe actual SDK IO and menu service traffic.
-                    menus::update_after_event(system, &browser, idle)?;
+                    menus::update_after_event(system, &browser, idle.into())?;
                 }
                 require(TRACKS.load(Ordering::Relaxed) - tracks >= 100,
                         system, "CLIPBOARD_SCROLL_FAIL thumb was not tracking\n")?;
@@ -149,8 +150,8 @@ fn run(system: &System<'_>) -> Result<(), Status>
             {
                 b't' =>
                 {
-                    system.scrap().clear().map_err(|e| e.0)?;
-                    system.scrap().put_text("abc").map_err(|e| e.0)?;
+                    system.scrap().clear()?;
+                    system.scrap().put_text("abc")?;
                     viewer.refresh(system)?;
                     system.log("CLIPBOARD_PROBE_TEXT\n")?;
                 }
@@ -161,15 +162,15 @@ fn run(system: &System<'_>) -> Result<(), Status>
                     {
                         if index % 20 == 19 { *byte = b'\r'; }
                     }
-                    system.scrap().clear().map_err(|e| e.0)?;
+                    system.scrap().clear()?;
                     system.scrap().put_text(core::str::from_utf8(&text).map_err(|_| mac_toolbox::BAD_ARGUMENT)?)
-                          .map_err(|e| e.0)?;
+                          ?;
                     viewer.refresh(system)?;
                     let commits = COMMITS.load(Ordering::Relaxed);
                     viewer.event(system, Event { kind: EventKind::Activate,
                                                 message: viewer.window + 100,
                                                 modifiers: mac_toolbox::ACTIVE_FLAG,
-                                                ..Default::default() })?;
+                                                ..Default::default() }.into())?;
                     require(COMMITS.load(Ordering::Relaxed) == commits,
                             system, "CLIPBOARD_SCROLL_FAIL unrelated activation repainted\n")?;
                     system.log("CLIPBOARD_UNRELATED_ACTIVATE_PASS commits=0\n")?;
@@ -180,7 +181,7 @@ fn run(system: &System<'_>) -> Result<(), Status>
                 }
                 b'e' =>
                 {
-                    system.scrap().clear().map_err(|e| e.0)?;
+                    system.scrap().clear()?;
                     viewer.refresh(system)?;
                     system.log("CLIPBOARD_PROBE_EMPTY_AGAIN\n")?;
                 }
@@ -205,12 +206,12 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(&profiled) }
     {
         Ok(s) => s,
-        Err(e) => return e
+        Err(e) => return e.status()
     };
     if let Err(error) = run(&system)
     {
         let _ = system.log("CLIPBOARD_PROBE_FAIL\n");
-        return error;
+        return error.status();
     }
     0
 }

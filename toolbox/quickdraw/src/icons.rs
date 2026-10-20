@@ -17,7 +17,7 @@ impl IconFlags
     {
         if self.open && self.disabled
         {
-            return Err(mac_traps::Error(mac_abi::BAD_ARGUMENT));
+            return Err(mac_traps::Error::BadArgument);
         }
         Ok((if self.open { 3 } else { u16::from(self.disabled) })
            | if self.selected { 0x4000 } else { 0 })

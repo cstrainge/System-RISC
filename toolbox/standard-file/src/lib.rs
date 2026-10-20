@@ -2,7 +2,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 pub use mac_abi::files::CatalogInfo;
-use mac_abi::{BAD_ARGUMENT, standard_file::*};
+use mac_abi::standard_file::*;
 pub use mac_traps::{Client, Error, Result};
 #[derive(Clone, Copy)]
 pub struct StandardFile<'a>
@@ -71,7 +71,7 @@ impl<'a> StandardFile<'a>
         {
             if types.len() > MAX_TYPES
             {
-                return Err(Error(BAD_ARGUMENT));
+                return Err(Error::BadArgument);
             }
             call.type_count = types.len() as i32;
             call.types[..types.len()].copy_from_slice(types);
@@ -90,7 +90,7 @@ impl<'a> StandardFile<'a>
                                           ..Default::default() };
         if prompt.len() > call.prompt.len() || default_name.len() > call.name.len()
         {
-            return Err(Error(BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
         call.prompt[..prompt.len()].copy_from_slice(prompt.as_bytes());
         call.prompt_length = prompt.len() as u32;
@@ -141,7 +141,7 @@ impl Dialog<'_>
                 Ok(Progress::Selected(Selection { entry:     call.entry,
                                                   replacing: call.replacing != 0 }))
             }
-            _ => Err(Error(BAD_ARGUMENT))
+            _ => Err(Error::BadArgument)
         }
     }
 

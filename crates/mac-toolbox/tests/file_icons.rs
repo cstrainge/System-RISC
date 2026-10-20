@@ -185,14 +185,14 @@ fn application_icons_use_their_own_bundle_family_sizes_colors_and_masks()
                                            Rect::new(0, 0, 32, 32),
                                            IconFlags::default())
                            .unwrap_err()
-                           .0,
+                           .status(),
                        mac_abi::BAD_ARGUMENT);
             assert_eq!(port.plot_file_icon(system.files().volume_at(0).unwrap().id,
                                            2,
                                            Rect::new(0, 0, 32, 32),
                                            IconFlags::default())
                            .unwrap_err()
-                           .0,
+                           .status(),
                        mac_abi::NOT_FOUND);
             assert_eq!(pixels, vec![0x123456; 32 * 32], "failed lookup must not paint");
             assert_eq!(system.quickdraw().icons().count().unwrap(),

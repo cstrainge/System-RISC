@@ -2,9 +2,7 @@
 #![no_std]
 #![no_main]
 
-use mac_toolbox::{System,
-                  events::{CMD_KEY, EVERY_EVENT},
-                  *};
+use mac_toolbox::{System, *};
 mod resources
 {
     use mac_toolbox as mac_abi;
@@ -19,14 +17,14 @@ mod icon_view;
 mod get_info;
 
 fn update_menus(system: &System<'_>, browser: &browser::Browser, info: &get_info::Controller)
-                -> Result<(), Status>
+                -> Result<(), Error>
 {
     menus::update(system, browser)?;
     info.update_menus(system)
 }
 
-fn try_action<T>(system: &System<'_>, alerts: &mut ui::Alerts, result: Result<T, Status>)
-                 -> Result<Option<T>, Status>
+fn try_action<T>(system: &System<'_>, alerts: &mut ui::Alerts, result: Result<T, Error>)
+                 -> Result<Option<T>, Error>
 {
     use core::fmt::Write;
     match result
@@ -35,12 +33,12 @@ fn try_action<T>(system: &System<'_>, alerts: &mut ui::Alerts, result: Result<T,
         Err(status) =>
         {
             let mut message = browser::Text::<80>::default();
-            let _ = writeln!(&mut message, "FINDER_ACTION_FAILED status={}", status);
+            let _ = writeln!(&mut message, "FINDER_ACTION_FAILED status={}", status.status());
             system.log(message.as_str())?;
             if let Err(error) = alerts.error(system, status)
             {
                 let mut message = browser::Text::<80>::default();
-                let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error);
+                let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
                 system.log(message.as_str())?;
             }
             Ok(None)
@@ -48,13 +46,13 @@ fn try_action<T>(system: &System<'_>, alerts: &mut ui::Alerts, result: Result<T,
     }
 }
 
-fn about(system: &System<'_>, id: u32) -> Result<(), Status>
+fn about(system: &System<'_>, id: u32) -> Result<(), Error>
 {
     system.begin_update(id)?;
     let port = system.quickdraw().graphics(WindowId(id));
-    port.reset().map_err(|e| e.0)?;
-    port.colors(0xffffff, 0xffffff).map_err(|e| e.0)?;
-    port.paint_rect(Rect::new(0, 0, 300, 210)).map_err(|e| e.0)?;
+    port.reset()?;
+    port.colors(0xffffff, 0xffffff)?;
+    port.paint_rect(Rect::new(0, 0, 300, 210))?;
     for (y, index) in [(20, 4), (45, 5), (70, 6), (100, 7), (120, 8), (140, 9), (160, 10)]
     {
         let mut bytes = [0; 768];
@@ -65,12 +63,11 @@ fn about(system: &System<'_>, id: u32) -> Result<(), Status>
                   Point { h: 16,
                           v: y },
                   text,
-                  0)
-            .map_err(|e| e.0)?;
+                  0)?;
     }
     system.end_update(id)
 }
-fn open_about(system: &System<'_>, id: &mut u32) -> Result<(), Status>
+fn open_about(system: &System<'_>, id: &mut u32) -> Result<(), Error>
 {
     if *id == 0 || system.window(*id).is_err()
     {
@@ -81,7 +78,7 @@ fn open_about(system: &System<'_>, id: &mut u32) -> Result<(), Status>
     system.select_window(*id)?;
     about(system, *id)
 }
-fn finder(system: &System<'_>) -> Result<(), Status>
+fn finder(system: &System<'_>) -> Result<(), Error>
 {
     let mut browser = browser::Browser::default();
     let mut info = get_info::Controller::default();
@@ -93,12 +90,13 @@ fn finder(system: &System<'_>) -> Result<(), Status>
     let mut clipboard = clipboard::Viewer::default();
     for _ in 0..32
     {
-        let event = system.next_event(EVERY_EVENT)?;
-        if event.kind == EventKind::Update && browser.contains(event.message)
+        let event = system.next_event(mac_toolbox::events::EventMask::ALL)?;
+        if matches!(event, Event::Update { .. })
+           && browser.contains(event.window().map_or(0, |window| window.0))
         {
-            browser.draw(system, event.message)?;
+            browser.draw(system, event.window().map_or(0, |window| window.0))?;
         }
-        if event.kind == EventKind::Null
+        if matches!(event, Event::Idle { .. })
         {
             break;
         }
@@ -106,7 +104,8 @@ fn finder(system: &System<'_>) -> Result<(), Status>
     system.log("DESKTOP_READY: Finder and native Window Manager\n")?;
     loop
     {
-        let event = system.wait_event(EVERY_EVENT, if info.pending() { 0 } else { 30 })?;
+        let event = system.wait_event(mac_toolbox::events::EventMask::ALL,
+                                      if info.pending() { 0 } else { 30 })?;
         if alerts.window != 0
         {
             let confirm = alerts.event(system, event)?;
@@ -143,12 +142,10 @@ fn finder(system: &System<'_>) -> Result<(), Status>
         {
             // Typing/selection only changes Info's edit policy. The broader
             // Finder policy enumerates Trash and must not run per keystroke.
-            if matches!(event.kind,
-                        EventKind::KeyDown
-                        | EventKind::AutoKey
-                        | EventKind::KeyUp
-                        | EventKind::Null)
-               || event.kind == EventKind::MenuCommand && event.message >> 16 == 1253
+            if matches!(event, Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Idle { .. })
+               || matches!(event,
+                           Event::MenuCommand { menu: 1253,
+                                                .. })
             {
                 info.update_menus(system)?;
             }
@@ -165,7 +162,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
         if try_action(system, &mut alerts, clipboard.event(system, event))?.unwrap_or(false)
         {
             menus::update_after_event(system, &browser, event)?;
-            if event.kind != EventKind::Null
+            if !matches!(event, Event::Idle { .. })
             {
                 info.update_menus(system)?;
             };
@@ -180,7 +177,7 @@ fn finder(system: &System<'_>) -> Result<(), Status>
         {
             continue;
         }
-        if let Some(selection) = system.menus().selection(&event).map_err(|e| e.0)?
+        if let Some(selection) = system.menus().selection(&event)?
         {
             let mut log = browser::Text::<120>::default();
             use core::fmt::Write;
@@ -219,48 +216,53 @@ fn finder(system: &System<'_>) -> Result<(), Status>
             update_menus(system, &browser, &info)?;
             continue;
         }
-        match event.kind
+        match event
         {
-            EventKind::Update =>
+            Event::Update { .. } =>
             {
-                if event.message == about_id && about_id != 0
+                if event.window().map_or(0, |window| window.0) == about_id && about_id != 0
                 {
                     about(system, about_id)?;
                 }
-                else if browser.contains(event.message)
+                else if browser.contains(event.window().map_or(0, |window| window.0))
                 {
-                    browser.draw(system, event.message)?;
+                    browser.draw(system, event.window().map_or(0, |window| window.0))?;
                 }
             }
-            EventKind::Activate =>
+            Event::Activate { .. } =>
             {
                 browser.activate(event);
                 // Window Manager paints activation chrome and queues damage for
                 // affected content. Redraw each window when its Update arrives,
                 // rather than rebuilding every folder on both Activate edges.
             }
-            EventKind::KeyDown | EventKind::AutoKey =>
+            Event::KeyDown { .. } =>
             {
-                let key = event.character().to_ascii_lowercase();
-                let code = (event.message >> 8) as u8;
-                if key == b'q' && event.modifiers & CMD_KEY == 0
+                let key = event.key().map_or('\0', |key| key.character()).to_ascii_lowercase();
+                let code = event.key().map_or(0, |key| key.code());
+                if key == 'q'
+                   && !event.input().modifiers.contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
                     let launch = (|| {
-                        let app = system.files()
-                                        .lookup(browser.startup,
-                                                files::ROOT_ID,
-                                                "/Applications/QuickDraw Test")
-                                        .map_err(|e| e.0)?;
-                        system.processes().launch(browser.startup, app.id).map_err(|e| e.0)?;
+                        let app = system.files().lookup(browser.startup,
+                                                         files::ROOT_ID,
+                                                         "/Applications/QuickDraw Test")?;
+                        system.processes().launch(browser.startup, app.id)?;
                         Ok(())
                     })();
                     let _ = try_action(system, &mut alerts, launch)?;
                 }
-                else if key == b'a' && event.modifiers & CMD_KEY == 0
+                else if key == 'a'
+                          && !event.input()
+                                   .modifiers
+                                   .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
                     let _ = try_action(system, &mut alerts, open_about(system, &mut about_id))?;
                 }
-                else if key == b'i' && event.modifiers & CMD_KEY != 0
+                else if key == 'i'
+                          && event.input()
+                                  .modifiers
+                                  .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
                     // A shortcut captured before the selection's menu policy
                     // updates arrives as KeyDown. Resolve it from current state.
@@ -269,7 +271,10 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                         let _ = try_action(system, &mut alerts, info.open(system, identity))?;
                     }
                 }
-                else if key == b'w' && event.modifiers & CMD_KEY != 0
+                else if key == 'w'
+                          && event.input()
+                                  .modifiers
+                                  .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
                     if let Ok(front) = system.window(0)
                     {
@@ -277,7 +282,10 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                         browser.prune(system)?;
                     }
                 }
-                else if key == b'n' && event.modifiers & CMD_KEY == 0
+                else if key == 'n'
+                          && !event.input()
+                                   .modifiers
+                                   .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
                     let _ =
                         try_action(system,&mut alerts,
@@ -285,17 +293,29 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                                          browser::Location { volume: browser.startup,
                                                              folder: mac_toolbox::files::ROOT_ID }))?;
                 }
-                else if code == 0x33 && event.modifiers & CMD_KEY != 0
+                else if code == 0x33
+                          && event.input()
+                                  .modifiers
+                                  .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
                     let _ = try_action(system, &mut alerts, browser.trash_selection(system))?;
                 }
-                else if code == 0x7e && event.modifiers & CMD_KEY != 0
+                else if code == 0x7e
+                          && event.input()
+                                  .modifiers
+                                  .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
                     let _ = try_action(system, &mut alerts, browser.parent(system))?;
                 }
-                else if key == b'\r'
-                          || key == b'o' && event.modifiers & CMD_KEY != 0
-                          || code == 0x7d && event.modifiers & CMD_KEY != 0
+                else if key == '\r'
+                          || key == 'o'
+                             && event.input()
+                                     .modifiers
+                                     .contains(mac_toolbox::events::Modifiers::COMMAND)
+                          || code == 0x7d
+                             && event.input()
+                                     .modifiers
+                                     .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
                     let _ = try_action(system, &mut alerts, browser.open_selection(system))?;
                 }
@@ -308,14 +328,16 @@ fn finder(system: &System<'_>) -> Result<(), Status>
                     browser.scroll(system, 104)?;
                 }
             }
-            EventKind::MouseDown if event.message == 0 || browser.contains(event.message) =>
+            Event::MouseDown { .. }
+                if event.window().map_or(0, |window| window.0) == 0
+                   || browser.contains(event.window().map_or(0, |window| window.0)) =>
             {
                 let _ = try_action(system, &mut alerts, browser.click(system, event))?;
             }
             _ =>
             {}
         }
-        if event.kind != EventKind::Null
+        if !matches!(event, Event::Idle { .. })
         {
             update_menus(system, &browser, &info)?;
         }
@@ -335,11 +357,11 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(system) => system,
-        Err(status) => return status
+        Err(status) => return status.status()
     };
     if let Err(status) = system.log("Finder: native application entry reached\n")
     {
-        return status;
+        return status.status();
     }
     if system.capabilities() & CAP_GRAPHICS == 0
     {
@@ -351,7 +373,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
         Err(status) =>
         {
             let _ = system.log("FINDER_ERROR: Toolbox operation failed\n");
-            status
+            status.status()
         }
     }
 }

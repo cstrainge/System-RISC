@@ -1,17 +1,17 @@
 //! Drain consecutive keyboard input before committing the editor's next frame.
 use core::fmt::Write;
 
-use mac_toolbox::{events::EVERY_EVENT, *};
+use mac_toolbox::*;
 
 use crate::{Text, editor, menus};
 
-pub fn is_keyboard(kind: EventKind) -> bool
+pub fn is_keyboard(kind: Event) -> bool
 {
-    matches!(kind, EventKind::KeyDown | EventKind::AutoKey | EventKind::KeyUp)
+    matches!(kind, Event::KeyDown { .. } | Event::KeyUp { .. })
 }
 
 pub fn keyboard(system: &System<'_>, editor: &mut editor::Editor, first: Event)
-                -> Result<(), Status>
+                -> Result<(), Error>
 {
     let mut pending = [Event::default(); 128];
     pending[0] = first;
@@ -23,11 +23,11 @@ pub fn keyboard(system: &System<'_>, editor: &mut editor::Editor, first: Event)
     {
         // Command shortcuts already arrive as MenuCommand records from the
         // Event Manager. Leave them queued for the normal main-loop dispatch.
-        match system.events().peek(EVERY_EVENT).map_err(|error| error.0)?
+        match system.events().peek(mac_toolbox::events::EventMask::ALL)?
         {
-            Some(next) if is_keyboard(next.kind) =>
+            Some(next) if is_keyboard(next) =>
             {
-                pending[count] = system.next_event(EVERY_EVENT)?;
+                pending[count] = system.next_event(mac_toolbox::events::EventMask::ALL)?;
                 count += 1;
             }
             _ => break
@@ -39,7 +39,7 @@ pub fn keyboard(system: &System<'_>, editor: &mut editor::Editor, first: Event)
     {
         // Releases only update the OS key map; they require no editor query,
         // menu query or repaint. Mutation order otherwise remains unchanged.
-        if event.kind != EventKind::KeyUp
+        if !matches!(event, Event::KeyUp { .. })
         {
             editor.event(system, event)?;
             keys += 1;

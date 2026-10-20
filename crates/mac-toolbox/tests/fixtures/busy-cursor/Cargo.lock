@@ -217,6 +217,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "toolbox-busy-cursor"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-toolbox",
+]
+
+[[package]]
 name = "toolbox-controls"
 version = "0.1.0"
 dependencies = [
@@ -239,6 +247,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-traps",
+ "toolbox-events",
 ]
 
 [[package]]
@@ -246,6 +255,7 @@ name = "toolbox-events"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
+ "mac-text",
  "mac-traps",
 ]
 
@@ -271,6 +281,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-traps",
+ "toolbox-events",
 ]
 
 [[package]]
@@ -295,14 +306,6 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-traps",
-]
-
-[[package]]
-name = "toolbox-busy-cursor"
-version = "0.1.0"
-dependencies = [
- "mac-build",
- "mac-toolbox",
 ]
 
 [[package]]

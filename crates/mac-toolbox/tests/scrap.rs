@@ -3,7 +3,7 @@
 #[allow(dead_code)]
 mod conformance;
 mod support;
-use mac_toolbox::{BAD_ARGUMENT, Error, NO_MEMORY, System,
+use mac_toolbox::{Error, System,
                   scrap::{MAX_BYTES, MAX_FLAVORS, TEXT}};
 #[test]
 fn original_scrap_trace_through_resident_userspace_services()
@@ -51,7 +51,7 @@ fn byte_and_record_limits_preserve_the_last_successful_clipboard()
         system.scrap().put_text("retained").unwrap();
         let before = system.scrap().info().unwrap();
         let excessive = vec![0xab; MAX_BYTES];
-        assert_eq!(system.scrap().put(*b"SIZE", &excessive), Err(Error(NO_MEMORY)));
+        assert_eq!(system.scrap().put(*b"SIZE", &excessive), Err(Error::NoMemory));
         assert_eq!(system.scrap().info().unwrap(), before);
         let mut text = [0; 32];
         assert_eq!(system.scrap().text(&mut text).unwrap(), "retained");
@@ -62,13 +62,13 @@ fn byte_and_record_limits_preserve_the_last_successful_clipboard()
         }
         let before = system.scrap().info().unwrap();
         assert_eq!(before.size as usize, MAX_FLAVORS * 8);
-        assert_eq!(system.scrap().put(*b"LAST", &[]), Err(Error(NO_MEMORY)));
+        assert_eq!(system.scrap().put(*b"LAST", &[]), Err(Error::NoMemory));
         assert_eq!(system.scrap().info().unwrap(), before);
         system.scrap().clear().unwrap();
         system.scrap().put(*b"FULL", &excessive[..MAX_BYTES - 8]).unwrap();
         assert_eq!(system.scrap().info().unwrap().size as usize, MAX_BYTES);
         let before = system.scrap().info().unwrap();
-        assert_eq!(system.scrap().put(*b"ZERO", &[]), Err(Error(NO_MEMORY)));
+        assert_eq!(system.scrap().put(*b"ZERO", &[]), Err(Error::NoMemory));
         assert_eq!(system.scrap().info().unwrap(), before);
         system.scrap().clear().unwrap();
         system.scrap().put_text("capacity recovered").unwrap();
@@ -91,7 +91,7 @@ fn transport_clears_borrowed_pointers_on_success_and_failure()
         assert!(call.input.is_null() && call.output.is_null());
         assert_eq!((call.input_length, call.capacity), (0, 0));
         call.kind = TEXT;
-        assert_eq!(system.client().scrap(&mut call, b"bypass", &mut []), Err(Error(BAD_ARGUMENT)));
+        assert_eq!(system.client().scrap(&mut call, b"bypass", &mut []), Err(Error::BadArgument));
         assert!(call.input.is_null() && call.output.is_null());
         assert_eq!((call.input_length, call.capacity), (0, 0));
     });
@@ -111,7 +111,7 @@ fn host_threads_share_one_clipboard_without_torn_payloads_or_lost_records()
             match operation()
             {
                 Ok(value) => return value,
-                Err(Error(mac_toolbox::SERVICE_BUSY)) =>
+                Err(Error::ServiceBusy) =>
                 {
                     busy.fetch_add(1, Ordering::Relaxed);
                     assert!(Instant::now() < deadline, "shared Scrap service made no progress");

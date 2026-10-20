@@ -42,13 +42,15 @@ fn observe(system: &System<'_>, handle: &Handle<'_>, expected: &Observation,
            operation: mac_toolbox::ToolboxResult<()>)
            -> Result<usize, Failure>
 {
-    require(expected, "operation error", operation.map_or_else(|e| e.0, |_| 0) == expected.error)?;
+    require(expected,
+            "operation error",
+            operation.map_or_else(|e| e.status(), |_| 0) == expected.error)?;
     require(expected, "MemError after operation", system.memory().last_error()? == expected.error)?;
     let length = handle.len();
     require(expected, "GetHandleSize result", match expected.size
     {
         Some(n) => length == Ok(n),
-        None => length == Err(mac_toolbox::Error(expected.size_error))
+        None => length == Err(mac_toolbox::Error::from_status(expected.size_error))
     })?;
     require(expected,
             "GetHandleSize MemError",
@@ -57,7 +59,7 @@ fn observe(system: &System<'_>, handle: &Handle<'_>, expected: &Observation,
     require(expected, "HGetState result", match expected.state
     {
         Some(n) => state == Ok(n),
-        None => state == Err(mac_toolbox::Error(expected.state_error))
+        None => state == Err(mac_toolbox::Error::from_status(expected.state_error))
     })?;
     require(expected, "HGetState MemError", system.memory().last_error()? == expected.state_error)?;
     if !expected.payload.is_empty()

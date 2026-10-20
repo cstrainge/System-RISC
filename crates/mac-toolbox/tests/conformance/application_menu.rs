@@ -69,7 +69,7 @@ pub fn snapshot(system: &System<'_>) -> Result<usize, Failure>
                 "captured alphabetic process rows and foreground mark")?;
     }
     require(menus.set_item_enabled(MENU, 1, !others_visible)
-            == Err(mac_toolbox::Error(mac_toolbox::NOT_SUPPORTED)),
+            == Err(mac_toolbox::Error::NotSupported),
             "system application menu is protected from application writes")?;
     require(menus.item(MENU, 1)?.enabled == others_visible,
             "rejected menu mutation preserves command policy")?;

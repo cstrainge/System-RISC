@@ -2,8 +2,8 @@
 //! retained in this crate; every operation enters the native System service.
 #![no_std]
 #![forbid(unsafe_code)]
+use mac_abi::scrap::*;
 pub use mac_abi::scrap::{FlavorInfo, MAX_BYTES, MAX_FLAVORS, NO_TYPE_ERR, ScrapInfo, TEXT};
-use mac_abi::{BAD_ARGUMENT, scrap::*};
 pub use mac_traps::{Client, Error, Result};
 #[derive(Clone, Copy)]
 pub struct Scrap<'a>
@@ -56,7 +56,7 @@ impl<'a> Scrap<'a>
         let mut call =
             ScrapCall { operation: READ,
                         kind,
-                        offset: u32::try_from(offset).map_err(|_| Error(BAD_ARGUMENT))?,
+                        offset: u32::try_from(offset).map_err(|_| Error::BadArgument)?,
                         ..Default::default() };
         self.client.scrap(&mut call, &[], output)?;
         Ok(call.transferred)
@@ -69,15 +69,15 @@ impl<'a> Scrap<'a>
         let mut call = ScrapCall { operation: READ_TEXT,
                                    ..Default::default() };
         self.client.scrap(&mut call, &[], output)?;
-        core::str::from_utf8(output.get(..call.transferred).ok_or(Error(BAD_ARGUMENT))?)
-            .map_err(|_| Error(BAD_ARGUMENT))
+        core::str::from_utf8(output.get(..call.transferred).ok_or(Error::BadArgument)?)
+            .map_err(|_| Error::BadArgument)
     }
 
     /// Enumerate records in their stored order; duplicate kinds are visible.
     pub fn flavor_at(self, index: usize) -> Result<FlavorInfo>
     {
         let mut call = ScrapCall { operation: FLAVOR_AT,
-                                   index: u32::try_from(index).map_err(|_| Error(BAD_ARGUMENT))?,
+                                   index: u32::try_from(index).map_err(|_| Error::BadArgument)?,
                                    ..Default::default() };
         self.client.scrap(&mut call, &[], &mut [])?;
         Ok(call.flavor)

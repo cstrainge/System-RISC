@@ -239,6 +239,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-traps",
+ "toolbox-events",
 ]
 
 [[package]]
@@ -246,6 +247,7 @@ name = "toolbox-events"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
+ "mac-text",
  "mac-traps",
 ]
 
@@ -279,6 +281,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-traps",
+ "toolbox-events",
 ]
 
 [[package]]

@@ -1,7 +1,8 @@
 //! Original System7.6.1 low-level OS queue observations and explicitly separate
 //! native application-queue contracts, through the public userspace facade.
 use mac_toolbox::{System,
-                  events::{BTN_STATE, EVERY_EVENT, Event, EventKind, Events, Point, SHIFT_KEY}};
+                  events::{Events, Point,
+                           classic::{BTN_STATE, EVERY_EVENT, Event, EventKind, SHIFT_KEY}}};
 
 use super::{Failure, require};
 include!("../data/events/observations.rs");
@@ -17,7 +18,7 @@ fn original(action: &str) -> Result<(i32, bool, u16, u32), Failure>
 fn posted(events: Events<'_>, action: &str, kind: EventKind, message: u32) -> Result<(), Failure>
 {
     let expected = original(action)?;
-    let actual = events.os_post(kind, message).map_or_else(|error| error.0, |_| 0);
+    let actual = events.os_post(kind, message).map_or_else(|error| error.status(), |_| 0);
     require(actual == expected.0, "original OS posting status")
 }
 fn read(events: Events<'_>, action: &'static str, mask: u16, remove: bool) -> Result<(), Failure>
@@ -129,7 +130,7 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
     events.os_post(EventKind::KeyDown, 0x1234)?;
     let stamped = events.os_event(EVERY_EVENT, true)?.event;
     let after = events.input_state()?;
-    require(stamped.where_ == before.mouse && stamped.modifiers == before.modifiers,
+    require(stamped.where_ == before.mouse && stamped.modifiers == before.modifiers.bits(),
             "posting captures physical input state")?;
     require(stamped.when.wrapping_sub(before.ticks) <= after.ticks.wrapping_sub(before.ticks),
             "posting stamp uses wrapping TickCount")?;
@@ -153,49 +154,72 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
     }
     native(system)?;
     system.log("EVENTS_USERSPACE_PASS original_queue=passed native_queue=passed\n")
-          .map_err(Failure::Service)?;
+          .map_err(|error| Failure::Service(error.status()))?;
     Ok(())
 }
 
 fn native(system: &System<'_>) -> Result<(), Failure>
 {
     let events = system.events();
-    events.flush(EVERY_EVENT, 0)?;
+    events.flush(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT),
+                 mac_toolbox::events::EventMask::from_bits_retain(0))?;
     let event = Event { kind:      EventKind::Application1,
                         message:   0xfeed_beef,
                         when:      u32::MAX - 2,
                         where_:    Point { h: -17,
                                            v: 1024 },
                         modifiers: SHIFT_KEY | BTN_STATE };
-    events.post(event)?;
-    require(events.peek(1 << 12)? == Some(event), "native peek preserves full record")?;
-    require(events.peek(1 << 12)? == Some(event), "native peek does not dequeue")?;
+    events.post(event.into())?;
+    require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?
+            == Some(event.into()),
+            "native peek preserves full record")?;
+    require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?
+            == Some(event.into()),
+            "native peek does not dequeue")?;
     require(events.os_get(EVERY_EVENT)?.is_none(), "native posting isolated from OS queue")?;
-    require(events.next_event(1 << 12)? == event, "native next receives posted record")?;
-    require(events.peek(1 << 12)?.is_none(), "native next removes record")?;
+    require(events.next(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?.into_record()
+            == event,
+            "native next receives posted record")?;
+    require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?.is_none(),
+            "native next removes record")?;
     for message in 0..130
     {
         events.post(Event { message,
-                            ..event })?;
+                            ..event }.into())?;
     }
     for message in 2..130
     {
-        require(events.next_event(1 << 12)?.message == message, "native128 queue retention")?;
+        require(events.next(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?
+                      .into_record()
+                      .message
+                == message,
+                "native128 queue retention")?;
     }
-    require(events.peek(1 << 12)?.is_none(), "native queue fully drained")?;
+    require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?.is_none(),
+            "native queue fully drained")?;
     events.post(Event { kind: EventKind::KeyDown,
                         message: 1,
-                        ..event })?;
+                        ..event }.into())?;
     events.post(Event { kind: EventKind::MouseDown,
                         message: 2,
-                        ..event })?;
+                        ..event }.into())?;
     events.post(Event { kind: EventKind::KeyDown,
                         message: 3,
-                        ..event })?;
-    events.flush(EVERY_EVENT, 2)?;
-    require(events.next_event(EVERY_EVENT)?.message == 2, "native flush keeps stopping event")?;
-    require(events.next_event(EVERY_EVENT)?.message == 3, "native flush keeps trailing event")?;
-    events.flush(EVERY_EVENT, 0)?;
+                        ..event }.into())?;
+    events.flush(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT),
+                 mac_toolbox::events::EventMask::from_bits_retain(2))?;
+    require(events.next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT))?
+                  .into_record()
+                  .message
+            == 2,
+            "native flush keeps stopping event")?;
+    require(events.next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT))?
+                  .into_record()
+                  .message
+            == 3,
+            "native flush keeps trailing event")?;
+    events.flush(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT),
+                 mac_toolbox::events::EventMask::from_bits_retain(0))?;
     events.os_flush(EVERY_EVENT, 0)?;
     Ok(())
 }

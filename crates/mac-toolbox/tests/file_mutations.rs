@@ -104,7 +104,7 @@ fn folders_trash_putaway_and_recursive_empty_persist_across_remounts()
                                                                 .unwrap()
                                                                 .id,
                                                           false),
-                                    Err(mac_toolbox::Error(mac_toolbox::NOT_FOUND))));
+                                    Err(mac_toolbox::Error::NotFound)));
                    let data = fork_bytes(system, sample.id, Fork::Data);
                    let resources = fork_bytes(system, sample.id, Fork::Resource);
                    let free =
@@ -160,7 +160,7 @@ fn folders_trash_putaway_and_recursive_empty_persist_across_remounts()
                                .unwrap(),
                           3);
                assert!(matches!(files.catalog(system.files().volume_at(0).unwrap().id, sample),
-                                Err(mac_toolbox::Error(mac_toolbox::NOT_FOUND))));
+                                Err(mac_toolbox::Error::NotFound)));
                assert!(files.volume(system.files().volume_at(0).unwrap().id).unwrap().free_bytes
                        > before);
            });
@@ -189,7 +189,7 @@ fn readonly_busy_conflict_and_invalid_names_never_modify_disk()
                                                         ROOT_ID,
                                                         "No",
                                                         WHEN),
-                              Err(mac_toolbox::Error(mac_toolbox::READ_ONLY)));
+                              Err(mac_toolbox::Error::ReadOnly));
                });
     assert_eq!(activity.writes, 0);
     assert_eq!(fs::read(&fixture.disk).unwrap(), before);
@@ -199,16 +199,16 @@ fn readonly_busy_conflict_and_invalid_names_never_modify_disk()
                                            ROOT_ID,
                                            "Source",
                                            WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::ALREADY_EXISTS)));
+                          Err(mac_toolbox::Error::AlreadyExists));
                assert_eq!(files.new_folder(system.files().volume_at(0).unwrap().id,
                                            ROOT_ID,
                                            "bad:name",
                                            WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT)));
+                          Err(mac_toolbox::Error::BadArgument));
                assert_eq!(files.move_to_trash(system.files().volume_at(0).unwrap().id,
                                               ROOT_ID,
                                               WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::ACCESS_DENIED)));
+                          Err(mac_toolbox::Error::AccessDenied));
                let item =
                    files.lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Source/Sample")
                         .unwrap();
@@ -217,7 +217,7 @@ fn readonly_busy_conflict_and_invalid_names_never_modify_disk()
                assert_eq!(files.move_to_trash(system.files().volume_at(0).unwrap().id,
                                               item.id,
                                               WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::SERVICE_BUSY)));
+                          Err(mac_toolbox::Error::ServiceBusy));
                drop(open);
            });
     assert_eq!(fs::read(&fixture.disk).unwrap(), before);
@@ -246,16 +246,15 @@ fn exiting_apps_release_their_open_forks_without_removing_other_apps_protection(
                                                   item.id,
                                                   WHEN)
                           }),
-                          Err(mac_toolbox::Error(mac_toolbox::SERVICE_BUSY)));
+                          Err(mac_toolbox::Error::ServiceBusy));
                assert_eq!(close_owner(11), 1);
-               assert_eq!(with_owner(11, || first.position()),
-                          Err(mac_toolbox::Error(mac_toolbox::NOT_FOUND)));
+               assert_eq!(with_owner(11, || first.position()), Err(mac_toolbox::Error::NotFound));
                assert_eq!(with_owner(33, || {
                               files.move_to_trash(system.files().volume_at(0).unwrap().id,
                                                   item.id,
                                                   WHEN)
                           }),
-                          Err(mac_toolbox::Error(mac_toolbox::SERVICE_BUSY)));
+                          Err(mac_toolbox::Error::ServiceBusy));
                assert_eq!(with_owner(22, || second.position()), Ok(0));
                assert_eq!(close_owner(22), 1);
                let moved =
@@ -288,7 +287,7 @@ fn partial_write_and_flush_failures_restore_original_sectors()
                                                         ROOT_ID,
                                                         "Will roll back",
                                                         WHEN),
-                              Err(mac_toolbox::Error(mac_toolbox::IO_ERROR)));
+                              Err(mac_toolbox::Error::Io));
                    assert!(system.files()
                                  .lookup(system.files().volume_at(0).unwrap().id,
                                          ROOT_ID,
@@ -318,12 +317,12 @@ fn failed_rollback_disables_further_mutations()
                                                          ROOT_ID,
                                                          "Broken",
                                                          WHEN),
-                               Err(mac_toolbox::Error(mac_toolbox::ROLLBACK_FAILED)));
+                               Err(mac_toolbox::Error::RollbackFailed));
                     assert_eq!(system.files().new_folder(system.files().volume_at(0).unwrap().id,
                                                          ROOT_ID,
                                                          "Denied",
                                                          WHEN),
-                               Err(mac_toolbox::Error(mac_toolbox::ROLLBACK_FAILED)));
+                               Err(mac_toolbox::Error::RollbackFailed));
                     assert_eq!(system.files()
                                      .volume(system.files().volume_at(0).unwrap().id)
                                      .unwrap()
@@ -405,7 +404,7 @@ fn trash_and_restore_name_conflicts_preserve_both_items_and_forks()
                    assert_eq!(files.move_to_trash(system.files().volume_at(0).unwrap().id,
                                                   second,
                                                   WHEN),
-                              Err(mac_toolbox::Error(mac_toolbox::ALREADY_EXISTS)));
+                              Err(mac_toolbox::Error::AlreadyExists));
                    assert_eq!(files.catalog(system.files().volume_at(0).unwrap().id, first)
                                    .unwrap()
                                    .parent,
@@ -429,7 +428,7 @@ fn trash_and_restore_name_conflicts_preserve_both_items_and_forks()
     fixture.run(false, DiskFaults::default(), |system| {
                assert_eq!(system.files()
                                 .put_away(system.files().volume_at(0).unwrap().id, first, WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::ALREADY_EXISTS)));
+                          Err(mac_toolbox::Error::AlreadyExists));
                assert_eq!(system.files()
                                 .catalog(system.files().volume_at(0).unwrap().id, first)
                                 .unwrap()
@@ -466,7 +465,7 @@ fn blessed_system_locked_items_and_trash_itself_are_protected()
                        assert_eq!(files.move_to_trash(system.files().volume_at(0).unwrap().id,
                                                       item.id,
                                                       WHEN),
-                                  Err(mac_toolbox::Error(mac_toolbox::ACCESS_DENIED)),
+                                  Err(mac_toolbox::Error::AccessDenied),
                                   "{path}");
                    }
                });
@@ -480,7 +479,7 @@ fn blessed_system_locked_items_and_trash_itself_are_protected()
                assert_eq!(system.files().move_to_trash(system.files().volume_at(0).unwrap().id,
                                                        trash.id,
                                                        WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::ACCESS_DENIED)));
+                          Err(mac_toolbox::Error::AccessDenied));
            });
     fixture.verify_hfs(":");
 }
@@ -527,7 +526,7 @@ fn empty_trash_busy_locked_and_bitmap_flush_failures_preserve_payloads()
                              .unwrap();
                    assert_eq!(system.files()
                                     .empty_trash(system.files().volume_at(0).unwrap().id, WHEN),
-                              Err(mac_toolbox::Error(mac_toolbox::SERVICE_BUSY)));
+                              Err(mac_toolbox::Error::ServiceBusy));
                    drop(file);
                });
     assert_eq!(activity.writes, 0);
@@ -538,7 +537,7 @@ fn empty_trash_busy_locked_and_bitmap_flush_failures_preserve_payloads()
                 |system| {
                     assert_eq!(system.files()
                                      .empty_trash(system.files().volume_at(0).unwrap().id, WHEN),
-                               Err(mac_toolbox::Error(mac_toolbox::IO_ERROR)));
+                               Err(mac_toolbox::Error::Io));
                     assert_eq!(system.files()
                                      .catalog(system.files().volume_at(0).unwrap().id, id)
                                      .unwrap()
@@ -557,7 +556,7 @@ fn empty_trash_busy_locked_and_bitmap_flush_failures_preserve_payloads()
         fixture.run(false, DiskFaults::default(), |system| {
                    assert_eq!(system.files()
                                     .empty_trash(system.files().volume_at(0).unwrap().id, WHEN),
-                              Err(mac_toolbox::Error(mac_toolbox::ACCESS_DENIED)));
+                              Err(mac_toolbox::Error::AccessDenied));
                });
     assert_eq!(activity.writes, 0);
     assert_eq!(fs::read(&fixture.disk).unwrap(), locked);
@@ -576,11 +575,11 @@ fn a_file_named_trash_never_masquerades_as_a_trash_directory()
                    let files = system.files();
                    assert_eq!(files.trash_directory(system.files().volume_at(0).unwrap().id,
                                                     false),
-                              Err(mac_toolbox::Error(mac_toolbox::ALREADY_EXISTS)));
+                              Err(mac_toolbox::Error::AlreadyExists));
                    assert_eq!(files.trash_usage(system.files().volume_at(0).unwrap().id),
-                              Err(mac_toolbox::Error(mac_toolbox::ALREADY_EXISTS)));
+                              Err(mac_toolbox::Error::AlreadyExists));
                    assert_eq!(files.empty_trash(system.files().volume_at(0).unwrap().id, WHEN),
-                              Err(mac_toolbox::Error(mac_toolbox::ALREADY_EXISTS)));
+                              Err(mac_toolbox::Error::AlreadyExists));
                });
     assert_eq!(activity.writes, 0);
     assert_eq!(fs::read(&fixture.disk).unwrap(), before);
@@ -626,7 +625,7 @@ fn on_disk_volume_locks_and_dirty_volume_state_are_respected()
                                                             ROOT_ID,
                                                             "Rejected",
                                                             WHEN),
-                                  Err(mac_toolbox::Error(expected)));
+                                  Err(mac_toolbox::Error::from_status(expected)));
                    });
         assert_eq!(activity.writes, 0);
         assert_eq!(fs::read(&fixture.disk).unwrap(), before);
@@ -752,12 +751,12 @@ fn get_info_metadata_edits_preserve_identity_forks_and_survive_remount()
                                            original.id,
                                            "Rejected",
                                            WHEN),
-                              Err(mac_toolbox::Error(mac_toolbox::ACCESS_DENIED)));
+                              Err(mac_toolbox::Error::AccessDenied));
                    assert_eq!(files.set_stationery(system.files().volume_at(0).unwrap().id,
                                                    original.id,
                                                    false,
                                                    WHEN),
-                              Err(mac_toolbox::Error(mac_toolbox::ACCESS_DENIED)));
+                              Err(mac_toolbox::Error::AccessDenied));
                    (original, allocation, data, resources, source.id)
                });
     fixture.verify_hfs(":Renamed Source:");
@@ -859,7 +858,7 @@ fn get_info_rejected_metadata_edits_never_change_the_disk()
                                                      true,
                                                      WHEN)]
                            {
-                               assert_eq!(result, Err(mac_toolbox::Error(mac_toolbox::READ_ONLY)));
+                               assert_eq!(result, Err(mac_toolbox::Error::ReadOnly));
                            }
                        }
                        else
@@ -871,24 +870,24 @@ fn get_info_rejected_metadata_edits_never_change_the_disk()
                                                        sample.id,
                                                        name,
                                                        WHEN),
-                                          Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT)),
+                                          Err(mac_toolbox::Error::BadArgument),
                                           "{name:?}");
                            }
                            assert_eq!(files.rename(system.files().volume_at(0).unwrap().id,
                                                    sample.parent,
                                                    "Other",
                                                    WHEN),
-                                      Err(mac_toolbox::Error(mac_toolbox::ALREADY_EXISTS)));
+                                      Err(mac_toolbox::Error::AlreadyExists));
                            assert_eq!(files.rename(system.files().volume_at(0).unwrap().id,
                                                    ROOT_ID,
                                                    "Renamed disk",
                                                    WHEN),
-                                      Err(mac_toolbox::Error(mac_toolbox::ACCESS_DENIED)));
+                                      Err(mac_toolbox::Error::AccessDenied));
                            assert_eq!(files.set_locked(system.files().volume_at(0).unwrap().id,
                                                        sample.parent,
                                                        true,
                                                        WHEN),
-                                      Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT)));
+                                      Err(mac_toolbox::Error::BadArgument));
                            assert_eq!(files.set_stationery(system.files()
                                                                  .volume_at(0)
                                                                  .unwrap()
@@ -896,7 +895,7 @@ fn get_info_rejected_metadata_edits_never_change_the_disk()
                                                            sample.parent,
                                                            true,
                                                            WHEN),
-                                      Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT)));
+                                      Err(mac_toolbox::Error::BadArgument));
                            let open = files.open(system.files().volume_at(0).unwrap().id,
                                                  sample.id,
                                                  Fork::Resource)
@@ -919,8 +918,7 @@ fn get_info_rejected_metadata_edits_never_change_the_disk()
                                                      true,
                                                      WHEN)]
                            {
-                               assert_eq!(result,
-                                          Err(mac_toolbox::Error(mac_toolbox::SERVICE_BUSY)));
+                               assert_eq!(result, Err(mac_toolbox::Error::ServiceBusy));
                            }
                            drop(open);
                        }
@@ -982,7 +980,7 @@ fn get_info_mutations_rollback_partial_writes_and_poison_failed_rollback()
                             {
                                 mac_toolbox::IO_ERROR
                             };
-                            assert_eq!(result, Err(mac_toolbox::Error(expected)));
+                            assert_eq!(result, Err(mac_toolbox::Error::from_status(expected)));
                             if persistent
                             {
                                 assert_eq!(files.volume(system.files().volume_at(0).unwrap().id)
@@ -993,7 +991,7 @@ fn get_info_mutations_rollback_partial_writes_and_poison_failed_rollback()
                                                         sample.id,
                                                         "Again",
                                                         WHEN),
-                                           Err(mac_toolbox::Error(expected)));
+                                           Err(mac_toolbox::Error::from_status(expected)));
                             }
                             else
                             {
@@ -1052,7 +1050,7 @@ fn finder_name_lock_is_separate_from_catalog_lock_and_unrelated_flags_survive()
                                        original.id,
                                        "New name",
                                        WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::ACCESS_DENIED)));
+                          Err(mac_toolbox::Error::AccessDenied));
                let stationery = files.set_stationery(system.files().volume_at(0).unwrap().id,
                                                      original.id,
                                                      true,
@@ -1376,7 +1374,7 @@ fn comments_reject_locked_readonly_overlong_and_unrepresentable_updates()
                                                      id,
                                                      "Changed",
                                                      WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::ACCESS_DENIED)));
+                          Err(mac_toolbox::Error::AccessDenied));
                assert_eq!(comment_text(system, id), "Original comment");
            });
     fixture.run(true, DiskFaults::default(), |system| {
@@ -1384,7 +1382,7 @@ fn comments_reject_locked_readonly_overlong_and_unrepresentable_updates()
                                                      id,
                                                      "Changed",
                                                      WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::READ_ONLY)));
+                          Err(mac_toolbox::Error::ReadOnly));
                assert_eq!(comment_text(system, id), "Original comment");
            });
     assert_eq!(fs::read(&fixture.disk).unwrap(), before);
@@ -1398,13 +1396,13 @@ fn comments_reject_locked_readonly_overlong_and_unrepresentable_updates()
                                    for text in [&"é".repeat(256), "😀"]
                                    {
                                        assert_eq!(system.files().set_comment(system.files()
-                                                                            .volume_at(0)
-                                                                            .unwrap()
-                                                                            .id,
-                                                                      id,
-                                                                      text,
-                                                                      WHEN),
-                                           Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT)));
+                                                                                   .volume_at(0)
+                                                                                   .unwrap()
+                                                                                   .id,
+                                                                             id,
+                                                                             text,
+                                                                             WHEN),
+                                                  Err(mac_toolbox::Error::BadArgument));
                                    }
                                    system.files()
                                          .set_comment(system.files().volume_at(0).unwrap().id,
@@ -1464,7 +1462,7 @@ fn desktop_db_creation_and_update_rollback_the_complete_disk_after_reported_fail
                                                                   id,
                                                                   "A new comment",
                                                                   WHEN),
-                                       Err(mac_toolbox::Error(expected)));
+                                       Err(mac_toolbox::Error::from_status(expected)));
                             if persistent
                             {
                                 assert_eq!(system.files()
@@ -1546,7 +1544,7 @@ fn a_full_desktop_db_reports_capacity_before_any_sector_changes()
                                                          target,
                                                          &"x".repeat(255),
                                                          WHEN),
-                              Err(mac_toolbox::Error(mac_toolbox::DISK_FULL)));
+                              Err(mac_toolbox::Error::DiskFull));
                    assert_eq!(comment_text(system, target), "");
                });
     assert_eq!(activity.writes, 0);
@@ -1571,7 +1569,7 @@ fn desktop_db_flush_failure_restores_payload_bitmap_and_both_volume_headers()
                                                           sample.id,
                                                           "Rollback after payload flush",
                                                           WHEN),
-                               Err(mac_toolbox::Error(mac_toolbox::IO_ERROR)));
+                               Err(mac_toolbox::Error::Io));
                     assert_eq!(comment_text(system, sample.id), "");
                     assert!(system.files()
                                   .lookup(system.files().volume_at(0).unwrap().id,
@@ -1611,8 +1609,7 @@ fn native_data_save_is_atomic_owned_and_preserves_resource_forks()
                    {
                        let mut abandoned = files.create_data(spec, 20).unwrap();
                        abandoned.write_all(b"unfinished").unwrap();
-                       assert_eq!(abandoned.finish(),
-                                  Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT)));
+                       assert_eq!(abandoned.finish(), Err(mac_toolbox::Error::BadArgument));
                    }
                    assert!(files.lookup(system.files().volume_at(0).unwrap().id,
                                         source.id,
@@ -1640,8 +1637,7 @@ fn native_data_save_is_atomic_owned_and_preserves_resource_forks()
                    assert_eq!(fork_bytes(system, sample.id, Fork::Resource), resource);
                    let mut duplicate = files.create_data(spec, 0).unwrap();
                    duplicate.write_all(&[]).unwrap();
-                   assert_eq!(duplicate.finish(),
-                              Err(mac_toolbox::Error(mac_toolbox::ALREADY_EXISTS)));
+                   assert_eq!(duplicate.finish(), Err(mac_toolbox::Error::AlreadyExists));
                    let mut empty = files.create_data(DataFileSpec { name: "Empty",
                                                                     ..spec },
                                                      0)
@@ -1724,7 +1720,7 @@ fn native_data_write_failures_preserve_live_files_and_abort_unpublished_creation
     }
     fixture.run(true, DiskFaults::default(), |system| {
                assert!(matches!(system.files().create_data(spec, 0),
-                                Err(mac_toolbox::Error(mac_toolbox::READ_ONLY))))
+                                Err(mac_toolbox::Error::ReadOnly)))
            });
 }
 
@@ -1824,7 +1820,7 @@ fn shared_file_dialog_and_writer_ids_reject_reused_and_foreign_slots()
 {
     use mac_abi::{files::*, standard_file as sf};
     use mac_system::testing::files::with_owner;
-    use mac_toolbox::{ACCESS_DENIED, Error, NOT_FOUND};
+    use mac_toolbox::Error;
     let fixture = Fixture::new();
     fixture.run(false, DiskFaults::default(), |system| {
                let client = system.client();
@@ -1842,7 +1838,7 @@ fn shared_file_dialog_and_writer_ids_reject_reused_and_foreign_slots()
                let old = write.handle;
                write.operation = APPEND_DATA_WRITE;
                assert_eq!(with_owner(22, || client.data_write(&mut write, "", b"x")),
-                          Err(Error(ACCESS_DENIED)));
+                          Err(Error::AccessDenied));
                write.operation = ABORT_DATA_WRITE;
                with_owner(11, || client.data_write(&mut write, "", &[])).unwrap();
                write = DataWriteCall { operation: BEGIN_DATA_WRITE,
@@ -1857,7 +1853,7 @@ fn shared_file_dialog_and_writer_ids_reject_reused_and_foreign_slots()
                                                handle: old,
                                                ..Default::default() };
                assert_eq!(with_owner(11, || client.data_write(&mut stale, "", b"x")),
-                          Err(Error(NOT_FOUND)));
+                          Err(Error::NotFound));
 
                let mut call =
                    sf::StandardFileCall { volume: system.files().volume_at(0).unwrap().id,
@@ -1867,7 +1863,7 @@ fn shared_file_dialog_and_writer_ids_reject_reused_and_foreign_slots()
                let first = call.handle;
                call.operation = sf::POLL;
                assert_eq!(with_owner(22, || client.standard_file(&mut call)),
-                          Err(Error(ACCESS_DENIED)));
+                          Err(Error::AccessDenied));
                call.operation = sf::DISPOSE;
                with_owner(11, || client.standard_file(&mut call)).unwrap();
                call = sf::StandardFileCall { volume: system.files().volume_at(0).unwrap().id,
@@ -1880,15 +1876,15 @@ fn shared_file_dialog_and_writer_ids_reject_reused_and_foreign_slots()
                                                       handle: first,
                                                       ..Default::default() };
                assert_eq!(with_owner(11, || client.standard_file(&mut stale)),
-                          Err(Error(NOT_FOUND)));
+                          Err(Error::NotFound));
                stale.handle = write.handle;
                assert_eq!(with_owner(11, || client.standard_file(&mut stale)),
-                          Err(Error(NOT_FOUND)));
+                          Err(Error::NotFound));
                let mut foreign = FileCall { operation: TELL,
                                             handle: write.handle,
                                             ..Default::default() };
                assert_eq!(with_owner(11, || client.file(&mut foreign, "", &mut [])),
-                          Err(Error(NOT_FOUND)));
+                          Err(Error::NotFound));
                write.operation = ABORT_DATA_WRITE;
                with_owner(11, || client.data_write(&mut write, "", &[])).unwrap();
                call.operation = sf::DISPOSE;

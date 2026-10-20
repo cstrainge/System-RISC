@@ -99,7 +99,7 @@ pub fn tracking(system: &System<'_>, window: WindowId) -> Result<(), Failure>
     control.cancel()?;
     system.log("MANAGED_CONTROL_TRACKING_PASS release=once cancel=passed repeat=passed \
                 unchanged=passed\n")
-          .map_err(Failure::Service)
+          .map_err(|error| Failure::Service(error.status()))
 }
 
 pub fn reuse(system: &System<'_>, window: WindowId, gate: mac_abi::TrapGate)
@@ -162,11 +162,10 @@ pub fn reuse(system: &System<'_>, window: WindowId, gate: mac_abi::TrapGate)
         for id in [stale, ControlId(window.0), ControlId(u32::MAX)]
         {
             let control = system.controls().control(id);
-            assert!(matches!(control.info(), Err(Error(NOT_FOUND))));
-            assert_eq!(control.dispose(), Err(Error(NOT_FOUND)));
-            assert_eq!(control.cancel(), Err(Error(NOT_FOUND)));
-            assert!(matches!(control.configure(StandardKind::Button, state),
-                             Err(Error(NOT_FOUND))));
+            assert!(matches!(control.info(), Err(Error::NotFound)));
+            assert_eq!(control.dispose(), Err(Error::NotFound));
+            assert_eq!(control.cancel(), Err(Error::NotFound));
+            assert!(matches!(control.configure(StandardKind::Button, state), Err(Error::NotFound)));
             let mut call = mac_abi::controls::ControlCall { operation:
                                                                 mac_abi::controls::INFO_OBJECT,
                                                             id: id.0,

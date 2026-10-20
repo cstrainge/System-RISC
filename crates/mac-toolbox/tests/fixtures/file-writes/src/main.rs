@@ -52,7 +52,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(s) => s,
-        Err(e) => return e
+        Err(e) => return e.status()
     };
     SERVICES.store(services.cast_mut(), Ordering::Release);
     let _ = system.log("DESKTOP_READY: durable public File Manager fixture\n");

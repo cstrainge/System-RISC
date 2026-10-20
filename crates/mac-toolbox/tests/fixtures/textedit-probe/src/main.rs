@@ -1,7 +1,7 @@
 //! Original TextEdit pixel cases rendered through actual resident RV64 traps.
 #![no_std]
 #![no_main]
-use mac_toolbox::{events::EVERY_EVENT, textedit::EditorId, *};
+use mac_toolbox::{events::classic::EVERY_EVENT, textedit::EditorId, *};
 const SAMPLE: &str = "one two three\rfour five six\rseven eight";
 
 fn draw(system: &System<'_>, window: WindowId, editor: EditorId) -> ToolboxResult<()>
@@ -63,11 +63,11 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
     let editor = system.textedit().create(Rect::new(6, 4, 86, 90), Rect::new(10, 8, 120, 80))?;
     state(system, editor, b't')?;
     draw(system, window, editor)?;
-    system.log("DESKTOP_READY: resident TextEdit SDK fixture\n").map_err(Error)?;
-    system.log("TEXTEDIT_PROBE_TEXT\n").map_err(Error)?;
+    system.log("DESKTOP_READY: resident TextEdit SDK fixture\n")?;
+    system.log("TEXTEDIT_PROBE_TEXT\n")?;
     loop
     {
-        let event = system.events().next_event(EVERY_EVENT)?;
+        let event = system.events().next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
         if event.kind == EventKind::Update && event.message == window.0
         {
             draw(system, window, editor)?;
@@ -80,7 +80,7 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
                 system.textedit().activate(editor, true)?;
                 system.textedit().idle(editor, 100)?;
                 draw(system, window, editor)?;
-                system.log("TEXTEDIT_NATIVE_CARET\n").map_err(Error)?;
+                system.log("TEXTEDIT_NATIVE_CARET\n")?;
                 continue;
             }
             if [b'r', b'm', b'n', b'b', b'x', b'e', b'w', b'z'].contains(&key)
@@ -129,7 +129,7 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
                 }
                 edit.activate(editor, false)?;
                 draw(system, window, editor)?;
-                system.log("TEXTEDIT_NATIVE_BASE\n").map_err(Error)?;
+                system.log("TEXTEDIT_NATIVE_BASE\n")?;
                 continue;
             }
             if [b't', b's', b'c', b'd', b'i', b'o', b'u'].contains(&key)
@@ -146,7 +146,7 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
                                b'u' => "TEXTEDIT_PROBE_INACTIVE_SELECTION\n",
                                _ => "TEXTEDIT_PROBE_TEXT\n"
                            })
-                      .map_err(Error)?;
+                      ?;
             }
         }
     }
@@ -160,12 +160,12 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(s) => s,
-        Err(e) => return e
+        Err(e) => return e.status()
     };
     if let Err(e) = run(&system)
     {
         let _ = system.log("TEXTEDIT_PROBE_FAIL\n");
-        return e.0;
+        return e.status();
     }
     OK
 }

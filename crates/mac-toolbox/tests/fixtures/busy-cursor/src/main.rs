@@ -28,7 +28,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(system) => system,
-        Err(error) => return error
+        Err(error) => return error.status()
     };
     match busy_cursor_cases::run(&system, clock)
     {
@@ -36,7 +36,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
         Err(error) =>
         {
             let _ = system.log("BUSY_CURSOR_FAIL service\n");
-            error
+            error.status()
         }
     }
 }

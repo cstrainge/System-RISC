@@ -1,7 +1,15 @@
 //! Event Manager client bindings; the event queue and input decoding are resident.
 #![no_std]
 #![forbid(unsafe_code)]
-pub use mac_abi::{Point, events::*};
+use mac_abi::events::*;
+pub use mac_abi::{Point, events::KeyMap};
+mod decoded;
+pub use decoded::{Event, EventMask, Input, Key, Modifiers};
+/// Original EventRecord and low-level queue vocabulary.
+pub mod classic
+{
+    pub use mac_abi::events::*;
+}
 pub use mac_traps::{Client, Error, Result};
 #[derive(Clone, Copy)]
 pub struct Events<'a>
@@ -16,55 +24,49 @@ impl<'a> Events<'a>
     }
 
     /// Nanoseconds since machine startup, independent of the wall clock.
-    /// Current RV64 hardware precision is100ns; the value saturates at u64::MAX.
+    /// Current RV64 hardware precision is 100 ns; the value saturates at u64::MAX.
     pub fn monotonic_nanoseconds(self) -> Result<u64>
     {
         self.client.monotonic_nanoseconds()
     }
 
-    pub fn next(self, mask: u16) -> Result<Option<Event>>
+    pub fn next(self, mask: EventMask) -> Result<Event>
     {
-        let event = self.client.next_event(mask)?;
-        Ok(if event.kind == EventKind::Null { None } else { Some(event) })
-    }
-
-    pub fn next_event(self, mask: u16) -> Result<Event>
-    {
-        self.client.next_event(mask)
+        self.client.next_event(mask.bits()).map(Event::from)
     }
 
     /// Sleep this OS thread until a matching event is ready or the maximum
     /// number of 60-Hz uptime ticks elapses. Zero polls without sleeping.
     /// Physical pointer motion may also return a null event for drag tracking.
     /// Other application threads remain runnable while this thread waits.
-    pub fn wait_event(self, mask: u16, timeout_ticks: u32) -> Result<Event>
+    pub fn wait_event(self, mask: EventMask, timeout_ticks: u32) -> Result<Event>
     {
-        self.client.wait_event(mask, timeout_ticks)
+        self.client.wait_event(mask.bits(), timeout_ticks).map(Event::from)
     }
 
-    /// Post to the native application queue consumed by `next_event`.
+    /// Post to the native application queue consumed by `next`.
     /// This queue retains 128 events and drops its oldest event on overflow.
     /// It is a native service, separate from the classic OS-level queue.
     pub fn post(self, event: Event) -> Result<()>
     {
         self.call(EventCall { operation: NATIVE_POST,
-                              event,
+                              event: event.into_record(),
                               ..Default::default() })
             .map(|_| ())
     }
 
     /// Inspect the native queue without removing its first matching event.
-    pub fn peek(self, mask: u16) -> Result<Option<Event>>
+    pub fn peek(self, mask: EventMask) -> Result<Option<Event>>
     {
-        self.selected(NATIVE_PEEK, mask)
+        self.selected(NATIVE_PEEK, mask.bits()).map(|event| event.map(Event::from))
     }
 
     /// Remove matching native queued events before the first stop-mask event.
-    pub fn flush(self, mask: u16, stop_mask: u16) -> Result<()>
+    pub fn flush(self, mask: EventMask, stop_mask: EventMask) -> Result<()>
     {
         self.call(EventCall { operation: NATIVE_FLUSH,
-                              mask,
-                              stop_mask,
+                              mask: mask.bits(),
+                              stop_mask: stop_mask.bits(),
                               ..Default::default() })
             .map(|_| ())
     }
@@ -74,19 +76,19 @@ impl<'a> Events<'a>
     pub fn os_post(self, kind: EventKind, message: u32) -> Result<()>
     {
         self.call(EventCall { operation: OS_POST,
-                              event: Event { kind,
-                                             message,
-                                             ..Default::default() },
+                              event: classic::Event { kind,
+                                                      message,
+                                                      ..Default::default() },
                               ..Default::default() })
             .map(|_| ())
     }
 
-    pub fn os_peek(self, mask: u16) -> Result<Option<Event>>
+    pub fn os_peek(self, mask: u16) -> Result<Option<classic::Event>>
     {
         self.selected(OS_PEEK, mask)
     }
 
-    pub fn os_get(self, mask: u16) -> Result<Option<Event>>
+    pub fn os_get(self, mask: u16) -> Result<Option<classic::Event>>
     {
         self.selected(OS_GET, mask)
     }
@@ -131,7 +133,7 @@ impl<'a> Events<'a>
         let call = self.call(EventCall { operation: INPUT_STATE,
                                          ..Default::default() })?;
         Ok(InputState { mouse:        call.event.where_,
-                        modifiers:    call.event.modifiers,
+                        modifiers:    Modifiers::from_bits_retain(call.event.modifiers),
                         keys:         call.keys,
                         ticks:        call.ticks,
                         uptime_ticks: call.uptime_ticks })
@@ -149,7 +151,7 @@ impl<'a> Events<'a>
 
     pub fn button(self) -> Result<bool>
     {
-        self.input_state().map(|state| state.modifiers & BTN_STATE == 0)
+        self.input_state().map(|state| state.modifiers.button_down())
     }
 
     /// Inspect the first queued low-level mouse event without removing it.
@@ -173,7 +175,7 @@ impl<'a> Events<'a>
         self.input_state().map(|state| state.uptime_ticks)
     }
 
-    fn selected(self, operation: u32, mask: u16) -> Result<Option<Event>>
+    fn selected(self, operation: u32, mask: u16) -> Result<Option<classic::Event>>
     {
         let call = self.call(EventCall { operation,
                                          mask,
@@ -193,7 +195,7 @@ pub struct InputState
 {
     /// Global screen coordinates, independent of the current graphics port.
     pub mouse:        Point,
-    pub modifiers:    u16,
+    pub modifiers:    Modifiers,
     pub keys:         KeyMap,
     pub ticks:        u32,
     /// Native extension: nonwrapping 60 Hz ticks, independent of the wall clock.
@@ -204,5 +206,5 @@ pub struct InputState
 pub struct EventRead
 {
     pub available: bool,
-    pub event:     Event
+    pub event:     classic::Event
 }

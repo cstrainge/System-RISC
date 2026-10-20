@@ -50,7 +50,7 @@ fn resident_viewport_reuses_rows_and_matches_fresh_rendering()
                            "one exposed row, not a full viewport");
             }
             assert_eq!(control.draw_pixels(&mut vec![0; 160 * 80], 160, 80),
-                       Err(Error(SERVICE_BUSY)),
+                       Err(Error::ServiceBusy),
                        "never publish incomplete content");
             fill(control, view.missing);
             let reference = system.controls().create_scroll_box(WindowId(0), spec(200000)).unwrap();
@@ -84,15 +84,15 @@ fn resident_scroll_controls_reject_stale_foreign_and_cross_owner_ids_in_both_tra
         let stale = owned.id();
         with_owner(8, || {
             let control = owned.control();
-            assert!(matches!(control.info(), Err(Error(ACCESS_DENIED))));
-            assert_eq!(control.dispose(), Err(Error(ACCESS_DENIED)));
+            assert!(matches!(control.info(), Err(Error::AccessDenied)));
+            assert_eq!(control.dispose(), Err(Error::AccessDenied));
         });
         with_owner(7, || {
             owned.control().dispose().unwrap();
             let replacement = system.controls().create_scroll_box(WindowId(0), spec(10)).unwrap();
             assert_eq!(stale.0 & 0xffff, replacement.id().0 & 0xffff);
             assert_ne!(stale, replacement.id());
-            assert!(matches!(system.controls().scroll_box(stale).info(), Err(Error(NOT_FOUND))));
+            assert!(matches!(system.controls().scroll_box(stale).info(), Err(Error::NotFound)));
             for id in [stale,
                        ScrollBoxId(1),
                        ScrollBoxId(u32::MAX),
@@ -111,7 +111,7 @@ fn resident_scroll_controls_reject_stale_foreign_and_cross_owner_ids_in_both_tra
             assert!(replacement.control().info().is_ok());
             let id = replacement.id();
             drop(replacement);
-            assert!(matches!(system.controls().scroll_box(id).info(), Err(Error(NOT_FOUND))));
+            assert!(matches!(system.controls().scroll_box(id).info(), Err(Error::NotFound)));
         });
     });
 }
@@ -162,6 +162,6 @@ fn row_text_has_native_utf8_and_pascal_traps_and_tracking_uses_cdef()
         invalid.row_height = 0;
         assert!(control.configure(invalid).is_err());
         assert_eq!(image(control), before);
-        assert_eq!(control.set_row(0, "outside", false), Err(Error(BAD_ARGUMENT)));
+        assert_eq!(control.set_row(0, "outside", false), Err(Error::BadArgument));
     });
 }

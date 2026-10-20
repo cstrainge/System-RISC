@@ -2,6 +2,7 @@
 #![no_std]
 #![no_main]
 #![allow(dead_code)]
+use mac_toolbox::events::classic::Event;
 use core::{fmt::Write,
            sync::atomic::{AtomicPtr, AtomicUsize, Ordering}};
 
@@ -65,7 +66,7 @@ unsafe extern "C" fn trace(number: u32, pointer: *mut (), size: usize) -> i64
     }
     status
 }
-fn run(system: &System<'_>) -> Result<(), Status>
+fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
 {
     menus::install(system)?;
     let mut editor = editor::Editor::default();
@@ -80,22 +81,22 @@ fn run(system: &System<'_>) -> Result<(), Status>
     GROW_CLIPS.store(0, Ordering::Relaxed);
     for _ in 0..20
     {
-        let start = system.events().uptime_ticks().map_err(|e| e.0)?;
+        let start = system.events().uptime_ticks()?;
         if !editor.event(system,
                          Event { kind: EventKind::KeyDown,
                                  message: u32::from(b'a'),
                                  when: start as u32,
-                                 ..Default::default() })?
+                                 ..Default::default() }.into())?
         {
-            return Err(BAD_ARGUMENT);
+            return Err(mac_toolbox::Error::BadArgument);
         }
-        let edited = system.events().uptime_ticks().map_err(|e| e.0)?;
+        let edited = system.events().uptime_ticks()?;
         menus::update(system, &editor)?;
         // Same consumed/released routing as the actual TextEdit application main loop.
         if editor.event(system,
                         Event { kind: EventKind::KeyUp,
                                 message: u32::from(b'a'),
-                                ..Default::default() })?
+                                ..Default::default() }.into())?
         {
             menus::update(system, &editor)?;
         }
@@ -108,8 +109,8 @@ fn run(system: &System<'_>) -> Result<(), Status>
         editor.event(system,
                      Event { kind: EventKind::Null,
                              when: start as u32,
-                             ..Default::default() })?;
-        let end = system.events().uptime_ticks().map_err(|e| e.0)?;
+                             ..Default::default() }.into())?;
+        let end = system.events().uptime_ticks()?;
         edit_ticks += edited - start;
         menu_ticks += end - edited;
     }
@@ -125,16 +126,16 @@ fn run(system: &System<'_>) -> Result<(), Status>
                      GROW_CLIPS.load(Ordering::Relaxed));
     system.log(line.as_str())?;
     // Getters and idempotent writes must not induce expensive stale frames.
-    let start = system.events().uptime_ticks().map_err(|e| e.0)?;
+    let start = system.events().uptime_ticks()?;
     for _ in 0..50
     {
         let api = system.menus();
-        let _ = api.layout(129).map_err(|e| e.0)?;
-        let item = api.item(129, 3).map_err(|e| e.0)?;
-        api.set_item_enabled(129, 3, item.enabled).map_err(|e| e.0)?;
-        let _ = system.events().next_event(0).map_err(|e| e.0)?;
+        let _ = api.layout(129)?;
+        let item = api.item(129, 3)?;
+        api.set_item_enabled(129, 3, item.enabled)?;
+        let _ = system.events().next(mac_toolbox::events::EventMask::from_bits_retain(0)).map(mac_toolbox::Event::into_record)?;
     }
-    let elapsed = system.events().uptime_ticks().map_err(|e| e.0)? - start;
+    let elapsed = system.events().uptime_ticks()? - start;
     let mut line = Text::<128>::default();
     let _ = writeln!(&mut line, "TYPING_QUERIES polls=50 elapsed_ticks={}", elapsed);
     system.log(line.as_str())?;
@@ -144,16 +145,16 @@ fn run(system: &System<'_>) -> Result<(), Status>
     Ok(())
 }
 
-fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor) -> Result<(), Status>
+fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor) -> Result<(), mac_toolbox::Error>
 {
     let id = textedit::EditorId(EDITOR.load(Ordering::Relaxed) as u32);
-    let before = system.textedit().info(id).map_err(|error| error.0)?;
-    system.events().flush(events::EVERY_EVENT, 0).map_err(|error| error.0)?;
+    let before = system.textedit().info(id)?;
+    system.events().flush(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT), mac_toolbox::events::EventMask::from_bits_retain(0))?;
     FILES.store(0, Ordering::Relaxed);
     MENUS.store(0, Ordering::Relaxed);
     UPDATES.store(0, Ordering::Relaxed);
     KEYS.store(0, Ordering::Relaxed);
-    let when = system.events().ticks().map_err(|error| error.0)?;
+    let when = system.events().ticks()?;
     for character in b'a'..=b't'
     {
         for kind in [EventKind::KeyDown, EventKind::KeyUp]
@@ -162,8 +163,8 @@ fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor) -> Result<()
                   .post(Event { kind,
                                 message: u32::from(character),
                                 when,
-                                ..Default::default() })
-                  .map_err(|error| error.0)?;
+                                ..Default::default() }.into())
+                  ?;
         }
     }
     let boundary = Event { kind: EventKind::Application1,
@@ -174,17 +175,17 @@ fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor) -> Result<()
                        ..Default::default() };
     for event in [boundary, tail]
     {
-        system.events().post(event).map_err(|error| error.0)?;
+        system.events().post(event.into())?;
     }
-    let first = system.next_event(events::EVERY_EVENT)?;
-    batch::keyboard(system, editor, first)?;
+    let first = system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
+    batch::keyboard(system, editor, first.into())?;
     let updates = UPDATES.load(Ordering::Relaxed);
     let key_calls = KEYS.load(Ordering::Relaxed);
     let menu_calls = MENUS.load(Ordering::Relaxed);
     let files = FILES.load(Ordering::Relaxed);
-    let info = system.textedit().info(id).map_err(|error| error.0)?;
+    let info = system.textedit().info(id)?;
     let mut bytes = [0; 512];
-    let text = system.textedit().text(id, &mut bytes).map_err(|error| error.0)?;
+    let text = system.textedit().text(id, &mut bytes)?;
     if info.text_length != before.text_length + 20
        || info.selection_start != info.text_length
        || info.selection_end != info.text_length
@@ -193,11 +194,11 @@ fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor) -> Result<()
        || key_calls != 20
        || menu_calls != 5
        || files != 0
-       || system.events().peek(events::EVERY_EVENT).map_err(|error| error.0)? != Some(boundary)
-       || system.next_event(events::EVERY_EVENT)? != boundary
-       || system.next_event(events::EVERY_EVENT)? != tail
+       || system.events().peek(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(|event| event.map(mac_toolbox::Event::into_record))? != Some(boundary)
+       || system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)? != boundary
+       || system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)? != tail
     {
-        return Err(BAD_ARGUMENT);
+        return Err(mac_toolbox::Error::BadArgument);
     }
     system.log("TYPING_BATCH chars=20 text_match=1 updates=1 key_calls=20 menu_calls=5 \
                 file_calls=0 ordered_boundary=1\n")?;
@@ -207,16 +208,16 @@ fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor) -> Result<()
                           ..Default::default() };
     for _ in 0..128
     {
-        system.events().post(release).map_err(|error| error.0)?;
+        system.events().post(release.into())?;
     }
-    batch::keyboard(system, editor, release)?;
-    if system.next_event(events::EVERY_EVENT)? != release
-       || system.events().peek(events::EVERY_EVENT).map_err(|error| error.0)?.is_some()
+    batch::keyboard(system, editor, release.into())?;
+    if system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)? != release
+       || system.events().peek(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT))?.is_some()
        || UPDATES.load(Ordering::Relaxed) != updates
        || KEYS.load(Ordering::Relaxed) != key_calls
        || MENUS.load(Ordering::Relaxed) != menu_calls
     {
-        return Err(BAD_ARGUMENT);
+        return Err(mac_toolbox::Error::BadArgument);
     }
     system.log("TYPING_BATCH_BOUND events=129 consumed=128 remaining=1 updates=0 key_calls=0\n")?;
 
@@ -227,34 +228,34 @@ fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor) -> Result<()
                           ..Default::default() },
                   Event { kind: EventKind::MenuCommand,
                           message: (129 << 16) | 6,
-                          modifiers: events::CMD_KEY,
+                          modifiers: events::classic::CMD_KEY,
                           ..Default::default() },
                   Event { kind: EventKind::KeyDown,
                           message: u32::from(b'q'),
                           ..Default::default() }]
     {
-        system.events().post(event).map_err(|error| error.0)?;
+        system.events().post(event.into())?;
     }
-    let first = system.next_event(events::EVERY_EVENT)?;
-    batch::keyboard(system, editor, first)?;
-    let command = system.next_event(events::EVERY_EVENT)?;
-    let Some(selection) = system.menus().selection(&command).map_err(|error| error.0)?
+    let first = system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
+    batch::keyboard(system, editor, first.into())?;
+    let command = system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
+    let Some(selection) = system.menus().selection(&command.into())?
     else
     {
-        return Err(BAD_ARGUMENT);
+        return Err(mac_toolbox::Error::BadArgument);
     };
     if selection.command != menus::SELECT_ALL
        || !editor.command(system, selection.command, command.when)?
     {
-        return Err(BAD_ARGUMENT);
+        return Err(mac_toolbox::Error::BadArgument);
     }
     menus::update(system, editor)?;
-    let after = system.next_event(events::EVERY_EVENT)?;
-    batch::keyboard(system, editor, after)?;
+    let after = system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
+    batch::keyboard(system, editor, after.into())?;
     let mut bytes = [0; 8];
-    if system.textedit().text(id, &mut bytes).map_err(|error| error.0)? != "q"
+    if system.textedit().text(id, &mut bytes)? != "q"
     {
-        return Err(BAD_ARGUMENT);
+        return Err(mac_toolbox::Error::BadArgument);
     }
     system.log("TYPING_BATCH_COMMAND ordered=1 selection_applied=1 final_text=q\n")
 }
@@ -272,12 +273,12 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(&profiled) }
     {
         Ok(s) => s,
-        Err(e) => return e
+        Err(e) => return e.status()
     };
     if let Err(e) = run(&system)
     {
         let _ = system.log("TYPING_PROFILE_FAIL\n");
-        return e;
+        return e.status();
     }
     OK
 }

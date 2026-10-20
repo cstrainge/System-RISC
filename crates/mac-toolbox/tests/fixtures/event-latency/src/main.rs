@@ -57,7 +57,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(system) => system,
-        Err(error) => return error
+        Err(error) => return error.status()
     };
     match cases::run(&system)
     {

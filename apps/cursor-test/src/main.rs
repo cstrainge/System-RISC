@@ -3,8 +3,7 @@
 #![no_main]
 
 
-use mac_toolbox::{events::{BTN_STATE, CMD_KEY, EVERY_EVENT, SHIFT_KEY},
-                  quickdraw::{cursors::StandardCursor, fonts::FontSelection},
+use mac_toolbox::{quickdraw::{cursors::StandardCursor, fonts::FontSelection},
                   textedit::{CursorMovement, EditorId},
                   *};
 
@@ -18,9 +17,9 @@ const FONT: FontSelection = FontSelection { family: 0,
                                             size:   12,
                                             face:   0 };
 
-fn label<'a>(system: &System<'_>, index: usize, buffer: &'a mut [u8]) -> Result<&'a str, Status>
+fn label<'a>(system: &System<'_>, index: usize, buffer: &'a mut [u8]) -> Result<&'a str, Error>
 {
-    system.resources().application().indexed_string(2000, index as u32, buffer).map_err(|e| e.0)
+    system.resources().application().indexed_string(2000, index as u32, buffer)
 }
 
 fn area(width: i16, index: usize) -> Rect
@@ -36,26 +35,23 @@ fn editor_view(width: i16, height: i16) -> Rect
     Rect::new(14, 210, width - 30, height - 32)
 }
 
-fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Status>
+fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Error>
 {
-    let resource = system.resources()
-                         .application()
-                         .get(resources::ResourceKey { kind: *b"WIND",
-                                                       id:   2003 })
-                         .map_err(|e| e.0)?;
+    let resource = system.resources().application().get(resources::ResourceKey { kind: *b"WIND",
+                                                                                  id:   2003 })?;
     let mut bytes = [0; 20];
     let read = if resource.size() == bytes.len()
     {
-        resource.read(0, &mut bytes).map_err(|e| e.0)
+        resource.read(0, &mut bytes)
     }
     else
     {
-        Err(BAD_ARGUMENT)
+        Err(Error::BadArgument)
     };
-    resource.release().map_err(|e| e.0)?;
+    resource.release()?;
     if read? != bytes.len()
     {
-        return Err(BAD_ARGUMENT);
+        return Err(Error::BadArgument);
     }
     let word = |at| i16::from_be_bytes([bytes[at], bytes[at + 1]]);
     let bounds = Rect::new(word(2), word(0), word(6), word(4));
@@ -65,65 +61,60 @@ fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Status>
        || bounds.bottom.checked_sub(bounds.top).is_none_or(|height| height < 320)
        || procedure != 4
     {
-        return Err(BAD_ARGUMENT);
+        return Err(Error::BadArgument);
     }
     Ok((bounds, procedure))
 }
 
-fn draw(system: &System<'_>, window: WindowId, editor: EditorId) -> Result<(), Status>
+fn draw(system: &System<'_>, window: WindowId, editor: EditorId) -> Result<(), Error>
 {
-    let bounds = system.windows().info(window).map_err(|e| e.0)?.bounds;
+    let bounds = system.windows().info(window)?.bounds;
     let width = bounds.right - bounds.left;
     let height = bounds.bottom - bounds.top;
     let view = editor_view(width, height);
-    let info = system.textedit().info(editor).map_err(|e| e.0)?;
+    let info = system.textedit().info(editor)?;
     if info.dest != view || info.view != view
     {
-        system.textedit().set_rects(editor, view, view).map_err(|e| e.0)?;
+        system.textedit().set_rects(editor, view, view)?;
     }
-    system.windows().begin_update(window).map_err(|e| e.0)?;
+    system.windows().begin_update(window)?;
     let port = system.quickdraw().graphics(window);
-    port.reset().map_err(|e| e.0)?;
-    port.colors(0xffffff, 0xffffff).map_err(|e| e.0)?;
-    port.paint_rect(Rect::new(0, 0, width, height)).map_err(|e| e.0)?;
+    port.reset()?;
+    port.colors(0xffffff, 0xffffff)?;
+    port.paint_rect(Rect::new(0, 0, width, height))?;
     let mut buffer = [0; 256];
     port.text(FONT,
               Point { h: 12,
                       v: 22 },
               label(system, 0, &mut buffer)?,
-              0)
-        .map_err(|e| e.0)?;
+              0)?;
     for index in 0..8
     {
         let bounds = area(width, index);
-        port.colors(0, 0xffffff).map_err(|e| e.0)?;
-        port.frame_rect(bounds).map_err(|e| e.0)?;
+        port.colors(0, 0xffffff)?;
+        port.frame_rect(bounds)?;
         port.text(FONT,
                   Point { h: bounds.left + 6,
                           v: bounds.top + 34 },
                   label(system, index + 1, &mut buffer)?,
-                  0)
-            .map_err(|e| e.0)?;
+                  0)?;
     }
     port.text(FONT,
               Point { h: 12,
                       v: 201 },
               label(system, 9, &mut buffer)?,
-              0)
-        .map_err(|e| e.0)?;
-    port.frame_rect(Rect::new(view.left - 2, view.top - 2, view.right + 2, view.bottom + 2))
-        .map_err(|e| e.0)?;
-    system.textedit().draw(editor, window).map_err(|e| e.0)?;
+              0)?;
+    port.frame_rect(Rect::new(view.left - 2, view.top - 2, view.right + 2, view.bottom + 2))?;
+    system.textedit().draw(editor, window)?;
     port.text(FONT,
               Point { h: 12,
                       v: height - 9 },
               label(system, 10, &mut buffer)?,
-              0)
-        .map_err(|e| e.0)?;
-    system.windows().end_update(window).map_err(|e| e.0)
+              0)?;
+    system.windows().end_update(window)
 }
 
-fn choose(system: &System<'_>, region: usize) -> Result<(), Status>
+fn choose(system: &System<'_>, region: usize) -> Result<(), Error>
 {
     let cursor = system.quickdraw().cursors();
     match region
@@ -137,36 +128,33 @@ fn choose(system: &System<'_>, region: usize) -> Result<(), Status>
         6 => cursor.system().set_resource(-5760),
         7 => cursor.system().set_resource(-20161),
         _ => cursor.init()
-    }.map_err(|e| e.0)?;
+    }?;
     // A zero-mask poll presents resident cursor changes without consuming any
     // queued application input. The following marker acknowledges visible work.
-    system.events().next_event(0).map_err(|e| e.0)?;
+    system.events().next(mac_toolbox::events::EventMask::from_bits_retain(0))?;
     system.log(REGION_LOGS[region])
 }
 
-fn run(system: &System<'_>) -> Result<(), Status>
+fn run(system: &System<'_>) -> Result<(), Error>
 {
-    system.menus().clear().map_err(|e| e.0)?;
+    system.menus().clear()?;
     for id in [128, 129]
     {
-        system.menus().install_menu_resource(resources::APPLICATION, id).map_err(|e| e.0)?;
+        system.menus().install_menu_resource(resources::APPLICATION, id)?;
     }
     let mut buffer = [0; 128];
-    let title = system.resources().application().string(128, &mut buffer).map_err(|e| e.0)?;
+    let title = system.resources().application().string(128, &mut buffer)?;
     let (bounds, procedure) = window_layout(system)?;
     let mut window_owner =
         system.windows()
               .create_owned(windows::WindowSpec::new(bounds, title).procedure(procedure)
-                                                                   .minimum(500, 320))
-              .map_err(|e| e.0)?;
+                                                                   .minimum(500, 320))?;
     let window = window_owner.id();
-    system.windows().set_grow_icon_clip(window, Some(Rect::ZERO)).map_err(|e| e.0)?;
+    system.windows().set_grow_icon_clip(window, Some(Rect::ZERO))?;
     let view = editor_view(bounds.right - bounds.left, bounds.bottom - bounds.top);
-    let editor = system.textedit().create(view, view).map_err(|e| e.0)?;
-    system.textedit()
-          .set_text(editor, "Try typing here.\rThe I-beam follows this text area.")
-          .map_err(|e| e.0)?;
-    system.textedit().activate(editor, true).map_err(|e| e.0)?;
+    let editor = system.textedit().create(view, view)?;
+    system.textedit().set_text(editor, "Try typing here.\rThe I-beam follows this text area.")?;
+    system.textedit().activate(editor, true)?;
     draw(system, window, editor)?;
     system.log("CURSOR_TEST_READY\n")?;
     let mut region = usize::MAX;
@@ -175,13 +163,13 @@ fn run(system: &System<'_>) -> Result<(), Status>
     let mut last_mouse = Point::default();
     loop
     {
-        let event = system.wait_event(EVERY_EVENT, 6)?;
-        if let Some(selection) = system.menus().selection(&event).map_err(|e| e.0)?
+        let event = system.wait_event(mac_toolbox::events::EventMask::ALL, 6)?;
+        if let Some(selection) = system.menus().selection(&event)?
         {
             if [u32::from_be_bytes(*b"clos"), u32::from_be_bytes(*b"quit")]
                .contains(&selection.command)
             {
-                window_owner.close().map_err(|e| e.0)?;
+                window_owner.close()?;
                 break;
             }
             let cursor = system.quickdraw().cursors();
@@ -189,39 +177,38 @@ fn run(system: &System<'_>) -> Result<(), Status>
             {
                 [b'h', b'i', b'd', b'e'] =>
                 {
-                    cursor.hide().map_err(|e| e.0)?;
+                    cursor.hide()?;
                     "CURSOR_TEST_ACTION kind=hide\n"
                 }
                 [b's', b'h', b'o', b'w'] =>
                 {
-                    cursor.show().map_err(|e| e.0)?;
+                    cursor.show()?;
                     "CURSOR_TEST_ACTION kind=show\n"
                 }
                 [b'o', b'b', b's', b'c'] =>
                 {
-                    cursor.obscure().map_err(|e| e.0)?;
+                    cursor.obscure()?;
                     "CURSOR_TEST_ACTION kind=obscure\n"
                 }
                 [b'r', b's', b'e', b't'] =>
                 {
-                    cursor.init().map_err(|e| e.0)?;
+                    cursor.init()?;
                     "CURSOR_TEST_ACTION kind=reset\n"
                 }
                 [b'n', b'e', b'x', b't'] =>
                 {
-                    if cursor.info().map_err(|e| e.0)?.flags & quickdraw::cursors::CURSOR_ANIMATED
-                       != 0
+                    if cursor.info()?.flags & quickdraw::cursors::CURSOR_ANIMATED != 0
                     {
-                        cursor.advance_animation().map_err(|e| e.0)?;
+                        cursor.advance_animation()?;
                     }
                     "CURSOR_TEST_ACTION kind=next-frame\n"
                 }
                 [b'e', b'd', b'i', b't'] =>
                 {
                     editable = !editable;
-                    system.textedit().set_cursor_enabled(editor, editable).map_err(|e| e.0)?;
-                    let active = system.windows().front().map_err(|e| e.0)? == Some(window);
-                    system.textedit().activate(editor, active && editable).map_err(|e| e.0)?;
+                    system.textedit().set_cursor_enabled(editor, editable)?;
+                    let active = system.windows().front()? == Some(window);
+                    system.textedit().activate(editor, active && editable)?;
                     tracking = false;
                     draw(system, window, editor)?;
                     if editable
@@ -235,43 +222,52 @@ fn run(system: &System<'_>) -> Result<(), Status>
                 }
                 _ => continue
             };
-            system.events().next_event(0).map_err(|e| e.0)?;
+            system.events().next(mac_toolbox::events::EventMask::from_bits_retain(0))?;
             system.log(action)?;
         }
         let bounds = match system.windows().info(window)
         {
             Ok(info) => info.bounds,
-            Err(Error(NOT_FOUND)) => break,
-            Err(error) => return Err(error.0)
+            Err(Error::NotFound) => break,
+            Err(error) => return Err(error)
         };
-        let active = system.windows().front().map_err(|e| e.0)? == Some(window);
-        let local = Point { h: event.where_.h.saturating_sub(bounds.left),
-                            v: event.where_.v.saturating_sub(bounds.top) };
-        let mut redraw = event.kind == EventKind::Update && event.message == window.0;
+        let active = system.windows().front()? == Some(window);
+        let local = Point { h: event.input().at.h.saturating_sub(bounds.left),
+                            v: event.input().at.v.saturating_sub(bounds.top) };
+        let mut redraw = matches!(event, Event::Update { .. })
+                         && event.window().map_or(0, |window| window.0) == window.0;
         let mut edited = false;
-        if event.kind == EventKind::Activate
+        if matches!(event, Event::Activate { .. })
         {
-            system.textedit().activate(editor, active && editable).map_err(|e| e.0)?;
+            system.textedit().activate(editor, active && editable)?;
             tracking = false;
             redraw = true;
         }
         let view = editor_view(bounds.right - bounds.left, bounds.bottom - bounds.top);
         if active && editable
         {
-            match event.kind
+            match event
             {
-                EventKind::MouseDown if event.message == window.0 && view.contains(local) =>
+                Event::MouseDown { .. }
+                    if event.window().map_or(0, |window| window.0) == window.0
+                       && view.contains(local) =>
                 {
                     system.textedit()
-                          .click(editor, local, event.modifiers & SHIFT_KEY != 0)
-                          .map_err(|e| e.0)?;
+                          .click(editor,
+                                 local,
+                                 event.input()
+                                      .modifiers
+                                      .contains(mac_toolbox::events::Modifiers::SHIFT))?;
                     tracking = true;
                     redraw = true;
                 }
-                EventKind::MouseUp => tracking = false,
-                EventKind::KeyDown | EventKind::AutoKey if event.modifiers & CMD_KEY == 0 =>
+                Event::MouseUp { .. } => tracking = false,
+                Event::KeyDown { .. }
+                    if !event.input()
+                             .modifiers
+                             .contains(mac_toolbox::events::Modifiers::COMMAND) =>
                 {
-                    let movement = match (event.message >> 8) as u8
+                    let movement = match event.key().map_or(0, |key| key.code())
                     {
                         0x7b => Some(CursorMovement::Left),
                         0x7c => Some(CursorMovement::Right),
@@ -284,41 +280,43 @@ fn run(system: &System<'_>) -> Result<(), Status>
                     if let Some(movement) = movement
                     {
                         system.textedit()
-                              .move_cursor(editor, movement, event.modifiers & SHIFT_KEY != 0)
-                              .map_err(|e| e.0)?;
+                              .move_cursor(editor,
+                                           movement,
+                                           event.input()
+                                                .modifiers
+                                                .contains(mac_toolbox::events::Modifiers::SHIFT))?;
                         redraw = true;
                         edited = true;
                     }
                     else
                     {
-                        let key = char::from(event.character());
+                        let key = char::from(event.key().map_or('\0', |key| key.character()));
                         if !key.is_control() || key == '\r' || key == '\u{8}'
                         {
-                            system.textedit().key(editor, key).map_err(|e| e.0)?;
+                            system.textedit().key(editor, key)?;
                             redraw = true;
                             edited = true;
                         }
                     }
                 }
-                EventKind::Null =>
+                Event::Idle { .. } =>
                 {
-                    if tracking && event.where_ != last_mouse
+                    if tracking && event.input().at != last_mouse
                     {
-                        system.textedit().click(editor, local, true).map_err(|e| e.0)?;
+                        system.textedit().click(editor, local, true)?;
                         redraw = true;
                     }
-                    let before = system.textedit().info(editor).map_err(|e| e.0)?;
-                    redraw |=
-                        system.textedit().idle(editor, event.when).map_err(|e| e.0)? != before;
+                    let before = system.textedit().info(editor)?;
+                    redraw |= system.textedit().idle(editor, event.input().when)? != before;
                 }
                 _ =>
                 {}
             }
         }
-        last_mouse = event.where_;
+        last_mouse = event.input().at;
         // Input wakes WaitNextEvent on pointer motion. Only region transitions
         // issue a cursor request, so idle polling never restarts animation.
-        if event.modifiers & BTN_STATE != 0
+        if !event.input().modifiers.button_down()
         {
             let next = if active
             {
@@ -344,8 +342,8 @@ fn run(system: &System<'_>) -> Result<(), Status>
             system.log("CURSOR_TEST_EDIT\n")?;
         }
     }
-    system.textedit().dispose(editor).map_err(|e| e.0)?;
-    system.quickdraw().cursors().init().map_err(|e| e.0)
+    system.textedit().dispose(editor)?;
+    system.quickdraw().cursors().init()
 }
 
 /// # Safety
@@ -361,7 +359,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(system) => system,
-        Err(status) => return status
+        Err(status) => return status.status()
     };
     match run(&system)
     {
@@ -369,7 +367,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
         Err(status) =>
         {
             let _ = system.log("CURSOR_TEST_ERROR\n");
-            status
+            status.status()
         }
     }
 }

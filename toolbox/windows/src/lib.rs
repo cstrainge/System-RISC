@@ -7,10 +7,10 @@ pub use mac_traps::{Client, Error, Result};
 
 pub struct WindowSpec<'a>
 {
-    pub bounds:    Rect,
-    pub title:     &'a str,
-    pub minimum:   (i16, i16),
-    pub procedure: i16
+    bounds:    Rect,
+    title:     &'a str,
+    minimum:   (i16, i16),
+    procedure: i16
 }
 impl<'a> WindowSpec<'a>
 {
@@ -52,7 +52,7 @@ impl<'a> Windows<'a>
         let length = spec.title.len();
         if length > request.title.len()
         {
-            return Err(Error(BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
         request.bounds = spec.bounds;
         request.title[..length].copy_from_slice(&spec.title.as_bytes()[..length]);
@@ -82,7 +82,7 @@ impl<'a> Windows<'a>
         let mut r = request(id);
         if title.len() > r.title.len()
         {
-            return Err(Error(BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
         r.title[..title.len()].copy_from_slice(title.as_bytes());
         r.title_length = title.len() as u32;
@@ -119,7 +119,7 @@ impl<'a> Windows<'a>
         match self.info(WindowId(0))
         {
             Ok(r) => Ok(Some(WindowId(r.id))),
-            Err(Error(NOT_FOUND)) => Ok(None),
+            Err(Error::NotFound) => Ok(None),
             Err(e) => Err(e)
         }
     }
@@ -214,7 +214,7 @@ impl Window<'_>
         {
             match self.windows().close(self.id)
             {
-                Ok(()) | Err(Error(NOT_FOUND)) => self.owned = false,
+                Ok(()) | Err(Error::NotFound) => self.owned = false,
                 Err(error) => return Err(error)
             }
         }

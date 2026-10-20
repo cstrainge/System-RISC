@@ -54,7 +54,7 @@ impl<'a> Regions<'a>
                    -> Result<Region<'a, 'b>>
     {
         let (length, _) = self.client.region(command, output)?;
-        let bytes = output.get(..length).ok_or(Error(mac_abi::BAD_ABI))?;
+        let bytes = output.get(..length).ok_or(Error::BadAbi)?;
         Ok(Region { client: self.client,
                     bytes })
     }

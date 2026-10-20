@@ -135,13 +135,45 @@ fn finder_menus_and_trash_are_resource_based_and_persist_across_disk_boots()
                 "{boot}: storage failed during Trash transaction: {serial}");
         assert!(!serial.contains("PANIC"));
     }
-    mac_system::testing::with_file_disk(Path::new(report["private_disk"].as_str().unwrap()),true,Default::default(),|services|{
-        let system=unsafe{mac_toolbox::System::from_raw(services)}.unwrap();
-        let trash=system.files().trash_directory(system.files().volume_at(0).unwrap().id,false).unwrap();assert_eq!(trash.child_count,0);
-        assert_eq!(system.files().lookup(system.files().volume_at(0).unwrap().id,2,"untitled folder"),Err(mac_toolbox::Error(mac_toolbox::NOT_FOUND)));
-        assert!(system.files().lookup(system.files().volume_at(0).unwrap().id,2,"System Folder/System").is_ok());
-        assert!(system.files().lookup(system.files().volume_at(0).unwrap().id,2,"System Folder/Finder").is_ok());
-    }).unwrap();
+    mac_system::testing::with_file_disk(Path::new(report["private_disk"].as_str().unwrap()),
+                                        true,
+                                        Default::default(),
+                                        |services| {
+                                            let system = unsafe {
+                                                             mac_toolbox::System::from_raw(services)
+                                                         }.unwrap();
+                                            let trash = system.files()
+                                                              .trash_directory(system.files()
+                                                                                     .volume_at(0)
+                                                                                     .unwrap()
+                                                                                     .id,
+                                                                               false)
+                                                              .unwrap();
+                                            assert_eq!(trash.child_count, 0);
+                                            assert_eq!(system.files().lookup(system.files()
+                                                                                   .volume_at(0)
+                                                                                   .unwrap()
+                                                                                   .id,
+                                                                             2,
+                                                                             "untitled folder"),
+                                                       Err(mac_toolbox::Error::NotFound));
+                                            assert!(system.files()
+                                                          .lookup(system.files()
+                                                                        .volume_at(0)
+                                                                        .unwrap()
+                                                                        .id,
+                                                                  2,
+                                                                  "System Folder/System")
+                                                          .is_ok());
+                                            assert!(system.files()
+                                                          .lookup(system.files()
+                                                                        .volume_at(0)
+                                                                        .unwrap()
+                                                                        .id,
+                                                                  2,
+                                                                  "System Folder/Finder")
+                                                          .is_ok());
+                                        }).unwrap();
     let accepted = serde_json::json!({"status":"passed","boots":3,"alert_original_pixels":checked,"pixel_differences":0,"scope":"real Finder menu/drag/shortcut/PutAway/modal confirmation and persistent HFS Trash","capture":report});
     let bytes = serde_json::to_vec_pretty(&accepted).unwrap();
     fs::write(output.join("rust-acceptance.json"), &bytes).unwrap();

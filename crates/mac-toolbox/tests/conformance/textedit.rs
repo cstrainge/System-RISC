@@ -1,5 +1,5 @@
 //! Original System 7.6.1 mono TextEdit observations through the native SDK.
-use mac_toolbox::{BAD_ARGUMENT, Error, NO_MEMORY, NOT_FOUND, Point, Rect, System,
+use mac_toolbox::{BAD_ARGUMENT, Error, Point, Rect, System,
                   textedit::{EditorId, MAX_BYTES}};
 
 use super::{Failure, require};
@@ -132,16 +132,16 @@ pub fn native(system: &System<'_>) -> Result<usize, Failure>
     let mut output = [0; 64];
     require(te.selection_text(id, &mut output)? == "é水🙂", "native UTF8 selection")?;
     let before = te.info(id)?;
-    require(te.select(id, 2, 3) == Err(Error(BAD_ARGUMENT)), "reject split UTF8 selection")?;
+    require(te.select(id, 2, 3) == Err(Error::BadArgument), "reject split UTF8 selection")?;
     require(te.info(id)? == before, "bad selection preserves state")?;
-    require(te.point(id, 2) == Err(Error(BAD_ARGUMENT)), "reject split UTF8 point")?;
+    require(te.point(id, 2) == Err(Error::BadArgument), "reject split UTF8 point")?;
     let mut tiny = [0xaa; 1];
-    require(te.text(id, &mut tiny) == Err(Error(NO_MEMORY)) && tiny == [0xaa],
+    require(te.text(id, &mut tiny) == Err(Error::NoMemory) && tiny == [0xaa],
             "text read atomic on short buffer")?;
     te.key(id, '界')?;
     text(system, id, "A界B")?;
     let before = te.info(id)?;
-    require(te.set_rects(id, Rect::ZERO, Rect::new(0, 0, 100, 100)) == Err(Error(BAD_ARGUMENT)),
+    require(te.set_rects(id, Rect::ZERO, Rect::new(0, 0, 100, 100)) == Err(Error::BadArgument),
             "reject invalid text rectangles")?;
     require(te.info(id)? == before, "bad rectangles preserve text state")?;
     te.activate(id, true)?;
@@ -151,7 +151,7 @@ pub fn native(system: &System<'_>) -> Result<usize, Failure>
     te.dispose(id)?;
     let replacement = create(system, 100)?;
     require(replacement != id, "generation safe editor IDs")?;
-    require(te.info(id) == Err(Error(NOT_FOUND)), "stale editor rejected")?;
+    require(te.info(id) == Err(Error::NotFound), "stale editor rejected")?;
     te.dispose(replacement)?;
     let _ = MAX_BYTES;
     let id = create(system, 100)?;
@@ -170,8 +170,7 @@ pub fn native(system: &System<'_>) -> Result<usize, Failure>
     text(system, id, "abc")?;
     system.scrap().clear()?;
     let before = te.info(id)?;
-    require(te.paste(id) == Err(Error(mac_toolbox::scrap::NO_TYPE_ERR)),
-            "missing clipboard flavor")?;
+    require(te.paste(id) == Err(Error::ScrapTypeUnavailable), "missing clipboard flavor")?;
     require(te.info(id)? == before, "missing Paste preserves editor")?;
     te.copy(id)?;
     require(system.scrap().info()?.flavors == 0, "empty Copy leaves clipboard")?;

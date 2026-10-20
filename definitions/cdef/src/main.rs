@@ -85,7 +85,7 @@ pub unsafe extern "C" fn standard_control_definition(pointer: *mut DefinitionCal
             };
             let connection = unsafe { mac_traps::SurfaceConnection::new(surface, call.gate) };
             let mut canvas = SurfacePort::new(connection);
-            draw(&mut canvas, state, call.variation).map_or_else(|e| e.0 as i64, |_| 0)
+            draw(&mut canvas, state, call.variation).map_or_else(|e| e.status() as i64, |_| 0)
         }
         1 =>
         {
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn standard_control_definition(pointer: *mut DefinitionCal
         2..=4 => 0,
         mac_abi::controls::VALIDATE_DEFINITION =>
         {
-            validate(state, call.variation).map_or_else(|e| e.0 as i64, |_| 0)
+            validate(state, call.variation).map_or_else(|e| e.status() as i64, |_| 0)
         }
         _ => NOT_SUPPORTED as i64
     }
@@ -132,7 +132,7 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
     use toolbox_quickdraw::graphics::{PortState, Shape, Verb};
     let font = validate(state, variation)?;
     let r = state.bounds;
-    let title=core::str::from_utf8(&state.title[..state.title_length as usize]).map_err(|_|mac_traps::Error(BAD_ARGUMENT))?;
+    let title=core::str::from_utf8(&state.title[..state.title_length as usize]).map_err(|_|mac_traps::Error::BadArgument)?;
     if matches!(font, CaptionFont::GenevaBold(_))
     {
         font.width(canvas, "")?;
@@ -247,15 +247,15 @@ fn validate(state: &ControlDefinitionState, variation: i16) -> mac_traps::Result
     use toolbox_quickdraw::font::GENEVA_9;
     if !matches!(variation,0..=2|8..=10)
     {
-        return Err(mac_traps::Error(NOT_SUPPORTED));
+        return Err(mac_traps::Error::NotSupported);
     }
     let r = state.bounds;
     let length = state.title_length as usize;
     if r.is_empty() || length > state.title.len()
     {
-        return Err(mac_traps::Error(BAD_ARGUMENT));
+        return Err(mac_traps::Error::BadArgument);
     }
-    core::str::from_utf8(&state.title[..length]).map_err(|_| mac_traps::Error(BAD_ARGUMENT))?;
+    core::str::from_utf8(&state.title[..length]).map_err(|_| mac_traps::Error::BadArgument)?;
     let font = if variation & 8 == 0
                   || (state.font.family == 0 && state.font.size == 12 && state.font.face == 0)
     {
@@ -271,7 +271,7 @@ fn validate(state: &ControlDefinitionState, variation: i16) -> mac_traps::Result
     }
     else
     {
-        return Err(mac_traps::Error(NOT_SUPPORTED));
+        return Err(mac_traps::Error::NotSupported);
     };
     Ok(font)
 }

@@ -4,7 +4,7 @@
 use core::fmt::{self, Write};
 
 use mac_toolbox::{Status, System, SystemServices,
-                  events::{EVERY_EVENT, EventKind}};
+                  events::classic::{EVERY_EVENT, EventKind}};
 struct Text
 {
     bytes: [u8; 512],
@@ -36,7 +36,7 @@ impl Write for Text
         Ok(())
     }
 }
-fn log_event(system: &System<'_>, e: mac_toolbox::events::Event)
+fn log_event(system: &System<'_>, e: mac_toolbox::events::classic::Event)
 {
     let mut text = Text::new();
     let _ = writeln!(text,
@@ -84,7 +84,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(s) => s,
-        Err(e) => return e
+        Err(e) => return e.status()
     };
     if system.menus().clear().is_err() || system.menus().install_menu_resource(1, 128).is_err()
     {
@@ -108,7 +108,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
                 return -1;
             }
         };
-        let current = (state.mouse, state.modifiers, state.keys);
+        let current = (state.mouse, state.modifiers.bits(), state.keys);
         if previous != Some(current)
         {
             let mut text = Text::new();
@@ -118,7 +118,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
                             keys\":\"",
                            state.mouse.h,
                            state.mouse.v,
-                           state.modifiers,
+                           state.modifiers.bits(),
                            state.ticks,
                            state.uptime_ticks);
             for byte in state.keys.0
@@ -129,7 +129,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
             let _ = system.log(text.str());
             previous = Some(current);
         }
-        if state.modifiers & 128 == 0 && !mouse_probed
+        if state.modifiers.button_down() && !mouse_probed
         {
             if still_probe(&system).is_err()
             {
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
                 }
             }
         }
-        if let Ok(event) = events.next_event(EVERY_EVENT)
+        if let Ok(event) = events.next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT)).map(mac_toolbox::Event::into_record)
            && event.kind == EventKind::MenuCommand
         {
             let _ = system.log("EVENT_INPUT_MENU_COMMAND\n");

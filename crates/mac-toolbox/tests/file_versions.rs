@@ -146,12 +146,12 @@ fn arbitrary_file_versions_are_utf8_scoped_and_read_only()
             assert_eq!(system.resources()
                              .file_version(system.files().volume_at(0).unwrap().id, file.id, 3)
                              .unwrap_err()
-                             .0,
+                             .status(),
                        mac_abi::NOT_FOUND);
             assert_eq!(system.resources()
                              .file_version(system.files().volume_at(0).unwrap().id, file.id, 2)
                              .unwrap_err()
-                             .0,
+                             .status(),
                        mac_abi::BAD_ARGUMENT);
             let bad = system.files()
                             .lookup(system.files().volume_at(0).unwrap().id, 2, "Malformed")
@@ -159,12 +159,12 @@ fn arbitrary_file_versions_are_utf8_scoped_and_read_only()
             assert_eq!(system.resources()
                              .file_version(system.files().volume_at(0).unwrap().id, bad.id, 1)
                              .unwrap_err()
-                             .0,
+                             .status(),
                        mac_abi::BAD_ARGUMENT);
             assert_eq!(system.resources()
                              .file_version(system.files().volume_at(0).unwrap().id, 2, 1)
                              .unwrap_err()
-                             .0,
+                             .status(),
                        mac_abi::NOT_FOUND);
             let mut call =
                 mac_abi::resources::FileVersionCall { operation:
@@ -188,7 +188,7 @@ fn arbitrary_file_versions_are_utf8_scoped_and_read_only()
                              .get(ResourceKey { kind: *b"RV64",
                                                 id:   0 })
                              .err()
-                             .map(|e| e.0),
+                             .map(|e| e.status()),
                        Some(mac_abi::NOT_FOUND));
         }).unwrap();
     assert_eq!(activity.writes, 0);

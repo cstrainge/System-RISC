@@ -1,6 +1,6 @@
 #![cfg(not(target_arch = "riscv64"))]
 use mac_formats::resource::{Resource, encode};
-use mac_toolbox::{BAD_ARGUMENT, Error, NOT_FOUND, NOT_SUPPORTED, System};
+use mac_toolbox::{BAD_ARGUMENT, Error, NOT_SUPPORTED, System};
 fn fork(kind: [u8; 4], id: i16, data: &[u8]) -> Resource
 {
     Resource { kind,
@@ -24,7 +24,7 @@ fn original_alert_items_are_loaded_through_public_resource_and_dialog_services()
         let system = unsafe { System::from_raw(services) }.unwrap();
         let dialogs = system.dialogs();
         assert_eq!(dialogs.validate_alert(1, 6012, "Permanently remove Café?"), Ok(4));
-        assert_eq!(dialogs.validate_alert(0, 6012, ""), Err(Error(NOT_FOUND)));
+        assert_eq!(dialogs.validate_alert(0, 6012, ""), Err(Error::NotFound));
         let mut legacy = mac_abi::dialogs::DialogCall { operation:
                                                             mac_abi::dialogs::VALIDATE_ALERT,
                                                         scope: 1,
@@ -61,7 +61,7 @@ fn malformed_or_unsupported_items_fail_before_creating_a_window()
                                                                   }.unwrap();
                                                      assert_eq!(system.dialogs()
                                                                       .validate_alert(1, 6012, ""),
-                                                                Err(Error(expected)));
+                                                                Err(Error::from_status(expected)));
                                                  }).unwrap();
     }
 }
@@ -97,7 +97,7 @@ fn string_resources_are_utf8_in_rust_and_pascal_only_at_legacy_trap()
                    "One");
         let mut short = [0xa5; 2];
         assert_eq!(system.resources().application().indexed_string(2000, 0, &mut short),
-                   Err(Error(mac_toolbox::NO_MEMORY)));
+                   Err(Error::NoMemory));
         assert_eq!(short, [0xa5; 2]);
         let mut call = mac_abi::resources::ResourceCall { operation: mac_abi::resources::STRING,
                                                           scope: 1,
@@ -115,6 +115,6 @@ fn string_resources_are_utf8_in_rust_and_pascal_only_at_legacy_trap()
                    0);
         assert_eq!(&out[..call.transferred], b"\x04Caf\x8e");
         assert_eq!(system.resources().application().indexed_string(2000, 2, &mut out),
-                   Err(Error(NOT_FOUND)));
+                   Err(Error::NotFound));
     }).unwrap();
 }

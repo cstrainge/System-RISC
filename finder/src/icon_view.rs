@@ -1,5 +1,5 @@
 //! Finder's large-icon geometry and presentation. System supplies only primitives.
-use mac_toolbox::{Point, Rect, Status};
+use mac_toolbox::{Error, Point, Rect};
 
 pub const GRID_WIDTH: i16 = 64;
 pub const GRID_HEIGHT: i16 = 52;
@@ -73,10 +73,10 @@ pub struct State
 
 pub trait Drawing
 {
-    fn fill(&mut self, bounds: Rect, color: u32) -> Result<(), Status>;
-    fn text_width(&mut self, text: &str) -> Result<i16, Status>;
-    fn text(&mut self, baseline: Point, text: &str, color: u32) -> Result<(), Status>;
-    fn icon(&mut self, id: Icon, bounds: Rect, state: State) -> Result<(), Status>;
+    fn fill(&mut self, bounds: Rect, color: u32) -> Result<(), Error>;
+    fn text_width(&mut self, text: &str) -> Result<i16, Error>;
+    fn text(&mut self, baseline: Point, text: &str, color: u32) -> Result<(), Error>;
+    fn icon(&mut self, id: Icon, bounds: Rect, state: State) -> Result<(), Error>;
 }
 
 #[derive(Clone, Copy)]
@@ -107,7 +107,7 @@ pub fn label_bounds(icon: Rect, width: i16) -> Rect
 
 pub fn draw_item(draw: &mut impl Drawing, id: impl Into<Icon>, icon: Rect, name: &str,
                  state: State)
-                 -> Result<Rect, Status>
+                 -> Result<Rect, Error>
 {
     draw.icon(id.into(), icon, state)?;
     let width = draw.text_width(name)?;

@@ -3,8 +3,7 @@
 #![no_main]
 use core::fmt::{self, Write};
 
-use mac_toolbox::{events::{CMD_KEY, EVERY_EVENT},
-                  files::{CatalogInfo, ROOT_ID},
+use mac_toolbox::{files::{CatalogInfo, ROOT_ID},
                   quickdraw::{cursors::StandardCursor, fonts::FontSelection},
                   resources::{FileResourceInfo, ResourceFile},
                   *};
@@ -53,7 +52,7 @@ fn window_layout(system: &System<'_>) -> ToolboxResult<(Rect, i16)>
     resource.release()?;
     if size != data.len()
     {
-        return Err(Error(BAD_ARGUMENT));
+        return Err(Error::BadArgument);
     }
     let word = |at| i16::from_be_bytes([data[at], data[at + 1]]);
     let bounds = Rect::new(word(2), word(0), word(6), word(4));
@@ -61,7 +60,7 @@ fn window_layout(system: &System<'_>) -> ToolboxResult<(Rect, i16)>
        || bounds.bottom.checked_sub(bounds.top).is_none_or(|n| n < 400)
        || word(8) != 0
     {
-        return Err(Error(BAD_ARGUMENT));
+        return Err(Error::BadArgument);
     }
     Ok((bounds, word(8)))
 }
@@ -143,7 +142,7 @@ impl<'a> Browser<'a>
                          item.volume,
                          item.id,
                          item.name());
-        system.log(log.as_str()).map_err(Error)
+        system.log(log.as_str())
     }
 
     fn draw(&mut self, system: &System<'a>, window: WindowId) -> ToolboxResult<()>
@@ -171,8 +170,8 @@ impl<'a> Browser<'a>
         let elapsed = system.events().monotonic_nanoseconds()?.saturating_sub(started);
         let mut timing = Text::<128>::new();
         let _ = writeln!(timing, "RESEDIT_RENDER pane=all ns={elapsed}");
-        system.log(timing.as_str()).map_err(Error)?;
-        system.log("RESEDIT_DRAW_READY\n").map_err(Error)
+        system.log(timing.as_str())?;
+        system.log("RESEDIT_DRAW_READY\n")
     }
 
     fn control(&self, pane: Pane) -> controls::ScrollBoxRef<'a>
@@ -271,11 +270,11 @@ impl<'a> Browser<'a>
                    let _ = writeln!(log,
                                     "RESEDIT_ROWS pane={} first={first} end={end} ns={elapsed}",
                                     pane as u32);
-                   system.log(log.as_str()).map_err(Error)
+                   system.log(log.as_str())
                })?;
         self.set_top(pane, control.info()?.top);
         self.report(system, layout)?;
-        system.log("RESEDIT_DRAW_READY\n").map_err(Error)
+        system.log("RESEDIT_DRAW_READY\n")
     }
 
     fn report(&self, system: &System<'a>, layout: Layout) -> ToolboxResult<()>
@@ -291,7 +290,7 @@ impl<'a> Browser<'a>
                          self.preview_top,
                          self.preview_rows,
                          self.preview_count.saturating_sub(self.preview_rows));
-        system.log(log.as_str()).map_err(Error)
+        system.log(log.as_str())
     }
 
     fn draw_resources(&mut self, system: &System<'a>, window: WindowId, width: i16, height: i16)
@@ -423,11 +422,11 @@ fn export(system: &System<'_>, browser: &mut Browser<'_>, window: WindowId) -> T
     {
         return Ok(());
     };
-    browser.export_number = browser.export_number.checked_add(1).ok_or(Error(BAD_ARGUMENT))?;
+    browser.export_number = browser.export_number.checked_add(1).ok_or(Error::BadArgument)?;
     let token = (u64::from(window.0) << 32) | u64::from(browser.export_number);
     let mut begin = Text::<128>::new();
     let _ = writeln!(begin, "RESEDIT_JSON_BEGIN {token}");
-    system.log(begin.as_str()).map_err(Error)?;
+    system.log(begin.as_str())?;
     system.quickdraw().cursors().set_standard(StandardCursor::Watch)?;
     let mut output = HostExport { system: *system,
                                   token,
@@ -443,12 +442,12 @@ fn export(system: &System<'_>, browser: &mut Browser<'_>, window: WindowId) -> T
     {
         Ok(()) => (),
         Err(document::ExportError::Service(error)) => return Err(error),
-        Err(document::ExportError::Output) => return Err(Error(IO_ERROR))
+        Err(document::ExportError::Output) => return Err(Error::Io)
     }
-    flushed.map_err(|_| Error(IO_ERROR))?;
+    flushed.map_err(|_| Error::Io)?;
     let mut end = Text::<128>::new();
     let _ = writeln!(end, "RESEDIT_JSON_END {token} {} {:016x}", output.length, output.hash);
-    system.log(end.as_str()).map_err(Error)?;
+    system.log(end.as_str())?;
     browser.status = 11;
     Ok(())
 }
@@ -519,7 +518,7 @@ fn save(system: &System<'_>, browser: &mut Browser<'_>, save_as: bool) -> Toolbo
     {
         return Ok(());
     };
-    let file = browser.file.as_ref().ok_or(Error(NOT_FOUND))?;
+    let file = browser.file.as_ref().ok_or(Error::NotFound)?;
     let mut name = Text::<128>::new();
     for c in catalog.name().chars().take(26)
     {
@@ -554,7 +553,7 @@ fn save(system: &System<'_>, browser: &mut Browser<'_>, save_as: bool) -> Toolbo
                                                                 }
                                                                 document::ExportError::Output =>
                                                                 {
-                                                                    Error(NO_MEMORY)
+                                                                    Error::NoMemory
                                                                 }
                                                             }
                                                         })?;
@@ -576,7 +575,7 @@ fn save(system: &System<'_>, browser: &mut Browser<'_>, save_as: bool) -> Toolbo
               match e
               {
                   document::ExportError::Service(e) => e,
-                  document::ExportError::Output => output.error.unwrap_or(Error(IO_ERROR))
+                  document::ExportError::Output => output.error.unwrap_or(Error::Io)
               }
           })?;
     output.flush()?;
@@ -591,7 +590,7 @@ fn save(system: &System<'_>, browser: &mut Browser<'_>, save_as: bool) -> Toolbo
                      choice.entry.id,
                      choice.name(),
                      count.0);
-    system.log(log.as_str()).map_err(Error)?;
+    system.log(log.as_str())?;
     Ok(())
 }
 fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
@@ -607,11 +606,11 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
     let window = owner.id();
     let mut browser = Browser::new(system, window)?;
     browser.draw(system, window)?;
-    system.log("RESEDIT_READY\n").map_err(Error)?;
+    system.log("RESEDIT_READY\n")?;
     loop
     {
-        let event = system.events().wait_event(EVERY_EVENT, 30)?;
-        if system.windows().info(window).is_err_and(|error| error.0 == NOT_FOUND)
+        let event = system.events().wait_event(mac_toolbox::events::EventMask::ALL, 30)?;
+        if system.windows().info(window).is_err_and(|error| error == Error::NotFound)
         {
             return Ok(());
         }
@@ -621,7 +620,8 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
             owner.close()?;
             return Ok(());
         }
-        let mut redraw = event.kind == EventKind::Update && event.message == window.0;
+        let mut redraw = matches!(event, Event::Update { .. })
+                         && event.window().map_or(0, |window| window.0) == window.0;
         if command == Some(*b"open")
         {
             if open_dialog(system, &mut browser, window).is_err()
@@ -635,8 +635,8 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
             if let Err(error) = save(system, &mut browser, command == Some(*b"svas"))
             {
                 let mut log = Text::<128>::new();
-                let _ = writeln!(log, "RESEDIT_SAVE_ERROR status={}", error.0);
-                system.log(log.as_str()).map_err(Error)?;
+                let _ = writeln!(log, "RESEDIT_SAVE_ERROR status={}", error.status());
+                system.log(log.as_str())?;
                 browser.status = 13;
             }
             redraw = true;
@@ -649,8 +649,8 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
             }
             redraw = true;
         }
-        if matches!(event.kind, EventKind::KeyDown | EventKind::AutoKey)
-           && event.modifiers & CMD_KEY == 0
+        if matches!(event, Event::KeyDown { .. })
+           && !event.input().modifiers.contains(mac_toolbox::events::Modifiers::COMMAND)
         {
             let bounds = system.windows().info(window)?.bounds;
             let layout = Layout { width:  bounds.right - bounds.left,
@@ -662,20 +662,21 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
                                            file,
                                            item,
                                            Browser::resource_area(layout),
-                                           (event.message >> 8) as u8)?;
+                                           event.key().map_or(0, |key| key.code()))?;
                 browser.sync_preview()?;
                 browser.report(system, layout)?;
             }
-            system.log("RESEDIT_DRAW_READY\n").map_err(Error)?;
+            system.log("RESEDIT_DRAW_READY\n")?;
             continue;
         }
-        if event.kind == EventKind::MouseDown && event.message == window.0
+        if matches!(event, Event::MouseDown { .. })
+           && event.window().map_or(0, |window| window.0) == window.0
         {
             let bounds = system.windows().info(window)?.bounds;
             let layout = Layout { width:  bounds.right - bounds.left,
                                   height: bounds.bottom - bounds.top };
-            let point = Point { h: event.where_.h - bounds.left,
-                                v: event.where_.v - bounds.top };
+            let point = Point { h: event.input().at.h - bounds.left,
+                                v: event.input().at.v - bounds.top };
             if Browser::resource_area(layout).contains(point)
             {
                 let changed = if let (Some(file), Some(item)) =
@@ -700,7 +701,7 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
                 else
                 {
                     browser.report(system, layout)?;
-                    system.log("RESEDIT_DRAW_READY\n").map_err(Error)?;
+                    system.log("RESEDIT_DRAW_READY\n")?;
                 }
                 continue;
             }
@@ -752,7 +753,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(system) => system,
-        Err(status) => return status
+        Err(status) => return status.status()
     };
     match run(&system)
     {
@@ -760,7 +761,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
         Err(error) =>
         {
             let _ = system.log("RESEDIT_ERROR\n");
-            error.0
+            error.status()
         }
     }
 }

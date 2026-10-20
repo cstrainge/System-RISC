@@ -252,7 +252,7 @@ fn native_names_precise_dates_and_large_forks_survive_real_remount()
                let long = format!("{}abc", "😀".repeat(63));
                let boundary = files.new_folder(id, ROOT_ID, &long, WHEN).unwrap();
                assert_eq!(files.rename(id, boundary.id, &"😀".repeat(64), WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT)));
+                          Err(mac_toolbox::Error::BadArgument));
                assert_eq!(files.catalog(id, boundary.id).unwrap().name(), long);
                // Input exceeds 255 bytes; NFC storage is exactly 255 and valid.
                let decomposed = format!("{}e\u{301}", "a".repeat(253));
@@ -271,13 +271,13 @@ fn native_names_precise_dates_and_large_forks_survive_real_remount()
                assert_eq!(marks.name(), "à\u{315}");
                assert_eq!(files.lookup(id, ROOT_ID, "A\u{300}\u{315}").unwrap().id, marks.id);
                assert_eq!(files.new_folder(id, ROOT_ID, &"😀".repeat(64), WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT)));
+                          Err(mac_toolbox::Error::BadArgument));
                for (stored, lookup) in [("Straße", "STRASSE"), ("ﬁ", "fi"), ("cafe\u{301}", "CAFÉ")]
                {
                    let folder = files.new_folder(id, ROOT_ID, stored, WHEN).unwrap();
                    assert_eq!(files.lookup(id, ROOT_ID, lookup).unwrap().id, folder.id);
                    assert_eq!(files.new_folder(id, ROOT_ID, lookup, WHEN),
-                              Err(mac_toolbox::Error(mac_toolbox::ALREADY_EXISTS)));
+                              Err(mac_toolbox::Error::AlreadyExists));
                }
                files.new_folder(id, ROOT_ID, "①", WHEN).unwrap();
                files.new_folder(id, ROOT_ID, "1", WHEN).unwrap();
@@ -336,11 +336,10 @@ fn save_replace_trash_restore_and_empty_are_durable()
                assert_eq!(system.files().empty_trash(id, WHEN).unwrap(), 1);
            });
     fixture.run(true, DiskFaults::default(), |system, id| {
-               assert_eq!(system.files().catalog(id, cnid),
-                          Err(mac_toolbox::Error(mac_toolbox::NOT_FOUND)));
+               assert_eq!(system.files().catalog(id, cnid), Err(mac_toolbox::Error::NotFound));
                assert_eq!(system.files().trash_usage(id).unwrap().items, 0);
                assert_eq!(system.files().new_folder(id, ROOT_ID, "denied", WHEN),
-                          Err(mac_toolbox::Error(mac_toolbox::READ_ONLY)));
+                          Err(mac_toolbox::Error::ReadOnly));
            });
 }
 
@@ -386,14 +385,14 @@ fn native_partial_writes_and_flush_failures_do_not_publish_catalog_changes()
     {
         fixture.run(false, fault, |system, id| {
                    assert_eq!(system.files().new_folder(id, ROOT_ID, "Unpublished 😀", WHEN),
-                              Err(mac_toolbox::Error(mac_toolbox::IO_ERROR)));
+                              Err(mac_toolbox::Error::Io));
                });
         assert_eq!(fs::read(&fixture.disk).unwrap(),
                    before,
                    "reported failure must restore partially written catalog sectors: {fault:?}");
         fixture.run(true, DiskFaults::default(), |system, id| {
                    assert_eq!(system.files().lookup(id, ROOT_ID, "Unpublished 😀"),
-                              Err(mac_toolbox::Error(mac_toolbox::NOT_FOUND)));
+                              Err(mac_toolbox::Error::NotFound));
                    assert_eq!(system.files().lookup(id, ROOT_ID, "CAFÉ").unwrap().id, fixture.file);
                });
         let mut disk = hfs_b::Image::open(&fixture.disk, false).unwrap();

@@ -120,8 +120,8 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
         tool(&root, &home, "hcopy", &["-m", path.to_str().unwrap(), ":"]);
     }
     tool(&root, &home, "humount", &[]);
-    let status = document::ExportError::Service(mac_toolbox::Error(-123));
-    assert!(matches!(status, document::ExportError::Service(mac_toolbox::Error(-123))));
+    let status = document::ExportError::Service(mac_toolbox::Error::Unknown(-123));
+    assert!(matches!(status, document::ExportError::Service(mac_toolbox::Error::Unknown(-123))));
     let mut hex_lines = Vec::new();
     preview::hex(&[0, 255, 65], 16, |line| hex_lines.push(line.to_owned()));
     assert!(hex_lines[0].starts_with("00000010 00 ff 41"));

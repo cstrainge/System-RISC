@@ -2,7 +2,7 @@
 #![cfg(not(target_arch = "riscv64"))]
 mod support;
 
-use mac_toolbox::{Error, NOT_FOUND, Rect};
+use mac_toolbox::{Error, Rect};
 
 #[test]
 fn cursor_policy_does_not_change_keyboard_activation_or_document_state()
@@ -45,12 +45,12 @@ fn disposed_editor_cursor_configuration_cannot_reach_reused_slot()
         text.dispose(old).unwrap();
         for enabled in [false, true]
         {
-            assert_eq!(text.set_cursor_enabled(old, enabled), Err(Error(NOT_FOUND)));
+            assert_eq!(text.set_cursor_enabled(old, enabled), Err(Error::NotFound));
         }
         let replacement = text.create(bounds, bounds).unwrap();
         assert_ne!(old, replacement);
         text.set_text(replacement, "replacement").unwrap();
-        assert_eq!(text.set_cursor_enabled(old, true), Err(Error(NOT_FOUND)));
+        assert_eq!(text.set_cursor_enabled(old, true), Err(Error::NotFound));
         let before = text.info(replacement).unwrap();
         assert_eq!(text.set_cursor_enabled(replacement, true).unwrap(), before);
         text.dispose(replacement).unwrap();

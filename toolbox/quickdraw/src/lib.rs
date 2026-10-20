@@ -87,7 +87,7 @@ impl Port<'_>
         let n = text.len();
         if n > command.text.len()
         {
-            return Err(Error(BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
         command.text[..n].copy_from_slice(&text.as_bytes()[..n]);
         command.text_length = n as u32;

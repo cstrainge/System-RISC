@@ -1,5 +1,5 @@
 //! Uncached standard-menu geometry captured from original CalcMenuSize calls.
-use mac_toolbox::{BAD_ARGUMENT, Error, System, ToolboxResult};
+use mac_toolbox::{Error, System, ToolboxResult};
 pub const CASES: &[(i16, &str, i16, i16)] = &[(31000, "keyless_close", 115, 16),
                                               (31001, "close_W", 139, 16),
                                               (31002, "folder_N", 122, 16),
@@ -17,7 +17,7 @@ pub fn run(system: &System<'_>) -> ToolboxResult<()>
         let bounds = system.menus().layout(id)?.popup;
         if bounds.right - bounds.left != width || bounds.bottom - bounds.top != height
         {
-            return Err(Error(BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
     }
     Ok(())

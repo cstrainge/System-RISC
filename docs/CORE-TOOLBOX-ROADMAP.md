@@ -44,7 +44,8 @@ M means a bounded extension of a working manager; L means substantial lifecycle/
 
 ## Delivery sequence
 
-**Next: driver/module SDK foundations**, exercised by StuffIt and vhost mounts,
+**Next: public Rust Toolbox API audit fixes** (see [the API worklist](TOOLBOX-RUST-API.md)),
+then **driver/module SDK foundations**, exercised by StuffIt and vhost mounts,
 then the host clipboard extension. P15's native boot/image cutover is verified
 using the existing no_std applications. The R1–R6 sequence below describes
 subsequent Toolbox delivery; its numbering does not put it ahead of the agreed

@@ -3,7 +3,7 @@
 #![no_main]
 use mac_toolbox::System;
 #[cfg(not(feature = "deferred-close"))]
-use mac_toolbox::{events::{EVERY_EVENT, EventKind},
+use mac_toolbox::{events::classic::{EVERY_EVENT, EventKind},
                   quickdraw::Rect,
                   windows::WindowSpec};
 #[cfg(feature = "menus")]
@@ -28,17 +28,17 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
     {
         system.menus().install_menu_resource(1, id)?;
     }
-    system.log("DESKTOP_READY: public SDK tracking fixture\n").map_err(mac_toolbox::Error)?;
+    system.log("DESKTOP_READY: public SDK tracking fixture\n")?;
     loop
     {
-        let event = system.events().next_event(EVERY_EVENT)?;
+        let event = system.events().next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
         // Disabled command equivalents remain ordinary application key events.
         // Observe them through the public SDK; canonical host Rust assertions
         // verify exact-once delivery, Command modifiers and absent selection.
         #[cfg(feature = "menus")]
         if event.kind == EventKind::KeyDown
            && matches!(event.character(), b'o' | b'w')
-           && event.modifiers & mac_toolbox::events::CMD_KEY != 0
+           && event.modifiers & mac_toolbox::events::classic::CMD_KEY != 0
         {
             use core::fmt::Write;
             let mut line = Line { bytes: [0; 128],
@@ -48,15 +48,15 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
                              event.kind as u16,
                              event.character(),
                              event.modifiers,
-                             system.menus().selection(&event)?.is_some());
+                             system.menus().selection(&event.into())?.is_some());
             system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())
-                  .map_err(mac_toolbox::Error)?;
+                  ?;
         }
         #[cfg(feature = "menus")]
         if event.kind == EventKind::KeyDown && event.character() == b'g'
         {
             menu_sizing::run(system)?;
-            system.log("MENU_SIZING_PASS cases=8\n").map_err(mac_toolbox::Error)?;
+            system.log("MENU_SIZING_PASS cases=8\n")?;
             system.menus().clear()?;
             system.menus().install_menu_resource(1, 30000)?;
             use core::fmt::Write;
@@ -65,17 +65,17 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
                                   len:   0 };
             let _ = writeln!(&mut line, "MENU_LABEL width={width}");
             system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())
-                  .map_err(mac_toolbox::Error)?;
+                  ?;
         }
         #[cfg(feature = "menus")]
         if event.kind == EventKind::KeyDown && event.character() == b'h'
         {
             system.menus().clear()?;
             system.menus().install_menu_resource(1, 30001)?;
-            system.log("MENU_KEYED_READY\n").map_err(mac_toolbox::Error)?;
+            system.log("MENU_KEYED_READY\n")?;
         }
         #[cfg(feature = "menus")]
-        if let Some(selection) = system.menus().selection(&event)?
+        if let Some(selection) = system.menus().selection(&event.into())?
         {
             use core::fmt::Write;
             let mut line = Line { bytes: [0; 128],
@@ -84,7 +84,7 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
                              "MENU_PROBE menu={} item={} command={:08x}",
                              selection.menu_id, selection.item, selection.command);
             system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())
-                  .map_err(mac_toolbox::Error)?;
+                  ?;
         }
         if event.kind == EventKind::Update && event.message == window.0
         {
@@ -116,7 +116,7 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
                           0)?;
             }
             system.windows().end_update(window)?;
-            system.log("WINDOW_PROBE_READY\n").map_err(mac_toolbox::Error)?;
+            system.log("WINDOW_PROBE_READY\n")?;
         }
     }
 }
@@ -131,12 +131,12 @@ pub unsafe extern "C" fn _start(services: *const mac_toolbox::SystemServices)
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(system) => system,
-        Err(error) => return error
+        Err(error) => return error.status()
     };
     match run(&system)
     {
         Ok(()) => 0,
-        Err(error) => error.0
+        Err(error) => error.status()
     }
 }
 #[panic_handler]

@@ -122,7 +122,7 @@ impl ScrollBoxRef<'_>
     {
         if text.len() > TEXT_BYTES
         {
-            return Err(Error(mac_abi::BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
         let mut call = Call { operation: SET_ROW,
                               row: index,

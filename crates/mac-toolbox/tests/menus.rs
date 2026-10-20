@@ -72,8 +72,9 @@ fn malformed_menu_resources_fail_without_installing_partial_objects()
         let fork = encode(&records).unwrap();
         mac_system::testing::menus::with_resources(&fork, &fork, |services| {
             let system = unsafe { System::from_raw(services) }.unwrap();
-            assert_eq!(system.menus().install_menu_resource(1, 257).unwrap_err().0, expected);
-            assert_eq!(system.menus().item_count(257).unwrap_err().0, NOT_FOUND);
+            assert_eq!(system.menus().install_menu_resource(1, 257).unwrap_err().status(),
+                       expected);
+            assert_eq!(system.menus().item_count(257).unwrap_err().status(), NOT_FOUND);
         });
     }
 }
@@ -118,9 +119,9 @@ fn original_menu_records_install_and_mutate_through_public_sdk()
         api.set_item_enabled(257, 1, true).unwrap();
         api.set_item_checked(257, 1, true).unwrap();
         assert!(api.item(257, 1).unwrap().checked);
-        let selection = api.selection(&Event { kind: EventKind::MenuCommand,
-                                               message: (257u32 << 16) | 1,
-                                               ..Default::default() })
+        let selection = api.selection(&mac_abi::Event { kind: EventKind::MenuCommand,
+                                                        message: (257u32 << 16) | 1,
+                                                        ..Default::default() }.into())
                            .unwrap()
                            .unwrap();
         assert_eq!((selection.menu_id, selection.item), (257, 1));
@@ -177,7 +178,9 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
                  .collect();
         assert_eq!(fields["kind"], "3", "disabled equivalent must remain KeyDown");
         assert_eq!(fields["character"].parse::<u8>().unwrap(), character);
-        assert_ne!(fields["modifiers"].parse::<u16>().unwrap() & mac_toolbox::events::CMD_KEY, 0);
+        assert_ne!(fields["modifiers"].parse::<u16>().unwrap()
+                   & mac_toolbox::events::classic::CMD_KEY,
+                   0);
         assert_eq!(fields["selection"], "false", "disabled equivalent became menu selection");
     }
     let baseline = frame(&output.join("menu-baseline.ppm"));
@@ -308,30 +311,30 @@ fn queued_command_keys_resolve_using_current_resource_menu_policy()
     let item =
         menu["items"].as_array().unwrap().iter().find(|i| i["key"].as_u64().unwrap() != 0).unwrap();
     let index = item["index"].as_u64().unwrap() as u16;
-    let event = Event { kind: EventKind::KeyDown,
-                        message: item["key"].as_u64().unwrap() as u32,
-                        modifiers: mac_toolbox::events::CMD_KEY,
-                        ..Default::default() };
+    let event = mac_abi::Event { kind: EventKind::KeyDown,
+                                 message: item["key"].as_u64().unwrap() as u32,
+                                 modifiers: mac_toolbox::events::classic::CMD_KEY,
+                                 ..Default::default() };
     mac_system::testing::menus::with_resources(fork, fork, |services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
         let menus = system.menus();
         menus.install_menu_resource(mac_abi::resources::APPLICATION, 257).unwrap();
         menus.set_item_enabled(257, index, false).unwrap();
-        assert_eq!(menus.selection(&event).unwrap(), None);
+        assert_eq!(menus.selection(&event.into()).unwrap(), None);
         // The key was already queued while disabled. Prior selection handling
         // enables the item before this same event reaches the application's loop.
         menus.set_item_enabled(257, index, true).unwrap();
-        let selected = menus.selection(&event).unwrap().unwrap();
+        let selected = menus.selection(&event.into()).unwrap().unwrap();
         assert_eq!((selected.menu_id, selected.item), (257, index));
-        assert_eq!(menus.selection(&Event { kind: EventKind::KeyUp,
-                                            ..event })
+        assert_eq!(menus.selection(&mac_abi::Event { kind: EventKind::KeyUp,
+                                                     ..event }.into())
                         .unwrap(),
                    None);
-        assert_eq!(menus.selection(&Event { modifiers: 0,
-                                            ..event })
+        assert_eq!(menus.selection(&mac_abi::Event { modifiers: 0,
+                                                     ..event }.into())
                         .unwrap(),
                    None);
         menus.set_item_enabled(257, index, false).unwrap();
-        assert_eq!(menus.selection(&event).unwrap(), None);
+        assert_eq!(menus.selection(&event.into()).unwrap(), None);
     });
 }

@@ -3,8 +3,7 @@
 use core::fmt::Write;
 
 use mac_code_resource::{DESCRIPTOR_SIZE, Descriptor, image};
-use mac_toolbox::{BAD_ARGUMENT, Error, IO_ERROR, ResourceKey, ToolboxResult,
-                  resources::ResourceFile};
+use mac_toolbox::{Error, ResourceKey, ToolboxResult, resources::ResourceFile};
 
 use super::document::Text;
 
@@ -34,7 +33,7 @@ pub struct Index
 }
 fn bad() -> Error
 {
-    Error(BAD_ARGUMENT)
+    Error::BadArgument
 }
 fn read_exact(read: &mut impl FnMut(usize, &mut [u8]) -> ToolboxResult<usize>, at: usize,
               out: &mut [u8])
@@ -42,7 +41,7 @@ fn read_exact(read: &mut impl FnMut(usize, &mut [u8]) -> ToolboxResult<usize>, a
 {
     if read(at, out)? != out.len()
     {
-        return Err(Error(IO_ERROR));
+        return Err(Error::Io);
     }
     Ok(())
 }
@@ -331,7 +330,7 @@ pub fn loader(file: &ResourceFile<'_>, source: &Source, mut emit: impl FnMut(&st
             let _ = write!(line, "RLOC: {} patches", count - 1);
             emit(line.as_str());
         }
-        Err(e) if e.0 == mac_toolbox::NOT_FOUND => emit("RLOC: absent (fixed-address image)"),
+        Err(mac_toolbox::Error::NotFound) => emit("RLOC: absent (fixed-address image)"),
         Err(_) => emit("RLOC: malformed relocation table")
     }
     emit("");

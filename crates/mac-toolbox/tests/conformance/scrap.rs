@@ -55,7 +55,8 @@ fn get(system: &System<'_>, action: &'static str, kind: [u8; 4], generation: u16
     };
     if expected.status < 0
     {
-        require(result == Err(Error(expected.status)), "original GetScrap missing-flavor error")?;
+        require(result == Err(Error::from_status(expected.status)),
+                "original GetScrap missing-flavor error")?;
         require(output == [0xa5; 64], "missing flavor preserves caller storage")?;
     }
     else
@@ -123,7 +124,6 @@ pub fn original_scrap(system: &System<'_>) -> Result<usize, Failure>
 /// original profile. Both native and RV64 call the same real resident manager.
 pub fn native_scrap(system: &System<'_>) -> Result<usize, Failure>
 {
-    use mac_toolbox::{BAD_ARGUMENT, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED};
     system.scrap().clear()?;
     const TEXT_VALUE: &str = "RISCy café — 中文 🦀\rLine two\0tail";
     system.scrap().put_text(TEXT_VALUE)?;
@@ -131,16 +131,16 @@ pub fn native_scrap(system: &System<'_>) -> Result<usize, Failure>
     require(system.scrap().text(&mut output)? == TEXT_VALUE, "full native Unicode clipboard")?;
     require(output[TEXT_VALUE.len()..].iter().all(|&b| b == 0xa5), "native text output tail")?;
     let mut short = [0xa5; 2];
-    require(system.scrap().text(&mut short) == Err(Error(NO_MEMORY)), "text does not truncate")?;
+    require(system.scrap().text(&mut short) == Err(Error::NoMemory), "text does not truncate")?;
     require(short == [0xa5; 2], "short text output preserved")?;
-    require(system.scrap().put(TEXT, b"bypass") == Err(Error(BAD_ARGUMENT)),
+    require(system.scrap().put(TEXT, b"bypass") == Err(Error::BadArgument),
             "binary TEXT put rejected")?;
-    require(system.scrap().read(TEXT, 0, &mut short) == Err(Error(BAD_ARGUMENT)),
+    require(system.scrap().read(TEXT, 0, &mut short) == Err(Error::BadArgument),
             "binary TEXT read rejected")?;
     let before = system.scrap().info()?;
     let mut call = mac_abi::scrap::ScrapCall { operation: mac_abi::scrap::PUT_TEXT,
                                                ..Default::default() };
-    require(system.client().scrap(&mut call, &[0xff, 0xfe], &mut []) == Err(Error(BAD_ARGUMENT)),
+    require(system.client().scrap(&mut call, &[0xff, 0xfe], &mut []) == Err(Error::BadArgument),
             "invalid native UTF-8 rejected at gate")?;
     require(system.scrap().info()? == before, "failed UTF-8 put preserves clipboard")?;
     const BINARY: &[u8] = &[0, 0xff, 0xfe, 0x80, 0, 0x41, 0x0d];
@@ -152,13 +152,13 @@ pub fn native_scrap(system: &System<'_>) -> Result<usize, Failure>
     binary.fill(0xa5);
     require(system.scrap().read(*b"BINR", BINARY.len(), &mut binary)? == 0, "binary EOF")?;
     require(system.scrap().read(*b"BINR", BINARY.len() + 1, &mut binary)
-            == Err(Error(BAD_ARGUMENT)),
+            == Err(Error::BadArgument),
             "binary read beyond EOF")?;
     require(binary == [0xa5; 10], "failed binary output preserved")?;
-    require(system.scrap().flavor_at(2) == Err(Error(NOT_FOUND)), "record enumeration end")?;
+    require(system.scrap().flavor_at(2) == Err(Error::NotFound), "record enumeration end")?;
     let before = system.scrap().info()?;
-    require(system.scrap().load() == Err(Error(NOT_SUPPORTED)), "disk scrap load unsupported")?;
-    require(system.scrap().unload() == Err(Error(NOT_SUPPORTED)), "disk scrap unload unsupported")?;
+    require(system.scrap().load() == Err(Error::NotSupported), "disk scrap load unsupported")?;
+    require(system.scrap().unload() == Err(Error::NotSupported), "disk scrap unload unsupported")?;
     require(system.scrap().info()? == before, "unsupported disk operations preserve state")?;
     system.scrap().clear()?;
     Ok(17)

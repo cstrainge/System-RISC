@@ -9,7 +9,7 @@ use std::{fs,
 use mac_abi::files::*;
 use mac_system::testing::{files::{close_owner, with_owner},
                           with_disk};
-use mac_toolbox::{ACCESS_DENIED, Error, NO_MEMORY, NOT_FOUND, System};
+use mac_toolbox::{ACCESS_DENIED, Error, System};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 fn disk() -> Vec<u8>
@@ -85,7 +85,7 @@ fn foreign_fork_handles_cannot_read_seek_tell_or_close()
                                       transferred: 99,
                                       ..Default::default() };
             assert_eq!(with_owner(22, || client.file(&mut call, "", &mut output)),
-                       Err(Error(ACCESS_DENIED)),
+                       Err(Error::AccessDenied),
                        "operation {operation}");
             assert_eq!(output, [0xa5; 16], "foreign read must preserve the destination");
             assert_eq!(call.transferred, 0);
@@ -140,7 +140,7 @@ fn exit_releases_only_its_handles_and_old_ids_do_not_alias_relaunch()
                                   fork: DATA_FORK,
                                   ..Default::default() };
         assert_eq!(with_owner(33, || system.client().file(&mut call, "", &mut [])),
-                   Err(Error(NO_MEMORY)));
+                   Err(Error::NoMemory));
         assert_eq!(close_owner(11), 63);
         assert_eq!(close_owner(11), 0, "exit cleanup is idempotent");
         let replacement = open(system, 33);
@@ -151,9 +151,9 @@ fn exit_releases_only_its_handles_and_old_ids_do_not_alias_relaunch()
                                        handle,
                                        ..Default::default() };
             assert_eq!(with_owner(11, || system.client().file(&mut stale, "", &mut [])),
-                       Err(Error(NOT_FOUND)));
+                       Err(Error::NotFound));
             assert_eq!(with_owner(33, || system.client().file(&mut stale, "", &mut [])),
-                       Err(Error(NOT_FOUND)));
+                       Err(Error::NotFound));
         }
         let mut own = FileCall { operation: READ,
                                  handle: surviving,
@@ -188,7 +188,7 @@ fn separate_apps_have_independent_marks_and_foreign_sdk_values_are_rejected()
         assert_eq!(with_owner(11, || first.read(&mut bytes)), Ok(8));
         assert_eq!(with_owner(22, || second.position()), Ok(0));
         assert_eq!(with_owner(22, || second.read(&mut bytes)), Ok(8));
-        assert_eq!(with_owner(22, || first.position()), Err(Error(ACCESS_DENIED)));
+        assert_eq!(with_owner(22, || first.position()), Err(Error::AccessDenied));
         assert_eq!(with_owner(11, || first.position()), Ok(8));
         with_owner(11, || first.close()).unwrap();
         with_owner(22, || second.close()).unwrap();

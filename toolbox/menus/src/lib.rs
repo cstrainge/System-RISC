@@ -2,8 +2,9 @@
 #![no_std]
 #![forbid(unsafe_code)]
 pub use mac_abi::menus::Selection;
-use mac_abi::{Event, EventKind, menus::*};
+use mac_abi::menus::*;
 pub use mac_traps::{Client, Error, Result};
+use toolbox_events::{Event, Modifiers};
 #[derive(Clone, Copy)]
 pub struct Menus<'a>
 {
@@ -71,7 +72,7 @@ impl<'a> Menus<'a>
     {
         if item == 0
         {
-            return Err(Error(mac_abi::BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
         let mut call = MenuCall { operation: COMMAND,
                                   menu_id: id,
@@ -85,19 +86,22 @@ impl<'a> Menus<'a>
 
     pub fn selection(self, event: &Event) -> Result<Option<Selection>>
     {
-        let mut call = match event.kind
+        let mut call = match *event
         {
-            EventKind::MenuCommand =>
+            Event::MenuCommand { menu,
+                                 item,
+                                 .. } =>
             {
                 MenuCall { operation: COMMAND,
-                           menu_id: (event.message >> 16) as i16,
-                           item: event.message as u16,
+                           menu_id: menu,
+                           item,
                            ..Default::default() }
             }
-            EventKind::KeyDown | EventKind::AutoKey if event.modifiers & mac_abi::CMD_KEY != 0 =>
+            Event::KeyDown { input,
+                             .. } if input.modifiers.contains(Modifiers::COMMAND) =>
             {
                 MenuCall { operation: KEY,
-                           value: u32::from(event.character()),
+                           value: u32::from(event.into_record().character()),
                            ..Default::default() }
             }
             _ => return Ok(None)
@@ -106,7 +110,7 @@ impl<'a> Menus<'a>
         // policy. Resolve an unconsumed key now, after preceding queued events.
         match self.client.menu(&mut call)
         {
-            Err(Error(mac_abi::NOT_FOUND)) if call.operation == KEY => return Ok(None),
+            Err(Error::NotFound) if call.operation == KEY => return Ok(None),
             result => result?
         }
         Ok(Some(Selection { menu_id: call.menu_id,

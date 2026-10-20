@@ -61,7 +61,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(s) => s,
-        Err(e) => return e
+        Err(e) => return e.status()
     };
     // SAFETY: the same loader-validated table supplies the raw legacy conversion gate.
     let outcome = process_pascal_cases::current_name(&system, unsafe { (*services).trap })

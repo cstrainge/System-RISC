@@ -1,6 +1,6 @@
 //! Canonical public SDK assertions shared by host and actual ECALL disk boots.
 //! The disposable fixture has a root file `Write Sample` with both known forks.
-use mac_toolbox::{Error, NOT_FOUND, System, Timestamp,
+use mac_toolbox::{Error, System, Timestamp,
                   files::{Fork, ROOT_ID}};
 
 #[derive(Debug)]
@@ -13,7 +13,7 @@ impl From<Error> for Failure
 {
     fn from(error: Error) -> Self
     {
-        Self::Service(error.0)
+        Self::Service(error.status())
     }
 }
 impl core::fmt::Display for Failure
@@ -92,10 +92,10 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
         require(comment(system, volume.id, done.id)?.text() == "Boot two sentinel",
                 "updated comment persisted through third boot")?;
         files.set_comment(volume.id, done.id, "", WHEN)?;
-        system.log("FILE_COMMENTS_UPDATED_PERSISTED\n").map_err(Error)?;
-        require(files.lookup(volume.id, ROOT_ID, FOLDER) == Err(Error(NOT_FOUND)),
+        system.log("FILE_COMMENTS_UPDATED_PERSISTED\n")?;
+        require(files.lookup(volume.id, ROOT_ID, FOLDER) == Err(Error::NotFound),
                 "removed folder absent after second remount")?;
-        require(files.lookup(volume.id, ROOT_ID, "Write Sample") == Err(Error(NOT_FOUND)),
+        require(files.lookup(volume.id, ROOT_ID, "Write Sample") == Err(Error::NotFound),
                 "deleted file absent after second remount")?;
         require(files.trash_usage(volume.id)?.items == 0, "Trash empty after second remount")?;
         files.move_to_trash(volume.id, done.id, WHEN)?;
@@ -114,7 +114,7 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
                 "file comment persisted through boot")?;
         require(comment(system, volume.id, folder.id)?.text() == "Guest folder comment",
                 "folder comment persisted through boot")?;
-        system.log("FILE_COMMENTS_PERSISTED\n").map_err(Error)?;
+        system.log("FILE_COMMENTS_PERSISTED\n")?;
         require(sample.put_away_parent() == ROOT_ID, "saved file parent persisted")?;
         require(sample.flags & 1 != 0 && sample.finder_flags() & 0x0800 != 0,
                 "catalog lock and stationery persisted across real boot")?;
@@ -130,7 +130,7 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
                 "comment replacement")?;
         files.set_comment(volume.id, sample.id, "", WHEN)?;
         files.set_comment(volume.id, folder.id, "", WHEN)?;
-        system.log("FILE_INFO_EDITS_PERSISTED\n").map_err(Error)?;
+        system.log("FILE_INFO_EDITS_PERSISTED\n")?;
         let restored = files.put_away(volume.id, child.id, WHEN)?;
         require(restored.parent == folder.id && restored.put_away_parent() == folder.id,
                 "Put Away retains original parent field")?;
@@ -165,7 +165,7 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
     files.set_comment(volume.id, folder.id, "Guest folder comment", WHEN)?;
     require(files.catalog(volume.id, sample.id)?.modified == sample.modified,
             "comment does not alter target modification date")?;
-    system.log("FILE_COMMENTS_COMMITTED\n").map_err(Error)?;
+    system.log("FILE_COMMENTS_COMMITTED\n")?;
     let allocation = files.allocation_info(volume.id, sample.id)?;
     require(allocation.data_bytes >= sample.data_length
             && allocation.resource_bytes >= sample.resource_length,
@@ -178,7 +178,7 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
     require(files.trash_usage(volume.id)?.allocated_bytes
             == allocation.data_bytes + allocation.resource_bytes,
             "physical allocation matches independently summed Trash bytes")?;
-    system.log("FILE_INFO_EDITS_COMMITTED\n").map_err(Error)?;
+    system.log("FILE_INFO_EDITS_COMMITTED\n")?;
     require(files.trash_usage(volume.id)?.items == 2,
             "first boot Trash contains both moved items")?;
     Ok(1)

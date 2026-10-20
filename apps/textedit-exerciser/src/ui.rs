@@ -1,10 +1,10 @@
 use core::fmt::Write;
 
-use mac_toolbox::*;
+use mac_toolbox::{Error, *};
 
-pub fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8]) -> Result<&'b str, Status>
+pub fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8]) -> Result<&'b str, Error>
 {
-    system.resources().application().indexed_string(2000, index, output).map_err(|e| e.0)
+    system.resources().application().indexed_string(2000, index, output)
 }
 
 pub struct Text<const N: usize>

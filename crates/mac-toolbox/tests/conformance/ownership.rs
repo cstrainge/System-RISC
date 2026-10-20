@@ -1,5 +1,5 @@
 //! Native Rust ownership contracts through the public Toolbox and real services.
-use mac_toolbox::{BAD_ARGUMENT, Error, NOT_FOUND, Rect, System, ToolboxResult, WindowId,
+use mac_toolbox::{Error, NOT_FOUND, Rect, System, ToolboxResult, WindowId,
                   windows::{Window, WindowSpec}};
 
 use super::Failure;
@@ -24,7 +24,7 @@ fn rejected_window(system: &System<'_>, id: WindowId, gate: mac_abi::TrapGate)
                    -> Result<(), Failure>
 {
     let windows = system.windows();
-    assert!(matches!(windows.info(id), Err(Error(NOT_FOUND))));
+    assert!(matches!(windows.info(id), Err(Error::NotFound)));
     for result in [windows.close(id),
                    windows.select(id),
                    windows.set_title(id, "stale"),
@@ -32,11 +32,11 @@ fn rejected_window(system: &System<'_>, id: WindowId, gate: mac_abi::TrapGate)
                    windows.set_close_deferred(id, true),
                    windows.end_update(id)]
     {
-        assert_eq!(result, Err(Error(NOT_FOUND)));
+        assert_eq!(result, Err(Error::NotFound));
     }
-    assert_eq!(windows.begin_update(id), Err(Error(NOT_FOUND)));
+    assert_eq!(windows.begin_update(id), Err(Error::NotFound));
     assert_eq!(system.quickdraw().graphics(id).paint_rect(Rect::new(0, 0, 10, 10)),
-               Err(Error(NOT_FOUND)));
+               Err(Error::NotFound));
     for operation in [mac_abi::GET_WINDOW, mac_abi::SET_WINDOW_TITLE, mac_abi::CLOSE_WINDOW]
     {
         let mut request = mac_abi::traps::WindowCall { operation,
@@ -70,8 +70,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     rejected_window(system, WindowId(memory_id), gate)?;
     memory.operation = mac_abi::memory::DISPOSE;
     memory.handle = window.id().0;
-    assert_eq!(system.client().memory(&mut memory, &[], &mut []),
-               Err(Error(mac_abi::memory::NIL_HANDLE_ERR)));
+    assert_eq!(system.client().memory(&mut memory, &[], &mut []), Err(Error::NilHandle));
     assert_eq!(window.info()?.id, window.id().0);
     memory.operation = mac_abi::memory::SIZE;
     memory.handle = memory_id;
@@ -112,9 +111,9 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     for _ in 0..16
     {
         let mut identity = WindowId(0);
-        assert_eq!(fail_after_creation(system, &mut identity), Err(Error(BAD_ARGUMENT)));
+        assert_eq!(fail_after_creation(system, &mut identity), Err(Error::BadArgument));
         assert_ne!(identity, WindowId(0));
-        assert!(matches!(system.windows().info(identity), Err(Error(NOT_FOUND))));
+        assert!(matches!(system.windows().info(identity), Err(Error::NotFound)));
     }
     // More than the available arena has passed through failed calls. This full
     // allocation succeeds only if those temporary handle owners freed storage.
@@ -127,7 +126,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     window.close()?;
     window.close()?;
     assert_eq!(window.id(), identity, "a closed owner must never become front-window ID0");
-    assert!(matches!(window.info(), Err(Error(NOT_FOUND))));
+    assert!(matches!(window.info(), Err(Error::NotFound)));
     let replacement = create(system)?;
     drop(window);
     assert_eq!(replacement.info()?.id, replacement.id().0);
@@ -157,7 +156,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     {
         let replacement = create(system)?;
         assert_ne!(replacement.id(), exhausted);
-        assert!(matches!(system.windows().info(exhausted), Err(Error(NOT_FOUND))));
+        assert!(matches!(system.windows().info(exhausted), Err(Error::NotFound)));
         assert_eq!(replacement.id().0 >> 24, 0);
         if replacement.id().0 & 0xffff != exhausted.0 & 0xffff
         {
@@ -171,9 +170,9 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     managed_controls(system, gate)?;
     system.log("HANDLE_REUSE_USERSPACE_PASS windows=40 native=9 legacy=3 retirement=passed \
                 foreign=passed\n")
-          .map_err(Failure::Service)?;
+          .map_err(|error| Failure::Service(error.status()))?;
     system.log("OWNERSHIP_USERSPACE_PASS scope=40 early_returns=16 stale=passed transfer=passed\n")
-          .map_err(Failure::Service)
+          .map_err(|error| Failure::Service(error.status()))
 }
 
 fn managed_controls(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>
@@ -186,7 +185,7 @@ fn managed_controls(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), 
     let owned = system.controls().create_standard(window.id(), StandardKind::Button, state)?;
     let stale = owned.id();
     drop(window);
-    assert!(matches!(owned.control().info(), Err(Error(NOT_FOUND))));
+    assert!(matches!(owned.control().info(), Err(Error::NotFound)));
     let replacement_window = create(system)?;
     let replacement =
         system.controls().create_standard(replacement_window.id(), StandardKind::Button, state)?;
@@ -195,7 +194,7 @@ fn managed_controls(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), 
     drop(owned);
     assert!(replacement.control().info().is_ok());
     system.log("MANAGED_CONTROL_OWNERSHIP_PASS parent_cleanup=passed reuse=passed legacy=passed\n")
-          .map_err(Failure::Service)
+          .map_err(|error| Failure::Service(error.status()))
 }
 
 fn scroll_boxes(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>
@@ -226,7 +225,7 @@ fn scroll_boxes(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fail
         let mut pixels = [0; 240 * 100];
         control.control().draw_pixels(&mut pixels, 240, 100)?;
         drop(window);
-        assert!(matches!(control.control().info(), Err(Error(NOT_FOUND))));
+        assert!(matches!(control.control().info(), Err(Error::NotFound)));
         let replacement_window = create(system)?;
         let replacement = system.controls().create_scroll_box(replacement_window.id(), spec)?;
         assert_eq!(replacement.id().0 & 0xffff, id.0 & 0xffff);
@@ -235,7 +234,7 @@ fn scroll_boxes(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fail
         assert!(replacement.control().info().is_ok());
         for foreign in [id, ScrollBoxId(replacement_window.id().0)]
         {
-            assert!(matches!(system.controls().scroll_box(foreign).info(), Err(Error(NOT_FOUND))));
+            assert!(matches!(system.controls().scroll_box(foreign).info(), Err(Error::NotFound)));
             let mut call = mac_abi::scrollbox::Call { id: foreign.0,
                                                       ..Default::default() };
             assert_eq!(unsafe {
@@ -248,5 +247,5 @@ fn scroll_boxes(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fail
     }
     system.log("SCROLL_BOX_USERSPACE_PASS parent_cleanup=8 stale=passed legacy=passed \
                 rows=passed\n")
-          .map_err(Failure::Service)
+          .map_err(|error| Failure::Service(error.status()))
 }

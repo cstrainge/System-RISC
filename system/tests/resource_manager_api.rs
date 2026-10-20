@@ -1,8 +1,8 @@
 //! Native clients exercise the resident manager using original font/icon/PICT payloads.
 use std::{collections::BTreeSet, sync::OnceLock};
 
-use mac_abi::{BAD_ARGUMENT, Header, NOT_FOUND, NOT_SUPPORTED, OK, ResourceKey, SystemServices,
-              resources::*, traps};
+use mac_abi::{BAD_ARGUMENT, Header, NOT_SUPPORTED, OK, ResourceKey, SystemServices, resources::*,
+              traps};
 use mac_formats::resource::Resource as ForkResource;
 use mac_system::toolbox::{quickdraw::fonts::FontManager, resources::manager::Manager};
 use mac_traps::{Client, Error, ResourceRequest};
@@ -172,9 +172,9 @@ fn names_roundtrip_mac_roman_to_utf8_and_remain_case_sensitive()
                ResourceKey { kind: *b"PICT",
                              id:   128 });
     assert_eq!(picture.name(), "Café À");
-    assert!(matches!(resources().named(*b"PICT", "café À"), Err(Error(NOT_FOUND))));
-    assert!(matches!(resources().named(*b"PICT", "Café A"), Err(Error(NOT_FOUND))));
-    assert!(matches!(resources().named(*b"ICN#", "Café À"), Err(Error(NOT_FOUND))));
+    assert!(matches!(resources().named(*b"PICT", "café À"), Err(Error::NotFound)));
+    assert!(matches!(resources().named(*b"PICT", "Café A"), Err(Error::NotFound)));
+    assert!(matches!(resources().named(*b"ICN#", "Café À"), Err(Error::NotFound)));
     let long = resource(b"TEXT", 1, Some(&"".repeat(255)), 0, b"");
     let info = Manager::info(SYSTEM, &long);
     assert_eq!(info.name_length, 765);
@@ -198,8 +198,8 @@ fn partial_reads_eof_load_and_release_preserve_original_forks()
     assert!(tail[3..].iter().all(|&byte| byte == 0xa5));
     assert_eq!(icon.read(icon.size(), &mut tail), Ok(0));
     assert_eq!(icon.read(0, &mut []), Ok(0));
-    assert_eq!(icon.read(icon.size() + 1, &mut tail), Err(Error(BAD_ARGUMENT)));
-    assert_eq!(icon.read(usize::MAX, &mut tail), Err(Error(BAD_ARGUMENT)));
+    assert_eq!(icon.read(icon.size() + 1, &mut tail), Err(Error::BadArgument));
+    assert_eq!(icon.read(usize::MAX, &mut tail), Err(Error::BadArgument));
     let key = icon.key();
     icon.release().unwrap();
     assert_eq!(read_all(&resources().get(key).unwrap()), SYSTEM_ICON);
@@ -221,7 +221,7 @@ fn moved_font_resources_remain_in_the_system_search_chain()
                             .unwrap();
     assert_eq!(strike.home(), SYSTEM);
     assert_eq!(read_all(&strike), CHICAGO);
-    assert!(matches!(resources().application().get(strike.key()), Err(Error(NOT_FOUND))));
+    assert!(matches!(resources().application().get(strike.key()), Err(Error::NotFound)));
     let info = client().resource(ResourceRequest { operation: INFO,
                                                    scope: SYSTEM,
                                                    key: strike.key(),
@@ -247,12 +247,12 @@ fn enumeration_visits_shadowed_resources_and_unique_types_without_losing_home()
     assert_eq!(entries.iter().map(|r| (r.home(), r.key().id)).collect::<Vec<_>>(),
                [(APPLICATION, -32510), (APPLICATION, 128), (SYSTEM, -32510)]);
     assert_eq!(read_all(&entries[2]), SYSTEM_PICTURE);
-    assert!(matches!(resources().at(*b"PICT", 3), Err(Error(NOT_FOUND))));
+    assert!(matches!(resources().at(*b"PICT", 3), Err(Error::NotFound)));
     let count = resources().type_count().unwrap();
     let types: BTreeSet<_> = (0..count).map(|index| resources().type_at(index).unwrap()).collect();
     assert_eq!(count as usize, types.len());
     assert_eq!(types, BTreeSet::from([*b"PICT", *b"ICN#", *b"FOND", *b"FONT", *b"sfnt"]));
-    assert!(matches!(resources().type_at(count), Err(Error(NOT_FOUND))));
+    assert!(matches!(resources().type_at(count), Err(Error::NotFound)));
     assert_eq!(resources().application().type_count(), Ok(1));
 }
 
@@ -270,16 +270,16 @@ fn low_level_client_rejects_invalid_scopes_operations_and_absent_keys()
     for operation in [GET, INFO, READ, LOAD, RELEASE, COUNT, COUNT_TYPES, TYPE_INDEX, INDEX, NAMED]
     {
         assert!(matches!(client().resource(request(operation, 123, known), &mut []),
-                         Err(Error(BAD_ARGUMENT))));
+                         Err(Error::BadArgument)));
     }
     assert!(matches!(client().resource(request(999, CHAIN, known), &mut []),
-                     Err(Error(NOT_SUPPORTED))));
+                     Err(Error::NotSupported)));
     let absent = ResourceKey { kind: *b"PICT",
                                id:   i16::MAX };
     for operation in [GET, INFO, READ, LOAD, RELEASE]
     {
         assert!(matches!(client().resource(request(operation, CHAIN, absent), &mut []),
-                         Err(Error(NOT_FOUND))));
+                         Err(Error::NotFound)));
     }
-    assert!(matches!(resources().application().named(*b"FOND", "Chicago"), Err(Error(NOT_FOUND))));
+    assert!(matches!(resources().application().named(*b"FOND", "Chicago"), Err(Error::NotFound)));
 }

@@ -140,8 +140,8 @@ impl Viewer for CodeViewer
         {
             return hex::HexViewer.fill(ctx, rows);
         }
-        let index = self.index.as_ref().ok_or(Error(BAD_ARGUMENT))?;
-        let source = self.source.as_ref().ok_or(Error(BAD_ARGUMENT))?;
+        let index = self.index.as_ref().ok_or(Error::BadArgument)?;
+        let source = self.source.as_ref().ok_or(Error::BadArgument)?;
         let mut row = rows.start;
         let mut error = None;
         index.lines(rows.start,

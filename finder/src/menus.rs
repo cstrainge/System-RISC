@@ -1,5 +1,5 @@
 //! Finder command policy. Menu labels/shortcuts/command IDs live in MENU/MCMD.
-use mac_toolbox::*;
+use mac_toolbox::{Error, *};
 
 use crate::browser::Browser;
 pub const ABOUT: u32 = u32::from_be_bytes(*b"abou");
@@ -11,29 +11,29 @@ pub const PUT_AWAY: u32 = u32::from_be_bytes(*b"sput");
 pub const CLEAR: u32 = u32::from_be_bytes(*b"cler");
 pub const SHOW_CLIPBOARD: u32 = u32::from_be_bytes(*b"shcl");
 pub const EMPTY: u32 = u32::from_be_bytes(*b"empt");
-pub fn install(system: &System<'_>) -> Result<(), Status>
+pub fn install(system: &System<'_>) -> Result<(), Error>
 {
     let menus = system.menus();
-    menus.clear().map_err(|e| e.0)?;
+    menus.clear()?;
     for id in [1251, 1252, 1253, 1254, 1256, 1255]
     {
-        menus.install_menu_resource(resources::APPLICATION, id).map_err(|e| e.0)?;
+        menus.install_menu_resource(resources::APPLICATION, id)?;
     }
     Ok(())
 }
 /// Idle scrollbar tracking changes neither selection nor file command policy.
 /// Consumed clipboard events still pass through this shared policy guard.
 pub fn update_after_event(system: &System<'_>, browser: &Browser, event: Event)
-                          -> Result<(), Status>
+                          -> Result<(), Error>
 {
-    if event.kind == EventKind::Null
+    if matches!(event, Event::Idle { .. })
     {
         return Ok(());
     }
     update(system, browser)
 }
 
-pub fn update(system: &System<'_>, browser: &Browser) -> Result<(), Status>
+pub fn update(system: &System<'_>, browser: &Browser) -> Result<(), Error>
 {
     let menus = system.menus();
     for (id, item, enabled) in [(1252, 1, browser.can_new_folder(system)),
@@ -45,7 +45,7 @@ pub fn update(system: &System<'_>, browser: &Browser) -> Result<(), Status>
                                 (1253, 9, true),
                                 (1255, 2, browser.trash_count(system)? > 0)]
     {
-        menus.set_item_enabled(id, item, enabled).map_err(|e| e.0)?;
+        menus.set_item_enabled(id, item, enabled)?;
     }
     Ok(())
 }

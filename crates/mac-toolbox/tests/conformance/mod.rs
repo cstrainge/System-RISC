@@ -32,7 +32,7 @@ impl From<mac_toolbox::Error> for Failure
 {
     fn from(value: mac_toolbox::Error) -> Self
     {
-        Self::Service(value.0)
+        Self::Service(value.status())
     }
 }
 pub const RECT_A: &[u8] = include_bytes!("../data/regions/rect.bin");
@@ -93,7 +93,7 @@ pub fn geometry_and_regions(system: &System<'_>) -> Result<usize, Failure>
                         v: 60 }],
             "polygon map")?;
     require(q.map_point(Point::default(), Rect::ZERO, destination)
-            == Err(mac_toolbox::Error(mac_abi::BAD_ARGUMENT)),
+            == Err(mac_toolbox::Error::BadArgument),
             "empty mapping source")?;
     let regions = q.regions();
     let mut a_output = [0u8; 1024];
@@ -126,11 +126,11 @@ pub fn geometry_and_regions(system: &System<'_>) -> Result<usize, Failure>
     let mut inset_output = [0u8; 2048];
     require(regions.inset(moved, 3, 2, &mut inset_output)?.bytes() == INSET_OVAL,
             "original inset oval")?;
-    require(regions.parse(&[0; 9]).is_err_and(|e| e.0 == mac_abi::BAD_ARGUMENT),
+    require(regions.parse(&[0; 9]).is_err_and(|e| e.status() == mac_abi::BAD_ARGUMENT),
             "malformed region")?;
     let mut short = [0xa5; 9];
     require(regions.rectangle(Rect::new(0, 0, 10, 10), &mut short)
-                   .is_err_and(|e| e.0 == mac_abi::NO_MEMORY),
+                   .is_err_and(|e| e.status() == mac_abi::NO_MEMORY),
             "undersized region output")?;
     require(short == [0xa5; 9], "failed output untouched")?;
     Ok(20)
@@ -210,6 +210,7 @@ pub fn run_core(system: &System<'_>) -> Result<(), Failure>
 pub fn run_all(system: &System<'_>) -> Result<(), Failure>
 {
     events::run(system)?;
+    rust_api::events_and_errors(system)?;
     textedit::original(system)?;
     textedit::native(system)?;
     textedit::navigation(system)?;
@@ -236,3 +237,5 @@ pub mod textedit;
 
 #[allow(dead_code)] // Legacy gate checks are called only by string/guest runners.
 pub mod scrap;
+
+pub mod rust_api;

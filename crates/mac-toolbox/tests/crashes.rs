@@ -1,6 +1,6 @@
 #![cfg(not(target_arch = "riscv64"))]
 mod support;
-use mac_toolbox::{Error, NO_MEMORY, System, crashes::*, panic};
+use mac_toolbox::{Error, System, crashes::*, panic};
 
 #[test]
 fn native_report_round_trips_long_utf8_and_scrolls_without_losing_text()
@@ -82,7 +82,7 @@ fn retention_and_formatter_failures_are_explicit_and_do_not_destroy_prior_diagno
         {
             reports.append(&block).unwrap();
         }
-        assert_eq!(reports.append("overflow"), Err(Error(NO_MEMORY)));
+        assert_eq!(reports.append("overflow"), Err(Error::NoMemory));
         let report = reports.show(0).unwrap();
         assert_eq!(report.report_bytes, MAX_REPORT_BYTES);
         assert_ne!(report.flags & TRUNCATED, 0);

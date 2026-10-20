@@ -264,7 +264,7 @@ impl<'a> ResourceView<'a>
                          ctx.item.info.length,
                          ctx.control.info()?.top,
                          self.active().mode());
-        ctx.system.log(log.as_str()).map_err(Error)
+        ctx.system.log(log.as_str())
     }
 
     pub fn draw(&mut self, system: &System<'a>, window: WindowId, file: Option<&ResourceFile<'a>>,
@@ -347,7 +347,7 @@ impl<'a> ResourceView<'a>
                                                  "RESEDIT_ROWS pane=2 first={} end={} \
                                                   ns={elapsed}",
                                                  range.start, range.end);
-                                system.log(log.as_str()).map_err(Error)
+                                system.log(log.as_str())
                             })?;
                 self.report(&ctx)?;
                 Ok(false)
@@ -367,7 +367,7 @@ impl<'a> ResourceView<'a>
             let elapsed = system.events().monotonic_nanoseconds()?.saturating_sub(started);
             let mut log = Text::<128>::new();
             let _ = writeln!(log, "RESEDIT_RENDER pane=2 ns={elapsed}");
-            system.log(log.as_str()).map_err(Error)?;
+            system.log(log.as_str())?;
         }
         Ok(())
     }

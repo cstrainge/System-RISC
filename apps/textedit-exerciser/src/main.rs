@@ -3,7 +3,7 @@
 #![no_main]
 
 
-use mac_toolbox::{events::EVERY_EVENT, *};
+use mac_toolbox::*;
 
 mod editor;
 mod batch;
@@ -16,7 +16,7 @@ mod menus;
 mod ui;
 use ui::{Text, text};
 
-fn run(system: &System<'_>) -> Result<(), Status>
+fn run(system: &System<'_>) -> Result<(), Error>
 {
     menus::install(system)?;
     let mut editor = editor::Editor::default();
@@ -25,19 +25,19 @@ fn run(system: &System<'_>) -> Result<(), Status>
     system.log("TEXTEDIT_EXERCISER_READY\n")?;
     loop
     {
-        let event = system.wait_event(EVERY_EVENT, 30)?;
-        if let Some(selection) = system.menus().selection(&event).map_err(|e| e.0)?
+        let event = system.wait_event(mac_toolbox::events::EventMask::ALL, 30)?;
+        if let Some(selection) = system.menus().selection(&event)?
         {
             if [u32::from_be_bytes(*b"clos"), u32::from_be_bytes(*b"quit")].contains(&selection.command)
             {
                 editor.close(system)?;
                 return Ok(());
             }
-            editor.command(system, selection.command, event.when)?;
+            editor.command(system, selection.command, event.input().when)?;
             menus::update(system, &editor)?;
             continue;
         }
-        if batch::is_keyboard(event.kind)
+        if batch::is_keyboard(event)
         {
             batch::keyboard(system, &mut editor, event)?;
             if editor.window == 0
@@ -51,7 +51,7 @@ fn run(system: &System<'_>) -> Result<(), Status>
         {
             return Ok(());
         }
-        if event.kind != EventKind::Null && event.kind != EventKind::KeyUp
+        if !matches!(event, Event::Idle { .. }) && !matches!(event, Event::KeyUp { .. })
         {
             menus::update(system, &editor)?;
         }
@@ -71,7 +71,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(system) => system,
-        Err(status) => return status
+        Err(status) => return status.status()
     };
     if system.capabilities() & CAP_GRAPHICS == 0
     {
@@ -83,7 +83,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
         Err(status) =>
         {
             let _ = system.log("TEXTEDIT_EXERCISER_ERROR\n");
-            status
+            status.status()
         }
     }
 }

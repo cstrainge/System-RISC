@@ -163,7 +163,7 @@ extern "C" fn main() -> !
         failed();
     }
     files.operation = mac_abi::files::VOLUME_INDEX;
-    if client.file(&mut files, "", &mut []) != Err(mac_traps::Error(mac_abi::NOT_FOUND))
+    if client.file(&mut files, "", &mut []) != Err(mac_traps::Error::NotFound)
     {
         failed();
     }

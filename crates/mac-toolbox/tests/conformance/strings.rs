@@ -188,21 +188,22 @@ pub fn graphical(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
     require(call(gate, PSTRING_WINDOW, &mut request) == 0, "255-byte Pascal window creation")?;
     let id = request.request.id;
     system.windows().set_title(mac_abi::WindowId(id), "Native café")?;
-    require(system.window(id).map_err(Failure::Service)?.title_length == 12,
+    require(system.window(id).map_err(|error| Failure::Service(error.status()))?.title_length
+            == 12,
             "native title setter")?;
     request.operation = SET_WINDOW_TITLE;
     request.request.title.fill(0);
     request.request.title[..5].copy_from_slice(b"\x04Caf\x8e");
     request.request.title_length = 5;
     require(call(gate, PSTRING_WINDOW, &mut request) == 0, "legacy title setter")?;
-    let native_title = system.window(id).map_err(Failure::Service)?;
+    let native_title = system.window(id).map_err(|error| Failure::Service(error.status()))?;
     require(&native_title.title[..native_title.title_length as usize] == "Café".as_bytes(),
             "legacy title UTF8")?;
     request.request.title[0] = 255;
     request.request.title[1..256].fill(0xdb);
     request.request.title_length = 256;
     require(call(gate, PSTRING_WINDOW, &mut request) == 0, "restore legacy title")?;
-    let native = system.window(id).map_err(Failure::Service)?;
+    let native = system.window(id).map_err(|error| Failure::Service(error.status()))?;
     require(native.title_length == 510, "Pascal window title expanded without truncation")?;
     require(core::str::from_utf8(&native.title[..510]).is_ok_and(|s| {
                                                           s.chars().count() == 255
@@ -230,13 +231,13 @@ pub fn graphical(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
     draw.command.text[0] = 0xff;
     require(call(gate, DRAW, &mut draw) == BAD_ARGUMENT as i64,
             "native retained draw rejects invalid UTF8")?;
-    system.close_window(id).map_err(Failure::Service)?;
+    system.close_window(id).map_err(|error| Failure::Service(error.status()))?;
     let id = system.new_window(Rect::new(100, 100, 300, 200), "🦀", (1, 1), 8)
-                   .map_err(Failure::Service)?;
+                   .map_err(|error| Failure::Service(error.status()))?;
     request.request.id = id;
     request.operation = GET_WINDOW;
     require(call(gate, PSTRING_WINDOW, &mut request) == BAD_ARGUMENT as i64,
             "unrepresentable Pascal output rejected")?;
-    system.close_window(id).map_err(Failure::Service)?;
+    system.close_window(id).map_err(|error| Failure::Service(error.status()))?;
     Ok(())
 }

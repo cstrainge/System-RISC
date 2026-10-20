@@ -70,7 +70,7 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
         canvas.draw_text(0,
                          state.title_bounds.left + 8,
                          14,
-                         text(&state.title, state.title_length).map_err(mac_traps::Error)?,
+                         text(&state.title, state.title_length).map_err(mac_traps::Error::from_status)?,
                          state.title_bounds.right - state.title_bounds.left - 13,
                          if selected
                          {
@@ -125,7 +125,7 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
         {
             canvas.draw_text(0, r.left + 2, baseline, "\u{12}", 14, fg)?;
         }
-        let label = text(&item.text, item.text_length).map_err(mac_traps::Error)?;
+        let label = text(&item.text, item.text_length).map_err(mac_traps::Error::from_status)?;
         let label_left = r.left + if item.icon.present != 0 { 34 } else { 14 };
         if item.icon.present != 0
         {
@@ -146,17 +146,17 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
         {
             if item.mark >= 128
             {
-                return Err(mac_traps::Error(NOT_SUPPORTED));
+                return Err(mac_traps::Error::NotSupported);
             }
             let bytes = [item.mark];
-            let mark = core::str::from_utf8(&bytes).map_err(|_| mac_traps::Error(BAD_ARGUMENT))?;
+            let mark = core::str::from_utf8(&bytes).map_err(|_| mac_traps::Error::BadArgument)?;
             canvas.draw_text(0, r.left + 2, baseline, mark, 14, fg)?;
         }
         if item.key != 0
         {
             canvas.draw_text(0, r.right - 24, baseline, "\u{11}", 14, fg)?;
             let key = [item.key.to_ascii_uppercase()];
-            let key = core::str::from_utf8(&key).map_err(|_| mac_traps::Error(NOT_SUPPORTED))?;
+            let key = core::str::from_utf8(&key).map_err(|_| mac_traps::Error::NotSupported)?;
             let command_width = canvas.text_width(0, "\u{11}")?;
             canvas.draw_text(0, r.right - 24 + command_width, baseline, key, 13, fg)?;
         }
@@ -171,7 +171,7 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
 }
 fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_traps::Result<()>
 {
-    let title = text(&state.title, state.title_length).map_err(mac_traps::Error)?;
+    let title = text(&state.title, state.title_length).map_err(mac_traps::Error::from_status)?;
     if state.profile == APPLICATION_PROFILE
     {
         // System 7.6.1 MBDF: right application title begins at601 on640-wide
@@ -188,7 +188,7 @@ fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_tra
     let mut width = state.minimum_width.max(24);
     for item in &state.items[..state.item_count as usize]
     {
-        let label = text(&item.text, item.text_length).map_err(mac_traps::Error)?;
+        let label = text(&item.text, item.text_length).map_err(mac_traps::Error::from_status)?;
         let label_width = if item.style == 0
         {
             canvas.text_width(0, label)?
@@ -278,9 +278,9 @@ pub unsafe extern "C" fn standard_menu_definition(pointer: *mut DefinitionCall) 
         MEASURE => measure(state, &mut canvas),
         DRAW_BAR => paint(state, false, &mut canvas),
         DRAW_POPUP => paint(state, true, &mut canvas),
-        _ => Err(mac_traps::Error(NOT_SUPPORTED))
+        _ => Err(mac_traps::Error::NotSupported)
     };
-    result.map_or_else(|e| e.0 as i64, |_| 0)
+    result.map_or_else(|e| e.status() as i64, |_| 0)
 }
 #[cfg(target_arch = "riscv64")]
 #[unsafe(no_mangle)]

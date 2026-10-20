@@ -31,7 +31,7 @@ fn legacy_text_convenience_traps()
 fn native_limits_and_failed_paste_preserve_both_managers()
 {
     support::with_system(|system| {
-        use mac_toolbox::{Error, NO_MEMORY, NOT_FOUND,
+        use mac_toolbox::{Error,
                           textedit::{MAX_BYTES, MAX_EDITORS}};
         let te = system.textedit();
         let rect = mac_toolbox::Rect::new(0, 0, 100, 100);
@@ -41,16 +41,16 @@ fn native_limits_and_failed_paste_preserve_both_managers()
         let before = te.info(id).unwrap();
         system.scrap().clear().unwrap();
         system.scrap().put_text("é").unwrap();
-        assert_eq!(te.paste(id), Err(Error(NO_MEMORY)));
+        assert_eq!(te.paste(id), Err(Error::NoMemory));
         assert_eq!(te.info(id).unwrap(), before);
         let mut bytes = [0; 16];
         assert_eq!(system.scrap().text(&mut bytes).unwrap(), "é");
-        assert_eq!(te.insert(id, "!"), Err(Error(NO_MEMORY)));
+        assert_eq!(te.insert(id, "!"), Err(Error::NoMemory));
         assert_eq!(te.info(id).unwrap(), before);
         te.dispose(id).unwrap();
-        assert_eq!(te.dispose(id), Err(Error(NOT_FOUND)));
+        assert_eq!(te.dispose(id), Err(Error::NotFound));
         let ids: Vec<_> = (0..MAX_EDITORS).map(|_| te.create(rect, rect).unwrap()).collect();
-        assert_eq!(te.create(rect, rect), Err(Error(NO_MEMORY)));
+        assert_eq!(te.create(rect, rect), Err(Error::NoMemory));
         for id in ids
         {
             te.dispose(id).unwrap();
@@ -193,7 +193,7 @@ fn native_editor_font_geometry_matches_resident_quickdraw_and_is_per_instance()
 fn native_editor_font_reflow_new_characters_paste_and_failure_are_consistent()
 {
     with_editor_fonts(|system| {
-        use mac_toolbox::{BAD_ARGUMENT, Error, NOT_FOUND, Rect, textedit::FontSelection};
+        use mac_toolbox::{Error, Rect, textedit::FontSelection};
         let te = system.textedit();
         let fonts = system.quickdraw().fonts();
         let font = FontSelection { family: 1,
@@ -229,11 +229,11 @@ fn native_editor_font_reflow_new_characters_paste_and_failure_are_consistent()
         assert_eq!(te.set_font(id,
                                FontSelection { family: 12345,
                                                ..font }),
-                   Err(Error(NOT_FOUND)));
+                   Err(Error::NotFound));
         assert_eq!(te.set_font(id,
                                FontSelection { size: -1,
                                                ..font }),
-                   Err(Error(BAD_ARGUMENT)));
+                   Err(Error::BadArgument));
         assert_eq!(te.info(id).unwrap(), before);
         assert_eq!(te.point(id, before.text_length).unwrap(), point);
         assert_eq!(te.text(id, &mut bytes).unwrap(), text);

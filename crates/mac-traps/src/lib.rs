@@ -2,51 +2,20 @@
 #![no_std]
 use mac_abi::{traps::*, *};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Error(pub Status);
+mod error;
+pub use error::Error;
 pub type Result<T> = core::result::Result<T, Error>;
 mod files;
 mod images;
-impl core::fmt::Display for Error
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-    {
-        f.write_str(match self.0
-                    {
-                        BAD_ABI => "incompatible System ABI",
-                        BAD_ARGUMENT => "invalid argument",
-                        NOT_FOUND => "not found",
-                        IO_ERROR => "disk I/O failed",
-                        READ_ONLY => "volume is read-only",
-                        ALREADY_EXISTS => "an item with that name already exists",
-                        ACCESS_DENIED => "item is protected or locked",
-                        DISK_FULL => "metadata storage is full",
-                        ROLLBACK_FAILED => "disk rollback failed; remount required",
-                        DIRECTORY_NOT_EMPTY => "directory is not empty",
-                        SERVICE_BUSY => "System service is busy",
-                        WRONG_THREAD => "Operation requires its owning OS thread",
-                        NOT_SUPPORTED => "service not supported",
-                        NO_MEMORY => "out of memory",
-                        TRANSLATION_REQUIRED => "68k translation required",
-                        events::EVENT_NOT_ENABLED => "event type is disabled by the OS event mask",
-                        scrap::NO_TYPE_ERR => "clipboard flavor is unavailable",
-                        memory::MEM_FULL_ERR => "Memory Manager allocation failed",
-                        memory::NIL_HANDLE_ERR => "invalid or empty memory handle",
-                        memory::MEM_WZ_ERR => "invalid memory zone",
-                        memory::MEM_PUR_ERR => "locked handle cannot be emptied or reallocated",
-                        memory::MEM_LOCKED_ERR => "memory handle is locked",
-                        _ => "System service failed"
-                    })
-    }
-}
-impl core::error::Error for Error
-{
-}
 pub fn status(value: i64) -> Result<()>
 {
-    if value == 0 { Ok(()) } else { Err(Error(value as Status)) }
+    if value == 0 { Ok(()) } else { Err(Error::from_status(value as Status)) }
 }
 
+/// Thread-mobile routing view into synchronized resident services. Copying a
+/// client grants no object ownership or caller identity: System derives those
+/// from its trusted execution context. Thread-specific operations may return
+/// `Error::WrongThread`; mutable manager state never lives in this view.
 #[derive(Clone, Copy)]
 pub struct Client<'a>
 {
@@ -85,9 +54,9 @@ impl<'a> Client<'a>
         status(self.invoke(CLOCK, &mut call))?;
         if call.reserved != 0
         {
-            return Err(Error(BAD_ABI));
+            return Err(Error::BadAbi);
         }
-        dates::Timestamp::from_unix_parts(call.unix_seconds,call.microseconds).ok_or(Error(BAD_ABI))
+        dates::Timestamp::from_unix_parts(call.unix_seconds, call.microseconds).ok_or(Error::BadAbi)
     }
 
     pub fn monotonic_nanoseconds(self) -> Result<u64>
@@ -110,7 +79,7 @@ impl<'a> Client<'a>
     {
         if !services.header.supports::<SystemServices>()
         {
-            return Err(Error(BAD_ABI));
+            return Err(Error::BadAbi);
         }
         Ok(Self { services })
     }
@@ -122,11 +91,11 @@ impl<'a> Client<'a>
     {
         if services.is_null()
         {
-            return Err(Error(BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
         if !unsafe { &*services.cast::<Header>() }.supports::<SystemServices>()
         {
-            return Err(Error(BAD_ABI));
+            return Err(Error::BadAbi);
         }
         Self::new(unsafe { &*services })
     }
@@ -255,7 +224,7 @@ impl<'a> Client<'a>
     pub unsafe fn definition(self, call: &mut DefinitionCall) -> Result<i64>
     {
         let result = self.invoke(DEFINITION, call);
-        if result < 0 { Err(Error(result as Status)) } else { Ok(result) }
+        if result < 0 { Err(Error::from_status(result as Status)) } else { Ok(result) }
     }
 }
 
@@ -895,7 +864,7 @@ impl Client<'_>
            || width.checked_mul(height) != Some(pixels.len())
            || pixels.len() > 640 * 480
         {
-            return Err(Error(BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
         let mut surface = Surface { pixels: pixels.as_mut_ptr(),
                                     width:  width as u32,
@@ -965,7 +934,7 @@ impl Client<'_>
            || width.checked_mul(height) != Some(pixels.len())
            || pixels.len() > 640 * 480
         {
-            return Err(Error(BAD_ARGUMENT));
+            return Err(Error::BadArgument);
         }
         let mut surface = Surface { pixels: pixels.as_mut_ptr(),
                                     width:  width as u32,

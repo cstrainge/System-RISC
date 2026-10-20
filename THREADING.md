@@ -51,6 +51,19 @@ spaces, user-mode execution, checked syscall copies and fault-local cleanup.
 Terminal session; they never execute on the Terminal app's UI thread. P6/P14
 extensions and drivers intentionally remain trusted kernel code.
 
+## Native SDK mobility
+
+Toolbox clients, manager views and object owners are deliberately `Send + Sync`.
+They contain routing views and validated object identities, not references into
+resident mutable state. Shared services synchronize each operation and derive
+the caller's AppId/ThreadId at entry. Copying or moving a client does not transfer
+object ownership between applications. Operations requiring a particular OS
+thread still report the typed `Error::WrongThread`; movement is not an exemption.
+Manager methods taking Copy `self` do not express exclusive resident access;
+the System guard supplies that serialization. The public SDK concurrency test
+exercises actual shared Memory Manager reads, writes, allocations and cleanup.
+This contract does not claim UI worker threads or SMP are implemented.
+
 ## Execution identities
 
 The scheduler must supply a trusted execution context at trap entry:

@@ -83,8 +83,8 @@ impl<'a> Resources<'a>
                                                             index,
                                                             ..Default::default() },
                                           output)?;
-        core::str::from_utf8(output.get(..reply.transferred).ok_or(Error(mac_abi::BAD_ARGUMENT))?)
-            .map_err(|_|Error(mac_abi::BAD_ARGUMENT))
+        core::str::from_utf8(output.get(..reply.transferred).ok_or(Error::BadArgument)?)
+            .map_err(|_|Error::BadArgument)
     }
 
     pub fn get(self, key: ResourceKey) -> Result<Resource<'a>>

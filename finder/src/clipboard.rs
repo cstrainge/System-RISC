@@ -56,10 +56,6 @@ impl Default for Viewer
                tracking:   None }
     }
 }
-fn error(error: mac_toolbox::Error) -> Status
-{
-    error.0
-}
 fn vertical(width: i16, height: i16) -> Rect
 {
     Rect::new(width - BAR, HEADER - 1, width + 1, height - BAR + 1)
@@ -71,19 +67,16 @@ fn horizontal(width: i16, height: i16) -> Rect
 /// This Finder-owned WIND descriptor is layout metadata, not a GetNewWindow
 /// implementation. Its title is empty: Rust obtains the actual UTF-8 title from
 /// STR# through Resource Manager instead of decoding Pascal text in an app.
-fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Status>
+fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Error>
 {
-    let resource = system.resources()
-                         .application()
-                         .get(resources::ResourceKey { kind: *b"WIND",
-                                                       id:   2002 })
-                         .map_err(error)?;
+    let resource = system.resources().application().get(resources::ResourceKey { kind: *b"WIND",
+                                                                                  id:   2002 })?;
     let mut data = [0u8; 20];
-    if resource.size() != data.len() || resource.read(0, &mut data).map_err(error)? != data.len()
+    if resource.size() != data.len() || resource.read(0, &mut data)? != data.len()
     {
-        return Err(BAD_ARGUMENT);
+        return Err(Error::BadArgument);
     }
-    resource.release().map_err(error)?;
+    resource.release()?;
     let word = |at| i16::from_be_bytes([data[at], data[at + 1]]);
     let bounds = Rect::new(word(2), word(0), word(6), word(4));
     let procedure = word(8);
@@ -96,13 +89,13 @@ fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Status>
        || procedure != 8
        || data[10..] != [1, 0, 1, 0, 0, 0, 0, 0, 0, 0]
     {
-        return Err(BAD_ARGUMENT);
+        return Err(Error::BadArgument);
     }
     Ok((bounds, procedure))
 }
 impl Viewer
 {
-    pub fn open(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn open(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         if self.window == 0 || system.window(self.window).is_err()
         {
@@ -119,11 +112,10 @@ impl Viewer
                                                                    ..Default::default() },
                                         LINE_HEIGHT,
                                         1)
-                      .map_err(error)
             };
             let bars = (|| {
-                Ok::<_, Status>([create(vertical(width, height))?,
-                                 create(horizontal(width, height))?])
+                Ok::<_, Error>([create(vertical(width, height))?,
+                                create(horizontal(width, height))?])
             })();
             let bars = match bars
             {
@@ -144,14 +136,14 @@ impl Viewer
         self.draw(system)
     }
 
-    fn current_text(&self) -> Result<&str, Status>
+    fn current_text(&self) -> Result<&str, Error>
     {
-        core::str::from_utf8(&self.text[..self.length]).map_err(|_| BAD_ARGUMENT)
+        core::str::from_utf8(&self.text[..self.length]).map_err(|_| Error::BadArgument)
     }
 
-    fn read(&mut self, system: &System<'_>) -> Result<(), Status>
+    fn read(&mut self, system: &System<'_>) -> Result<(), Error>
     {
-        let info = system.scrap().info().map_err(error)?;
+        let info = system.scrap().info()?;
         if self.snapshot == Some(info)
         {
             return Ok(());
@@ -162,7 +154,7 @@ impl Viewer
         self.scroll = Point::default();
         if info.flavors != 0
         {
-            self.first = system.scrap().flavor_at(0).map_err(error)?;
+            self.first = system.scrap().flavor_at(0)?;
             if self.first.kind == TEXT
             {
                 if self.first.length as usize > self.text.len()
@@ -171,15 +163,13 @@ impl Viewer
                 }
                 else
                 {
-                    self.length = system.scrap().text(&mut self.text).map_err(error)?.len();
+                    self.length = system.scrap().text(&mut self.text)?.len();
                     self.mode = Mode::Text;
                     let mut extent = Point::default();
                     for line in Lines::new(self.current_text()?)
                     {
-                        extent.h = extent.h.max(system.quickdraw()
-                                                      .fonts()
-                                                      .text_width(FONT, line)
-                                                      .map_err(error)?);
+                        extent.h =
+                            extent.h.max(system.quickdraw().fonts().text_width(FONT, line)?);
                         extent.v = extent.v.saturating_add(LINE_HEIGHT);
                     }
                     self.extent = extent;
@@ -196,7 +186,7 @@ impl Viewer
 
     /// Detect both clear generations and puts: puts change size/flavor count but
     /// intentionally leave the original-style clear generation unchanged.
-    pub fn refresh(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn refresh(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         if self.window == 0
         {
@@ -206,14 +196,14 @@ impl Viewer
         {
             Ok(_) =>
             {}
-            Err(NOT_FOUND) =>
+            Err(Error::NotFound) =>
             {
                 self.window = 0;
                 return Ok(());
             }
             Err(status) => return Err(status)
         }
-        if self.snapshot != Some(system.scrap().info().map_err(error)?)
+        if self.snapshot != Some(system.scrap().info()?)
         {
             self.draw(system)?;
             system.log("FINDER_CLIPBOARD_CHANGED\n")?;
@@ -227,7 +217,7 @@ impl Viewer
                 v: (self.extent.v + 6 - height + HEADER + BAR).max(0) }
     }
 
-    pub fn draw(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn draw(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         self.read(system)?;
         let window = system.window(self.window)?;
@@ -236,17 +226,18 @@ impl Viewer
         let limits = self.limits(width, height);
         self.scroll.h = self.scroll.h.clamp(0, limits.h);
         self.scroll.v = self.scroll.v.clamp(0, limits.v);
-        system.windows()
-              .set_grow_icon_clip(WindowId(self.window),
-                                  Some(Rect::new(width - BAR, height - BAR, width, height)))
-              .map_err(error)?;
+        system.windows().set_grow_icon_clip(WindowId(self.window),
+                                             Some(Rect::new(width - BAR,
+                                                            height - BAR,
+                                                            width,
+                                                            height)))?;
         system.begin_update(self.window)?;
-        let result: Result<(), Status> = (|| {
+        let result: Result<(), Error> = (|| {
             let port = system.quickdraw().graphics(WindowId(self.window));
-            port.reset().map_err(error)?;
-            port.colors(0xffffff, 0xffffff).map_err(error)?;
-            port.paint_rect(Rect::new(0, 0, width, height)).map_err(error)?;
-            port.colors(0, 0xffffff).map_err(error)?;
+            port.reset()?;
+            port.colors(0xffffff, 0xffffff)?;
+            port.paint_rect(Rect::new(0, 0, width, height))?;
+            port.colors(0, 0xffffff)?;
             let mut prefix = [0; 768];
             let prefix = crate::ui::text(system, CONTENTS, &mut prefix)?;
             // Original header uses separate child views, each inset by1px.
@@ -255,8 +246,7 @@ impl Viewer
                                         Point { h: 5,
                                                 v: 14 },
                                         prefix,
-                                        0)
-                                  .map_err(error)?;
+                                        0)?;
             let mut bytes = [0; 768];
             let mut kind = TypeName::default();
             let label = match self.mode
@@ -273,11 +263,10 @@ impl Viewer
                       Point { h: label_x,
                               v: 14 },
                       label,
-                      0)
-                .map_err(error)?;
-            port.paint_rect(Rect::new(0, 17, width, 18)).map_err(error)?;
-            port.paint_rect(Rect::new(0, 19, width, 20)).map_err(error)?;
-            port.clip_rect(Rect::new(0, HEADER, width - BAR, height - BAR)).map_err(error)?;
+                      0)?;
+            port.paint_rect(Rect::new(0, 17, width, 18))?;
+            port.paint_rect(Rect::new(0, 19, width, 20))?;
+            port.clip_rect(Rect::new(0, HEADER, width - BAR, height - BAR))?;
             match self.mode
             {
                 Mode::Text =>
@@ -291,8 +280,7 @@ impl Viewer
                                       Point { h: 5 - self.scroll.h,
                                               v: baseline },
                                       line,
-                                      0)
-                                .map_err(error)?;
+                                      0)?;
                         }
                     }
                 }
@@ -312,13 +300,12 @@ impl Viewer
                               Point { h: 5,
                                       v: 33 },
                               body,
-                              0)
-                        .map_err(error)?;
+                              0)?;
                 }
                 Mode::Empty =>
                 {}
             }
-            port.clip_rect(Rect::new(0, 0, width, height)).map_err(error)?;
+            port.clip_rect(Rect::new(0, 0, width, height))?;
             let active = system.window(0)?.id == self.window;
             for (index, bounds, value, maximum, page) in
                 [(0,
@@ -335,8 +322,7 @@ impl Viewer
                                                                     active: u32::from(active),
                                                                     ..Default::default() },
                                          LINE_HEIGHT,
-                                         page)
-                       .map_err(error)?;
+                                         page)?;
             }
             Ok(())
         })();
@@ -346,13 +332,14 @@ impl Viewer
     }
 
     /// Read-only document input. Loaded CDEF1 owns all scrollbar hit/drag math.
-    pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Status>
+    pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Error>
     {
         if self.window == 0
         {
             return Ok(false);
         }
-        if event.kind == EventKind::Update && event.message == self.window
+        if matches!(event, Event::Update { .. })
+           && event.window().map_or(0, |window| window.0) == self.window
         {
             self.draw(system)?;
             return Ok(true);
@@ -360,29 +347,28 @@ impl Viewer
         let window = system.window(self.window)?;
         let width = window.bounds.right - window.bounds.left;
         let height = window.bounds.bottom - window.bounds.top;
-        let point = Point { h: event.where_.h - window.bounds.left,
-                            v: event.where_.v - window.bounds.top };
+        let point = Point { h: event.input().at.h - window.bounds.left,
+                            v: event.input().at.v - window.bounds.top };
         let limits = self.limits(width, height);
         if let Some(index) = self.tracking
-           && matches!(event.kind, EventKind::Null | EventKind::MouseUp | EventKind::Activate)
+           && matches!(event, Event::Idle { .. } | Event::MouseUp { .. } | Event::Activate { .. })
         {
             let control = system.controls().control(self.scrollbars[index]);
-            if event.kind == EventKind::Activate
-               && event.message == self.window
-               && event.modifiers & ACTIVE_FLAG == 0
+            if matches!(event, Event::Activate { .. })
+               && event.window().map_or(0, |window| window.0) == self.window
+               && !event.input().modifiers.contains(mac_toolbox::events::Modifiers::ACTIVE)
             {
-                control.cancel().map_err(error)?;
+                control.cancel()?;
                 self.tracking = None;
                 return Ok(true);
             }
-            if event.kind != EventKind::Activate
+            if !matches!(event, Event::Activate { .. })
             {
-                let input = system.events().input_state().map_err(error)?;
+                let input = system.events().input_state()?;
                 let state = control.poll_tracking(point,
-                                                  event.kind != EventKind::MouseUp
-                                                  && input.modifiers & events::BTN_STATE == 0,
-                                                  input.uptime_ticks)
-                                   .map_err(error)?;
+                                                  !matches!(event, Event::MouseUp { .. })
+                                                  && input.modifiers.button_down(),
+                                                  input.uptime_ticks)?;
                 if !state.tracking
                 {
                     self.tracking = None;
@@ -402,15 +388,14 @@ impl Viewer
                 return Ok(true);
             }
         }
-        if event.kind == EventKind::MouseDown && event.message == self.window
+        if matches!(event, Event::MouseDown { .. })
+           && event.window().map_or(0, |window| window.0) == self.window
         {
-            let input = system.events().input_state().map_err(error)?;
+            let input = system.events().input_state()?;
             for (index, id) in self.scrollbars.into_iter().enumerate()
             {
-                let state = system.controls()
-                                  .control(id)
-                                  .begin_tracking(point, input.uptime_ticks)
-                                  .map_err(error)?;
+                let state =
+                    system.controls().control(id).begin_tracking(point, input.uptime_ticks)?;
                 if state.handled
                 {
                     self.tracking = state.tracking.then_some(index);
@@ -430,10 +415,9 @@ impl Viewer
                 }
             }
         }
-        if matches!(event.kind, EventKind::KeyDown | EventKind::AutoKey)
-           && system.window(0)?.id == self.window
+        if matches!(event, Event::KeyDown { .. }) && system.window(0)?.id == self.window
         {
-            let delta = match (event.message >> 8) as u8
+            let delta = match event.key().map_or(0, |key| key.code())
             {
                 0x74 => -(height - HEADER - BAR),
                 0x79 => height - HEADER - BAR,
@@ -471,16 +455,16 @@ impl Write for TypeName
 }
 impl TypeName
 {
-    fn set(&mut self, kind: [u8; 4]) -> Result<(), Status>
+    fn set(&mut self, kind: [u8; 4]) -> Result<(), Error>
     {
         if kind.iter().all(|byte| (0x20..=0x7e).contains(byte))
         {
-            self.write_str(core::str::from_utf8(&kind).map_err(|_| BAD_ARGUMENT)?)
-                .map_err(|_| BAD_ARGUMENT)
+            self.write_str(core::str::from_utf8(&kind).map_err(|_| Error::BadArgument)?)
+                .map_err(|_| Error::BadArgument)
         }
         else
         {
-            write!(self, "0x{:08X}", u32::from_be_bytes(kind)).map_err(|_| BAD_ARGUMENT)
+            write!(self, "0x{:08X}", u32::from_be_bytes(kind)).map_err(|_| Error::BadArgument)
         }
     }
 

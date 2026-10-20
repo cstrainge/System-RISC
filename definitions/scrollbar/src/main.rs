@@ -145,7 +145,7 @@ pub fn track_value(state: &ScrollbarState, anchor: Point, point: Point) -> Resul
 /// surface connection applies the caller's origin and clipping on every span.
 pub fn draw(canvas: &mut SurfacePort<'_>, state: &ScrollbarState) -> mac_traps::Result<()>
 {
-    let g = geometry(state).map_err(mac_traps::Error)?;
+    let g = geometry(state).map_err(mac_traps::Error::from_status)?;
     let active = state.active != 0 && state.maximum > 0;
     let thickness = if g.horizontal
     {
@@ -263,7 +263,9 @@ pub unsafe extern "C" fn scrollbar_definition(pointer: *mut DefinitionCall) -> i
                 return BAD_ARGUMENT as i64;
             };
             let connection = unsafe { mac_traps::SurfaceConnection::new(surface, call.gate) };
-            draw(&mut SurfacePort::new(connection), state).map_or_else(|error| error.0 as i64,
+            draw(&mut SurfacePort::new(connection), state).map_or_else(|error| {
+                                                                           error.status() as i64
+                                                                       },
                                                                        |_| 0)
         }
         1 =>

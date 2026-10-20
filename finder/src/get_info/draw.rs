@@ -4,11 +4,11 @@ use mac_toolbox::{controls::StandardState,
 
 use super::*;
 pub(super) fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8])
-                       -> Result<&'b str, Status>
+                       -> Result<&'b str, Error>
 {
-    system.resources().application().indexed_string(2003, index, output).map_err(error)
+    system.resources().application().indexed_string(2003, index, output)
 }
-fn substitute<const N: usize>(source: &str, values: &[&str]) -> Result<Text<N>, Status>
+fn substitute<const N: usize>(source: &str, values: &[&str]) -> Result<Text<N>, Error>
 {
     let mut result = Text::default();
     let mut remaining = source;
@@ -16,54 +16,55 @@ fn substitute<const N: usize>(source: &str, values: &[&str]) -> Result<Text<N>, 
     {
         if let Some(after) = remaining.strip_prefix('^')
         {
-            let digit = after.as_bytes().first().copied().ok_or(BAD_ARGUMENT)?;
-            let value = values.get(usize::from(digit.checked_sub(b'0').ok_or(BAD_ARGUMENT)?))
-                              .ok_or(BAD_ARGUMENT)?;
-            result.write_str(value).map_err(|_| NO_MEMORY)?;
+            let digit = after.as_bytes().first().copied().ok_or(Error::BadArgument)?;
+            let value = values.get(usize::from(digit.checked_sub(b'0')
+                                                    .ok_or(Error::BadArgument)?))
+                              .ok_or(Error::BadArgument)?;
+            result.write_str(value).map_err(|_| Error::NoMemory)?;
             remaining = &after[1..];
         }
         else
         {
-            let c = remaining.chars().next().ok_or(BAD_ARGUMENT)?;
-            result.write_char(c).map_err(|_| NO_MEMORY)?;
+            let c = remaining.chars().next().ok_or(Error::BadArgument)?;
+            result.write_char(c).map_err(|_| Error::NoMemory)?;
             remaining = &remaining[c.len_utf8()..];
         }
     }
     Ok(result)
 }
 pub(super) fn filesystem(system: &System<'_>, volume: &files::VolumeInfo)
-                         -> Result<Text<256>, Status>
+                         -> Result<Text<256>, Error>
 {
-    let filesystem = files::Filesystem::of(volume).map_err(error)?;
+    let filesystem = files::Filesystem::of(volume)?;
     if let Some(version) = filesystem.version()
     {
         let mut bytes = [0; 128];
         let mut number = Text::<16>::default();
-        write!(&mut number, "{version}").map_err(|_| NO_MEMORY)?;
+        write!(&mut number, "{version}").map_err(|_| Error::NoMemory)?;
         substitute(text(system, 46, &mut bytes)?, &[filesystem.name(), number.as_str()])
     }
     else
     {
         let mut result = Text::default();
-        result.write_str(filesystem.name()).map_err(|_| NO_MEMORY)?;
+        result.write_str(filesystem.name()).map_err(|_| Error::NoMemory)?;
         Ok(result)
     }
 }
 pub(super) fn volume_location(system: &System<'_>, volume: &files::VolumeInfo)
-                              -> Result<Text<768>, Status>
+                              -> Result<Text<768>, Error>
 {
     let mut bytes = [0; 128];
     let mut number = Text::<16>::default();
-    write!(&mut number, "{}", volume.disk).map_err(|_| NO_MEMORY)?;
+    write!(&mut number, "{}", volume.disk).map_err(|_| Error::NoMemory)?;
     substitute(text(system, 47, &mut bytes)?, &[number.as_str()])
 }
-pub(super) fn title(system: &System<'_>, name: &str) -> Result<Text<768>, Status>
+pub(super) fn title(system: &System<'_>, name: &str) -> Result<Text<768>, Error>
 {
     let mut bytes = [0; 512];
-    let source = system.resources().application().string(3091, &mut bytes).map_err(error)?;
+    let source = system.resources().application().string(3091, &mut bytes)?;
     substitute(source, &[name])
 }
-fn date(system: &System<'_>, when: Timestamp) -> Result<Text<128>, Status>
+fn date(system: &System<'_>, when: Timestamp) -> Result<Text<128>, Error>
 {
     let date = format::calendar(when);
     let mut day = [0; 32];
@@ -76,11 +77,13 @@ fn date(system: &System<'_>, when: Timestamp) -> Result<Text<128>, Status>
     let hour = if date.hour.is_multiple_of(12) { 12 } else { date.hour % 12 };
     write!(&mut output,
            "{}, {} {}, {}, {}:{:02} {}",
-           day, month, date.day, date.year, hour, date.minute, period).map_err(|_| NO_MEMORY)?;
+           day, month, date.day, date.year, hour, date.minute, period).map_err(|_| {
+                                                                          Error::NoMemory
+                                                                      })?;
     Ok(output)
 }
 fn body(system: &System<'_>, port: GraphicsPort<'_>, bounds: Rect, value: &str, color: u32)
-        -> Result<(), Status>
+        -> Result<(), Error>
 {
     if bounds == Rect::ZERO
     {
@@ -95,17 +98,13 @@ fn body(system: &System<'_>, port: GraphicsPort<'_>, bounds: Rect, value: &str, 
         let candidate = &remaining[..line_end];
         let mut newline = line_end < remaining.len();
         let mut end = line_end;
-        if system.quickdraw().fonts().text_width(FONT, candidate).map_err(error)? > width
+        if system.quickdraw().fonts().text_width(FONT, candidate)? > width
         {
             newline = false;
             end = 0;
             for (index, _) in candidate.match_indices(' ')
             {
-                if system.quickdraw()
-                         .fonts()
-                         .text_width(FONT, &candidate[..index])
-                         .map_err(error)?
-                   > width
+                if system.quickdraw().fonts().text_width(FONT, &candidate[..index])? > width
                 {
                     break;
                 }
@@ -116,11 +115,7 @@ fn body(system: &System<'_>, port: GraphicsPort<'_>, bounds: Rect, value: &str, 
                 for (index, c) in candidate.char_indices()
                 {
                     let next = index + c.len_utf8();
-                    if system.quickdraw()
-                             .fonts()
-                             .text_width(FONT, &candidate[..next])
-                             .map_err(error)?
-                       > width
+                    if system.quickdraw().fonts().text_width(FONT, &candidate[..next])? > width
                     {
                         break;
                     }
@@ -137,8 +132,7 @@ fn body(system: &System<'_>, port: GraphicsPort<'_>, bounds: Rect, value: &str, 
                   Point { h: bounds.left,
                           v: y },
                   line,
-                  color)
-            .map_err(error)?;
+                  color)?;
         remaining = &remaining[end..];
         if newline
         {
@@ -157,7 +151,7 @@ fn body(system: &System<'_>, port: GraphicsPort<'_>, bounds: Rect, value: &str, 
 impl Info
 {
     pub(super) fn control(&self, system: &System<'_>, check: Check, highlighted: bool)
-                          -> Result<StandardState, Status>
+                          -> Result<StandardState, Error>
     {
         let (bounds, index, value, enabled) = match check
         {
@@ -181,7 +175,7 @@ impl Info
         Ok(state)
     }
 
-    fn size_text(&self, system: &System<'_>) -> Result<Text<256>, Status>
+    fn size_text(&self, system: &System<'_>) -> Result<Text<256>, Error>
     {
         let mut bytes = [0; 512];
         if let Some(volume) = self.volume_info
@@ -193,24 +187,24 @@ impl Info
         if let Some(status) = self.job.as_ref().and_then(|job| job.error)
         {
             let mut number = Text::<32>::default();
-            write!(&mut number, "{}", status).map_err(|_| NO_MEMORY)?;
+            write!(&mut number, "{}", status.status()).map_err(|_| Error::NoMemory)?;
             return substitute(text(system, 37, &mut bytes)?, &[number.as_str()]);
         }
         if self.job.as_ref().is_some_and(|job| !job.complete)
         {
             let mut result = Text::default();
-            result.write_str(text(system, 9, &mut bytes)?).map_err(|_| NO_MEMORY)?;
+            result.write_str(text(system, 9, &mut bytes)?).map_err(|_| Error::NoMemory)?;
             return Ok(result);
         }
         let mut disk = Text::<40>::default();
         if self.allocated == 0
         {
-            disk.write_str(text(system, 12, &mut bytes)?).map_err(|_| NO_MEMORY)?;
+            disk.write_str(text(system, 12, &mut bytes)?).map_err(|_| Error::NoMemory)?;
         }
         else
         {
             disk.write_str(crate::browser::disk_size_text(self.allocated).as_str())
-                .map_err(|_| NO_MEMORY)?;
+                .map_err(|_| Error::NoMemory)?;
         }
         let used = format::grouped(self.logical);
         let count = format::grouped(self.job.as_ref().map_or(0, |job| job.items));
@@ -228,16 +222,15 @@ impl Info
         substitute(source, &[disk.as_str(), used.as_str(), count.as_str()])
     }
 
-    pub(super) fn draw(&self, system: &System<'_>) -> Result<(), Status>
+    pub(super) fn draw(&self, system: &System<'_>) -> Result<(), Error>
     {
         system.begin_update(self.window)?;
-        let result: Result<(), Status> = (|| {
+        let result: Result<(), Error> = (|| {
             let port = system.quickdraw().graphics(WindowId(self.window));
-            port.reset().map_err(error)?;
-            port.colors(0xffffff, 0xffffff).map_err(error)?;
-            port.paint_rect(Rect::new(0, 0, self.layout.width, self.layout.height))
-                .map_err(error)?;
-            port.colors(0, 0xffffff).map_err(error)?;
+            port.reset()?;
+            port.colors(0xffffff, 0xffffff)?;
+            port.paint_rect(Rect::new(0, 0, self.layout.width, self.layout.height))?;
+            port.colors(0, 0xffffff)?;
             for (index, bounds) in [(0, self.layout.location),
                                     (1, self.layout.kind),
                                     (2, self.layout.size),
@@ -254,13 +247,12 @@ impl Info
                 let label = text(system, index, &mut bytes)?;
                 let font = FontSelection { face: 1,
                                            ..FONT };
-                let width = system.quickdraw().fonts().text_width(font, label).map_err(error)?;
+                let width = system.quickdraw().fonts().text_width(font, label)?;
                 port.text(font,
                           Point { h: 69 - width,
                                   v: if index == 6 { bounds.top - 4 } else { bounds.top + 10 } },
                           label,
-                          0)
-                    .map_err(error)?;
+                          0)?;
             }
             let bounds = self.layout.icon;
             let icon_bounds =
@@ -270,10 +262,10 @@ impl Info
                                             self.icon,
                                             icon_bounds,
                                             crate::icon_view::State::default())?;
-            system.textedit().draw(self.name, WindowId(self.window)).map_err(error)?;
+            system.textedit().draw(self.name, WindowId(self.window))?;
             if self.focus == Focus::Name && self.active && self.editable(Focus::Name)
             {
-                port.frame_rect(layout::inset(self.layout.name, -1)).map_err(error)?;
+                port.frame_rect(layout::inset(self.layout.name, -1))?;
             }
             body(system, port, self.layout.kind, self.kind.as_str(), 0)?;
             body(system, port, self.layout.size, self.size_text(system)?.as_str(), 0)?;
@@ -293,7 +285,7 @@ impl Info
             {
                 let mut bytes = [0; 256];
                 let mut number = Text::<32>::default();
-                write!(&mut number, "{}", status).map_err(|_| NO_MEMORY)?;
+                write!(&mut number, "{}", status.status()).map_err(|_| Error::NoMemory)?;
                 let index = if self.status.is_none()
                                || self.job.as_ref().is_some_and(|job| job.error == Some(status))
                 {
@@ -303,12 +295,12 @@ impl Info
                 {
                     match status
                     {
-                        ALREADY_EXISTS => 39,
-                        BAD_ARGUMENT => 40,
-                        READ_ONLY => 41,
-                        ACCESS_DENIED => 42,
-                        DISK_FULL => 43,
-                        IO_ERROR | ROLLBACK_FAILED => 44,
+                        Error::AlreadyExists => 39,
+                        Error::BadArgument => 40,
+                        Error::ReadOnly => 41,
+                        Error::AccessDenied => 42,
+                        Error::DiskFull => 43,
+                        Error::Io | Error::RollbackFailed => 44,
                         _ => 11
                     }
                 };
@@ -322,24 +314,22 @@ impl Info
             }
             if !self.editable(Focus::Comments)
             {
-                port.pen_pattern([0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55])
-                    .map_err(error)?;
-                port.frame_rect(self.layout.comments).map_err(error)?;
-                port.pen_pattern([0xff; 8]).map_err(error)?;
+                port.pen_pattern([0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55])?;
+                port.frame_rect(self.layout.comments)?;
+                port.pen_pattern([0xff; 8])?;
             }
             else
             {
-                port.frame_rect(self.layout.comments).map_err(error)?;
+                port.frame_rect(self.layout.comments)?;
             }
-            system.textedit().draw(self.comments, WindowId(self.window)).map_err(error)?;
+            system.textedit().draw(self.comments, WindowId(self.window))?;
             for (index, check) in [Check::Locked, Check::Stationery].into_iter().enumerate()
             {
                 if let Some(id) = self.controls[index]
                 {
                     let control = system.controls().control(id);
                     control.update(controls::StandardKind::WindowFontCheckbox,
-                                   self.control(system, check, false)?)
-                           .map_err(error)?;
+                                   self.control(system, check, false)?)?;
                 }
             }
             Ok(())
@@ -351,18 +341,18 @@ impl Info
 }
 
 pub(super) fn location(system: &System<'_>, volume_id: u32, parent: u32)
-                       -> Result<Text<768>, Status>
+                       -> Result<Text<768>, Error>
 {
     let mut output = Text::default();
-    let volume = system.files().volume(volume_id).map_err(error)?;
-    write!(&mut output, "{} :", volume.name()).map_err(|_| NO_MEMORY)?;
+    let volume = system.files().volume(volume_id)?;
+    write!(&mut output, "{} :", volume.name()).map_err(|_| Error::NoMemory)?;
     let mut path = Text::<512>::default();
-    system.files().path(volume_id, parent, &mut path).map_err(error)?;
+    system.files().path(volume_id, parent, &mut path)?;
     // File Manager returns a native slash path. Its catalog path remains
     // authoritative; Finder contributes the classic presentation separators.
     for part in path.as_str().split('/').filter(|part| !part.is_empty())
     {
-        write!(&mut output, " {} :", part).map_err(|_| NO_MEMORY)?;
+        write!(&mut output, " {} :", part).map_err(|_| Error::NoMemory)?;
     }
     Ok(output)
 }

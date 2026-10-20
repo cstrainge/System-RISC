@@ -43,7 +43,7 @@ impl Part
             23 => Ok(Self::PageDown),
             129 => Ok(Self::Thumb),
             254 => Ok(Self::Inactive),
-            _ => Err(Error(mac_abi::BAD_ARGUMENT))
+            _ => Err(Error::BadArgument)
         }
     }
 }

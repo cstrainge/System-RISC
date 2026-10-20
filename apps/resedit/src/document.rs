@@ -128,7 +128,7 @@ pub fn export(system: &System<'_>, file: &ResourceFile<'_>, catalog: &CatalogInf
         let count = data.read(&mut buffer[..size])?;
         if count != size
         {
-            return Err(ExportError::Service(Error(IO_ERROR)));
+            return Err(ExportError::Service(Error::Io));
         }
         hex(out, &buffer[..size])?;
         remaining -= size as u64;
@@ -166,7 +166,7 @@ pub fn export(system: &System<'_>, file: &ResourceFile<'_>, catalog: &CatalogInf
                 let size = (item.info.length - offset).min(buffer.len());
                 if file.read(item.info.key, offset, &mut buffer[..size])? != size
                 {
-                    return Err(ExportError::Service(Error(IO_ERROR)));
+                    return Err(ExportError::Service(Error::Io));
                 }
                 hex(out, &buffer[..size])?;
                 offset += size;

@@ -18,7 +18,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(system) => system,
-        Err(error) => return error
+        Err(error) => return error.status()
     };
     match retained_update_cases::run(&system)
     {
@@ -26,7 +26,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
         Err(error) =>
         {
             let _ = system.log("RETAINED_UPDATE_FAIL service\n");
-            error
+            error.status()
         }
     }
 }

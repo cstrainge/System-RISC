@@ -1,5 +1,5 @@
 //! Native resource descriptor projected from original fvew child rectangles.
-use mac_toolbox::*;
+use mac_toolbox::{Error, *};
 pub const WIDTH: i16 = 242;
 pub const FONT: quickdraw::fonts::FontSelection = quickdraw::fonts::FontSelection { family: 1,
                                                                                     size:   9,
@@ -25,7 +25,7 @@ pub struct Layout
 impl Layout
 {
     pub fn load(system: &System<'_>, folder: bool, document: bool, volume: bool)
-                -> Result<Self, Status>
+                -> Result<Self, Error>
     {
         let id = if volume
         {
@@ -43,19 +43,16 @@ impl Layout
         {
             12761
         };
-        let resource = system.resources()
-                             .application()
-                             .get(ResourceKey { kind: *b"gInf",
-                                                id })
-                             .map_err(|e| e.0)?;
+        let resource = system.resources().application().get(ResourceKey { kind: *b"gInf",
+                                                                           id })?;
         let mut bytes = [0; 104];
-        let read = resource.read(0, &mut bytes).map_err(|e| e.0);
-        let released = resource.release().map_err(|e| e.0);
+        let read = resource.read(0, &mut bytes);
+        let released = resource.release();
         let read = read?;
         released?;
         if read != bytes.len() || &bytes[..4] != b"GIn1"
         {
-            return Err(BAD_ARGUMENT);
+            return Err(Error::BadArgument);
         }
         let word = |at| i16::from_be_bytes([bytes[at], bytes[at + 1]]);
         let rect = |index: usize| {
@@ -78,7 +75,7 @@ impl Layout
                             stationery:  rect(11) };
         if layout.width != WIDTH || layout.height != if folder { 217 } else { 261 }
         {
-            return Err(BAD_ARGUMENT);
+            return Err(Error::BadArgument);
         }
         for bounds in [layout.name, layout.description, layout.kind, layout.size, layout.location,
                        layout.created, layout.modified, layout.version, layout.comments,
@@ -91,7 +88,7 @@ impl Layout
                || bounds.right < bounds.left
                || bounds.bottom < bounds.top
             {
-                return Err(BAD_ARGUMENT);
+                return Err(Error::BadArgument);
             }
         }
         Ok(layout)

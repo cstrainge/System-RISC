@@ -389,7 +389,7 @@ pub unsafe extern "C" fn standard_window_definition(pointer: *mut DefinitionCall
                 }
                 _ => grow_icon(state, &mut canvas)
             };
-            result.map_or_else(|e| e.0 as i64, |_| 0)
+            result.map_or_else(|e| e.status() as i64, |_| 0)
         }
         _ => NOT_SUPPORTED as i64
     }

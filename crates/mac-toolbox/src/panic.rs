@@ -17,7 +17,7 @@ static PANICKING: AtomicBool = AtomicBool::new(false);
 /// terminated, including while its panic handler is running.
 pub unsafe fn install(services: *const SystemServices) -> Result<(), Status>
 {
-    unsafe { Client::from_raw(services) }.map_err(|error| error.0)?;
+    unsafe { Client::from_raw(services) }.map_err(|error| error.status())?;
     SERVICES.store(services.cast_mut(), Ordering::Release);
     Ok(())
 }

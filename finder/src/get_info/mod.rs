@@ -8,9 +8,7 @@ mod totals;
 use core::fmt::Write;
 
 use layout::{FONT, Layout};
-use mac_toolbox::{events::{CMD_KEY, CONTROL_KEY, EVERY_EVENT, SHIFT_KEY},
-                  textedit::EditorId,
-                  *};
+use mac_toolbox::{textedit::EditorId, *};
 
 use crate::browser::{Location, Text};
 const CAPACITY: usize = 8;
@@ -41,8 +39,8 @@ struct Info
     read_only:      bool,
     active:         bool,
     controls:       [Option<controls::ControlId>; 2],
-    status:         Option<Status>,
-    metadata_error: Option<Status>,
+    status:         Option<Error>,
+    metadata_error: Option<Error>,
     changed:        bool,
     allocated:      u64,
     logical:        u64,
@@ -60,18 +58,14 @@ pub struct Controller
     work_cursor: usize,
     changed:     bool
 }
-fn error(error: Error) -> Status
+fn editor(system: &System<'_>, dest: Rect, view: Rect, text: &str) -> Result<EditorId, Error>
 {
-    error.0
-}
-fn editor(system: &System<'_>, dest: Rect, view: Rect, text: &str) -> Result<EditorId, Status>
-{
-    let id = system.textedit().create(dest, view).map_err(error)?;
+    let id = system.textedit().create(dest, view)?;
     let mut stage = "font";
-    let configured = (|| {
-        system.textedit().set_font(id, FONT).map_err(error)?;
+    let configured: ToolboxResult<_> = (|| {
+        system.textedit().set_font(id, FONT)?;
         stage = "text";
-        system.textedit().set_text(id, text).map_err(error)?;
+        system.textedit().set_text(id, text)?;
         Ok(())
     })();
     if let Err(status) = configured
@@ -79,7 +73,10 @@ fn editor(system: &System<'_>, dest: Rect, view: Rect, text: &str) -> Result<Edi
         let mut log = Text::<160>::default();
         let _ = writeln!(&mut log,
                          "FINDER_INFO_EDITOR_FAILED stage={} editor={} top={} status={}",
-                         stage, id.0, dest.top, status);
+                         stage,
+                         id.0,
+                         dest.top,
+                         status.status());
         let _ = system.log(log.as_str());
         let _ = system.textedit().dispose(id);
         return Err(status);
@@ -88,10 +85,10 @@ fn editor(system: &System<'_>, dest: Rect, view: Rect, text: &str) -> Result<Edi
 }
 impl Info
 {
-    fn create(system: &System<'_>, identity: Location) -> Result<Self, Status>
+    fn create(system: &System<'_>, identity: Location) -> Result<Self, Error>
     {
-        let mut entry = system.files().catalog(identity.volume, identity.folder).map_err(error)?;
-        let volume = system.files().volume(identity.volume).map_err(error)?;
+        let mut entry = system.files().catalog(identity.volume, identity.folder)?;
+        let volume = system.files().volume(identity.volume)?;
         let folder = entry.is_directory();
         let is_volume = entry.id == files::ROOT_ID;
         if is_volume
@@ -111,16 +108,14 @@ impl Info
         let mut name = EditorId(0);
         let mut comments = EditorId(0);
         let mut stage = "close-policy";
-        let configured = (|| {
-            system.windows().set_close_deferred(WindowId(window), true).map_err(error)?;
-            system.windows()
-                  .set_grow_icon_clip(WindowId(window), Some(Rect::ZERO))
-                  .map_err(error)?;
+        let configured: ToolboxResult<_> = (|| {
+            system.windows().set_close_deferred(WindowId(window), true)?;
+            system.windows().set_grow_icon_clip(WindowId(window), Some(Rect::ZERO))?;
             stage = "name-editor";
             name = editor(system, layout.name, layout.name, entry.name())?;
             stage = "comments-load";
             let mut text = Text::<768>::default();
-            system.files().comment(identity.volume, identity.folder, &mut text).map_err(error)?;
+            system.files().comment(identity.volume, identity.folder, &mut text)?;
             stage = "comments-editor";
             let comment_bounds = layout::inset(layout.comments, 1);
             comments = editor(system, comment_bounds, comment_bounds, text.as_str())?;
@@ -131,34 +126,32 @@ impl Info
             }
             else
             {
-                system.files().allocation_info(identity.volume, identity.folder).map_err(error)?
+                system.files().allocation_info(identity.volume, identity.folder)?
             };
             stage = "resource-labels";
             let mut kind = Text::default();
             let mut bytes = [0; 512];
-            let label = system.resources()
-                              .application()
-                              .string(if folder
-                                      {
-                                          11252
-                                      }
-                                      else if entry.file_type == *b"APPL"
-                                      {
-                                          17252
-                                      }
-                                      else
-                                      {
-                                          12752
-                                      },
-                                      &mut bytes)
-                              .map_err(error)?;
-            kind.write_str(label).map_err(|_| NO_MEMORY)?;
+            let label = system.resources().application().string(if folder
+                                                                 {
+                                                                     11252
+                                                                 }
+                                                                 else if entry.file_type
+                                                                           == *b"APPL"
+                                                                 {
+                                                                     17252
+                                                                 }
+                                                                 else
+                                                                 {
+                                                                     12752
+                                                                 },
+                                                                 &mut bytes)?;
+            kind.write_str(label).map_err(|_| Error::NoMemory)?;
             if is_volume
             {
                 kind = draw::filesystem(system, &volume)?;
             }
             let mut version = Text::default();
-            version.write_str(draw::text(system, 10, &mut bytes)?).map_err(|_| NO_MEMORY)?;
+            version.write_str(draw::text(system, 10, &mut bytes)?).map_err(|_| Error::NoMemory)?;
             stage = "metadata";
             let mut description = Text::default();
             let mut metadata_status = None;
@@ -171,7 +164,7 @@ impl Info
                         version = Text::default();
                         if metadata.long().is_empty()
                         {
-                            version.write_str(metadata.short()).map_err(|_| NO_MEMORY)?;
+                            version.write_str(metadata.short()).map_err(|_| Error::NoMemory)?;
                         }
                         else
                         {
@@ -179,25 +172,25 @@ impl Info
                                && !metadata.long().starts_with(metadata.short())
                             {
                                 write!(&mut version, "{}, ", metadata.short()).map_err(|_| {
-                                                                                  NO_MEMORY
+                                                                                  Error::NoMemory
                                                                               })?;
                             }
-                            version.write_str(metadata.long()).map_err(|_| NO_MEMORY)?;
+                            version.write_str(metadata.long()).map_err(|_| Error::NoMemory)?;
                         }
                     }
-                    Err(Error(NOT_FOUND)) =>
+                    Err(Error::NotFound) =>
                     {}
-                    Err(error) => metadata_status = Some(error.0)
+                    Err(error) => metadata_status = Some(error)
                 }
                 match system.resources().file_version(identity.volume, identity.folder, 2)
                 {
                     Ok(metadata) =>
                     {
-                        description.write_str(metadata.short()).map_err(|_| NO_MEMORY)?;
+                        description.write_str(metadata.short()).map_err(|_| Error::NoMemory)?;
                     }
-                    Err(Error(NOT_FOUND)) =>
+                    Err(Error::NotFound) =>
                     {}
-                    Err(error) => metadata_status = Some(error.0)
+                    Err(error) => metadata_status = Some(error)
                 }
             }
             let icon = crate::browser::entry_icon(system, &volume, &entry);
@@ -231,10 +224,10 @@ impl Info
                                   changed: false,
                                   allocated: allocation.data_bytes
                                                        .checked_add(allocation.resource_bytes)
-                                                       .ok_or(BAD_ARGUMENT)?,
+                                                       .ok_or(Error::BadArgument)?,
                                   logical: entry.data_length
                                                 .checked_add(entry.resource_length)
-                                                .ok_or(BAD_ARGUMENT)?,
+                                                .ok_or(Error::BadArgument)?,
                                   job: (folder && !is_volume).then(|| {
                                                                  totals::Job::new(identity.volume,
                                                                                   identity.folder)
@@ -253,8 +246,7 @@ impl Info
                         Some(system.controls()
                                    .create_standard(WindowId(window),
                                                     controls::StandardKind::WindowFontCheckbox,
-                                                    state)
-                                   .map_err(error)?
+                                                    state)?
                                    .into_id());
                 }
             }
@@ -273,7 +265,11 @@ impl Info
                 let _ = writeln!(&mut log,
                                  "FINDER_INFO_CREATE_FAILED stage={} volume={} cnid={} window={} \
                                   status={}",
-                                 stage, identity.volume, identity.folder, window, status);
+                                 stage,
+                                 identity.volume,
+                                 identity.folder,
+                                 window,
+                                 status.status());
                 let _ = system.log(log.as_str());
                 if name.0 != 0
                 {
@@ -302,39 +298,40 @@ impl Info
         if self.focus == Focus::Name { self.name } else { self.comments }
     }
 
-    fn activate_editor(&self, system: &System<'_>) -> Result<(), Status>
+    fn activate_editor(&self, system: &System<'_>) -> Result<(), Error>
     {
         for (focus, id) in [(Focus::Name, self.name), (Focus::Comments, self.comments)]
         {
-            system.textedit().set_cursor_enabled(id, self.editable(focus)).map_err(error)?;
+            system.textedit().set_cursor_enabled(id, self.editable(focus))?;
             system.textedit()
-                  .activate(id, self.active && self.focus == focus && self.editable(focus))
-                  .map_err(error)?;
+                  .activate(id, self.active && self.focus == focus && self.editable(focus))?;
         }
         Ok(())
     }
 
-    fn fail(&mut self, system: &System<'_>, status: Status) -> Result<(), Status>
+    fn fail(&mut self, system: &System<'_>, status: Error) -> Result<(), Error>
     {
         self.status = Some(status);
         let mut line = Text::<128>::default();
         let _ = writeln!(&mut line,
                          "FINDER_INFO_ERROR volume={} cnid={} status={}",
-                         self.identity.volume, self.identity.folder, status);
+                         self.identity.volume,
+                         self.identity.folder,
+                         status.status());
         system.log(line.as_str())?;
         self.draw(system)
     }
 
-    fn dispose(&self, system: &System<'_>) -> Result<(), Status>
+    fn dispose(&self, system: &System<'_>) -> Result<(), Error>
     {
-        let first = system.textedit().dispose(self.name).map_err(error);
-        let second = system.textedit().dispose(self.comments).map_err(error);
+        let first = system.textedit().dispose(self.name);
+        let second = system.textedit().dispose(self.comments);
         first.and(second)
     }
 }
 impl Controller
 {
-    pub fn open(&mut self, system: &System<'_>, identity: Location) -> Result<(), Status>
+    pub fn open(&mut self, system: &System<'_>, identity: Location) -> Result<(), Error>
     {
         if let Some(info) = self.windows.iter_mut().flatten().find(|info| info.identity == identity)
         {
@@ -353,7 +350,7 @@ impl Controller
             system.log(log.as_str())?;
             return info.draw(system);
         }
-        let slot = self.windows.iter().position(Option::is_none).ok_or(NO_MEMORY)?;
+        let slot = self.windows.iter().position(Option::is_none).ok_or(Error::NoMemory)?;
         let info = Info::create(system, identity)?;
         let mut log = Text::<256>::default();
         let _ = writeln!(&mut log,
@@ -384,7 +381,7 @@ impl Controller
         self.windows.iter().flatten().any(|info| info.job.as_ref().is_some_and(|job| !job.complete))
     }
 
-    pub fn redraw_all(&self, system: &System<'_>) -> Result<(), Status>
+    pub fn redraw_all(&self, system: &System<'_>) -> Result<(), Error>
     {
         for info in self.windows.iter().flatten()
         {
@@ -393,7 +390,7 @@ impl Controller
         Ok(())
     }
 
-    fn close(&mut self, system: &System<'_>, slot: usize) -> Result<(), Status>
+    fn close(&mut self, system: &System<'_>, slot: usize) -> Result<(), Error>
     {
         let Some(info) = self.windows[slot].as_mut()
         else
@@ -406,7 +403,7 @@ impl Controller
         }
         system.close_window(info.window)?;
         self.changed |= info.changed;
-        let info = self.windows[slot].take().ok_or(NOT_FOUND)?;
+        let info = self.windows[slot].take().ok_or(Error::NotFound)?;
         let cleanup = info.dispose(system);
         let mut log = Text::<128>::default();
         let _ = writeln!(&mut log,
@@ -418,7 +415,7 @@ impl Controller
 
     /// Prune unexpected external disposal without leaking resident TextEdits.
     /// Opt-in close requests normally ensure dirty state commits before disposal.
-    fn prune(&mut self, system: &System<'_>) -> Result<(), Status>
+    fn prune(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         for row in &mut self.windows
         {
@@ -431,9 +428,9 @@ impl Controller
             {
                 Ok(_) =>
                 {}
-                Err(NOT_FOUND) =>
+                Err(Error::NotFound) =>
                 {
-                    let info = row.take().ok_or(NOT_FOUND)?;
+                    let info = row.take().ok_or(Error::NotFound)?;
                     info.dispose(system)?;
                 }
                 Err(status) => return Err(status)
@@ -442,7 +439,7 @@ impl Controller
         Ok(())
     }
 
-    pub fn update_menus(&self, system: &System<'_>) -> Result<(), Status>
+    pub fn update_menus(&self, system: &System<'_>) -> Result<(), Error>
     {
         let front = system.window(0).ok().and_then(|window| {
                                              self.windows
@@ -462,18 +459,18 @@ impl Controller
                                 (6, selected && writable),
                                 (7, front.is_some())]
         {
-            system.menus().set_item_enabled(1253, item, enabled).map_err(error)?;
+            system.menus().set_item_enabled(1253, item, enabled)?;
         }
         Ok(())
     }
 
-    pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Status>
+    pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Error>
     {
         self.prune(system)?;
-        if event.kind == EventKind::OsEvent
-           && event.message & 0xff00_0000 == windows::WINDOW_CLOSE_REQUEST
+        if let Event::CloseRequested { window,
+                                       .. } = event
         {
-            let window = event.message & 0x00ff_ffff;
+            let window = window.0;
             if let Some(slot) =
                 self.windows
                     .iter()
@@ -483,11 +480,14 @@ impl Controller
                 return Ok(true);
             }
         }
-        if event.kind == EventKind::Activate
+        if matches!(event, Event::Activate { .. })
            && let Some(info) =
-               self.windows.iter_mut().flatten().find(|info| info.window == event.message)
+               self.windows
+                   .iter_mut()
+                   .flatten()
+                   .find(|info| info.window == event.window().map_or(0, |window| window.0))
         {
-            info.active = event.modifiers & ACTIVE_FLAG != 0;
+            info.active = event.input().modifiers.contains(mac_toolbox::events::Modifiers::ACTIVE);
             if !info.active
                && let Err(status) = info.commit(system)
             {
@@ -496,9 +496,12 @@ impl Controller
             info.activate_editor(system)?;
             return Ok(true);
         }
-        if event.kind == EventKind::Update
+        if matches!(event, Event::Update { .. })
            && let Some(info) =
-               self.windows.iter().flatten().find(|info| info.window == event.message)
+               self.windows
+                   .iter()
+                   .flatten()
+                   .find(|info| info.window == event.window().map_or(0, |window| window.0))
         {
             info.draw(system)?;
             return Ok(true);
@@ -510,14 +513,14 @@ impl Controller
                 .position(|row| row.as_ref().is_some_and(|info| Some(info.window) == front))
         else
         {
-            if event.kind == EventKind::Null
+            if matches!(event, Event::Idle { .. })
             {
                 self.progress(system)?;
             }
             return Ok(false);
         };
-        if event.kind == EventKind::MenuCommand
-           && let Some(selection) = system.menus().selection(&event).map_err(error)?
+        if matches!(event, Event::MenuCommand { .. })
+           && let Some(selection) = system.menus().selection(&event)?
         {
             if selection.command == crate::menus::CLOSE
             {
@@ -531,53 +534,52 @@ impl Controller
                 return Ok(true);
             }
         }
-        if event.kind == EventKind::MouseDown && event.message == front.unwrap_or(0)
+        if matches!(event, Event::MouseDown { .. })
+           && event.window().map_or(0, |window| window.0) == front.unwrap_or(0)
         {
-            let info = self.windows[slot].as_mut().ok_or(NOT_FOUND)?;
+            let info = self.windows[slot].as_mut().ok_or(Error::NotFound)?;
             info.click(system, event)?;
             return Ok(true);
         }
-        if matches!(event.kind, EventKind::KeyDown | EventKind::AutoKey | EventKind::KeyUp)
+        if matches!(event, Event::KeyDown { .. } | Event::KeyUp { .. })
         {
             let mut batch = [Event::default(); 128];
             batch[0] = event;
             let mut count = 1;
             while count < batch.len()
             {
-                match system.events().peek(EVERY_EVENT).map_err(error)?
+                match system.events().peek(mac_toolbox::events::EventMask::ALL)?
                 {
-                    Some(next)
-                        if matches!(next.kind,
-                                    EventKind::KeyDown | EventKind::AutoKey | EventKind::KeyUp) =>
+                    Some(next) if matches!(next, Event::KeyDown { .. } | Event::KeyUp { .. }) =>
                     {
-                        batch[count] = system.next_event(EVERY_EVENT)?;
+                        batch[count] = system.next_event(mac_toolbox::events::EventMask::ALL)?;
                         count += 1;
                     }
                     _ => break
                 }
             }
-            let info = self.windows[slot].as_mut().ok_or(NOT_FOUND)?;
+            let info = self.windows[slot].as_mut().ok_or(Error::NotFound)?;
             for event in batch[..count].iter().copied()
             {
-                if event.kind != EventKind::KeyUp
+                if !matches!(event, Event::KeyUp { .. })
                 {
                     info.key(system, event)?;
                 }
             }
-            if batch[..count].iter().any(|event| event.kind != EventKind::KeyUp)
+            if batch[..count].iter().any(|event| !matches!(event, Event::KeyUp { .. }))
             {
                 info.draw(system)?;
             }
             return Ok(true);
         }
-        if event.kind == EventKind::Null
+        if matches!(event, Event::Idle { .. })
         {
-            let info = self.windows[slot].as_mut().ok_or(NOT_FOUND)?;
+            let info = self.windows[slot].as_mut().ok_or(Error::NotFound)?;
             if info.active && info.editable(info.focus)
             {
                 let editor = info.current_editor();
-                let old = system.textedit().info(editor).map_err(error)?;
-                let new = system.textedit().idle(editor, event.when).map_err(error)?;
+                let old = system.textedit().info(editor)?;
+                let new = system.textedit().idle(editor, event.input().when)?;
                 if old.caret_visible != new.caret_visible
                 {
                     info.draw(system)?;
@@ -588,7 +590,7 @@ impl Controller
         Ok(false)
     }
 
-    fn progress(&mut self, system: &System<'_>) -> Result<(), Status>
+    fn progress(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         for offset in 0..CAPACITY
         {
@@ -634,7 +636,7 @@ impl Controller
                 }
                 Err(status) =>
                 {
-                    let job = info.job.as_mut().ok_or(NOT_FOUND)?;
+                    let job = info.job.as_mut().ok_or(Error::NotFound)?;
                     job.complete = true;
                     job.error = Some(status);
                     info.fail(system, status)?;

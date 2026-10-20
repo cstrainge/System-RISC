@@ -51,7 +51,7 @@ impl Files<'_>
             }
             SCAN_PENDING => ScanStep::Pending,
             SCAN_DONE => ScanStep::Done,
-            _ => return Err(Error(mac_abi::BAD_ARGUMENT))
+            _ => return Err(Error::BadArgument)
         };
         cursor.cursor = call.cursor;
         Ok(step)

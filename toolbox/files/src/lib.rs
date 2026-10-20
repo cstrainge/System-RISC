@@ -24,9 +24,14 @@ impl Filesystem
     {
         match volume.filesystem
         {
-            FILESYSTEM_HFS if volume.filesystem_version==0=>Ok(Self::Hfs),
-            FILESYSTEM_HFS_B if volume.filesystem_version != 0=>Ok(Self::HfsB {version:u16::try_from(volume.filesystem_version).map_err(|_|Error(mac_abi::BAD_ABI))?}),
-            _=>Err(Error(mac_abi::BAD_ABI))
+            FILESYSTEM_HFS if volume.filesystem_version == 0 => Ok(Self::Hfs),
+            FILESYSTEM_HFS_B if volume.filesystem_version != 0 =>
+            {
+                Ok(Self::HfsB { version: u16::try_from(volume.filesystem_version).map_err(|_| {
+                                                                                     Error::BadAbi
+                                                                                 })? })
+            }
+            _ => Err(Error::BadAbi)
         }
     }
 
@@ -143,7 +148,7 @@ impl<'a> Files<'a>
     fn set_flag(self, operation: u32, volume: u32, cnid: u32, value: bool, when: Timestamp)
                 -> Result<CatalogInfo>
     {
-        let time = when.mac_microseconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        let time = when.mac_microseconds().ok_or(Error::BadArgument)?;
         Ok(self.call(FileCall { operation,
                                 volume,
                                 cnid,
@@ -164,9 +169,9 @@ impl<'a> Files<'a>
                                   ..Default::default() };
         let mut bytes = [0; 768];
         self.client.file(&mut call, "", &mut bytes)?;
-        let text = core::str::from_utf8(bytes.get(..call.transferred).ok_or(Error(mac_abi::BAD_ARGUMENT))?)
-            .map_err(|_| Error(mac_abi::BAD_ARGUMENT))?;
-        output.write_str(text).map_err(|_| Error(mac_abi::NO_MEMORY))
+        let text = core::str::from_utf8(bytes.get(..call.transferred).ok_or(Error::BadArgument)?)
+            .map_err(|_| Error::BadArgument)?;
+        output.write_str(text).map_err(|_| Error::NoMemory)
     }
 
     /// Persist a Desktop DB comment. Empty text deletes only that comment key.
@@ -225,14 +230,14 @@ impl<'a> Files<'a>
                                   ..Default::default() };
         let mut bytes = [0; 4096];
         self.client.file(&mut call, "", &mut bytes)?;
-        let text=core::str::from_utf8(bytes.get(..call.transferred).ok_or(Error(mac_abi::BAD_ARGUMENT))?).map_err(|_|Error(mac_abi::BAD_ARGUMENT))?;
-        output.write_str(text).map_err(|_| Error(mac_abi::NO_MEMORY))
+        let text=core::str::from_utf8(bytes.get(..call.transferred).ok_or(Error::BadArgument)?).map_err(|_|Error::BadArgument)?;
+        output.write_str(text).map_err(|_| Error::NoMemory)
     }
 
     fn mutation(self, operation: u32, volume: u32, cnid: u32, name: &str, when: Timestamp)
                 -> Result<FileCall>
     {
-        let time = when.mac_microseconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        let time = when.mac_microseconds().ok_or(Error::BadArgument)?;
         self.call(FileCall { operation,
                              volume,
                              cnid,
@@ -256,7 +261,7 @@ impl<'a> Files<'a>
     pub fn trash_directory_at(self, volume: u32, create: bool, when: Timestamp)
                               -> Result<CatalogInfo>
     {
-        let time = when.mac_microseconds().ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        let time = when.mac_microseconds().ok_or(Error::BadArgument)?;
         Ok(self.call(FileCall { operation: TRASH_DIRECTORY,
                                 volume,
                                 index: u32::from(create),
@@ -339,10 +344,7 @@ impl OpenFile<'_>
     {
         let (whence, offset) = match from
         {
-            SeekFrom::Start(n) =>
-            {
-                (SEEK_START, i64::try_from(n).map_err(|_| Error(mac_abi::BAD_ARGUMENT))?)
-            }
+            SeekFrom::Start(n) => (SEEK_START, i64::try_from(n).map_err(|_| Error::BadArgument)?),
             SeekFrom::Current(n) => (SEEK_CURRENT, n),
             SeekFrom::End(n) => (SEEK_END, n)
         };
@@ -441,17 +443,16 @@ impl<'a> Files<'a>
 {
     pub fn create_data(self, spec: DataFileSpec<'_>, length: usize) -> Result<DataWriter<'a>>
     {
-        let mut call = DataWriteCall { operation: BEGIN_DATA_WRITE,
-                                       volume: spec.volume,
-                                       parent: spec.parent,
-                                       expected_cnid: spec.replacing.unwrap_or(0),
-                                       file_type: spec.file_type,
-                                       creator: spec.creator,
-                                       length,
-                                       when: spec.modified
-                                                 .mac_microseconds()
-                                                 .ok_or(Error(mac_abi::BAD_ARGUMENT))?,
-                                       ..Default::default() };
+        let mut call =
+            DataWriteCall { operation: BEGIN_DATA_WRITE,
+                            volume: spec.volume,
+                            parent: spec.parent,
+                            expected_cnid: spec.replacing.unwrap_or(0),
+                            file_type: spec.file_type,
+                            creator: spec.creator,
+                            length,
+                            when: spec.modified.mac_microseconds().ok_or(Error::BadArgument)?,
+                            ..Default::default() };
         self.client.data_write(&mut call, spec.name, &[])?;
         Ok(DataWriter { client: self.client,
                         handle: call.handle })

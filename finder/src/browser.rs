@@ -87,25 +87,21 @@ pub struct Port<'a, 's>
 }
 impl Drawing for Port<'_, '_>
 {
-    fn fill(&mut self, bounds: Rect, color: u32) -> Result<(), Status>
+    fn fill(&mut self, bounds: Rect, color: u32) -> Result<(), Error>
     {
-        self.graphics.colors(color, 0xffffff).map_err(|e| e.0)?;
-        self.graphics.paint_rect(bounds).map_err(|e| e.0)
+        self.graphics.colors(color, 0xffffff)?;
+        self.graphics.paint_rect(bounds)
     }
 
-    fn text_width(&mut self, text: &str) -> Result<i16, Status>
+    fn text_width(&mut self, text: &str) -> Result<i16, Error>
     {
-        self.system
-            .quickdraw()
-            .fonts()
-            .text_width(FontSelection { family: 3,
-                                        size:   9,
-                                        face:   0 },
-                        text)
-            .map_err(|e| e.0)
+        self.system.quickdraw().fonts().text_width(FontSelection { family: 3,
+                                                                   size:   9,
+                                                                   face:   0 },
+                                                   text)
     }
 
-    fn text(&mut self, baseline: Point, text: &str, color: u32) -> Result<(), Status>
+    fn text(&mut self, baseline: Point, text: &str, color: u32) -> Result<(), Error>
     {
         self.graphics
             .text(FontSelection { family: 3,
@@ -115,10 +111,9 @@ impl Drawing for Port<'_, '_>
                   text,
                   color)
             .map(|_| ())
-            .map_err(|e| e.0)
     }
 
-    fn icon(&mut self, icon: Icon, bounds: Rect, state: State) -> Result<(), Status>
+    fn icon(&mut self, icon: Icon, bounds: Rect, state: State) -> Result<(), Error>
     {
         let icons = self.system.quickdraw().icons();
         let flags = IconFlags { selected: state.selected && state.active,
@@ -134,17 +129,13 @@ impl Drawing for Port<'_, '_>
                 match icons.plot_file(self.graphics.window_id(), volume, cnid, bounds, flags)
                 {
                     Ok(()) => return Ok(()),
-                    Err(Error(NOT_FOUND | BAD_ARGUMENT | NOT_SUPPORTED)) => fallback,
-                    Err(e) => return Err(e.0)
+                    Err(Error::NotFound | Error::BadArgument | Error::NotSupported) => fallback,
+                    Err(e) => return Err(e)
                 }
             }
         };
-        icons.plot(self.graphics.window_id(), id, bounds, flags).map_err(|e| e.0)
+        icons.plot(self.graphics.window_id(), id, bounds, flags)
     }
-}
-fn error(e: mac_toolbox::Error) -> Status
-{
-    e.0
 }
 fn visible(entry: &CatalogInfo) -> bool
 {
@@ -269,7 +260,7 @@ fn folder_entry(system: &System<'_>, location: Location, mut index: u32)
         let trash = match system.files().trash_directory(volume.id, false)
         {
             Ok(trash) => trash,
-            Err(error) if error.0 == NOT_FOUND => continue,
+            Err(error) if error == Error::NotFound => continue,
             Err(error) => return Err(error)
         };
         if index < u32::from(trash.child_count)
@@ -278,17 +269,17 @@ fn folder_entry(system: &System<'_>, location: Location, mut index: u32)
         }
         index -= u32::from(trash.child_count);
     }
-    Err(Error(NOT_FOUND))
+    Err(Error::NotFound)
 }
 impl Browser
 {
-    pub fn initialize(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn initialize(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         let files = system.files();
-        let count = files.volume_count().map_err(error)?;
+        let count = files.volume_count()?;
         for index in 0..count
         {
-            let volume = files.volume_at(index).map_err(error)?;
+            let volume = files.volume_at(index)?;
             if volume.startup != 0
             {
                 self.startup = volume.id;
@@ -299,7 +290,7 @@ impl Browser
         }
         if self.startup == 0 && count > 0
         {
-            self.startup = files.volume_at(0).map_err(error)?.id;
+            self.startup = files.volume_at(0)?.id;
         }
         self.draw_desktop(system)?;
         if self.startup != 0
@@ -321,16 +312,16 @@ impl Browser
         self.windows.iter().flatten().any(|w| w.window == id)
     }
 
-    pub fn draw_desktop(&self, system: &System<'_>) -> Result<(), Status>
+    pub fn draw_desktop(&self, system: &System<'_>) -> Result<(), Error>
     {
         let desktop = system.quickdraw().desktop();
-        desktop.begin_update().map_err(error)?;
+        desktop.begin_update()?;
         let result = (|| {
             let mut draw = Port { system,
                                   graphics: desktop.graphics() };
-            for index in 0..system.files().volume_count().map_err(error)?
+            for index in 0..system.files().volume_count()?
             {
-                let volume = system.files().volume_at(index).map_err(error)?;
+                let volume = system.files().volume_at(index)?;
                 icon_view::draw_item(&mut draw,
                                      volume_icon(&volume),
                                      icon_view::volume_bounds(index),
@@ -362,7 +353,7 @@ impl Browser
         })();
         if result.is_ok()
         {
-            desktop.end_update().map_err(error)?;
+            desktop.end_update()?;
         }
         else
         {
@@ -371,7 +362,7 @@ impl Browser
         result
     }
 
-    pub fn open(&mut self, system: &System<'_>, location: Location) -> Result<u32, Status>
+    pub fn open(&mut self, system: &System<'_>, location: Location) -> Result<u32, Error>
     {
         self.desktop_active = false;
         if let Some(existing) = self.windows.iter().flatten().find(|w| w.location == location)
@@ -383,7 +374,7 @@ impl Browser
         let Some(slot) = self.windows.iter().position(Option::is_none)
         else
         {
-            return Err(NO_MEMORY);
+            return Err(Error::NoMemory);
         };
         let trash = location == Location::default();
         let folder = if trash
@@ -392,15 +383,13 @@ impl Browser
         }
         else
         {
-            system.files().catalog(location.volume, location.folder).map_err(error)?
+            system.files().catalog(location.volume, location.folder)?
         };
         if !trash && !folder.is_directory()
         {
-            return Err(BAD_ARGUMENT);
+            return Err(Error::BadArgument);
         }
-        let volume = system.files()
-                           .volume(if trash { self.startup } else { location.volume })
-                           .map_err(error)?;
+        let volume = system.files().volume(if trash { self.startup } else { location.volume })?;
         let offset = slot as i16 * 16;
         let mut title = [0; 768];
         let trash_title = crate::ui::text(system, 0, &mut title)?;
@@ -420,17 +409,15 @@ impl Browser
                                    (180, 100),
                                    8)?;
         let create = |bounds| {
-            system.controls()
-                  .create_scrollbar(WindowId(id),
-                                    controls::ScrollbarState { bounds,
-                                                               ..Default::default() },
-                                    1,
-                                    1)
-                  .map_err(error)
+            system.controls().create_scrollbar(WindowId(id),
+                                               controls::ScrollbarState { bounds,
+                                                                          ..Default::default() },
+                                               1,
+                                               1)
         };
         let bars = (|| {
-            Ok::<_, Status>([create(vertical_scrollbar(404, 188))?,
-                             create(horizontal_scrollbar(404, 188))?])
+            Ok::<_, Error>([create(vertical_scrollbar(404, 188))?,
+                            create(horizontal_scrollbar(404, 188))?])
         })();
         let bars = match bars
         {
@@ -457,7 +444,7 @@ impl Browser
         Ok(id)
     }
 
-    pub fn prune(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn prune(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         let mut changed = false;
         for window in &mut self.windows
@@ -486,7 +473,7 @@ impl Browser
         Ok(())
     }
 
-    pub fn redraw_all(&self, system: &System<'_>) -> Result<(), Status>
+    pub fn redraw_all(&self, system: &System<'_>) -> Result<(), Error>
     {
         self.draw_desktop(system)?;
         for w in self.windows.iter().flatten()
@@ -496,40 +483,34 @@ impl Browser
         Ok(())
     }
 
-    pub fn draw(&self, system: &System<'_>, id: u32) -> Result<(), Status>
+    pub fn draw(&self, system: &System<'_>, id: u32) -> Result<(), Error>
     {
         let Some(window) = self.windows.iter().flatten().find(|w| w.window == id)
         else
         {
-            return Err(NOT_FOUND);
+            return Err(Error::NotFound);
         };
         if window.location.volume != 0 && window.location.folder != ROOT_ID
         {
-            let entry = system.files()
-                              .catalog(window.location.volume, window.location.folder)
-                              .map_err(error)?;
-            system.windows().set_title(WindowId(id), entry.name()).map_err(error)?;
+            let entry = system.files().catalog(window.location.volume, window.location.folder)?;
+            system.windows().set_title(WindowId(id), entry.name())?;
         }
         let bounds = system.window(id)?.bounds;
         let width = bounds.right - bounds.left;
         let height = bounds.bottom - bounds.top;
-        let volume = system.files()
-                           .volume(if window.location == Location::default()
-                                   {
-                                       self.startup
-                                   }
-                                   else
-                                   {
-                                       window.location.volume
-                                   })
-                           .map_err(error)?;
-        system.windows()
-              .set_grow_icon_clip(WindowId(id), Some(grow_icon_clip(width, height)))
-              .map_err(error)?;
+        let volume = system.files().volume(if window.location == Location::default()
+                                            {
+                                                self.startup
+                                            }
+                                            else
+                                            {
+                                                window.location.volume
+                                            })?;
+        system.windows().set_grow_icon_clip(WindowId(id), Some(grow_icon_clip(width, height)))?;
         system.begin_update(id)?;
         let graphics = system.quickdraw().graphics(WindowId(id));
         let result = (|| {
-            graphics.reset().map_err(error)?;
+            graphics.reset()?;
             let mut draw = Port { system,
                                   graphics };
             draw.fill(Rect::new(0, 0, width, height), 0xffffff)?;
@@ -542,8 +523,8 @@ impl Browser
                 let entry = match folder_entry(system, window.location, index)
                 {
                     Ok(e) => e,
-                    Err(e) if e.0 == NOT_FOUND => break,
-                    Err(e) => return Err(e.0)
+                    Err(e) if e == Error::NotFound => break,
+                    Err(e) => return Err(e)
                 };
                 if !visible(&entry)
                 {
@@ -564,11 +545,8 @@ impl Browser
                 graphics.clip_rect(Rect::new(0,
                                              icon_view::INFO_HEIGHT,
                                              width - icon_view::SCROLLBAR,
-                                             height - icon_view::SCROLLBAR))
-                        .map_err(error)?;
-                let icon = entry_icon(system,
-                                      &system.files().volume(entry.volume).map_err(error)?,
-                                      &entry);
+                                             height - icon_view::SCROLLBAR))?;
+                let icon = entry_icon(system, &system.files().volume(entry.volume)?, &entry);
                 // The browser owns the open/running mark. Other consumers,
                 // including Get Info, draw the same icon with their own state.
                 let open = if entry.is_directory()
@@ -579,7 +557,7 @@ impl Browser
                 else
                 {
                     matches!(icon, Icon::Application { .. })
-                    && system.processes().is_running(entry.volume, entry.id).map_err(error)?
+                    && system.processes().is_running(entry.volume, entry.id)?
                 };
                 icon_view::draw_item(&mut draw,
                                      icon,
@@ -592,7 +570,7 @@ impl Browser
                                              open,
                                              desktop: false })?;
             }
-            graphics.clip_rect(Rect::new(0, 0, width, height)).map_err(error)?;
+            graphics.clip_rect(Rect::new(0, 0, width, height))?;
             info_band(system,
                       &mut draw,
                       width,
@@ -619,8 +597,7 @@ impl Browser
                                                                     active: u32::from(active),
                                                                     ..Default::default() },
                                          step,
-                                         page)
-                       .map_err(error)?;
+                                         page)?;
             }
             Ok(())
         })();
@@ -631,22 +608,22 @@ impl Browser
         system.log(line.as_str())
     }
 
-    pub fn click(&mut self, system: &System<'_>, event: Event) -> Result<(), Status>
+    pub fn click(&mut self, system: &System<'_>, event: Event) -> Result<(), Error>
     {
         self.drag = None;
         let mut target = None;
-        if event.message == 0
+        if event.window().map_or(0, |window| window.0) == 0
         {
             system.select_desktop()?;
             self.desktop_active = true;
             let mut draw = Port { system,
                                   graphics: system.quickdraw().desktop().graphics() };
-            for index in 0..system.files().volume_count().map_err(error)?
+            for index in 0..system.files().volume_count()?
             {
-                let volume = system.files().volume_at(index).map_err(error)?;
+                let volume = system.files().volume_at(index)?;
                 let icon = icon_view::volume_bounds(index);
                 let label = icon_view::label_bounds(icon, draw.text_width(volume.name())?);
-                if icon.contains(event.where_) || label.contains(event.where_)
+                if icon.contains(event.input().at) || label.contains(event.input().at)
                 {
                     target = Some((0, volume.id, ROOT_ID));
                     self.desktop_selection = Some(volume.id);
@@ -660,8 +637,9 @@ impl Browser
                 let mut label = [0; 768];
                 let label = crate::ui::text(system, 0, &mut label)?;
                 let icon = icon_view::TRASH_BOUNDS;
-                if icon.contains(event.where_)
-                   || icon_view::label_bounds(icon, draw.text_width(label)?).contains(event.where_)
+                if icon.contains(event.input().at)
+                   || icon_view::label_bounds(icon, draw.text_width(label)?).contains(event.input()
+                                                                                           .at)
                 {
                     self.trash_selected = true;
                     target = Some((0, 0, 0));
@@ -669,34 +647,38 @@ impl Browser
             }
         }
         else if let Some(slot) =
-            self.windows.iter().position(|w| w.is_some_and(|w| w.window == event.message))
+            self.windows.iter().position(|w| {
+                                   w.is_some_and(|w| {
+                                        w.window == event.window().map_or(0, |window| window.0)
+                                    })
+                               })
         {
             let window = self.windows[slot].unwrap();
             let bounds = system.window(window.window)?.bounds;
-            let p = Point { h: event.where_.h - bounds.left,
-                            v: event.where_.v - bounds.top };
+            let p = Point { h: event.input().at.h - bounds.left,
+                            v: event.input().at.v - bounds.top };
             if p.h >= bounds.right - bounds.left - icon_view::SCROLLBAR
                || p.v >= bounds.bottom - bounds.top - icon_view::SCROLLBAR
             {
                 for (index, id) in window.scrollbars.into_iter().enumerate()
                 {
-                    if system.controls()
-                             .control(id)
-                             .track(p, |action| {
-                                 if let Some(folder) = self.windows[slot].as_mut()
-                                 {
-                                     if index == 1
-                                     {
-                                         folder.scroll_h = action.scrollbar.value;
-                                     }
-                                     else
-                                     {
-                                         folder.scroll = action.scrollbar.value;
-                                     }
-                                 }
-                                 self.draw(system, window.window).map_err(Error)
-                             })
-                             .map_err(error)?
+                    if system.controls().control(id).track(p, |action| {
+                                                         if let Some(folder) =
+                                                             self.windows[slot].as_mut()
+                                                         {
+                                                             if index == 1
+                                                             {
+                                                                 folder.scroll_h =
+                                                                     action.scrollbar.value;
+                                                             }
+                                                             else
+                                                             {
+                                                                 folder.scroll =
+                                                                     action.scrollbar.value;
+                                                             }
+                                                         }
+                                                         self.draw(system, window.window)
+                                                     })?
                     {
                         break;
                     }
@@ -711,8 +693,8 @@ impl Browser
                 let entry = match folder_entry(system, window.location, index)
                 {
                     Ok(e) => e,
-                    Err(e) if e.0 == NOT_FOUND => break,
-                    Err(e) => return Err(e.0)
+                    Err(e) if e == Error::NotFound => break,
+                    Err(e) => return Err(e)
                 };
                 if !visible(&entry)
                 {
@@ -736,7 +718,7 @@ impl Browser
             self.drag = target.map(|(_, volume, folder)| {
                                   IconDrag { entry:  Location { volume,
                                                                 folder },
-                                             anchor: event.where_ }
+                                             anchor: event.input().at }
                               });
             self.desktop_selection = None;
             self.desktop_active = false;
@@ -747,10 +729,10 @@ impl Browser
                                        window == last_window
                                        && volume == last_volume
                                        && id == last_id
-                                       && event.when.wrapping_sub(time) < 30
+                                       && event.input().when.wrapping_sub(time) < 30
                                    })
                            });
-        self.last_click = target.map(|(w, v, id)| (w, v, id, event.when));
+        self.last_click = target.map(|(w, v, id)| (w, v, id, event.input().when));
         if double
         {
             let (_, volume, folder) = target.unwrap();
@@ -761,7 +743,7 @@ impl Browser
                 self.redraw_all(system)?;
                 return Ok(());
             }
-            let entry = system.files().catalog(volume, folder).map_err(error)?;
+            let entry = system.files().catalog(volume, folder)?;
             if entry.is_directory()
             {
                 self.open(system,
@@ -770,7 +752,7 @@ impl Browser
             }
             else if entry.file_type == *b"APPL"
             {
-                system.processes().launch(volume, folder).map_err(error)?;
+                system.processes().launch(volume, folder)?;
             }
         }
         self.redraw_all(system)?;
@@ -779,25 +761,25 @@ impl Browser
 
     pub fn activate(&mut self, event: Event)
     {
-        if event.modifiers & mac_toolbox::ACTIVE_FLAG != 0
+        if event.input().modifiers.contains(mac_toolbox::events::Modifiers::ACTIVE)
         {
             self.desktop_active = false;
         }
     }
 
-    pub fn track(&mut self, system: &System<'_>, event: Event) -> Result<(), Status>
+    pub fn track(&mut self, system: &System<'_>, event: Event) -> Result<(), Error>
     {
         if let Some(drag) = self.drag
         {
-            let moved = (i32::from(event.where_.h) - i32::from(drag.anchor.h)).abs() > 4
-                        || (i32::from(event.where_.v) - i32::from(drag.anchor.v)).abs() > 4;
-            let hover = moved && icon_view::TRASH_BOUNDS.contains(event.where_);
+            let moved = (i32::from(event.input().at.h) - i32::from(drag.anchor.h)).abs() > 4
+                        || (i32::from(event.input().at.v) - i32::from(drag.anchor.v)).abs() > 4;
+            let hover = moved && icon_view::TRASH_BOUNDS.contains(event.input().at);
             if self.trash_hover != hover
             {
                 self.trash_hover = hover;
                 self.draw_desktop(system)?;
             }
-            if event.kind == EventKind::MouseUp
+            if matches!(event, Event::MouseUp { .. })
             {
                 self.drag = None;
                 self.trash_hover = false;
@@ -814,7 +796,7 @@ impl Browser
         Ok(())
     }
 
-    pub fn open_selection(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn open_selection(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         if self.desktop_active && self.trash_selected
         {
@@ -833,7 +815,7 @@ impl Browser
         if let Some(w) = self.windows.iter().flatten().find(|w| Some(w.window) == front)
            && let Some(id) = w.selected
         {
-            let entry = system.files().catalog(id.volume, id.folder).map_err(error)?;
+            let entry = system.files().catalog(id.volume, id.folder)?;
             if entry.is_directory()
             {
                 self.open(system,
@@ -842,7 +824,7 @@ impl Browser
             }
             else if entry.file_type == *b"APPL"
             {
-                system.processes().launch(entry.volume, entry.id).map_err(error)?;
+                system.processes().launch(entry.volume, entry.id)?;
             }
         }
         else if let Some(volume) = self.desktop_selection
@@ -854,15 +836,14 @@ impl Browser
         Ok(())
     }
 
-    pub fn parent(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn parent(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         if let Ok(front) = system.window(0)
            && let Some(w) = self.windows.iter().flatten().find(|w| w.window == front.id)
            && w.location.volume != 0
            && w.location.folder != ROOT_ID
         {
-            let current =
-                system.files().catalog(w.location.volume, w.location.folder).map_err(error)?;
+            let current = system.files().catalog(w.location.volume, w.location.folder)?;
             self.open(system,
                       Location { volume: w.location.volume,
                                  folder: current.parent })?;
@@ -871,7 +852,7 @@ impl Browser
     }
 
     fn limits(&self, system: &System<'_>, window: FolderWindow, bounds: Rect)
-              -> Result<(i16, i16), Status>
+              -> Result<(i16, i16), Error>
     {
         let mut layout = Layout::new(bounds.right - bounds.left);
         let mut extent = Point::default();
@@ -882,8 +863,8 @@ impl Browser
             let entry = match folder_entry(system, window.location, index)
             {
                 Ok(e) => e,
-                Err(e) if e.0 == NOT_FOUND => break,
-                Err(e) => return Err(e.0)
+                Err(e) if e == Error::NotFound => break,
+                Err(e) => return Err(e)
             };
             if !visible(&entry)
             {
@@ -899,7 +880,7 @@ impl Browser
             (extent.v - (bounds.bottom - bounds.top - 15)).max(0)))
     }
 
-    pub fn scroll(&mut self, system: &System<'_>, delta: i16) -> Result<(), Status>
+    pub fn scroll(&mut self, system: &System<'_>, delta: i16) -> Result<(), Error>
     {
         if let Ok(front) = system.window(0)
            && let Some(slot) =
@@ -937,7 +918,7 @@ fn size_text(bytes: u64) -> Text<40>
 }
 fn info_band(system: &System<'_>, draw: &mut impl Drawing, width: i16, count: u32,
              volume: Option<&VolumeInfo>)
-             -> Result<(), Status>
+             -> Result<(), Error>
 {
     draw.fill(Rect::new(0, 0, width, 20), 0xffffff)?;
     let mut text = Text::<64>::default();
@@ -1074,24 +1055,24 @@ impl Browser
             && system.files().volume(selection.volume).is_ok_and(|v|v.read_only==0))
     }
 
-    pub fn trash_count(&self, system: &System<'_>) -> Result<u32, Status>
+    pub fn trash_count(&self, system: &System<'_>) -> Result<u32, Error>
     {
         let mut count = 0u32;
-        for index in 0..system.files().volume_count().map_err(error)?
+        for index in 0..system.files().volume_count()?
         {
-            let volume = system.files().volume_at(index).map_err(error)?;
+            let volume = system.files().volume_at(index)?;
             match system.files().trash_directory(volume.id, false)
             {
                 Ok(trash) => count = count.saturating_add(u32::from(trash.child_count)),
-                Err(e) if e.0 == NOT_FOUND =>
+                Err(e) if e == Error::NotFound =>
                 {}
-                Err(e) => return Err(e.0)
+                Err(e) => return Err(e)
             }
         }
         Ok(count)
     }
 
-    fn files_changed(&mut self, system: &System<'_>) -> Result<(), Status>
+    fn files_changed(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         self.last_click = None;
         self.drag = None;
@@ -1109,24 +1090,24 @@ impl Browser
         self.redraw_all(system)
     }
 
-    pub fn new_folder(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn new_folder(&mut self, system: &System<'_>) -> Result<(), Error>
     {
-        let location = self.current_folder(system).ok_or(BAD_ARGUMENT)?;
+        let location = self.current_folder(system).ok_or(Error::BadArgument)?;
         if location.volume == 0
         {
-            return Err(BAD_ARGUMENT);
+            return Err(Error::BadArgument);
         }
         let mut bytes = [0; 768];
         let base = crate::ui::text(system, 1, &mut bytes)?;
-        let when = system.now().map_err(error)?;
+        let when = system.now()?;
         let mut created = None;
         for suffix in 1..1000
         {
             let mut name = Text::<96>::default();
-            write!(&mut name, "{}", base).map_err(|_| BAD_ARGUMENT)?;
+            write!(&mut name, "{}", base).map_err(|_| Error::BadArgument)?;
             if suffix > 1
             {
-                write!(&mut name, " {}", suffix).map_err(|_| BAD_ARGUMENT)?;
+                write!(&mut name, " {}", suffix).map_err(|_| Error::BadArgument)?;
             }
             match system.files().new_folder(location.volume, location.folder, name.as_str(), when)
             {
@@ -1135,12 +1116,12 @@ impl Browser
                     created = Some(entry);
                     break;
                 }
-                Err(e) if e.0 == mac_toolbox::ALREADY_EXISTS =>
+                Err(e) if e == mac_toolbox::Error::AlreadyExists =>
                 {}
-                Err(e) => return Err(e.0)
+                Err(e) => return Err(e)
             }
         }
-        let created = created.ok_or(mac_toolbox::ALREADY_EXISTS)?;
+        let created = created.ok_or(mac_toolbox::Error::AlreadyExists)?;
         self.files_changed(system)?;
         if self.desktop_active
         {
@@ -1162,11 +1143,9 @@ impl Browser
         system.log(log.as_str())
     }
 
-    fn move_entry_to_trash(&mut self, system: &System<'_>, entry: Location) -> Result<(), Status>
+    fn move_entry_to_trash(&mut self, system: &System<'_>, entry: Location) -> Result<(), Error>
     {
-        let moved = system.files()
-                          .move_to_trash(entry.volume, entry.folder, system.now().map_err(error)?)
-                          .map_err(error)?;
+        let moved = system.files().move_to_trash(entry.volume, entry.folder, system.now()?)?;
         self.files_changed(system)?;
         let mut log = Text::<160>::default();
         let _ = writeln!(&mut log,
@@ -1178,18 +1157,16 @@ impl Browser
         system.log(log.as_str())
     }
 
-    pub fn trash_selection(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn trash_selection(&mut self, system: &System<'_>) -> Result<(), Error>
     {
-        let entry = self.selection(system).ok_or(NOT_FOUND)?;
+        let entry = self.selection(system).ok_or(Error::NotFound)?;
         self.move_entry_to_trash(system, entry)
     }
 
-    pub fn put_away(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn put_away(&mut self, system: &System<'_>) -> Result<(), Error>
     {
-        let entry = self.selection(system).ok_or(NOT_FOUND)?;
-        let moved = system.files()
-                          .put_away(entry.volume, entry.folder, system.now().map_err(error)?)
-                          .map_err(error)?;
+        let entry = self.selection(system).ok_or(Error::NotFound)?;
+        let moved = system.files().put_away(entry.volume, entry.folder, system.now()?)?;
         self.files_changed(system)?;
         let mut log = Text::<160>::default();
         let _ = writeln!(&mut log,
@@ -1198,23 +1175,23 @@ impl Browser
         system.log(log.as_str())
     }
 
-    pub fn empty_trash(&mut self, system: &System<'_>) -> Result<(), Status>
+    pub fn empty_trash(&mut self, system: &System<'_>) -> Result<(), Error>
     {
-        let when = system.now().map_err(error)?;
+        let when = system.now()?;
         let mut removed = 0;
-        let result = (|| -> Result<(), Status> {
-            for index in 0..system.files().volume_count().map_err(error)?
+        let result = (|| -> Result<(), Error> {
+            for index in 0..system.files().volume_count()?
             {
-                let volume = system.files().volume_at(index).map_err(error)?;
+                let volume = system.files().volume_at(index)?;
                 let trash = match system.files().trash_directory(volume.id, false)
                 {
                     Ok(trash) => trash,
-                    Err(e) if e.0 == NOT_FOUND => continue,
-                    Err(e) => return Err(e.0)
+                    Err(e) if e == Error::NotFound => continue,
+                    Err(e) => return Err(e)
                 };
                 if trash.child_count > 0
                 {
-                    removed += system.files().empty_trash(volume.id, when).map_err(error)?;
+                    removed += system.files().empty_trash(volume.id, when)?;
                 }
             }
             Ok(())
@@ -1224,8 +1201,10 @@ impl Browser
         if let Err(status) = result
         {
             let mut log = Text::<80>::default();
-            let _ =
-                writeln!(&mut log, "FINDER_TRASH_PARTIAL removed={} status={}", removed, status);
+            let _ = writeln!(&mut log,
+                             "FINDER_TRASH_PARTIAL removed={} status={}",
+                             removed,
+                             status.status());
             system.log(log.as_str())?;
             return Err(status);
         }
@@ -1238,17 +1217,18 @@ impl Browser
 impl Browser
 {
     pub fn trash_usage(&self, system: &System<'_>)
-                       -> Result<mac_toolbox::files::TrashUsage, Status>
+                       -> Result<mac_toolbox::files::TrashUsage, Error>
     {
         let mut total = mac_toolbox::files::TrashUsage { items:           0,
                                                          allocated_bytes: 0 };
-        for index in 0..system.files().volume_count().map_err(error)?
+        for index in 0..system.files().volume_count()?
         {
-            let volume = system.files().volume_at(index).map_err(error)?;
-            let usage = system.files().trash_usage(volume.id).map_err(error)?;
-            total.items = total.items.checked_add(usage.items).ok_or(BAD_ARGUMENT)?;
-            total.allocated_bytes =
-                total.allocated_bytes.checked_add(usage.allocated_bytes).ok_or(BAD_ARGUMENT)?;
+            let volume = system.files().volume_at(index)?;
+            let usage = system.files().trash_usage(volume.id)?;
+            total.items = total.items.checked_add(usage.items).ok_or(Error::BadArgument)?;
+            total.allocated_bytes = total.allocated_bytes
+                                         .checked_add(usage.allocated_bytes)
+                                         .ok_or(Error::BadArgument)?;
         }
         Ok(total)
     }

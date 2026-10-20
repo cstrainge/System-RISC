@@ -2,12 +2,13 @@
 #![no_std]
 pub use mac_abi::{ACCESS_DENIED, ACTIVE_FLAG, ALREADY_EXISTS, ApplicationEntry, BAD_ABI,
                   BAD_ARGUMENT, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK,
-                  DIRECTORY_NOT_EMPTY, DISK_FULL, DRAW_BUTTON, DRAW_TEXT, Event, EventKind,
-                  FRAME_RECT, IO_ERROR, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, OK, PAINT_RECT,
-                  Point, READ_ONLY, ROLLBACK_FAILED, Rect, ResourceKey, SCAN_STALE, SERVICE_BUSY,
-                  Status, SystemServices, TRANSLATION_REQUIRED, WRONG_THREAD, WindowId,
-                  WindowRequest, dates::Timestamp};
+                  DIRECTORY_NOT_EMPTY, DISK_FULL, DRAW_BUTTON, DRAW_TEXT, EventKind, FRAME_RECT,
+                  IO_ERROR, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, OK, PAINT_RECT, Point, READ_ONLY,
+                  ROLLBACK_FAILED, Rect, ResourceKey, SCAN_STALE, SERVICE_BUSY, Status,
+                  SystemServices, TRANSLATION_REQUIRED, WRONG_THREAD, WindowId, WindowRequest,
+                  dates::Timestamp};
 pub use mac_traps::{Client, Error, Result as ToolboxResult};
+pub use toolbox_events::{Event, EventMask, Modifiers};
 pub mod panic;
 pub use toolbox_controls as controls;
 pub use toolbox_crashes as crashes;
@@ -34,9 +35,9 @@ impl<'a> System<'a>
 {
     /// # Safety
     /// The loader-provided table and its advertised callbacks must remain valid.
-    pub unsafe fn from_raw(services: *const SystemServices) -> core::result::Result<Self, Status>
+    pub unsafe fn from_raw(services: *const SystemServices) -> core::result::Result<Self, Error>
     {
-        unsafe { Client::from_raw(services) }.map(|client| Self { client }).map_err(|e| e.0)
+        unsafe { Client::from_raw(services) }.map(|client| Self { client })
     }
 
     pub fn client(&self) -> Client<'a>
@@ -119,9 +120,9 @@ impl<'a> System<'a>
         memory::Memory::new(self.client)
     }
 
-    pub fn log(&self, text: &str) -> core::result::Result<(), Status>
+    pub fn log(&self, text: &str) -> core::result::Result<(), Error>
     {
-        self.client.log(text).map_err(|e| e.0)
+        self.client.log(text)
     }
 
     pub fn capabilities(&self) -> u64
@@ -130,59 +131,59 @@ impl<'a> System<'a>
     }
 
     pub fn new_window(&self, bounds: Rect, title: &str, minimum: (i16, i16), procedure: i16)
-                      -> core::result::Result<u32, Status>
+                      -> core::result::Result<u32, Error>
     {
         self.windows()
             .create(windows::WindowSpec::new(bounds, title).minimum(minimum.0, minimum.1)
                                                            .procedure(procedure))
             .map(|id| id.0)
-            .map_err(|e| e.0)
     }
 
-    pub fn close_window(&self, id: u32) -> core::result::Result<(), Status>
+    pub fn close_window(&self, id: u32) -> core::result::Result<(), Error>
     {
-        self.windows().close(WindowId(id)).map_err(|e| e.0)
+        self.windows().close(WindowId(id))
     }
 
-    pub fn select_window(&self, id: u32) -> core::result::Result<(), Status>
+    pub fn select_window(&self, id: u32) -> core::result::Result<(), Error>
     {
-        self.windows().select(WindowId(id)).map_err(|e| e.0)
+        self.windows().select(WindowId(id))
     }
 
-    pub fn select_desktop(&self) -> core::result::Result<(), Status>
+    pub fn select_desktop(&self) -> core::result::Result<(), Error>
     {
-        self.windows().select_desktop().map_err(|e| e.0)
+        self.windows().select_desktop()
     }
 
-    pub fn window(&self, id: u32) -> core::result::Result<WindowRequest, Status>
+    pub fn window(&self, id: u32) -> core::result::Result<WindowRequest, Error>
     {
-        self.windows().info(WindowId(id)).map_err(|e| e.0)
+        self.windows().info(WindowId(id))
     }
 
-    pub fn begin_update(&self, id: u32) -> core::result::Result<Rect, Status>
+    pub fn begin_update(&self, id: u32) -> core::result::Result<Rect, Error>
     {
-        self.windows().begin_update(WindowId(id)).map_err(|e| e.0)
+        self.windows().begin_update(WindowId(id))
     }
 
-    pub fn end_update(&self, id: u32) -> core::result::Result<(), Status>
+    pub fn end_update(&self, id: u32) -> core::result::Result<(), Error>
     {
-        self.windows().end_update(WindowId(id)).map_err(|e| e.0)
+        self.windows().end_update(WindowId(id))
     }
 
     pub fn draw(&self, id: u32, kind: u32, bounds: Rect, color: u32, text: &str)
-                -> core::result::Result<(), Status>
+                -> core::result::Result<(), Error>
     {
-        self.quickdraw().port(WindowId(id)).command(kind, bounds, color, text).map_err(|e| e.0)
+        self.quickdraw().port(WindowId(id)).command(kind, bounds, color, text)
     }
 
-    pub fn next_event(&self, mask: u16) -> core::result::Result<Event, Status>
+    pub fn next_event(&self, mask: EventMask) -> core::result::Result<Event, Error>
     {
-        self.events().next_event(mask).map_err(|e| e.0)
+        self.events().next(mask)
     }
 
-    pub fn wait_event(&self, mask: u16, timeout_ticks: u32) -> core::result::Result<Event, Status>
+    pub fn wait_event(&self, mask: EventMask, timeout_ticks: u32)
+                      -> core::result::Result<Event, Error>
     {
-        self.events().wait_event(mask, timeout_ticks).map_err(|e| e.0)
+        self.events().wait_event(mask, timeout_ticks)
     }
 }
 #[cfg(test)]
@@ -215,9 +216,9 @@ mod tests
             {
                 assert_eq!(size, core::mem::size_of::<traps::NextEventCall>());
                 let r = unsafe { &mut *request.cast::<traps::NextEventCall>() };
-                r.event = Event { kind: EventKind::KeyDown,
-                                  message: 65,
-                                  ..Default::default() };
+                r.event = mac_abi::Event { kind: EventKind::KeyDown,
+                                           message: 65,
+                                           ..Default::default() };
                 OK as i64
             }
             _ => NOT_SUPPORTED as i64
@@ -236,10 +237,16 @@ mod tests
                                                           "System RISC"))
                          .unwrap(),
                    WindowId(7));
-        assert_eq!(system.events().next(mac_abi::EVERY_EVENT).unwrap().unwrap().character(), 65);
-        assert!(matches!(unsafe { System::from_raw(core::ptr::null()) }, Err(BAD_ARGUMENT)));
+        assert_eq!(system.events()
+                         .next(events::EventMask::ALL)
+                         .unwrap()
+                         .key()
+                         .unwrap()
+                         .character(),
+                   'A');
+        assert!(matches!(unsafe { System::from_raw(core::ptr::null()) }, Err(Error::BadArgument)));
         let short = Header::for_type::<Header>();
         assert!(matches!(unsafe { System::from_raw((&short as *const Header).cast()) },
-                         Err(BAD_ABI)));
+                         Err(Error::BadAbi)));
     }
 }

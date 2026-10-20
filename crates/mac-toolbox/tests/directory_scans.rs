@@ -7,7 +7,7 @@ use std::{collections::BTreeMap,
           sync::atomic::{AtomicUsize, Ordering}};
 
 use mac_system::testing::{DiskFaults, with_file_disk};
-use mac_toolbox::{BAD_ARGUMENT, Error, IO_ERROR, SCAN_STALE, System, Timestamp,
+use mac_toolbox::{Error, System, Timestamp,
                   files::{DirectoryCursor, ROOT_ID, ScanStep}};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 const WHEN: Timestamp = Timestamp::from_unix_seconds(1_792_326_896);
@@ -214,7 +214,7 @@ fn directory_scan_mutation_remount_and_binding_guards_prevent_mixed_totals()
                    assert_eq!(files.scan_directory(system.files().volume_at(0).unwrap().id,
                                                    ROOT_ID,
                                                    &mut cursor),
-                              Err(Error(BAD_ARGUMENT)));
+                              Err(Error::BadArgument));
                    assert_eq!(cursor, unchanged);
                    let _ = files.catalog(system.files().volume_at(0).unwrap().id, parent).unwrap(); // ordinary reads do not invalidate
                    files.scan_directory(system.files().volume_at(0).unwrap().id,
@@ -227,7 +227,7 @@ fn directory_scan_mutation_remount_and_binding_guards_prevent_mixed_totals()
                    assert_eq!(files.scan_directory(system.files().volume_at(0).unwrap().id,
                                                    parent,
                                                    &mut cursor),
-                              Err(Error(SCAN_STALE)));
+                              Err(Error::ScanStale));
                    assert_eq!(cursor, before);
                    assert_eq!(collect(system, parent).0.len(), 4);
                    let mut fresh = DirectoryCursor::default();
@@ -242,7 +242,7 @@ fn directory_scan_mutation_remount_and_binding_guards_prevent_mixed_totals()
                assert_eq!(system.files().scan_directory(system.files().volume_at(0).unwrap().id,
                                                         parent,
                                                         &mut cursor),
-                          Err(Error(SCAN_STALE)));
+                          Err(Error::ScanStale));
            });
 }
 #[test]
@@ -270,7 +270,7 @@ fn forged_scan_cursor_fields_are_rejected_through_public_native_client()
                        _ => bad.cursor.revision = 0
                    }
                    assert_eq!(system.client().file_scan(&mut bad),
-                              Err(Error(BAD_ARGUMENT)),
+                              Err(Error::BadArgument),
                               "field {field}");
                }
            });
@@ -298,7 +298,7 @@ fn corrupted_catalog_cycles_and_offset_tables_fail_without_walking_the_chain()
                                                      ROOT_ID,
                                                      &mut DirectoryCursor::default())
                    });
-        assert_eq!(result, Err(Error(IO_ERROR)));
+        assert_eq!(result, Err(Error::Io));
         assert!(activity.reads - baseline.reads <= 1);
     }
 }
@@ -347,7 +347,7 @@ fn malformed_physical_lengths_cannot_be_reported_as_completed_folder_totals()
                                                        parent,
                                                        &mut cursor)
                    {
-                       Err(Error(IO_ERROR)) => return,
+                       Err(Error::Io) => return,
                        Ok(ScanStep::Pending) =>
                        {}
                        other => panic!("malformed allocation returned usable totals: {other:?}")

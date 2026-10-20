@@ -1,5 +1,5 @@
 //! Interactive QuickDraw exercise. Every operation crosses the public Toolbox API.
-use mac_toolbox::{Point, Rect, Status, System, WindowId,
+use mac_toolbox::{Error, Point, Rect, Status, System, WindowId,
                   quickdraw::{bitmaps::Bitmap,
                               fonts::{BOLD, FontSelection, ITALIC, UNDERLINE},
                               graphics::{GraphicsPort, Shape, TransferMode, Verb}}};
@@ -8,7 +8,7 @@ fn point(h: i16, v: i16) -> Point
     Point { h,
             v }
 }
-fn text(port: GraphicsPort<'_>, x: i16, y: i16, s: &str) -> Result<(), Status>
+fn text(port: GraphicsPort<'_>, x: i16, y: i16, s: &str) -> Result<(), Error>
 {
     port.text(FontSelection { family: 3,
                               size:   9,
@@ -17,25 +17,23 @@ fn text(port: GraphicsPort<'_>, x: i16, y: i16, s: &str) -> Result<(), Status>
               s,
               0)
         .map(|_| ())
-        .map_err(|e| e.0)
 }
-pub fn open(system: &System<'_>) -> Result<u32, Status>
+pub fn open(system: &System<'_>) -> Result<u32, Error>
 {
-    let layout =
-        system.resources().application().get(crate::resources::WINDOW_LAYOUT).map_err(|e| e.0)?;
+    let layout = system.resources().application().get(crate::resources::WINDOW_LAYOUT)?;
     let mut bytes = [0; 20];
-    if layout.size() != bytes.len() || layout.read(0, &mut bytes).map_err(|e| e.0)? != bytes.len()
+    if layout.size() != bytes.len() || layout.read(0, &mut bytes)? != bytes.len()
     {
-        return Err(mac_toolbox::BAD_ARGUMENT);
+        return Err(mac_toolbox::Error::BadArgument);
     }
-    layout.release().map_err(|e| e.0)?;
+    layout.release()?;
     let word = |at| i16::from_be_bytes([bytes[at], bytes[at + 1]]);
     let mut title = [0; 128];
-    let title = system.resources().application().string(128, &mut title).map_err(|e| e.0)?;
+    let title = system.resources().application().string(128, &mut title)?;
     system.new_window(Rect::new(word(2), word(0), word(6), word(4)), title, (400, 280), word(8))
 }
 pub fn selector(system: &System<'_>, index: usize)
-                -> Result<mac_toolbox::controls::StandardState, Status>
+                -> Result<mac_toolbox::controls::StandardState, Error>
 {
     let mut bytes = [0; 128];
     let label = system.resources()
@@ -52,12 +50,12 @@ pub fn selector(system: &System<'_>, index: usize)
 }
 fn mac_traps_error_status(error: mac_toolbox::Error) -> Status
 {
-    error.0
+    error.status()
 }
 
 pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32,
             selectors: &[mac_toolbox::controls::ControlId; 10])
-            -> Result<(), Status>
+            -> Result<(), Error>
 {
     let r = system.window(id)?.bounds;
     let (w, h) = (r.right - r.left, r.bottom - r.top);
@@ -100,7 +98,7 @@ pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32,
     system.end_update(id)?;
     if let Err(e) = run
     {
-        return Err(e.0);
+        return Err(e);
     }
     let marker = match page
     {
@@ -117,9 +115,9 @@ pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32,
     };
     system.log(marker)
 }
-fn mac_traps_error(status: Status) -> mac_toolbox::Error
+fn mac_traps_error(status: Error) -> mac_toolbox::Error
 {
-    mac_toolbox::Error(status)
+    status
 }
 fn shapes(port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResult<()>
 {
@@ -337,7 +335,7 @@ fn worlds(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::ToolboxRe
     let mut pixels = [0u32; 64 * 64];
     if world.pixels(&mut pixels)? != pixels.len() || pixels[0] != 0x325bab
     {
-        return Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT));
+        return Err(mac_toolbox::Error::BadArgument);
     }
     world.copy_to(port, Rect::new(0, 0, 64, 64), Rect::new(16, 62, 256, 302), TransferMode::Copy)?;
     world.copy_to(port, Rect::new(0, 0, 64, 64), Rect::new(300, 62, 428, 190), TransferMode::Copy)?;
@@ -437,13 +435,13 @@ fn resources(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::Toolbo
        || resources.system().count(*b"FOND")? != 9
        || resources.type_count()? == 0
     {
-        return Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT));
+        return Err(mac_toolbox::Error::BadArgument);
     }
     resources.type_at(0)?;
     let chicago = resources.system().named(*b"FOND", "Chicago")?;
     if chicago.key().id != 0 || chicago.home() != mac_toolbox::resources::SYSTEM
     {
-        return Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT));
+        return Err(mac_toolbox::Error::BadArgument);
     }
     chicago.release()?;
     let picture = resources.application().get(crate::resources::QUICKDRAW_DEMO_PICTURE)?;
@@ -451,7 +449,7 @@ fn resources(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::Toolbo
     if picture.read(0, &mut header)? != header.len()
        || picture.read(picture.size(), &mut header)? != 0
     {
-        return Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT));
+        return Err(mac_toolbox::Error::BadArgument);
     }
     picture.release()?;
     text(port,16,45,"Resource Manager: application -> System search chain").map_err(mac_traps_error)?;
@@ -473,7 +471,7 @@ fn resources(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::Toolbo
             let got = resource.read(0, &mut prefix)?;
             if got != resource.size().min(prefix.len())
             {
-                return Err(mac_toolbox::Error(mac_toolbox::BAD_ARGUMENT));
+                return Err(mac_toolbox::Error::BadArgument);
             }
             resource.release()?;
         }
@@ -488,11 +486,14 @@ fn png(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResul
     let mut bytes = [0; 32 * 1024];
     if resource.size() > bytes.len()
     {
-        return Err(mac_toolbox::Error(mac_toolbox::NO_MEMORY));
+        return Err(mac_toolbox::Error::NoMemory);
     }
     let count = resource.read(0, &mut bytes)?;
     let image = &bytes[..count];
-    let info = system.quickdraw().images().info(image).map_err(|e| mac_toolbox::Error(e.status))?;
+    let info = system.quickdraw()
+                     .images()
+                     .info(image)
+                     .map_err(|e| mac_toolbox::Error::from_status(e.status))?;
     text(port,16,44,"PNG: resident decoding, alpha composition, scaling and clipping").map_err(mac_traps_error)?;
     // A checkerboard makes translucent pixels easy to distinguish from opaque RGB.
     for row in 0..14i16
@@ -507,10 +508,13 @@ fn png(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResul
                                       76 + row * 16))?;
         }
     }
-    port.draw_png(image, Rect::new(24, 76, 120, 140)).map_err(|e| mac_toolbox::Error(e.status))?;
-    port.draw_png(image, Rect::new(160, 76, 448, 268)).map_err(|e| mac_toolbox::Error(e.status))?;
+    port.draw_png(image, Rect::new(24, 76, 120, 140))
+        .map_err(|e| mac_toolbox::Error::from_status(e.status))?;
+    port.draw_png(image, Rect::new(160, 76, 448, 268))
+        .map_err(|e| mac_toolbox::Error::from_status(e.status))?;
     port.clip_rect(Rect::new(460, 100, 520, 240))?;
-    port.draw_png(image, Rect::new(440, 76, 536, 268)).map_err(|e| mac_toolbox::Error(e.status))?;
+    port.draw_png(image, Rect::new(440, 76, 536, 268))
+        .map_err(|e| mac_toolbox::Error::from_status(e.status))?;
     port.clip_rect(Rect::new(0, 0, i16::MAX, i16::MAX))?;
     let mut label = Label::default();
     use core::fmt::Write;

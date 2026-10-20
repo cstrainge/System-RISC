@@ -157,7 +157,7 @@ pub fn control_pixel_bounds(system: &System<'_>) -> Result<(), Failure>
                                                    2,
                                                    StandardKind::Button,
                                                    state)
-            == Err(mac_toolbox::Error(mac_abi::BAD_ARGUMENT)),
+            == Err(mac_toolbox::Error::BadArgument),
             "control pixel storage bounds")?;
     require(pixels == [0x123456; 8], "failed control pixel storage untouched")?;
     let scrollbar = ScrollbarState { bounds: Rect::new(0, 0, 15, 45),
@@ -166,7 +166,7 @@ pub fn control_pixel_bounds(system: &System<'_>) -> Result<(), Failure>
                                      active: 1,
                                      ..Default::default() };
     require(system.controls().draw_scrollbar_pixels(&mut pixels, 0, 0, scrollbar)
-            == Err(mac_toolbox::Error(mac_abi::BAD_ARGUMENT)),
+            == Err(mac_toolbox::Error::BadArgument),
             "empty control pixel dimensions")?;
     let mut unsupported = state;
     unsupported.font.family = 20;
@@ -176,7 +176,7 @@ pub fn control_pixel_bounds(system: &System<'_>) -> Result<(), Failure>
                                                    1,
                                                    StandardKind::WindowFontButton,
                                                    unsupported)
-            == Err(mac_toolbox::Error(mac_abi::NOT_SUPPORTED)),
+            == Err(mac_toolbox::Error::NotSupported),
             "unsupported CDEF font rejected before drawing")?;
     unsupported = state;
     unsupported.title[0] = 0xff;
@@ -186,12 +186,12 @@ pub fn control_pixel_bounds(system: &System<'_>) -> Result<(), Failure>
                                                    1,
                                                    StandardKind::Button,
                                                    unsupported)
-            == Err(mac_toolbox::Error(mac_abi::BAD_ARGUMENT)),
+            == Err(mac_toolbox::Error::BadArgument),
             "malformed control title rejected before drawing")?;
     let unsupported = ScrollbarState { bounds: Rect::new(0, 0, 14, 40),
                                        ..scrollbar };
     require(system.controls().draw_scrollbar_pixels(&mut pixels, 8, 1, unsupported)
-            == Err(mac_toolbox::Error(mac_abi::NOT_SUPPORTED)),
+            == Err(mac_toolbox::Error::NotSupported),
             "unsupported scrollbar geometry rejected before drawing")?;
     require(pixels == [0x123456; 8], "definition rejection preserves borrowed pixels")
 }

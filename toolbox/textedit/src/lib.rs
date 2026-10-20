@@ -2,7 +2,7 @@
 //! generations, so an old ID cannot accidentally access a replacement editor.
 #![no_std]
 #![forbid(unsafe_code)]
-use mac_abi::{BAD_ARGUMENT, textedit::*};
+use mac_abi::textedit::*;
 pub use mac_abi::{Point, Rect, WindowId,
                   quickdraw::FontSelection,
                   textedit::{CursorMovement, EditorId, EditorInfo, LineInfo, MAX_BYTES,
@@ -141,7 +141,7 @@ impl<'a> TextEdit<'a>
                                                ..Default::default() },
                                 "",
                                 output)?;
-        core::str::from_utf8(output.get(..call.transferred).ok_or(Error(BAD_ARGUMENT))?).map_err(|_|Error(BAD_ARGUMENT))
+        core::str::from_utf8(output.get(..call.transferred).ok_or(Error::BadArgument)?).map_err(|_|Error::BadArgument)
     }
 
     pub fn select(self, id: EditorId, start: u32, end: u32) -> Result<EditorInfo>

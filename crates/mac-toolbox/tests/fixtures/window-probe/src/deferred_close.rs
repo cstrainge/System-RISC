@@ -2,7 +2,7 @@
 use core::fmt::Write;
 
 use mac_toolbox::{Rect, System, WindowId,
-                  events::{EVERY_EVENT, EventKind},
+                  events::classic::{EVERY_EVENT, EventKind},
                   windows::{WINDOW_CLOSE_REQUEST, WindowSpec}};
 struct Line
 {
@@ -27,7 +27,7 @@ fn log(system: &System<'_>, args: core::fmt::Arguments<'_>) -> mac_toolbox::Tool
     let mut line = Line { bytes: [0; 256],
                           len:   0 };
     let _ = line.write_fmt(args);
-    system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap()).map_err(mac_toolbox::Error)
+    system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())
 }
 fn draw(system: &System<'_>, window: WindowId) -> mac_toolbox::ToolboxResult<()>
 {
@@ -56,10 +56,10 @@ pub fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
     let mut auto_events = 0u32;
     let mut updates = 0u32;
     let mut query = 0u32;
-    system.log("DESKTOP_READY: public SDK deferred close fixture\n").map_err(mac_toolbox::Error)?;
+    system.log("DESKTOP_READY: public SDK deferred close fixture\n")?;
     loop
     {
-        let event = system.events().wait_event(EVERY_EVENT, 1)?;
+        let event = system.events().wait_event(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT), 1).map(mac_toolbox::Event::into_record)?;
         if event.kind == EventKind::Update
            && (event.message == deferred.0
                || automatic.is_some_and(|id: WindowId| id.0 == event.message))

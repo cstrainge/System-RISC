@@ -26,14 +26,14 @@ fn foreign_owners_cannot_read_track_configure_or_dispose_a_control()
         });
         with_owner(8, || {
             let control = owned.control();
-            assert!(matches!(control.info(), Err(Error(ACCESS_DENIED))));
-            assert_eq!(control.dispose(), Err(Error(ACCESS_DENIED)));
+            assert!(matches!(control.info(), Err(Error::AccessDenied)));
+            assert_eq!(control.dispose(), Err(Error::AccessDenied));
             assert!(matches!(control.configure(StandardKind::Button, state),
-                             Err(Error(ACCESS_DENIED))));
+                             Err(Error::AccessDenied)));
             assert!(matches!(control.begin_tracking(Point { h: 20,
                                                             v: 20 },
                                                     0),
-                             Err(Error(ACCESS_DENIED))));
+                             Err(Error::AccessDenied)));
         });
         with_owner(7, || drop(owned));
     });

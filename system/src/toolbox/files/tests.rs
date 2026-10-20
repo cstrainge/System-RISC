@@ -476,7 +476,7 @@ fn public_safe_client_crosses_actual_filecall_and_drop_releases_handles()
     assert!(raw.output.is_null());
     assert_eq!((raw.name_length, raw.capacity), (0, 0));
     raw.operation = LOOKUP;
-    assert_eq!(client.file(&mut raw, "absent", &mut []), Err(mac_traps::Error(NOT_FOUND)));
+    assert_eq!(client.file(&mut raw, "absent", &mut []), Err(mac_traps::Error::NotFound));
     assert!(raw.name.is_null());
     assert!(raw.output.is_null());
 }

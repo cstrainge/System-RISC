@@ -7,3 +7,4 @@ publish.workspace = true
 [dependencies]
 mac-abi.workspace = true
 mac-traps.workspace = true
+toolbox-events = { path = "../events" }
