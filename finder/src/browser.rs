@@ -132,9 +132,9 @@ impl Drawing for Port<'_, '_>
     fn icon(&mut self, icon: Icon, bounds: Rect, state: State) -> Result<(), Status>
     {
         let icons = self.system.quickdraw().icons();
-        let mut flags = IconFlags { selected: state.selected && state.active,
-                                    open: state.open,
-                                    ..Default::default() };
+        let flags = IconFlags { selected: state.selected && state.active,
+                                open: state.open,
+                                ..Default::default() };
         let id = match icon
         {
             Icon::Resource(id) => id,
@@ -142,7 +142,6 @@ impl Drawing for Port<'_, '_>
                                 cnid,
                                 fallback } =>
             {
-                flags.open |= self.system.processes().is_running(volume, cnid).map_err(error)?;
                 match icons.plot_file(self.graphics.window_id(), volume, cnid, bounds, flags)
                 {
                     Ok(()) => return Ok(()),
@@ -550,22 +549,30 @@ impl Browser
                                              width - icon_view::SCROLLBAR,
                                              height - icon_view::SCROLLBAR))
                         .map_err(error)?;
+                let icon = entry_icon(system,
+                                      &system.files().volume(entry.volume).map_err(error)?,
+                                      &entry);
+                // The browser owns the open/running mark. Other consumers,
+                // including Get Info, draw the same icon with their own state.
+                let open = if entry.is_directory()
+                {
+                    self.is_open(Location { volume: entry.volume,
+                                            folder: entry.id })
+                }
+                else
+                {
+                    matches!(icon, Icon::Application { .. })
+                    && system.processes().is_running(entry.volume, entry.id).map_err(error)?
+                };
                 icon_view::draw_item(&mut draw,
-                                     entry_icon(system,
-                                                &system.files()
-                                                       .volume(entry.volume)
-                                                       .map_err(error)?,
-                                                &entry),
+                                     icon,
                                      rect,
                                      entry.name(),
                                      State { selected: window.selected
                                                        == Some(Location { volume: entry.volume,
                                                                           folder: entry.id }),
                                              active,
-                                             open:
-                                                 entry.is_directory()
-                                                 && self.is_open(Location { volume: entry.volume,
-                                                                            folder: entry.id }),
+                                             open,
                                              desktop: false })?;
             }
             graphics.clip_rect(Rect::new(0, 0, width, height)).map_err(error)?;

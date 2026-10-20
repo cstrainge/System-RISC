@@ -115,6 +115,9 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
                    "Finder did not draw {package}'s own icon before launch");
     }
     let running = image("running-file-icons");
+    assert_eq!(region(&image("running-app-info"), 38, 53, 70, 85),
+               icon(&root, "QuickDraw Test", 128, 32),
+               "Get Info must show the normal icon even while its application is running");
     assert_eq!(region(&running, 168, 90, 200, 122),
                icon_flags(&root,
                           "QuickDraw Test",
@@ -272,7 +275,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
         "activation_click_does_not_click_through":"passed","second_content_click_delivered":"passed",
         "background_command_drag_preserves_foreground":"passed","ordinary_drag_activates_on_release":"passed",
         "resource_menu_quit_and_fresh_relaunch":"passed","finder_alive_after_exit":"passed",
-        "application_icon_pixels":6656,"running_file_identity_icons":"passed","unlaunched_copy_unmarked":"passed","running_icon_cleared_on_exit":"passed","application_icons_before_launch":"passed",
+        "application_icon_pixels":7680,"running_app_info_normal_icon":"passed","running_file_identity_icons":"passed","unlaunched_copy_unmarked":"passed","running_icon_cleared_on_exit":"passed","application_icons_before_launch":"passed",
         "application_menu_icon_rows_and_foreground_title":"passed","non_128_icon_bundle":"passed"});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join(if windows

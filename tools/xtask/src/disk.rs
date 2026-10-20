@@ -3,7 +3,8 @@
 use std::{env,
           fs::{self, File, OpenOptions},
           path::{Path, PathBuf},
-          process::Command};
+          process::Command,
+          time::{SystemTime, UNIX_EPOCH}};
 
 use mac_build::{Result, error, package};
 use mac_formats::{macbinary, text};
@@ -105,6 +106,7 @@ pub(super) fn edit(workspace: &Workspace, image: &Path, home: &Path,
 
 pub fn image(workspace: &Workspace) -> Result<Value>
 {
+    let started = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let tools = tool_path(workspace)?;
     let scratch = Scratch::create(&workspace.build)?;
     let raw = scratch.path.join("system7.hfs");
@@ -140,6 +142,8 @@ pub fn image(workspace: &Workspace) -> Result<Value>
            || original.creator != copied.creator
            || original.data != copied.data
            || original.resources != copied.resources
+           || original.created != copied.created
+           || original.modified != copied.modified
         {
             return Err(error(format!("HFS fork or metadata roundtrip failed for {name}")));
         }
@@ -160,6 +164,8 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     disk.seek(SeekFrom::Start(1024))?;
     disk.read_exact(&mut header)?;
     let blessed_id = u32::from_be_bytes(header[92..96].try_into().unwrap());
+    let created = u32::from_be_bytes(header[2..6].try_into().unwrap());
+    let modified = u32::from_be_bytes(header[6..10].try_into().unwrap());
     if &header[..2] != b"BD" || blessed_id == 0 || disk.metadata()?.len() != DISK_SIZE
     {
         return Err(error("invalid HFS volume or missing System Folder blessing"));
@@ -184,7 +190,8 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     // live separately as overlays when a real disk bootstrap is introduced.
     fs::rename(&raw, dist.join("system7.hfs"))?;
     fs::rename(&qcow, dist.join("system7.qcow2"))?;
-    let report = json!({"raw": "build/system7/dist/system7.hfs", "qcow2": "build/system7/dist/system7.qcow2", "virtual_size": DISK_SIZE, "layout": "unpartitioned HFS", "volume_name": "System RISC", "blessed_system_folder_id": blessed_id, "files": verified, "listing": listing, "qcow2_check": "passed", "raw_qcow2_comparison": "passed", "riscv_disk_boot_available": true, "boot_rom": "build/system7/dist/bootrom.bin"});
+    let finished = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let report = json!({"raw": "build/system7/dist/system7.hfs", "qcow2": "build/system7/dist/system7.qcow2", "virtual_size": DISK_SIZE, "layout": "unpartitioned HFS", "volume_name": "System RISC", "created": created, "modified": modified, "image_started_unix": started, "image_finished_unix": finished, "time_basis": "UTC", "blessed_system_folder_id": blessed_id, "files": verified, "listing": listing, "qcow2_check": "passed", "raw_qcow2_comparison": "passed", "riscv_disk_boot_available": true, "boot_rom": "build/system7/dist/bootrom.bin"});
     write_json(&dist.join("disk.json"), &report)?;
     println!("Built 500 MiB HFS/qcow2; System, Finder and Applications fork roundtrips passed.");
     Ok(report)

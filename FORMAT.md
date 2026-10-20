@@ -251,6 +251,15 @@ pre8.5 mapping in [ROMAN.TXT](https://www.unicode.org/Public/MAPPINGS/VENDORS/AP
 
 ## Dates and application versions
 
+New native packages stamp their MacBinary Created and Modified fields with the
+actual packaging time in UTC. An explicit `SOURCE_DATE_EPOCH` overrides that
+time for reproducible packages; an absent value never means Unix epoch zero.
+Lossless archive rebuilds preserve the archived dates. Package reports record
+the chosen dates, wall-clock packaging time and optional source epoch. HFS image
+creation preserves file dates on import, creates the volume and initial folders
+at the real build time, and records its UTC creation interval for SDK validation.
+Finder Get Info displays the catalog timestamps rather than a synthetic date.
+
 Native Rust `Timestamp` holds signed64-bit Unix seconds. HFS/MacBinary dates are
 unsigned32-bit seconds since1904; File Manager metadata provides `created_at`,
 `modified_at` and `backed_up_at` Rust timestamp accessors. Conversion is checked,

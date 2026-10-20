@@ -1,4 +1,7 @@
-use std::{env, fs, path::Path, process::Command};
+use std::{env, fs,
+          path::Path,
+          process::Command,
+          time::{SystemTime, UNIX_EPOCH}};
 
 use mac_formats::{elf,
                   macbinary::{self, MacFile},
@@ -39,6 +42,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Value>
     let image = image::decode(code, &descriptor)?;
     Ok(json!({
         "name": text::decode(&file.name), "file_type": text::decode(&file.file_type), "creator": text::decode(&file.creator),
+        "created": file.created, "modified": file.modified,
         "role": match descriptor.role { Role::System => "system", Role::Application => "application", Role::CodeResource => "code_resource" },
         "abi_version": descriptor.abi_version, "load_base": descriptor.load_base, "load_limit": descriptor.load_limit,
         "format_version": mac_formats::native::FORMAT_VERSION, "entry": descriptor.entry, "code_sha256": sha256(code), "resource_fork_sha256": sha256(&file.resources), "macbinary_sha256": sha256(bytes),
@@ -76,7 +80,14 @@ pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
         }
     }
     let resources = resource::encode(&compiled)?;
-    let seconds: u64 = env::var("SOURCE_DATE_EPOCH").unwrap_or_else(|_| "0".into()).parse()?;
+    let packaged_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let source_epoch = match env::var("SOURCE_DATE_EPOCH")
+    {
+        Ok(value) => Some(value),
+        Err(env::VarError::NotPresent) => None,
+        Err(error) => return Err(error.into())
+    };
+    let seconds = source_seconds(source_epoch.as_deref(), packaged_at)?;
     let date = mac_date(seconds)?;
     let file = MacFile { name: text::encode(&manifest.name)?,
                          file_type: crate::manifest::fourcc(&manifest.file_type)?,
@@ -95,6 +106,8 @@ pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
                          resources };
     let binary = macbinary::encode(&file)?;
     let mut report = inspect(&binary)?;
+    report["packaged_at_unix"] = packaged_at.into();
+    report["source_date_epoch"] = source_epoch.map(|_| seconds).into();
     report["cargo_version"] = manifest.cargo_version.into();
     fs::create_dir_all(out)?;
     for (suffix, bytes) in
@@ -104,6 +117,11 @@ pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
     }
     fs::write(out.join(format!("{}.json", manifest.name)), serde_json::to_vec_pretty(&report)?)?;
     Ok(report)
+}
+
+fn source_seconds(source: Option<&str>, now: u64) -> Result<u64>
+{
+    source.map(str::parse).transpose().map(|epoch| epoch.unwrap_or(now)).map_err(Into::into)
 }
 
 fn mac_date(unix_seconds: u64) -> Result<u32>
@@ -165,6 +183,19 @@ pub fn rebuild(manifest_path: &Path, out: &Path) -> Result<Value>
 #[cfg(test)]
 mod tests
 {
+    #[test]
+    fn package_dates_default_to_the_build_clock_but_honor_explicit_source_epochs()
+    {
+        let now = 1_792_326_896;
+        assert_eq!(super::source_seconds(None, now).unwrap(), now);
+        assert_eq!(super::source_seconds(Some("0"), now).unwrap(), 0);
+        assert_eq!(super::source_seconds(Some("1767225600"), now).unwrap(), 1_767_225_600);
+        for invalid in ["", "invalid", "-1", "18446744073709551616"]
+        {
+            assert!(super::source_seconds(Some(invalid), now).is_err());
+        }
+    }
+
     #[test]
     fn source_dates_support_2026_and_reject_classic_overflow()
     {

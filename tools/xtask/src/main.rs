@@ -135,9 +135,9 @@ impl Workspace
                                "window_interactions", "--", "--ignored"]))?;
         run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", "finder_png",
                                "--", "--ignored"]))?;
-        for test in ["resedit", "menus", "finder_trash", "file_writes_guest", "deferred_close",
-                     "get_info_ui", "events", "clipboard", "textedit_graphical", "typing",
-                     "processes", "application_ui", "retained_update", "event_latency",
+        for test in ["dates", "resedit", "menus", "finder_trash", "file_writes_guest",
+                     "deferred_close", "get_info_ui", "events", "clipboard", "textedit_graphical",
+                     "typing", "processes", "application_ui", "retained_update", "event_latency",
                      "cursor_graphical", "busy_cursor", "panic_graphical"]
         {
             run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test", test,

@@ -1,4 +1,56 @@
 use mac_toolbox::Timestamp;
+
+#[test]
+#[ignore = "requires the current cargo xtask image and its package metadata"]
+fn built_disk_dates_match_package_metadata_and_the_real_image_creation_clock()
+{
+    use std::{fs, path::PathBuf};
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let dist = root.join("build/system7/dist");
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(dist.join("disk.json")).unwrap()).unwrap();
+    let start = report["image_started_unix"].as_i64().unwrap();
+    let finish = report["image_finished_unix"].as_i64().unwrap();
+    assert!(finish >= start);
+    let within_build = |date: Timestamp| {
+        assert!((start..=finish).contains(&date.unix_seconds()),
+                "disk metadata{} is outside its real creation interval{start}..={finish}",
+                date.unix_seconds());
+    };
+    let (_, activity) = mac_system::testing::with_file_disk(&dist.join("system7.hfs"), true, Default::default(), |services| {
+        let system = unsafe { mac_toolbox::System::from_raw(services) }.unwrap();
+        let files = system.files();
+        let volume = files.volume_at(0).unwrap();
+        assert_eq!(u64::from(volume.created), report["created"].as_u64().unwrap());
+        assert_eq!(u64::from(volume.modified), report["modified"].as_u64().unwrap());
+        within_build(volume.created_at());
+        within_build(volume.modified_at());
+        for path in ["", "System Folder", "Applications", "Documents", "System Folder/Preferences"] {
+            let folder = if path.is_empty() { files.catalog(volume.id, 2).unwrap() }
+                         else { files.lookup(volume.id, 2, path).unwrap() };
+            within_build(folder.created_at());
+            within_build(folder.modified_at());
+        }
+        for file in report["files"].as_array().unwrap() {
+            let path = file["path"].as_str().unwrap();
+            let name = path.rsplit('/').next().unwrap();
+            let catalog = files.lookup(volume.id, 2, path).unwrap();
+            let package = mac_formats::macbinary::decode(&fs::read(dist.join(format!("{name}.bin"))).unwrap()).unwrap();
+            let metadata: serde_json::Value = serde_json::from_slice(&fs::read(dist.join(format!("{name}.json"))).unwrap()).unwrap();
+            assert_eq!(catalog.created, package.created, "{path}: creation changed on import");
+            assert_eq!(catalog.modified, package.modified, "{path}: modification changed on import");
+            assert_eq!(u64::from(catalog.created), metadata["created"].as_u64().unwrap());
+            assert_eq!(u64::from(catalog.modified), metadata["modified"].as_u64().unwrap());
+            let packaged_at = metadata["packaged_at_unix"].as_i64().unwrap();
+            assert!(packaged_at <= start, "{path}: packaged after image creation started");
+            let expected = metadata["source_date_epoch"].as_i64().unwrap_or(packaged_at);
+            assert_eq!(catalog.created_at().unix_seconds(), expected, "{path}: creation is not its declared build time");
+            assert_eq!(catalog.modified_at().unix_seconds(), expected);
+        }
+    }).unwrap();
+    assert_eq!(activity.writes, 0, "date inspection modified the built disk");
+}
+
 #[test]
 fn dates_2026_survive_real_hfs_and_userspace_file_traps()
 {
