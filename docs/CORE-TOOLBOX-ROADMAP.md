@@ -322,8 +322,10 @@ a separate native UTF-8, dual-fork format alongside unchanged classic HFS, not a
 extension of HFS's name keys or date fields. Move native workspaces to HFS-B early,
 before P8's broader filesystem workloads and P12 hosted tools depend on classic
 HFS limits. The current recommendation is HFS boot with HFS-B mounted afterward;
-the final boot decision remains open alongside timestamps. Stored names use NFC
-UTF-8 with an inclusive 255-byte limit per component after normalization. Search
+only the final boot decision remains open. Timestamps are unsigned 64-bit
+microseconds since 1904-01-01 UTC, with checked native/std/legacy conversions.
+Stored names use NFC UTF-8 with an inclusive 255-byte limit per component after
+normalization. Search
 uses canonical caseless matching with Unicode default folding independent of
 locale, no Turkish-i tailoring, and preservation of case in the stored NFC name.
 
@@ -343,17 +345,17 @@ and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
    attributes trees and fork records. Encode the decided locale-independent,
    non-Turkic Unicode folding and case-preserving behavior with a pinned data
    version, NFC storage and canonical caseless lookup, plus the inclusive
-   255-byte post-normalization UTF-8 stored-name limit. Resolve the two remaining
-   decisions: timestamp representation/precision and boot policy. HFS-B uses its
-   own NFC contract rather than HFS+'s decomposed storage. Keep classic HFS
+   255-byte post-normalization UTF-8 stored-name limit and unsigned 64-bit
+   microseconds from the 1904 Mac epoch. Resolve the remaining boot decision.
+   HFS-B uses its own NFC contract rather than HFS+'s decomposed storage. Keep classic HFS
    serialization unchanged.
 2. Add a safe no_std format/backend plus host formatter/validator and resident
    mount/read support over the shared block interface. Use distinct signature
    dispatch, bounded checked B-tree/extent parsing and the same File/Resource
    Manager services. Native clients receive full UTF-8 names and metadata;
-   expand the current 128-byte catalog name buffer and legacy-width timestamp
-   transport rather than silently truncating. Preserve existing 64-bit fork
-   lengths/offsets throughout all backend operations.
+   expand the current 128-byte catalog name buffer and second/legacy-width date
+   transport rather than silently truncating names or microseconds. Preserve
+   existing 64-bit fork lengths/offsets throughout all backend operations.
 3. Implement writable files, both forks, allocation/tree growth, metadata and
    clean unmount/remount with explicit write/flush-error and dirty-volume policy.
    Use bounded page/path updates rather than rebuilding every tree per edit.
@@ -371,6 +373,7 @@ and UI/performance gates; preserve HFS boot until the separate HFS-B ROM gate.
    and CAFÉ/café collision/ID-equivalent lookup with stored spelling preserved
    in NFC across remount/locales, composed/decomposed collisions, canonical
    combining-mark ordering and default non-Turkic I/i behavior,
+   precise timestamp round-trips and checked epoch/2040/overflow projections,
    fork round-trips, actual file I/O crossing 2/4 GiB boundaries, malformed media,
    write failures and clean remount. Test long MacRoman legacy-name truncation
    separately from unrepresentable names returning BAD_ARGUMENT; verify ID/index

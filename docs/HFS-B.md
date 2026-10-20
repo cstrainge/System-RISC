@@ -51,9 +51,13 @@ encoding and normalization: **stored names are NFC-normalized UTF-8.**
   changes; failure leaves the catalog unchanged. Bound input/normalization work
   separately without treating 255 input bytes as the stored-name limit.
 - 32-bit allocation blocks minimum; 64-bit file sizes. No 2 GiB ceiling.
-- **[DECIDE]** Timestamps: keep the 1904 Mac epoch (continuity with the rest
-  of the system) but say the precision explicitly — recommend 64-bit
-  microseconds, a clean superset of HFS's one-second fields.
+- **Decided — timestamps:** unsigned 64-bit microseconds since
+  **1904-01-01 00:00:00 UTC**, retaining the classic Mac epoch. Apply this to
+  volume and catalog timestamps; time zones affect display, not stored values.
+  Preserve microseconds through native reads/writes and remounts. Zero denotes
+  the epoch, not an implicitly missing date; optional-date semantics must be
+  represented separately. Use checked integer conversion, never floating point,
+  wrapping or silent saturation.
 - Resource forks are first-class, same dual-fork model as HFS. The system's
   resource machinery must work identically on HFS-B volumes.
 
@@ -71,6 +75,14 @@ a second filesystem.
   (BAD_ARGUMENT), never silently — same rule as the string shims.
 - The truncation is a *projection*, not storage. The catalog always holds
   the full UTF-8 name.
+- Native date interfaces must carry microsecond precision rather than round-trip
+  HFS-B values through the current whole-second Timestamp/clock transport.
+  Unix/std conversion uses the 2,082,844,800-second epoch offset with checked
+  range and subsecond handling. Legacy HFS-style dates remain unsigned 32-bit
+  seconds since 1904: explicitly discard the fractional second for that view,
+  reject out-of-range values and never alter the precise stored timestamp.
+  Unsupported source precision stays documented; a microsecond field does not
+  imply the hardware clock measures at microsecond resolution.
 
 ## Boot story
 
@@ -88,8 +100,8 @@ decision remains open.
 
 ## Remaining decisions
 
-Two decisions remain: timestamp precision/representation and boot policy.
-Maximum name length, case behavior and normalization above are settled.
+One decision remains: boot policy. Maximum name length, case behavior,
+normalization and timestamp representation above are settled.
 
 ## Volume identity
 
@@ -134,6 +146,12 @@ Maximum name length, case behavior and normalization above are settled.
 6. Unmount/remount: catalog intact, no repair needed on clean unmount.
 7. Boot regression: system still boots from HFS with HFS-B present but
    unmounted-at-boot (option 1).
+8. Timestamps: exact microsecond round-trips for volume/file/folder metadata,
+   create/modify operations and remounts, including 2026 and dates beyond classic
+   HFS's 2040 boundary. Verify epoch zero, Unix-epoch conversion, fractional-second
+   preservation, legacy second projection and range/overflow errors, including
+   rejection of pre-1904 input for this unsigned representation. Precision loss
+   must occur only at an explicitly lower-precision compatibility boundary.
 
 ## Out of scope for this spec
 
