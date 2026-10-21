@@ -18,6 +18,7 @@ bench = false
 
 [dependencies]
 mac-module.workspace = true
+mac-object-table.workspace = true
 spinning_top = "=0.2.5"
 mac-abi.workspace = true
 mac-boot-screen.workspace = true

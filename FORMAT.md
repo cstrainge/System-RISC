@@ -529,3 +529,106 @@ On the current 128 MiB QEMU virt board, the machine adapter reserves
 `0x87800000..0x87e00000` for modules. This leaves the ROM's live storage scratch
 heap at `0x87000000..0x87800000` and the high2 MiB device-tree reservation untouched.
 These addresses belong to the machine adapter, not the class-neutral registry.
+
+## Native host fork containers (RSFORK01, version 1)
+
+`mac-fork-file` is the safe no_std reader/writer used by host tools and the native
+host filesystem provider. The whole-number container version fixes both byte
+layout and Unicode 17.0.0: names are stored NFC, at most 255  UTF-8 bytes, and
+compared using the same canonical caseless rules as HFS-B 1. Changing that contract
+requires a new complete format version and rebuilding affected representations;
+it is not an independent Unicode field.
+
+Each regular guest file is one host file containing native metadata, both forks
+and chunk integrity hashes. Directories remain host directories. The fixed header
+is256 bytes, followed by UTF-8 name and comment bytes and zero padding to a fixed
+1024-byte metadata area. Fork data starts at 1024 regardless of name length, so
+metadata-only renames do not shift fork data. All integers are little-endian.
+
+| Offset | Bytes | Field |
+| --- | --- | --- |
+| 0 | 8 | ASCII `RSFORK01` |
+| 8 | 4 | whole format version, 1 |
+| 12 | 4 | header length, 256 |
+| 16 | 4 | kind: file 1, directory 2, root 3 |
+| 20 | 4 | backup-present flag,0 or 1 |
+| 24 | 4 | persistent catalog ID |
+| 28 | 4 | root's next unused catalog ID; zero for other kinds |
+| 32 | 16 | nonzero persistent object identity |
+| 48 | 16 | nonzero export/volume identity |
+| 64 | 8 | nonzero container revision |
+| 72 | 8 | created, unsigned microseconds since 1904 |
+| 80 | 8 | modified, same epoch/precision |
+| 88 | 8 | backup date; zero when absent; present-zero means1904 |
+| 96 | 32 | complete Finder information, including file type/creator |
+| 128 | 4 | catalog attributes in low16  bits; high16 zero |
+| 132 | 2 | UTF-8 name byte length, 1..255 |
+| 134 | 2 | UTF-8 comment byte length, 0..255 |
+| 136 | 8 | logical data-fork length |
+| 144 | 8 | logical resource-fork length |
+| 152 | 8 | data-fork physical offset, 1024 |
+| 160 | 8 | first data-chunk hash offset |
+| 168 | 8 | resource-fork physical offset |
+| 176 | 8 | first resource-chunk hash offset |
+| 184 | 8 | exact complete host-file length |
+| 192 | 4 | logical chunk size, 4096 |
+| 196 | 4 | zero |
+| 200 | 32 | SHA-256 of the complete header with this field zero, then name/comment bytes |
+| 232 | 24 | zero |
+
+A fork is a sequence of up-to4096  logical bytes followed immediately by that
+chunk's 32-byte SHA-256, repeated until its declared logical length is reached.
+There is no padding between chunks or forks and no hash for an empty fork.
+Interleaving hashes keeps sequential I/O sequential. A fork occupies
+`length + ceil(length/4096)*32` physical bytes; an empty fork's first-hash offset
+is its start. Header offsets and total length must agree exactly with these
+formulas, with checked 64-bit arithmetic. Extra/truncated bytes, unsupported
+versions, nonzero reserved/padding bytes and checksum failures are rejected.
+These are integrity checks, not authentication signatures.
+
+Directories/root records cannot contain forks. Root has catalog ID2, object
+identity equal to volume identity, and next catalog ID at least 16. Other entries
+have IDs at least 16 and next-ID zero. A child's identity starts as its volume
+identity, with the final little-endian 32-bit word increased by its catalog ID
+modulo 2^32. If that produces sixteen zero bytes, byte zero is set to 0x80.
+This mapping is injective within the volume and distinct from its root identity;
+a child's metadata must contain exactly this derived identity. Persistent
+catalog IDs and identities are
+file metadata, not runtime handles. Runtime mount/open/request leases use the
+shared generation facility. The cooperating writer advances the root counter
+before publishing a new entry and never reuses IDs, including after a failed
+publication. Revision/counter exhaustion fails explicitly.
+
+Portable host components are `f-` or `d-` followed by 32 lowercase hexadecimal
+identity digits. These fixed 34-byte tokens avoid Windows reserved names and
+UTF-8 expansion beyond host component limits. The exact guest name is recovered
+from the container metadata; it is never truncated or inferred from the token.
+The token's kind/identity must match the contained metadata. Root metadata lives
+in `.system-risc-root`; each directory has `.system-risc-directory`. A root-only
+`.system-risc-lock` serializes cooperating transactions. These records are hidden
+from guest directory listings. Unwrapped files, misplaced internal records,
+identity/token mismatches, duplicate catalog/object identities and canonical
+name collisions are errors, not silently merged or ignored entries. Importing a
+copy assigns fresh identities and catalog IDs; copying a raw container does not.
+
+Writers use unpublished, exclusively created `.system-risc-stage-*` files. The
+shared chunk writer writes a valid header last, requires every fork chunk before
+finish, and reports flush errors. The host adapter syncs staged file contents,
+publishes new files without replacement, atomically replaces existing metadata
+records, and syncs the containing directory. Stages are cleaned on ordinary
+failure; a leftover crash stage is reported as an unfinished transaction. There
+is no claim that a recursive import is one atomic transaction. A failed import
+may leave completed entries and skipped IDs; it never reports success for an
+unfinished entry. Unsupported durability primitives refuse writable operations.
+
+Readers own their leased source together with decoded metadata/layout. Source
+adapters validate revisions before/after operations; changed in-place sources
+return Stale rather than mixing revisions. Atomic replacement may leave a prior
+leased inode as a consistent old snapshot. The host tool uses capability-relative
+paths, rejects symlink entries and checks global identity/name consistency.
+
+The `risc-forks` Linux tool provides init/import/import-macbinary/export/list/
+mkdir/check. Its lossless `system-risc-forks` JSON+fork bundles interoperate with
+the HFS-B tool, preserving both forks, complete Finder information, comments,
+attributes, and unsigned 64-bit microsecond dates. Copying assigns destination
+identities; IDs/revisions are not restored as another live object's identity.

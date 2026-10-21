@@ -58,14 +58,15 @@ cargo xtask boot
 cargo xtask boot-check
 cargo xtask inspect ../build/system7/dist/Finder.bin
 cargo xtask check
+cargo xtask doc
 ```
 
-For the graphical desktop, from the outer workspace:
+For the graphical desktop:
 
 ```sh
-python3 System7/scripts/system7_vm.py start
-python3 System7/scripts/system7_vm.py check
-python3 System7/scripts/system7_vm.py stop
+python3 ./scripts/system7_vm.py start
+python3 ./scripts/system7_vm.py check
+python3 ./scripts/system7_vm.py stop
 ```
 
 The launcher opens a separate native Windows GTK window at 2× when available,
@@ -88,9 +89,9 @@ each profile's current installation and removes obsolete fixture disks.
 Override the build/media root when needed (paths with spaces are supported):
 
 ```sh
-python3 System7/scripts/system7_vm.py start --build-dir /tmp/my-system-risc --qmp-port 4448
-python3 System7/scripts/system7_vm.py status --build-dir /tmp/my-system-risc
-python3 System7/scripts/system7_vm.py stop --build-dir /tmp/my-system-risc
+python3 ./scripts/system7_vm.py start --build-dir /tmp/my-system-risc --qmp-port 4448
+python3 ./scripts/system7_vm.py status --build-dir /tmp/my-system-risc
+python3 ./scripts/system7_vm.py stop --build-dir /tmp/my-system-risc
 # From System7/:
 cargo xtask image --build-dir /tmp/my-system-risc
 ```

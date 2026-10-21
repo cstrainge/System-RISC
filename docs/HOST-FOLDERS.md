@@ -60,11 +60,19 @@ overwrite files. Invalid/unsupported containers report explicit diagnostics;
 ordinary unwrapped host files require an explicit import policy/tool rather than
 being silently rewritten.
 
-Share the safe no_std format codec (proposed `mac-fork-file`) between the driver,
+Share the safe no_std format codec (`mac-fork-file`) between the driver,
 Linux init/import/export/check tools and the future System RISC Filesystem app.
 Reuse common name/date/metadata primitives rather than copying implementations.
 Tools must wrap/unwrap both forks losslessly and validate without modifying files.
 The native utility uses public Toolbox services for mounted storage.
+
+The shared codec and `tools/risc-forks` init/import/export/check utility are now
+implemented. The [container layout](../FORMAT.md#native-host-fork-container-v1)
+fixes offsets, identities, Unicode, integrity checks and staged publication.
+Tests exchange both forks and native metadata with HFS-B. Bulk import holds the
+writer lock and updates a cached directory index after each publication. This
+host-tool milestone does not yet provide a guest mount or filesystem driver;
+the read/write guest acceptance below remains required.
 
 ## Identity, changes and persistence
 

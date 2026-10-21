@@ -66,7 +66,8 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
 - All system preferences use versioned JSON with typed access and safe concurrent
   transactions. Persistence requires writable storage; do not fake success.
 - Every resident Toolbox manager must issue and validate object IDs through
-  `system/src/toolbox/handles.rs`; no manager may introduce its own ID scheme.
+  `system/src/toolbox/handles.rs` (the resident facade over the shared
+  `crates/mac-object-table` utility); no manager may introduce its own ID scheme.
   Migrate existing ID storage when touching that manager. Preserve generation
   history across clears and retire exhausted slots; register disjoint service
   namespaces centrally and keep ownership checks separate. Keep validation in

@@ -4,6 +4,8 @@
 /dist/
 /results/
 /working/
+# Generated rustdoc, refreshed by cargo xtask doc/check.
+/docs/api/
 /.toolchains/
 # Private VM media and machine-local state.
 *.qcow2

@@ -1,6 +1,7 @@
 mod disk;
 mod smoke;
 mod boot;
+mod docs;
 
 use std::{env,
           ffi::OsStr,
@@ -159,6 +160,7 @@ impl Workspace
                 .current_dir(&self.repo)
                 .arg("System7/scripts/prune_system7_images.py"))?;
         run(self.cargo().args(["fmt", "--all", "--", "--check"]))?;
+        docs::generate(self)?;
         run(self.cargo().args(["test", "--locked", "--workspace", "--exclude", "mac-finder",
                                "--exclude", "quickdraw-test", "--exclude",
                                "textedit-exerciser", "--exclude", "cursor-test", "--exclude",
@@ -383,6 +385,7 @@ fn execute() -> Result<()>
         {
             workspace.build()?;
         }
+        [command] if command == "doc" => docs::generate(&workspace)?,
         [command] if command == "image" =>
         {
             workspace.build()?;
@@ -450,6 +453,7 @@ fn execute() -> Result<()>
 
 fn help()
 {
+    println!("  cargo xtask doc            Generate Rust library documentation in docs/api");
     println!("System7 build tools\n\n  cargo xtask rebuild MANIFEST OUT  Rebuild a ResEdit \
               resource archive\n  cargo xtask build          Build System, Finder, applications \
               and boot ROM\n  cargo xtask image          Build a separate 500 MiB HFS-B disk and \
