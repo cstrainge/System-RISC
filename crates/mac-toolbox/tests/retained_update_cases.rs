@@ -188,7 +188,45 @@ pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     checkpoint(system, "RETAINED_UPDATE_STAGE scroll-row-pending\n")?;
     system.end_update(window)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE scroll-row-committed\n")?;
-    system.log("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=33\n")?;
+    // Cursor checks intentionally restored the child application's window.
+    // Hide it again so the mask has both exposed and covered desktop pixels.
+    system.processes().hide(child.id)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-patch-baseline\n")?;
+    let desktop = system.quickdraw().desktop();
+    let cover =
+        system.new_window(Rect::new(90, 195, 290, 275), "Desktop mask cover", (100, 40), 0)?;
+    system.begin_update(cover)?;
+    system.quickdraw().port(cover).paint_rect(Rect::new(0, 0, 200, 80), 0x123456)?;
+    system.end_update(cover)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-patch-covered\n")?;
+    let mask = [Rect::new(80, 180, 300, 280)];
+    let pending = desktop.graphics().masked_rectangles(&mask)?;
+    desktop.graphics().colors(0x00ff00, 0)?;
+    desktop.graphics().paint_rect(Rect::new(0, 0, 640, 480))?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-patch-pending\n")?;
+    drop(pending);
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-patch-cancelled\n")?;
+    let pending = desktop.graphics().masked_rectangles(&mask)?;
+    desktop.graphics().colors(0x00ff00, 0)?;
+    desktop.graphics().paint_rect(Rect::new(0, 0, 640, 480))?;
+    pending.commit()?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-patch-committed\n")?;
+    system.close_window(cover)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-patch-revealed\n")?;
+    // Publishing an empty fragment must expose the real patterned background.
+    desktop.graphics().masked_rectangles(&mask)?.commit()?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-patch-transparent\n")?;
+    system.select_desktop()?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-patch-inactive\n")?;
+    for step in 0..2000
+    {
+        desktop.graphics()
+               .content_outline(Some(Rect::new(60, 160, 300 + (step % 100) as i16, 300)))?;
+        system.next_event(mac_toolbox::events::EventMask::from_bits_retain(0))?;
+    }
+    desktop.graphics().content_outline(None)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE desktop-patch-outline\n")?;
+    system.log("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=42\n")?;
     // Keep the last committed scene available until the owned VM is stopped.
     loop
     {

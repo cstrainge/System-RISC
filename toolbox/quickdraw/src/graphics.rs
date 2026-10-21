@@ -139,6 +139,7 @@ impl<'a> GraphicsPort<'a>
     /// Change the System-owned transient content outline. It damages just its
     /// old/new edges and keeps retained application drawing and cached pixels.
     /// During an update the property is staged and follows commit/cancellation.
+    /// The Finder-owned desktop uses screen coordinates and sits below windows.
     pub fn content_outline(self, bounds: Option<Rect>) -> Result<()>
     {
         self.request(GraphicsCommand { operation: QD_WINDOW_OUTLINE,
@@ -150,6 +151,7 @@ impl<'a> GraphicsPort<'a>
 
     /// Begin one masked update for the exact union of changed rectangles.
     /// The bounded request avoids one region trap per selected item.
+    /// Also accepts the Finder-owned desktop port, using screen coordinates.
     pub fn masked_rectangles(self, rectangles: &[Rect]) -> Result<MaskedUpdate<'a>>
     {
         if rectangles.is_empty() || rectangles.len() > 1056
@@ -177,6 +179,7 @@ impl<'a> GraphicsPort<'a>
 
     /// Stage a replacement for precisely this local-coordinate region. Drawing
     /// outside it cannot change the committed scene. Drop cancels the update.
+    /// Desktop masks use screen coordinates and require the desktop owner.
     pub fn masked_update(self, region: &[u8]) -> Result<MaskedUpdate<'a>>
     {
         self.request(GraphicsCommand { operation: QD_WINDOW_BEGIN_MASK,

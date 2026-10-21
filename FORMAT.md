@@ -237,24 +237,29 @@ Window and retained drawing titles accept768 UTF8 bytes, enough for all255
 MacRoman characters after conversion. Legacy Pascal/MacRoman conversion remains
 at the trap boundary; native application interfaces expose Rust strings.
 
-Graphics operations36/37/38 begin, commit and cancel an atomic masked window
+Graphics operations36/37/38 begin, commit and cancel an atomic masked content
 update. BEGIN_MASK accepts an encoded QuickDraw region in window-local
-coordinates, intersects it with the content bounds and rejects an empty mask.
-The normal window generation/owner checks apply. Draws and port state remain
+coordinates, or screen coordinates for the Finder-owned `DESKTOP_TARGET`.
+It intersects the region with the target bounds and rejects an empty mask.
+Window generation/owner checks apply; only Finder can mutate the desktop.
+Draws and port state remain
 private until commit; dropping the SDK `MaskedUpdate` cancels them. Nested
 updates are rejected. Commit replaces retained drawing and TextEdit hover policy
 only inside the mask, preserving the rest of the scene and pending exposure
 damage. Repeated masks replace prior fragments rather than accumulating drawing
 history. Exact damaged spans invalidate the pixel cache; menus and unrelated
-window content retain their cached pixels. Normal BeginUpdate/EndUpdate still
-replace a complete scene.
+window content retain their cached pixels. Desktop patches restore only damaged
+background spans and subtract every visible window structure before presenting;
+transparent patches expose the desktop pattern rather than stale pixels.
+Normal BeginUpdate/EndUpdate still replace a complete scene.
 
 Graphics operation39 begins the same transaction from a bounded rectangle list:
 at most1056 records, each8bytes, four little-endian i16 values in left/top/right/
 bottom order. System sweeps edges into an exact region before staging. This avoids
 one region trap per selected item. Operation40 sets a transient content outline
 (verb0 removes it; verb1 supplies bounds). It follows an open drawing transaction's
-commit/cancellation. Only the active window shows tracking feedback. System
+commit/cancellation. Only the active window, or the selected desktop, shows
+tracking feedback. Desktop outlines remain beneath window structures. System
 temporarily paints visible outline pixels alongside its cursor overlay, presents
 the damaged edges, and restores the underlying backbuffer. Outline motion never
 appends retained commands or enters the scene compositor. Menu/window tracking

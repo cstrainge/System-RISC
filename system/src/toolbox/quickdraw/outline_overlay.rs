@@ -30,59 +30,67 @@ impl Default for OutlineUnder
 }
 impl OutlineUnder
 {
-    /// At most one active window owns visible tracking feedback. Normalized
-    /// damage and disjoint visible pieces visit each outline pixel at most once.
-    pub fn paint(&mut self, canvas: &mut Canvas<'_>, windows: &WindowManager, damage: &Region)
+    /// Exactly one active target owns tracking feedback. Desktop feedback is
+    /// below every window; window feedback is clipped by higher structures.
+    pub fn paint(&mut self, canvas: &mut Canvas<'_>, windows: &WindowManager,
+                 desktop: Option<Rect>, damage: &Region)
     {
         self.length = 0;
         self.used = 0;
-        let Some(id) = windows.active_window()
-        else
+        if let Some(window) = windows.active_window().and_then(|id| windows.window(id))
         {
-            return;
-        };
-        let Some(window) = windows.window(id)
-        else
+            let Some(mut outline) = window.outline_rect()
+            else
+            {
+                return;
+            };
+            outline.offset(window.bounds.left, window.bounds.top);
+            windows.for_each_visible_rect(window.id, |visible| {
+                       self.paint_piece(canvas, outline, visible, damage)
+                   });
+        }
+        else if let Some(outline) = desktop
         {
-            return;
-        };
-        let Some(mut outline) = window.outline_rect()
-        else
+            windows.for_each_desktop_rect(Rect::new(0, 21, canvas.width as i16,
+                                                    canvas.height as i16),
+                                          |visible| {
+                                              self.paint_piece(canvas, outline, visible, damage)
+                                          });
+        }
+    }
+
+    fn paint_piece(&mut self, canvas: &mut Canvas<'_>, outline: Rect, visible: Rect,
+                   damage: &Region)
+    {
+        for edge in super::geometry::outline_edges(outline)
         {
-            return;
-        };
-        outline.offset(window.bounds.left, window.bounds.top);
-        windows.for_each_visible_rect(id, |visible| {
-                   for edge in super::geometry::outline_edges(outline)
-                   {
-                       let mut edge_clip = Rect::ZERO;
-                       if !sect_rect(edge, visible, &mut edge_clip)
-                       {
-                           continue;
-                       }
-                       for band in damage.bands()
-                       {
-                           if band.bottom <= edge_clip.top
-                           {
-                               continue;
-                           }
-                           if band.top >= edge_clip.bottom
-                           {
-                               break;
-                           }
-                           for span in &band.spans
-                           {
-                               let mut rect = Rect::ZERO;
-                               if sect_rect(edge_clip,
-                                            Rect::new(span.left, band.top, span.right, band.bottom),
-                                            &mut rect)
-                               {
-                                   self.capture(canvas, rect);
-                               }
-                           }
-                       }
-                   }
-               });
+            let mut edge_clip = Rect::ZERO;
+            if !sect_rect(edge, visible, &mut edge_clip)
+            {
+                continue;
+            }
+            for band in damage.bands()
+            {
+                if band.bottom <= edge_clip.top
+                {
+                    continue;
+                }
+                if band.top >= edge_clip.bottom
+                {
+                    break;
+                }
+                for span in &band.spans
+                {
+                    let mut rect = Rect::ZERO;
+                    if sect_rect(edge_clip,
+                                 Rect::new(span.left, band.top, span.right, band.bottom),
+                                 &mut rect)
+                    {
+                        self.capture(canvas, rect);
+                    }
+                }
+            }
+        }
     }
 
     fn capture(&mut self, canvas: &mut Canvas<'_>, rect: Rect)

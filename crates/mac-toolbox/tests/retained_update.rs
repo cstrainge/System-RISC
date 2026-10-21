@@ -62,10 +62,10 @@ fn staged_window_drawing_stays_private_until_end_update()
     assert_eq!(report["owned_vm_exited"], true);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert!(!serial.contains("RETAINED_UPDATE_FAIL"), "{serial}");
-    assert!(serial.contains("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=33\n"),
+    assert!(serial.contains("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=42\n"),
             "{serial}");
     let stages = report["stages"].as_array().unwrap();
-    assert_eq!(stages.len(), 33);
+    assert_eq!(stages.len(), 42);
     let header = b"P6\n640 480\n255\n";
     let mut checked = 0;
     let mut cursor_pixels = 0;
@@ -110,6 +110,92 @@ fn staged_window_drawing_stays_private_until_end_update()
         let frame = fs::read(output.join(stage["frame"].as_str().unwrap())).unwrap();
         assert!(frame.starts_with(header));
         assert_eq!(frame.len(), header.len() + 640 * 480 * 3);
+        if name.starts_with("desktop-patch-")
+        {
+            let reference = |name: &str| {
+                let row = stages.iter().find(|s| s["stage"] == name).unwrap();
+                fs::read(output.join(row["frame"].as_str().unwrap())).unwrap()
+            };
+            if matches!(name, "desktop-patch-pending" | "desktop-patch-cancelled")
+            {
+                assert_eq!(frame,
+                           reference("desktop-patch-covered"),
+                           "{name}: exposed private drawing");
+            }
+            else if name == "desktop-patch-committed"
+            {
+                let before = reference("desktop-patch-covered");
+                assert_eq!(stage["state"]["menu_paints"],
+                           stages.iter().find(|s| s["stage"] == "desktop-patch-covered").unwrap()
+                               ["state"]["menu_paints"]);
+                let mut changes = 0;
+                for y in 0..480
+                {
+                    for x in 0..640
+                    {
+                        let at = header.len() + (y * 640 + x) * 3;
+                        if frame[at..at + 3] != before[at..at + 3]
+                        {
+                            assert!((80..300).contains(&x) && (180..280).contains(&y),
+                                    "desktop mask escaped at {x},{y}");
+                            assert!(!(90..290).contains(&x) || !(195..275).contains(&y),
+                                    "desktop damaged covering window at {x},{y}");
+                            assert_eq!(&frame[at..at + 3], &[0, 255, 0]);
+                            changes += 1;
+                        }
+                    }
+                }
+                assert!(changes > 0);
+            }
+            else if matches!(name, "desktop-patch-revealed" | "desktop-patch-transparent")
+            {
+                let before = reference("desktop-patch-baseline");
+                for y in 0..480
+                {
+                    for x in 0..640
+                    {
+                        let at = header.len() + (y * 640 + x) * 3;
+                        let expected: &[u8] = if (80..300).contains(&x) && (180..280).contains(&y)
+                        {
+                            if name == "desktop-patch-transparent"
+                            {
+                                if (x + y) & 1 == 0
+                                {
+                                    &[0x87, 0x87, 0x87]
+                                }
+                                else
+                                {
+                                    &[0xc0, 0xc0, 0xc0]
+                                }
+                            }
+                            else
+                            {
+                                &[0, 255, 0]
+                            }
+                        }
+                        else
+                        {
+                            &before[at..at + 3]
+                        };
+                        assert_eq!(&frame[at..at + 3],
+                                   expected,
+                                   "desktop exposure differs at {x},{y}");
+                    }
+                }
+            }
+            else if name == "desktop-patch-outline"
+            {
+                assert_eq!(frame,
+                           reference("desktop-patch-inactive"),
+                           "desktop outline left damage");
+                let baseline =
+                    stages.iter().find(|s| s["stage"] == "desktop-patch-inactive").unwrap();
+                assert_eq!(stage["state"]["compositions"], baseline["state"]["compositions"],
+                           "desktop outline recomposed scene");
+                assert_eq!(stage["state"]["menu_paints"], baseline["state"]["menu_paints"]);
+            }
+            continue;
+        }
         if name.starts_with("mask-")
         {
             let baseline = stages.iter().find(|s| s["stage"] == "desktop-revealed").unwrap();
@@ -239,7 +325,7 @@ fn staged_window_drawing_stays_private_until_end_update()
         }
     }
     assert_eq!(cursor_pixels, 18 * 32 * 32);
-    let acceptance = serde_json::json!({"status":"passed","stages":33,"native_app_threads":2,
+    let acceptance = serde_json::json!({"status":"passed","stages":42,"native_app_threads":2,
         "masked_window_updates_preserve_all_other_pixels_and_menu_cache":true,
         "scroll_rows_commit_atomically_without_mutating_other_rows":true,
         "pixels":checked,"pending_frames_retain_last_commit":true,
@@ -247,7 +333,9 @@ fn staged_window_drawing_stays_private_until_end_update()
         "omitted_editor_removes_cursor_binding":true,
         "end_update_publishes_complete_scene":true,
         "pattern_phase_append_and_exposure":true,
-        "desktop_commit_pending_cancel_and_exposure":true,"capture":report});
+        "desktop_commit_pending_cancel_and_exposure":true,
+        "desktop_masks_preserve_occlusion_transparency_and_unrelated_pixels":true,
+        "desktop_outline_steps_without_compositions":2000,"capture":report});
     fs::write(output.join("rust-acceptance.json"),
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join("results/system7/retained-update-checks.json"),

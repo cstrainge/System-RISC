@@ -50,18 +50,32 @@ impl<'a> Raster<'a>
 
     pub fn background(&mut self)
     {
-        for y in 0..self.height.min(2)
+        self.background_rect(Rect::new(0, 0, self.width as i16, self.height as i16));
+    }
+
+    /// Restore just the changed desktop area, preserving global pattern phase.
+    pub fn background_rect(&mut self, rect: Rect)
+    {
+        let left = (rect.left.max(0) as usize).min(self.width);
+        let right = (rect.right.max(0) as usize).min(self.width);
+        let top = (rect.top.max(0) as usize).min(self.height);
+        let bottom = (rect.bottom.max(0) as usize).min(self.height);
+        if left >= right || top >= bottom
         {
-            for x in 0..self.width
+            return;
+        }
+        for y in top..bottom.min(top + 2)
+        {
+            for x in left..right
             {
                 self.pixels[y * self.width + x] =
                     if (x + y) & 1 == 0 { 0x878787 } else { 0xc0c0c0 };
             }
         }
-        for y in 2..self.height
+        for y in top + 2..bottom
         {
-            let start = (y & 1) * self.width;
-            self.pixels.copy_within(start..start + self.width, y * self.width);
+            let start = (top + ((y - top) & 1)) * self.width + left;
+            self.pixels.copy_within(start..start + right - left, y * self.width + left);
         }
     }
 

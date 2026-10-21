@@ -1,4 +1,4 @@
-//! Application-owned desktop graphics, committed as one retained scene.
+//! Finder-owned desktop graphics with complete or masked atomic updates.
 use mac_abi::quickdraw::*;
 
 use crate::{Client, QuickDraw, Rect, Result, WindowId, graphics::GraphicsPort};
@@ -38,7 +38,9 @@ impl<'a> DesktopPort<'a>
         WindowId(DESKTOP_TARGET)
     }
 
-    /// Reuse shapes, fonts, bitmaps, icons and pictures with this target ID.
+    /// Reuse drawing, masked updates and transient outlines with this target ID.
+    /// Coordinates remain global, including for masks. System clips publication
+    /// beneath visible window structures and preserves the desktop background.
     pub fn graphics(self) -> GraphicsPort<'a>
     {
         GraphicsPort::new(self.client, self.window_id())

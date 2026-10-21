@@ -50,7 +50,9 @@ def capture(output):
                       'cursor-outside-patch', 'cursor-erased-patch', 'cursor-pending-patch',
                       'cursor-cancelled-patch', 'cursor-restored-patch', 'cursor-pending-right',
                       'cursor-right', 'cursor-omitted', 'scroll-rows-red',
-                      'scroll-row-pending', 'scroll-row-committed']:
+                      'scroll-row-pending', 'scroll-row-committed', 'desktop-patch-baseline', 'desktop-patch-covered',
+                      'desktop-patch-pending', 'desktop-patch-cancelled', 'desktop-patch-committed',
+                      'desktop-patch-revealed', 'desktop-patch-transparent', 'desktop-patch-inactive', 'desktop-patch-outline']:
             wait('RETAINED_UPDATE_STAGE ' + stage + '\n')
             # Leave both actual app threads running across multiple timer
             # slices before capture, including event polling and presentation.
@@ -64,7 +66,7 @@ def capture(output):
                     frames.append({'point': point, 'frame': frame})
                 stages.append({'stage': stage, 'cursor_frames': frames})
             else:
-                if stage.startswith('scroll-'):
+                if stage.startswith(('scroll-', 'desktop-patch-')):
                     driver.move(16, 444)
                 frame = stage + '.ppm'
                 vm.qmp('screendump', {'filename': str(output / frame)}, endpoint)
@@ -72,7 +74,7 @@ def capture(output):
             vm.qmp('input-send-event', {'events': [
                 {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'spc'},
                                          'down': down}} for down in [True, False]]}, endpoint)
-        wait('RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=33\n')
+        wait('RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=42\n')
         report = {'transport': 'private blessed disk -> live System -> two native SDK app threads',
                   'assertion_owner': 'mac-toolbox/tests/retained_update{,_cases}.rs',
                   'termination': 'guest-outcome',

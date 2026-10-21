@@ -145,13 +145,24 @@ impl Desktop
         {
             return;
         }
-        let Some(window) = self.windows.window(WindowId(id))
+        let local = if id == mac_abi::quickdraw::DESKTOP_TARGET
+        {
+            if self.desktop.is_updating()
+            {
+                return;
+            }
+            self.desktop.bounds()
+        }
         else
         {
-            return;
+            let Some(window) = self.windows.window(WindowId(id))
+            else
+            {
+                return;
+            };
+            window.local_bounds()
         };
         let bounds = region.bounds();
-        let local = window.local_bounds();
         let region = if bounds.left >= local.left
                         && bounds.top >= local.top
                         && bounds.right <= local.right
@@ -198,10 +209,27 @@ impl Desktop
 
     fn apply_content_outline(&mut self, id: WindowId, next: Option<Rect>) -> Result<(), Status>
     {
-        if let Some(edges) = self.windows.content_outline(id, next)?
+        let (edges, origin) = if id.0 == mac_abi::quickdraw::DESKTOP_TARGET
         {
-            let bounds = self.windows.window(id).ok_or(NOT_FOUND)?.bounds;
-            self.outline_damage.extend(edges.into_iter().filter(|rect|!rect.is_empty()).map(|mut rect|{rect.offset(bounds.left,bounds.top);rect}));
+            (self.desktop.set_outline(next), Point::default())
+        }
+        else
+        {
+            (self.windows.content_outline(id, next)?,
+             {
+                 let bounds = self.windows.window(id).ok_or(NOT_FOUND)?.bounds;
+                 Point { h: bounds.left,
+                         v: bounds.top }
+             })
+        };
+        if let Some(edges) = edges
+        {
+            self.outline_damage.extend(edges.into_iter()
+                                            .filter(|rect| !rect.is_empty())
+                                            .map(|mut rect| {
+                                                rect.offset(origin.h, origin.v);
+                                                rect
+                                            }));
         }
         Ok(())
     }
@@ -954,14 +982,37 @@ impl Desktop
         use super::quickdraw::region::{BooleanOp, Region};
         let id = WindowId(call.window);
         // Use the ordinary owner/generation gate, including stale window IDs.
-        self.content_mut(call.window)?;
+        let desktop = call.window == DESKTOP_TARGET;
+        if desktop
+        {
+            if self.owner != 1
+            {
+                return Err(ACCESS_DENIED);
+            }
+        }
+        else
+        {
+            self.content_mut(call.window)?;
+        }
         if matches!(call.operation, QD_WINDOW_BEGIN_MASK | QD_WINDOW_BEGIN_RECTS)
         {
-            let window = self.windows.window(id).ok_or(NOT_FOUND)?;
-            if window.updating
+            let bounds = if desktop
             {
-                return Err(BAD_ARGUMENT);
+                if self.desktop.is_updating()
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                self.desktop.bounds()
             }
+            else
+            {
+                let window = self.windows.window(id).ok_or(NOT_FOUND)?;
+                if window.updating
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                window.local_bounds()
+            };
             let mask = if call.operation == QD_WINDOW_BEGIN_RECTS
             {
                 if bytes.is_empty() || !bytes.len().is_multiple_of(8) || bytes.len() > 1056 * 8
@@ -977,8 +1028,11 @@ impl Desktop
             {
                 Region::from_be_bytes(bytes).map_err(|_| BAD_ARGUMENT)?
             };
-            let mask =
-                mask.combine(&Region::from_rect(window.local_bounds()), BooleanOp::Intersection);
+            let mask = mask.combine(&Region::from_rect(bounds), BooleanOp::Intersection);
+            if desktop
+            {
+                return self.desktop.begin_mask(mask, self.retained_bytes(), MAX_RETAINED_BYTES);
+            }
             if mask.is_empty()
             {
                 return Err(BAD_ARGUMENT);
@@ -999,6 +1053,22 @@ impl Desktop
         }
         else
         {
+            if desktop
+            {
+                if call.operation == QD_WINDOW_CANCEL_MASK
+                {
+                    return self.desktop.cancel_mask();
+                }
+                let outline = self.desktop.pending_outline();
+                let mask = self.desktop.commit_mask(self.retained_bytes(), MAX_RETAINED_BYTES)?;
+                if let Some(outline) = outline
+                {
+                    self.apply_content_outline(id, outline)?;
+                }
+                self.content_changed_region(id.0, mask);
+                self.present();
+                return Ok(());
+            }
             let index = self.pending_content
                             .iter()
                             .position(|c| c.id == id && c.is_patch())
@@ -1041,10 +1111,26 @@ impl Desktop
             {
                 return Err(BAD_ARGUMENT);
             }
-            self.content_mut(call.window)?;
+            let desktop = call.window == DESKTOP_TARGET;
+            if desktop
+            {
+                if self.owner != 1
+                {
+                    return Err(ACCESS_DENIED);
+                }
+            }
+            else
+            {
+                self.content_mut(call.window)?;
+            }
             let next = (call.verb == 1 && !call.bounds.is_empty()).then_some(call.bounds);
             let id = WindowId(call.window);
-            if let Some(pending) = self.pending_content.iter_mut().find(|content| content.id == id)
+            if desktop && self.desktop.is_updating()
+            {
+                self.desktop.pending_mut()?.outline = Some(next);
+            }
+            else if let Some(pending) =
+                self.pending_content.iter_mut().find(|content| content.id == id)
             {
                 pending.outline = Some(next);
             }
@@ -1070,9 +1156,14 @@ impl Desktop
             {
                 return Err(ACCESS_DENIED);
             }
+            let outline = self.desktop.pending_outline();
             let committed = self.desktop.request(call)?;
             if committed
             {
+                if let Some(outline) = outline
+                {
+                    self.apply_content_outline(WindowId(DESKTOP_TARGET), outline)?;
+                }
                 self.content_cache.invalidate(DESKTOP_TARGET);
                 self.last_action = "DESKTOP";
                 self.redraw = true;
@@ -1945,6 +2036,25 @@ impl Desktop
             let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
             for (id, region) in damage
             {
+                if id.0 == mac_abi::quickdraw::DESKTOP_TARGET
+                {
+                    if self.processes.get(1).is_ok_and(|p| p.info.hidden == 0)
+                    {
+                        self.windows.for_each_desktop_rect(self.desktop.bounds(), |visible| {
+                            for band in region.bands() { for span in &band.spans {
+                                let mut clip = Rect::ZERO;
+                                if !super::quickdraw::geometry::sect_rect(Rect::new(span.left, band.top, span.right, band.bottom), visible, &mut clip) { continue; }
+                                canvas.reset_port(); canvas.set_clip(clip);
+                                background(&mut canvas);
+                                cache.paint(id.0, self.desktop.bounds(), &mut canvas, |canvas| {
+                                    crate::kernel::with_resource_owner(1, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef)));
+                                });
+                                damaged.push(clip);
+                            }}
+                        });
+                    }
+                    continue;
+                }
                 let Some(window) = self.windows.window(id)
                 else
                 {
@@ -2021,13 +2131,20 @@ impl Desktop
         let text_cursor = if self.responsiveness.active() { None } else { text_cursor };
         let bounds = cursor.bounds(self.events.mouse, text_cursor);
         let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
+        let desktop_outline =
+            (self.foreground == 1 && self.windows.active_window().is_none()).then(|| {
+                                                                                self.desktop
+                                                                                    .outline()
+                                                                            })
+                                                                            .flatten();
         let outline_visible = !self.menus.is_tracking()
                               && !self.app_menu.is_tracking()
                               && !self.windows.is_tracking()
-                              && self.windows
-                                     .active_window()
-                                     .and_then(|id| self.windows.window(id))
-                                     .is_some_and(|window| window.outline_rect().is_some());
+                              && (desktop_outline.is_some()
+                                  || self.windows
+                                         .active_window()
+                                         .and_then(|id| self.windows.window(id))
+                                         .is_some_and(|window| window.outline_rect().is_some()));
         if outline_visible
         {
             use super::quickdraw::region::Region;
@@ -2039,7 +2156,7 @@ impl Desktop
             {
                 Region::from_rectangles(damaged.iter().copied().chain([self.cursor_bounds, bounds]))
             };
-            self.outline_under.paint(&mut canvas, &self.windows, &damage);
+            self.outline_under.paint(&mut canvas, &self.windows, desktop_outline, &damage);
         }
         let under = super::quickdraw::overlay::CursorUnder::capture(&canvas, bounds);
         cursor.draw_auto(&mut canvas, self.events.mouse, text_cursor);
@@ -2138,10 +2255,11 @@ fn control(command: &DrawCommand) -> crate::toolbox::controls::ControlDefinition
 
 fn background(canvas: &mut Canvas)
 {
+    let clip = canvas.clip();
     if let Some(mut raster) =
         mac_boot_screen::Raster::new(canvas.pixels, canvas.width, canvas.height)
     {
-        raster.background();
+        raster.background_rect(clip);
     }
 }
 

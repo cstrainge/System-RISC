@@ -76,3 +76,33 @@ fn pattern_handles_small_surfaces_and_icon_mask_preserves_its_surroundings()
         }
     }
 }
+
+#[test]
+fn clipped_background_restores_only_requested_pixels_with_global_pattern_phase()
+{
+    for rect in [mac_abi::Rect::new(3, 5, 17, 18),
+                 mac_abi::Rect::new(-4, -3, 4, 4),
+                 mac_abi::Rect::new(19, 19, 24, 25),
+                 mac_abi::Rect::new(3, 7, 4, 8),
+                 mac_abi::Rect::new(8, 9, 2, 1)]
+    {
+        let mut pixels = vec![0x123456; 20 * 20];
+        Raster::new(&mut pixels, 20, 20).unwrap().background_rect(rect);
+        for y in 0..20
+        {
+            for x in 0..20
+            {
+                assert_eq!(pixels[y * 20 + x],
+                           if rect.contains(mac_abi::Point { h: x as i16,
+                                                             v: y as i16 })
+                           {
+                               if (x + y) & 1 == 0 { 0x878787 } else { 0xc0c0c0 }
+                           }
+                           else
+                           {
+                               0x123456
+                           });
+            }
+        }
+    }
+}

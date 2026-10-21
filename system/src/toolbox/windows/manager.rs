@@ -1252,9 +1252,8 @@ impl WindowManager
 
     /// Enumerate non-overlapping global content rectangles after subtracting
     /// higher windows' structure regions. Rectangular regions are the first cut.
-    pub fn for_each_visible_rect(&self, id: WindowId, mut visit: impl FnMut(Rect))
+    pub fn for_each_visible_rect(&self, id: WindowId, visit: impl FnMut(Rect))
     {
-        const CAPACITY: usize = MAX_WINDOWS * MAX_WINDOWS * 4;
         let Some(index) = self.order[..self.len].iter().position(|other| *other == id)
         else
         {
@@ -1265,10 +1264,22 @@ impl WindowManager
         {
             return;
         };
+        self.visible_fragments(window.bounds, &self.order[index + 1..self.len], visit);
+    }
+
+    /// Desktop damage is clipped below every visible window's structure.
+    pub fn for_each_desktop_rect(&self, bounds: Rect, visit: impl FnMut(Rect))
+    {
+        self.visible_fragments(bounds, &self.order[..self.len], visit);
+    }
+
+    fn visible_fragments(&self, bounds: Rect, covers: &[WindowId], mut visit: impl FnMut(Rect))
+    {
+        const CAPACITY: usize = MAX_WINDOWS * MAX_WINDOWS * 4;
         let mut pieces = [Rect::ZERO; CAPACITY];
-        pieces[0] = window.bounds;
+        pieces[0] = bounds;
         let mut count = 1;
-        for front in &self.order[index + 1..self.len]
+        for front in covers
         {
             if self.window(*front).is_none_or(|window| window.hidden)
             {
@@ -1314,6 +1325,45 @@ mod tests
 {
     use super::*;
 
+    #[test]
+    fn desktop_fragments_exclude_all_visible_window_structures()
+    {
+        let (mut wm, _events, _a, b) = make();
+        for hide in [false, true]
+        {
+            wm.set_hidden(b, hide);
+            let bounds = Rect::new(0, 21, 640, 480);
+            let mut visible = vec![0u8; 640 * 480];
+            wm.for_each_desktop_rect(bounds, |rect| {
+                  assert!(rect.left >= bounds.left
+                          && rect.top >= bounds.top
+                          && rect.right <= bounds.right
+                          && rect.bottom <= bounds.bottom);
+                  for y in rect.top..rect.bottom
+                  {
+                      for x in rect.left..rect.right
+                      {
+                          visible[y as usize * 640 + x as usize] += 1;
+                      }
+                  }
+              });
+            for y in 0..480
+            {
+                for x in 0..640
+                {
+                    let point = Point { h: x as i16,
+                                        v: y as i16 };
+                    let exposed = bounds.contains(point)
+                                  && !wm.back_to_front().any(|window| {
+                                                            window.structure_pieces()
+                                                                  .iter()
+                                                                  .any(|r| r.contains(point))
+                                                        });
+                    assert_eq!(visible[y * 640 + x], u8::from(exposed));
+                }
+            }
+        }
+    }
     #[test]
     fn perimeter_tracking_matches_full_screen_union_reference()
     {

@@ -260,7 +260,8 @@ pub struct DesktopLayer
 {
     bounds:    Rect,
     committed: Content,
-    pending:   Option<Content>
+    pending:   Option<Content>,
+    outline:   Option<Rect>
 }
 impl DesktopLayer
 {
@@ -270,7 +271,8 @@ impl DesktopLayer
         committed.port.state.clip = Some(super::region::Region::from_rect(bounds));
         Self { bounds,
                committed,
-               pending: None }
+               pending: None,
+               outline: None }
     }
 
     /// Validate and execute desktop-only QuickDraw operations. True means a
@@ -324,8 +326,84 @@ impl DesktopLayer
         Ok(())
     }
 
+    pub fn is_updating(&self) -> bool
+    {
+        self.pending.is_some()
+    }
+
+    pub fn outline(&self) -> Option<Rect>
+    {
+        self.outline
+    }
+
+    pub fn set_outline(&mut self, next: Option<Rect>) -> Option<[Rect; 8]>
+    {
+        if self.outline == next
+        {
+            return None;
+        }
+        let mut edges = [Rect::ZERO; 8];
+        if let Some(old) = self.outline
+        {
+            edges[..4].copy_from_slice(&super::geometry::outline_edges(old));
+        }
+        if let Some(next) = next
+        {
+            edges[4..].copy_from_slice(&super::geometry::outline_edges(next));
+        }
+        self.outline = next;
+        Some(edges)
+    }
+
+    pub fn pending_outline(&self) -> Option<Option<Rect>>
+    {
+        self.pending.as_ref().and_then(|p| p.outline)
+    }
+
+    pub fn begin_mask(&mut self, mask: Region, used: usize, budget: usize) -> Result<(), Status>
+    {
+        if self.pending.is_some()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let mask = mask.combine(&Region::from_rect(self.bounds), BooleanOp::Intersection);
+        if mask.is_empty()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let pending = Content::pending_patch(self.committed.id, self.committed.port.clone(), mask);
+        if used.saturating_add(pending.storage()) > budget
+        {
+            return Err(mac_abi::NO_MEMORY);
+        }
+        self.pending = Some(pending);
+        Ok(())
+    }
+
+    pub fn commit_mask(&mut self, used: usize, budget: usize) -> Result<Region, Status>
+    {
+        if !self.pending.as_ref().is_some_and(Content::is_patch)
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.committed.commit_patch(self.pending.take().unwrap(), self.bounds, used, budget)
+    }
+
+    pub fn cancel_mask(&mut self) -> Result<(), Status>
+    {
+        if !self.pending.as_ref().is_some_and(Content::is_patch)
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.cancel_update()
+    }
+
     pub fn end_update(&mut self) -> Result<(), Status>
     {
+        if self.pending.as_ref().is_some_and(Content::is_patch)
+        {
+            return Err(BAD_ARGUMENT);
+        }
         self.committed = self.pending.take().ok_or(BAD_ARGUMENT)?;
         Ok(())
     }
@@ -458,6 +536,42 @@ mod tests
         let before = scene.storage();
         assert_eq!(scene.commit_patch(rejected, bounds, before, 0), Err(mac_abi::NO_MEMORY));
         assert_eq!(scene.storage(), before);
+    }
+    #[test]
+    fn desktop_masks_are_atomic_cancelable_bounded_and_preserve_transparency()
+    {
+        let bounds = Rect::new(0, 21, 64, 48);
+        let mut layer = DesktopLayer::new(bounds);
+        layer.begin_update().unwrap();
+        rectangle(&mut layer, bounds, 0xff0000);
+        layer.end_update().unwrap();
+        let mask = Region::from_rect(Rect::new(10, 25, 30, 40));
+        layer.begin_mask(mask.clone(), layer.storage(), 1 << 20).unwrap();
+        rectangle(&mut layer, bounds, 0x00ff00);
+        assert_eq!(pixel(&layer), 0xff0000);
+        layer.cancel_mask().unwrap();
+        assert_eq!(pixel(&layer), 0xff0000);
+        for _ in 0..200
+        {
+            layer.begin_mask(mask.clone(), layer.storage(), 1 << 20).unwrap();
+            rectangle(&mut layer, bounds, 0x00ff00);
+            layer.commit_mask(layer.storage(), 1 << 20).unwrap();
+            assert_eq!(pixel(&layer), 0x00ff00);
+        }
+        assert_eq!(layer.committed.fragments.len(), 2);
+        // An empty masked scene removes old ink and exposes the background.
+        layer.begin_mask(mask, layer.storage(), 1 << 20).unwrap();
+        layer.commit_mask(layer.storage(), 1 << 20).unwrap();
+        assert_eq!(pixel(&layer), 0x878787);
+        let mut pixels = vec![0x878787; 64 * 48];
+        layer.paint(&mut Canvas::new(&mut pixels, 64, 48), None, paint_legacy);
+        assert_eq!(pixels[30 * 64 + 40], 0xff0000);
+        assert_eq!(pixels[4 * 64 + 40], 0x878787);
+        layer.begin_update().unwrap();
+        assert_eq!(layer.cancel_mask(), Err(BAD_ARGUMENT));
+        layer.cancel_update().unwrap();
+        assert_eq!(layer.begin_mask(Region::from_rect(Rect::new(0, 0, 2, 2)), 0, 1 << 20),
+                   Err(BAD_ARGUMENT));
     }
     #[test]
     fn desktop_replacements_are_atomic_and_cancellable()
