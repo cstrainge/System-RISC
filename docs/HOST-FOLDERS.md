@@ -139,3 +139,20 @@ outside the OS repository. This qualifies channel delivery only. It does not
 qualify the filesystem protocol, native Windows filesystem persistence, shared
 volume read/write behavior, notifications, or disconnect/cancellation handling;
 those are mandatory provider gates before declaring the feature complete.
+
+## Host filesystem implementation checkpoint
+
+`drivers/vhost-filesystem` now contains the safe `no_std` asynchronous catalog and
+fork-container client. It reads leased fork snapshots, caches normalized names
+and folded lookup keys, scans one child per step, detects external changes, and
+creates/replaces both forks through durable staged host publication. Writer
+leases and reserved catalog IDs survive the required retry/abort paths; metadata
+cleanup errors cannot cause a second publication. Own writes update the affected
+folder cache rather than re-enumerating unrelated directories.
+
+Ten real-host component tests cover these paths, including read-only refusal,
+Unicode collisions, stale tokens, corrupt data, external refresh, flush/close
+failure and abandoned acquisition cleanup. Strict host and RV64 library checks
+pass. These tests do not mount a guest volume: the native module wrapper, generic
+filesystem class, File Manager integration, remaining catalog mutations and the
+public-SDK VM read/write gate are still pending.

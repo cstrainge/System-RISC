@@ -1,5 +1,3 @@
-use sha2::{Digest, Sha256};
-
 use crate::*;
 
 /// A metadata view and its owned leased source stay together. A reader cannot
@@ -15,20 +13,9 @@ impl<R: ReadAt> Opened<R>
     pub fn open(mut source: R) -> Result<Self>
     {
         source.validate()?;
-        let mut bytes = [0; HEADER_BYTES];
+        let mut bytes = [0; METADATA_BYTES];
         source.read_exact(0, &mut bytes)?;
-        let header = Header::decode(bytes, source.len())?;
-        let mut text = [0; MAX_NAME + MAX_COMMENT];
-        let length = header.metadata_bytes();
-        source.read_exact(HEADER_BYTES as u64, &mut text[..length])?;
-        let (metadata, layout) = header.metadata(&text[..length])?;
-        let pad = (layout.data.offset - HEADER_BYTES as u64 - length as u64) as usize;
-        let mut padding = [0; METADATA_BYTES - HEADER_BYTES];
-        source.read_exact(HEADER_BYTES as u64 + length as u64, &mut padding[..pad])?;
-        if padding[..pad].iter().any(|&b| b != 0)
-        {
-            return Err(Error::Corrupt);
-        }
+        let (metadata, layout) = decode_metadata(&bytes, source.len())?;
         source.validate()?;
         Ok(Self { metadata,
                   layout,
@@ -71,24 +58,19 @@ impl<R: ReadAt> Opened<R>
         }
         let count = (fork.length - offset).min(output.len() as u64) as usize;
         let mut copied = 0;
-        let mut buffer = [0; CHUNK_BYTES];
+        let mut buffer = [0; CHUNK_BYTES + HASH_BYTES as usize];
         while copied < count
         {
             let position = offset + copied as u64;
             let chunk = position / CHUNK_BYTES as u64;
             let start = chunk * CHUNK_BYTES as u64;
-            let (physical, length, hash) = fork.chunk(chunk)?;
-            self.source.read_exact(physical, &mut buffer[..length])?;
-            let mut expected = [0; 32];
-            self.source.read_exact(hash, &mut expected)?;
-            let digest: [u8; 32] = Sha256::digest(&buffer[..length]).into();
-            if digest != expected
-            {
-                return Err(Error::Corrupt);
-            }
+            let (physical, length, _) = fork.chunk(chunk)?;
+            let physical_length = length + HASH_BYTES as usize;
+            self.source.read_exact(physical, &mut buffer[..physical_length])?;
+            let verified = decode_chunk(&buffer[..physical_length], length)?;
             let within = (position - start) as usize;
             let take = (length - within).min(count - copied);
-            output[copied..copied + take].copy_from_slice(&buffer[within..within + take]);
+            output[copied..copied + take].copy_from_slice(&verified[within..within + take]);
             copied += take;
         }
         Ok(copied)
@@ -131,16 +113,11 @@ impl<W: WriteAt> Writer<W>
 {
     pub fn begin(mut target: W, metadata: &Metadata, data: u64, resources: u64) -> Result<Self>
     {
-        let (header, layout) = Header::encode(metadata, data, resources)?;
+        let (mut record, layout) = encode_metadata(metadata, data, resources)?;
+        let header = Header { bytes: record[..HEADER_BYTES].try_into().unwrap() };
+        record[..HEADER_BYTES].fill(0);
         target.set_len(layout.total)?;
-        target.write_all(0, &[0; HEADER_BYTES])?;
-        target.write_all(HEADER_BYTES as u64, metadata.name.as_bytes())?;
-        target.write_all(HEADER_BYTES as u64 + metadata.name.len() as u64,
-                         metadata.comment.as_bytes())?;
-        let end = HEADER_BYTES as u64 + metadata.name.len() as u64 + metadata.comment.len() as u64;
-        target.write_all(end,
-                         &[0; METADATA_BYTES - HEADER_BYTES]
-                             [..(layout.data.offset - end) as usize])?;
+        target.write_all(0, &record)?;
         Ok(Self { target,
                   header,
                   layout,
@@ -166,14 +143,10 @@ impl<W: WriteAt> Writer<W>
         {
             return Err(Error::Invalid);
         }
-        let (physical, expected, hash) = fork.chunk(chunk)?;
-        if bytes.len() != expected
-        {
-            return Err(Error::Invalid);
-        }
-        self.target.write_all(physical, bytes)?;
-        let digest: [u8; 32] = Sha256::digest(bytes).into();
-        self.target.write_all(hash, &digest)?;
+        let (physical, expected, _) = fork.chunk(chunk)?;
+        let mut buffer = [0; CHUNK_BYTES + HASH_BYTES as usize];
+        let length = encode_chunk(bytes, expected, &mut buffer)?;
+        self.target.write_all(physical, &buffer[..length])?;
         match kind
         {
             Fork::Data => self.data_chunks += 1,

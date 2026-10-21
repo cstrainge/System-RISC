@@ -4,6 +4,7 @@ struct Bytes
 {
     bytes:      Vec<u8>,
     writes:     usize,
+    reads:      usize,
     flushes:    usize,
     fail_flush: bool
 }
@@ -16,6 +17,7 @@ impl ReadAt for Bytes
 
     fn read_exact(&mut self, offset: u64, output: &mut [u8]) -> Result<()>
     {
+        self.reads += 1;
         let start = usize::try_from(offset).map_err(|_| Error::Range)?;
         let end = start.checked_add(output.len()).ok_or(Error::Range)?;
         output.copy_from_slice(self.bytes.get(start..end).ok_or(Error::Io)?);
@@ -236,4 +238,39 @@ fn physical_chunk_hashes_are_interleaved_for_sequential_io()
     assert_eq!(&source.bytes[9313..9315], &resources);
     assert_eq!(u64::from_le_bytes(source.bytes[160..168].try_into().unwrap()), 5120);
     assert_eq!(u64::from_le_bytes(source.bytes[168..176].try_into().unwrap()), 9313);
+}
+
+
+#[test]
+fn each_metadata_or_chunk_record_uses_one_transfer_and_flush_is_still_real()
+{
+    let (mut source, data, resources) = container();
+    let chunks = data.len().div_ceil(CHUNK_BYTES) + resources.len().div_ceil(CHUNK_BYTES);
+    // Length, invalid metadata record, each complete chunk, then the valid header.
+    assert_eq!(source.writes, chunks + 3);
+    assert_eq!(source.flushes, 1);
+    let mut opened = Opened::open(&mut source).unwrap();
+    let mut bytes = vec![0; data.len().max(resources.len())];
+    opened.read(Fork::Data, 0, &mut bytes[..data.len()]).unwrap();
+    assert_eq!(&bytes[..data.len()], data);
+    opened.read(Fork::Resource, 0, &mut bytes[..resources.len()]).unwrap();
+    assert_eq!(&bytes[..resources.len()], resources);
+    assert_eq!(opened.into_inner().reads, chunks + 1);
+}
+
+#[test]
+fn pure_chunk_records_reject_bad_ranges_before_modifying_destination()
+{
+    let mut encoded = [0xa5; CHUNK_BYTES + HASH_BYTES as usize];
+    assert_eq!(encode_chunk(b"abc", 4, &mut encoded), Err(Error::Invalid));
+    assert!(encoded.iter().all(|&byte| byte == 0xa5));
+    assert_eq!(encode_chunk(&[], 0, &mut encoded), Err(Error::Range));
+    assert_eq!(encode_chunk(b"abc", 3, &mut encoded[..34]), Err(Error::Range));
+    let length = encode_chunk(b"abc", 3, &mut encoded).unwrap();
+    assert_eq!(length, 35);
+    assert_eq!(decode_chunk(&encoded[..length], 3), Ok(&b"abc"[..]));
+    assert!(decode_chunk(&encoded[..length - 1], 3).is_err());
+    assert!(decode_chunk(&encoded[..length + 1], 3).is_err());
+    encoded[0] ^= 1;
+    assert_eq!(decode_chunk(&encoded[..length], 3), Err(Error::Corrupt));
 }

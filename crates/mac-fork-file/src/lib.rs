@@ -5,9 +5,11 @@
 extern crate alloc;
 mod header;
 mod stream;
+mod record;
 use alloc::string::String;
 
 pub use header::{ForkLayout, Header, Layout};
+pub use record::{decode_chunk, decode_metadata, encode_chunk, encode_metadata};
 pub use stream::{Opened, Writer};
 pub const VERSION: u32 = 1;
 pub const HEADER_BYTES: usize = 256;
