@@ -111,7 +111,8 @@ def capture(output, windows=False):
         nonlocal cases_window
         previous = driver.log().count('FINDER_CLICK_HANDLED\n')
         driver.click(40, 95, double=True)
-        log = driver.wait('name=0 Info Cases\n')
+        driver.wait_folder_ready('0 Info Cases')
+        log = driver.log()
         row = next(line for line in reversed(log.splitlines())
                    if line.startswith('FINDER_FOLDER_OPEN ') and line.endswith('name=0 Info Cases'))
         cases_window = int(re.search(r' window=(\d+) ', row).group(1))

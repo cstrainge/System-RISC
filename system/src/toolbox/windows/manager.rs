@@ -59,6 +59,7 @@ pub struct Window
     gate:                mac_abi::TrapGate,
     user_bounds:         Option<Rect>,
     grow_icon_clip:      Option<Rect>,
+    content_outline:     Option<Rect>,
     close_deferred:      bool,
     damage:              Option<Rect>,
     hidden:              bool,
@@ -84,6 +85,11 @@ impl Window
     pub fn local_bounds(&self) -> Rect
     {
         Rect::new(0, 0, self.width(), self.height())
+    }
+
+    pub(crate) fn outline_rect(&self) -> Option<Rect>
+    {
+        self.content_outline
     }
 
     pub fn procedure(&self) -> i16
@@ -406,6 +412,7 @@ impl WindowManager
                                   gate: self.gate,
                                   user_bounds: None,
                                   grow_icon_clip: None,
+                                  content_outline: None,
                                   close_deferred: false,
                                   damage: Some(Rect::new(0,
                                                          0,
@@ -736,6 +743,28 @@ impl WindowManager
         }
         window.updating = true;
         true
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn content_outline(&mut self, id: WindowId, next: Option<Rect>)
+                                  -> Result<Option<[Rect; 8]>, mac_abi::Status>
+    {
+        let window = self.window_mut(id).ok_or(mac_abi::NOT_FOUND)?;
+        if window.content_outline == next
+        {
+            return Ok(None);
+        }
+        let mut edges = [Rect::ZERO; 8];
+        if let Some(old) = window.content_outline
+        {
+            edges[..4].copy_from_slice(&crate::toolbox::quickdraw::geometry::outline_edges(old));
+        }
+        if let Some(next) = next
+        {
+            edges[4..].copy_from_slice(&crate::toolbox::quickdraw::geometry::outline_edges(next));
+        }
+        window.content_outline = next;
+        Ok(Some(edges))
     }
 
     pub fn find_window(&self, point: Point) -> Hit

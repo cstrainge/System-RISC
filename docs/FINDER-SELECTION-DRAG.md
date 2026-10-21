@@ -219,7 +219,42 @@ retired in favor of the manager.
   - The receiver performs the operation through ordinary Files
     calls **after** the drop; the manager moves no data itself.
 
-### 4.6 Finder transfer window
+### 4.6 Persistent icon placement
+
+Icon positions are per-entry Finder metadata attached to `(volume, cnid)`,
+never an index in an enumeration or a map keyed only by the displayed path.
+The existing catalog Finder-info fields are the authoritative saved position.
+Folder layout uses those positions when initialized; automatic layout is only
+for unplaced items. Persist changes through resident Files services, with the
+same support on HFS-B and writable provider volumes (host sidecars). Read-only
+volumes expose their saved positions without attempting writes.
+
+- A same-volume move retains identity and all Finder metadata. A drop supplies
+  the new position in the destination folder's content coordinates, including
+  scroll offset, preserving relative offsets within a multiple-item group.
+- Copies get fresh identities and independent position state; destination
+  placement changes must never alter the source's saved position. Cross-volume
+  copies/moves preserve both forks and other Macintosh metadata while assigning
+  the destination's drop positions. Descendant folder layouts remain intact.
+- Coordinate conversion belongs to one Finder placement path. Updating a
+  position changes only placement fields/initialization; it must preserve file
+  type, creator, labels, folder-window state, file dates and unrelated Finder flags.
+- Commit on accepted drop, never on mouse motion. Cancel/failed batch restores
+  previous placement with the operation's metadata rollback. Persistence errors
+  are reported; don't pretend an in-memory position was saved.
+- Acceptance: reposition, close/reopen and reboot; rename/move while retaining
+  identity; same/cross-volume copy; writable host sidecars; independent copies;
+  scroll-coordinate conversion and multiple-item offsets; cancellation and
+  read-only rejection preserve every source's metadata.
+
+Long filenames wrap at a bounded caption width (currently 96px of Geneva 9 ink,
+plus selection inset). Cache line breaks and measured widths once per folder
+snapshot, preserving the entire UTF-8 name, preferring word/grapheme boundaries.
+Automatic rows reserve the full caption height. Saved positions stay authoritative.
+Hit tests, marquee intersections, selection masks and scroll extents include
+all caption lines; neither wrapping nor measurement happens on pointer paths.
+
+### 4.7 Finder transfer window
 
 - File/folder copies and cross-volume moves show a resource-based Finder copy
   window using the classic **managed progress-bar control** and **managed static
@@ -246,7 +281,7 @@ retired in favor of the manager.
 - TextEdit is the validation second client when its surface is
   ready (text flavor, promise-kept) — not a Part 3 deliverable.
 
-### 4.7 Legacy surface
+### 4.8 Legacy surface
 
 The classic Drag Manager trap surface (for legacy apps) is
 **not** part of this spec; it belongs to the compatibility-closure

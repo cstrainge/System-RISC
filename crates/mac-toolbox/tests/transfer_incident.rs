@@ -41,6 +41,14 @@ fn ordinary_host_entries_boot_browse_and_allow_finder_folder_creation()
     assert!(serial.contains("FINDER_NEW_FOLDER "), "{serial}");
     assert!(!serial.contains("FINDER_ACTION_FAILED"), "{serial}");
     assert!(serial.contains("FINDER_FOLDER_CHANGED "), "{serial}");
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(report["rapid_closed_windows"].as_array().unwrap().len(), 3);
+    assert_eq!(report["state"]["windows"], "2");
+    assert!(serial.contains("FINDER_CLOSE_COMMITTED"), "{serial}");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let arrow = fs::read(root.join("System7/system/assets/cursors/arrow.curs")).unwrap();
+    assert_arrow(&fs::read(output.join("rapid-close.ppm")).unwrap(), &arrow, [350, 350]);
     let export = output.join("export");
     assert_eq!(fs::read(export.join("Notes.txt")).unwrap(), b"Ordinary host file\n");
     assert!(export.join("Test").is_dir());

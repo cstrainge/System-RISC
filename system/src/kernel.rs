@@ -208,6 +208,12 @@ pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontM
 {
     FONTS.get()
 }
+/// Reclaimable rendering caches must leave room for application loading and
+/// thread stacks. Read under the allocator's own synchronization boundary.
+pub(crate) fn heap_available() -> usize
+{
+    HEAP.lock().free()
+}
 static RESOURCE_IMAGE: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(usize::MAX);
 pub(crate) fn with_resource_owner<R>(app: u64, call: impl FnOnce() -> R) -> R

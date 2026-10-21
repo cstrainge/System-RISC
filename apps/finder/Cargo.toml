@@ -12,6 +12,8 @@ bench = false
 
 [dependencies]
 mac-toolbox.workspace = true
+spinning_top = "=0.2.5"
+unicode-segmentation = "=1.13.3"
 
 [build-dependencies]
 mac-build.workspace = true

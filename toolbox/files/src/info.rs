@@ -89,6 +89,25 @@ impl TryFrom<wire::CatalogInfo> for CatalogInfo
 }
 impl CatalogInfo
 {
+    /// Unidentified, empty storage for a bounded snapshot cache. Dates have no
+    /// meaning until populated from a real catalog entry. This constant permits
+    /// zero-initialized client storage without unsafe uninitialized values.
+    pub const EMPTY: Self = Self { volume:          VolumeId::NONE,
+                                   id:              Cnid::UNSAVED,
+                                   parent:          Cnid::UNSAVED,
+                                   kind:            EntryKind::File,
+                                   data_length:     0,
+                                   resource_length: 0,
+                                   file_type:       TypeCode::ZERO,
+                                   creator:         TypeCode::ZERO,
+                                   flags:           CatalogFlags::NONE,
+                                   child_count:     None,
+                                   created:         Timestamp::from_unix_seconds(0),
+                                   modified:        Timestamp::from_unix_seconds(0),
+                                   backup:          None,
+                                   finder_info:     [0; 32],
+                                   name:            InlineText::EMPTY };
+
     pub fn name(&self) -> &str
     {
         self.name.as_str()

@@ -188,3 +188,15 @@ mod tests
         assert_eq!(r, Rect::new(-2, -3, 12, 13));
     }
 }
+
+pub fn outline_edges(rect: Rect) -> [Rect; 4]
+{
+    if rect.is_empty()
+    {
+        return [Rect::ZERO; 4];
+    }
+    [Rect::new(rect.left, rect.top, rect.right, rect.top + 1),
+     Rect::new(rect.left, rect.bottom - 1, rect.right, rect.bottom),
+     Rect::new(rect.left, rect.top + 1, rect.left + 1, rect.bottom - 1),
+     Rect::new(rect.right - 1, rect.top + 1, rect.right, rect.bottom - 1)]
+}

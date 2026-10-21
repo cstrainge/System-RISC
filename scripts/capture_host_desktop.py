@@ -71,6 +71,7 @@ def capture(output, windows=False, default_transfer=False):
         driver.wait('FINDER_CLICK_HANDLED\n', clicks)
         driver.key('o', ('ctrl',))
         driver.wait(marker, previous)
+        driver.wait_folder_ready(name)
         driver.wait_state(lambda state: state['windows'] == '2')
         time.sleep(.1)
         vm.qmp('screendump', {'filename': str(output / 'host-folder.ppm')}, endpoint)

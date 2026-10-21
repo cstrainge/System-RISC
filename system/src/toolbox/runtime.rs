@@ -62,6 +62,8 @@ pub struct Desktop
     last_action:     &'static str,
     redraw:          bool,
     content_damage:  Vec<(WindowId, super::quickdraw::region::Region)>,
+    outline_damage:  Vec<Rect>,
+    outline_under:   Box<super::quickdraw::outline_overlay::OutlineUnder>,
     cursor_dirty:    bool,
     cursor_bounds:   Rect,
     activity:        u64,
@@ -173,15 +175,35 @@ impl Desktop
                     .invalidate_rect(id, Rect::new(span.left, band.top, span.right, band.bottom));
             }
         }
+        self.queue_content_damage(WindowId(id), region);
+    }
+
+    fn queue_content_damage(&mut self, id: WindowId, region: super::quickdraw::region::Region)
+    {
+        use super::quickdraw::region::BooleanOp;
+        if region.is_empty()
+        {
+            return;
+        }
         if let Some((_, previous)) =
-            self.content_damage.iter_mut().find(|(window, _)| window.0 == id)
+            self.content_damage.iter_mut().find(|(window, _)| *window == id)
         {
             *previous = previous.combine(&region, BooleanOp::Union);
         }
         else
         {
-            self.content_damage.push((WindowId(id), region));
+            self.content_damage.push((id, region));
         }
+    }
+
+    fn apply_content_outline(&mut self, id: WindowId, next: Option<Rect>) -> Result<(), Status>
+    {
+        if let Some(edges) = self.windows.content_outline(id, next)?
+        {
+            let bounds = self.windows.window(id).ok_or(NOT_FOUND)?.bounds;
+            self.outline_damage.extend(edges.into_iter().filter(|rect|!rect.is_empty()).map(|mut rect|{rect.offset(bounds.left,bounds.top);rect}));
+        }
+        Ok(())
     }
 
     pub fn new(mut definitions: Definitions) -> Result<Self, Status>
@@ -242,6 +264,8 @@ impl Desktop
                   last_action: "READY",
                   redraw: true,
                   content_damage: Vec::new(),
+                  outline_damage:Vec::new(),
+                  outline_under:Box::default(),
                   cursor_dirty: true,
                   cursor_bounds: Rect::ZERO,
                   activity: 0,
@@ -546,7 +570,8 @@ impl Desktop
                 {
                     return NOT_FOUND;
                 };
-                let pending = self.pending_content.swap_remove(index);
+                let mut pending = self.pending_content.swap_remove(index);
+                let outline = pending.outline.take();
                 if pending.is_patch()
                 {
                     match content.commit_patch(pending, bounds, used, MAX_RETAINED_BYTES)
@@ -573,6 +598,11 @@ impl Desktop
                     self.textedit.commit_cursor_update(id);
                 }
                 self.windows.end_update(id);
+                if let Some(outline) = outline
+                   && let Err(status) = self.apply_content_outline(id, outline)
+                {
+                    return status;
+                }
             }
             _ => return NOT_SUPPORTED
         }
@@ -925,17 +955,30 @@ impl Desktop
         let id = WindowId(call.window);
         // Use the ordinary owner/generation gate, including stale window IDs.
         self.content_mut(call.window)?;
-        if call.operation == QD_WINDOW_BEGIN_MASK
+        if matches!(call.operation, QD_WINDOW_BEGIN_MASK | QD_WINDOW_BEGIN_RECTS)
         {
             let window = self.windows.window(id).ok_or(NOT_FOUND)?;
             if window.updating
             {
                 return Err(BAD_ARGUMENT);
             }
-            let mask =
+            let mask = if call.operation == QD_WINDOW_BEGIN_RECTS
+            {
+                if bytes.is_empty() || !bytes.len().is_multiple_of(8) || bytes.len() > 1056 * 8
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                Region::from_rectangles(bytes.as_chunks::<8>().0.iter().map(|bytes| {
+                    let at=|index| i16::from_le_bytes([bytes[index],bytes[index+1]]);
+                    Rect::new(at(0),at(2),at(4),at(6))
+                }))
+            }
+            else
+            {
                 Region::from_be_bytes(bytes).map_err(|_| BAD_ARGUMENT)?
-                                            .combine(&Region::from_rect(window.local_bounds()),
-                                                     BooleanOp::Intersection);
+            };
+            let mask =
+                mask.combine(&Region::from_rect(window.local_bounds()), BooleanOp::Intersection);
             if mask.is_empty()
             {
                 return Err(BAD_ARGUMENT);
@@ -992,8 +1035,29 @@ impl Desktop
     {
         use mac_abi::quickdraw::{DESKTOP_TARGET, QD_DESKTOP_BEGIN, QD_DESKTOP_BOUNDS,
                                  QD_DESKTOP_CANCEL, QD_DESKTOP_END, QD_GET_STATE};
+        if call.operation == mac_abi::quickdraw::QD_WINDOW_OUTLINE
+        {
+            if call.verb > 1
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            self.content_mut(call.window)?;
+            let next = (call.verb == 1 && !call.bounds.is_empty()).then_some(call.bounds);
+            let id = WindowId(call.window);
+            if let Some(pending) = self.pending_content.iter_mut().find(|content| content.id == id)
+            {
+                pending.outline = Some(next);
+            }
+            else
+            {
+                self.apply_content_outline(id, next)?;
+                self.present();
+            }
+            return Ok(());
+        }
         if matches!(call.operation,
                     mac_abi::quickdraw::QD_WINDOW_BEGIN_MASK
+                    | mac_abi::quickdraw::QD_WINDOW_BEGIN_RECTS
                     | mac_abi::quickdraw::QD_WINDOW_COMMIT_MASK
                     | mac_abi::quickdraw::QD_WINDOW_CANCEL_MASK)
         {
@@ -1740,7 +1804,10 @@ impl Desktop
     {
         crate::trace::record(crate::trace::PRESENT, self.owner, 0, 0, 0, 0);
         self.tick_cursor();
-        if !self.redraw && !self.cursor_dirty && self.content_damage.is_empty()
+        if !self.redraw
+           && !self.cursor_dirty
+           && self.content_damage.is_empty()
+           && self.outline_damage.is_empty()
         {
             self.publish_observation();
             return;
@@ -1756,10 +1823,20 @@ impl Desktop
         let full = self.redraw;
         if full || !self.content_damage.is_empty()
         {
+            let cache_budget =
+                super::quickdraw::content_cache::PIXEL_BUDGET.saturating_sub(self.scroll_boxes
+                                                                                 .raster_storage())
+                    .saturating_sub(super::quickdraw::menu_cache::BYTES);
+            self.content_cache
+                .preserve_headroom(crate::kernel::heap_available(), 2 * 1024 * 1024, cache_budget);
             self.revision = self.revision.wrapping_add(1);
             self.compositions = self.compositions.wrapping_add(1);
         }
-        let mut damaged = Vec::new();
+        else if !self.outline_damage.is_empty()
+        {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        let mut damaged = core::mem::take(&mut self.outline_damage);
         if self.redraw
         {
             let started = crate::trace::clock();
@@ -1770,11 +1847,6 @@ impl Desktop
             let cdef = self.cdef;
             let fonts = crate::kernel::fonts();
             let desktop_visible = self.processes.get(1).is_ok_and(|p| p.info.hidden == 0);
-            let cache_budget =
-                super::quickdraw::content_cache::PIXEL_BUDGET.saturating_sub(self.scroll_boxes
-                                                                                 .raster_storage())
-                    .saturating_sub(super::quickdraw::menu_cache::BYTES);
-            self.content_cache.set_budget(cache_budget);
             self.content_cache.begin_frame();
             self.content_cache.retain(|id| {
                                   if id == mac_abi::quickdraw::DESKTOP_TARGET
@@ -1869,6 +1941,7 @@ impl Desktop
             let damage = core::mem::take(&mut self.content_damage);
             let fonts = crate::kernel::fonts();
             let cdef = self.cdef;
+            let cache = &mut self.content_cache;
             let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
             for (id, region) in damage
             {
@@ -1882,6 +1955,9 @@ impl Desktop
                 {
                     continue;
                 };
+                let has_viewports =
+                    content.iter_commands()
+                           .any(|command| matches!(command, RenderCommand::ScrollBox(_)));
                 self.windows.for_each_visible_rect(id, |visible| {
                     for band in region.bands()
                     {
@@ -1894,10 +1970,13 @@ impl Desktop
                             canvas.reset_port();
                             canvas.set_clip(clip);
                             canvas.set_origin(window.bounds.left, window.bounds.top);
-                            canvas.paint_rect(window.local_bounds(), WHITE);
-                            crate::kernel::with_resource_owner(u64::from(window.refcon), || {
-                                content.paint(&mut canvas, fonts, |canvas, command| paint(canvas, command, cdef));
-                            });
+                            let replay=|canvas:&mut Canvas<'_>| {
+                                canvas.paint_rect(window.local_bounds(), WHITE);
+                                crate::kernel::with_resource_owner(u64::from(window.refcon), || {
+                                    content.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef));
+                                });
+                            };
+                            if has_viewports {replay(&mut canvas);}else{cache.paint(id.0,window.bounds,&mut canvas,replay);}
                             window.paint_content_overlay(&mut canvas);
                             damaged.push(clip);
                         }
@@ -1934,7 +2013,7 @@ impl Desktop
         self.enter(caller);
     }
 
-    fn compose_cursor(&mut self, full: bool, damaged: Vec<Rect>)
+    fn compose_cursor(&mut self, full: bool, mut damaged: Vec<Rect>)
     {
         let text_cursor = self.text_cursor_at_mouse().then_some(self.text_cursor);
         let cursor =
@@ -1942,6 +2021,26 @@ impl Desktop
         let text_cursor = if self.responsiveness.active() { None } else { text_cursor };
         let bounds = cursor.bounds(self.events.mouse, text_cursor);
         let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
+        let outline_visible = !self.menus.is_tracking()
+                              && !self.app_menu.is_tracking()
+                              && !self.windows.is_tracking()
+                              && self.windows
+                                     .active_window()
+                                     .and_then(|id| self.windows.window(id))
+                                     .is_some_and(|window| window.outline_rect().is_some());
+        if outline_visible
+        {
+            use super::quickdraw::region::Region;
+            let damage = if full
+            {
+                Region::from_rect(Rect::new(0, 0, 640, 480))
+            }
+            else
+            {
+                Region::from_rectangles(damaged.iter().copied().chain([self.cursor_bounds, bounds]))
+            };
+            self.outline_under.paint(&mut canvas, &self.windows, &damage);
+        }
         let under = super::quickdraw::overlay::CursorUnder::capture(&canvas, bounds);
         cursor.draw_auto(&mut canvas, self.events.mouse, text_cursor);
         if full
@@ -1951,9 +2050,18 @@ impl Desktop
         else
         {
             platform::present_rects(canvas.pixels,
-                                    damaged.into_iter().chain([self.cursor_bounds, bounds]));
+                                    damaged.iter().copied().chain([self.cursor_bounds, bounds]));
         }
         under.restore(&mut canvas);
+        if outline_visible
+        {
+            self.outline_under.restore(&mut canvas);
+        }
+        if self.outline_damage.is_empty() && self.outline_damage.capacity() < damaged.capacity()
+        {
+            damaged.clear();
+            self.outline_damage = damaged;
+        }
         self.cursor_bounds = bounds;
         self.cursor_dirty = false;
         self.presentations = self.presentations.wrapping_add(1);

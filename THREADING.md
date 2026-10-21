@@ -45,6 +45,15 @@ preserving original replay on misses. Cold composition and other synchronous
 services still mask interrupts. See
 [event tracing](docs/EVENT-TRACING.md) for the measured scenarios and limits.
 
+Finder catalog snapshots are application-owned, bounded to1024 items per open
+folder. Scan cursors bind the fill to a resident catalog revision; stale partial
+snapshots restart before publication. Directory watches invalidate only the
+affected folder. Snapshot locks cover local memory only and never cross traps
+or event waits. Bulk item storage lives in zero-initialized application memory,
+outside resource payloads and the application stack. Selection uses one set/diff
+path, cached text dimensions and a row index. Marquee outlines share the cursor's
+temporary presentation path and never accumulate retained paint history.
+
 This is a trusted shared M-mode address space without an MMU or protection
 boundary. Owner checks prevent accidental cross-application object access through
 services; they cannot constrain arbitrary application pointers or machine code.

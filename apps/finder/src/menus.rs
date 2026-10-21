@@ -5,6 +5,7 @@ use crate::browser::Browser;
 pub const ABOUT: u32 = u32::from_be_bytes(*b"abou");
 pub const NEW_FOLDER: u32 = u32::from_be_bytes(*b"new ");
 pub const OPEN: u32 = u32::from_be_bytes(*b"sope");
+pub const SELECT_ALL: u32 = u32::from_be_bytes(*b"sela");
 pub const GET_INFO: u32 = u32::from_be_bytes(*b"sinf");
 pub const CLOSE: u32 = u32::from_be_bytes(*b"clos");
 pub const PUT_AWAY: u32 = u32::from_be_bytes(*b"sput");
@@ -43,6 +44,10 @@ pub fn update(system: &System<'_>, browser: &Browser) -> Result<(), Error>
                                 (1252, 6, browser.info_selection(system).is_some()),
                                 (1252, 10, browser.can_put_away(system)),
                                 (1253, 6, browser.can_trash(system)),
+                                (1253, 3, false),
+                                (1253, 4, false),
+                                (1253, 5, false),
+                                (1253, 7, browser.can_select_all()),
                                 (1253, 9, true),
                                 (1255, 2, browser.cached_trash_count() > 0)]
     {

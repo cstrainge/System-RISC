@@ -38,6 +38,12 @@ fn rejected_window(system: &System<'_>, id: WindowId, gate: mac_abi::TrapGate)
     assert_eq!(windows.begin_update(id), Err(Error::NotFound));
     assert_eq!(system.quickdraw().graphics(id).paint_rect(Rect::new(0, 0, 10, 10)),
                Err(Error::NotFound));
+    assert_eq!(system.quickdraw().graphics(id).content_outline(Some(Rect::new(0, 0, 10, 10))),
+               Err(Error::NotFound));
+    assert!(matches!(system.quickdraw()
+                           .graphics(id)
+                           .masked_rectangles(&[Rect::new(0, 0, 10, 10)]),
+                     Err(Error::NotFound)));
     for operation in [mac_abi::GET_WINDOW, mac_abi::SET_WINDOW_TITLE, mac_abi::CLOSE_WINDOW]
     {
         let mut request = mac_abi::traps::WindowCall { operation,

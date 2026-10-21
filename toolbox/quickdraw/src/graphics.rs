@@ -136,6 +136,45 @@ pub struct GraphicsPort<'a>
 }
 impl<'a> GraphicsPort<'a>
 {
+    /// Change the System-owned transient content outline. It damages just its
+    /// old/new edges and keeps retained application drawing and cached pixels.
+    /// During an update the property is staged and follows commit/cancellation.
+    pub fn content_outline(self, bounds: Option<Rect>) -> Result<()>
+    {
+        self.request(GraphicsCommand { operation: QD_WINDOW_OUTLINE,
+                                       verb: u32::from(bounds.is_some()),
+                                       bounds: bounds.unwrap_or(Rect::ZERO),
+                                       ..Default::default() })
+            .map(|_| ())
+    }
+
+    /// Begin one masked update for the exact union of changed rectangles.
+    /// The bounded request avoids one region trap per selected item.
+    pub fn masked_rectangles(self, rectangles: &[Rect]) -> Result<MaskedUpdate<'a>>
+    {
+        if rectangles.is_empty() || rectangles.len() > 1056
+        {
+            return Err(crate::Error::BadArgument);
+        }
+        let mut bytes = [0u8; 1056 * 8];
+        for (rect, output) in rectangles.iter().zip(bytes.as_chunks_mut::<8>().0.iter_mut())
+        {
+            for (value, pair) in
+                [rect.left, rect.top, rect.right, rect.bottom].into_iter()
+                                                              .zip(output.as_chunks_mut::<2>()
+                                                                         .0
+                                                                         .iter_mut())
+            {
+                pair.copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        self.request(GraphicsCommand { operation: QD_WINDOW_BEGIN_RECTS,
+                                       region: &bytes[..rectangles.len() * 8],
+                                       ..Default::default() })?;
+        Ok(MaskedUpdate { port:   self,
+                          active: true })
+    }
+
     /// Stage a replacement for precisely this local-coordinate region. Drawing
     /// outside it cannot change the committed scene. Drop cancels the update.
     pub fn masked_update(self, region: &[u8]) -> Result<MaskedUpdate<'a>>

@@ -1,0 +1,387 @@
+//! Actual Finder source over observed public SDK calls forwarded to real System.
+use core::{fmt::Write,
+           sync::atomic::{AtomicU64, Ordering}};
+
+use mac_toolbox::{events::{EventMask, Input, Modifiers},
+                  *};
+
+use crate::browser::{Browser, Location, Text};
+static FILES: AtomicU64 = AtomicU64::new(0);
+static WIDTHS: AtomicU64 = AtomicU64::new(0);
+static DRAWS: AtomicU64 = AtomicU64::new(0);
+static COMMITS: AtomicU64 = AtomicU64::new(0);
+/// # Safety
+/// Caller passes the public SDK's live, synchronously borrowed request.
+pub unsafe fn observe(number: u32, pointer: *mut (), size: usize)
+{
+    if number == abi::traps::FILE
+    {
+        FILES.fetch_add(1, Ordering::Relaxed);
+    }
+    if number == abi::traps::FONT && size == core::mem::size_of::<abi::quickdraw::FontCall>()
+    {
+        let call = unsafe { &*pointer.cast::<abi::quickdraw::FontCall>() };
+        if call.operation == abi::quickdraw::FONT_WIDTH
+        {
+            WIDTHS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    if [abi::traps::QUICKDRAW,abi::traps::ICON,abi::traps::FONT,abi::traps::COPY_BITS].contains(&number){DRAWS.fetch_add(1,Ordering::Relaxed);}
+    if number == abi::traps::QUICKDRAW
+       && size == core::mem::size_of::<abi::quickdraw::GraphicsCall>()
+    {
+        let call = unsafe { &*pointer.cast::<abi::quickdraw::GraphicsCall>() };
+        if call.operation == abi::quickdraw::QD_WINDOW_COMMIT_MASK
+        {
+            COMMITS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+fn require(system: &System<'_>, condition: bool, reason: &str) -> Result<(), Error>
+{
+    if condition
+    {
+        return Ok(());
+    }
+    system.log("FINDER_SELECTION_FAIL ")?;
+    system.log(reason)?;
+    system.log("\n")?;
+    Err(Error::BadArgument)
+}
+fn input(at: Point, when: u32, shift: bool) -> Input
+{
+    Input { at,
+            when,
+            modifiers: if shift { Modifiers::SHIFT } else { Modifiers::from_bits_retain(0) } }
+}
+fn checkpoint(system: &System<'_>, stage: &str) -> Result<(), Error>
+{
+    system.log("FINDER_SELECTION_STAGE ")?;
+    system.log(stage)?;
+    system.log("\n")?;
+    loop
+    {
+        if matches!(system.wait_event(EventMask::KEY_DOWN, 30)?, Event::KeyDown { .. })
+        {
+            return Ok(());
+        }
+    }
+}
+fn fill(system: &System<'_>, browser: &mut Browser) -> Result<(), Error>
+{
+    for _ in 0..20000
+    {
+        if !browser.pending()
+        {
+            return Ok(());
+        }
+        browser.advance_cache(system)?;
+        let event = system.next_event(EventMask::ALL)?;
+        if matches!(event, Event::Activate { .. })
+        {
+            browser.activate(event);
+        }
+        if let Event::Update { window,
+                               .. } = event
+           && browser.contains(window)
+        {
+            browser.draw(system, window)?;
+        }
+    }
+    Err(Error::BadArgument)
+}
+fn action(system: &System<'_>, browser: &mut Browser, label: &str, count: usize, noop: bool,
+          run: impl FnOnce(&mut Browser) -> Result<(), Error>)
+          -> Result<(), Error>
+{
+    let before = [FILES.load(Ordering::Relaxed),
+                  WIDTHS.load(Ordering::Relaxed),
+                  DRAWS.load(Ordering::Relaxed),
+                  COMMITS.load(Ordering::Relaxed)];
+    let start = system.events().monotonic_nanoseconds()?;
+    run(browser)?;
+    let elapsed = system.events().monotonic_nanoseconds()?.saturating_sub(start);
+    require(system, browser.selection_count() == count, "wrong selection membership")?;
+    require(system, FILES.load(Ordering::Relaxed) == before[0], "pointer path called Files")?;
+    require(system, WIDTHS.load(Ordering::Relaxed) == before[1], "pointer path remeasured text")?;
+    if noop
+    {
+        require(system, DRAWS.load(Ordering::Relaxed) == before[2], "unchanged state drew pixels")?;
+    }
+    require(system, elapsed < 500_000_000, "selection exceeded watch deadline")?;
+    let mut log = Text::<200>::default();
+    let _ = writeln!(&mut log,
+                     "FINDER_SELECTION_ACTION name={} selected={} files=0 widths=0 draws={} \
+                      commits={} ns={}",
+                     label,
+                     count,
+                     DRAWS.load(Ordering::Relaxed) - before[2],
+                     COMMITS.load(Ordering::Relaxed) - before[3],
+                     elapsed);
+    system.log(log.as_str())
+}
+pub fn run(system: &System<'_>) -> Result<(), Error>
+{
+    let code = system.resources().application().get(ResourceKey { kind: TypeCode::new(*b"RV64"),
+                                                                   id:   0 })?;
+    let stored = code.size();
+    code.release()?;
+    require(system, stored < 512 * 1024, "cache storage inflated the code resource")?;
+    let volume = system.files().volume_at(0)?.id;
+    let folder = system.files().new_folder(volume, files::ROOT_ID, "Selection Lab")?;
+    for index in 0..8
+    {
+        let mut name = Text::<32>::default();
+        let _ = write!(&mut name, "Item {index:02}");
+        system.files()
+              .create_data(files::DataFileSpec { volume,
+                                                 parent: folder.id,
+                                                 name: name.as_str(),
+                                                 replacing: None,
+                                                 file_type: TypeCode::new(*b"TEXT"),
+                                                 creator: TypeCode::new(*b"ttxt") },
+                           0)?
+              .finish()?;
+    }
+    let mut browser = Browser::default();
+    browser.initialize(system)?;
+    fill(system, &mut browser)?;
+    let lab = browser.open(system,
+                           Location { volume,
+                                      folder: folder.id })?;
+    fill(system, &mut browser)?;
+    let other = system.files().new_folder(volume, files::ROOT_ID, "Other Window")?;
+    browser.open(system,
+                 Location { volume,
+                            folder: other.id })?;
+    fill(system, &mut browser)?;
+    system.select_window(lab)?;
+    browser.activate(Event::Activate { window: lab,
+                                       active: true,
+                                       input:  input(Point::default(), 0, false).with_active() });
+    browser.draw(system, lab)?;
+    system.quickdraw().cursors().hide()?;
+    system.log("DESKTOP_READY: Finder cached selection fixture\n")?;
+    checkpoint(system, "baseline")?;
+    let bounds = system.window(lab)?.bounds;
+    let width =
+        system.quickdraw().fonts().text_width(quickdraw::fonts::FontSelection { family: 3,
+                                                                                 size:   9,
+                                                                                 face:   0 },
+                                               "Item 00")?;
+    let mut geometry = Text::<160>::default();
+    let first = crate::icon_view::label_bounds(Rect::new(16, 28, 48, 60), width);
+    let second = crate::icon_view::label_bounds(Rect::new(80, 28, 112, 60), width);
+    let _ = writeln!(&mut geometry,
+                     "FINDER_SELECTION_BOUNDS {} {} {} {} {} {} {} {}",
+                     bounds.left + 16.min(first.left),
+                     bounds.top + 28,
+                     bounds.left + 48.max(first.right),
+                     bounds.top + first.bottom,
+                     bounds.left + 80.min(second.left),
+                     bounds.top + 28,
+                     bounds.left + 112.max(second.right),
+                     bounds.top + second.bottom);
+    system.log(geometry.as_str())?;
+    let point = |h, v| {
+        Point { h: bounds.left + h,
+                v: bounds.top + v }
+    };
+    let click = |browser: &mut Browser, h, v, when, shift| {
+        browser.click(system,
+                      Event::MouseDown { window: Some(lab),
+                                         input:  input(point(h, v), when, shift) })
+    };
+    action(system, &mut browser, "single", 1, false, |browser| click(browser, 32, 44, 100, false))?;
+    checkpoint(system, "single")?;
+    action(system, &mut browser, "shift-add", 2, false, |browser| {
+        click(browser, 96, 44, 200, true)
+    })?;
+    checkpoint(system, "shift-add")?;
+    action(system, &mut browser, "selected-noop", 2, true, |browser| {
+        click(browser, 96, 44, 300, false)
+    })?;
+    checkpoint(system, "selected-noop")?;
+    action(system, &mut browser, "shift-toggle", 1, false, |browser| {
+        click(browser, 32, 44, 400, true)
+    })?;
+    checkpoint(system, "shift-toggle")?;
+    action(system, &mut browser, "clear", 0, false, |browser| click(browser, 4, 24, 500, false))?;
+    let move_band = |browser: &mut Browser, h, v, when, up| {
+        browser.track(system,
+                      if up
+                      {
+                          Event::MouseUp { window: Some(lab),
+                                           input:  input(point(h, v), when, false) }
+                      }
+                      else
+                      {
+                          Event::Idle { input: input(point(h, v), when, false),
+                                        tag:   0 }
+                      })
+    };
+    action(system, &mut browser, "marquee-three", 3, false, |browser| {
+        move_band(browser, 182, 76, 501, false)
+    })?;
+    checkpoint(system, "marquee-three")?;
+    action(system, &mut browser, "marquee-stationary", 3, true, |browser| {
+        move_band(browser, 182, 76, 502, false)
+    })?;
+    action(system, &mut browser, "marquee-shrink", 1, false, |browser| {
+        move_band(browser, 55, 76, 503, false)
+    })?;
+    checkpoint(system, "marquee-shrink")?;
+    action(system, &mut browser, "marquee-release", 1, false, |browser| {
+        move_band(browser, 55, 76, 504, true)
+    })?;
+    checkpoint(system, "marquee-release")?;
+    action(system, &mut browser, "select-all", 8, false, |browser| browser.select_all(system))?;
+    checkpoint(system, "select-all")?;
+    action(system, &mut browser, "select-all-noop", 8, true, |browser| browser.select_all(system))?;
+    action(system, &mut browser, "shift-band-start", 8, true, |browser| {
+        click(browser, 4, 24, 600, true)
+    })?;
+    let before = COMMITS.load(Ordering::Relaxed);
+    for step in 0..2000
+    {
+        move_band(&mut browser, 55 + (step % 128) as i16, 76, 601 + step, false)?;
+        system.next_event(EventMask::from_bits_retain(0))?;
+    }
+    require(system,
+            COMMITS.load(Ordering::Relaxed) == before,
+            "outline motion rebuilt retained content")?;
+    move_band(&mut browser, 182, 76, 3001, true)?;
+    require(system, browser.selection_count() == 8, "shift marquee lost base selection")?;
+    checkpoint(system, "outline-stress")?;
+    // A folder revision invalidates this snapshot and preserves selected IDs.
+    system.files().new_folder(volume, folder.id, "New Arrival")?;
+    browser.folder_changed(system, lab)?;
+    browser.advance_cache(system)?;
+    // Invalidate an in-flight cursor. Its unpublished partial result must be
+    // discarded, and stable selections must survive the restarted snapshot.
+    system.files().new_folder(volume, folder.id, "Racing Arrival")?;
+    fill(system, &mut browser)?;
+    require(system, browser.selection_count() == 8, "refresh lost stable selected IDs")?;
+    action(system, &mut browser, "select-new-snapshot", 10, false, |browser| {
+        browser.select_all(system)
+    })?;
+    checkpoint(system, "refreshed")?;
+    let mut info = crate::get_info::Controller::default();
+    info.open_selection(system, browser.selected_locations())?;
+    for _ in 0..2000
+    {
+        if !info.pending()
+        {
+            break;
+        }
+        info.event(system,
+                   Event::Idle { input: input(Point::default(), 4000, false),
+                                 tag:   0 })?;
+        system.next_event(EventMask::from_bits_retain(0))?;
+    }
+    require(system, !info.pending(), "multiple info did not finish bounded totals")?;
+    require(system,
+            system.window(WindowId(0))?.title() == "Multiple Items",
+            "multiple info has wrong title")?;
+    checkpoint(system, "multiple-info")?;
+    let wrapped = system.files().new_folder(volume, files::ROOT_ID, "Wrapped Captions")?;
+    let names = ["A long filename with several words and its final extension.txt",
+                 "AReallyLongUnbrokenFileNameThatMustWrapWithoutDroppingItsExtension.rs",
+                 "Éléphant 🦀 avec un très long nom de fichier.txt"];
+    for name in names
+    {
+        system.files()
+              .create_data(files::DataFileSpec { volume,
+                                                 parent: wrapped.id,
+                                                 name,
+                                                 replacing: None,
+                                                 file_type: TypeCode::new(*b"TEXT"),
+                                                 creator: TypeCode::new(*b"ttxt") },
+                           0)?
+              .finish()?;
+    }
+    let wrapped_window = browser.open(system,
+                                      Location { volume,
+                                                 folder: wrapped.id })?;
+    fill(system, &mut browser)?;
+    browser.activate(Event::Activate { window: wrapped_window,
+                                active: true,
+                                input:  input(Point::default(), 5000, false).with_active() });
+    browser.draw(system, wrapped_window)?;
+    let (index, item) =
+        (0..8).find_map(|slot| {
+                  crate::cache::with(slot, |folder| {
+                      (folder.window == wrapped_window).then(|| (0, folder.items[0]))
+                  })
+              })
+              .ok_or(Error::BadArgument)?;
+    require(system, index == 0 && item.caption.height() > 12, "long caption did not wrap")?;
+    require(system,
+            item.caption.width() <= crate::icon_view::CAPTION_WIDTH,
+            "caption grew beyond width cap")?;
+    let mut joined = Text::<256>::default();
+    for (line, _) in item.caption.lines(item.entry.name())
+    {
+        let _ = write!(&mut joined, "{line}");
+    }
+    require(system, joined.as_str() == item.entry.name(), "caption lost filename bytes")?;
+    checkpoint(system, "wrapped")?;
+    let frame = system.window(wrapped_window)?.bounds;
+    let label = item.caption.bounds(item.icon_bounds);
+    let last_line = Point { h: frame.left + (label.left + label.right) / 2,
+                            v: frame.top + label.bottom - 6 };
+    require(system,
+            last_line.v > frame.top + item.icon_bounds.bottom + 12,
+            "wrapped hit test did not reach a later line")?;
+    let mut geometry = Text::<160>::default();
+    let _ = writeln!(&mut geometry,
+                     "FINDER_WRAPPED_BOUNDS {} {} {} {}",
+                     frame.left + item.bounds.left,
+                     frame.top + item.bounds.top,
+                     frame.left + item.bounds.right,
+                     frame.top + item.bounds.bottom);
+    system.log(geometry.as_str())?;
+    for (name, when, noop) in [("wrapped-last-line", 5100, false), ("wrapped-noop", 5200, true)]
+    {
+        action(system, &mut browser, name, 1, noop, |browser| {
+            browser.click(system,
+                          Event::MouseDown { window: Some(wrapped_window),
+                                             input:  input(last_line, when, false) })
+        })?;
+        checkpoint(system, if noop { "wrapped-noop" } else { "wrapped-selected" })?;
+    }
+    // A physical click during refresh must be replayed after publication,
+    // rather than disappearing between the watch notification and cache fill.
+    browser.folder_changed(system, wrapped_window)?;
+    action(system, &mut browser, "wrapped-refresh-press", 0, true, |browser| {
+        browser.click(system,
+                      Event::MouseDown { window: Some(wrapped_window),
+                                         input:  input(last_line, 5400, false) })
+    })?;
+    action(system, &mut browser, "wrapped-refresh-release", 0, true, |browser| {
+        browser.track(system,
+                      Event::MouseUp { window: Some(wrapped_window),
+                                       input:  input(last_line, 5401, false) })
+    })?;
+    fill(system, &mut browser)?;
+    require(system, browser.selection_count() == 1, "refresh lost a physical click")?;
+    checkpoint(system, "wrapped-refreshed")?;
+    system.log("FINDER_SELECTION_USERSPACE_PASS stages=16 outline_steps=2000\n")?;
+    loop
+    {
+        system.wait_event(EventMask::from_bits_retain(0), 30)?;
+    }
+}
+trait ActiveInput
+{
+    fn with_active(self) -> Self;
+}
+impl ActiveInput for Input
+{
+    fn with_active(mut self) -> Self
+    {
+        self.modifiers =
+            Modifiers::from_bits_retain(self.modifiers.bits() | Modifiers::ACTIVE.bits());
+        self
+    }
+}

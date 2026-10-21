@@ -65,6 +65,62 @@ impl Region
         &self.bands
     }
 
+    /// Sweep rectangle edges once. No per-pixel work and no repeated growing
+    /// region unions when a selection changes many disjoint items together.
+    pub fn from_rectangles(rectangles: impl Iterator<Item = Rect>) -> Self
+    {
+        let mut edges = Vec::new();
+        for rect in rectangles.filter(|rect| !rect.is_empty())
+        {
+            edges.push((rect.top, rect.left, rect.right, true));
+            edges.push((rect.bottom, rect.left, rect.right, false));
+        }
+        edges.sort_unstable();
+        let mut active: Vec<Span> = Vec::new();
+        let mut result = Self::new();
+        let mut index = 0;
+        while index < edges.len()
+        {
+            let y = edges[index].0;
+            while index < edges.len() && edges[index].0 == y
+            {
+                let (_, left, right, begin) = edges[index];
+                if begin
+                {
+                    active.push(Span { left,
+                                       right });
+                }
+                else if let Some(slot) =
+                    active.iter().position(|span| span.left == left && span.right == right)
+                {
+                    active.swap_remove(slot);
+                }
+                index += 1;
+            }
+            let Some(next) = edges.get(index)
+            else
+            {
+                break;
+            };
+            active.sort_unstable_by_key(|span| (span.left, span.right));
+            let mut spans: Vec<Span> = Vec::new();
+            for &span in &active
+            {
+                if let Some(last) = spans.last_mut()
+                   && span.left <= last.right
+                {
+                    last.right = last.right.max(span.right);
+                }
+                else
+                {
+                    spans.push(span);
+                }
+            }
+            result.push_band(y, next.0, spans);
+        }
+        result
+    }
+
     pub fn is_empty(&self) -> bool
     {
         self.bands.is_empty()
@@ -601,5 +657,39 @@ mod tests
         assert!(Region::from_be_bytes(&bad).is_err());
         assert!(ring.offset(i16::MAX, 0).is_err());
         assert_eq!(Region::new().to_be_bytes().unwrap(), vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]);
+    }
+}
+
+#[cfg(test)]
+mod rectangle_sweep_tests
+{
+    use super::*;
+    #[test]
+    fn rectangle_sweep_matches_exact_union_with_touching_duplicate_and_nested_edges()
+    {
+        let rectangles: Vec<_> =
+            (0..120).map(|index| {
+                        let left = (index * 17 % 91) - 20;
+                        let top = (index * 11 % 79) - 20;
+                        Rect::new(left, top, left + 1 + (index % 25), top + 1 + (index % 19))
+                    })
+                    .chain([Rect::ZERO,
+                            Rect::new(0, 0, 40, 40),
+                            Rect::new(0, 0, 40, 40),
+                            Rect::new(0, 40, 40, 60)])
+                    .collect();
+        let actual = Region::from_rectangles(rectangles.iter().copied());
+        for y in -25..100
+        {
+            for x in -25..120
+            {
+                let point = Point { h: x,
+                                    v: y };
+                assert_eq!(actual.contains(point),
+                           rectangles.iter().any(|rect| rect.contains(point)),
+                           "{x},{y}");
+            }
+        }
+        assert_eq!(Region::from_be_bytes(&actual.to_be_bytes().unwrap()).unwrap(), actual);
     }
 }

@@ -5,6 +5,7 @@ pub(crate) mod format;
 mod layout;
 mod editing;
 mod totals;
+mod summary;
 use core::fmt::Write;
 
 use layout::{FONT, Layout};
@@ -56,7 +57,8 @@ pub struct Controller<'a>
 {
     windows:     [Option<Info<'a>>; CAPACITY],
     work_cursor: usize,
-    changed:     bool
+    changed:     bool,
+    summary:     Option<summary::Summary<'a>>
 }
 fn editor<'a>(system: &System<'a>, dest: Rect, view: Rect, text: &str)
               -> Result<textedit::Editor<'a>, Error>
@@ -305,6 +307,25 @@ impl<'a> Info<'a>
 }
 impl<'a> Controller<'a>
 {
+    pub fn open_selection(&mut self, system: &System<'a>,
+                          identities: [Option<Location>; crate::selection::CAPACITY])
+                          -> Result<(), Error>
+    {
+        let mut selected = identities.iter().copied().flatten();
+        let Some(first) = selected.next()
+        else
+        {
+            return Ok(());
+        };
+        if selected.next().is_none()
+        {
+            return self.open(system, first);
+        }
+        let summary = summary::Summary::new(system, identities)?;
+        self.summary = Some(summary);
+        Ok(())
+    }
+
     pub fn open(&mut self, system: &System<'a>, identity: Location) -> Result<(), Error>
     {
         if let Some(info) = self.windows.iter_mut().flatten().find(|info| info.identity == identity)
@@ -352,7 +373,11 @@ impl<'a> Controller<'a>
 
     pub fn pending(&self) -> bool
     {
-        self.windows.iter().flatten().any(|info| info.job.as_ref().is_some_and(|job| !job.complete))
+        self.summary.as_ref().is_some_and(|summary| summary.pending())
+        || self.windows
+               .iter()
+               .flatten()
+               .any(|info| info.job.as_ref().is_some_and(|job| !job.complete))
     }
 
     fn close(&mut self, system: &System<'_>, slot: usize) -> Result<(), Error>
@@ -406,6 +431,22 @@ impl<'a> Controller<'a>
 
     pub fn update_menus(&self, system: &System<'_>) -> Result<(), Error>
     {
+        if self.summary
+               .as_ref()
+               .is_some_and(|summary| {
+                   system.window(WindowId(0)).is_ok_and(|window| window.id == summary.id())
+               })
+        {
+            for item in 3..=7
+            {
+                system.menus().set_item_enabled(MenuId(1253), item, false)?;
+            }
+            return Ok(());
+        }
+        if self.windows.iter().all(Option::is_none)
+        {
+            return Ok(());
+        }
         let front = system.window(WindowId(0)).ok().and_then(|window| {
                                                        self.windows
                                                            .iter()
@@ -417,6 +458,10 @@ impl<'a> Controller<'a>
                                       .info(info.current_editor())
                                       .is_ok_and(|e| e.selection_start != e.selection_end)
                             });
+        if front.is_none()
+        {
+            return Ok(());
+        }
         let writable = front.is_some_and(|info| info.editable(info.focus));
         for (item, enabled) in [(3, selected && writable),
                                 (4, selected),
@@ -431,6 +476,42 @@ impl<'a> Controller<'a>
 
     pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Error>
     {
+        if let Some(summary) = self.summary.as_mut()
+        {
+            let id = summary.id();
+            if matches!(event,Event::Other{kind:events::classic::EventKind::OsEvent,message,..} if message & 0xff00_0000==0x0200_0000 && message & 0x00ff_ffff==id.0)
+            {
+                self.summary = None;
+                return Ok(true);
+            }
+            if matches!(event, Event::Idle { .. })
+            {
+                summary.step(system)?;
+            }
+            if event.window() == Some(id)
+            {
+                if matches!(event, Event::Update { .. })
+                {
+                    summary.draw(system, false)?;
+                }
+                return Ok(true);
+            }
+            if matches!(event, Event::MenuCommand { .. } | Event::KeyDown { .. })
+               && system.window(WindowId(0)).is_ok_and(|window| window.id == id)
+            {
+                if system.menus()
+                         .selection(&event)?
+                         .is_some_and(|selection| selection.command == crate::menus::CLOSE)
+                {
+                    self.summary = None;
+                }
+                return Ok(true);
+            }
+        }
+        if self.windows.iter().all(Option::is_none)
+        {
+            return Ok(false);
+        }
         self.prune(system)?;
         if let Event::CloseRequested { window,
                                        .. } = event

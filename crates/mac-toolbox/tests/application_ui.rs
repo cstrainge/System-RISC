@@ -128,7 +128,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
                           mac_toolbox::quickdraw::icons::IconFlags { open: true,
                                                                      ..Default::default() }),
                "running application's icon did not use the open transform");
-    assert_eq!(region(&running, 40, 142, 72, 174),
+    assert_eq!(region(&running, 51, 142, 83, 174),
                icon(&root, "QuickDraw Test", 128, 32),
                "unlaunched copy inherited the running application's mark");
     let closed = image("closed-file-icons");

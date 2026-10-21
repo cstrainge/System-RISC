@@ -63,6 +63,12 @@ mod clipboard;
 #[path = "../../../../../../apps/finder/src/browser.rs"]
 mod browser;
 #[allow(dead_code)]
+#[path = "../../../../../../apps/finder/src/cache.rs"]
+mod cache;
+#[allow(dead_code)]
+#[path = "../../../../../../apps/finder/src/selection.rs"]
+mod selection;
+#[allow(dead_code)]
 #[path = "../../../../../../apps/finder/src/icon_view.rs"]
 mod icon_view;
 #[allow(dead_code)]

@@ -120,7 +120,8 @@ pub struct Content
     pub commands: Vec<RenderCommand>,
     pub port:     service::Port,
     fragments:    Vec<Fragment>,
-    patch:        Option<Region>
+    patch:        Option<Region>,
+    pub outline:  Option<Option<Rect>>
 }
 struct Fragment
 {
@@ -139,7 +140,8 @@ impl Content
                commands: Vec::new(),
                port: service::Port::default(),
                fragments: Vec::new(),
-               patch: None }
+               patch: None,
+               outline: None }
     }
 
     pub fn pending_patch(id: WindowId, port: service::Port, patch: Region) -> Self

@@ -1,0 +1,38 @@
+[package]
+name = "toolbox-finder-selection"
+version = "0.1.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[workspace]
+
+[[bin]]
+name = "Finder"
+path = "src/main.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "package"
+path = "src/package.rs"
+test = false
+bench = false
+
+[dependencies]
+mac-toolbox = { path = "../../.." }
+spinning_top = "=0.2.5"
+unicode-segmentation = "=1.13.3"
+mac-abi = {path="../../../../mac-abi"}
+
+[target.'cfg(not(target_arch = "riscv64"))'.dependencies]
+mac-build = { path = "../../../../../tools/mac-build" }
+
+[build-dependencies]
+mac-build = { path = "../../../../../tools/mac-build" }
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = 3
+codegen-units = 1

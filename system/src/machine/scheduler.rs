@@ -93,7 +93,10 @@ pub fn spawn(app: u64, image: usize, entry: usize) -> Result<u64, mac_abi::Statu
 {
     let mut scheduler = SCHEDULER.lock();
     let slot = scheduler.threads.iter().position(|t| t.is_none()).ok_or(mac_abi::NO_MEMORY)?;
-    let mut stack = vec![0u128; STACK_WORDS].into_boxed_slice();
+    let mut storage = alloc::vec::Vec::<u128>::new();
+    storage.try_reserve_exact(STACK_WORDS).map_err(|_| mac_abi::NO_MEMORY)?;
+    storage.resize(STACK_WORDS, 0);
+    let mut stack = storage.into_boxed_slice();
     let top = unsafe { stack.as_mut_ptr().add(stack.len()) } as usize;
     let frame = (top - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
     let mut initial = TrapFrame::default();

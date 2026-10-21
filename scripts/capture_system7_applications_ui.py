@@ -27,7 +27,7 @@ APPLICATION_POINTS = {
     'QuickDraw Test': (184, 106),
     'ResEdit': (248, 106),
     'TextEdit Exerciser': (312, 106),
-    'Z QuickDraw Copy': (56, 158),
+    'Z QuickDraw Copy': (67, 158),
 }
 
 
@@ -63,6 +63,13 @@ class Driver:
                 raise RuntimeError(text[-5000:])
             time.sleep(.01)
         raise TimeoutError('Guest did not acknowledge ' + marker + '\n' + self.log()[-5000:])
+
+    def wait_folder_ready(self, name):
+        self.wait(' name='+name+'\n')
+        row=next(line for line in reversed(self.log().splitlines())
+                 if line.startswith('FINDER_FOLDER_OPEN ') and line.endswith(' name='+name))
+        identity=row.split(' window=',1)[1].split(' ',1)[0]
+        return self.wait('FINDER_FOLDER_READY window='+identity+'\n')
 
     def send(self, events):
         vm.qmp('input-send-event', {'events': events}, self.endpoint)
@@ -114,7 +121,7 @@ def open_textedit(endpoint, serial):
     """
     driver = Driver(endpoint, serial)
     driver.click(40, 95, double=True)
-    driver.wait(' name=Applications\n')
+    driver.wait_folder_ready('Applications')
     driver.application('TextEdit Exerciser')
     driver.wait('TEXTEDIT_EXERCISER_READY\n')
     return driver
@@ -209,7 +216,7 @@ def capture(output, remap_icon=False, windows=False):
         driver.button(False)
         clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
         driver.click(40, 95, double=True)
-        driver.wait(' name=Applications\n')
+        driver.wait_folder_ready('Applications')
         # Folder-open is logged before the second click's redraw completes.
         driver.wait('FINDER_CLICK_HANDLED\n', clicks + 1)
         frame('applications-folder')

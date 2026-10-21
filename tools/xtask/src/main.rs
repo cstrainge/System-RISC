@@ -194,7 +194,8 @@ impl Workspace
         for test in ["dates", "boot_ui", "resedit", "menus", "finder_trash", "file_writes_guest",
                      "deferred_close", "get_info_ui", "events", "clipboard", "textedit_graphical",
                      "typing", "processes", "application_ui", "retained_update", "event_latency",
-                     "cursor_graphical", "busy_cursor", "panic_graphical"]
+                     "cursor_graphical", "busy_cursor", "panic_graphical", "finder_selection",
+                     "transfer_incident"]
         {
             self.private_guest_test(test)?;
         }

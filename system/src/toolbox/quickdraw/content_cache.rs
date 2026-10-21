@@ -65,7 +65,56 @@ impl Entry
                                                                           [cached..cached + count]);
             }
         }
-        if save && self.valid_len < MAX_FRAGMENTS
+        if save
+        {
+            self.mark_valid(rect);
+        }
+    }
+
+    /// Repaired holes join their adjacent cached pieces again. Without this,
+    /// a line crossing a repaired icon could miss despite every pixel being
+    /// valid, making transient outlines replay text unnecessarily.
+    fn mark_valid(&mut self, mut rect: Rect)
+    {
+        let mut index = 0;
+        while index < self.valid_len
+        {
+            let old = self.valid[index];
+            if old.left <= rect.left
+               && old.top <= rect.top
+               && old.right >= rect.right
+               && old.bottom >= rect.bottom
+            {
+                return;
+            }
+            let contained = rect.left <= old.left
+                            && rect.top <= old.top
+                            && rect.right >= old.right
+                            && rect.bottom >= old.bottom;
+            let horizontal = old.top == rect.top
+                             && old.bottom == rect.bottom
+                             && old.left <= rect.right
+                             && old.right >= rect.left;
+            let vertical = old.left == rect.left
+                           && old.right == rect.right
+                           && old.top <= rect.bottom
+                           && old.bottom >= rect.top;
+            if contained || horizontal || vertical
+            {
+                rect = Rect::new(rect.left.min(old.left),
+                                 rect.top.min(old.top),
+                                 rect.right.max(old.right),
+                                 rect.bottom.max(old.bottom));
+                self.valid_len -= 1;
+                self.valid[index] = self.valid[self.valid_len];
+                index = 0;
+            }
+            else
+            {
+                index += 1;
+            }
+        }
+        if self.valid_len < MAX_FRAGMENTS
         {
             self.valid[self.valid_len] = rect;
             self.valid_len += 1;
@@ -84,6 +133,14 @@ pub struct ContentCache
 
 impl ContentCache
 {
+    /// Cache pixels are expendable. Reserve caller headroom before opportunistic
+    /// allocation, and release old entries when other services consumed it.
+    pub fn preserve_headroom(&mut self, available: usize, reserve: usize, maximum: usize)
+    {
+        let budget = self.bytes().saturating_add(available).saturating_sub(reserve).min(maximum);
+        self.set_budget(budget);
+    }
+
     pub fn set_budget(&mut self, bytes: usize)
     {
         self.budget = Some(bytes.min(PIXEL_BUDGET));
@@ -380,5 +437,58 @@ mod tests
         canvas.set_clip(Rect::new(20, 10, 30, 20));
         cache.paint(1, bounds, &mut canvas, paint);
         assert_eq!(paints.get(), 2);
+    }
+}
+
+#[cfg(test)]
+mod repaired_hole_tests
+{
+    use super::*;
+    #[test]
+    fn repaired_item_holes_restore_a_single_warm_raster_for_crossing_outlines()
+    {
+        let mut pixels = alloc::vec![0;200*100];
+        let mut canvas = Canvas::new(&mut pixels, 200, 100);
+        let bounds = Rect::new(0, 0, 200, 100);
+        let mut cache = ContentCache::default();
+        cache.paint(1, bounds, &mut canvas, |canvas| canvas.paint_rect(bounds, 0x123456));
+        for iteration in 0..100
+        {
+            let hole = Rect::new(40, 20, 80, 65);
+            cache.invalidate_rect(1, hole);
+            canvas.set_clip(hole);
+            cache.paint(1, bounds, &mut canvas, |canvas| canvas.paint_rect(bounds, iteration));
+            canvas.set_clip(Rect::new(0, 35, 200, 36));
+            cache.paint(1, bounds, &mut canvas, |_| {
+                     panic!("crossing line must use repaired cache")
+                 });
+            assert_eq!(cache.entries[0].valid_len, 1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod headroom_tests
+{
+    use super::*;
+    #[test]
+    fn pixel_cache_yields_to_other_services_without_changing_rendered_results()
+    {
+        let mut pixels = alloc::vec![0;200*100];
+        let mut canvas = Canvas::new(&mut pixels, 200, 100);
+        let bounds = Rect::new(0, 0, 200, 100);
+        let mut cache = ContentCache::default();
+        for id in [1, 2]
+        {
+            cache.paint(id, bounds, &mut canvas, |canvas| canvas.paint_rect(bounds, id));
+        }
+        assert_eq!(cache.bytes(), 160_000);
+        cache.preserve_headroom(64_000, 128_000, PIXEL_BUDGET);
+        assert_eq!(cache.bytes(), 80_000);
+        cache.preserve_headroom(0, 128_000, PIXEL_BUDGET);
+        assert_eq!(cache.bytes(), 0);
+        cache.paint(3, bounds, &mut canvas, |canvas| canvas.paint_rect(bounds, 0x123456));
+        assert!(canvas.pixels.iter().all(|pixel| *pixel == 0x123456));
+        assert_eq!(cache.bytes(), 0, "replay may not consume reserved headroom");
     }
 }

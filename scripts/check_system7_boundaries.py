@@ -115,8 +115,16 @@ def check(args):
     for name in ['mac-finder', 'quickdraw-test', 'textedit-exerciser', 'cursor-test', 'panic-test', 'resedit']:
         direct = sorted(packages[dep['pkg']]['name'] for dep in nodes[by_name[name]]['deps']
                         if any(kind['kind'] is None for kind in dep['dep_kinds']))
-        expected = ['disc-v', 'mac-code-resource', 'mac-text', 'mac-toolbox'] if name == 'resedit' else ['mac-toolbox']
-        assert direct == expected, (name, 'runtime must use only the aggregate Toolbox', direct)
+        # Pure application helpers do not provide System services. Keep their
+        # reviewed allowlist explicit, just like ResEdit's instruction decoder.
+        # Finder's synchronized BSS snapshots and Unicode caption boundaries
+        # contain no resident manager implementation or private kernel calls.
+        helpers = {
+            'resedit': ['disc-v', 'mac-code-resource', 'mac-text'],
+            'mac-finder': ['spinning_top', 'unicode-segmentation'],
+        }
+        expected = sorted(['mac-toolbox', *helpers.get(name, [])])
+        assert direct == expected, (name, 'services must use aggregate Toolbox; helper dependencies require review', direct)
         manifest = Path(packages[by_name[name]]['manifest_path'])
         source = (manifest.parent / 'src/main.rs').read_text()
         assert 'mac_toolbox::panic_handler!();' in source, (name, 'must use the shared panic handler')

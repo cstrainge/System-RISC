@@ -13,6 +13,8 @@ mod ui;
 mod clipboard;
 mod menus;
 mod browser;
+mod cache;
+mod selection;
 mod watches;
 mod icon_view;
 mod get_info;
@@ -95,10 +97,16 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     }
     let mut about_id = WindowId(0);
     let mut clipboard = clipboard::Viewer::default();
-    for _ in 0..32
+    let _ = try_action(system, &mut alerts, watches.poll(system, &mut browser))?;
+    loop
     {
+        let _ = try_action(system, &mut alerts, browser.advance_cache(system))?;
         let event = system.next_event(mac_toolbox::events::EventMask::ALL)?;
         alerts.set_context(event);
+        if matches!(event, Event::Activate { .. })
+        {
+            browser.activate(event);
+        }
         if matches!(event, Event::Update { .. })
            && browser.contains(event.window().unwrap_or_default())
         {
@@ -106,17 +114,29 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                                &mut alerts,
                                browser.draw(system, event.window().unwrap_or_default()))?;
         }
-        if matches!(event, Event::Idle { .. })
+        if matches!(event, Event::Idle { .. }) && !browser.pending()
         {
             break;
         }
+    }
+    if alerts.window() == WindowId(0)
+    {
+        update_menus(system, &browser, &info)?;
     }
     system.log("DESKTOP_READY: Finder and native Window Manager\n")?;
     loop
     {
         let event = system.wait_event(mac_toolbox::events::EventMask::ALL,
-                                      if info.pending() { 0 } else { 30 })?;
+                                      if info.pending() || browser.pending() { 0 } else { 30 })?;
         alerts.set_context(event);
+        if matches!(event, Event::Activate { .. })
+        {
+            browser.activate(event);
+            if matches!(event,Event::Activate{window,active:true,..} if browser.contains(window))
+            {
+                let _ = try_action(system, &mut alerts, browser.refresh_running(system))?;
+            }
+        }
         if alerts.window() != WindowId(0)
         {
             let confirm = alerts.event(system, event)?;
@@ -135,10 +155,30 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             }
             continue;
         }
-        browser.prune(system)?;
+        if matches!(event,Event::Other{kind:events::classic::EventKind::OsEvent,message,..} if message & 0xff00_0000==0x0200_0000)
+        {
+            browser.prune(system)?;
+        }
+        if browser.marquee_tracking()
+           && matches!(event, Event::Idle { .. } | Event::MouseUp { .. } | Event::KeyDown { .. })
+        {
+            let _ = try_action(system, &mut alerts, browser.track(system, event))?;
+            if !browser.marquee_tracking()
+            {
+                update_menus(system, &browser, &info)?;
+            }
+            continue;
+        }
         if matches!(event, Event::Idle { .. })
         {
+            let before = (browser.can_select_all(), browser.can_new_folder(system));
             let _ = try_action(system, &mut alerts, watches.poll(system, &mut browser))?;
+            let _ = try_action(system, &mut alerts, browser.advance_cache(system))?;
+            if before != (browser.can_select_all(), browser.can_new_folder(system))
+               && alerts.window() == WindowId(0)
+            {
+                update_menus(system, &browser, &info)?;
+            }
             if alerts.window() != WindowId(0)
             {
                 continue;
@@ -153,7 +193,9 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             try_action(system, &mut alerts, info.event(system, event))?.unwrap_or(false);
         if info.take_changed()
         {
-            let _ = try_action(system, &mut alerts, browser.redraw_all(system))?;
+            // Native writes have already published exact parent notifications.
+            // Consume those instead of repainting every cached folder.
+            let _ = try_action(system, &mut alerts, watches.poll(system, &mut browser))?;
         }
         if info_handled
         {
@@ -206,14 +248,8 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             {
                 menus::NEW_FOLDER => browser.new_folder(system),
                 menus::OPEN => browser.open_selection(system),
-                menus::GET_INFO =>
-                {
-                    match browser.info_selection(system)
-                    {
-                        Some(identity) => info.open(system, identity),
-                        None => Ok(())
-                    }
-                }
+                menus::SELECT_ALL => browser.select_all(system),
+                menus::GET_INFO => info.open_selection(system, browser.selected_locations()),
                 menus::CLOSE =>
                 {
                     if let Ok(front) = system.window(WindowId(0))
@@ -288,10 +324,9 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 {
                     // A shortcut captured before the selection's menu policy
                     // updates arrives as KeyDown. Resolve it from current state.
-                    if let Some(identity) = browser.info_selection(system)
-                    {
-                        let _ = try_action(system, &mut alerts, info.open(system, identity))?;
-                    }
+                    let _ = try_action(system,
+                                       &mut alerts,
+                                       info.open_selection(system, browser.selected_locations()))?;
                 }
                 else if key == 'w'
                           && event.input()

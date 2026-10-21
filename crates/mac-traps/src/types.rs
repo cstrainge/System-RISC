@@ -112,6 +112,9 @@ pub struct InlineText<const N: usize>
 }
 impl<const N: usize> InlineText<N>
 {
+    pub const EMPTY: Self = Self { bytes:  [0; N],
+                                   length: 0 };
+
     pub fn from_reply(bytes: [u8; N], length: u32) -> Result<Self>
     {
         let length = length as usize;

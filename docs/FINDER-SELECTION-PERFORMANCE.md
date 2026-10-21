@@ -50,3 +50,29 @@ item bounds and responsiveness with a populated folder and other windows open.
 Also verify that a real folder mutation invalidates its cache and that stale scan
 results cannot replace a current snapshot. Use Cursor Test responsiveness and
 `present()` timing traces as the performance checks.
+
+## Browser milestone verified on 2026-10-21
+
+Folder windows now use bounded catalog snapshots, cached icon descriptors and
+wrapped Geneva captions. Hit tests and selection repaints perform no Files or
+font-width traps. A variable-height interval index includes every caption line;
+selection changes publish rectangle-mask patches through the public SDK. Shift
+toggle, marquee union/shrink/cancel, Select All and Multiple Items Info share
+the set model. In-flight scan invalidation preserves selected identities, and
+physical press/release pairs received during a refresh survive publication.
+
+The canonical `finder_selection` guest test checks 16 captured stages, exact
+pixels outside selection bounds, wrapped-label hit testing, no-change early
+outs, scan races and 2,000 outline moves. In the verified private run, those
+moves added 2,001 presentations with **zero scene compositions or menu paints**.
+Feedback uses a temporary resident save-under overlay; it does not append
+retained drawing history or invalidate the window raster. Reclaimable pixel
+caches preserve heap headroom for other application resources and thread stacks.
+
+Supplementary `finder_layout` tests cover UTF-8/grapheme wrapping, the 255-byte
+name limit, variable row height and tall-label interval queries. Private native
+application launching/switching, Get Info persistence across cold boot and the
+aggregate SDK conformance gate also passed. This is not a claim of complete
+Finder gesture coverage or a fresh original-system multiline visual comparison.
+Desktop set selection, resident Drag Manager, persistent drop placement and
+batch copy/move/progress remain the following parts of the authoritative spec.

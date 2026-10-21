@@ -34,6 +34,7 @@ def capture(output, corrupt=False):
     before = digest()
     process = companion = None
     endpoint = None
+    rapid_closed=[]
     try:
         with (output / 'host.log').open('w') as log:
             companion = subprocess.Popen([str(host / 'risc-host'), '--export', f'Transfer={export}'],
@@ -57,7 +58,7 @@ def capture(output, corrupt=False):
             time.sleep(.7)
             vm.qmp('screendump', {'filename': str(output / 'dismissed.ppm')}, endpoint)
         else:
-            driver.wait(' name=Transfer\n')
+            driver.wait_folder_ready('Transfer')
             driver.wait_state(lambda s: s['windows'] == '2')
             time.sleep(.15)
             vm.qmp('screendump', {'filename': str(output / 'plain-entries.ppm')}, endpoint)
@@ -68,13 +69,47 @@ def capture(output, corrupt=False):
             (export / 'Arrived.txt').write_bytes(b'Arrived while Finder was running\n')
             driver.wait('FINDER_FOLDER_CHANGED ', previous)
             vm.qmp('screendump', {'filename': str(output / 'refreshed.ppm')}, endpoint)
+            front=int(driver.state()['front'])
+            marker=f'FINDER_FOLDER_READY window={front}\n'
+            ready=driver.log().count(marker)
             driver.key('n', ('ctrl',))
             driver.wait('FINDER_NEW_FOLDER ')
-            time.sleep(.15)
+            driver.wait(marker,ready)
             vm.qmp('screendump', {'filename': str(output / 'created-folder.ppm')}, endpoint)
+            # Exercise actual provider directories, live subscriptions, and
+            # physical close boxes. No app-local fake windows or SDK stubs.
+            for level in range(3):
+                opened=driver.log().count('FINDER_FOLDER_OPEN ')
+                driver.key('o',('ctrl',))
+                log=driver.wait('FINDER_FOLDER_OPEN ',opened)
+                row=next(line for line in reversed(log.splitlines()) if line.startswith('FINDER_FOLDER_OPEN '))
+                identity=int(row.split(' window=',1)[1].split(' ',1)[0])
+                rapid_closed.append(identity)
+                driver.wait(f'FINDER_FOLDER_READY window={identity}\n')
+                if level<2:
+                    marker=f'FINDER_FOLDER_READY window={identity}\n'
+                    ready=driver.log().count(marker)
+                    created=driver.log().count('FINDER_NEW_FOLDER ')
+                    driver.key('n',('ctrl',))
+                    driver.wait('FINDER_NEW_FOLDER ',created)
+                    driver.wait(marker,ready)
+            vm.qmp('screendump',{'filename':str(output/'rapid-before.ppm')},endpoint)
+            # New folder windows use the standard 16px Finder cascade.
+            for x,y in [(80,100),(64,84),(48,68)]:
+                # QEMU synchronizes each input-send-event batch only once;
+                # down/up must be separate physical reports, as on a mouse.
+                driver.click(x,y)
+            driver.wait_state(lambda state:state['windows']=='2')
+            root=next(line for line in driver.log().splitlines() if line.startswith('FINDER_FOLDER_OPEN '))
+            root_id=int(root.split(' window=',1)[1].split(' ',1)[0])
+            driver.key('n')
+            driver.wait_state(lambda state:int(state['front'])==root_id)
+            driver.move(350,350)
+            time.sleep(.7)
+            vm.qmp('screendump',{'filename':str(output/'rapid-close.ppm')},endpoint)
         (output / 'capture.json').write_text(json.dumps({
             'original_before': before, 'original_after': digest(), 'corrupt': corrupt,
-            'state': driver.state(), 'export': str(export)
+            'state': driver.state(), 'export': str(export), 'rapid_closed_windows':rapid_closed
         }, indent=2) + '\n')
     finally:
         try:

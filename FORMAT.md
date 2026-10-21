@@ -249,6 +249,23 @@ history. Exact damaged spans invalidate the pixel cache; menus and unrelated
 window content retain their cached pixels. Normal BeginUpdate/EndUpdate still
 replace a complete scene.
 
+Graphics operation39 begins the same transaction from a bounded rectangle list:
+at most1056 records, each8bytes, four little-endian i16 values in left/top/right/
+bottom order. System sweeps edges into an exact region before staging. This avoids
+one region trap per selected item. Operation40 sets a transient content outline
+(verb0 removes it; verb1 supplies bounds). It follows an open drawing transaction's
+commit/cancellation. Only the active window shows tracking feedback. System
+temporarily paints visible outline pixels alongside its cursor overlay, presents
+the damaged edges, and restores the underlying backbuffer. Outline motion never
+appends retained commands or enters the scene compositor. Menu/window tracking
+temporarily suppresses that feedback.
+
+Finder's `gSum`20031 descriptor contains `SUM1`, big-endian i16 width/height,
+then four left/top/right/bottom rectangles for count, logical size, allocated
+size and error status (40bytes total). `STR#`20030 supplies its labels. This
+Multiple Items window owns a stable selection snapshot and computes recursive
+totals in bounded steps, replacing only its value rows when finished.
+
 FILE requests and metadata are defined in mac-abi/src/files.rs. File IDs are
 opaque mounted-volume IDs plus persistent catalog IDs; volume and open handles include
 a generation. Reads copy into caller storage, and both forks have independent

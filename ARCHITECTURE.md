@@ -53,6 +53,10 @@ applications with resource forks, installed under `Applications`; their code is
 no longer part of Finder. Each app owns its resource-defined menus/windows and calls only the
 aggregate Toolbox facade. Closing its last window or choosing Quit returns from
 its native entry point; System cleans up its state and retires its thread stack.
+Pure application helpers are explicitly allowlisted by the boundary check:
+Finder uses safe synchronization for its local catalog snapshots and Unicode
+grapheme boundaries for cached captions. These contain no System service code;
+all filesystem, graphics, window and event operations still use `mac-toolbox`.
 
 The resident right-hand application menu uses live Process Manager state. It
 switches foreground windows, ordinary menus and keyboard event ownership and

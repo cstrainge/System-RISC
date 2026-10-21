@@ -12,6 +12,15 @@ pub struct DirectoryCursor
 {
     cursor: DirectoryScanCursor
 }
+impl DirectoryCursor
+{
+    /// Revision of this snapshot, assigned on the first successful scan step.
+    /// A stale continuation is rejected by the resident service.
+    pub const fn revision(&self) -> u64
+    {
+        self.cursor.revision
+    }
+}
 /// Fixed-size returned metadata keeps the SDK usable without an allocator.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
