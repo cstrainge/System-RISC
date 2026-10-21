@@ -74,5 +74,18 @@ name limit, variable row height and tall-label interval queries. Private native
 application launching/switching, Get Info persistence across cold boot and the
 aggregate SDK conformance gate also passed. This is not a claim of complete
 Finder gesture coverage or a fresh original-system multiline visual comparison.
-Desktop set selection, resident Drag Manager, persistent drop placement and
-batch copy/move/progress remain the following parts of the authoritative spec.
+The desktop now also caches mounted-volume names, wrapped captions and geometry,
+and shares the interval index and selection set. Modifier clicks, marquee
+cancellation, Select All and multi-selection press/release semantics use masked
+desktop transactions. Selection activation repaints only selected items; the
+asynchronous deactivate edge from a previous folder does not erase a desktop
+double-click. Explicit mount discovery refreshes reconcile selected volume IDs.
+Desktop error subjects come from the same cache, including wrapped captions.
+
+The expanded guest gate checks 25 stages and 4,000 outline moves across windows
+and desktop, with zero enumeration/measurement calls on those pointer paths.
+It also verifies volume double-clicks across the asynchronous deactivate edge.
+Native mounted-provider browsing/New Folder and rapid close regression checks,
+application launching/switching, and cold-boot Get Info persistence passed.
+Resident Drag Manager, persistent drop placement and batch copy/move/progress
+remain the following parts of the authoritative spec.

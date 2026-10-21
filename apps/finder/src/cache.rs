@@ -10,6 +10,73 @@ use crate::{browser::Location,
             icon_view::{Caption, Icon, Layout},
             selection::CAPACITY};
 
+/// Shared cached spatial index for folder and desktop icon bounds. Geometry is
+/// rebuilt only when layout changes; queries do no allocation or Toolbox work.
+pub struct BoundsIndex<const N: usize, const M: usize>
+{
+    order:      [u16; N],
+    max_bottom: [i16; M],
+    count:      usize
+}
+impl<const N: usize, const M: usize> BoundsIndex<N, M>
+{
+    pub const EMPTY: Self = Self { order:      [0; N],
+                                   max_bottom: [0; M],
+                                   count:      0 };
+
+    pub fn rebuild(&mut self, count: usize, bounds: impl Fn(usize) -> Rect)
+    {
+        assert!(N.is_power_of_two() && M == N * 2 && count <= N && N <= u16::MAX as usize);
+        self.count = count;
+        for (i, slot) in self.order[..count].iter_mut().enumerate()
+        {
+            *slot = i as u16;
+        }
+        self.order[..count].sort_unstable_by_key(|&i| bounds(i as usize).top);
+        self.max_bottom.fill(i16::MIN);
+        for at in 0..count
+        {
+            self.max_bottom[N + at] = bounds(self.order[at] as usize).bottom;
+        }
+        for node in (1..N).rev()
+        {
+            self.max_bottom[node] = self.max_bottom[node * 2].max(self.max_bottom[node * 2 + 1]);
+        }
+    }
+
+    pub fn intersecting(&self, rect: Rect, bounds: impl Fn(usize) -> Rect,
+                        mut visit: impl FnMut(usize))
+    {
+        if !rect.is_empty()
+        {
+            self.visit(1, 0, N, rect, &bounds, &mut visit);
+        }
+    }
+
+    fn visit(&self, node: usize, begin: usize, end: usize, rect: Rect,
+             bounds: &impl Fn(usize) -> Rect, visit: &mut impl FnMut(usize))
+    {
+        if begin >= self.count
+           || self.max_bottom[node] <= rect.top
+           || bounds(self.order[begin] as usize).top >= rect.bottom
+        {
+            return;
+        }
+        if end - begin == 1
+        {
+            let index = self.order[begin] as usize;
+            if overlaps(bounds(index), rect)
+            {
+                visit(index);
+            }
+            return;
+        }
+        let mid = begin + (end - begin) / 2;
+        self.visit(node * 2, begin, mid, rect, bounds, visit);
+        self.visit(node * 2 + 1, mid, end, rect, bounds, visit);
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Item
 {
@@ -56,9 +123,7 @@ pub struct Metadata
     pub volume:         Option<VolumeInfo>,
     pub width:          i16,
     pub extent:         Point,
-    // Sorted icon tops permit row-bounded hit tests and marquee edge queries.
-    pub by_top:         [u16; CAPACITY],
-    pub max_bottom:     [i16; CAPACITY * 2],
+    pub index:          BoundsIndex<CAPACITY, { CAPACITY * 2 }>,
     pub previous:       [Option<Location>; CAPACITY],
     pub previous_count: usize,
     pub restored:       crate::selection::Selection,
@@ -81,8 +146,7 @@ impl Metadata
                width:          0,
                extent:         Point { h: 0,
                                        v: 0 },
-               by_top:         [0; CAPACITY],
-               max_bottom:     [i16::MIN; CAPACITY * 2],
+               index:          BoundsIndex::EMPTY,
                previous:       [None; CAPACITY],
                previous_count: 0,
                restored:       crate::selection::Selection::EMPTY,
@@ -140,9 +204,8 @@ impl Folder<'_>
         }
         let mut layout = Layout::new(width);
         metadata.extent = Point::default();
-        for index in 0..metadata.count
+        for item in &mut self.items[..metadata.count]
         {
-            let item = &mut self.items[index];
             item.icon_bounds = crate::browser::entry_rect(&mut layout, &item.entry, item.caption);
             let label = item.caption.bounds(item.icon_bounds);
             item.bounds = Rect::new(item.icon_bounds.left.min(label.left),
@@ -151,55 +214,17 @@ impl Folder<'_>
                                     label.bottom);
             metadata.extent.h = metadata.extent.h.max(item.bounds.right);
             metadata.extent.v = metadata.extent.v.max(item.bounds.bottom);
-            metadata.by_top[index] = index as u16;
         }
-        metadata.by_top[..metadata.count].sort_unstable_by_key(|&index| {
-                                             self.items[index as usize].bounds.top
-                                         });
-        // Variable-height captions need an interval tree, not a binary search
-        // on bottoms (which cease to be sorted when tops are sorted).
-        metadata.max_bottom.fill(i16::MIN);
-        for at in 0..metadata.count
-        {
-            metadata.max_bottom[CAPACITY + at] =
-                self.items[metadata.by_top[at] as usize].bounds.bottom;
-        }
-        for node in (1..CAPACITY).rev()
-        {
-            metadata.max_bottom[node] =
-                metadata.max_bottom[node * 2].max(metadata.max_bottom[node * 2 + 1]);
-        }
+        metadata.index.rebuild(metadata.count, |index| self.items[index].bounds);
         metadata.width = width;
     }
 
     /// O(log n + intersecting rows), including unusually tall saved captions.
     pub fn intersecting(&self, rect: Rect, mut visit: impl FnMut(usize, Item))
     {
-        self.visit_intervals(1, 0, CAPACITY, rect, &mut visit);
-    }
-
-    fn visit_intervals(&self, node: usize, begin: usize, end: usize, rect: Rect,
-                       visit: &mut impl FnMut(usize, Item))
-    {
-        if begin >= self.count
-           || self.max_bottom[node] <= rect.top
-           || self.items[self.by_top[begin] as usize].bounds.top >= rect.bottom
-        {
-            return;
-        }
-        if end - begin == 1
-        {
-            let index = self.by_top[begin] as usize;
-            let item = self.items[index];
-            if overlaps(item.bounds, rect)
-            {
-                visit(index, item);
-            }
-            return;
-        }
-        let mid = begin + (end - begin) / 2;
-        self.visit_intervals(node * 2, begin, mid, rect, visit);
-        self.visit_intervals(node * 2 + 1, mid, end, rect, visit);
+        self.index.intersecting(rect,
+                                |index| self.items[index].bounds,
+                                |index| visit(index, self.items[index]));
     }
 }
 pub fn overlaps(a: Rect, b: Rect) -> bool

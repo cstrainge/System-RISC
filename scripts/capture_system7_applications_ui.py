@@ -65,11 +65,17 @@ class Driver:
         raise TimeoutError('Guest did not acknowledge ' + marker + '\n' + self.log()[-5000:])
 
     def wait_folder_ready(self, name):
-        self.wait(' name='+name+'\n')
-        row=next(line for line in reversed(self.log().splitlines())
-                 if line.startswith('FINDER_FOLDER_OPEN ') and line.endswith(' name='+name))
-        identity=row.split(' window=',1)[1].split(' ',1)[0]
-        return self.wait('FINDER_FOLDER_READY window='+identity+'\n')
+        # Volume discovery also logs "name=...". Wait for an actual folder-open
+        # record before selecting its window identity and completed snapshot.
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            rows = [line for line in self.log().splitlines()
+                    if line.startswith('FINDER_FOLDER_OPEN ') and line.endswith(' name='+name)]
+            if rows:
+                identity = rows[-1].split(' window=',1)[1].split(' ',1)[0]
+                return self.wait('FINDER_FOLDER_READY window='+identity+'\n')
+            time.sleep(.01)
+        raise TimeoutError('Guest did not open folder '+name+'\n'+self.log()[-5000:])
 
     def send(self, events):
         vm.qmp('input-send-event', {'events': events}, self.endpoint)

@@ -105,16 +105,10 @@ impl<'a> Alerts<'a>
         let mut subject = crate::browser::Text::<256>::default();
         let window = self.context.and_then(|e| e.window()).unwrap_or(WindowId(0));
         if let Some(event) = self.context.filter(|e| e.window().is_none())
+           && let Some(index) = crate::browser::desktop::hit(event.input().at)
+           && let Some(item) = crate::browser::desktop::item(index)
         {
-            for i in 0..system.files().volume_count()?
-            {
-                if crate::icon_view::volume_bounds(i).contains(event.input().at)
-                {
-                    let v = system.files().volume_at(i)?;
-                    let _ = subject.write_str(v.name());
-                    break;
-                }
-            }
+            let _ = subject.write_str(item.name.as_str());
         }
         if subject.as_str().is_empty()
         {

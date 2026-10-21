@@ -132,6 +132,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         if matches!(event, Event::Activate { .. })
         {
             browser.activate(event);
+            let _ = try_action(system, &mut alerts, browser.sync_desktop_activation(system))?;
             if matches!(event,Event::Activate{window,active:true,..} if browser.contains(window))
             {
                 let _ = try_action(system, &mut alerts, browser.refresh_running(system))?;

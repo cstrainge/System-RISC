@@ -26,10 +26,10 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
     {
         assert!(!serial.contains(error), "{serial}");
     }
-    assert!(serial.contains("FINDER_SELECTION_USERSPACE_PASS stages=16 outline_steps=2000\n"),
+    assert!(serial.contains("FINDER_SELECTION_USERSPACE_PASS stages=25 outline_steps=4000\n"),
             "{serial}");
     let stages = report["stages"].as_array().unwrap();
-    assert_eq!(stages.len(), 16);
+    assert_eq!(stages.len(), 25);
     assert!(serial.contains("FINDER_INFO_MULTIPLE_TOTALS selected=10 logical=0 \
                              allocated=Some(0) error=None"),
             "{serial}");
@@ -112,9 +112,37 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
         }
     }
     assert!(changed > 0);
+    assert_eq!(frame("desktop-clear"), frame("desktop-band-cancel"), "desktop Escape left pixels");
+    assert_eq!(frame("desktop-all"), frame("desktop-outline"), "desktop outline left pixels");
+    assert_eq!(frame("desktop-single"), frame("desktop-collapse"));
+    let desktop_all = stages.iter().find(|s| s["name"] == "desktop-all").unwrap();
+    let desktop_outline = stages.iter().find(|s| s["name"] == "desktop-outline").unwrap();
+    assert_eq!(desktop_all["state"]["compositions"], desktop_outline["state"]["compositions"]);
+    assert_eq!(desktop_all["state"]["menu_paints"], desktop_outline["state"]["menu_paints"]);
+    let trash: Vec<i16> = serial.lines()
+                                .find(|line| line.starts_with("FINDER_DESKTOP_TRASH_BOUNDS "))
+                                .unwrap()
+                                .split_whitespace()
+                                .skip(1)
+                                .map(|s| s.parse().unwrap())
+                                .collect();
+    let before = frame("desktop-single");
+    let after = frame("desktop-shift");
+    for y in 0..480i16
+    {
+        for x in 0..640i16
+        {
+            let at = (y as usize * 640 + x as usize) * 3;
+            if before[at..at + 3] != after[at..at + 3]
+            {
+                assert!(x >= trash[0] && y >= trash[1] && x < trash[2] && y < trash[3],
+                        "desktop selection escaped at {x},{y}");
+            }
+        }
+    }
     let actions: Vec<_> =
         serial.lines().filter(|line| line.starts_with("FINDER_SELECTION_ACTION ")).collect();
     assert!(actions.len() >= 13, "{serial}");
     assert!(actions.iter().all(|line| line.contains("files=0 widths=0")), "{serial}");
-    fs::write(output.join("acceptance.json"),serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","pixel_comparisons":comparisons,"outline_steps":2000,"pointer_file_calls":0,"pointer_text_measurements":0,"selection_actions":actions})).unwrap()).unwrap();
+    fs::write(output.join("acceptance.json"),serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","pixel_comparisons":comparisons,"outline_steps":4000,"pointer_file_calls":0,"pointer_text_measurements":0,"selection_actions":actions})).unwrap()).unwrap();
 }

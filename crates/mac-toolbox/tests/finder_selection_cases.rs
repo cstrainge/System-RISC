@@ -366,7 +366,105 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     fill(system, &mut browser)?;
     require(system, browser.selection_count() == 1, "refresh lost a physical click")?;
     checkpoint(system, "wrapped-refreshed")?;
-    system.log("FINDER_SELECTION_USERSPACE_PASS stages=16 outline_steps=2000\n")?;
+    let desktop_click = |browser: &mut Browser, at, when, shift| {
+        browser.click(system,
+                      Event::MouseDown { window: None,
+                                         input:  input(at, when, shift) })
+    };
+    let root_point = Point { h: 600,
+                             v: 44 };
+    let trash_point = Point { h: 592,
+                              v: 436 };
+    let empty = Point { h: 540,
+                        v: 400 };
+    action(system, &mut browser, "desktop-single", 1, false, |browser| {
+        desktop_click(browser, root_point, 6000, false)
+    })?;
+    checkpoint(system, "desktop-single")?;
+    let trash = crate::browser::desktop::item(crate::browser::desktop::count() - 1).unwrap();
+    let mut geometry = Text::<160>::default();
+    let _ = writeln!(&mut geometry,
+                     "FINDER_DESKTOP_TRASH_BOUNDS {} {} {} {}",
+                     trash.bounds.left, trash.bounds.top, trash.bounds.right, trash.bounds.bottom);
+    system.log(geometry.as_str())?;
+    action(system, &mut browser, "desktop-shift", 2, false, |browser| {
+        desktop_click(browser, trash_point, 6100, true)
+    })?;
+    checkpoint(system, "desktop-shift")?;
+    action(system, &mut browser, "desktop-clear", 0, false, |browser| {
+        desktop_click(browser, empty, 6200, false)
+    })?;
+    checkpoint(system, "desktop-clear")?;
+    let band_end = Point { h: 630,
+                           v: 474 };
+    action(system, &mut browser, "desktop-band-trash", 1, false, |browser| {
+        browser.track(system,
+                      Event::Idle { input: input(band_end, 6201, false),
+                                    tag:   0 })
+    })?;
+    checkpoint(system, "desktop-band-trash")?;
+    action(system, &mut browser, "desktop-band-stationary", 1, true, |browser| {
+        browser.track(system,
+                      Event::Idle { input: input(band_end, 6202, false),
+                                    tag:   0 })
+    })?;
+    action(system, &mut browser, "desktop-band-cancel", 0, false, |browser| {
+        browser.track(system,
+                      Event::from(abi::events::Event { kind:      abi::events::EventKind::KeyDown,
+                                                       message:   0x351b,
+                                                       when:      6203,
+                                                       where_:    band_end,
+                                                       modifiers: 0 }))
+    })?;
+    checkpoint(system, "desktop-band-cancel")?;
+    action(system, &mut browser, "desktop-all", 2, false, |browser| browser.select_all(system))?;
+    checkpoint(system, "desktop-all")?;
+    action(system, &mut browser, "desktop-all-noop", 2, true, |browser| {
+        browser.select_all(system)
+    })?;
+    action(system, &mut browser, "desktop-shift-band", 2, true, |browser| {
+        desktop_click(browser, empty, 6300, true)
+    })?;
+    let before = COMMITS.load(Ordering::Relaxed);
+    for step in 0..2000
+    {
+        browser.track(system,
+                      Event::Idle { input: input(Point { h: 570 + (step % 60) as i16,
+                                                         v: 474 },
+                                                 6301 + step,
+                                                 false),
+                                    tag:   0 })?;
+        system.next_event(EventMask::from_bits_retain(0))?;
+    }
+    require(system,
+            COMMITS.load(Ordering::Relaxed) == before,
+            "desktop outline rebuilt retained drawing")?;
+    browser.track(system,
+                  Event::MouseUp { window: None,
+                                   input:  input(band_end, 8401, false) })?;
+    require(system, browser.selection_count() == 2, "desktop marquee lost base selection")?;
+    checkpoint(system, "desktop-outline")?;
+    action(system, &mut browser, "desktop-selected-press", 2, true, |browser| {
+        desktop_click(browser, root_point, 8500, false)
+    })?;
+    action(system, &mut browser, "desktop-selected-release", 1, false, |browser| {
+        browser.track(system,
+                      Event::MouseUp { window: None,
+                                       input:  input(root_point, 8501, false) })
+    })?;
+    checkpoint(system, "desktop-collapse")?;
+    // Delivery of the previous folder's deactivate edge may occur between the
+    // two desktop presses. It must preserve the desktop target's click pair.
+    browser.activate(Event::Activate { window: wrapped_window,
+                                       active: false,
+                                       input:  input(root_point, 8502, false) });
+    desktop_click(&mut browser, root_point, 8510, false)?;
+    let root_window = crate::cache::with(0, |folder| folder.window);
+    require(system,
+            system.window(WindowId(0))?.id == root_window,
+            "deactivation erased desktop volume double-click")?;
+    checkpoint(system, "desktop-double-open")?;
+    system.log("FINDER_SELECTION_USERSPACE_PASS stages=25 outline_steps=4000\n")?;
     loop
     {
         system.wait_event(EventMask::from_bits_retain(0), 30)?;

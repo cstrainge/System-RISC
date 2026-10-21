@@ -247,8 +247,9 @@ volumes expose their saved positions without attempting writes.
   scroll-coordinate conversion and multiple-item offsets; cancellation and
   read-only rejection preserve every source's metadata.
 
-Long filenames wrap at a bounded caption width (currently 96px of Geneva 9 ink,
-plus selection inset). Cache line breaks and measured widths once per folder
+Long filenames wrap at a bounded caption width (currently up to 96px of Geneva
+9 ink in folder windows, or 60px in the desktop's 64px volume cells, plus selection
+inset). Cache line breaks and measured widths once per folder
 snapshot, preserving the entire UTF-8 name, preferring word/grapheme boundaries.
 Automatic rows reserve the full caption height. Saved positions stay authoritative.
 Hit tests, marquee intersections, selection masks and scroll extents include

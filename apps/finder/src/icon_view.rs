@@ -37,9 +37,20 @@ impl Caption
                                    count: 0,
                                    width: 0 };
 
-    pub fn measure(name: &str, mut measure: impl FnMut(&str) -> Result<i16, Error>)
+    pub fn measure(name: &str, measure: impl FnMut(&str) -> Result<i16, Error>)
                    -> Result<Self, Error>
     {
+        Self::measure_with_limit(name, CAPTION_WIDTH, measure)
+    }
+
+    pub fn measure_with_limit(name: &str, limit: i16,
+                              mut measure: impl FnMut(&str) -> Result<i16, Error>)
+                              -> Result<Self, Error>
+    {
+        if !(1..=CAPTION_WIDTH).contains(&limit)
+        {
+            return Err(Error::BadArgument);
+        }
         if name.len() > 255
         {
             return Err(Error::BadArgument);
@@ -50,7 +61,7 @@ impl Caption
         {
             let rest = &name[start..];
             let width = measure(rest)?.max(0);
-            if width <= CAPTION_WIDTH
+            if width <= limit
             {
                 result.push(name.len(), width);
                 break;
@@ -67,7 +78,7 @@ impl Caption
             while low < high
             {
                 let mid = low + (high - low) / 2;
-                if measure(&rest[..ends[mid] as usize])? <= CAPTION_WIDTH
+                if measure(&rest[..ends[mid] as usize])? <= limit
                 {
                     low = mid + 1;
                 }
@@ -85,7 +96,7 @@ impl Caption
                 for (at, ch) in cluster.char_indices().skip(1)
                 {
                     let next = at + ch.len_utf8();
-                    if measure(&cluster[..next])? > CAPTION_WIDTH
+                    if measure(&cluster[..next])? > limit
                     {
                         break;
                     }
@@ -113,7 +124,7 @@ impl Caption
             let width = measure(&rest[..end])?.max(0);
             // Geneva 9 and its missing-glyph fallback fit individual scalars.
             // Do not publish out-of-bounds geometry if that contract changes.
-            if width > CAPTION_WIDTH
+            if width > limit
             {
                 return Err(Error::BadArgument);
             }
@@ -264,14 +275,6 @@ pub fn label_bounds(icon: Rect, width: i16) -> Rect
               icon.bottom,
               origin.saturating_add(width).saturating_add(2),
               icon.bottom.saturating_add(LINE_HEIGHT))
-}
-
-pub fn draw_item(draw: &mut impl Drawing, id: impl Into<Icon>, icon: Rect, name: &str,
-                 state: State)
-                 -> Result<Rect, Error>
-{
-    let caption = Caption::measure(name, |text| draw.text_width(text))?;
-    draw_item_measured(draw, id, icon, name, caption, state)
 }
 
 /// Cached folder views measure and wrap captions once per snapshot.

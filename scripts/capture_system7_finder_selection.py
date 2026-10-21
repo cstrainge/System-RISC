@@ -12,7 +12,8 @@ import system7_vm as vm
 
 STAGES = ['baseline', 'single', 'shift-add', 'selected-noop', 'shift-toggle',
           'marquee-three', 'marquee-shrink', 'marquee-release', 'select-all',
-          'outline-stress', 'refreshed', 'multiple-info', 'wrapped', 'wrapped-selected', 'wrapped-noop', 'wrapped-refreshed']
+          'outline-stress', 'refreshed', 'multiple-info', 'wrapped', 'wrapped-selected', 'wrapped-noop', 'wrapped-refreshed', 'desktop-single', 'desktop-shift', 'desktop-clear', 'desktop-band-trash',
+          'desktop-band-cancel', 'desktop-all', 'desktop-outline', 'desktop-collapse', 'desktop-double-open']
 
 def capture(output):
     output=Path(output).resolve()
@@ -28,7 +29,7 @@ def capture(output):
     try:
         for stage in STAGES:
             marker='FINDER_SELECTION_STAGE '+stage+'\n'
-            deadline=time.monotonic()+(90 if stage=='outline-stress' else 20)
+            deadline=time.monotonic()+(90 if stage in ('outline-stress', 'desktop-outline') else 20)
             while marker not in driver.log():
                 if 'FINDER_SELECTION_FAIL' in driver.log() or time.monotonic()>deadline:
                     raise RuntimeError('No checkpoint '+stage+'\n'+driver.log()[-6000:])
@@ -45,7 +46,7 @@ def capture(output):
             stages.append(row)
             (output/'stages.json').write_text(json.dumps(stages,indent=2)+'\n')
             driver.key('spc')
-        driver.wait('FINDER_SELECTION_USERSPACE_PASS stages=16 outline_steps=2000\n')
+        driver.wait('FINDER_SELECTION_USERSPACE_PASS stages=25 outline_steps=4000\n')
         report={'original_before':before,'original_after':{name:packaging.sha(original/name) for name in before},'stages':stages,'fixture_elf_sha256':packaging.sha(binary),'assertion_owner':'mac-toolbox/tests/finder_selection{,_cases}.rs'}
     finally:
         try:

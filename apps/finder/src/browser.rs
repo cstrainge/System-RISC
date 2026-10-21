@@ -1,5 +1,7 @@
 //! Finder catalog windows. Every volume, entry and fork comes from the File Manager.
 use core::{cell::Cell, fmt::Write};
+#[path = "desktop.rs"]
+pub(crate) mod desktop;
 
 use mac_toolbox::{System,
                   files::{CatalogInfo, ROOT_ID, VolumeInfo},
@@ -48,19 +50,18 @@ struct Marquee
 #[derive(Default)]
 pub struct Browser
 {
-    front:             WindowId,
-    startup_writable:  bool,
-    windows:           [Option<FolderWindow>; 8],
-    desktop_selection: Option<VolumeId>,
-    desktop_active:    bool,
-    last_click:        Option<(WindowId, VolumeId, Cnid, u32)>,
-    trash_selected:    bool,
-    drag:              Option<IconDrag>,
-    marquee:           Option<Marquee>,
-    trash_hover:       bool,
-    pub startup:       VolumeId,
-    trash_cached:      Cell<u32>,
-    failures:          [Cell<Option<Error>>; 8]
+    front:            WindowId,
+    startup_writable: bool,
+    windows:          [Option<FolderWindow>; 8],
+    desktop:          desktop::State,
+    desktop_active:   bool,
+    last_click:       Option<(WindowId, VolumeId, Cnid, u32)>,
+    drag:             Option<IconDrag>,
+    marquee:          Option<Marquee>,
+    trash_hover:      bool,
+    pub startup:      VolumeId,
+    trash_cached:     Cell<u32>,
+    failures:         [Cell<Option<Error>>; 8]
 }
 
 pub struct Text<const N: usize = 160>
@@ -311,11 +312,15 @@ impl Browser
 {
     pub fn marquee_tracking(&self) -> bool
     {
-        self.marquee.is_some()
+        self.marquee.is_some() || self.desktop.marquee.is_some()
     }
 
     pub fn can_select_all(&self) -> bool
     {
+        if self.desktop_active
+        {
+            return desktop::count() > 0;
+        }
         self.front_slot()
             .is_some_and(|slot| cache::with(slot, |folder| folder.ready && folder.count != 0))
     }
@@ -582,6 +587,7 @@ impl Browser
         }
         else if let Some(mounted) = system.files().open_item(entry.volume, entry.id)?
         {
+            desktop::invalidate();
             self.open(system,
                       Location { volume: mounted.id,
                                  folder: ROOT_ID })?;
@@ -639,59 +645,10 @@ impl Browser
         self.windows.iter().flatten().any(|w| w.window == id)
     }
 
-    pub fn draw_desktop(&self, system: &System<'_>) -> Result<(), Error>
-    {
-        let desktop = system.quickdraw().desktop();
-        desktop.begin_update()?;
-        let result = (|| {
-            let mut draw = Port { system,
-                                  graphics: desktop.graphics() };
-            for index in 0..system.files().volume_count()?
-            {
-                let volume = system.files().volume_at(index)?;
-                icon_view::draw_item(&mut draw,
-                                     volume_icon(&volume),
-                                     icon_view::volume_bounds(index),
-                                     volume.name(),
-                                     State { selected: self.desktop_selection == Some(volume.id),
-                                             active:   self.desktop_active,
-                                             open:     self.is_open(Location { volume: volume.id,
-                                                                               folder: ROOT_ID }),
-                                             desktop:  true })?;
-            }
-            let mut label = [0u8; 768];
-            let label = crate::ui::text(system, 0, &mut label)?;
-            icon_view::draw_item(&mut draw,
-                                 if self.cached_trash_count() > 0
-                                 {
-                                     standard::FULL_TRASH
-                                 }
-                                 else
-                                 {
-                                     standard::TRASH
-                                 },
-                                 icon_view::TRASH_BOUNDS,
-                                 label,
-                                 State { desktop:  true,
-                                         active:   self.desktop_active || self.trash_hover,
-                                         selected: self.trash_selected || self.trash_hover,
-                                         open:     self.is_open(Location::default()) })?;
-            Ok(())
-        })();
-        if result.is_ok()
-        {
-            desktop.end_update()?;
-        }
-        else
-        {
-            let _ = desktop.cancel_update();
-        }
-        result
-    }
-
     pub fn open(&mut self, system: &System<'_>, location: Location) -> Result<WindowId, Error>
     {
         self.desktop_active = false;
+        self.sync_desktop_activation(system)?;
         if let Some(existing) = self.windows.iter().flatten().find(|w| w.location == location)
         {
             system.select_window(existing.window)?;
@@ -1130,40 +1087,7 @@ impl Browser
         let mut target: Option<(WindowId, VolumeId, Cnid)> = None;
         if event.window().is_none()
         {
-            system.select_desktop()?;
-            self.desktop_active = true;
-            self.front = WindowId(0);
-            let mut draw = Port { system,
-                                  graphics: system.quickdraw().desktop().graphics() };
-            for index in 0..system.files().volume_count()?
-            {
-                let volume = system.files().volume_at(index)?;
-                let icon = icon_view::volume_bounds(index);
-                let label =
-                    Caption::measure(volume.name(), |text| draw.text_width(text))?.bounds(icon);
-                if icon.contains(event.input().at) || label.contains(event.input().at)
-                {
-                    target = Some((WindowId(0), volume.id, ROOT_ID));
-                    self.desktop_selection = Some(volume.id);
-                    break;
-                }
-            }
-            self.trash_selected = false;
-            if target.is_none()
-            {
-                self.desktop_selection = None;
-                let mut label = [0; 768];
-                let label = crate::ui::text(system, 0, &mut label)?;
-                let icon = icon_view::TRASH_BOUNDS;
-                if icon.contains(event.input().at) || Caption::measure(label, |text| {
-                                                          draw.text_width(text)
-                                                      })?.bounds(icon)
-                                                         .contains(event.input().at)
-                {
-                    self.trash_selected = true;
-                    target = Some((WindowId(0), VolumeId::NONE, Cnid::UNSAVED));
-                }
-            }
+            target = self.click_desktop(system, event)?;
         }
         else if let Some(slot) =
             self.windows
@@ -1231,10 +1155,11 @@ impl Browser
                                                   content.h.saturating_add(1),
                                                   content.v.saturating_add(1)),
                                         |index, item| {
-                                            if item.icon_bounds.contains(content)
-                                               || item.caption
-                                                      .bounds(item.icon_bounds)
-                                                      .contains(content)
+                                            if (item.icon_bounds.contains(content)
+                                                || item.caption
+                                                       .bounds(item.icon_bounds)
+                                                       .contains(content))
+                                               && hit.is_none_or(|(old, _)| index > old)
                                             {
                                                 hit = Some((index, item));
                                             }
@@ -1274,7 +1199,8 @@ impl Browser
             self.change_selection(system, slot, next, &[])?;
             if was_desktop
             {
-                self.draw_desktop(system)?;
+                let selected = self.desktop.selected.get();
+                self.change_desktop_selection(system, selected, selected)?;
             }
         }
 
@@ -1302,10 +1228,6 @@ impl Browser
             let entry = system.files().catalog(volume, folder)?;
             self.open_entry(system, &entry)?;
         }
-        if event.window().is_none()
-        {
-            self.draw_desktop(system)?;
-        }
         system.log("FINDER_CLICK_HANDLED\n")
     }
 
@@ -1315,7 +1237,12 @@ impl Browser
                                  active,
                                  .. } = event
         {
-            self.last_click = None;
+            // A desktop press deactivates the former folder asynchronously.
+            // That unrelated edge must not erase the new desktop click pair.
+            if active || self.last_click.is_some_and(|(target, _, _, _)| target == window)
+            {
+                self.last_click = None;
+            }
             if !active
                && let Some(folder) =
                    self.windows.iter_mut().flatten().find(|folder| folder.window == window)
@@ -1324,6 +1251,8 @@ impl Browser
             }
             if active
             {
+                self.desktop.marquee = None;
+                self.desktop.pressed = None;
                 self.desktop_active = false;
                 self.front = window;
             }
@@ -1365,6 +1294,10 @@ impl Browser
 
     pub fn track(&mut self, system: &System<'_>, event: Event) -> Result<(), Error>
     {
+        if self.track_desktop(system, event)?
+        {
+            return Ok(());
+        }
         if let Some(folder) =
             self.windows.iter_mut().flatten().find(|folder| folder.pending_clicks[0].is_some())
         {
@@ -1396,7 +1329,7 @@ impl Browser
             if self.trash_hover != hover
             {
                 self.trash_hover = hover;
-                self.draw_desktop(system)?;
+                self.redraw_trash_icon(system)?;
             }
             if matches!(event, Event::MouseUp { .. })
             {
@@ -1491,6 +1424,12 @@ impl Browser
 
     pub fn select_all(&mut self, system: &System<'_>) -> Result<(), Error>
     {
+        if self.desktop_active
+        {
+            return self.change_desktop_selection(system,
+                                                 Selection::all(desktop::count()),
+                                                 Selection::EMPTY);
+        }
         let front = system.window(WindowId(0))?.id;
         let Some(slot) = self.windows.iter().position(|w| w.is_some_and(|w| w.window == front))
         else
@@ -1503,17 +1442,16 @@ impl Browser
 
     pub fn open_selection(&mut self, system: &System<'_>) -> Result<(), Error>
     {
-        if self.desktop_active && self.trash_selected
-        {
-            self.open(system, Location::default())?;
-            return Ok(());
-        }
         if self.desktop_active
-           && let Some(volume) = self.desktop_selection
         {
-            self.open(system,
-                      Location { volume,
-                                 folder: ROOT_ID })?;
+            let selected = self.desktop.selected.get();
+            for index in selected.iter()
+            {
+                if let Some(item) = desktop::item(index)
+                {
+                    self.open(system, item.location())?;
+                }
+            }
             return Ok(());
         }
         let front = system.window(WindowId(0)).ok().map(|w| w.id);
@@ -1531,12 +1469,6 @@ impl Browser
                 let entry = system.files().catalog(location.volume, location.folder)?;
                 self.open_entry(system, &entry)?;
             }
-        }
-        else if let Some(volume) = self.desktop_selection
-        {
-            self.open(system,
-                      Location { volume,
-                                 folder: ROOT_ID })?;
         }
         Ok(())
     }
@@ -1664,7 +1596,7 @@ impl Browser
     {
         if self.desktop_active
         {
-            return usize::from(self.desktop_selection.is_some());
+            return self.desktop.selected.get().len();
         }
         self.front_slot().map_or(0, |slot| self.windows[slot].unwrap().selected.len())
     }
@@ -1674,10 +1606,11 @@ impl Browser
         let mut result = [None; CAPACITY];
         if self.desktop_active
         {
-            result[0] = self.desktop_selection.map(|volume| {
-                                                  Location { volume,
-                                                             folder: ROOT_ID }
-                                              });
+            for (index, volume) in self.desktop_volumes().enumerate()
+            {
+                result[index] = Some(Location { volume,
+                                                folder: ROOT_ID });
+            }
         }
         else if let Some(slot) = self.front_slot()
         {
@@ -1693,10 +1626,10 @@ impl Browser
     {
         if self.desktop_active
         {
-            self.desktop_selection.map(|volume| {
-                                      Location { volume,
-                                                 folder: ROOT_ID }
-                                  })
+            self.desktop_volumes().next().map(|volume| {
+                                             Location { volume,
+                                                        folder: ROOT_ID }
+                                         })
         }
         else
         {
@@ -1725,7 +1658,7 @@ impl Browser
 
     pub fn can_open(&self, _system: &System<'_>) -> bool
     {
-        self.desktop_active && (self.trash_selected || self.desktop_selection.is_some())
+        self.desktop_active && !self.desktop.selected.get().is_empty()
         || self.front_slot().is_some_and(|slot| !self.windows[slot].unwrap().selected.is_empty())
     }
 
