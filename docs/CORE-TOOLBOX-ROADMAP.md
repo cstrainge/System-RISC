@@ -81,8 +81,10 @@ prevent unmount/reuse during pending catalog I/O; mounting no longer enumerates
 the root. Both-fork open/read/seek/tell/close, independent marks, EOF, Drop and
 stale fork IDs pass through the public SDK in the guest. Deferred resident exit
 cleanup retains marks until Close acknowledgement; a real second-app guest test
-forgets two forks, exits and successfully unmounts after cleanup. This is partial
-P17: provider cursor/path and resource
+forgets two forks, exits and successfully unmounts after cleanup. Public path
+lookup/output pass Unicode, relative/dot/parent, root and bounded-output checks;
+metadata-only ancestry does not enumerate unused directory children. This is
+partial P17: provider cursor and resource
 inspection/application-loading dispatch, native write-back,
 normal launcher exports, disconnect/pending-I/O-exit/performance acceptance and P16 remain
 to be completed. See [the exact filesystem contract and coverage](FILESYSTEM-INTERFACE.md).

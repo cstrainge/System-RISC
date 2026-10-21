@@ -21,6 +21,9 @@ pub const SCAN_PENDING: u32 = 0;
 pub const SCAN_ENTRY: u32 = 1;
 pub const SCAN_DONE: u32 = 2;
 pub const CHILD_COUNT_UNKNOWN: u32 = u32::MAX;
+/// Catalog/Lookup flag: obtain an exact directory child count. Metadata-only
+/// traversal leaves an unscanned count unknown and performs no enumeration.
+pub const INCLUDE_CHILD_COUNT: u32 = 1;
 /// Provider source capabilities, used by class-neutral interface discovery.
 pub const SOURCE_HOST_EXPORT: u64 = 1;
 pub const SOURCE_FILE: u64 = 2;

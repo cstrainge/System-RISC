@@ -12,7 +12,12 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
         return None;
     }
     let call = unsafe { &mut *pointer.cast::<FileCall>() };
-    let catalog = matches!(call.operation, files::CATALOG | files::PARENT | files::DIRECTORY_ENTRY);
+    let catalog = matches!(call.operation,
+                           files::CATALOG
+                           | files::PARENT
+                           | files::DIRECTORY_ENTRY
+                           | files::LOOKUP
+                           | files::PATH);
     let opening = call.operation == files::OPEN;
     let fork_io = matches!(call.operation, files::READ | files::CLOSE);
     if !matches!(call.operation,
@@ -37,8 +42,10 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
        || call.offset != 0
        || call.position != 0
        || call.length != 0
-       || call.name_length != 0
-       || (call.operation != files::READ && call.capacity != 0)
+       || (call.operation != files::LOOKUP && call.name_length != 0)
+       || call.name_length > 4096
+       || (call.name_length != 0 && call.name.is_null())
+       || (!matches!(call.operation, files::READ | files::PATH) && call.capacity != 0)
        || call.capacity > 1024 * 1024
        || (call.capacity != 0 && call.output.is_null())
        || call.operation == files::HOST_EXPORT_COUNT && (call.volume != 0 || call.index != 0)
@@ -47,6 +54,20 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
     {
         return Some(BAD_ARGUMENT as i64);
     }
+    let name = if call.name_length == 0
+    {
+        ""
+    }
+    else
+    {
+        match core::str::from_utf8(unsafe {
+                  core::slice::from_raw_parts(call.name, call.name_length)
+              })
+        {
+            Ok(name) => name,
+            Err(_) => return Some(BAD_ARGUMENT as i64)
+        }
+    };
     let output = if call.capacity == 0
     {
         &mut [][..]
@@ -74,7 +95,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
                 Ok(Some(_)) => None,
                 Ok(None) =>
                 {
-                    Some(manager.request_owned(owner, call, "", output)
+                    Some(manager.request_owned(owner, call, name, output)
                                 .map_or_else(|status| status, |()| OK))
                 }
                 Err(error) => Some(error)
@@ -87,7 +108,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
             Err(error) => return Some(error.status() as i64)
         }
     }
-    Some(super::provider::runtime::request(owner, call, output) as i64)
+    Some(super::provider::runtime::request(owner, call, name, output) as i64)
 }
 /// # Safety
 /// Request and nested buffers must be live exclusive borrows for their sizes.

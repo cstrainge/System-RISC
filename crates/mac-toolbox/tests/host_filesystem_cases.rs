@@ -44,6 +44,26 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     let (nested, forks) = if a.name() == "Child" { (a, b) } else { (b, a) };
     require(nested.name() == "Child" && nested.parent == folder.id && nested.data_length == 15)?;
     require(files.parent(writable.id, nested.id)? == exact_folder)?;
+    system.log("HOST_FS_STAGE paths\n")?;
+    require(files.lookup(writable.id, root.id, "//tools/./Child")? == nested)?;
+    require(files.lookup(writable.id, folder.id, "../CAFE\u{301}")? == file)?;
+    require(files.lookup(writable.id, nested.id, "")? == nested)?;
+    require(files.lookup(writable.id, folder.id, "../../")? == root)?;
+    require(files.lookup(writable.id, folder.id, ".")? == exact_folder)?;
+    require(files.lookup(writable.id, root.id, "/Tools/")? == exact_folder)?;
+    require(files.lookup(writable.id, nested.id, ".") == Err(Error::BadArgument))?;
+    require(files.lookup(writable.id, root.id, "/Café/") == Err(Error::BadArgument))?;
+    require(files.lookup(writable.id, root.id, "Missing") == Err(Error::NotFound))?;
+    expect_path(system, writable.id, root.id, "/")?;
+    expect_path(system, writable.id, file.id, "/Café")?;
+    expect_path(system, writable.id, nested.id, "/Tools/Child")?;
+    let mut small = [0xa5; 2];
+    let mut call = mac_toolbox::abi::files::FileCall { operation: mac_toolbox::abi::files::PATH,
+                                                       volume: writable.id.0,
+                                                       cnid: nested.id.0,
+                                                       ..Default::default() };
+    require(system.client().file(&mut call, "", &mut small) == Err(Error::NoMemory)
+            && small == [0xa5; 2])?;
     require(forks.name() == "Forks"
             && forks.data_length == 131089
             && forks.resource_length == 70003)?;
@@ -88,6 +108,33 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     files.unmount(read_only.id)?;
     require(files.volume_count()? == before)?;
     Ok(())
+}
+
+fn expect_path(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid, expected: &str)
+               -> Result<(), Error>
+{
+    struct Text
+    {
+        bytes: [u8; 256],
+        len:   usize
+    }
+    impl core::fmt::Write for Text
+    {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result
+        {
+            let end = self.len.checked_add(text.len()).ok_or(core::fmt::Error)?;
+            self.bytes
+                .get_mut(self.len..end)
+                .ok_or(core::fmt::Error)?
+                .copy_from_slice(text.as_bytes());
+            self.len = end;
+            Ok(())
+        }
+    }
+    let mut text = Text { bytes: [0; 256],
+                          len:   0 };
+    system.files().path(volume, node, &mut text)?;
+    require(&text.bytes[..text.len] == expected.as_bytes())
 }
 
 fn check_forks(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid)

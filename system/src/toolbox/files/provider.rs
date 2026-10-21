@@ -6,6 +6,7 @@ use mac_filesystem_interface as fs;
 
 use super::*;
 mod forks;
+mod path;
 pub(super) use forks::Open;
 #[cfg(target_arch = "riscv64")]
 pub(super) mod runtime;

@@ -800,6 +800,10 @@ The exact header/metadata fields and allocated operation numbers are documented
 in [FILESYSTEM-INTERFACE.md](docs/FILESYSTEM-INTERFACE.md); their shared checked
 codec lives in `crates/mac-filesystem-interface`. This adds a class contract and
 does not change the generic module entry boundary or the native code envelope.
+Catalog/Lookup flag bit 0 requests an exact child count. Metadata-only ancestry
+queries leave unscanned counts unknown instead of enumerating unused children;
+all other flag bits are rejected. These are the same schema/version 1 producers
+and consumers rebuilt together, with no older project decoder.
 Native FileCall operations 26, 27 and 28 are host-export count, mount host export
 (index selector), and unmount volume. All other input fields must be zero except
 the volume for unmount. Mounted identities are issued by resident File Manager,

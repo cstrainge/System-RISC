@@ -542,6 +542,75 @@ fn serve(fs: &mut Filesystem<Host>, op: mac_filesystem_interface::Operation,
     run(fs.execute(op as u32, &bytes))
 }
 #[test]
+fn metadata_only_ancestry_does_not_enumerate_folders_and_count_requests_are_explicit()
+{
+    use mac_filesystem_interface::{self as fs, Arguments as A, Operation as O};
+    let (temp, _, _, _) = seeded();
+    let mut filesystem = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    let args = A { volume,
+                   ..Default::default() };
+    serve(&mut filesystem, O::Mount, args).unwrap();
+    let bytes = serve(&mut filesystem,
+                      O::Catalog,
+                      A { node: 2,
+                          ..args }).unwrap();
+    assert_eq!(fs::Metadata::decode(&bytes).unwrap().child_count, fs::CHILD_COUNT_UNKNOWN);
+    assert!(!filesystem.transport().calls.contains(&Operation::ListBegin));
+    let bytes = serve(&mut filesystem,
+                      O::Catalog,
+                      A { node: 2,
+                          flags: fs::INCLUDE_CHILD_COUNT,
+                          ..args }).unwrap();
+    assert_eq!(fs::Metadata::decode(&bytes).unwrap().child_count, 1);
+    let before =
+        filesystem.transport().calls.iter().filter(|&&op| op == Operation::ListBegin).count();
+    let bytes = serve(&mut filesystem,
+                      O::Lookup,
+                      A { parent: 2,
+                          payload: b"Tools",
+                          ..args }).unwrap();
+    assert_eq!(fs::Metadata::decode(&bytes).unwrap().child_count, fs::CHILD_COUNT_UNKNOWN);
+    assert_eq!(filesystem.transport()
+                         .calls
+                         .iter()
+                         .filter(|&&op| op == Operation::ListBegin)
+                         .count(),
+               before);
+    let bytes = serve(&mut filesystem,
+                      O::Lookup,
+                      A { parent: 2,
+                          payload: b"Tools",
+                          flags: fs::INCLUDE_CHILD_COUNT,
+                          ..args }).unwrap();
+    assert_eq!(fs::Metadata::decode(&bytes).unwrap().child_count, 1);
+    assert_eq!(filesystem.transport()
+                         .calls
+                         .iter()
+                         .filter(|&&op| op == Operation::ListBegin)
+                         .count(),
+               before + 1);
+    let before = filesystem.transport().calls.len();
+    for (op, args) in [(O::Catalog,
+                        A { node: 2,
+                            flags: 2,
+                            ..args }),
+                       (O::Lookup,
+                        A { parent: 2,
+                            flags: 2,
+                            payload: b"Tools",
+                            ..args }),
+                       (O::Scan,
+                        A { parent: 2,
+                            flags: 1,
+                            ..args })]
+    {
+        assert_eq!(serve(&mut filesystem, op, args).unwrap_err().cause, Cause::Invalid);
+    }
+    assert_eq!(filesystem.transport().calls.len(), before);
+}
+#[test]
 fn filesystem_class_exchanges_metadata_and_both_forks_through_owned_byte_requests()
 {
     use mac_filesystem_interface::{self as fs, Arguments as A, Operation as O};
@@ -650,7 +719,7 @@ fn filesystem_class_rejects_invalid_requests_and_read_only_mutations_without_hos
     assert_eq!(serve(&mut filesystem,
                      O::Catalog,
                      A { node: 2,
-                         flags: 1,
+                         flags: 2,
                          ..args }).unwrap_err()
                                   .cause,
                Cause::Invalid);

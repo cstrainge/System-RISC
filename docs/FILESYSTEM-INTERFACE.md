@@ -36,9 +36,9 @@ Operation is the broker operation number. Unused arguments must be zero:
 | Exports (1) | none | u32 export count |
 | Mount (2) | resident volume token; auxiliary = source/export selector | Mount descriptor |
 | Unmount (3) | volume | empty; busy if open forks/transactions |
-| Catalog (4) | volume, CNID in node | Metadata |
+| Catalog (4) | volume, CNID in node; optional INCLUDE_CHILD_COUNT flag | Metadata |
 | Scan (5) | volume, parent CNID, child index in offset | u32 pending=0/entry=1/done=2, then Metadata for entry |
-| Lookup (6) | volume, parent, UTF-8 name payload | Metadata |
+| Lookup (6) | volume, parent, UTF-8 name payload; optional INCLUDE_CHILD_COUNT flag | Metadata |
 | Open (7) | volume, node, resident open token | u64 data length, u64 resource length |
 | Read (8) | volume, token, fork flag 0/1, offset, capacity in length | verified fork bytes, at most 64 KiB |
 | Close (9) | volume, token | empty |
@@ -71,7 +71,10 @@ Metadata uses a 112-byte header followed by its UTF-8 name and comment:
 An absent backup date requires its value to be zero. Names/comments each occupy
 at most 255 UTF-8 bytes; filesystem-specific storage normalization stays with the
 provider. Directory fork lengths must be zero. An unscanned directory's child
-count is explicitly `u32::MAX`; Catalog/Lookup obtain the exact count. Root CNID
+count is explicitly `u32::MAX`. Catalog/Lookup flag bit 0 (`INCLUDE_CHILD_COUNT`)
+requests an exact directory child count; all other flag bits are rejected.
+Without it, metadata queries do not enumerate the target directory just for a
+count. A cached exact count may still be returned. Root CNID
 is 2, directory=true, parent=0. Other entries have a parent CNID of at least 2.
 
 A Mount reply has a 48-byte header then root Metadata: schema/size at 0/2,
@@ -185,7 +188,18 @@ forks, deliberately forgets both wrappers and exits. The first app then waits fo
 actual process exit and successful unmount after deferred Close acknowledgements.
 Exit during pending I/O, disconnect and latency gates remain outstanding.
 
-Incremental public cursor scans, full path lookup, Resource Manager inspection
+Public path lookup/output also pass in the native guest: absolute/relative
+paths, repeated separators, dot/parent components, root clamping, Unicode folding,
+empty paths, trailing-slash errors, missing entries and output-buffer refusal
+without partial writes. The resident owns input bytes across waits and binds
+replay to the same request; no caller pointer is retained. Ancestry construction
+checks cycles, 256 total nodes and a 4096-byte output bound, accumulating names
+once and assembling the final path once. Intermediate metadata queries omit
+child counts; only a final directory lookup requests its exact count. Real-host
+component tests assert no enumeration for metadata-only queries and reject
+unknown flags before host I/O.
+
+Incremental public cursor scans, Resource Manager inspection
 and application loading from provider forks remain to be connected. This does
 not yet make external directories usable in Finder.
 
@@ -201,7 +215,8 @@ filesystem engine is wrapped by a narrow native entry with a private 1 MiB heap
 and an exact HDIR dependency. The allocation helper is a separate
 `mac-driver-alloc` crate so allocation-free modules do not acquire an allocator
 requirement through Cargo feature unification. These packages are not installed
-in the default disk yet: provider cursor/path/fork dispatch, write-back, normal
+in the default disk yet: provider cursor/resource-inspection/application-loading
+dispatch, write-back, normal
 launcher export configuration and complete public-SDK filesystem acceptance
 remain in progress. Private guest mounting works; that is not yet a usable host
 directory in Finder or a mounted StuffIt volume, and is not a hard latency

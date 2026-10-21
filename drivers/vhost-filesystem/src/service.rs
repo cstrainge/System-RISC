@@ -59,8 +59,9 @@ impl<R: Rpc> Filesystem<R>
             Operation::Catalog =>
             {
                 self.find(args.volume, args.node).await?;
-                if self.cached_node(args.volume, args.node)?.metadata.kind
-                   != mac_fork_file::Kind::File
+                if args.flags & fs::INCLUDE_CHILD_COUNT != 0
+                   && self.cached_node(args.volume, args.node)?.metadata.kind
+                      != mac_fork_file::Kind::File
                 {
                     self.scan(args.volume, args.node).await?;
                 }
@@ -73,7 +74,8 @@ impl<R: Rpc> Filesystem<R>
                         .await?
                         .metadata
                         .catalog_id;
-                if self.cached_node(args.volume, id)?.metadata.kind != mac_fork_file::Kind::File
+                if args.flags & fs::INCLUDE_CHILD_COUNT != 0
+                   && self.cached_node(args.volume, id)?.metadata.kind != mac_fork_file::Kind::File
                 {
                     self.scan(args.volume, id).await?;
                 }
@@ -217,7 +219,11 @@ impl<R: Rpc> Filesystem<R>
                             ..volume }
             }
             Operation::Unmount | Operation::Refresh => volume,
-            Operation::Catalog => node,
+            Operation::Catalog =>
+            {
+                Arguments { flags: a.flags,
+                            ..node }
+            }
             Operation::Scan =>
             {
                 Arguments { parent: a.parent,
@@ -227,6 +233,7 @@ impl<R: Rpc> Filesystem<R>
             Operation::Lookup =>
             {
                 Arguments { parent: a.parent,
+                            flags: a.flags,
                             payload: a.payload,
                             ..volume }
             }
@@ -269,6 +276,8 @@ impl<R: Rpc> Filesystem<R>
             _ => return Err(Cause::Unsupported.into())
         };
         if a != accepted
+           || matches!(op, Operation::Catalog | Operation::Lookup)
+              && a.flags & !fs::INCLUDE_CHILD_COUNT != 0
            || op != Operation::Exports && a.volume == 0
            || matches!(op,
                        Operation::Open

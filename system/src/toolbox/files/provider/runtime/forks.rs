@@ -231,7 +231,9 @@ pub(super) fn start(owner: u64, thread: u64, key: Key, call: &mut FileCall, outp
                      provider,
                      step: Step::File(action),
                      job,
-                     abandoned: false })
+                     abandoned: false,
+                     input: String::new(),
+                     path: None })
 }
 pub(super) fn pump_cleanup()
 {
@@ -296,7 +298,9 @@ pub(super) fn pump_cleanup()
                                          provider,
                                          step,
                                          job,
-                                         abandoned: true });
+                                         abandoned: true,
+                                         input: String::new(),
+                                         path: None });
             REAP.store(true, Ordering::Release);
         }
         Err(_) => quarantine(handle)

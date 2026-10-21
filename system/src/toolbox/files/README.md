@@ -27,7 +27,9 @@ unmount, catalog, direct-child enumeration and parent queries now have private
 public-SDK guest acceptance. Pending provider reads pin their mounted generation
 through actual completion; unmount rejects a live read lease. Mount itself never
 enumerates the host root. Both fork types now support owned open/read/seek/tell/
-close and Drop through native guest SDK checks. Provider cursor/path, resource
+close and Drop through native guest SDK checks. Provider lookup/path output also
+pass native SDK checks with owned request bytes, bounded/cycle-checked ancestry
+and metadata-only intermediate queries. Provider cursor, resource
 inspection/application loading and write dispatch are still in progress; see
 [the filesystem class contract](../../../../docs/FILESYSTEM-INTERFACE.md).
 

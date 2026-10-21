@@ -1,7 +1,7 @@
 //! Park/replay boundary for owned filesystem operations. No app pointer, Files
 //! guard or native I/O stack handoff survives a provider callback or wait.
 #![forbid(unsafe_code)]
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use mac_abi::{files::*, *};
@@ -11,6 +11,7 @@ use spinning_top::Spinlock;
 
 use crate::drivers::{OwnedJob, jobs::Failure};
 mod forks;
+mod paths;
 pub(in crate::toolbox::files::provider) use forks::request_fork_cleanup;
 
 const MAX_WAITERS: usize = crate::toolbox::handles::Kind::Threads.capacity();
@@ -35,6 +36,18 @@ enum Step
     Mount(u32),
     Unmount(u32),
     File(forks::Action),
+    Lookup
+    {
+        volume: u32,
+        node:   Option<u32>,
+        parent: Option<u32>,
+        at:     usize
+    },
+    Path
+    {
+        volume: u32,
+        node:   u32
+    },
     Catalog
     {
         volume: u32,
@@ -65,7 +78,9 @@ struct Flight
     provider:  u32,
     step:      Step,
     job:       OwnedJob,
-    abandoned: bool
+    abandoned: bool,
+    input:     String,
+    path:      Option<super::path::Builder>
 }
 // Keep the terminal metadata inline: allocation after publishing a mounted
 // object would make delivery depend on another fallible heap reservation.
@@ -82,6 +97,7 @@ enum Reply
     Mounted(VolumeInfo),
     Entry(CatalogInfo),
     Opened(u32, u64),
+    Path(Vec<u8>),
     Read
     {
         bytes:    Vec<u8>,
@@ -114,7 +130,7 @@ fn submit_args(provider: u32, op: Operation, args: Arguments<'_>) -> Result<Owne
     {
         Operation::Exports => 4,
         Operation::Mount => fs::MOUNT_BYTES + fs::METADATA_BYTES + 510,
-        Operation::Catalog => fs::METADATA_BYTES + 510,
+        Operation::Catalog | Operation::Lookup => fs::METADATA_BYTES + 510,
         Operation::Scan => 4 + fs::METADATA_BYTES + 510,
         Operation::Open => 16,
         Operation::Read => usize::try_from(args.length).map_err(|_| BAD_ARGUMENT)?,
@@ -189,6 +205,7 @@ fn advance(mut flight: Flight) -> Progress
     match flight.step
     {
         Step::File(_) => forks::advance(flight, result, never_sent),
+        Step::Lookup { .. } | Step::Path { .. } => paths::advance(flight, result),
         Step::Catalog { volume,
                         node } =>
         {
@@ -214,6 +231,7 @@ fn advance(mut flight: Flight) -> Progress
                                   Operation::Catalog,
                                   Arguments { volume,
                                               node: parent,
+                                              flags: fs::INCLUDE_CHILD_COUNT,
                                               ..Default::default() })
                 }
                 other => finish_read(volume, other)
@@ -304,6 +322,17 @@ fn reply(call: &mut FileCall, output: &mut [u8], result: Result<Reply, Status>) 
 {
     match result
     {
+        Ok(Reply::Path(bytes)) =>
+        {
+            call.length = bytes.len() as u64;
+            if output.len() < bytes.len()
+            {
+                return NO_MEMORY;
+            }
+            output[..bytes.len()].copy_from_slice(&bytes);
+            call.transferred = bytes.len();
+            OK
+        }
         Ok(Reply::Opened(handle, length)) =>
         {
             call.handle = handle;
@@ -362,7 +391,7 @@ fn waiting(flight: Flight) -> Status
     result.err().unwrap_or(SERVICE_BUSY)
 }
 
-pub(crate) fn request(owner: u64, call: &mut FileCall, output: &mut [u8]) -> Status
+pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut [u8]) -> Status
 {
     let thread = crate::context::current_thread().0;
     if thread <= 1
@@ -379,7 +408,10 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, output: &mut [u8]) -> Sta
     let mut flights = FLIGHTS.lock();
     if let Some(at) = flights.iter().position(|f| f.thread == thread)
     {
-        if flights[at].key != key || flights[at].owner != owner || flights[at].abandoned
+        if flights[at].key != key
+           || flights[at].owner != owner
+           || flights[at].abandoned
+           || flights[at].input != name
         {
             flights[at].abandoned = true;
             let _ = flights[at].job.cancel();
@@ -407,6 +439,10 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, output: &mut [u8]) -> Sta
         }
     }
     drop(flights);
+    if matches!(call.operation, LOOKUP | PATH)
+    {
+        return paths::start(owner, thread, key, call, name);
+    }
     if matches!(call.operation, OPEN | READ | CLOSE)
     {
         return forks::start(owner, thread, key, call, output);
@@ -446,6 +482,14 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, output: &mut [u8]) -> Sta
              Operation::Catalog,
              Arguments { volume,
                          node,
+                         flags: if call.operation == CATALOG || node == ROOT_ID
+                         {
+                             fs::INCLUDE_CHILD_COUNT
+                         }
+                         else
+                         {
+                             0
+                         },
                          ..Default::default() })
         };
         let job = match submit_args(provider, operation, args)
@@ -463,7 +507,9 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, output: &mut [u8]) -> Sta
                                 provider,
                                 step,
                                 job,
-                                abandoned: false });
+                                abandoned: false,
+                                input: String::new(),
+                                path: None });
     }
     let provider = if call.operation == UNMOUNT_VOLUME
     {
@@ -532,7 +578,9 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, output: &mut [u8]) -> Sta
                      provider,
                      step,
                      job,
-                     abandoned: false })
+                     abandoned: false,
+                     input: String::new(),
+                     path: None })
 }
 
 /// Thread exit only requests cleanup. The resident record retains buffers,
