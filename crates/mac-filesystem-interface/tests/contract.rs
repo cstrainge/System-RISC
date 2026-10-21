@@ -118,8 +118,9 @@ fn mount_writability_and_unknown_capacity_are_explicit_for_every_filesystem()
 #[test]
 fn filesystem_projection_keeps_length_delimited_rust_text_and_rejects_self_parent_cycles()
 {
-    // The filesystem name contract excludes NUL/slash/colon, not every Unicode
-    // control character. Comments are Rust strings, not legacy C strings.
+    // The class excludes NUL but leaves separators and normalization policy to
+    // providers (including classic Mac names addressed by ID). Comments are
+    // Rust strings, not legacy C strings.
     let value = Metadata { name: "Line\nBreak",
                            comment: "before\0after",
                            ..metadata() };
@@ -137,4 +138,111 @@ fn filesystem_projection_keeps_length_delimited_rust_text_and_rejects_self_paren
         assert_eq!(invalid.encode(&mut untouched), Err(Error::Invalid));
         assert_eq!(untouched, [0xa5; 1024]);
     }
+}
+
+#[test]
+fn creation_properties_are_lossless_bounded_and_separate_from_persistent_ids()
+{
+    let mut props = fs::FileProperties::fresh("Cafe\u{301}", 3_875_171_696_123_456);
+    props.modified += 42;
+    props.backup = Some(0);
+    props.finder_info = [0x53; 32];
+    props.attributes = 1;
+    props.comment = "before\0after\r🦀";
+    let mut bytes = [0; 2048];
+    let count = props.encode(&mut bytes).unwrap();
+    assert_eq!(fs::FileProperties::decode(&bytes[..count]), Ok(props));
+    for len in 0..count
+    {
+        assert!(fs::FileProperties::decode(&bytes[..len]).is_err());
+    }
+    assert!(fs::FileProperties::decode(&bytes[..count + 1]).is_err());
+    for at in [0, 2, 10, 12]
+    {
+        let old = bytes[at];
+        bytes[at] = 0xff;
+        assert!(fs::FileProperties::decode(&bytes[..count]).is_err());
+        bytes[at] = old;
+    }
+    bytes[12] = 0;
+    bytes[32] = 1;
+    assert_eq!(fs::FileProperties::decode(&bytes[..count]), Err(Error::Invalid));
+    let mut untouched = [0xa5; 2048];
+    let long = "a".repeat(256);
+    assert_eq!(fs::FileProperties { comment: &long,
+                                    ..props }.encode(&mut untouched),
+               Err(Error::Invalid));
+    assert_eq!(untouched, [0xa5; 2048]);
+    let decomposed = "e\u{301}".repeat(127) + "x";
+    assert!(decomposed.len() > 255);
+    let props = fs::FileProperties::fresh(&decomposed, 0);
+    let count = props.encode(&mut bytes).unwrap();
+    assert_eq!(fs::FileProperties::decode(&bytes[..count]), Ok(props));
+    assert_eq!(Arguments { payload: decomposed.as_bytes(),
+                           ..Default::default() }.name(),
+               Ok(decomposed.as_str()));
+    let name = "Quarter/Final";
+    let count = Metadata { name,
+                           ..metadata() }.encode(&mut bytes)
+                                         .unwrap();
+    assert_eq!(Metadata::decode(&bytes[..count]).unwrap().name, name);
+}
+
+#[test]
+fn published_receipts_preserve_actual_file_and_volume_and_reject_malformed_envelopes()
+{
+    let file = metadata();
+    let root = Metadata { id: 2,
+                          parent: 0,
+                          directory: true,
+                          data_length: 0,
+                          resource_length: 0,
+                          child_count: 42,
+                          ..file };
+    let value = fs::WriteReceipt { file,
+                                   volume: Mount { capabilities: fs::READ | fs::WRITE,
+                                                   filesystem: *b"HOST",
+                                                   filesystem_version: 1,
+                                                   capacity: None,
+                                                   root } };
+    let mut bytes = [0; fs::MAX_WRITE_RECEIPT_BYTES];
+    let n = value.encode(&mut bytes).unwrap();
+    assert_eq!(fs::WriteReceipt::decode(&bytes[..n]), Ok(value));
+    let abort = fs::AbortReceipt(Some(value));
+    let mut receipt_bytes = [0; fs::MAX_ABORT_RECEIPT_BYTES];
+    let m = abort.encode(&mut receipt_bytes).unwrap();
+    assert_eq!(m, n + 4);
+    assert_eq!(fs::AbortReceipt::decode(&receipt_bytes[..m]), Ok(abort));
+    assert!(fs::AbortReceipt::decode(&receipt_bytes[..m - 1]).is_err());
+    assert!(fs::AbortReceipt::decode(&receipt_bytes[..m + 1]).is_err());
+    receipt_bytes[0] = 2;
+    assert!(fs::AbortReceipt::decode(&receipt_bytes[..m]).is_err());
+    assert_eq!(fs::AbortReceipt::decode(&[0; 4]), Ok(fs::AbortReceipt(None)));
+    assert!(fs::AbortReceipt::decode(&[0; 5]).is_err());
+    assert!(fs::AbortReceipt::decode(&[1, 0, 0, 0]).is_err());
+    assert_eq!(fs::WriteReceipt::decode(&bytes[..n]).unwrap().file.backup, Some(0));
+    for len in 0..n
+    {
+        assert!(fs::WriteReceipt::decode(&bytes[..len]).is_err());
+    }
+    assert_eq!(fs::WriteReceipt::decode(&bytes[..n + 1]), Err(Error::Length));
+    for at in [0, 2, 4, 8, 12]
+    {
+        let old = bytes[at];
+        bytes[at] = 0xff;
+        assert!(fs::WriteReceipt::decode(&bytes[..n]).is_err());
+        bytes[at] = old;
+    }
+    let mut untouched = [0xa5; fs::MAX_WRITE_RECEIPT_BYTES];
+    let invalid = fs::WriteReceipt { file: root,
+                                     ..value };
+    assert_eq!(invalid.encode(&mut untouched), Err(Error::Invalid));
+    assert_eq!(untouched, [0xa5; fs::MAX_WRITE_RECEIPT_BYTES]);
+    assert_eq!(value.encode(&mut untouched[..n - 1]), Err(Error::Length));
+    assert_eq!(untouched, [0xa5; fs::MAX_WRITE_RECEIPT_BYTES]);
+    assert_eq!(fs::WriteReceipt { volume: Mount { capacity: Some((1, 2)),
+                                                  ..value.volume },
+                                  ..value }.encode(&mut untouched),
+               Err(Error::Invalid));
+    assert_eq!(untouched, [0xa5; fs::MAX_WRITE_RECEIPT_BYTES]);
 }

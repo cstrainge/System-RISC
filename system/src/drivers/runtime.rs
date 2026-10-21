@@ -541,11 +541,8 @@ pub(crate) fn find_kernel_provider(class: ClassId, version: u32, capabilities: u
 {
     RUNTIME.with(|runtime| {
                runtime.registry
-                      .find(class, version)
-                      .find(|(_, interface)| {
-                          interface.offer.capabilities & capabilities == capabilities
-                      })
-                      .map(|(id, _)| id)
+                      .select(class, version, capabilities)
+                      .map_err(status)?
                       .ok_or(NOT_FOUND)
            })
            .map_err(crate::state::AccessError::status)?

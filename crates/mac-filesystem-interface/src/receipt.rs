@@ -1,0 +1,126 @@
+//! Actual published file and volume metadata. Receipt storage is reserved before
+//! committing so reporting success never depends on a later heap allocation.
+use super::*;
+pub const WRITE_RECEIPT_BYTES: usize = 16;
+pub const MAX_WRITE_RECEIPT_BYTES: usize =
+    WRITE_RECEIPT_BYTES + MAX_METADATA_BYTES + MAX_MOUNT_BYTES;
+pub const MAX_ABORT_RECEIPT_BYTES: usize = 4 + MAX_WRITE_RECEIPT_BYTES;
+/// Cancellation reports the actual publication, rather than losing its
+/// metadata behind a boolean if cleanup followed a successful host commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AbortReceipt<'a>(pub Option<WriteReceipt<'a>>);
+impl<'a> AbortReceipt<'a>
+{
+    pub fn encode(&self, output: &mut [u8]) -> Result<usize, Error>
+    {
+        let count = if let Some(receipt) = self.0
+        {
+            receipt.validate()?;
+            receipt.encoded_len() + 4
+        }
+        else
+        {
+            4
+        };
+        let out = output.get_mut(..count).ok_or(Error::Length)?;
+        if let Some(receipt) = self.0
+        {
+            receipt.encode(&mut out[4..])?;
+        }
+        put32(out, 0, u32::from(self.0.is_some()));
+        Ok(count)
+    }
+
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, Error>
+    {
+        if bytes.len() < 4
+        {
+            return Err(Error::Length);
+        }
+        match get32(bytes, 0)
+        {
+            0 if bytes.len() == 4 => Ok(Self(None)),
+            1 => Ok(Self(Some(WriteReceipt::decode(&bytes[4..])?))),
+            _ => Err(Error::Invalid)
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteReceipt<'a>
+{
+    pub file:   Metadata<'a>,
+    pub volume: Mount<'a>
+}
+impl<'a> WriteReceipt<'a>
+{
+    fn validate(&self) -> Result<(), Error>
+    {
+        self.file.validate()?;
+        self.volume.validate()?;
+        if self.file.directory
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+
+    fn encoded_len(&self) -> usize
+    {
+        WRITE_RECEIPT_BYTES
+        + METADATA_BYTES
+        + self.file.name.len()
+        + self.file.comment.len()
+        + MOUNT_BYTES
+        + METADATA_BYTES
+        + self.volume.root.name.len()
+        + self.volume.root.comment.len()
+    }
+
+    pub fn encode(&self, output: &mut [u8]) -> Result<usize, Error>
+    {
+        self.validate()?;
+        let file = METADATA_BYTES + self.file.name.len() + self.file.comment.len();
+        let volume = MOUNT_BYTES
+                     + METADATA_BYTES
+                     + self.volume.root.name.len()
+                     + self.volume.root.comment.len();
+        let count = self.encoded_len();
+        let out = output.get_mut(..count).ok_or(Error::Length)?;
+        out[..WRITE_RECEIPT_BYTES].fill(0);
+        put16(out, 0, SCHEMA);
+        put16(out, 2, WRITE_RECEIPT_BYTES as u16);
+        put32(out, 4, file as u32);
+        put32(out, 8, volume as u32);
+        self.file.encode(&mut out[WRITE_RECEIPT_BYTES..WRITE_RECEIPT_BYTES + file])?;
+        self.volume.encode(&mut out[WRITE_RECEIPT_BYTES + file..])?;
+        Ok(count)
+    }
+
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, Error>
+    {
+        if bytes.len() < WRITE_RECEIPT_BYTES || bytes.len() > MAX_WRITE_RECEIPT_BYTES
+        {
+            return Err(Error::Length);
+        }
+        if get16(bytes, 0) != SCHEMA
+        {
+            return Err(Error::Version);
+        }
+        if get16(bytes, 2) as usize != WRITE_RECEIPT_BYTES || get32(bytes, 12) != 0
+        {
+            return Err(Error::Invalid);
+        }
+        let file = get32(bytes, 4) as usize;
+        let volume = get32(bytes, 8) as usize;
+        let split = WRITE_RECEIPT_BYTES.checked_add(file).ok_or(Error::Length)?;
+        if split.checked_add(volume) != Some(bytes.len())
+        {
+            return Err(Error::Length);
+        }
+        let value = Self { file:   Metadata::decode(bytes.get(WRITE_RECEIPT_BYTES..split)
+                                                         .ok_or(Error::Length)?)?,
+                           volume: Mount::decode(bytes.get(split..).ok_or(Error::Length)?)? };
+        value.validate()?;
+        Ok(value)
+    }
+}

@@ -13,6 +13,12 @@ use risc_host::{Export, Session};
 use vhost_filesystem::{module::Service, transport::Channel};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+fn create_bytes(name: &str, when: u64) -> Vec<u8>
+{
+    let mut bytes = vec![0; fs::PROPERTIES_BYTES + name.len()];
+    fs::FileProperties::fresh(name, when).encode(&mut bytes).unwrap();
+    bytes
+}
 struct Temp(PathBuf);
 impl Drop for Temp
 {
@@ -198,10 +204,10 @@ impl Harness
                                            length: data as u64,
                                            auxiliary: resource as u64,
                                            when: 3_800_000_000_000_000,
-                                           payload: name.as_bytes(),
+                                           payload: &create_bytes(name, 3_800_000_000_000_000),
                                            ..Default::default() })
                       .unwrap();
-        (token, u32::from_le_bytes(out.try_into().unwrap()))
+        (token, fs::Metadata::decode(&out).unwrap().id)
     }
 
     fn until_host_start(&self, ticket: u32, op: Operation, input: &[u8], target: HostOp)
@@ -251,7 +257,10 @@ fn fresh_callback_buffers_round_trip_both_forks_and_quiesce_releases_mounts()
                                     token,
                                     ..Default::default() })
                .unwrap();
-    assert_eq!(out, node.to_le_bytes());
+    let receipt = fs::WriteReceipt::decode(&out).unwrap();
+    assert_eq!(receipt.file.id, node);
+    assert_eq!((receipt.file.data_length, receipt.file.resource_length), (5, 4));
+    assert_eq!(receipt.volume.root.name, "Shared Files");
     let open = h.files.insert(()).unwrap();
     h.execute(Operation::Open,
               Arguments { volume,
@@ -297,7 +306,10 @@ fn cancellation_after_host_commit_returns_actual_identity_without_republishing()
                                            ..Default::default() });
     h.until_host_start(ticket, Operation::FinishWrite, &input, HostOp::Commit);
     let out = h.finish(ticket, Phase::Cancel, Operation::FinishWrite, &[]).unwrap();
-    assert_eq!(out, node.to_le_bytes());
+    let receipt = fs::WriteReceipt::decode(&out).unwrap();
+    assert_eq!(receipt.file.id, node);
+    assert_eq!(receipt.file.name, "Committed");
+    assert_eq!(receipt.volume.root.child_count, 1);
     let trace = h.trace.lock().unwrap();
     assert_eq!(trace.iter()
                     .filter(|t| {
@@ -395,7 +407,7 @@ fn invalid_start_capacity_and_read_only_mutations_fail_before_host_side_effects(
                          Arguments { volume,
                                      parent: 2,
                                      token,
-                                     payload: b"Forbidden",
+                                     payload: &create_bytes("Forbidden", 0),
                                      ..Default::default() }),
                Err(Error(mac_abi::READ_ONLY)));
     assert_eq!(h.trace.lock().unwrap().len(), before);

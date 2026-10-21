@@ -24,20 +24,13 @@ impl<R: Rpc> Filesystem<R>
             }
             Operation::Mount =>
             {
-                let mut out = buffer(fs::MOUNT_BYTES + fs::METADATA_BYTES + 510)?;
+                let mut out = buffer(fs::MAX_MOUNT_BYTES)?;
                 let export = u32::try_from(args.auxiliary).map_err(|_| Cause::Invalid)?;
-                let info = self.mount(args.volume, export).await?;
+                self.mount(args.volume, export).await?;
                 let result: Result<Vec<u8>> = (|| {
                     // Mount only reads the root record. Enumerate lazily
                     // when a caller actually requests catalog children.
-                    let root = self.project(args.volume, 2)?;
-                    let descriptor =
-                        fs::Mount { capabilities: fs::READ
-                                                  | if info.read_only { 0 } else { fs::WRITE },
-                                    filesystem: *b"HOST",
-                                    filesystem_version: mac_fork_file::VERSION,
-                                    capacity: None,
-                                    root };
+                    let descriptor = self.mount_descriptor(args.volume)?;
                     let count = descriptor.encode(&mut out).map_err(|_| Cause::Invalid)?;
                     out.truncate(count);
                     Ok(out)
@@ -89,7 +82,7 @@ impl<R: Rpc> Filesystem<R>
                 {
                     return Err(Cause::Invalid.into());
                 }
-                let mut out = buffer(4 + fs::METADATA_BYTES + 510)?;
+                let mut out = buffer(4 + fs::MAX_METADATA_BYTES)?;
                 let index = usize::try_from(args.offset).map_err(|_| Cause::Invalid)?;
                 if self.child(args.volume, args.parent, index).is_err()
                 {
@@ -141,29 +134,42 @@ impl<R: Rpc> Filesystem<R>
             }
             Operation::BeginCreate =>
             {
-                let mut out = buffer(4)?;
-                let id = self.begin_create(Create { volume:          args.volume,
+                let mut out = buffer(fs::MAX_METADATA_BYTES)?;
+                self.begin_create(Create { volume:          args.volume,
                                                     parent:          args.parent,
                                                     token:           args.token,
-                                                    name:
-                                                        args.name().map_err(|_| Cause::Invalid)?,
+                                                    properties:
+                                                        fs::FileProperties::decode(args.payload).map_err(|_| Cause::Invalid)?,
                                                     data_length:     args.length,
                                                     resource_length: args.auxiliary,
                                                     when:            args.when })
                              .await?;
-                out.copy_from_slice(&id.to_le_bytes());
+                let count = self.project_node(args.volume,
+                                              self.pending_node(args.volume, args.token)?)?
+                                .encode(&mut out)
+                                .map_err(|_| Cause::Invalid)?;
+                out.truncate(count);
                 Ok(out)
             }
             Operation::BeginReplace =>
             {
-                self.begin_replace(Replace { volume:          args.volume,
-                                             node:            args.node,
-                                             token:           args.token,
-                                             data_length:     args.length,
-                                             resource_length: args.auxiliary,
-                                             when:            args.when })
+                let mut out = buffer(fs::MAX_METADATA_BYTES)?;
+                self.begin_replace(Replace { volume:             args.volume,
+                                             node:               args.node,
+                                             token:              args.token,
+                                             data_length:        args.length,
+                                             resource_length:    args.auxiliary,
+                                             when:               args.when,
+                                             preserve_resources: args.flags
+                                                                 & fs::PRESERVE_RESOURCE_FORK
+                                                                 != 0 })
                     .await?;
-                Ok(Vec::new())
+                let count = self.project_node(args.volume,
+                                              self.pending_node(args.volume, args.token)?)?
+                                .encode(&mut out)
+                                .map_err(|_| Cause::Invalid)?;
+                out.truncate(count);
+                Ok(out)
             }
             Operation::WriteChunk =>
             {
@@ -181,16 +187,19 @@ impl<R: Rpc> Filesystem<R>
             }
             Operation::FinishWrite =>
             {
-                let mut out = buffer(4)?;
-                out.copy_from_slice(&self.finish_write(args.volume, args.token)
-                                         .await?
-                                         .to_le_bytes());
+                let mut out = buffer(fs::MAX_WRITE_RECEIPT_BYTES)?;
+                let node = self.finish_write(args.volume, args.token).await?;
+                let count = self.encode_receipt(args.volume, node, &mut out)?;
+                out.truncate(count);
                 Ok(out)
             }
             Operation::AbortWrite =>
             {
-                let mut out = buffer(4)?;
-                out.copy_from_slice(&u32::from(self.abort_write(args.volume, args.token).await?).to_le_bytes());
+                let mut out = buffer(fs::MAX_ABORT_RECEIPT_BYTES)?;
+                let node = self.write_node(args.volume, args.token).ok_or(Cause::NotFound)?;
+                let published = self.abort_write(args.volume, args.token).await?;
+                let count = self.encode_abort_receipt(args.volume, node, published, &mut out)?;
+                out.truncate(count);
                 Ok(out)
             }
             Operation::Refresh =>
@@ -262,6 +271,7 @@ impl<R: Rpc> Filesystem<R>
             Operation::BeginReplace =>
             {
                 Arguments { node: a.node,
+                            flags: a.flags,
                             length: a.length,
                             auxiliary: a.auxiliary,
                             when: a.when,
@@ -276,6 +286,9 @@ impl<R: Rpc> Filesystem<R>
             _ => return Err(Cause::Unsupported.into())
         };
         if a != accepted
+           || op == Operation::BeginReplace
+              && (a.flags & !fs::PRESERVE_RESOURCE_FORK != 0
+                  || a.flags & fs::PRESERVE_RESOURCE_FORK != 0 && a.auxiliary != 0)
            || matches!(op, Operation::Catalog | Operation::Lookup)
               && a.flags & !fs::INCLUDE_CHILD_COUNT != 0
            || op != Operation::Exports && a.volume == 0
@@ -300,7 +313,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    async fn find(&mut self, volume: u32, id: u32) -> Result<()>
+    pub(crate) async fn find(&mut self, volume: u32, id: u32) -> Result<()>
     {
         if self.cached_node(volume, id).is_ok()
         {
@@ -362,9 +375,45 @@ impl<R: Rpc> Filesystem<R>
         self.project_node(volume, self.cached_node(volume, id)?)
     }
 
+    fn mount_descriptor(&self, volume: u32) -> Result<fs::Mount<'_>>
+    {
+        let info = self.info(volume)?;
+        Ok(fs::Mount { capabilities:       fs::READ | if info.read_only { 0 } else { fs::WRITE },
+                       filesystem:         *b"HOST",
+                       filesystem_version: mac_fork_file::VERSION,
+                       capacity:           None,
+                       root:               self.project(volume, 2)? })
+    }
+
+    pub(crate) fn encode_receipt(&self, volume: u32, node: u32, output: &mut [u8])
+                                 -> Result<usize>
+    {
+        fs::WriteReceipt { file:   self.project(volume, node)?,
+                           volume: self.mount_descriptor(volume)? }.encode(output)
+                                                                   .map_err(|_| {
+                                                                       Cause::Invalid.into()
+                                                                   })
+    }
+
+    pub(crate) fn encode_abort_receipt(&self, volume: u32, node: u32, published: bool,
+                                       output: &mut [u8])
+                                       -> Result<usize>
+    {
+        let receipt = if published
+        {
+            Some(fs::WriteReceipt { file:   self.project(volume, node)?,
+                                    volume: self.mount_descriptor(volume)? })
+        }
+        else
+        {
+            None
+        };
+        fs::AbortReceipt(receipt).encode(output).map_err(|_| Cause::Invalid.into())
+    }
+
     fn encode_node(&self, volume: u32, id: u32) -> Result<Vec<u8>>
     {
-        let mut out = buffer(fs::METADATA_BYTES + 510)?;
+        let mut out = buffer(fs::MAX_METADATA_BYTES)?;
         let count = self.project(volume, id)?.encode(&mut out).map_err(|_| Cause::Invalid)?;
         out.truncate(count);
         Ok(out)

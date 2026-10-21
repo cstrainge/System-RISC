@@ -1,6 +1,8 @@
 use super::*;
 pub const METADATA_BYTES: usize = 112;
 pub const MOUNT_BYTES: usize = 48;
+pub const MAX_METADATA_BYTES: usize = METADATA_BYTES + 510;
+pub const MAX_MOUNT_BYTES: usize = MOUNT_BYTES + MAX_METADATA_BYTES;
 /// Common catalog projection; no host container or on-disk filesystem layout.
 /// Dates are checked unsigned microseconds from the Macintosh 1904 epoch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,7 +25,7 @@ pub struct Metadata<'a>
 }
 impl<'a> Metadata<'a>
 {
-    fn validate(&self) -> Result<(), Error>
+    pub(crate) fn validate(&self) -> Result<(), Error>
     {
         name(self.name.as_bytes())?;
         if self.id < 2
@@ -130,7 +132,7 @@ pub struct Mount<'a>
 }
 impl<'a> Mount<'a>
 {
-    fn validate(&self) -> Result<(), Error>
+    pub(crate) fn validate(&self) -> Result<(), Error>
     {
         if self.capabilities & !ALL_CAPABILITIES != 0
            || self.capabilities & READ == 0

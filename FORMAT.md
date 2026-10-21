@@ -794,7 +794,7 @@ cannot reclaim DMA-visible module memory. The module remains pinned until reboot
 
 ## Native filesystem provider class
 
-The `FSYS` class version 1 carries bounded little-endian owned byte requests and
+The `FSYS` class version 2 carries bounded little-endian owned byte requests and
 catalog/mount replies, independent of resource-fork layouts and physical storage.
 The exact header/metadata fields and allocated operation numbers are documented
 in [FILESYSTEM-INTERFACE.md](docs/FILESYSTEM-INTERFACE.md); their shared checked
@@ -802,8 +802,16 @@ codec lives in `crates/mac-filesystem-interface`. This adds a class contract and
 does not change the generic module entry boundary or the native code envelope.
 Catalog/Lookup flag bit 0 requests an exact child count. Metadata-only ancestry
 queries leave unscanned counts unknown instead of enumerating unused children;
-all other flag bits are rejected. These are the same schema/version 1 producers
-and consumers rebuilt together, with no older project decoder.
+all other flag bits are rejected. Header/metadata schemas remain 1; producers
+and consumers rebuild together, with no older project decoder. Class v2 creation
+uses the documented FileProperties template, and data-only replacements can
+request verified resource-fork preservation. Wrong installed contract versions
+produce an ABI/rebuild error; physical HFS-B/host-container formats are unchanged.
+BeginCreate/BeginReplace return prospective metadata. FinishWrite returns the
+documented WriteReceipt envelope containing the published file and Mount
+metadata; its storage is reserved before publication, including cancellation
+cleanup that observes a successful commit. No post-commit allocation or extra
+catalog query is needed to report the actual result.
 Native FileCall operations 26, 27 and 28 are host-export count, mount host export
 (index selector), and unmount volume. All other input fields must be zero except
 the volume for unmount. Mounted identities are issued by resident File Manager,

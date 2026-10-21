@@ -5,14 +5,21 @@
 #![no_std]
 #![forbid(unsafe_code)]
 mod metadata;
-pub use metadata::{METADATA_BYTES, MOUNT_BYTES, Metadata, Mount};
+mod properties;
+mod receipt;
+pub use metadata::{MAX_METADATA_BYTES, MAX_MOUNT_BYTES, METADATA_BYTES, MOUNT_BYTES, Metadata,
+                   Mount};
+pub use properties::{FileProperties, PROPERTIES_BYTES};
+pub use receipt::{AbortReceipt, MAX_ABORT_RECEIPT_BYTES, MAX_WRITE_RECEIPT_BYTES,
+                  WRITE_RECEIPT_BYTES, WriteReceipt};
 pub const CLASS: [u8; 4] = *b"FSYS";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const SCHEMA: u16 = 1;
 pub const HEADER_BYTES: usize = 64;
 pub const MAX_TRANSFER: usize = 64 * 1024;
 pub const MAX_REQUEST: usize = HEADER_BYTES + MAX_TRANSFER;
 pub const MAX_REPLY: usize = MAX_TRANSFER;
+pub const MAX_NAME_INPUT: usize = 16 * 1024;
 pub const DATA_FORK: u32 = 0;
 pub const RESOURCE_FORK: u32 = 1;
 /// Scan replies begin with one of these LE u32 values, followed by Metadata for
@@ -24,6 +31,9 @@ pub const CHILD_COUNT_UNKNOWN: u32 = u32::MAX;
 /// Catalog/Lookup flag: obtain an exact directory child count. Metadata-only
 /// traversal leaves an unscanned count unknown and performs no enumeration.
 pub const INCLUDE_CHILD_COUNT: u32 = 1;
+/// BeginReplace flag: retain the original resource fork. Auxiliary must be zero;
+/// the provider leases/copies the actual fork in bounded, verified chunks.
+pub const PRESERVE_RESOURCE_FORK: u32 = 1;
 /// Provider source capabilities, used by class-neutral interface discovery.
 pub const SOURCE_HOST_EXPORT: u64 = 1;
 pub const SOURCE_FILE: u64 = 2;
@@ -177,16 +187,21 @@ impl<'a> Arguments<'a>
 
     pub fn name(&self) -> Result<&'a str, Error>
     {
-        name(self.payload)
+        name_input(self.payload)
     }
 }
 pub(crate) fn name(bytes: &[u8]) -> Result<&str, Error>
 {
+    checked_name(bytes, 255)
+}
+pub(crate) fn name_input(bytes: &[u8]) -> Result<&str, Error>
+{
+    checked_name(bytes, MAX_NAME_INPUT)
+}
+fn checked_name(bytes: &[u8], limit: usize) -> Result<&str, Error>
+{
     let text = core::str::from_utf8(bytes).map_err(|_| Error::Utf8)?;
-    if bytes.is_empty()
-       || bytes.len() > 255
-       || matches!(text, "." | "..")
-       || text.contains(['\0', '/', ':'])
+    if bytes.is_empty() || bytes.len() > limit || text.contains('\0')
     {
         return Err(Error::Invalid);
     }

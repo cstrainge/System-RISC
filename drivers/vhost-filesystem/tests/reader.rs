@@ -46,12 +46,13 @@ fn run<T>(future: impl Future<Output = T>) -> T
 }
 struct Host
 {
-    session:       Session,
-    tickets:       Table<()>,
-    calls:         Vec<Operation>,
-    trace:         Vec<(Operation, u32, u64, usize)>,
-    fail_next:     Option<Operation>,
-    reached_child: Arc<AtomicBool>
+    session:                  Session,
+    tickets:                  Table<()>,
+    calls:                    Vec<Operation>,
+    trace:                    Vec<(Operation, u32, u64, usize)>,
+    fail_next:                Option<Operation>,
+    fail_resource_read_after: Option<usize>,
+    reached_child:            Arc<AtomicBool>
 }
 impl Host
 {
@@ -60,7 +61,7 @@ impl Host
         Self {
             session: Session::new(Arc::new(vec![Export::open("Share", &temp.0, writable).unwrap()])).unwrap(),
             tickets: Table::new(ObjectKind::DriverRequests),
-            calls: Vec::new(), trace: Vec::new(), fail_next: None,
+            calls: Vec::new(), trace: Vec::new(), fail_next: None, fail_resource_read_after: None,
             reached_child: Arc::new(AtomicBool::new(false))
         }
     }
@@ -86,6 +87,17 @@ impl Rpc for Host
         }).await;
         self.calls.push(operation);
         self.trace.push((operation, arguments.object, arguments.offset, arguments.payload.len()));
+        if operation == Operation::Read
+           && arguments.offset >= mac_fork_file::METADATA_BYTES as u64
+           && let Some(remaining) = &mut self.fail_resource_read_after
+        {
+            if *remaining == 0
+            {
+                self.fail_resource_read_after = None;
+                return Err(Cause::Host(mac_host_protocol::status::IO).into());
+            }
+            *remaining -= 1;
+        }
         if self.fail_next == Some(operation)
         {
             self.fail_next = None;
@@ -230,7 +242,7 @@ fn native_writer_creates_both_forks_replaces_atomically_and_keeps_unrelated_dire
     let id = run(filesystem.begin_create(Create { volume,
                                                   parent,
                                                   token,
-                                                  name: "New Script",
+                                                  properties: mac_filesystem_interface::FileProperties::fresh("New Script", when),
                                                   data_length: data.len() as u64,
                                                   resource_length: resource.len() as u64,
                                                   when })).unwrap();
@@ -271,6 +283,7 @@ fn native_writer_creates_both_forks_replaces_atomically_and_keeps_unrelated_dire
                                            token: replacement,
                                            data_length: 3,
                                            resource_length: 2,
+                                           preserve_resources: false,
                                            when: when + 1 })).unwrap();
     run(filesystem.write_chunk(volume, replacement, Fork::Data, b"new")).unwrap();
     run(filesystem.write_chunk(volume, replacement, Fork::Resource, b"rs")).unwrap();
@@ -301,7 +314,7 @@ fn aborted_create_removes_stage_preserves_catalog_and_never_reuses_reserved_iden
     let reserved = run(filesystem.begin_create(Create { volume,
                                                         parent,
                                                         token: first,
-                                                        name: "Cancelled",
+                                                        properties: mac_filesystem_interface::FileProperties::fresh("Cancelled", 10),
                                                         data_length: 20,
                                                         resource_length: 0,
                                                         when: 10 })).unwrap();
@@ -316,7 +329,7 @@ fn aborted_create_removes_stage_preserves_catalog_and_never_reuses_reserved_iden
     let fresh = run(filesystem.begin_create(Create { volume,
                                                      parent,
                                                      token: next,
-                                                     name: "Cancelled",
+                                                     properties: mac_filesystem_interface::FileProperties::fresh("Cancelled", 11),
                                                      data_length: 0,
                                                      resource_length: 0,
                                                      when: 11 })).unwrap();
@@ -351,7 +364,7 @@ fn failed_flush_retries_durability_without_rewriting_the_acknowledged_header()
     let id = run(fs.begin_create(Create { volume,
                                           parent,
                                           token,
-                                          name: "Flush Retry",
+                                          properties: mac_filesystem_interface::FileProperties::fresh("Flush Retry", 20),
                                           data_length: 3,
                                           resource_length: 0,
                                           when: 20 })).unwrap();
@@ -399,7 +412,7 @@ fn cleanup_failure_after_publication_keeps_actual_result_and_does_not_repeat_com
     let id = run(fs.begin_create(Create { volume,
                                           parent,
                                           token,
-                                          name: "Published",
+                                          properties: mac_filesystem_interface::FileProperties::fresh("Published", 30),
                                           data_length: 0,
                                           resource_length: 0,
                                           when: 30 })).unwrap();
@@ -415,6 +428,48 @@ fn cleanup_failure_after_publication_keeps_actual_result_and_does_not_repeat_com
     let physical = Volume::open(&temp.0).unwrap();
     assert_eq!(physical.resolve("/Tools/Published").unwrap().metadata.catalog_id, id);
     assert_eq!(physical.resolve("/Tools").unwrap().metadata.modified, 30);
+    physical.check().unwrap();
+}
+
+#[test]
+fn abort_after_publication_reports_actual_metadata_without_a_second_commit()
+{
+    use mac_filesystem_interface::{self as wire, Arguments as A, Operation as O};
+    let (temp, _, _, _) = seeded();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    let a = A { volume,
+                ..Default::default() };
+    serve(&mut fs, O::Mount, a).unwrap();
+    let mut writes = Table::new(ObjectKind::FileWrites);
+    let token = writes.insert(()).unwrap();
+    let a = A { token,
+                ..a };
+    let out = serve(&mut fs,
+                    O::BeginCreate,
+                    A { parent: 2,
+                        when: 55,
+                        payload: &create_bytes("Published abort", 55),
+                        ..a }).unwrap();
+    let id = wire::Metadata::decode(&out).unwrap().id;
+    fs.transport().fail_next = Some(Operation::Close);
+    assert_eq!(serve(&mut fs, O::FinishWrite, a).unwrap_err().cause,
+               Cause::Host(mac_host_protocol::status::IO));
+    let commits = fs.transport().calls.iter().filter(|&&op| op == Operation::Commit).count();
+    let out = serve(&mut fs, O::AbortWrite, a).unwrap();
+    let receipt = wire::AbortReceipt::decode(&out).unwrap().0.unwrap();
+    assert_eq!(receipt.file.id, id);
+    assert_eq!(receipt.file.name, "Published abort");
+    assert_eq!(receipt.file.modified, 55);
+    assert_eq!(receipt.volume.root.modified, 55);
+    assert_eq!(fs.transport().calls.iter().filter(|&&op| op == Operation::Commit).count(), commits);
+    serve(&mut fs,
+          O::Unmount,
+          A { token: 0,
+              ..a }).unwrap();
+    let physical = Volume::open(&temp.0).unwrap();
+    assert_eq!(physical.resolve("/Published abort").unwrap().metadata.catalog_id, id);
     physical.check().unwrap();
 }
 
@@ -437,7 +492,7 @@ fn casefold_collisions_invalid_names_and_read_only_writes_do_not_reserve_catalog
         assert_eq!(run(fs.begin_create(Create { volume,
                                                 parent,
                                                 token,
-                                                name,
+                                                properties: mac_filesystem_interface::FileProperties::fresh(name, 40),
                                                 data_length: 0,
                                                 resource_length: 0,
                                                 when: 40 })).unwrap_err()
@@ -448,7 +503,7 @@ fn casefold_collisions_invalid_names_and_read_only_writes_do_not_reserve_catalog
     assert_eq!(run(fs.begin_create(Create { volume,
                                             parent,
                                             token,
-                                            name: &long,
+                                            properties: mac_filesystem_interface::FileProperties::fresh(&long, 40),
                                             data_length: 0,
                                             resource_length: 0,
                                             when: 40 })).unwrap_err()
@@ -462,7 +517,7 @@ fn casefold_collisions_invalid_names_and_read_only_writes_do_not_reserve_catalog
     assert_eq!(run(fs.begin_create(Create { volume: readonly,
                                             parent: 2,
                                             token,
-                                            name: "Read Only",
+                                            properties: mac_filesystem_interface::FileProperties::fresh("Read Only", 40),
                                             data_length: 0,
                                             resource_length: 0,
                                             when: 40 })).unwrap_err()
@@ -540,6 +595,207 @@ fn serve(fs: &mut Filesystem<Host>, op: mac_filesystem_interface::Operation,
     let mut bytes = vec![0; mac_filesystem_interface::HEADER_BYTES + args.payload.len()];
     args.encode(&mut bytes).unwrap();
     run(fs.execute(op as u32, &bytes))
+}
+fn create_bytes(name: &str, when: u64) -> Vec<u8>
+{
+    use mac_filesystem_interface as fs;
+    let mut bytes = vec![0; fs::PROPERTIES_BYTES + name.len()];
+    fs::FileProperties::fresh(name, when).encode(&mut bytes).unwrap();
+    bytes
+}
+#[test]
+fn data_only_replacement_preserves_resources_and_aborts_partial_copy_failures()
+{
+    use mac_filesystem_interface::{self as fs, Arguments as A, Operation as O};
+    let (temp, node, original, resources) = seeded();
+    let physical = Volume::open(&temp.0).unwrap();
+    let before = physical.resolve("/Tools/Café").unwrap().metadata;
+    let mut filesystem = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    let args = A { volume,
+                   ..Default::default() };
+    serve(&mut filesystem, O::Mount, args).unwrap();
+    let mut writes = Table::new(ObjectKind::FileWrites);
+    let token = writes.insert(()).unwrap();
+    let when = 3_875_171_696_123_456;
+    let data = vec![0x73; 9003];
+    let replace = A { node,
+                      token,
+                      flags: fs::PRESERVE_RESOURCE_FORK,
+                      length: data.len() as u64,
+                      when,
+                      ..args };
+    let prospective = serve(&mut filesystem, O::BeginReplace, replace).unwrap();
+    let prospective = fs::Metadata::decode(&prospective).unwrap();
+    assert_eq!(prospective.id, node);
+    assert_eq!(prospective.data_length, data.len() as u64);
+    assert_eq!(prospective.resource_length, resources.len() as u64);
+    for bytes in data.chunks(mac_fork_file::CHUNK_BYTES)
+    {
+        serve(&mut filesystem,
+              O::WriteChunk,
+              A { token,
+                  payload: bytes,
+                  ..args }).unwrap();
+    }
+    let mut files = Table::new(ObjectKind::Files);
+    let reader = files.insert(()).unwrap();
+    serve(&mut filesystem,
+          O::Open,
+          A { node,
+              token: reader,
+              ..args }).unwrap();
+    assert_eq!(serve(&mut filesystem,
+                     O::FinishWrite,
+                     A { token,
+                         ..args }).unwrap_err()
+                                  .cause,
+               Cause::Busy);
+    assert_eq!(serve(&mut filesystem,
+                     O::Read,
+                     A { token: reader,
+                         length: fs::MAX_TRANSFER as u64,
+                         ..args }).unwrap(),
+               original);
+    serve(&mut filesystem,
+          O::Close,
+          A { token: reader,
+              ..args }).unwrap();
+    serve(&mut filesystem,
+          O::FinishWrite,
+          A { token,
+              ..args }).unwrap();
+    let mut expected = before;
+    expected.modified = when;
+    expected.revision += 1;
+    assert_eq!(physical.resolve("/Tools/Café").unwrap().metadata, expected);
+    files.remove(reader);
+    let reader = files.insert(()).unwrap();
+    serve(&mut filesystem,
+          O::Open,
+          A { node,
+              token: reader,
+              ..args }).unwrap();
+    assert_eq!(serve(&mut filesystem,
+                     O::Read,
+                     A { token: reader,
+                         length: fs::MAX_TRANSFER as u64,
+                         ..args }).unwrap(),
+               data);
+    assert_eq!(serve(&mut filesystem,
+                     O::Read,
+                     A { token: reader,
+                         flags: fs::RESOURCE_FORK,
+                         length: fs::MAX_TRANSFER as u64,
+                         ..args }).unwrap(),
+               resources);
+    serve(&mut filesystem,
+          O::Close,
+          A { token: reader,
+              ..args }).unwrap();
+    writes.remove(token);
+    let token = writes.insert(()).unwrap();
+    // Fail after one old resource chunk has been verified and copied to the
+    // hidden stage. Abort must preserve the entire previously published file.
+    filesystem.transport().fail_resource_read_after = Some(1);
+    assert_eq!(serve(&mut filesystem,
+                     O::BeginReplace,
+                     A { token,
+                         when: when + 1,
+                         ..replace }).unwrap_err()
+                                     .cause,
+               Cause::Host(mac_host_protocol::status::IO));
+    assert_eq!(serve(&mut filesystem,
+                     O::AbortWrite,
+                     A { token,
+                         ..args }).unwrap(),
+               0u32.to_le_bytes());
+    assert_eq!(physical.resolve("/Tools/Café").unwrap().metadata, expected);
+    serve(&mut filesystem, O::Unmount, args).unwrap();
+    physical.check().unwrap();
+}
+#[test]
+fn filesystem_creation_preserves_properties_and_normalizes_before_the_byte_limit()
+{
+    use mac_filesystem_interface::{self as fs, Arguments as A, Operation as O};
+    let (temp, _, _, _) = seeded();
+    let mut filesystem = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    let args = A { volume,
+                   ..Default::default() };
+    serve(&mut filesystem, O::Mount, args).unwrap();
+    let tools = serve(&mut filesystem,
+                      O::Lookup,
+                      A { parent: 2,
+                          payload: b"Tools",
+                          ..args }).unwrap();
+    let parent = fs::Metadata::decode(&tools).unwrap().id;
+    let name = "e\u{301}".repeat(127) + "x";
+    let normalized = mac_hfs_b::names::normalize(&name).unwrap();
+    assert!(name.len() > 255);
+    assert_eq!(normalized.len(), 255);
+    let mut props = fs::FileProperties::fresh(&name, 3_875_171_696_123_456);
+    props.modified += 42;
+    props.backup = Some(0);
+    props.attributes = 1;
+    props.finder_info = [0x37; 32];
+    props.finder_info[..8].copy_from_slice(b"TEXTTEST");
+    props.comment = "Source metadata\r🦀";
+    let mut payload = vec![0; 2048];
+    let count = props.encode(&mut payload).unwrap();
+    payload.truncate(count);
+    let mut writes = Table::new(ObjectKind::FileWrites);
+    let token = writes.insert(()).unwrap();
+    let when = props.modified + 999;
+    let id = serve(&mut filesystem,
+                   O::BeginCreate,
+                   A { parent,
+                       token,
+                       length: 3,
+                       auxiliary: 2,
+                       when,
+                       payload: &payload,
+                       ..args }).unwrap();
+    let prospective = fs::Metadata::decode(&id).unwrap();
+    assert_eq!(prospective.name, normalized);
+    assert_eq!(prospective.modified, props.modified);
+    let id = prospective.id;
+    serve(&mut filesystem,
+          O::WriteChunk,
+          A { token,
+              payload: b"abc",
+              ..args }).unwrap();
+    serve(&mut filesystem,
+          O::WriteChunk,
+          A { token,
+              flags: fs::RESOURCE_FORK,
+              payload: b"rs",
+              ..args }).unwrap();
+    serve(&mut filesystem,
+          O::FinishWrite,
+          A { token,
+              ..args }).unwrap();
+    let found = serve(&mut filesystem,
+                      O::Lookup,
+                      A { parent,
+                          payload: name.as_bytes(),
+                          ..args }).unwrap();
+    let metadata = fs::Metadata::decode(&found).unwrap();
+    assert_eq!(metadata.id, id);
+    assert_eq!(metadata.name, normalized);
+    assert_eq!((metadata.created, metadata.modified, metadata.backup),
+               (props.created, props.modified, props.backup));
+    assert_eq!((metadata.attributes, metadata.finder_info, metadata.comment),
+               (props.attributes, props.finder_info, props.comment));
+    serve(&mut filesystem, O::Unmount, args).unwrap();
+    let physical = Volume::open(&temp.0).unwrap();
+    let file = physical.resolve(&format!("/Tools/{normalized}")).unwrap();
+    assert_eq!(file.metadata.catalog_id, id);
+    assert_eq!(physical.resolve("/Tools").unwrap().metadata.modified, when);
+    assert_eq!(physical.root().unwrap().metadata.modified, when);
+    physical.check().unwrap();
 }
 #[test]
 fn metadata_only_ancestry_does_not_enumerate_folders_and_count_requests_are_explicit()
@@ -674,9 +930,9 @@ fn filesystem_class_exchanges_metadata_and_both_forks_through_owned_byte_request
                        length: 3,
                        auxiliary: 2,
                        when: 3_875_171_696_123_456,
-                       payload: b"Copied",
+                       payload: &create_bytes("Copied", 3_875_171_696_123_456),
                        ..write }).unwrap();
-    let cnid = u32::from_le_bytes(id.try_into().unwrap());
+    let cnid = fs::Metadata::decode(&id).unwrap().id;
     serve(&mut filesystem,
           O::WriteChunk,
           A { payload: b"abc",
@@ -686,7 +942,12 @@ fn filesystem_class_exchanges_metadata_and_both_forks_through_owned_byte_request
           A { flags: fs::RESOURCE_FORK,
               payload: b"rs",
               ..write }).unwrap();
-    assert_eq!(serve(&mut filesystem, O::FinishWrite, write).unwrap(), cnid.to_le_bytes());
+    let receipt = serve(&mut filesystem, O::FinishWrite, write).unwrap();
+    let receipt = fs::WriteReceipt::decode(&receipt).unwrap();
+    assert_eq!(receipt.file.id, cnid);
+    assert_eq!(receipt.file.name, "Copied");
+    assert_eq!((receipt.file.data_length, receipt.file.resource_length), (3, 2));
+    assert_eq!(receipt.volume.filesystem, *b"HOST");
     let copied = Volume::open(&temp.0).unwrap().resolve("/Copied").unwrap();
     assert_eq!(copied.metadata.catalog_id, cnid);
     let bytes = serve(&mut filesystem,
@@ -731,7 +992,7 @@ fn filesystem_class_rejects_invalid_requests_and_read_only_mutations_without_hos
                      O::BeginCreate,
                      A { parent: 2,
                          token,
-                         payload: b"No write",
+                         payload: &create_bytes("No write", 0),
                          ..args }).unwrap_err()
                                   .cause,
                Cause::ReadOnly);

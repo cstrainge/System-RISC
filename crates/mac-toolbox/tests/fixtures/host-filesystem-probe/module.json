@@ -2,7 +2,7 @@
   "identity": "7731a000000000000000000000000012",
   "stack_bytes": 8192,
   "dependencies": [
-    { "class": "FSYS", "version": 1,
+    { "class": "FSYS", "version": 2,
       "module": "7731a000000000000000000000000011" }
   ]
 }

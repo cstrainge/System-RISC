@@ -1,4 +1,4 @@
-# Native filesystem class (FSYS v1)
+# Native filesystem class (FSYS v2)
 
 `mac-filesystem-interface` is the safe, allocation-free byte contract between
 resident File Manager and independently loaded filesystem providers. It is a
@@ -42,18 +42,48 @@ Operation is the broker operation number. Unused arguments must be zero:
 | Open (7) | volume, node, resident open token | u64 data length, u64 resource length |
 | Read (8) | volume, token, fork flag 0/1, offset, capacity in length | verified fork bytes, at most 64 KiB |
 | Close (9) | volume, token | empty |
-| BeginCreate (10) | volume, parent, resident write token, data length, resource length in auxiliary, timestamp in when, name payload | reserved u32 CNID |
-| BeginReplace (11) | volume, node, write token, fork lengths and when | empty |
+| BeginCreate (10) | volume, parent, resident write token, data length, resource length in auxiliary, operation timestamp in when, FileProperties payload | prospective Metadata, including reserved CNID and normalized name |
+| BeginReplace (11) | volume, node, write token, fork lengths and when; optional PRESERVE_RESOURCE_FORK flag | prospective Metadata, including actual retained resource length |
 | WriteChunk (12) | volume, write token, fork flag, next chunk bytes | empty |
-| FinishWrite (13) | volume, write token | published u32 CNID |
-| AbortWrite (14) | volume, write token | u32 publication-observed boolean |
+| FinishWrite (13) | volume, write token | WriteReceipt containing actual published Metadata and Mount |
+| AbortWrite (14) | volume, write token | AbortReceipt: u32 publication-observed boolean; WriteReceipt follows only when true |
 | Refresh (15) | volume | empty; existing read leases remain bound to their original source |
 
 Rename/Move/MakeDirectory/Remove/SetMetadata (16–20) are allocated operation codes;
 the host provider currently rejects them as unsupported. Their payload contracts
-must be specified and tested with their implementation. BeginCreate currently
-creates fresh metadata; metadata-preserving copy needs the subsequent metadata
-contract. This checkpoint is not full File Manager mutation coverage.
+must be specified and tested with their implementation. This checkpoint is not
+full File Manager mutation coverage, nor native public writer integration.
+
+Class version 2 replaces the old raw-name creation request directly. There is no
+v1 producer/decoder path. Rebuild System, driver packages and their dependents
+together. Kernel provider selection reports an ABI mismatch when an installed
+matching-capability provider has only the wrong contract version, rather than
+pretending the provider is absent. This does not change HFS-B, RSFORK01, module
+entry ABI or their Unicode versions.
+
+FileProperties has a 72-byte header followed by UTF-8 name/comment:
+
+| Offset | Field |
+| --- | --- |
+| 0, 2 | u16 schema 1, header size 72 |
+| 4, 6, 8, 10 | u16 attributes, input-name bytes, comment bytes, reserved zero |
+| 12 | u32 backup-present boolean |
+| 16, 24, 32 | u64 created, modified, backup microseconds since 1904 |
+| 40 | 32 bytes Finder info |
+
+The provider issues persistent IDs/volume identities; callers cannot inject
+them in a template. Name input is bounded to 16 KiB before provider normalization;
+HOST still stores NFC with its 255-byte post-normalization limit. Comments retain
+the existing 255-byte UTF-8 limit. Creation preserves all supplied metadata while
+parent/volume modification dates use the separate operation timestamp.
+
+BeginReplace flag bit 0 (`PRESERVE_RESOURCE_FORK`) requires auxiliary zero. The
+provider verifies and streams the actual original resource fork into its private
+stage, retaining its old source capability until commit/abort cleanup. No whole
+resource fork is buffered, and validated physical chunks are copied without
+hashing the same bytes again. Layout as well as metadata is revalidated before
+replacement. A newly opened reader also blocks publication, even if it opened
+after staging began. Partial-copy failures remain unpublished and require Abort.
 
 Metadata uses a 112-byte header followed by its UTF-8 name and comment:
 
@@ -70,7 +100,9 @@ Metadata uses a 112-byte header followed by its UTF-8 name and comment:
 
 An absent backup date requires its value to be zero. Names/comments each occupy
 at most 255 UTF-8 bytes; filesystem-specific storage normalization stays with the
-provider. Directory fork lengths must be zero. An unscanned directory's child
+provider. Metadata excludes NUL names but leaves separator restrictions with the provider;
+classic names containing slash can be carried by ID even when native path output
+cannot express them. Directory fork lengths must be zero. An unscanned directory's child
 count is explicitly `u32::MAX`. Catalog/Lookup flag bit 0 (`INCLUDE_CHILD_COUNT`)
 requests an exact directory child count; all other flag bits are rejected.
 Without it, metadata queries do not enumerate the target directory just for a
@@ -84,6 +116,19 @@ and reserved zero at 40. READ=1 and WRITE=2 are per-mount capabilities; absence
 of capacity requires zero fields and means unknown, not a zero-size filesystem.
 The format version identifies the filesystem/container contract, separately from
 this class's version. HOST currently reports RSFORK01 version 1.
+
+A WriteReceipt has a 16-byte header followed by exact file Metadata and Mount:
+u16 schema 1/header size 16 at 0/2, u32 metadata/mount byte lengths at 4/8,
+and reserved zero at 12. The file must not be a directory. Reply storage is
+reserved before commit; encoding the acknowledged result borrows the published
+cache and performs no allocation or extra catalog request. Begin replies are
+prospective: the file remains unpublished until FinishWrite succeeds. The finish
+receipt is authoritative, including provider-assigned IDs, normalization, dates,
+fork lengths and the current volume/root state.
+AbortReceipt is exactly four zero bytes for an unpublished abort, or a u32 one
+followed by the full WriteReceipt for an observed publication. No other values
+or trailing bytes are valid. Cleanup after a commit cannot discard the metadata
+needed to update the resident catalog or falsely claim the file was undone.
 
 ## Writability and cancellation
 
@@ -114,7 +159,7 @@ the completed result. Cancellation drains actual lower acknowledgements before
 closing leases or aborting stages; repeated CANCEL cannot cancel that cleanup.
 An unpublished cancellation reports `OPERATION_CANCELLED` (-17), exposed as
 `Error::Cancelled` by the native SDK. If FinishWrite observed a commit, it returns
-the actual CNID after cleanup rather than claiming that cancellation undid it.
+the actual publication receipt after cleanup rather than claiming that cancellation undid it.
 Reply storage is reserved before publishing/opening objects. Deferred orphan
 leases stay in the provider's ledger and are retried before the next START;
 unrelated cleanup failure cannot erase an already successful operation result.
@@ -239,3 +284,11 @@ launcher export configuration and complete public-SDK filesystem acceptance
 remain in progress. Private guest mounting works; that is not yet a usable host
 directory in Finder or a mounted StuffIt volume, and is not a hard latency
 acceptance result.
+
+Real-host component tests additionally cover creation properties, long
+decomposed input normalizing to the 255-byte boundary, full metadata round trips,
+distinct operation/source dates, data-only replacement retaining both metadata
+and resource bytes, readers acquired during staging, and abort after a partial
+resource-copy failure. Metadata snapshots allocate fallibly before publication;
+root-cache updates do not allocate after their host commit. Native public writer
+acceptance is still pending.

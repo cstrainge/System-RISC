@@ -87,6 +87,22 @@ fn name_error(error: mac_hfs_b::Error) -> Error
 }
 impl Metadata
 {
+    /// Fallible copying for bounded kernel/module heaps. Reserve both strings
+    /// before any caller publishes metadata or acknowledges a host mutation.
+    pub fn try_clone(&self) -> Result<Self>
+    {
+        fn text(source: &str) -> Result<String>
+        {
+            let mut value = String::new();
+            value.try_reserve_exact(source.len()).map_err(|_| Error::NoMemory)?;
+            value.push_str(source);
+            Ok(value)
+        }
+        Ok(Self { name: text(&self.name)?,
+                  comment: text(&self.comment)?,
+                  ..*self })
+    }
+
     pub fn new(kind: Kind, catalog_id: u32, volume: [u8; 16], name: &str, when: u64)
                -> Result<Self>
     {

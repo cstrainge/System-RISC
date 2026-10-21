@@ -96,6 +96,26 @@ pub struct MountInfo
     pub metadata:  Metadata,
     pub read_only: bool
 }
+impl MountInfo
+{
+    fn try_clone(&self) -> Result<Self>
+    {
+        Ok(Self { metadata: self.metadata.try_clone()?,
+                  ..*self })
+    }
+}
+impl Node
+{
+    fn try_clone(&self) -> Result<Self>
+    {
+        let mut key = String::new();
+        key.try_reserve_exact(self.key.len()).map_err(|_| Cause::NoMemory)?;
+        key.push_str(&self.key);
+        Ok(Self { metadata: self.metadata.try_clone()?,
+                  key,
+                  ..*self })
+    }
+}
 struct PendingChild
 {
     name:      Vec<u8>,
@@ -389,12 +409,21 @@ impl<R: Rpc> Filesystem<R>
         {
             return self.cleanup(root, Err(Cause::Invalid.into())).await;
         }
-        let info = MountInfo { metadata:  node.metadata.clone(),
-                               read_only: flags & wire::WRITE == 0 };
+        let snapshots: Result<_> = (|| {
+            let info = MountInfo { metadata:  node.metadata.try_clone()?,
+                                   read_only: flags & wire::WRITE == 0 };
+            let cached = info.try_clone()?;
+            Ok((info, cached))
+        })();
+        let (info, cached) = match snapshots
+        {
+            Ok(value) => value,
+            Err(error) => return self.cleanup(root, Err(error)).await
+        };
         let mut mounted = Mount { root,
                                   ejecting: false,
                                   invalidated: false,
-                                  info: info.clone(),
+                                  info: cached,
                                   nodes: Index::new(MAX_NODES),
                                   directories: Index::new(MAX_DIRECTORIES) };
         if let Err(error) =
@@ -623,7 +652,7 @@ impl<R: Rpc> Filesystem<R>
         {
             return Err(Cause::Stale.into());
         }
-        let info = MountInfo { metadata: node.metadata.clone(),
+        let info = MountInfo { metadata: node.metadata.try_clone()?,
                                read_only };
         let mut nodes = Index::new(MAX_NODES);
         nodes.insert(ROOT, node)?;

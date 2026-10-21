@@ -117,7 +117,15 @@ impl<C: Channel + 'static> Service<C>
             }
             let cancellation = state.cancellation.clone().ok_or(Error(mac_abi::NOT_SUPPORTED))?;
             let mut input = Vec::new();
-            input.try_reserve_exact(request.input.len()).map_err(|_| Error(mac_abi::NO_MEMORY))?;
+            let capacity = if matches!(operation, Operation::FinishWrite | Operation::AbortWrite)
+            {
+                request.input.len().max(fs::MAX_ABORT_RECEIPT_BYTES)
+            }
+            else
+            {
+                request.input.len()
+            };
+            input.try_reserve_exact(capacity).map_err(|_| Error(mac_abi::NO_MEMORY))?;
             input.extend_from_slice(request.input);
             // The reservation's future type is inferred from write below. OOM
             // occurs before the client moves, leaving every live lease owned.
@@ -211,9 +219,14 @@ fn reply_capacity(op: Operation, a: Arguments<'_>) -> mac_driver::Result<usize>
 {
     Ok(match op
     {
-        Operation::Mount => fs::MOUNT_BYTES + fs::METADATA_BYTES + 510,
-        Operation::Catalog | Operation::Lookup => fs::METADATA_BYTES + 510,
-        Operation::Scan => 4 + fs::METADATA_BYTES + 510,
+        Operation::Mount => fs::MAX_MOUNT_BYTES,
+        Operation::Catalog
+        | Operation::Lookup
+        | Operation::BeginCreate
+        | Operation::BeginReplace => fs::MAX_METADATA_BYTES,
+        Operation::Scan => 4 + fs::MAX_METADATA_BYTES,
+        Operation::FinishWrite => fs::MAX_WRITE_RECEIPT_BYTES,
+        Operation::AbortWrite => fs::MAX_ABORT_RECEIPT_BYTES,
         Operation::Read =>
         {
             usize::try_from(a.length).ok()
@@ -221,10 +234,7 @@ fn reply_capacity(op: Operation, a: Arguments<'_>) -> mac_driver::Result<usize>
                                      .ok_or(Error(mac_abi::BAD_ARGUMENT))?
         }
         Operation::Open => 16,
-        Operation::Exports
-        | Operation::BeginCreate
-        | Operation::FinishWrite
-        | Operation::AbortWrite => 4,
+        Operation::Exports => 4,
         _ => 0
     })
 }
@@ -267,17 +277,25 @@ async fn run<C: Channel + 'static>(mut client: Filesystem<DirectoryRpc<C>>, oper
                             // Reuse storage reserved before START. A commit
                             // ACK survives cancellation even if subsequent
                             // metadata or cleanup was interrupted.
-                            let value = if op == Operation::AbortWrite
+                            if op == Operation::AbortWrite
                             {
-                                u32::from(published)
+                                input.resize(fs::MAX_ABORT_RECEIPT_BYTES, 0);
+                                result = client.encode_abort_receipt(volume, node, published,
+                                                                     &mut input)
+                                               .map(|count| {
+                                                   input.truncate(count);
+                                                   core::mem::take(&mut input)
+                                               });
                             }
                             else
                             {
-                                node
-                            };
-                            input.truncate(4);
-                            input.copy_from_slice(&value.to_le_bytes());
-                            result = Ok(core::mem::take(&mut input));
+                                input.resize(fs::MAX_WRITE_RECEIPT_BYTES, 0);
+                                result = client.encode_receipt(volume, node, &mut input)
+                                               .map(|count| {
+                                                   input.truncate(count);
+                                                   core::mem::take(&mut input)
+                                               });
+                            }
                         }
                         else
                         {

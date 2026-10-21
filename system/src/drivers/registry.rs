@@ -293,6 +293,31 @@ impl Registry
             .map(|(id, i)| (id, *i))
     }
 
+    /// Kernel discovery distinguishes absence from a stale service contract.
+    /// Never silently treat an installed incompatible provider as no hardware.
+    pub fn select(&self, class: ClassId, version: u32, capabilities: u64) -> Result<Option<u32>>
+    {
+        let mut mismatch = false;
+        for (id, interface) in self.interfaces.iter()
+        {
+            if interface.offer.class != class
+               || interface.offer.capabilities & capabilities != capabilities
+               || interface.module != 0
+                  && !self.modules
+                          .get(interface.module)
+                          .is_some_and(|module| module.state == State::Ready)
+            {
+                continue;
+            }
+            if interface.offer.version == version
+            {
+                return Ok(Some(id));
+            }
+            mismatch = true;
+        }
+        if mismatch { Err(Error::Contract(mac_module::Error::Version)) } else { Ok(None) }
+    }
+
     pub fn resolve(&self, caller: u64, class: ClassId, version: u32) -> Result<u32>
     {
         if caller == 0
@@ -703,6 +728,34 @@ mod tests
         let tb = second.begin(0, ib, 1, 0, 0).unwrap();
         assert_ne!(ta, tb);
         assert_eq!(first.complete(0, tb, 0), Err(Error::Stale));
+    }
+    #[test]
+    fn kernel_selection_distinguishes_missing_capabilities_from_stale_contracts()
+    {
+        let mut registry = Registry::new(Target::RV64IMAC);
+        assert_eq!(registry.select(OFFER.class, 2, 1), Ok(None));
+        let old = Offer { flags: Offer::KERNEL_ONLY,
+                          capabilities: 1,
+                          ..OFFER };
+        let old_id = registry.register_service(old).unwrap();
+        assert_eq!(registry.select(OFFER.class, 1, 1), Ok(Some(old_id)));
+        assert_eq!(registry.select(OFFER.class, 2, 1),
+                   Err(Error::Contract(mac_module::Error::Version)));
+        assert_eq!(registry.select(OFFER.class, 2, 2), Ok(None));
+        let new_id = registry.register_service(Offer { version: 2,
+                                                       ..old })
+                             .unwrap();
+        assert_eq!(registry.select(OFFER.class, 2, 1), Ok(Some(new_id)));
+        assert_eq!(registry.select(ClassId(*b"NONE"), 2, 1), Ok(None));
+        let bytes = metadata(*b"select-module!!!",
+                             &[Offer { version: 2,
+                                       capabilities: 2,
+                                       ..OFFER }],
+                             &[]);
+        let module = stage(&mut registry, &bytes);
+        assert_eq!(registry.select(OFFER.class, 2, 2), Ok(None));
+        registry.commit(module).unwrap();
+        assert!(registry.select(OFFER.class, 2, 2).unwrap().is_some());
     }
     #[test]
     fn resident_services_require_explicit_contracts_and_keep_request_ownership()

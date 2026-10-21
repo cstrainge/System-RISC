@@ -7,19 +7,20 @@ pub struct Create<'a>
     pub volume:          u32,
     pub parent:          u32,
     pub token:           u32,
-    pub name:            &'a str,
+    pub properties:      mac_filesystem_interface::FileProperties<'a>,
     pub data_length:     u64,
     pub resource_length: u64,
     pub when:            u64
 }
 pub struct Replace
 {
-    pub volume:          u32,
-    pub node:            u32,
-    pub token:           u32,
-    pub data_length:     u64,
-    pub resource_length: u64,
-    pub when:            u64
+    pub volume:             u32,
+    pub node:               u32,
+    pub token:              u32,
+    pub data_length:        u64,
+    pub resource_length:    u64,
+    pub when:               u64,
+    pub preserve_resources: bool
 }
 pub(super) struct Pending
 {
@@ -41,6 +42,7 @@ pub(super) struct Pending
     replacing:         bool,
     revision_updated:  bool,
     parent_updated:    bool,
+    when:              u64,
     locked:            bool
 }
 impl Pending
@@ -57,6 +59,17 @@ impl Pending
 }
 impl<R: Rpc> Filesystem<R>
 {
+    pub(crate) fn pending_node(&self, volume: u32, token: u32) -> Result<&Node>
+    {
+        let pending =
+            self.writes.get(token).filter(|p| p.volume == volume).ok_or(Cause::NotFound)?;
+        if pending.aborting
+        {
+            return Err(Cause::Busy.into());
+        }
+        pending.node.as_ref().ok_or(Cause::Busy.into())
+    }
+
     fn writable(&self, volume: u32) -> Result<()>
     {
         let mount = self.mounts.get(volume).ok_or(Cause::NotFound)?;
@@ -159,10 +172,11 @@ impl<R: Rpc> Filesystem<R>
                 }
                 metadata.revision = metadata.revision.checked_add(1).ok_or(Cause::NoMemory)?;
                 metadata.modified = when;
+                let info = metadata.try_clone()?;
                 self.publish_record(root, forks::ROOT_RECORD.as_bytes(), old, &metadata).await?;
                 let revision = self.directory_revision(root).await?;
                 let mount = self.mounts.get_mut(volume).unwrap();
-                mount.info.metadata = metadata.clone();
+                mount.info.metadata = info;
                 mount.nodes.get_mut(ROOT).unwrap().metadata = metadata;
                 mount.directories.get_mut(ROOT).unwrap().revision = Some(revision);
                 Ok(id)
@@ -198,6 +212,7 @@ impl<R: Rpc> Filesystem<R>
             return self.cleanup(stage, Err(error)).await;
         }
         let cnid = node.metadata.catalog_id;
+        let when = node.metadata.modified;
         let revision = self.directory_revision(parent_handle).await?;
         self.mounts.get_mut(volume).unwrap().directories.get_mut(parent).unwrap().revision =
             Some(revision);
@@ -219,6 +234,7 @@ impl<R: Rpc> Filesystem<R>
                      replacing,
                      revision_updated: false,
                      parent_updated: false,
+                     when,
                      locked: true })
     }
 
@@ -227,13 +243,14 @@ impl<R: Rpc> Filesystem<R>
         let Create { volume,
                      parent,
                      token,
-                     name,
+                     properties,
                      data_length,
                      resource_length,
                      when } = request;
         self.writable(volume)?;
         self.writes.reserve(token)?;
-        let normalized = mac_hfs_b::names::normalize(name).map_err(|_| Cause::Invalid)?;
+        properties.validate().map_err(|_| Cause::Invalid)?;
+        let normalized = mac_hfs_b::names::normalize(properties.name).map_err(|_| Cause::Invalid)?;
         let key = mac_hfs_b::names::comparison(&normalized).map_err(|_| Cause::Invalid)?;
         self.scan(volume, parent).await?;
         let mount = self.mounts.get(volume).unwrap();
@@ -247,8 +264,19 @@ impl<R: Rpc> Filesystem<R>
             return Err(Cause::Conflict.into());
         }
         // Validate lengths/name before reserving a durable catalog identity.
-        let mut metadata =
-            Metadata::new(Kind::File, 16, mount.info.metadata.volume, &normalized, when)?;
+        let mut metadata = Metadata::new(Kind::File,
+                                         16,
+                                         mount.info.metadata.volume,
+                                         &normalized,
+                                         properties.created)?;
+        metadata.modified = properties.modified;
+        metadata.backup = properties.backup;
+        metadata.attributes = properties.attributes;
+        metadata.finder_info = properties.finder_info;
+        metadata.comment
+                .try_reserve_exact(properties.comment.len())
+                .map_err(|_| Cause::NoMemory)?;
+        metadata.comment.push_str(properties.comment);
         let layout = Layout::new(&metadata, data_length, resource_length)?;
         let lock = self.writer_lock(volume).await?;
         let result =
@@ -272,7 +300,7 @@ impl<R: Rpc> Filesystem<R>
                                   key };
                 self.stage_file(volume, parent, lock, 0, node, false).await
             }.await;
-        let pending = match result
+        let mut pending = match result
         {
             Ok(pending) => pending,
             Err(mut error) =>
@@ -284,6 +312,7 @@ impl<R: Rpc> Filesystem<R>
                 return Err(error);
             }
         };
+        pending.when = when;
         let id = pending.node.as_ref().unwrap().metadata.catalog_id;
         self.writes
             .insert(token, pending)
@@ -293,19 +322,28 @@ impl<R: Rpc> Filesystem<R>
 
     pub async fn begin_replace(&mut self, request: Replace) -> Result<()>
     {
+        if request.preserve_resources && request.resource_length != 0
+        {
+            return Err(Cause::Invalid.into());
+        }
         self.writable(request.volume)?;
         let Replace { volume,
                       node,
                       token,
                       data_length,
                       resource_length,
-                      when } = request;
+                      when,
+                      preserve_resources } = request;
         self.writes.reserve(token)?;
         if self.is_open(volume, node)
         {
             return Err(Cause::Busy.into());
         }
-        let cached = self.cached_node(volume, node)?.clone();
+        self.find(volume, node).await?;
+        let cached = self.cached_node(volume, node)?.try_clone()?;
+        let original_resources = cached.layout.resources;
+        let resource_length =
+            if preserve_resources { original_resources.length } else { resource_length };
         if cached.metadata.kind != Kind::File
         {
             return Err(Cause::Invalid.into());
@@ -327,7 +365,7 @@ impl<R: Rpc> Filesystem<R>
         let result =
             async {
                 let (expected, current) = self.open_record(parent_handle, &name).await?;
-                if current.metadata != cached.metadata
+                if current.metadata != cached.metadata || current.layout != cached.layout
                 {
                     return self.cleanup(expected, Err(Cause::Stale.into())).await;
                 }
@@ -363,6 +401,45 @@ impl<R: Rpc> Filesystem<R>
         self.writes
             .insert(token, pending)
             .unwrap_or_else(|_| unreachable!("write admission was reserved before host I/O"));
+        if preserve_resources
+        {
+            self.copy_resource(volume, token, original_resources).await?;
+        }
+        Ok(())
+    }
+
+    async fn copy_resource(&mut self, volume: u32, token: u32, source: forks::ForkLayout)
+                           -> Result<()>
+    {
+        let pending = self.writes
+                          .get(token)
+                          .filter(|pending| pending.volume == volume)
+                          .ok_or(Cause::NotFound)?;
+        let (expected, stage, target) =
+            (pending.expected,
+             pending.stage,
+             pending.node.as_ref().ok_or(Cause::Invalid)?.layout.resources);
+        for index in 0..source.chunks
+        {
+            let (offset, count, _) = source.chunk(index)?;
+            let reply = self.call(Op::Read,
+                                  expected,
+                                  offset,
+                                  (count + forks::HASH_BYTES as usize) as u32,
+                                  &[])
+                            .await?;
+            forks::decode_chunk(&reply.body, count)?;
+            let (destination, expected_count, _) = target.chunk(index)?;
+            if expected_count != count
+            {
+                return Err(Cause::Invalid.into());
+            }
+            // Chunk digests cover bytes, not their file offsets. Verify once
+            // and copy the complete checked chunk; do not hash it a second time.
+            self.call(Op::Write, stage, destination, 0, &reply.body).await?;
+            self.writes.get_mut(token).ok_or(Cause::NotFound)?.resource_chunks = index + 1;
+            yield_once().await;
+        }
         Ok(())
     }
 
@@ -410,11 +487,10 @@ impl<R: Rpc> Filesystem<R>
             self.writes.get_mut(token).unwrap().parent_updated = true;
             return Ok(());
         }
-        let (volume, parent, handle, cnid) =
-            (pending.volume, pending.parent, pending.parent_handle, pending.cnid);
-        let cached = self.cached_node(volume, parent)?.metadata.clone();
-        let when = self.cached_node(volume, cnid)?.metadata.modified;
-        let mut desired = cached.clone();
+        let (volume, parent, handle, when) =
+            (pending.volume, pending.parent, pending.parent_handle, pending.when);
+        let cached = self.cached_node(volume, parent)?.metadata.try_clone()?;
+        let mut desired = cached.try_clone()?;
         desired.modified = when;
         desired.revision = desired.revision.checked_add(1).ok_or(Cause::NoMemory)?;
         let (old, actual) = self.open_record(handle, forks::DIRECTORY_RECORD.as_bytes()).await?;
@@ -503,6 +579,10 @@ impl<R: Rpc> Filesystem<R>
         }
         if !pending.published
         {
+            if self.is_open(volume, pending.cnid)
+            {
+                return Err(Cause::Busy.into());
+            }
             let layout = pending.node.as_ref().unwrap().layout;
             if pending.data_chunks != layout.data.chunks
                || pending.resource_chunks != layout.resources.chunks
