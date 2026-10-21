@@ -189,8 +189,29 @@ struct OpenFile
     owner:    u64,
     id:       u32,
     volume:   u32,
-    fork:     Fork,
+    fork:     FileFork,
     position: u64
+}
+enum FileFork
+{
+    Block(Fork),
+    Provider(provider::Open)
+}
+impl FileFork
+{
+    fn length(&self) -> Result<u64, Status>
+    {
+        match self
+        {
+            Self::Block(fork) => Ok(fork.length),
+            Self::Provider(fork) => fork.ready_length()
+        }
+    }
+
+    fn orphaned(&self) -> bool
+    {
+        matches!(self, Self::Provider(fork) if fork.orphaned)
+    }
 }
 pub struct Manager
 {
@@ -498,7 +519,7 @@ impl Manager
                          .insert(OpenFile { owner,
                                             id,
                                             volume,
-                                            fork,
+                                            fork: FileFork::Block(fork),
                                             position: 0 })
                          .map_err(|_| NO_MEMORY)?;
         Ok((handle, length))
@@ -643,13 +664,24 @@ impl Manager
         let mut count = 0;
         loop
         {
-            let id = self.handles.iter().find_map(|(id, file)| (file.owner == owner).then_some(id));
+            let id =
+                self.handles.iter().find_map(|(id, file)| {
+                                       (file.owner == owner && !file.fork.orphaned()).then_some(id)
+                                   });
             let Some(id) = id
             else
             {
                 break;
             };
-            self.handles.remove(id);
+            if let Some(OpenFile { fork: FileFork::Provider(fork),
+                                   .. }) = self.handles.get_mut(id)
+            {
+                fork.abandon();
+            }
+            else
+            {
+                self.handles.remove(id);
+            }
             count += 1;
         }
         loop
@@ -772,43 +804,53 @@ impl Manager
             {
                 // Clone only the bounded extent descriptor; handles keep independent marks.
                 let file = self.slot(owner, call.handle)?;
-                let (volume, position, mut fork) = (file.volume, file.position, file.fork.clone());
+                let FileFork::Block(fork) = &file.fork
+                else
+                {
+                    return Err(NOT_SUPPORTED);
+                };
+                let (volume, position, mut fork) = (file.volume, file.position, fork.clone());
                 let length = self.with_volume(volume, |v| io(v.read(&mut fork, position, output)))?;
                 let file = self.slot(owner, call.handle)?;
-                file.fork = fork;
+                let fork_length = fork.length;
+                file.fork = FileFork::Block(fork);
                 file.position += length as u64;
                 call.transferred = length;
                 call.position = file.position;
-                call.length = file.fork.length;
+                call.length = fork_length;
             }
             SEEK =>
             {
                 let file = self.slot(owner, call.handle)?;
+                let length = file.fork.length()?;
                 let base = match call.whence
                 {
                     SEEK_START => 0,
                     SEEK_CURRENT => file.position,
-                    SEEK_END => file.fork.length,
+                    SEEK_END => length,
                     _ => return Err(BAD_ARGUMENT)
                 };
                 let position = base.checked_add_signed(call.offset).ok_or(BAD_ARGUMENT)?;
-                if position > file.fork.length
+                if position > length
                 {
                     return Err(BAD_ARGUMENT);
                 }
                 file.position = position;
                 call.position = position;
-                call.length = file.fork.length;
+                call.length = length;
             }
             TELL =>
             {
                 let file = self.slot(owner, call.handle)?;
                 call.position = file.position;
-                call.length = file.fork.length;
+                call.length = file.fork.length()?;
             }
             CLOSE =>
             {
-                self.slot(owner, call.handle)?;
+                if matches!(self.slot(owner, call.handle)?.fork, FileFork::Provider(_))
+                {
+                    return Err(NOT_SUPPORTED);
+                }
                 self.handles.remove(call.handle).ok_or(NOT_FOUND)?;
             }
             _ => return Err(NOT_SUPPORTED)

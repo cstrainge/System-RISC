@@ -20,17 +20,19 @@ def digest(path):
 
 
 def prepare(output, sdk=False):
-    fixture = 'host-filesystem-app' if sdk else 'host-filesystem-probe'
-    binary = 'Finder' if sdk else 'HostFilesystemProbe'
-    target = vm.build_dir() / 'fixtures' / fixture
-    manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
-    subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
-                    '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin',
-                    binary, '--target-dir', str(target)], cwd=vm.ROOT, check=True)
-    subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
-                    '--bin', 'package', '--target-dir', str(target), '--',
-                    str(target / 'riscv64imac-unknown-none-elf/release' / binary),
-                    str(output / 'packages')], cwd=vm.ROOT, check=True)
+    fixtures = [('host-filesystem-app', 'Finder'),
+                ('host-filesystem-exit-worker', 'HostExitWorker')] if sdk else [
+                    ('host-filesystem-probe', 'HostFilesystemProbe')]
+    for fixture, binary in fixtures:
+        target = vm.build_dir() / 'fixtures' / fixture
+        manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
+        subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
+                        '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin',
+                        binary, '--target-dir', str(target)], cwd=vm.ROOT, check=True)
+        subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
+                        '--bin', 'package', '--target-dir', str(target), '--',
+                        str(target / 'riscv64imac-unknown-none-elf/release' / binary),
+                        str(output / 'packages')], cwd=vm.ROOT, check=True)
     subprocess.run(['cargo', 'build', '--locked', '-p', 'risc-host', '-p', 'risc-forks',
                     '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.ROOT / 'System7', check=True)
 
@@ -54,6 +56,7 @@ def capture(output, sdk=False):
         if sdk:
             image.remove('/System Folder/Finder')
             image.import_macbinary(output / 'packages/Finder.bin', '/System Folder')
+            image.import_macbinary(output / 'packages/Host Exit Worker.bin', '/Applications')
         else:
             image.import_macbinary(output / 'packages/Host Filesystem Probe.bin', '/System Folder/Extensions')
         subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
@@ -70,6 +73,20 @@ def capture(output, sdk=False):
             child = output / 'Child'
             child.write_bytes(b'Nested fixture\n')
             subprocess.run([str(host / 'risc-forks'), 'import', str(export), str(child), '/Tools'], check=True)
+            # Original MacBinary envelope is fixture transport, not an export
+            # acceptance oracle. Rust verifies both payloads through File APIs.
+            header = bytearray(128)
+            header[1] = 5
+            header[2:7] = b'Forks'
+            header[65:73] = b'TEXTTEST'
+            data = bytes((i * 31 + 7) & 255 for i in range(131089))
+            resources = bytes((i * 13 + 11) & 255 for i in range(70003))
+            header[83:87] = len(data).to_bytes(4, 'big')
+            header[87:91] = len(resources).to_bytes(4, 'big')
+            forks = output / 'Forks.bin'
+            forks.write_bytes(header + data + bytes(-len(data) % 128)
+                              + resources + bytes(-len(resources) % 128))
+            subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(export), str(forks), '/Tools'], check=True)
         companion_args = [str(host / 'risc-host'), '--export', f'Test={export}']
         if sdk:
             readonly = output / 'readonly-export'

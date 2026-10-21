@@ -443,6 +443,9 @@ pub struct OpenFile<'a>
 }
 impl OpenFile<'_>
 {
+    /// Read up to the output length. A successful call may return fewer bytes;
+    /// provider-backed reads are bounded to 64 KiB per call. Zero indicates EOF
+    /// unless the output itself is empty.
     pub fn read(&mut self, output: &mut [u8]) -> Result<usize>
     {
         let mut call = FileCall { operation: READ,

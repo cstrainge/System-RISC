@@ -159,7 +159,7 @@ and data-write admission fail as ReadOnly. The public snapshot carries
 `Option<VolumeCapacity>`, `VolumeSource` and provider FourCC/whole version;
 Finder omits unavailable capacity figures and Get Info describes virtual volumes
 without fabricating a block-device number. This gate does not yet establish
-fork APIs, write-back, app-exit/disconnect or responsiveness.
+write-back, exit during pending I/O, disconnect or responsiveness.
 
 Catalog, direct-child enumeration and parent queries also run through the public
 SDK in that guest case, including nested folders, Unicode names, end-of-directory
@@ -170,8 +170,24 @@ race a pending read. Decoded metadata is bound to the requested node or parent.
 Mount reads only the root record, with an explicitly unknown child count, rather
 than enumerating the export. Catalog requests obtain exact directory counts;
 direct-child requests advance bounded provider scans and park between steps.
-Incremental public cursor scans, full path lookup and fork operations remain to
-be connected. This does not yet make external directories usable in Finder.
+Both fork types now support public owned open/read/seek/tell/close, including
+managed Drop. Each provider read transfers at most 64 KiB and may return a short
+read; position advances exactly once on delivery. The guest checks independent
+marks, deterministic multi-chunk data/resource payloads, EOF/empty reads, seeks,
+busy unmount, Drop and forced file-slot reuse with stale/foreign-ID rejection.
+Provider handles use the common resident File Manager table. An exiting owner
+marks its provider handles for deferred cleanup instead of removing slots while
+the driver still owns their capabilities. Pending reads retain tracking through
+actual completion; Close acknowledges retirement. Failed cleanup quarantines
+the mark, retaining the mount lease. Resident tests cover pending-read exit
+transitions. The guest also launches a real second application, opens/reads both
+forks, deliberately forgets both wrappers and exits. The first app then waits for
+actual process exit and successful unmount after deferred Close acknowledgements.
+Exit during pending I/O, disconnect and latency gates remain outstanding.
+
+Incremental public cursor scans, full path lookup, Resource Manager inspection
+and application loading from provider forks remain to be connected. This does
+not yet make external directories usable in Finder.
 
 Verification builds now share `<selected build>/host` for workspace host tests,
 examples, formatter tools and rustdoc. Native images/binaries and fixture targets

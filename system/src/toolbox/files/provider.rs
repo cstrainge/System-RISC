@@ -5,6 +5,8 @@
 use mac_filesystem_interface as fs;
 
 use super::*;
+mod forks;
+pub(super) use forks::Open;
 #[cfg(target_arch = "riscv64")]
 pub(super) mod runtime;
 
@@ -276,6 +278,89 @@ mod tests
                                   ..Default::default() };
         manager.request(&mut call, "", &mut []).unwrap();
         call.index
+    }
+    fn open_reply(data: u64, resource: u64) -> [u8; 16]
+    {
+        let mut bytes = [0; 16];
+        bytes[..8].copy_from_slice(&data.to_le_bytes());
+        bytes[8..].copy_from_slice(&resource.to_le_bytes());
+        bytes
+    }
+    #[test]
+    fn provider_fork_marks_validate_owner_busy_state_lengths_and_acknowledged_reuse()
+    {
+        let mut manager = Manager::default();
+        let volume = manager.reserve_provider_mount(77, 0).unwrap();
+        manager.publish_provider_mount(volume, &descriptor()).unwrap();
+        let (_, handle) = manager.reserve_provider_file(7, volume, 16, DATA_FORK).unwrap();
+        assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+        assert_eq!(manager.publish_provider_file(handle, &[0; 15]), Err(BAD_ABI));
+        assert_eq!(manager.publish_provider_file(handle, &open_reply(131089, 70003)), Ok(131089));
+        assert_eq!(manager.file_provider(9, handle), Err(ACCESS_DENIED));
+        assert_eq!(manager.begin_provider_file_read(9, handle, 4), Err(ACCESS_DENIED));
+        let (_, args) = manager.begin_provider_file_read(7, handle, usize::MAX).unwrap();
+        assert_eq!((args.volume, args.token, args.flags, args.offset, args.length),
+                   (volume, handle, DATA_FORK, 0, fs::MAX_TRANSFER as u64));
+        assert_eq!(manager.begin_provider_file_close(7, handle), Err(SERVICE_BUSY));
+        assert_eq!(manager.retire_provider_file(handle), Err(SERVICE_BUSY));
+        assert_eq!(manager.finish_provider_file_read(handle,
+                                                     0,
+                                                     args.length,
+                                                     Some(fs::MAX_TRANSFER + 1)),
+                   Err(BAD_ABI));
+        let (_, args) = manager.begin_provider_file_read(7, handle, 4).unwrap();
+        assert_eq!(args.offset, 0, "invalid provider length advanced the mark");
+        assert_eq!(manager.finish_provider_file_read(handle, 0, 4, Some(3)), Ok((3, 131089)));
+        let mut call = FileCall { operation: SEEK,
+                                  handle,
+                                  whence: SEEK_END,
+                                  offset: -1,
+                                  ..Default::default() };
+        manager.request_owned(7, &mut call, "", &mut []).unwrap();
+        assert_eq!(call.position, 131088);
+        assert_eq!(manager.begin_provider_file_close(9, handle), Err(ACCESS_DENIED));
+        manager.begin_provider_file_close(7, handle).unwrap();
+        assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+        manager.retire_provider_file(handle).unwrap(); // simulated actual Close ACK
+        let (_, next) = manager.reserve_provider_file(7, volume, 16, RESOURCE_FORK).unwrap();
+        assert_eq!(next & 0xffff, handle & 0xffff);
+        assert_ne!(next, handle);
+        assert_eq!(manager.file_provider(7, handle), Err(NOT_FOUND));
+        assert_eq!(manager.publish_provider_file(next, &open_reply(131089, 70003)), Ok(70003));
+        manager.begin_provider_file_close(7, next).unwrap();
+        manager.quarantine_provider_file(next).unwrap();
+        assert_eq!(manager.retire_provider_file(next), Err(SERVICE_BUSY));
+        assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+        manager.begin_provider_file_close(7, next).unwrap();
+        manager.retire_provider_file(next).unwrap();
+        manager.begin_provider_unmount(volume).unwrap();
+    }
+    #[test]
+    fn app_exit_retains_provider_marks_until_pending_reads_and_cleanup_acknowledge()
+    {
+        let mut manager = Manager::default();
+        let volume = manager.reserve_provider_mount(77, 0).unwrap();
+        manager.publish_provider_mount(volume, &descriptor()).unwrap();
+        let (_, handle) = manager.reserve_provider_file(7, volume, 16, DATA_FORK).unwrap();
+        manager.publish_provider_file(handle, &open_reply(9, 0)).unwrap();
+        let (_, other) = manager.reserve_provider_file(9, volume, 16, DATA_FORK).unwrap();
+        manager.publish_provider_file(other, &open_reply(9, 0)).unwrap();
+        manager.begin_provider_file_read(7, handle, 4).unwrap();
+        assert_eq!(manager.close_all(7), 1);
+        assert_eq!(manager.close_all(7), 0);
+        assert_eq!(manager.next_orphaned_file().unwrap(), None);
+        assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+        // A cancelled waiter must not advance the shared mark with undelivered
+        // bytes. The actual result still releases the read before Close runs.
+        assert_eq!(manager.finish_provider_file_read(handle, 0, 4, None), Ok((0, 9)));
+        assert_eq!(manager.next_orphaned_file().unwrap(), Some((handle, 77, volume)));
+        assert_eq!(manager.next_orphaned_file().unwrap(), None);
+        assert_eq!(manager.file_provider(9, other), Ok(Some(77)));
+        manager.retire_provider_file(handle).unwrap();
+        assert_eq!(manager.file_provider(7, handle), Err(NOT_FOUND));
+        manager.begin_provider_file_close(9, other).unwrap();
+        manager.retire_provider_file(other).unwrap();
+        manager.begin_provider_unmount(volume).unwrap();
     }
     #[test]
     fn provider_reads_pin_mount_generation_until_actual_completion()

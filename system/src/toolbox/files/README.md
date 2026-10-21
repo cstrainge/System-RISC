@@ -26,8 +26,10 @@ hotplug/unmount remains outside the current slice. Host export mount/count/
 unmount, catalog, direct-child enumeration and parent queries now have private
 public-SDK guest acceptance. Pending provider reads pin their mounted generation
 through actual completion; unmount rejects a live read lease. Mount itself never
-enumerates the host root. Provider cursor/path/fork and write dispatch is still
-in progress; see [the filesystem class contract](../../../../docs/FILESYSTEM-INTERFACE.md).
+enumerates the host root. Both fork types now support owned open/read/seek/tell/
+close and Drop through native guest SDK checks. Provider cursor/path, resource
+inspection/application loading and write dispatch are still in progress; see
+[the filesystem class contract](../../../../docs/FILESYSTEM-INTERFACE.md).
 
 Provider requests own their input/results, select the exact generation-checked
 interface incarnation, and park the caller outside the synchronous firmware I/O
@@ -36,6 +38,14 @@ if its waiting app thread exits. Unavailable cleanup quarantines a mount rather
 than recycling its identity. Provider volume snapshots carry an explicit unknown
 capacity and non-block source; applications receive Rust enums/options rather
 than internal sentinels.
+
+Block and provider fork marks share the generation-tagged File Manager table.
+Provider opens reserve a slot before dispatch and publish it only after a valid
+open result. Reads own at most 64 KiB, exclude concurrent operations on that mark,
+and advance its position only when bytes are delivered. Closing retains the
+slot/mount lease until acknowledgement. App exit marks provider slots for deferred
+cleanup outside Files/I/O guards; pending results remain resident-owned. Failed
+cleanup quarantines its mark rather than recycling a still-owned capability.
 
 The native API provides:
 
@@ -76,8 +86,9 @@ captures that identity before switching to the storage thread and passes it to
 `dispatch_owned` / `request_owned`; `FileCall` cannot choose an owner. Reading,
 seeking, inspecting or closing another application's live handle returns
 `ACCESS_DENIED` and preserves the owner's mark and destination buffer. Closing
-an application invokes `close_all(owner)`, which releases only its marks without
-resetting slot generations. A relaunched application therefore cannot reuse a
+an application invokes `close_all(owner)`, which releases its block marks and
+schedules acknowledged provider cleanup without resetting slot generations.
+A relaunched application therefore cannot reuse a
 stale handle. Owner zero is the separate trusted loader/bootstrap namespace used
 by internal `request` calls, rather than an application bypass.
 

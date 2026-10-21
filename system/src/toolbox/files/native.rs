@@ -13,42 +13,68 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
     }
     let call = unsafe { &mut *pointer.cast::<FileCall>() };
     let catalog = matches!(call.operation, files::CATALOG | files::PARENT | files::DIRECTORY_ENTRY);
+    let opening = call.operation == files::OPEN;
+    let fork_io = matches!(call.operation, files::READ | files::CLOSE);
     if !matches!(call.operation,
                  files::HOST_EXPORT_COUNT | files::MOUNT_HOST_EXPORT | files::UNMOUNT_VOLUME)
        && !catalog
+       && !opening
+       && !fork_io
     {
         return None;
     }
-    if (!catalog && call.cnid != 0)
-       || (catalog && call.cnid == 1)
-       || (catalog && call.operation != files::DIRECTORY_ENTRY && call.index != 0)
-       || call.handle != 0
-       || call.fork != 0
+    if (!(catalog || opening) && call.cnid != 0)
+       || ((catalog || opening) && call.cnid == 1)
+       || ((catalog || opening || fork_io)
+           && call.operation != files::DIRECTORY_ENTRY
+           && call.index != 0)
+       || (fork_io && call.volume != 0)
+       || (!fork_io && call.handle != 0)
+       || (!opening && call.fork != 0)
+       || (opening && !matches!(call.fork, files::DATA_FORK | files::RESOURCE_FORK))
        || call.whence != 0
        || call.reserved != 0
        || call.offset != 0
        || call.position != 0
        || call.length != 0
        || call.name_length != 0
-       || call.capacity != 0
+       || (call.operation != files::READ && call.capacity != 0)
+       || call.capacity > 1024 * 1024
+       || (call.capacity != 0 && call.output.is_null())
        || call.operation == files::HOST_EXPORT_COUNT && (call.volume != 0 || call.index != 0)
        || call.operation == files::MOUNT_HOST_EXPORT && call.volume != 0
        || call.operation == files::UNMOUNT_VOLUME && (call.volume == 0 || call.index != 0)
     {
         return Some(BAD_ARGUMENT as i64);
     }
+    let output = if call.capacity == 0
+    {
+        &mut [][..]
+    }
+    else
+    {
+        unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
+    };
     call.transferred = 0;
-    if catalog
+    if catalog || opening || fork_io
     {
         // Complete local reads in the same handoff used for routing. Introducing
         // providers must not add a second Files guard/stack switch to disk reads.
         let routed = crate::kernel::with_files(|manager| {
-            match manager.read_provider(call.volume)
+            let provider = if fork_io
+            {
+                manager.file_provider(owner, call.handle)
+            }
+            else
+            {
+                manager.read_provider(call.volume)
+            };
+            match provider
             {
                 Ok(Some(_)) => None,
                 Ok(None) =>
                 {
-                    Some(manager.request_owned(owner, call, "", &mut [])
+                    Some(manager.request_owned(owner, call, "", output)
                                 .map_or_else(|status| status, |()| OK))
                 }
                 Err(error) => Some(error)
@@ -61,7 +87,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
             Err(error) => return Some(error.status() as i64)
         }
     }
-    Some(super::provider::runtime::request(owner, call) as i64)
+    Some(super::provider::runtime::request(owner, call, output) as i64)
 }
 /// # Safety
 /// Request and nested buffers must be live exclusive borrows for their sizes.

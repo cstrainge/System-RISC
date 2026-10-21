@@ -10,23 +10,31 @@ use mac_module::ClassId;
 use spinning_top::Spinlock;
 
 use crate::drivers::{OwnedJob, jobs::Failure};
+mod forks;
+pub(in crate::toolbox::files::provider) use forks::request_fork_cleanup;
 
 const MAX_WAITERS: usize = crate::toolbox::handles::Kind::Threads.capacity();
+const MAX_FLIGHTS: usize = MAX_WAITERS + super::super::MAX_OPEN_FILES;
 static FLIGHTS: Spinlock<Vec<Flight>> = Spinlock::new(Vec::new());
 static REAP: AtomicBool = AtomicBool::new(false);
+static FORK_CLEANUP: AtomicBool = AtomicBool::new(false);
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key
 {
     operation: u32,
     volume:    u32,
     index:     u32,
-    cnid:      u32
+    cnid:      u32,
+    handle:    u32,
+    fork:      u32,
+    capacity:  usize
 }
 enum Step
 {
     Count,
     Mount(u32),
     Unmount(u32),
+    File(forks::Action),
     Catalog
     {
         volume: u32,
@@ -73,6 +81,13 @@ enum Reply
     Count(u32),
     Mounted(VolumeInfo),
     Entry(CatalogInfo),
+    Opened(u32, u64),
+    Read
+    {
+        bytes:    Vec<u8>,
+        position: u64,
+        length:   u64
+    },
     Unmounted
 }
 
@@ -101,6 +116,8 @@ fn submit_args(provider: u32, op: Operation, args: Arguments<'_>) -> Result<Owne
         Operation::Mount => fs::MOUNT_BYTES + fs::METADATA_BYTES + 510,
         Operation::Catalog => fs::METADATA_BYTES + 510,
         Operation::Scan => 4 + fs::METADATA_BYTES + 510,
+        Operation::Open => 16,
+        Operation::Read => usize::try_from(args.length).map_err(|_| BAD_ARGUMENT)?,
         _ => 0
     };
     crate::drivers::submit_background_to(provider,
@@ -171,6 +188,7 @@ fn advance(mut flight: Flight) -> Progress
     };
     match flight.step
     {
+        Step::File(_) => forks::advance(flight, result, never_sent),
         Step::Catalog { volume,
                         node } =>
         {
@@ -282,10 +300,31 @@ fn advance(mut flight: Flight) -> Progress
     }
 }
 
-fn reply(call: &mut FileCall, result: Result<Reply, Status>) -> Status
+fn reply(call: &mut FileCall, output: &mut [u8], result: Result<Reply, Status>) -> Status
 {
     match result
     {
+        Ok(Reply::Opened(handle, length)) =>
+        {
+            call.handle = handle;
+            call.length = length;
+            call.position = 0;
+            OK
+        }
+        Ok(Reply::Read { bytes,
+                         position,
+                         length }) =>
+        {
+            if bytes.len() > output.len()
+            {
+                return BAD_ABI;
+            }
+            output[..bytes.len()].copy_from_slice(&bytes);
+            call.transferred = bytes.len();
+            call.position = position;
+            call.length = length;
+            OK
+        }
         Ok(Reply::Count(count)) =>
         {
             call.index = count;
@@ -323,7 +362,7 @@ fn waiting(flight: Flight) -> Status
     result.err().unwrap_or(SERVICE_BUSY)
 }
 
-pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
+pub(crate) fn request(owner: u64, call: &mut FileCall, output: &mut [u8]) -> Status
 {
     let thread = crate::context::current_thread().0;
     if thread <= 1
@@ -333,35 +372,45 @@ pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
     let key = Key { operation: call.operation,
                     volume:    call.volume,
                     index:     call.index,
-                    cnid:      call.cnid };
+                    cnid:      call.cnid,
+                    handle:    call.handle,
+                    fork:      call.fork,
+                    capacity:  output.len() };
     let mut flights = FLIGHTS.lock();
     if let Some(at) = flights.iter().position(|f| f.thread == thread)
     {
         if flights[at].key != key || flights[at].owner != owner || flights[at].abandoned
         {
+            flights[at].abandoned = true;
+            let _ = flights[at].job.cancel();
+            REAP.store(true, Ordering::Release);
             return BAD_ABI;
         }
         let flight = flights.swap_remove(at);
         drop(flights);
         return match advance(flight)
         {
-            Progress::Done(result) => reply(call, result),
+            Progress::Done(result) => reply(call, output, result),
             Progress::Pending(flight) => waiting(flight)
         };
     }
-    if flights.len() == MAX_WAITERS
+    if flights.len() == MAX_FLIGHTS
     {
         return NO_MEMORY;
     }
-    if flights.capacity() < MAX_WAITERS
+    if flights.capacity() < MAX_FLIGHTS
     {
-        let additional = MAX_WAITERS - flights.len();
+        let additional = MAX_FLIGHTS - flights.len();
         if flights.try_reserve_exact(additional).is_err()
         {
             return NO_MEMORY;
         }
     }
     drop(flights);
+    if matches!(call.operation, OPEN | READ | CLOSE)
+    {
+        return forks::start(owner, thread, key, call, output);
+    }
     if matches!(call.operation, CATALOG | PARENT | DIRECTORY_ENTRY)
     {
         let provider = match files(|manager| manager.begin_provider_read(call.volume))
@@ -433,7 +482,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
             Ok(id) => id,
             Err(NOT_FOUND) if call.operation == HOST_EXPORT_COUNT =>
             {
-                return reply(call, Ok(Reply::Count(0)));
+                return reply(call, output, Ok(Reply::Count(0)));
             }
             Err(error) => return error
         }
@@ -445,7 +494,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
         {
             match files(|manager| manager.existing_provider_mount(provider, u64::from(call.index)))
             {
-                Ok(Some(info)) => return reply(call, Ok(Reply::Mounted(info))),
+                Ok(Some(info)) => return reply(call, output, Ok(Reply::Mounted(info))),
                 Ok(None) => (),
                 Err(error) => return error
             }
@@ -500,6 +549,7 @@ pub(crate) fn abandon_thread(thread: u64)
 }
 pub(crate) fn pump()
 {
+    forks::pump_cleanup();
     if !REAP.load(Ordering::Acquire)
     {
         return;

@@ -1,0 +1,41 @@
+//! A real second application deliberately exits with two live provider marks.
+use mac_toolbox::{Error, System,
+                  files::{Fork, ROOT_ID}};
+fn require(value: bool) -> Result<(), Error>
+{
+    if value { Ok(()) } else { Err(Error::BadAbi) }
+}
+pub fn check(system: &System<'_>) -> Result<(), Error>
+{
+    let files = system.files();
+    let mut mounted = None;
+    for index in 0..files.volume_count()?
+    {
+        let info = files.volume_at(index)?;
+        if info.name() == "Native Host"
+        {
+            mounted = Some(info.id);
+            break;
+        }
+    }
+    let volume = mounted.ok_or(Error::NotFound)?;
+    let a = files.child(volume, ROOT_ID, 0)?;
+    let b = files.child(volume, ROOT_ID, 1)?;
+    let folder = if a.name() == "Tools" { a } else { b };
+    require(folder.name() == "Tools")?;
+    let a = files.child(volume, folder.id, 0)?;
+    let b = files.child(volume, folder.id, 1)?;
+    let file = if a.name() == "Forks" { a } else { b };
+    require(file.name() == "Forks")?;
+    let mut data = files.open(volume, file.id, Fork::Data)?;
+    let mut resources = files.open(volume, file.id, Fork::Resource)?;
+    let mut bytes = [0; 3];
+    require(data.read(&mut bytes)? == 3 && bytes == [7, 38, 69])?;
+    require(resources.read(&mut bytes)? == 3 && bytes == [11, 24, 37])?;
+    require(files.unmount(volume) == Err(Error::ServiceBusy))?;
+    core::mem::forget(data);
+    core::mem::forget(resources);
+    system.log("HOST_FS_EXIT_WORKER_READY\n")?;
+    // Returning enters the real scheduler/process EXIT path, bypassing Drop.
+    Ok(())
+}
