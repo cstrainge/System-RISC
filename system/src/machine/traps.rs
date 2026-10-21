@@ -84,9 +84,37 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
                                  0);
         }
     }
+    let deferred = if depth == 1 { thread.traps.take_deferred() } else { None };
+    drop(scope);
+    if let Some(job) = deferred
+    {
+        if result != SERVICE_BUSY as i64
+        {
+            // Replaying an already successful mutation would duplicate it.
+            // Treat a violated adapter contract as an ABI failure and abandon
+            // delivery while cancellation safely drains the owned request.
+            crate::drivers::abandon_deferred_job(thread.identity().thread.0, job);
+            frame.registers[8] = BAD_ABI as usize;
+            frame.pc = frame.pc.wrapping_add(4);
+            return frame;
+        }
+        // All request slices, legacy conversion temporaries and manager guards
+        // are gone. Preserve original request registers/PC for a fresh borrow
+        // when the completion wakes the same generation-tagged OS thread.
+        match super::scheduler::wait_io(job)
+        {
+            Ok(true) => return super::scheduler::schedule(frame),
+            Ok(false) => return frame, // completion won the race; replay now
+            Err(error) =>
+            {
+                frame.registers[8] = error as usize;
+                frame.pc = frame.pc.wrapping_add(4);
+                return frame;
+            }
+        }
+    }
     frame.registers[8] = result as usize;
     frame.pc = frame.pc.wrapping_add(4);
-    drop(scope);
     if matches!(number, PROCESS | PSTRING_PROCESS)
        && result == OK as i64
        && super::scheduler::retired()

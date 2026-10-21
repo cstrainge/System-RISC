@@ -293,3 +293,34 @@ that history. Counter allocation is atomic and exhausted slots are retired.
 Memory keeps its existing process-local wire contract and scheduler-slot history.
 Native MenuId values name semantic menu properties; MenuHandle values identify
 actual live menu objects. Owned menu references validate the latter on every call.
+
+## Deferred driver I/O integration
+
+The resident job pump now advances at most one bounded callback per scheduler
+sample, with an atomic early-out when no jobs are ready. It takes owned work out
+of the queue, releases the queue guard, invokes the provider through the checked
+module broker, and reacquires the queue only to commit its completion. Provider
+admission contention is distinct from a terminal provider error; unsent work
+retains its original owned input and can still be cancelled without dispatch.
+
+Outer native traps can park on a generation-tagged job after all request borrows,
+legacy string conversion temporaries and manager guards have gone out of scope.
+The saved PC/registers are replayed after completion so the adapter gets fresh
+borrows. The adapter must retain its owned operation state, consume the result
+once and return `SERVICE_BUSY` when requesting a park. The boundary rejects an
+attempt to replay an already successful call. Nested definition/drawing traps
+cannot park. Completion-before-park is checked under the scheduler guard; the
+completion path releases the job guard before waking the scheduler.
+
+Scheduled thread identities now use the shared `Threads` object namespace rather
+than deriving IDs from AppId. Late completions validate the thread's generation
+and its exact waiting job. Event readiness cannot wake an I/O wait. Retiring a
+thread discards delivery and starts cancellation drainage; buffers and broker
+requests stay owned until acknowledged, independent of the reclaimed app stack.
+An `OwnedJob` provides the same abandonment behavior on a resident adapter's Drop.
+
+This supplies the integration boundary for filesystem drivers; it does not by
+itself establish live host filesystem behavior. Public mount/read/write tests must
+exercise parking, cancellation/disconnect, other-app progress and single delivery
+of mutations before the host mount milestone is complete. SMP, general worker
+threads and unresponsive-provider timeout recovery remain separate work.

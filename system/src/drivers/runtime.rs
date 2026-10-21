@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, vec::Vec};
 
 use mac_abi::{ACCESS_DENIED, BAD_ABI, BAD_ARGUMENT, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, OK,
-              SERVICE_BUSY, Status};
+              SERVICE_BUSY, Status, WRONG_THREAD};
 use mac_formats::{module::Package, native::image, resource::Resource};
 use mac_module::{ClassId, PackageKind, Target, abi};
 
@@ -526,4 +526,240 @@ unsafe extern "C" fn resolve(caller: u64, class: u32, version: u32, output: *mut
         }
         Err(status) => status
     }
+}
+/// A kernel caller still resolves a live, declared class/version through the
+/// same registry as modules. Filesystem adapters never call a code address.
+fn resolve_kernel(class: ClassId, version: u32) -> Result<u32, Status>
+{
+    RUNTIME.with(|runtime| runtime.registry.resolve(0, class, version).map_err(status))
+           .map_err(crate::state::AccessError::status)?
+}
+
+struct NativeBroker;
+impl super::jobs::Broker for NativeBroker
+{
+    fn invoke(&mut self, request: super::jobs::Call<'_>) -> super::jobs::Outcome
+    {
+        use super::jobs::{Outcome, Owner, Phase};
+        // File Manager jobs carry trusted thread ownership but invoke as the
+        // resident service. A module-owned job keeps its original declaration
+        // checks; the queue cannot lend it the kernel's authority.
+        let caller = match request.owner
+        {
+            Owner::Module(module) => u64::from(module),
+            Owner::Kernel | Owner::Thread(_) => 0
+        };
+        let mut call = abi::Call { header:          abi::Header::of::<abi::Call>(),
+                                   ticket:          *request.ticket,
+                                   phase:           match request.phase
+                                   {
+                                       Phase::Start => abi::START,
+                                       Phase::Poll => abi::POLL,
+                                       Phase::Cancel => abi::CANCEL
+                                   },
+                                   class:           request.class.0,
+                                   operation:       request.operation,
+                                   input:           request.input.as_ptr(),
+                                   input_len:       request.input.len() as u32,
+                                   output:          request.output.as_mut_ptr(),
+                                   output_capacity: request.output.len() as u32,
+                                   output_len:      0,
+                                   reserved:        0 };
+        // SAFETY: Call and both disjoint borrowed slices remain live only for
+        // this invocation. checked_call validates the broker wire contract;
+        // no registry or job-queue guard survives the callback.
+        let result = unsafe { invoke(caller, request.provider, &mut call) };
+        *request.ticket = call.ticket;
+        // Provider errors are Ok(negative_status). Err(Busy) is admission or
+        // registry contention: the callback was not dispatched at this boundary.
+        if result == Err(SERVICE_BUSY)
+        {
+            return Outcome::Contended;
+        }
+        let result = result.unwrap_or_else(|status| status);
+        match result
+        {
+            OK => Outcome::Complete(call.output_len as usize),
+            abi::PENDING => Outcome::Pending,
+            error => Outcome::Failed(error)
+        }
+    }
+}
+
+
+// These short queue critical sections run only at the interrupt-masked native
+// service/timer boundary. No callback or hardware poll holds this guard. This
+// follows the current one-hart scheduler contract; SMP must supply per-hart
+// interrupt exclusion before it enables concurrent preemption in the kernel.
+static JOBS: spinning_top::Spinlock<super::jobs::Queue> =
+    spinning_top::Spinlock::new(super::jobs::Queue::new());
+static JOBS_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Resident adapters enqueue only owned bytes. The owner comes from trusted
+/// execution context, never from the application's request payload.
+fn enqueue_job(owner: super::jobs::Owner, class: ClassId, version: u32, operation: u32,
+               input: Vec<u8>, output_bytes: usize)
+               -> Result<OwnedJob, Status>
+{
+    use core::sync::atomic::Ordering::Release;
+    let provider = match owner
+    {
+        super::jobs::Owner::Module(module) =>
+        {
+            RUNTIME.with(|runtime| {
+                       runtime.registry.resolve(u64::from(module), class, version).map_err(status)
+                   })
+                   .map_err(crate::state::AccessError::status)??
+        }
+        _ => resolve_kernel(class, version)?
+    };
+    let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
+    let mut queue = JOBS.lock();
+    let id = queue.submit(owner, work).map_err(|error| error.status)?;
+    JOBS_READY.store(true, Release);
+    Ok(OwnedJob { owner,
+                  id })
+}
+
+fn take_job(owner: super::jobs::Owner, id: u32) -> Result<Option<super::jobs::Completed>, Status>
+{
+    JOBS.lock().take(owner, id)
+}
+
+pub(crate) fn job_pending(thread: u64, id: u32) -> Result<bool, Status>
+{
+    JOBS.lock().pending(super::jobs::Owner::Thread(thread), id)
+}
+
+pub(crate) fn discard_thread_jobs(thread: u64)
+{
+    let mut queue = JOBS.lock();
+    queue.discard_owner(super::jobs::Owner::Thread(thread));
+    JOBS_READY.store(queue.has_ready(), core::sync::atomic::Ordering::Release);
+}
+
+/// At most one bounded callback per scheduler sample. Empty queues cost one
+/// atomic load, with no registry lookup, allocation or device access.
+pub(crate) fn pump_jobs()
+{
+    use core::sync::atomic::Ordering::{Acquire, Release};
+    if !JOBS_READY.load(Acquire)
+    {
+        return;
+    }
+    let dispatch = { JOBS.lock().next_dispatch() };
+    let Some(mut dispatch) = dispatch
+    else
+    {
+        return;
+    };
+    dispatch.invoke(&mut NativeBroker);
+    let completed = {
+        let mut queue = JOBS.lock();
+        let completed = queue.finish(dispatch).expect("dispatch belongs to its live job queue");
+        JOBS_READY.store(queue.has_ready(), Release);
+        completed
+    };
+    if let Some((super::jobs::Owner::Thread(thread), job)) = completed
+    {
+        crate::machine::scheduler::wake_io(thread, job);
+    }
+}
+
+
+/// Ask the outer native service boundary to park and replay this call. Resident
+/// adapters return SERVICE_BUSY immediately after this succeeds. Nested drawing
+/// and definition calls cannot park while their caller may own a manager guard.
+fn defer_current_job(id: u32) -> Result<(), Status>
+{
+    let context = crate::context::current_thread_context();
+    job_pending(context.identity().thread.0, id)?;
+    context.traps.defer(id)
+}
+
+
+/// A resident adapter owns a job while its request is parked. Dropping the
+/// adapter abandons delivery but retains any live transport ticket until the
+/// provider acknowledges cancellation; no borrowed application buffer is pinned.
+pub struct OwnedJob
+{
+    owner: super::jobs::Owner,
+    id:    u32
+}
+impl OwnedJob
+{
+    pub fn poll(&mut self) -> Result<Option<super::jobs::Completed>, Status>
+    {
+        if self.id == 0
+        {
+            return Err(NOT_FOUND);
+        }
+        let result = take_job(self.owner, self.id)?;
+        if result.is_some()
+        {
+            self.id = 0;
+        }
+        Ok(result)
+    }
+
+    pub fn defer_current(&self) -> Result<(), Status>
+    {
+        if self.id == 0
+        {
+            return Err(NOT_FOUND);
+        }
+        if self.owner != super::jobs::Owner::Thread(crate::context::current_thread().0)
+        {
+            return Err(WRONG_THREAD);
+        }
+        defer_current_job(self.id)
+    }
+}
+impl Drop for OwnedJob
+{
+    fn drop(&mut self)
+    {
+        if self.id == 0
+        {
+            return;
+        }
+        let mut queue = JOBS.lock();
+        let _ = queue.discard(self.owner, self.id);
+        JOBS_READY.store(queue.has_ready(), core::sync::atomic::Ordering::Release);
+    }
+}
+
+
+/// Queue work on behalf of the actual running OS thread. No application request
+/// may supply a different owner or module identity.
+pub fn submit_job(class: ClassId, version: u32, operation: u32, input: Vec<u8>,
+                  output_bytes: usize)
+                  -> Result<OwnedJob, Status>
+{
+    let thread = crate::context::current_thread();
+    if thread == crate::context::BOOT_THREAD || thread.0 == 0
+    {
+        return Err(WRONG_THREAD);
+    }
+    enqueue_job(super::jobs::Owner::Thread(thread.0),
+                class,
+                version,
+                operation,
+                input,
+                output_bytes)
+}
+
+/// Background resident services own their own result and cancellation lifetime.
+pub fn submit_background_job(class: ClassId, version: u32, operation: u32, input: Vec<u8>,
+                             output_bytes: usize)
+                             -> Result<OwnedJob, Status>
+{
+    enqueue_job(super::jobs::Owner::Kernel, class, version, operation, input, output_bytes)
+}
+
+pub(crate) fn abandon_deferred_job(thread: u64, id: u32)
+{
+    let mut queue = JOBS.lock();
+    let _ = queue.discard(super::jobs::Owner::Thread(thread), id);
+    JOBS_READY.store(queue.has_ready(), core::sync::atomic::Ordering::Release);
 }

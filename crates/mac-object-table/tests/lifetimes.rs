@@ -36,6 +36,7 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
                  Kind::HostTransactions,
                  Kind::HostSessions,
                  Kind::DriverDevices,
+                 Kind::Threads,
                  Kind::DriverJobs,
                  Kind::DriverDma];
     let mut tables: Vec<_> = kinds.into_iter().map(Table::new).collect();
@@ -83,4 +84,24 @@ fn distinct_host_sessions_cannot_accept_each_others_file_ids()
     assert_ne!(a, c);
     assert_ne!(b, c);
     assert!(first.get(a).is_none());
+}
+
+#[test]
+fn retired_thread_slots_and_recreated_tables_cannot_accept_old_wakeup_identities()
+{
+    let mut threads = Table::new(Kind::Threads);
+    let retired = threads.insert("retired stack").unwrap();
+    assert_eq!(threads.remove(retired), Some("retired stack"));
+    let replacement = threads.insert("new stack").unwrap();
+    assert_eq!(retired & 0xffff, replacement & 0xffff);
+    assert_ne!(retired, replacement);
+    assert!(threads.get(retired).is_none());
+    let mut other = Table::new(Kind::Threads);
+    let foreign = other.insert("another scheduler").unwrap();
+    assert_ne!(foreign, replacement);
+    assert!(threads.get(foreign).is_none());
+    threads.clear();
+    let fresh = threads.insert("fresh stack").unwrap();
+    assert_ne!(fresh, replacement);
+    assert!(threads.get(replacement).is_none());
 }

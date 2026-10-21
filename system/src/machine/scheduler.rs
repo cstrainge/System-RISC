@@ -8,8 +8,9 @@ use core::{arch::asm,
 use spinning_top::Spinlock as Mutex;
 
 use super::traps::TrapFrame;
-use crate::context::ThreadContext;
-pub const MAX_THREADS: usize = 8;
+use crate::{context::ThreadContext,
+            toolbox::handles::{Kind, Table}};
+pub const MAX_THREADS: usize = Kind::Threads.capacity();
 const STACK_WORDS: usize = 16384; // 256KiB, including nested service/definition frames.
 // The CLINT runs at 10 MHz. Sampling input every 500 us avoids the old 10 ms
 // event-polling floor; a freshly woken event consumer takes the next timeslice.
@@ -19,6 +20,7 @@ static CURRENT: AtomicUsize = AtomicUsize::new(MAX_THREADS);
 static IO: AtomicBool = AtomicBool::new(false);
 struct Thread
 {
+    id:       u32,
     _stack:   Box<[u128]>,
     frame:    usize,
     live:     bool,
@@ -29,20 +31,29 @@ struct Thread
     woken:    u8
 }
 #[derive(Clone, Copy)]
-struct Wait
+enum Wait
 {
-    mask:     u16,
-    deadline: u64
+    Events
+    {
+        mask: u16, deadline: u64
+    },
+    Io
+    {
+        job: u32
+    }
 }
 struct Scheduler
 {
-    threads: [Option<Thread>; MAX_THREADS],
-    idle:    Option<Thread>,
-    ticks:   u64
+    threads:    [Option<Thread>; MAX_THREADS],
+    identities: Table<usize>,
+    idle:       Option<Thread>,
+    ticks:      u64
 }
-static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler { threads: [const { None }; MAX_THREADS],
-                                                            idle:    None,
-                                                            ticks:   0 });
+static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler { identities: Table::new(Kind::Threads),
+                                                            threads:    [const { None };
+                                                                         MAX_THREADS],
+                                                            idle:       None,
+                                                            ticks:      0 });
 unsafe extern "C" {
     fn __system_start_frame(frame: *mut TrapFrame) -> !;
 }
@@ -93,9 +104,11 @@ pub fn spawn(app: u64, image: usize, entry: usize) -> Result<u64, mac_abi::Statu
     unsafe {
         frame.write(initial);
     }
-    let thread = app.checked_add(1).ok_or(mac_abi::NO_MEMORY)?;
+    let id = scheduler.identities.insert(slot).map_err(|_| mac_abi::NO_MEMORY)?;
+    let thread = u64::from(id);
     CONTEXTS[slot].assign(app, thread);
-    scheduler.threads[slot] = Some(Thread { _stack: stack,
+    scheduler.threads[slot] = Some(Thread { id,
+                                            _stack: stack,
                                             frame: frame as usize,
                                             live: true,
                                             retired: false,
@@ -141,7 +154,8 @@ pub fn start() -> !
     unsafe {
         idle_frame.write(initial);
     }
-    scheduler.idle = Some(Thread { _stack:   stack,
+    scheduler.idle = Some(Thread { id:       0,
+                                   _stack:   stack,
                                    frame:    idle_frame as usize,
                                    live:     true,
                                    retired:  false,
@@ -184,8 +198,8 @@ pub fn wait_current(mask: u16, timeout_ticks: u32)
     let index = CURRENT.load(Ordering::Relaxed);
     if let Some(thread) = SCHEDULER.lock().threads.get_mut(index).and_then(Option::as_mut)
     {
-        thread.waiting = Some(Wait { mask,
-                                     deadline });
+        thread.waiting = Some(Wait::Events { mask,
+                                             deadline });
         thread.woken = 0;
     }
 }
@@ -207,10 +221,19 @@ pub fn waiting() -> [(u64, u16); MAX_THREADS]
     let scheduler = SCHEDULER.lock();
     core::array::from_fn(|index| {
         scheduler.threads[index].as_ref()
-                                .and_then(|thread| thread.waiting.filter(|_| thread.live))
-                                .map_or((0, 0), |wait| {
-                                    (CONTEXTS[index].identity().app.0, wait.mask)
+                                .filter(|thread| thread.live)
+                                .and_then(|thread| {
+                                    match thread.waiting
+                                    {
+                                        Some(Wait::Events { mask,
+                                                            .. }) =>
+                                        {
+                                            Some((CONTEXTS[index].identity().app.0, mask))
+                                        }
+                                        _ => None
+                                    }
                                 })
+                                .unwrap_or((0, 0))
     })
 }
 
@@ -232,34 +255,95 @@ fn wake_with_priority(app: u64, priority: u8)
     {
         if CONTEXTS[index].identity().app.0 == app
            && let Some(thread) = thread.as_mut().filter(|thread| thread.live)
-           && thread.waiting.take().is_some()
+           && matches!(thread.waiting, Some(Wait::Events { .. }))
         {
+            thread.waiting = None;
             thread.woken = priority;
             break;
         }
     }
 }
+/// Park only after the original trap has dropped every manager guard. The
+/// replay keeps the original PC/registers, and borrows fresh buffers on wake.
+/// Checking completion while holding the scheduler guard closes completion-
+/// before-park races; the job pump releases its queue guard before waking us.
+pub fn wait_io(job: u32) -> Result<bool, mac_abi::Status>
+{
+    let index = CURRENT.load(Ordering::Relaxed);
+    let mut scheduler = SCHEDULER.lock();
+    let thread = scheduler.threads
+                          .get_mut(index)
+                          .and_then(Option::as_mut)
+                          .filter(|thread| thread.live)
+                          .ok_or(mac_abi::WRONG_THREAD)?;
+    if !crate::drivers::job_pending(u64::from(thread.id), job)?
+    {
+        return Ok(false);
+    }
+    thread.waiting = Some(Wait::Io { job });
+    thread.woken = 0;
+    Ok(true)
+}
+
+pub fn wake_io(identity: u64, job: u32)
+{
+    let Ok(id) = u32::try_from(identity)
+    else
+    {
+        return;
+    };
+    let mut scheduler = SCHEDULER.lock();
+    let Some(&index) = scheduler.identities.get(id)
+    else
+    {
+        return;
+    };
+    if let Some(thread) =
+        scheduler.threads[index].as_mut().filter(|thread| thread.id == id && thread.live)
+       && matches!(thread.waiting, Some(Wait::Io { job: expected }) if expected == job)
+    {
+        thread.waiting = None;
+        thread.woken = 1;
+    }
+}
+
 pub fn retire_current()
 {
     let index = CURRENT.load(Ordering::Relaxed);
-    if let Some(t) = SCHEDULER.lock().threads.get_mut(index).and_then(Option::as_mut)
+    let thread = {
+        let mut scheduler = SCHEDULER.lock();
+        if let Some(thread) = scheduler.threads.get_mut(index).and_then(Option::as_mut)
+        {
+            thread.live = false;
+            thread.retired = true;
+            Some(thread.id)
+        }
+        else
+        {
+            None
+        }
+    };
+    if let Some(thread) = thread
     {
-        t.live = false;
-        t.retired = true;
+        crate::drivers::discard_thread_jobs(u64::from(thread));
     }
 }
+
 pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
 {
+    crate::drivers::pump_jobs();
     crate::kernel::poll_waiting_events();
     let current = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();
     scheduler.ticks += 1;
     // A retired stack is reclaimed only after a different stack has become current.
-    for (i, thread) in scheduler.threads.iter_mut().enumerate()
+    for index in 0..MAX_THREADS
     {
-        if i != current && thread.as_ref().is_some_and(|t| t.retired)
+        if index != current
+           && scheduler.threads[index].as_ref().is_some_and(|thread| thread.retired)
+           && let Some(thread) = scheduler.threads[index].take()
         {
-            *thread = None;
+            scheduler.identities.remove(thread.id);
         }
     }
     if let Some(thread) = scheduler.threads.get_mut(current).and_then(Option::as_mut)
@@ -273,7 +357,7 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
     let now = crate::platform::ticks();
     for thread in scheduler.threads.iter_mut().flatten()
     {
-        if thread.waiting.is_some_and(|wait| now >= wait.deadline)
+        if matches!(thread.waiting, Some(Wait::Events { deadline, .. }) if now >= deadline)
         {
             thread.waiting = None;
         }

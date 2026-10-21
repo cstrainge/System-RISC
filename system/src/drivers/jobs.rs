@@ -30,6 +30,8 @@ pub enum Outcome
 {
     Complete(usize),
     Pending,
+    /// Admission was busy; no provider callback ran. Keep the owned request.
+    Contended,
     Failed(Status)
 }
 pub struct Call<'a>
@@ -243,6 +245,11 @@ impl Queue
         Ok(record)
     }
 
+    pub fn pending(&mut self, owner: Owner, id: u32) -> Result<bool, Status>
+    {
+        Ok(!matches!(self.owned(owner, id)?.state, State::Finished(_)))
+    }
+
     pub fn next_dispatch(&mut self) -> Option<Dispatch>
     {
         while let Some(id) = self.ready.pop_front()
@@ -287,11 +294,17 @@ impl Queue
         {
             return Err(dispatch);
         };
+        if outcome == Outcome::Contended && !(record.cancel && dispatch.work.ticket == 0)
+        {
+            record.state = State::Ready(dispatch.work);
+            self.ready.push_back(dispatch.id);
+            return Ok(None);
+        }
         if dispatch.work.ticket != 0
         {
             match outcome
             {
-                Outcome::Pending | Outcome::Failed(SERVICE_BUSY) => (),
+                Outcome::Pending | Outcome::Contended | Outcome::Failed(SERVICE_BUSY) => (),
                 Outcome::Failed(error) => dispatch.work.forced_error = Some(error),
                 Outcome::Complete(_) => dispatch.work.forced_error = Some(BAD_ABI)
             }
@@ -308,6 +321,7 @@ impl Queue
             match outcome
             {
                 Outcome::Pending => Err(Failure::Service(BAD_ABI)),
+                Outcome::Contended => Err(Failure::Cancelled),
                 Outcome::Failed(error) => Err(Failure::Service(error)),
                 Outcome::Complete(length) if length <= dispatch.work.output.len() =>
                 {

@@ -7,3 +7,5 @@ pub use registry::*;
 mod runtime;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use runtime::*;
+#[cfg(target_arch = "riscv64")]
+pub use runtime::{OwnedJob, submit_background_job, submit_job};

@@ -47,14 +47,16 @@ pub fn bootstrap_thread() -> ThreadId
 pub struct ThreadTrapState
 {
     depth:    core::sync::atomic::AtomicUsize,
-    reported: core::sync::atomic::AtomicBool
+    reported: core::sync::atomic::AtomicBool,
+    deferred: core::sync::atomic::AtomicU32
 }
 impl ThreadTrapState
 {
     pub const fn new() -> Self
     {
         Self { depth:    core::sync::atomic::AtomicUsize::new(0),
-               reported: core::sync::atomic::AtomicBool::new(false) }
+               reported: core::sync::atomic::AtomicBool::new(false),
+               deferred: core::sync::atomic::AtomicU32::new(0) }
     }
 
     pub fn enter(&self) -> TrapScope<'_>
@@ -62,6 +64,29 @@ impl ThreadTrapState
         let depth = self.depth.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
         TrapScope { state: self,
                     depth }
+    }
+
+    pub fn defer(&self, job: u32) -> Result<(), mac_abi::Status>
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        if job == 0
+        {
+            return Err(mac_abi::BAD_ARGUMENT);
+        }
+        if self.depth.load(Relaxed) != 1
+        {
+            return Err(mac_abi::WRONG_THREAD);
+        }
+        self.deferred
+            .compare_exchange(0, job, Relaxed, Relaxed)
+            .map(|_| ())
+            .map_err(|_| mac_abi::SERVICE_BUSY)
+    }
+
+    pub fn take_deferred(&self) -> Option<u32>
+    {
+        let job = self.deferred.swap(0, core::sync::atomic::Ordering::Relaxed);
+        (job != 0).then_some(job)
     }
 
     pub fn nesting_reported(&self) -> bool
@@ -130,4 +155,29 @@ pub fn boot_context() -> &'static ThreadContext
 pub fn current_thread() -> ThreadId
 {
     current_thread_context().identity().thread
+}
+
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+    #[test]
+    fn deferred_io_is_exclusive_to_an_outer_service_and_consumed_once()
+    {
+        let state = ThreadTrapState::new();
+        assert_eq!(state.defer(17), Err(mac_abi::WRONG_THREAD));
+        let outer = state.enter();
+        assert_eq!(state.defer(0), Err(mac_abi::BAD_ARGUMENT));
+        {
+            let _nested = state.enter();
+            assert_eq!(state.defer(17), Err(mac_abi::WRONG_THREAD));
+        }
+        state.defer(17).unwrap();
+        assert_eq!(state.defer(18), Err(mac_abi::SERVICE_BUSY));
+        assert_eq!(state.take_deferred(), Some(17));
+        assert_eq!(state.take_deferred(), None);
+        drop(outer);
+        assert_eq!(state.defer(19), Err(mac_abi::WRONG_THREAD));
+    }
 }

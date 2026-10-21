@@ -23,6 +23,7 @@ static HOST_TRANSACTION_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0
 static HOST_SESSION_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
 
 static DEVICE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
+static THREAD_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static JOB_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DMA_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 
@@ -60,7 +61,8 @@ pub enum Kind
     HostSessions,
     DriverDevices,
     DriverDma,
-    DriverJobs
+    DriverJobs,
+    Threads
 }
 impl Kind
 {
@@ -68,6 +70,7 @@ impl Kind
     {
         match self
         {
+            Self::Threads => 8,
             Self::DriverJobs => 128,
             Self::DriverDevices => 64,
             Self::DriverDma => 128,
@@ -94,6 +97,7 @@ impl Kind
     {
         match self
         {
+            Self::Threads => Self::DriverJobs.first_slot() + Self::DriverJobs.capacity() as u32,
             Self::DriverJobs => Self::DriverDma.first_slot() + Self::DriverDma.capacity() as u32,
             Self::DriverDevices =>
             {
@@ -148,6 +152,7 @@ impl Kind
     {
         match self
         {
+            Self::Threads => THREAD_GENERATIONS.get(index),
             Self::DriverJobs => JOB_GENERATIONS.get(index),
             Self::DriverDevices => DEVICE_GENERATIONS.get(index),
             Self::DriverDma => DMA_GENERATIONS.get(index),
@@ -174,7 +179,8 @@ impl Kind
             | Self::StandardFiles
             | Self::ScrollBoxes
             | Self::Controls => u16::MAX,
-            Self::DriverJobs
+            Self::Threads
+            | Self::DriverJobs
             | Self::DriverDevices
             | Self::DriverDma
             | Self::HostFiles

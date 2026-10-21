@@ -242,3 +242,36 @@ fn memory_budget_fails_before_dispatch_and_returns_unsent_owned_input()
     let id = q.submit(OWNER, error.work).unwrap();
     q.discard(OWNER, id).unwrap();
 }
+
+#[test]
+fn admission_contention_before_start_retains_owned_work_and_can_be_cancelled_unsent()
+{
+    let mut q = Queue::new();
+    let id = q.submit(OWNER, work(8)).unwrap();
+    step(&mut q, |call| {
+        assert_eq!(*call.ticket, 0);
+        Outcome::Contended
+    });
+    assert!(q.pending(OWNER, id).unwrap());
+    step(&mut q, |call| {
+        assert_eq!(call.phase, Phase::Start);
+        assert_eq!(call.input, [1, 2, 3]);
+        Outcome::Contended
+    });
+    q.cancel(OWNER, id).unwrap();
+    assert!(!q.pending(OWNER, id).unwrap());
+    assert_eq!(q.take(OWNER, id).unwrap().unwrap().result.unwrap_err(), Failure::Cancelled);
+}
+
+#[test]
+fn cancellation_during_contended_admission_never_retries_the_unsent_start()
+{
+    let mut q = Queue::new();
+    let id = q.submit(OWNER, work(8)).unwrap();
+    let mut dispatch = q.next_dispatch().unwrap();
+    q.cancel(OWNER, id).unwrap();
+    dispatch.invoke(&mut Script(|_: Call<'_>| Outcome::Contended));
+    q.finish(dispatch).unwrap();
+    assert!(!q.has_ready());
+    assert_eq!(q.take(OWNER, id).unwrap().unwrap().result.unwrap_err(), Failure::Cancelled);
+}
