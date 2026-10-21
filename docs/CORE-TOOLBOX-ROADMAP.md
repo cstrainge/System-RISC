@@ -70,6 +70,13 @@ for each gate; the full P6 control-panel suite, SMP, networking and std port are
 not prerequisites. Resume broader driver extraction, std and Toolbox delivery
 after this sequence. Each milestone remains subject to its runtime acceptance.
 
+The next queued Finder performance task is the
+[browser selection-change stall](FINDER-SELECTION-PERFORMANCE.md): cache folder
+items/layout against catalog revisions, repaint only the changed items through
+a mask, and early-out on unchanged selection. Acceptance requires no enumeration
+on selection changes, no unrelated repainting and no watch cursor. Keep the
+current storage-driver delivery moving first.
+
 ### R1 — Service lifetimes and waits
 
 Depends on: the current ABI7 baseline.
