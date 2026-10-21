@@ -1,0 +1,49 @@
+{
+  "family": -30001,
+  "puzzle_family": -16415,
+  "chip_family": -30000,
+  "placement": {
+    "32": [
+      0,
+      -6
+    ],
+    "16": [
+      0,
+      -3
+    ]
+  },
+  "sources": [
+    {
+      "path": "system/assets/visual/49434e23--16415.bin",
+      "sha256": "40f8743f2968efd5ce62c6150e00c0f66ccf624b67ea5364e30c59adb26684d6"
+    },
+    {
+      "path": "system/assets/visual/69636c38--16415.bin",
+      "sha256": "33dc0341d554fea86bda1e5d0caa78c74873fbc114da1735a826d158adfda9d7"
+    },
+    {
+      "path": "system/assets/icons/drivers/49434e23--30000.bin",
+      "sha256": "2c5f7772ba9299066ae834312a6aff02823c2577404c94a0082d5a45049c8006"
+    },
+    {
+      "path": "system/assets/icons/drivers/69636c38--30000.bin",
+      "sha256": "8c0ce3a470e2524ca035831b62cc42e45c23758ccb9de43b2019fb0fadc6753f"
+    },
+    {
+      "path": "system/assets/visual/69637323--16415.bin",
+      "sha256": "2591211f202d1d9608f12ba121d6c3505e36f4187f207173d66daf42a7f0d3b7"
+    },
+    {
+      "path": "system/assets/visual/69637338--16415.bin",
+      "sha256": "793ee357e2beeed874dda80a2600e1aa85b465dd3f02e7d684909803e0b8f7cf"
+    },
+    {
+      "path": "system/assets/icons/drivers/69637323--30000.bin",
+      "sha256": "9f2122741e7bb259128a805fa6b750d69ffae2a5d9afa628dbc9aeca2302db2e"
+    },
+    {
+      "path": "system/assets/icons/drivers/69637338--30000.bin",
+      "sha256": "d1e414dbc5cf81669b8e9b89ff3b7e92cbd8e32dfa3b5e53f6f0c23b0543a53c"
+    }
+  ]
+}

@@ -73,7 +73,50 @@ pub fn query(manager: Manager<'_>, call: &mut IconCall) -> Result<(), Status>
         }
         ICON_FILE =>
         {
+            let scopes = if call.scope == CHAIN
+            {
+                [mac_abi::resources::APPLICATION, SYSTEM]
+            }
+            else
+            {
+                [call.scope, call.scope]
+            };
+            for scope in scopes.into_iter().take(if call.scope == CHAIN { 2 } else { 1 })
+            {
+                // BNDL local IDs are meaningful only inside their own fork.
+                // Never let another scope's FREF or icon shadow this mapping.
+                let refs: Vec<_> = resources.iter()
+                                            .filter(|(origin, _)| *origin == scope)
+                                            .map(|(_, r)| {
+                                                ResourceRef { kind:       r.kind,
+                                                              id:         r.id,
+                                                              name:       r.name.as_deref(),
+                                                              attributes: r.attributes,
+                                                              data:       &r.data }
+                                            })
+                                            .collect();
+                match icons::file_icon_id(&refs, call.creator, call.file_type)
+                {
+                    Ok(id) =>
+                    {
+                        call.id = id;
+                        call.origin = scope;
+                        return Ok(());
+                    }
+                    Err(icons::IconError::NotFound) =>
+                    {}
+                    Err(error) => return Err(status(error))
+                }
+            }
+            if ![SYSTEM, CHAIN].contains(&call.scope)
+            {
+                return Err(NOT_FOUND);
+            }
+            // The System's type bundles own generic driver/extension icons.
+            // A third-party creator need not duplicate these resources; its
+            // specific bundle above still wins. This remains resource based.
             let refs: Vec<_> = resources.iter()
+                                        .filter(|(origin, _)| *origin == SYSTEM)
                                         .map(|(_, r)| {
                                             ResourceRef { kind:       r.kind,
                                                           id:         r.id,
@@ -82,11 +125,8 @@ pub fn query(manager: Manager<'_>, call: &mut IconCall) -> Result<(), Status>
                                                           data:       &r.data }
                                         })
                                         .collect();
-            call.id = icons::file_icon_id(&refs, call.creator, call.file_type).map_err(status)?;
-            call.origin =
-                resources.iter()
-                         .find(|(_, r)| r.kind == *b"BNDL" && r.data.starts_with(&call.creator))
-                         .map_or(CHAIN, |(origin, _)| *origin);
+            call.id = icons::file_icon_id(&refs, *b"MACS", call.file_type).map_err(status)?;
+            call.origin = SYSTEM;
             Ok(())
         }
         _ => Err(NOT_SUPPORTED)

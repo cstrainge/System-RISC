@@ -8475,42 +8475,42 @@
     },
     {
       "type": "ICN#",
-      "id": 32730,
+      "id": -30000,
       "symbol": "DRIVERS_FOLDER_LARGE_MONO",
       "name": "Drivers folder",
       "payload": {
         "format": "file",
-        "path": "assets/icons/drivers/49434e23-32730.bin"
+        "path": "assets/icons/drivers/49434e23--30000.bin"
       }
     },
     {
       "type": "icl8",
-      "id": 32730,
+      "id": -30000,
       "symbol": "DRIVERS_FOLDER_LARGE_COLOR",
       "name": "Drivers folder",
       "payload": {
         "format": "file",
-        "path": "assets/icons/drivers/69636c38-32730.bin"
+        "path": "assets/icons/drivers/69636c38--30000.bin"
       }
     },
     {
       "type": "ics#",
-      "id": 32730,
+      "id": -30000,
       "symbol": "DRIVERS_FOLDER_SMALL_MONO",
       "name": "Drivers folder",
       "payload": {
         "format": "file",
-        "path": "assets/icons/drivers/69637323-32730.bin"
+        "path": "assets/icons/drivers/69637323--30000.bin"
       }
     },
     {
       "type": "ics8",
-      "id": 32730,
+      "id": -30000,
       "symbol": "DRIVERS_FOLDER_SMALL_COLOR",
       "name": "Drivers folder",
       "payload": {
         "format": "file",
-        "path": "assets/icons/drivers/69637338-32730.bin"
+        "path": "assets/icons/drivers/69637338--30000.bin"
       }
     },
     {
@@ -8539,6 +8539,72 @@
         "format": "file",
         "path": "../crates/mac-boot-screen/assets/blank-disk.icn"
       }
+    },
+    {
+      "type": "ICN#",
+      "id": -30001,
+      "name": "Driver file",
+      "attributes": 0,
+      "payload": {
+        "path": "assets/icons/driver-file/49434e23--30001.bin",
+        "format": "file"
+      },
+      "symbol": "DRIVER_FILE_LARGE_MONO"
+    },
+    {
+      "type": "icl8",
+      "id": -30001,
+      "name": "Driver file",
+      "attributes": 0,
+      "payload": {
+        "path": "assets/icons/driver-file/69636c38--30001.bin",
+        "format": "file"
+      },
+      "symbol": "DRIVER_FILE_LARGE_COLOR"
+    },
+    {
+      "type": "ics#",
+      "id": -30001,
+      "name": "Driver file",
+      "attributes": 0,
+      "payload": {
+        "path": "assets/icons/driver-file/69637323--30001.bin",
+        "format": "file"
+      },
+      "symbol": "DRIVER_FILE_SMALL_MONO"
+    },
+    {
+      "type": "ics8",
+      "id": -30001,
+      "name": "Driver file",
+      "attributes": 0,
+      "payload": {
+        "path": "assets/icons/driver-file/69637338--30001.bin",
+        "format": "file"
+      },
+      "symbol": "DRIVER_FILE_SMALL_COLOR"
+    },
+    {
+      "type": "BNDL",
+      "id": -30001,
+      "name": "Native driver type icon",
+      "attributes": 0,
+      "payload": {
+        "path": "assets/icons/driver-file/BNDL--30001.bin",
+        "format": "file"
+      },
+      "symbol": "NATIVE_DRIVER_ICON_BUNDLE"
+    },
+    {
+      "type": "FREF",
+      "id": -30001,
+      "name": "Native driver type icon",
+      "attributes": 0,
+      "payload": {
+        "path": "assets/icons/driver-file/FREF--30001.bin",
+        "format": "file"
+      },
+      "symbol": "NATIVE_DRIVER_ICON_REFERENCE"
     }
   ]
 }

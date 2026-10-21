@@ -149,7 +149,10 @@ pub mod standard
     pub const EXTENSIONS_FOLDER: i16 = -3973;
     pub const FONTS_FOLDER: i16 = -3968;
     /// System RISC's Drivers folder, with its own large/small color/mono family.
-    pub const DRIVERS_FOLDER: i16 = 32730;
+    pub const DRIVERS_FOLDER: i16 = -30000;
+    /// Default native driver document: extension puzzle with the Drivers chip.
+    pub const DRIVER: i16 = -30001;
+    pub const EXTENSION: i16 = -16415;
 }
 
 impl crate::graphics::GraphicsPort<'_>

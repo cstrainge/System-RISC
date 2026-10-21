@@ -250,3 +250,216 @@ fn custom_document_icons_are_read_without_bundle_or_executable_loading()
     assert_eq!(activity.writes, 0);
     assert!(activity.reads < 128, "custom lookup read executable payload: {activity:?}");
 }
+
+fn driver_icon_resources(color: bool) -> Vec<Resource>
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let manifest = mac_build::Manifest::read(&root.join("system/resources.json")).unwrap();
+    manifest.resources
+            .into_iter()
+            .filter_map(|r| {
+                let metadata = matches!(r.kind.as_str(), "BNDL" | "FREF");
+                let icon = r.id == mac_toolbox::quickdraw::icons::standard::DRIVER
+                           && (color || !matches!(r.kind.as_str(), "icl8" | "ics8"));
+                let palette = r.kind == "clut" && r.id == 8;
+                if !(metadata || icon || palette)
+                {
+                    return None;
+                }
+                let mac_build::manifest::Payload::File { path } = r.payload
+                else
+                {
+                    panic!("icon source must be a packaged file")
+                };
+                Some(Resource { kind:       r.kind.as_bytes().try_into().unwrap(),
+                                id:         r.id,
+                                name:       None,
+                                attributes: r.attributes,
+                                data:       fs::read(root.join("system").join(path)).unwrap() })
+            })
+            .collect()
+}
+#[test]
+fn generic_driver_icon_is_resource_based_and_clear_at_each_native_size_and_depth()
+{
+    use mac_toolbox::{ResourceScope, TypeCode, quickdraw::icons::standard};
+    for color in [false, true]
+    {
+        let resources = driver_icon_resources(color);
+        let encoded = resource::encode(&resources).unwrap();
+        let application = resource::encode(&[]).unwrap();
+        mac_system::testing::with_resource_forks(&encoded, &application, |services| {
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            let icons = system.quickdraw().icons();
+            assert_eq!(icons.for_file(TypeCode::new(*b"TEST"), TypeCode::new(*b"DRVR")).unwrap(),
+                       standard::DRIVER);
+            assert_eq!(icons.for_file(TypeCode::new(*b"TEST"), TypeCode::new(*b"INIT")).unwrap(),
+                       standard::EXTENSION);
+            assert_eq!(icons.application()
+                            .for_file(TypeCode::new(*b"TEST"), TypeCode::new(*b"DRVR"))
+                            .unwrap_err(),
+                       mac_toolbox::Error::NotFound);
+            for size in [16usize, 32]
+            {
+                let mono = resources.iter()
+                                    .find(|r| {
+                                        r.id == standard::DRIVER
+                                        && r.kind == if size == 16 { *b"ics#" } else { *b"ICN#" }
+                                    })
+                                    .unwrap();
+                let pixels_source =
+                    resources.iter().find(|r| {
+                                        r.id == standard::DRIVER
+                                        && r.kind == if size == 16 { *b"ics8" } else { *b"icl8" }
+                                    });
+                let palette = resources.iter().find(|r| r.kind == *b"clut" && r.id == 8).unwrap();
+                let mut pixels = vec![0x123456; 40 * 40];
+                let mut surface = mac_abi::Surface { pixels: pixels.as_mut_ptr(),
+                                                     width:  40,
+                                                     height: 40,
+                                                     origin: Point::default(),
+                                                     clip:   Rect::new(0, 0, 40, 40) };
+                let connection =
+                    unsafe { mac_traps::SurfaceConnection::new(&mut surface, services.trap) };
+                SurfacePort::new(connection).plot_icon(ResourceScope::System,
+                                                       standard::DRIVER,
+                                                       Rect::new(4,
+                                                                 3,
+                                                                 4 + size as i16,
+                                                                 3 + size as i16),
+                                                       IconFlags::default())
+                                            .unwrap();
+                for y in 0..40
+                {
+                    for x in 0..40
+                    {
+                        let mut expected = 0x123456;
+                        if (4..4 + size).contains(&x) && (3..3 + size).contains(&y)
+                        {
+                            let (ix, iy) = (x - 4, y - 3);
+                            let byte = iy * (size / 8) + ix / 8;
+                            let mask = 1 << (7 - ix % 8);
+                            if mono.data[size * size / 8 + byte] & mask != 0
+                            {
+                                expected = if let Some(source) = pixels_source
+                                {
+                                    let index = source.data[iy * size + ix] as usize;
+                                    let at = 8 + index * 8;
+                                    u32::from(palette.data[at + 2]) << 16
+                                    | u32::from(palette.data[at + 4]) << 8
+                                    | u32::from(palette.data[at + 6])
+                                }
+                                else if mono.data[byte] & mask != 0
+                                {
+                                    0
+                                }
+                                else
+                                {
+                                    0xffffff
+                                };
+                            }
+                        }
+                        if expected != 0x123456
+                        {
+                            let display = include_bytes!("../../../system/assets/icons/\
+                                                          system7-indexed-display.bin");
+                            let record =
+                                display.as_chunks::<32>()
+                                       .0
+                                       .iter()
+                                       .find(|row| {
+                                           u32::from_be_bytes(row[..4].try_into().unwrap())
+                                           == expected
+                                       })
+                                       .expect("source color absent from original GDevice \
+                                                reference");
+                            expected = u32::from_be_bytes(record[4..8].try_into().unwrap());
+                        }
+                        assert_eq!(pixels[y * 40 + x],
+                                   expected,
+                                   "{size}px color={color} at {x},{y}");
+                    }
+                }
+            }
+        }).unwrap();
+    }
+}
+#[test]
+fn creator_specific_driver_bundle_wins_without_crossing_resource_fork_mappings()
+{
+    let resources = driver_icon_resources(true);
+    let system = resource::encode(&resources).unwrap();
+    let app = resource::encode(&[r(b"BNDL",
+                                   0,
+                                   [b"TEST".as_slice(),
+                                    &[0, 0, 0, 1],
+                                    b"ICN#",
+                                    &[0, 0, 0, 7, 0x24, 0xd9],
+                                    b"FREF",
+                                    &[0, 0, 0, 0, 0, 0]].concat()),
+                                 r(b"FREF", 0, b"DRVR\0\x07\0".to_vec())]).unwrap();
+    mac_system::testing::with_resource_forks(&system, &app, |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let icons = system.quickdraw().icons();
+        assert_eq!(icons.for_file(mac_toolbox::TypeCode::new(*b"TEST"),
+                                  mac_toolbox::TypeCode::new(*b"DRVR"))
+                        .unwrap(),
+                   9433);
+        assert_eq!(icons.system()
+                        .for_file(mac_toolbox::TypeCode::new(*b"TEST"),
+                                  mac_toolbox::TypeCode::new(*b"DRVR"))
+                        .unwrap(),
+                   mac_toolbox::quickdraw::icons::standard::DRIVER);
+        assert_eq!(icons.for_file(mac_toolbox::TypeCode::new(*b"MACS"),
+                                  mac_toolbox::TypeCode::new(*b"INIT"))
+                        .unwrap(),
+                   mac_toolbox::quickdraw::icons::standard::EXTENSION);
+    }).unwrap();
+}
+
+#[test]
+fn native_system_icon_reservation_preserves_classic_ids_and_rejects_import_collisions()
+{
+    use mac_toolbox::quickdraw::icons::standard;
+    let reference: serde_json::Value =
+        serde_json::from_str(include_str!("data/classic-system-icon-ids.json")).unwrap();
+    assert_eq!(standard::DRIVERS_FOLDER, -30000);
+    assert_eq!(standard::DRIVER, -30001);
+    let native = -30031..=-30000;
+    for source in reference["sources"].as_array().unwrap()
+    {
+        for id in source["icon_resource_ids"].as_array().unwrap()
+        {
+            let id = id.as_i64().unwrap() as i16;
+            assert!(!native.contains(&id),
+                    "reserved System RISC block collides with {}: {id}",
+                    source["name"]);
+        }
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut manifest = mac_build::Manifest::read(&root.join("system/resources.json")).unwrap();
+    for r in &manifest.resources
+    {
+        if native.contains(&r.id)
+        {
+            assert!((r.id == standard::DRIVERS_FOLDER && r.symbol.starts_with("DRIVERS_FOLDER_"))
+                    || (r.id == standard::DRIVER
+                        && (r.symbol.starts_with("DRIVER_FILE_")
+                            || r.symbol.starts_with("NATIVE_DRIVER_ICON_"))),
+                    "unexpected resource in native System icon reservation: {} {}",
+                    r.kind,
+                    r.id);
+        }
+    }
+    // The build compiler refuses a later classic import that uses an occupied
+    // family key, instead of silently replacing the native or original payload.
+    let mut collision = mac_build::Manifest::read(&root.join("system/resources.json")).unwrap();
+    let at = collision.resources
+                      .iter()
+                      .position(|r| r.kind == "ICN#" && r.id == standard::DRIVER)
+                      .unwrap();
+    let mut imported = collision.resources.remove(at);
+    imported.symbol = "ORIGINAL_VISUAL_IMPORTED".into();
+    manifest.resources.push(imported);
+    assert!(manifest.validate().is_err());
+}
