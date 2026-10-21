@@ -80,7 +80,16 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     let drivers = volume.create(system, "Drivers", true, when)?.id;
     for name in ["Extensions", "Fonts", "Control Panels", "Preferences"]
     {
-        volume.create(system, name, true, when)?;
+        let folder = volume.create(system, name, true, when)?.id;
+        if name == "Preferences"
+        {
+            let file = volume.create(folder, "File Types.json", false, when)?.id;
+            hfs_b::write_stream(&mut volume,
+                                file,
+                                mac_hfs_b::ForkKind::Data,
+                                mac_file_types::DEFAULT_JSON,
+                                when)?;
+        }
     }
     let mut verified = Vec::new();
     for (parent, directory, name) in [(system, "System Folder", "System"),

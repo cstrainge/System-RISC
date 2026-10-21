@@ -1,7 +1,6 @@
 use sha2::{Digest, Sha256};
 
 use crate::*;
-const MAGIC: &[u8; 8] = b"RSFORK01";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ForkLayout
 {

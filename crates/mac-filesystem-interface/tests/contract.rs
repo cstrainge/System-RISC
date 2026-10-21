@@ -208,6 +208,15 @@ fn published_receipts_preserve_actual_file_and_volume_and_reject_malformed_envel
     let mut bytes = [0; fs::MAX_WRITE_RECEIPT_BYTES];
     let n = value.encode(&mut bytes).unwrap();
     assert_eq!(fs::WriteReceipt::decode(&bytes[..n]), Ok(value));
+    let folder = fs::WriteReceipt { file: Metadata { directory: true,
+                                                     data_length: 0,
+                                                     resource_length: 0,
+                                                     child_count: 0,
+                                                     ..file },
+                                    ..value };
+    let mut folder_bytes = [0; fs::MAX_WRITE_RECEIPT_BYTES];
+    let folder_length = folder.encode(&mut folder_bytes).unwrap();
+    assert_eq!(fs::WriteReceipt::decode(&folder_bytes[..folder_length]), Ok(folder));
     let abort = fs::AbortReceipt(Some(value));
     let mut receipt_bytes = [0; fs::MAX_ABORT_RECEIPT_BYTES];
     let m = abort.encode(&mut receipt_bytes).unwrap();

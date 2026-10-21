@@ -12,6 +12,7 @@ pub use header::{ForkLayout, Header, Layout};
 pub use record::{decode_chunk, decode_metadata, encode_chunk, encode_metadata};
 pub use stream::{Opened, Writer};
 pub const VERSION: u32 = 1;
+pub const MAGIC: &[u8; 8] = b"RSFORK01";
 pub const HEADER_BYTES: usize = 256;
 pub const METADATA_BYTES: usize = 1024;
 pub const CHUNK_BYTES: usize = 4096;

@@ -187,7 +187,7 @@ fn actual_host_containers_support_nested_unicode_lookup_both_forks_and_stale_ope
     assert_eq!(filesystem.info(volume).unwrap_err().cause, Cause::NotFound);
 }
 #[test]
-fn corrupt_fork_is_rejected_before_returning_bytes_and_plain_host_files_are_rejected()
+fn corrupt_container_fork_is_rejected_while_plain_host_data_is_not_a_container()
 {
     let (temp, cnid, _, _) = seeded();
     let volume = Volume::open(&temp.0).unwrap();
@@ -209,10 +209,63 @@ fn corrupt_fork_is_rejected_before_returning_bytes_and_plain_host_files_are_reje
                Cause::Format(mac_fork_file::Error::Corrupt));
     run(filesystem.close_file(id, token)).unwrap();
     run(filesystem.unmount(id)).unwrap();
-    std::fs::write(temp.0.join("unwrapped.txt"), b"must be imported explicitly").unwrap();
+    std::fs::write(temp.0.join("unwrapped.txt"), b"ordinary host data").unwrap();
     run(filesystem.mount(id, 0)).unwrap();
-    assert!(run(filesystem.scan(id, 2)).is_err());
+    run(filesystem.scan(id, 2)).unwrap();
+    let plain = run(filesystem.lookup(id, 2, "unwrapped.txt")).unwrap().metadata.catalog_id;
+    run(filesystem.open(id, plain, token)).unwrap();
+    assert_eq!(run(filesystem.read(id, token, Fork::Data, 0, 64)).unwrap(), b"ordinary host data");
+    assert!(run(filesystem.read(id, token, Fork::Resource, 0, 64)).unwrap().is_empty());
+    run(filesystem.close_file(id, token)).unwrap();
+    assert_eq!(std::fs::read(temp.0.join("unwrapped.txt")).unwrap(), b"ordinary host data");
     run(filesystem.unmount(id)).unwrap();
+}
+
+#[test]
+fn raw_host_folders_and_files_are_readable_without_records_on_writable_and_readonly_exports()
+{
+    for writable in [true, false]
+    {
+        let (temp, _, _, _) = seeded();
+        std::fs::create_dir(temp.0.join("Test")).unwrap();
+        std::fs::write(temp.0.join("Test/Plain.txt"), b"plain file, no metadata").unwrap();
+        std::fs::write(temp.0.join("Empty.txt"), b"").unwrap();
+        let mut fs = Filesystem::new(Host::new(&temp, writable));
+        let mut volumes = Table::new(ObjectKind::Volumes);
+        let volume = volumes.insert(()).unwrap();
+        run(fs.mount(volume, 0)).unwrap();
+        let folder = run(fs.lookup(volume, 2, "TEST")).unwrap().clone();
+        assert_eq!(folder.metadata.kind, Kind::Directory);
+        let file = run(fs.lookup(volume, folder.metadata.catalog_id, "plain.TXT")).unwrap().clone();
+        assert_eq!(file.layout.data.length, 23);
+        assert_eq!(file.layout.resources.length, 0);
+        assert_eq!(file.metadata.finder_info, [0; 32]);
+        assert!(file.metadata.modified > 3_800_000_000_000_000);
+        let mut files = Table::new(ObjectKind::Files);
+        let token = files.insert(()).unwrap();
+        run(fs.open(volume, file.metadata.catalog_id, token)).unwrap();
+        assert_eq!(run(fs.read(volume, token, Fork::Data, 6, 17)).unwrap(), b"file, no metadata");
+        assert!(run(fs.read(volume, token, Fork::Resource, 0, 100)).unwrap().is_empty());
+        run(fs.close_file(volume, token)).unwrap();
+        // A refresh and rename preserve identity; replacement cannot alias it.
+        std::fs::rename(temp.0.join("Test/Plain.txt"), temp.0.join("Test/Renamed.txt")).unwrap();
+        run(fs.refresh(volume)).unwrap();
+        let again = run(fs.lookup(volume, 2, "Test")).unwrap().metadata.catalog_id;
+        assert_eq!(again, folder.metadata.catalog_id);
+        assert_eq!(run(fs.lookup(volume, again, "Renamed.txt")).unwrap().metadata.catalog_id,
+                   file.metadata.catalog_id);
+        std::fs::remove_file(temp.0.join("Test/Renamed.txt")).unwrap();
+        std::fs::write(temp.0.join("Test/Renamed.txt"), b"replacement").unwrap();
+        run(fs.refresh(volume)).unwrap();
+        run(fs.lookup(volume, 2, "Test")).unwrap();
+        let replacement = run(fs.lookup(volume, again, "Renamed.txt")).unwrap().metadata.catalog_id;
+        assert_ne!(replacement, file.metadata.catalog_id);
+        assert_eq!(run(fs.open(volume, file.metadata.catalog_id, token)).unwrap_err().cause,
+                   Cause::NotFound);
+        run(fs.unmount(volume)).unwrap();
+        assert!(!temp.0.join("Test/.system-risc-directory").exists());
+        assert_eq!(std::fs::read(temp.0.join("Test/Renamed.txt")).unwrap(), b"replacement");
+    }
 }
 #[test]
 fn read_only_mounts_preserve_the_same_metadata_and_failed_export_is_not_published()
@@ -1099,4 +1152,54 @@ fn abandoned_scan_retains_the_consumed_entry_until_its_metadata_is_published()
                          .count(),
                1);
     run(filesystem.unmount(volume)).unwrap();
+}
+
+#[test]
+fn directory_creation_publishes_metadata_atomically_and_supports_nested_writes()
+{
+    use vhost_filesystem::Create;
+    let (temp, _, _, _) = seeded();
+    std::fs::create_dir(temp.0.join("Host Folder")).unwrap();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut ids = Table::new(ObjectKind::Volumes);
+    let volume = ids.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let parent = run(fs.lookup(volume, 2, "Host Folder")).unwrap().metadata.catalog_id;
+    let mut marks = Table::new(ObjectKind::FileWrites);
+    let mark = marks.insert(()).unwrap();
+    let folder=run(fs.begin_directory(Create {volume,parent,token:mark,
+        properties:mac_filesystem_interface::FileProperties::fresh("Café",4_000_000_000_000_000),
+        data_length:0,resource_length:0,when:4_000_000_000_000_000})).unwrap();
+    let request = mac_filesystem_interface::Arguments { volume,
+                                                        token: mark,
+                                                        ..Default::default() };
+    let mut request_bytes = [0; mac_filesystem_interface::HEADER_BYTES];
+    request.encode(&mut request_bytes).unwrap();
+    let receipt = run(fs.execute(mac_filesystem_interface::Operation::FinishWrite as u32,
+                                 &request_bytes)).unwrap();
+    assert_eq!(mac_filesystem_interface::WriteReceipt::decode(&receipt).unwrap().file.id, folder);
+    assert_eq!(run(fs.lookup(volume, parent, "CAFE\u{301}")).unwrap().metadata.catalog_id, folder);
+    assert_eq!(fs.cached_node(volume, folder).unwrap().metadata.kind, Kind::Directory);
+    assert!(fs.child(volume, folder, 0).is_err());
+    marks.remove(mark);
+    let next = marks.insert(()).unwrap();
+    run(fs.begin_create(Create {volume,parent:folder,token:next,
+        properties:mac_filesystem_interface::FileProperties::fresh("Child",4_000_000_000_000_001),
+        data_length:0,resource_length:0,when:4_000_000_000_000_001})).unwrap();
+    run(fs.finish_write(volume, next)).unwrap();
+    let physical = mac_fork_file::host_name(Kind::Directory,
+                                            fs.cached_node(volume, folder)
+                                              .unwrap()
+                                              .metadata
+                                              .identity).unwrap();
+    assert!(temp.0
+                .join("Host Folder")
+                .join(core::str::from_utf8(&physical).unwrap())
+                .join(mac_fork_file::DIRECTORY_RECORD)
+                .exists());
+    run(fs.refresh(volume)).unwrap();
+    let parent = run(fs.lookup(volume, 2, "Host Folder")).unwrap().metadata.catalog_id;
+    let folder = run(fs.lookup(volume, parent, "Café")).unwrap().metadata.catalog_id;
+    assert_eq!(run(fs.lookup(volume, folder, "Child")).unwrap().metadata.kind, Kind::File);
+    run(fs.unmount(volume)).unwrap();
 }

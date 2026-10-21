@@ -378,7 +378,7 @@
       "name": "Native Finder error DITL",
       "payload": {
         "format": "hex",
-        "hex": "0002000000000044012b0058016604024f4b00000000000a0014002a0034a0020002000000000007004a0037016688025e30"
+        "hex": "0002000000000094016000a801a004024f4b00000000000c0014002c0034a002000200000000000c004a008801a088025e30"
       }
     },
     {
@@ -388,7 +388,7 @@
       "name": "Native Finder error ALRT",
       "payload": {
         "format": "hex",
-        "hex": "000000000062017007d14444300a"
+        "hex": "0000000000b401b007d14444300a"
       }
     },
     {
@@ -2304,6 +2304,66 @@
       "payload": {
         "format": "file",
         "path": "assets/get-info/fvew-11511.bin"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 20020,
+      "symbol": "ERROR_ACTIONS",
+      "name": "ERROR_ACTIONS",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Initialize Finder",
+          "Read folder",
+          "Open item",
+          "Create folder",
+          "Move to Trash",
+          "Empty Trash",
+          "Show information",
+          "Read Clipboard",
+          "Update Finder",
+          "Close window",
+          "Put Away"
+        ]
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 20021,
+      "symbol": "ERROR_CAUSES",
+      "name": "ERROR_CAUSES",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "The application and System use incompatible interfaces.",
+          "An argument or filename is invalid.",
+          "The item could not be found.",
+          "This volume does not support this operation.",
+          "There is not enough memory.",
+          "This application requires 68k translation.",
+          "The item or service is busy. Try again after the current operation finishes.",
+          "This operation must run in its owning thread.",
+          "A storage read or write failed.",
+          "The volume is read-only.",
+          "An item with that name already exists.",
+          "Access was denied or the item is locked.",
+          "The disk is full.",
+          "Cleanup could not be completed. Remount the volume before trying again.",
+          "The folder is not empty.",
+          "The folder changed during enumeration. Refresh it and try again.",
+          "The operation was cancelled.",
+          "This event type is disabled.",
+          "The requested Clipboard format is unavailable.",
+          "The Memory Manager could not allocate storage.",
+          "The memory handle is invalid.",
+          "The memory zone is invalid.",
+          "This memory handle cannot be purged.",
+          "This memory handle is locked.",
+          "File or catalog data is damaged or malformed.",
+          "The backing storage or host export is unavailable.",
+          "An unrecognized System error occurred. Its identity is shown below."
+        ]
       }
     }
   ]

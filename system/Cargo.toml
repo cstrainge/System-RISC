@@ -17,6 +17,7 @@ test = false
 bench = false
 
 [dependencies]
+mac-file-types.workspace = true
 mac-module.workspace = true
 mac-device-interface.workspace = true
 mac-object-table.workspace = true

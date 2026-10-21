@@ -44,7 +44,7 @@ pub fn update(system: &System<'_>, browser: &Browser) -> Result<(), Error>
                                 (1252, 10, browser.can_put_away(system)),
                                 (1253, 6, browser.can_trash(system)),
                                 (1253, 9, true),
-                                (1255, 2, browser.trash_count(system)? > 0)]
+                                (1255, 2, browser.cached_trash_count() > 0)]
     {
         menus.set_item_enabled(MenuId(id), item, enabled)?;
     }

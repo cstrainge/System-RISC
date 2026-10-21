@@ -60,6 +60,17 @@ impl Pending
 }
 impl<R: Rpc> Filesystem<R>
 {
+    pub(crate) fn pending_directory(&self, volume: u32, node: u32) -> bool
+    {
+        self.writes.entries.iter().any(|(_, p)| {
+                                      p.volume == volume
+                                      && p.node.as_ref().is_some_and(|n| {
+                                                            n.metadata.catalog_id == node
+                                                            && n.metadata.kind == Kind::Directory
+                                                        })
+                                  })
+    }
+
     pub(crate) fn pending_node(&self, volume: u32, token: u32) -> Result<&Node>
     {
         let pending =
@@ -257,6 +268,20 @@ impl<R: Rpc> Filesystem<R>
 
     pub async fn begin_create(&mut self, request: Create<'_>) -> Result<u32>
     {
+        self.begin_create_kind(request, Kind::File).await
+    }
+
+    pub async fn begin_directory(&mut self, request: Create<'_>) -> Result<u32>
+    {
+        if request.data_length != 0 || request.resource_length != 0
+        {
+            return Err(Cause::Invalid.into());
+        }
+        self.begin_create_kind(request, Kind::Directory).await
+    }
+
+    async fn begin_create_kind(&mut self, request: Create<'_>, kind: Kind) -> Result<u32>
+    {
         let Create { volume,
                      parent,
                      token,
@@ -281,11 +306,8 @@ impl<R: Rpc> Filesystem<R>
             return Err(Cause::Conflict.into());
         }
         // Validate lengths/name before reserving a durable catalog identity.
-        let mut metadata = Metadata::new(Kind::File,
-                                         16,
-                                         mount.info.metadata.volume,
-                                         &normalized,
-                                         properties.created)?;
+        let mut metadata =
+            Metadata::new(kind, 16, mount.info.metadata.volume, &normalized, properties.created)?;
         metadata.modified = properties.modified;
         metadata.backup = properties.backup;
         metadata.attributes = properties.attributes;
@@ -314,6 +336,7 @@ impl<R: Rpc> Filesystem<R>
                 metadata.catalog_id = id;
                 metadata.identity = forks::catalog_identity(metadata.volume, id)?;
                 let node = Node { parent,
+                                  host_name: None,
                                   metadata,
                                   layout,
                                   key };
@@ -392,6 +415,7 @@ impl<R: Rpc> Filesystem<R>
                 metadata.modified = when;
                 metadata.revision = metadata.revision.checked_add(1).ok_or(Cause::NoMemory)?;
                 let node = Node { parent: cached.parent,
+                                  host_name: cached.host_name,
                                   metadata,
                                   layout,
                                   key: cached.key };
@@ -554,6 +578,28 @@ impl<R: Rpc> Filesystem<R>
         }
         let (volume, parent, handle, when) =
             (pending.volume, pending.parent, pending.parent_handle, pending.when);
+        let parent_node = self.cached_node(volume, parent)?;
+        if let Some(name) = &parent_node.host_name
+        {
+            let mut physical = buffer(name.len())?;
+            physical.copy_from_slice(name);
+            let ancestor = self.mounts
+                               .get(volume)
+                               .unwrap()
+                               .directories
+                               .get(parent_node.parent)
+                               .ok_or(Cause::NotFound)?
+                               .handle;
+            let observed = self.plain_node(volume, ancestor, &physical).await?;
+            if observed.metadata.catalog_id != parent
+            {
+                return Err(Cause::Stale.into());
+            }
+            self.mounts.get_mut(volume).unwrap().nodes.get_mut(parent).unwrap().metadata =
+                observed.metadata;
+            self.writes.get_mut(token).unwrap().parent_updated = true;
+            return Ok(());
+        }
         let cached = self.cached_node(volume, parent)?.metadata.try_clone()?;
         let mut desired = cached.try_clone()?;
         desired.modified = when;
@@ -668,7 +714,8 @@ impl<R: Rpc> Filesystem<R>
             }
             let pending = self.writes.get(token).unwrap();
             let node = pending.node.as_ref().unwrap();
-            let name = forks::host_name(Kind::File, node.metadata.identity)?;
+            let is_directory = node.metadata.kind == Kind::Directory;
+            let name = forks::host_name(node.metadata.kind, node.metadata.identity)?;
             let (parent, expected, replacing) =
                 (pending.parent, pending.expected, pending.replacing);
             let mount = self.mounts.get_mut(volume).unwrap();
@@ -679,17 +726,39 @@ impl<R: Rpc> Filesystem<R>
                     return Err(Cause::NoMemory.into());
                 }
                 mount.nodes.entries.try_reserve(1).map_err(|_| Cause::NoMemory)?;
+                if is_directory
+                {
+                    mount.directories.reserve(node.metadata.catalog_id)?;
+                }
                 let directory = mount.directories.get_mut(parent).ok_or(Cause::NotFound)?;
                 directory.children.try_reserve(1).map_err(|_| Cause::NoMemory)?;
                 directory.by_name.try_reserve(1).map_err(|_| Cause::NoMemory)?;
             }
-            self.call(Op::Commit, stage, 0, expected, &name).await?;
+            let opened = if is_directory
+            {
+                let mut payload = buffer(name.len() + 2 + forks::DIRECTORY_RECORD.len())?;
+                payload[..2].copy_from_slice(&(name.len() as u16).to_le_bytes());
+                payload[2..2 + name.len()].copy_from_slice(&name);
+                payload[name.len() + 2..].copy_from_slice(forks::DIRECTORY_RECORD.as_bytes());
+                self.call(Op::PublishDirectory, stage, 0, 0, &payload).await?.header.object
+            }
+            else
+            {
+                self.call(Op::Commit, stage, 0, expected, &name).await?;
+                0
+            };
             let pending = self.writes.get_mut(token).unwrap();
             pending.published = true;
             pending.stage = 0;
             let node = pending.node.take().unwrap();
             let id = node.metadata.catalog_id;
             let mount = self.mounts.get_mut(volume).unwrap();
+            if is_directory
+            {
+                let mut directory = Directory::new(opened);
+                directory.complete = true;
+                mount.directories.insert(id, directory)?;
+            }
             if replacing
             {
                 *mount.nodes.get_mut(id).ok_or(Cause::Stale)? = node;

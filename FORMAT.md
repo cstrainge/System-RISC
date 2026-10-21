@@ -584,20 +584,18 @@ These addresses belong to the machine adapter, not the class-neutral registry.
 
 A native module can include one `FASS` resource, ID 0. `mac-module` owns its
 allocation-free codec. The resource is big endian, with an eight-byte header:
-magic `FAS1`, u16 version 1, u16 rule count (1..32), then exact 32-byte records:
+magic `FAS1`, u16 version 1, u16 rule count (1..32), then exact 12-byte records:
 
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | Exact Finder file-type code, ASCII graphic bytes |
 | 4 | 2 | Action: 1 = mount filesystem |
 | 6 | 2 | Signed icon family ID in this module's fork; 0 = no default icon |
-| 8 | 1 | Optional extension length (0..16) |
-| 9 | 7 | Reserved zero |
-| 16 | 16 | Lowercase ASCII alphanumeric extension, zero-padded, without dot |
+| 8 | 4 | Reserved zero |
 
-Duplicate file codes or nonempty extension hints are rejected, including
-conflicts with another initializing/ready module. Exact file codes take priority;
-extension hints only classify zero/BINA untyped files, never override APPL/TEXT.
+Duplicate file codes are rejected, including conflicts with another
+initializing/ready module. File-name classification is a separate preference
+service; FASS contains no extension matching rules.
 Mount actions require a driver offering FSYS v2 `SOURCE_FILE`. Local icon families
 are decoded once at admission and shared while painting; they do not reserve
 global System icon IDs or read resource forks during repaint.
@@ -608,6 +606,22 @@ Current module code stays pinned until reboot: deleting its file is not hot unlo
 `Files::open_item` returns `None` for an unclaimed document and `Some(VolumeInfo)`
 after an acknowledged mount; explicit `mount_file` returns NotSupported if unclaimed.
 Finder uses this generic service, with no archive-type or suffix special case.
+
+### File type preferences
+
+`System Folder/Preferences/File Types.json` is a UTF-8 JSON document with exactly
+`version` (currently 1) and `associations`. Each association has `extension`,
+`file_type`, and `creator` fields. Extensions are case-insensitive ASCII
+alphanumeric suffixes of 1..16 bytes without the dot; duplicate extensions are
+invalid. Codes are exactly four printable ASCII bytes. The document is bounded
+to 64 KiB and 128 associations. The initial image associates `sit` with `SIT!`
+type and creator codes. The resident service loads the preference at boot;
+malformed or unsupported preferences report a specific startup error.
+
+Classification projects zero/BINA file metadata without changing stored bytes or
+overriding explicit types such as TEXT or APPL. This grants no launch capability:
+only an admitted, Ready driver supplies the matching action and default icon.
+Removing that driver leaves classification intact but removes its action/icon.
 
 ## Backing-file service (FORK v1)
 
@@ -817,9 +831,17 @@ separate fork-container format, never inferred by this transport.
 | 19 Lock | object=lock, value=0 shared or 1 exclusive | empty; nonblocking, Busy on contention |
 | 20 Unlock | object=lock | empty |
 | 21 Stat | object=snapshot/directory | value=1 file or 2 directory, offset=file length, body=32-byte opaque revision |
+| 22 Describe | object=parent, body=component | object=catalog identity, value=1 file or 2 directory, offset=file length, body=created/modified u64 LE Mac-epoch microseconds |
+| 23 PublishDirectory | object=flushed transaction, body=two names: target, metadata-record name | object=new directory capability; containing directory synced; transaction consumed |
 
 Unused request fields must be zero. Rename encodes `u16 first_name_length`, first
-name, then second name. Enumerations stop with Stale if their directory changes.
+name, then second name; PublishDirectory uses the same two-name encoding.
+Describe identities come from the shared generation table and are scoped to the
+session and export. A pinned host object preserves identity across rename while
+preventing inode reuse from aliasing a deleted object. Host creation dates use
+birth time where supported, otherwise modification time; all epoch conversions
+are checked. Describe grants no read or directory capability.
+Enumerations stop with Stale if their directory changes.
 Only currently active transaction stages are hidden; leftover crash stages remain
 visible for explicit format validation/recovery. Read-only exports refuse every
 mutation and exclusive lock. Export capability bits are Read=1, Write=2,

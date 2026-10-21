@@ -33,7 +33,9 @@ fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: R
         Err(status) =>
         {
             let mut message = browser::Text::<80>::default();
-            let _ = writeln!(&mut message, "FINDER_ACTION_FAILED status={}", status.status());
+            let _ = writeln!(&mut message,
+                             "FINDER_ACTION_FAILED status={} error={status:?}",
+                             status.status());
             system.log(message.as_str())?;
             if let Err(error) = alerts.error(system, status)
             {
@@ -83,18 +85,24 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     let mut browser = browser::Browser::default();
     let mut info = get_info::Controller::default();
     let _menus = menus::install(system)?;
-    browser.initialize(system)?;
     let mut alerts = ui::Alerts::default();
-    update_menus(system, &browser, &info)?;
+    let _ = try_action(system, &mut alerts, browser.initialize(system))?;
+    if alerts.window() == WindowId(0)
+    {
+        update_menus(system, &browser, &info)?;
+    }
     let mut about_id = WindowId(0);
     let mut clipboard = clipboard::Viewer::default();
     for _ in 0..32
     {
         let event = system.next_event(mac_toolbox::events::EventMask::ALL)?;
+        alerts.set_context(event);
         if matches!(event, Event::Update { .. })
            && browser.contains(event.window().unwrap_or_default())
         {
-            browser.draw(system, event.window().unwrap_or_default())?;
+            let _ = try_action(system,
+                               &mut alerts,
+                               browser.draw(system, event.window().unwrap_or_default()))?;
         }
         if matches!(event, Event::Idle { .. })
         {
@@ -106,13 +114,12 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     {
         let event = system.wait_event(mac_toolbox::events::EventMask::ALL,
                                       if info.pending() { 0 } else { 30 })?;
+        alerts.set_context(event);
         if alerts.window() != WindowId(0)
         {
             let confirm = alerts.event(system, event)?;
             if alerts.window() == WindowId(0)
             {
-                browser.redraw_all(system)?;
-                info.redraw_all(system)?;
                 if clipboard.window != WindowId(0)
                 {
                     let _ = try_action(system, &mut alerts, clipboard.draw(system))?;
@@ -136,7 +143,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             try_action(system, &mut alerts, info.event(system, event))?.unwrap_or(false);
         if info.take_changed()
         {
-            browser.redraw_all(system)?;
+            let _ = try_action(system, &mut alerts, browser.redraw_all(system))?;
         }
         if info_handled
         {
@@ -213,7 +220,10 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 _ => Ok(())
             };
             let _ = try_action(system, &mut alerts, action)?;
-            update_menus(system, &browser, &info)?;
+            if alerts.window() == WindowId(0)
+            {
+                update_menus(system, &browser, &info)?;
+            }
             continue;
         }
         match event
@@ -226,7 +236,9 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 }
                 else if browser.contains(event.window().unwrap_or_default())
                 {
-                    browser.draw(system, event.window().unwrap_or_default())?;
+                    let _ = try_action(system,
+                                       &mut alerts,
+                                       browser.draw(system, event.window().unwrap_or_default()))?;
                 }
             }
             Event::Activate { .. } =>
@@ -321,11 +333,11 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 }
                 else if code == 0x74
                 {
-                    browser.scroll(system, -104)?;
+                    let _ = try_action(system, &mut alerts, browser.scroll(system, -104))?;
                 }
                 else if code == 0x79
                 {
-                    browser.scroll(system, 104)?;
+                    let _ = try_action(system, &mut alerts, browser.scroll(system, 104))?;
                 }
             }
             Event::MouseDown { .. }
@@ -337,7 +349,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             _ =>
             {}
         }
-        if !matches!(event, Event::Idle { .. })
+        if alerts.window() == WindowId(0) && !matches!(event, Event::Idle { .. })
         {
             update_menus(system, &browser, &info)?;
         }
@@ -372,7 +384,10 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
         Ok(()) => mac_toolbox::abi::OK,
         Err(status) =>
         {
-            let _ = system.log("FINDER_ERROR: Toolbox operation failed\n");
+            use core::fmt::Write;
+            let mut line = browser::Text::<160>::default();
+            let _ = writeln!(&mut line, "FINDER_ERROR status={} error={status:?}", status.status());
+            let _ = system.log(line.as_str());
             status.status()
         }
     }

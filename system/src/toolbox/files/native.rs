@@ -74,6 +74,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
                            | files::PATH);
     let trash_query = call.operation == files::TRASH_DIRECTORY && call.index == 0;
     let opening = call.operation == files::OPEN;
+    let making_folder = call.operation == files::NEW_FOLDER;
     let mounting_file = matches!(call.operation, files::MOUNT_FILE | files::OPEN_ITEM);
     let fork_io = matches!(call.operation, files::READ | files::CLOSE);
     if !matches!(call.operation,
@@ -83,12 +84,13 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
        && !fork_io
        && !mounting_file
        && !trash_query
+       && !making_folder
     {
         return None;
     }
-    if (!(catalog || opening || mounting_file) && call.cnid != 0)
-       || ((catalog || opening || mounting_file) && call.cnid == 1)
-       || ((catalog || opening || fork_io || mounting_file)
+    if (!(catalog || opening || mounting_file || making_folder) && call.cnid != 0)
+       || ((catalog || opening || mounting_file || making_folder) && call.cnid == 1)
+       || ((catalog || opening || fork_io || mounting_file || making_folder)
            && call.operation != files::DIRECTORY_ENTRY
            && call.index != 0)
        || (fork_io && call.volume != 0)
@@ -98,9 +100,9 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
        || call.whence != 0
        || call.reserved != 0
        || call.offset != 0
-       || (!trash_query && call.position != 0)
+       || (!(trash_query || making_folder) && call.position != 0)
        || call.length != 0
-       || (call.operation != files::LOOKUP && call.name_length != 0)
+       || (!matches!(call.operation, files::LOOKUP | files::NEW_FOLDER) && call.name_length != 0)
        || call.name_length > 4096
        || (call.name_length != 0 && call.name.is_null())
        || (!matches!(call.operation, files::READ | files::PATH) && call.capacity != 0)
@@ -135,7 +137,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
         unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
     };
     call.transferred = 0;
-    if catalog || opening || fork_io || trash_query
+    if catalog || opening || fork_io || trash_query || making_folder
     {
         // Complete local reads in the same handoff used for routing. Introducing
         // providers must not add a second Files guard/stack switch to disk reads.

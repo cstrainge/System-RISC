@@ -135,15 +135,24 @@ impl<R: Rpc> Filesystem<R>
             Operation::BeginCreate =>
             {
                 let mut out = buffer(fs::MAX_METADATA_BYTES)?;
-                self.begin_create(Create { volume:          args.volume,
-                                                    parent:          args.parent,
-                                                    token:           args.token,
-                                                    properties:
-                                                        fs::FileProperties::decode(args.payload).map_err(|_| Cause::Invalid)?,
-                                                    data_length:     args.length,
-                                                    resource_length: args.auxiliary,
-                                                    when:            args.when })
-                             .await?;
+                let create = Create { volume:          args.volume,
+                                      parent:          args.parent,
+                                      token:           args.token,
+                                      properties:
+                                          fs::FileProperties::decode(args.payload).map_err(|_| {
+                                                                                      Cause::Invalid
+                                                                                  })?,
+                                      data_length:     args.length,
+                                      resource_length: args.auxiliary,
+                                      when:            args.when };
+                if args.flags & fs::CREATE_DIRECTORY != 0
+                {
+                    self.begin_directory(create).await?;
+                }
+                else
+                {
+                    self.begin_create(create).await?;
+                }
                 let count = self.project_node(args.volume,
                                               self.pending_node(args.volume, args.token)?)?
                                 .encode(&mut out)
@@ -261,7 +270,12 @@ impl<R: Rpc> Filesystem<R>
             Operation::Close | Operation::FinishWrite | Operation::AbortWrite => token,
             Operation::BeginCreate =>
             {
+                if a.flags & !fs::CREATE_DIRECTORY != 0
+                {
+                    return Err(Cause::Invalid.into());
+                }
                 Arguments { parent: a.parent,
+                            flags: a.flags,
                             length: a.length,
                             auxiliary: a.auxiliary,
                             when: a.when,
@@ -352,8 +366,21 @@ impl<R: Rpc> Filesystem<R>
     {
         let m = &node.metadata;
         let directory = m.kind != mac_fork_file::Kind::File;
-        let count =
-            if directory { self.cached_child_count(volume, m.catalog_id)? } else { Some(0) };
+        let count = if directory
+        {
+            if self.pending_directory(volume, m.catalog_id)
+            {
+                Some(0)
+            }
+            else
+            {
+                self.cached_child_count(volume, m.catalog_id)?
+            }
+        }
+        else
+        {
+            Some(0)
+        };
         Ok(Metadata { id: m.catalog_id,
                       parent: node.parent,
                       directory,

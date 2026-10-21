@@ -15,6 +15,35 @@ pub(crate) struct ProviderInspection
 #[cfg(target_arch = "riscv64")]
 impl Manager
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn startup_preferences(&mut self, name: &str) -> Result<Vec<u8>, Status>
+    {
+        let id = self.volumes
+                     .iter()
+                     .find(|(_, v)| v.info().is_some_and(|i| i.startup != 0))
+                     .map(|(id, _)| id)
+                     .ok_or(NOT_FOUND)?;
+        self.with_volume(id, |v| {
+                let system = io(v.blessed_folder())?;
+                let prefs = required(io(v.lookup(system.id, b"Preferences"))?)?;
+                let file = required(io(v.lookup(prefs.id, name.as_bytes()))?)?;
+                let mut fork = file.data.ok_or(CORRUPT_DATA)?;
+                let length = usize::try_from(fork.length).map_err(|_| CORRUPT_DATA)?;
+                if length > mac_file_types::MAX_BYTES
+                {
+                    return Err(CORRUPT_DATA);
+                }
+                let mut bytes = Vec::new();
+                bytes.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
+                bytes.resize(length, 0);
+                if io(v.read(&mut fork, 0, &mut bytes))? != length
+                {
+                    return Err(IO_ERROR);
+                }
+                Ok(bytes)
+            })
+    }
+
     pub(crate) fn resource_provider(&self, owner: u64, handle: u32) -> Result<Option<u32>, Status>
     {
         self.file_provider(owner, handle)

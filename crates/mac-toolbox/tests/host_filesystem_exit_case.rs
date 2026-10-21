@@ -19,14 +19,8 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
         }
     }
     let volume = mounted.ok_or(Error::NotFound)?;
-    let a = files.child(volume, ROOT_ID, 0)?;
-    let b = files.child(volume, ROOT_ID, 1)?;
-    let folder = if a.name() == "Tools" { a } else { b };
-    require(folder.name() == "Tools")?;
-    let a = files.child(volume, folder.id, 0)?;
-    let b = files.child(volume, folder.id, 1)?;
-    let file = if a.name() == "Forks" { a } else { b };
-    require(file.name() == "Forks")?;
+    let folder = files.lookup(volume, ROOT_ID, "Tools")?;
+    let file = files.lookup(volume, folder.id, "Forks")?;
     let mut data = files.open(volume, file.id, Fork::Data)?;
     let mut resources = files.open(volume, file.id, Fork::Resource)?;
     let mut bytes = [0; 3];

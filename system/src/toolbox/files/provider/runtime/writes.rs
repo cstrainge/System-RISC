@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 use super::{super::writes::Plan, *};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stage
 {
     Parent,
@@ -42,6 +42,7 @@ fn terminal(state: State, result: Result<Reply, Status>) -> Progress
 }
 fn failed(mut flight: Flight, mut state: State, error: Status) -> Progress
 {
+    serial!("FILE_WRITE_FAILED stage={:?} status={}", state.stage, error);
     if !state.remote
     {
         return terminal(state, Err(error));
@@ -125,6 +126,7 @@ fn begin(flight: Flight, mut state: State) -> Progress
             submit_args(flight.provider,
                         Operation::BeginCreate,
                         Arguments { payload: &bytes,
+                                    flags: if plan.directory { fs::CREATE_DIRECTORY } else { 0 },
                                     ..args })
         })();
         (Operation::BeginCreate, result)
@@ -195,8 +197,9 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
                     if state.error == OK { Ok(Reply::Unmounted) } else { Err(state.error) };
                 terminal(state, result)
             }
-            Err(_) =>
+            Err(error) =>
             {
+                serial!("FILE_WRITE_ABORT_FAILED status={}", error);
                 quarantine(state.handle);
                 Progress::Done(Err(ROLLBACK_FAILED))
             }
@@ -320,6 +323,51 @@ fn key(operation: u32, handle: u32, volume: u32) -> Key
           capacity: 0,
           cursor: DirectoryScanCursor::default(),
           resource: None }
+}
+pub(super) fn folder(owner: u64, thread: u64, key: Key, call: &FileCall, name: &str) -> Status
+{
+    let mut input = String::new();
+    if input.try_reserve_exact(name.len()).is_err()
+    {
+        return NO_MEMORY;
+    }
+    input.push_str(name);
+    let plan = match files(|m| {
+              m.reserve_provider_directory(owner, call.volume, call.cnid, name, call.position)
+          })
+    {
+        Ok(plan) => plan,
+        Err(error) => return error
+    };
+    let job = match submit_args(plan.provider,
+                                Operation::Catalog,
+                                Arguments { volume: plan.volume,
+                                            node: plan.parent,
+                                            ..Default::default() })
+    {
+        Ok(job) => job,
+        Err(error) =>
+        {
+            let _ = retire(plan.handle);
+            return error;
+        }
+    };
+    waiting(Flight { owner,
+                     thread,
+                     key,
+                     provider: plan.provider,
+                     job,
+                     abandoned: false,
+                     input,
+                     path: None,
+                     step: Step::Write(State { handle:      plan.handle,
+                                               volume:      plan.volume,
+                                               stage:       Stage::Parent,
+                                               written:     0,
+                                               remote:      false,
+                                               may_publish: false,
+                                               error:       OK,
+                                               plan:        Some(plan) }) })
 }
 pub(in crate::toolbox::files) fn request(owner: u64, call: &mut DataWriteCall) -> Status
 {

@@ -381,3 +381,28 @@ and resource bytes, readers acquired during staging, and abort after a partial
 resource-copy failure. Metadata snapshots allocate fallibly before publication;
 root-cache updates do not allocate after their host commit. The public writer
 gate described above now covers the installed native driver path as well.
+
+### Ordinary host entries and directory creation
+
+The host provider accepts mixed native fork containers and ordinary host files
+and folders. Raw file contents are the data fork; the resource fork is empty.
+Browsing creates no sidecars and rewrites no source bytes. Names normalize through
+the shared HFS-B rules; colliding normalized/folded names fail explicitly.
+Catalog identities for raw objects come from companion-side, session/export-bound
+generation tables with pinned host objects. Rename preserves identity; replacement
+cannot alias it. Dates use checked Mac-epoch microseconds (host birth time, or
+modification time when birth time is unavailable).
+
+BeginCreate flag `CREATE_DIRECTORY` uses the same staged transaction and receipt
+contract as file creation, with empty forks. PublishDirectory atomically exposes
+the directory with its native metadata record already inside it. Both ordinary
+host folders and native folders accept new guest folders and files. Read-only
+exports reject mutation before staging. The public SDK fixture includes raw
+entries permanently and exercises folder creation and child-file readback.
+
+`transfer_incident` runs the real Finder against raw fixtures and a corrupt native
+container: desktop boot, browsing, managed New Folder, specific error text/status,
+managed alert dismissal and arrow-cursor liveness beyond the stall threshold.
+Automatic host-change watches, raw-file replacement, and the offline fork tool's
+mixed-directory editing still need separate completion; these are not implied by
+successful raw reads and native-container writes.

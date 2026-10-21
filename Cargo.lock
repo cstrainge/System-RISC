@@ -366,6 +366,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-file-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mac-filesystem"
 version = "0.1.0"
 dependencies = [
@@ -454,6 +462,7 @@ dependencies = [
  "mac-build",
  "mac-device-interface",
  "mac-file-source-interface",
+ "mac-file-types",
  "mac-filesystem",
  "mac-filesystem-interface",
  "mac-formats",
@@ -674,6 +683,7 @@ version = "0.1.0"
 dependencies = [
  "cap-std",
  "getrandom",
+ "mac-hfs-b",
  "mac-host-protocol",
  "mac-object-table",
  "rustix",
@@ -1207,6 +1217,7 @@ version = "0.1.0"
 dependencies = [
  "hfs-b",
  "mac-build",
+ "mac-file-types",
  "mac-formats",
  "mac-hfs-b",
  "serde_json",

@@ -16,7 +16,8 @@ pub(super) struct Pending
     pub comparison:    Vec<u8>,
     pub length:        usize,
     pub data:          Vec<u8>,
-    pub provider:      Option<provider::writes::State>
+    pub provider:      Option<provider::writes::State>,
+    pub directory:     bool
 }
 impl Pending
 {
@@ -103,7 +104,8 @@ impl Manager
                                                 comparison,
                                                 length: call.length,
                                                 data: bytes,
-                                                provider: None })
+                                                provider: None,
+                                                directory: false })
                               .map_err(|_| NO_MEMORY)?;
             return Ok(());
         }

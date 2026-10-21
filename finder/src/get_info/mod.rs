@@ -355,15 +355,6 @@ impl<'a> Controller<'a>
         self.windows.iter().flatten().any(|info| info.job.as_ref().is_some_and(|job| !job.complete))
     }
 
-    pub fn redraw_all(&self, system: &System<'_>) -> Result<(), Error>
-    {
-        for info in self.windows.iter().flatten()
-        {
-            info.draw(system)?;
-        }
-        Ok(())
-    }
-
     fn close(&mut self, system: &System<'_>, slot: usize) -> Result<(), Error>
     {
         let Some(info) = self.windows[slot].as_mut()

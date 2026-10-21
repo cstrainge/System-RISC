@@ -18,6 +18,32 @@ pub const WRITE: u32 = 2;
 pub const DURABLE: u32 = 4;
 pub const ATOMIC_PUBLISH: u32 = 8;
 pub const ALL_CAPABILITIES: u32 = READ | WRITE | DURABLE | ATOMIC_PUBLISH;
+pub const DESCRIPTION_BYTES: usize = 16;
+/// Describe returns a session-scoped catalog identity, kind and data length in
+/// the header; these checked timestamps use the System-wide 1904 us epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Description
+{
+    pub created:  u64,
+    pub modified: u64
+}
+impl Description
+{
+    pub fn encode(self) -> [u8; DESCRIPTION_BYTES]
+    {
+        let mut bytes = [0; DESCRIPTION_BYTES];
+        bytes[..8].copy_from_slice(&self.created.to_le_bytes());
+        bytes[8..].copy_from_slice(&self.modified.to_le_bytes());
+        bytes
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error>
+    {
+        let bytes: &[u8; DESCRIPTION_BYTES] = bytes.try_into().map_err(|_| Error::Length)?;
+        Ok(Self { created:  u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                  modified: u64::from_le_bytes(bytes[8..].try_into().unwrap()) })
+    }
+}
 
 /// Wire status values, independent of CPU ABI and native Toolbox error numbers.
 pub mod status
@@ -39,27 +65,29 @@ pub mod status
 #[repr(u16)]
 pub enum Operation
 {
-    Hello         = 1,
-    Export        = 2,
-    OpenDirectory = 3,
-    ListBegin     = 4,
-    ListNext      = 5,
-    OpenRead      = 6,
-    Read          = 7,
-    Close         = 8,
-    BeginWrite    = 9,
-    Write         = 10,
-    SetLength     = 11,
-    Flush         = 12,
-    Commit        = 13,
-    MakeDirectory = 14,
-    Rename        = 15,
-    Remove        = 16,
-    SyncDirectory = 17,
-    OpenLock      = 18,
-    Lock          = 19,
-    Unlock        = 20,
-    Stat          = 21
+    Hello            = 1,
+    Export           = 2,
+    OpenDirectory    = 3,
+    ListBegin        = 4,
+    ListNext         = 5,
+    OpenRead         = 6,
+    Read             = 7,
+    Close            = 8,
+    BeginWrite       = 9,
+    Write            = 10,
+    SetLength        = 11,
+    Flush            = 12,
+    Commit           = 13,
+    MakeDirectory    = 14,
+    Rename           = 15,
+    Remove           = 16,
+    SyncDirectory    = 17,
+    OpenLock         = 18,
+    Lock             = 19,
+    Unlock           = 20,
+    Stat             = 21,
+    Describe         = 22,
+    PublishDirectory = 23
 }
 impl TryFrom<u16> for Operation
 {
@@ -90,6 +118,8 @@ impl TryFrom<u16> for Operation
             19 => Self::Lock,
             20 => Self::Unlock,
             21 => Self::Stat,
+            22 => Self::Describe,
+            23 => Self::PublishDirectory,
             _ => return Err(Error::Operation)
         })
     }

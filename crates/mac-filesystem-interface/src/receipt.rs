@@ -57,7 +57,8 @@ impl<'a> WriteReceipt<'a>
     {
         self.file.validate()?;
         self.volume.validate()?;
-        if self.file.directory
+        // A transaction may publish a file or folder, never the volume root.
+        if self.file.id == 2
         {
             return Err(Error::Invalid);
         }

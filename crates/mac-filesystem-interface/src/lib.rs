@@ -37,6 +37,8 @@ pub const INCLUDE_CHILD_COUNT: u32 = 1;
 /// BeginReplace flag: retain the original resource fork. Auxiliary must be zero;
 /// the provider leases/copies the actual fork in bounded, verified chunks.
 pub const PRESERVE_RESOURCE_FORK: u32 = 1;
+/// BeginCreate creates a directory with an empty pair of forks.
+pub const CREATE_DIRECTORY: u32 = 1;
 /// Provider source capabilities, used by class-neutral interface discovery.
 pub const SOURCE_HOST_EXPORT: u64 = 1;
 pub const SOURCE_FILE: u64 = 2;

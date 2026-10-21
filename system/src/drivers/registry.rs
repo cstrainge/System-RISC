@@ -316,10 +316,8 @@ impl Registry
         }
         for (i, rule) in rules.iter().enumerate()
         {
-            let conflicts = |other: &mac_module::file_handlers::Rule| {
-                other.file_type == rule.file_type
-                || !rule.extension().is_empty() && other.extension() == rule.extension()
-            };
+            let conflicts =
+                |other: &mac_module::file_handlers::Rule| other.file_type == rule.file_type;
             if rules[..i].iter().any(conflicts)
                || self.modules.iter().any(|(id, m)| {
                                          id != module
@@ -334,7 +332,7 @@ impl Registry
         Ok(())
     }
 
-    pub fn file_handler(&self, file_type: [u8; 4], name: &str)
+    pub fn file_handler(&self, file_type: [u8; 4])
                         -> Option<(u32, mac_module::file_handlers::Rule)>
     {
         for (id, module) in self.modules.iter().filter(|(_, m)| m.state == State::Ready)
@@ -342,18 +340,6 @@ impl Registry
             if let Some(rule) = module.file_handlers.iter().find(|r| r.file_type == file_type)
             {
                 return Some((id, *rule));
-            }
-        }
-        // Explicit file codes take priority. Extension hints only classify an
-        // untyped/raw imported document; they cannot hijack an APPL/TEXT file.
-        if file_type == [0; 4] || file_type == *b"BINA"
-        {
-            for (id, module) in self.modules.iter().filter(|(_, m)| m.state == State::Ready)
-            {
-                if let Some(rule) = module.file_handlers.iter().find(|r| r.matches_extension(name))
-                {
-                    return Some((id, *rule));
-                }
             }
         }
         None
@@ -685,30 +671,30 @@ mod tests
     {
         use mac_module::file_handlers::{Action, Rule};
         let bytes = metadata(*b"test-module-uuid", &[OFFER], &[]);
-        let rule = Rule::new(*b"SIT!", Action::MountFilesystem, 128, "sit").unwrap();
+        let rule = Rule::new(*b"SIT!", Action::MountFilesystem, 128).unwrap();
         let mut registry = Registry::new(Target::RV64IMAC);
         let first = stage(&mut registry, &bytes);
         registry.install_file_handlers(first, alloc::vec![rule]).unwrap();
-        assert_eq!(registry.file_handler(*b"SIT!", "typed.bin"), None);
+        assert_eq!(registry.file_handler(*b"SIT!"), None);
         registry.rollback(first).unwrap();
         let module = stage(&mut registry, &bytes);
         assert_ne!(first, module);
         registry.install_file_handlers(module, alloc::vec![rule]).unwrap();
         registry.commit(module).unwrap();
-        assert_eq!(registry.file_handler(*b"SIT!", "typed.bin"), Some((module, rule)));
-        assert_eq!(registry.file_handler(*b"BINA", "archive.SIT"), Some((module, rule)));
-        assert_eq!(registry.file_handler(*b"APPL", "archive.sit"), None);
-        assert_eq!(registry.file_handler(*b"BINA", "archive.sitx"), None);
+        assert_eq!(registry.file_handler(*b"SIT!"), Some((module, rule)));
+        assert_eq!(registry.file_handler(*b"BINA"), None);
+        assert_eq!(registry.file_handler(*b"APPL"), None);
+        assert_eq!(registry.file_handler(*b"BINA"), None);
         registry.quiesce(module).unwrap();
-        assert_eq!(registry.file_handler(*b"SIT!", "archive.sit"), None);
+        assert_eq!(registry.file_handler(*b"SIT!"), None);
         registry.finish_quiesce(module).unwrap();
-        assert_eq!(registry.file_handler(*b"BINA", "archive.sit"), None);
+        assert_eq!(registry.file_handler(*b"BINA"), None);
         // Failed module code stays pinned until reboot; a separate incarnation
         // without declarations cannot inherit its retired associations.
         let replacement = metadata(*b"next-module-uuid", &[OFFER], &[]);
         let module2 = stage(&mut registry, &replacement);
         registry.commit(module2).unwrap();
-        assert_eq!(registry.file_handler(*b"SIT!", "archive.sit"), None);
+        assert_eq!(registry.file_handler(*b"SIT!"), None);
     }
     #[test]
     fn initialization_is_hidden_and_rollback_never_reuses_ids()

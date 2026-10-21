@@ -7,6 +7,7 @@ use alloc::{string::String, vec::Vec};
 mod scan;
 mod cache;
 mod provider;
+pub(crate) mod types;
 #[cfg(target_arch = "riscv64")]
 mod backing;
 use mac_abi::{files::*, *};
@@ -281,6 +282,14 @@ fn metadata(volume: u32, entry: &CatalogEntry) -> CatalogInfo
     {
         result.file_type.copy_from_slice(&entry.finder_info[..4]);
         result.creator.copy_from_slice(&entry.finder_info[4..8]);
+        if let Ok(name) = core::str::from_utf8(&entry.name)
+        {
+            let (kind, creator) = types::classify(name, result.file_type, result.creator);
+            result.file_type = kind;
+            result.creator = creator;
+            result.finder_info[..4].copy_from_slice(&kind);
+            result.finder_info[4..8].copy_from_slice(&creator);
+        }
     }
     result.name_length = utf8_name(&entry.name, &mut result.name);
     result

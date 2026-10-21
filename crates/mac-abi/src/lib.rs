@@ -26,6 +26,10 @@ pub const DIRECTORY_NOT_EMPTY: Status = -15;
 pub const SCAN_STALE: Status = -16;
 /// Cancellation was acknowledged before the requested operation completed.
 pub const OPERATION_CANCELLED: Status = -17;
+/// Stored file/container metadata or verified payload is malformed.
+pub const CORRUPT_DATA: Status = -18;
+/// A mounted provider's backing device/export is no longer available.
+pub const STORAGE_UNAVAILABLE: Status = -19;
 
 pub mod crashes;
 pub mod dates;

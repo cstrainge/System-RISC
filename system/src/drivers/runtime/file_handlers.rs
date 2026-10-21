@@ -80,8 +80,9 @@ pub(super) fn prepare(resources: &[Resource], contract: Contract<'_>) -> Result<
 }
 pub(crate) fn file_handler_provider(file_type: [u8; 4], name: &str) -> Result<Option<u32>, Status>
 {
+    let (file_type, _) = crate::toolbox::files::types::classify(name, file_type, [0; 4]);
     RUNTIME.with(|runtime| {
-               let Some((module, rule)) = runtime.registry.file_handler(file_type, name)
+               let Some((module, rule)) = runtime.registry.file_handler(file_type)
                else
                {
                    return Ok(None);
@@ -105,8 +106,9 @@ pub(crate) fn file_handler_provider(file_type: [u8; 4], name: &str) -> Result<Op
 pub(crate) fn file_handler_icon(file_type: [u8; 4], name: &str)
                                 -> Result<Option<Arc<IconFamily>>, Status>
 {
+    let (file_type, _) = crate::toolbox::files::types::classify(name, file_type, [0; 4]);
     RUNTIME.with(|runtime| {
-               let Some((module, rule)) = runtime.registry.file_handler(file_type, name)
+               let Some((module, rule)) = runtime.registry.file_handler(file_type)
                else
                {
                    return Ok(None);

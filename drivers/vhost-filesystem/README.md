@@ -3,7 +3,12 @@
 The safe, `no_std` library implements host container catalogs, leased reads and
 staged two-fork creation/replacement over the separate `HDIR` transport contract.
 Names, identities and integrity use `mac-fork-file`; host paths never become guest
-filenames. Runtime volume/open/write tokens come from the resident generation
+filenames for native containers. Ordinary host files and folders also enumerate
+without conversion: file bytes form the data fork, the resource fork is empty,
+and names/dates are projected from the host. No metadata sidecars are created.
+The companion pins these host objects and supplies session/export-scoped
+generation-tagged catalog identities, preserving rename identity and rejecting
+replacement reuse. Runtime volume/open/write tokens come from the resident generation
 facility; the driver does not issue a parallel set of object IDs.
 
 Every transport await retains owned progress, and catalog/chunk loops yield
@@ -18,6 +23,8 @@ writer leases through publication, flush chunk bytes and the final valid header,
 and preserve publication state for retries after cleanup failures. Abort reports
 whether publication already happened; it does not claim to undo a committed file.
 A higher-level cancellable batch transfer must handle rollback of its outputs.
+New directories publish their native metadata record atomically with the directory;
+they may be created inside either native or ordinary host folders.
 
 `tests/reader.rs` runs against real host directories and the production host
 companion session, with split future polls, both forks, Unicode/case collisions,

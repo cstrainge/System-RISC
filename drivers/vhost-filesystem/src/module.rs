@@ -348,10 +348,12 @@ fn status(error: crate::Error) -> i32
             match wire
             {
                 mac_host_protocol::status::READ_ONLY => mac_abi::READ_ONLY,
-                mac_host_protocol::status::NOT_FOUND | mac_host_protocol::status::STALE =>
-                {
-                    mac_abi::NOT_FOUND
-                }
+                mac_host_protocol::status::NOT_FOUND => mac_abi::NOT_FOUND,
+                mac_host_protocol::status::STALE => mac_abi::SCAN_STALE,
+                mac_host_protocol::status::INVALID => mac_abi::BAD_ARGUMENT,
+                mac_host_protocol::status::UNAVAILABLE => mac_abi::STORAGE_UNAVAILABLE,
+                mac_host_protocol::status::UNSUPPORTED => mac_abi::NOT_SUPPORTED,
+                mac_host_protocol::status::LIMIT => mac_abi::NO_MEMORY,
                 mac_host_protocol::status::CONFLICT => mac_abi::ALREADY_EXISTS,
                 mac_host_protocol::status::BUSY => mac_abi::SERVICE_BUSY,
                 _ => mac_abi::IO_ERROR
@@ -370,6 +372,7 @@ fn status(error: crate::Error) -> i32
         Cause::Format(mac_fork_file::Error::NoMemory) => mac_abi::NO_MEMORY,
         Cause::Format(mac_fork_file::Error::Stale) => mac_abi::SCAN_STALE,
         Cause::Format(mac_fork_file::Error::Version) => mac_abi::BAD_ABI,
-        Cause::Format(_) => mac_abi::IO_ERROR
+        Cause::Format(mac_fork_file::Error::Io) => mac_abi::IO_ERROR,
+        Cause::Format(_) => mac_abi::CORRUPT_DATA
     }
 }

@@ -5,6 +5,8 @@
 use mac_toolbox::{System, SystemServices};
 #[path = "../../../host_filesystem_cases.rs"]
 mod cases;
+#[path="../../diagnostics.rs"]
+mod diagnostics;
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 pub unsafe extern "C" fn _start(services: *const SystemServices) -> i32
@@ -25,6 +27,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> i32
         }
         Err(error) =>
         {
+            diagnostics::error(&system,"HOST_FILESYSTEM_ERROR",error);
             let _ = system.log("HOST_FILESYSTEM_FAIL\n");
             error.status()
         }

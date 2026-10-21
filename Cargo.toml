@@ -6,6 +6,7 @@ members = [
     "crates/mac-object-table",
     "crates/mac-fork-file",
     "crates/mac-host-protocol",
+    "crates/mac-file-types",
     "crates/mac-driver",
     "crates/mac-driver-alloc",
     "crates/mac-device-interface",
@@ -44,6 +45,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+mac-file-types = { path = "crates/mac-file-types" }
 mac-module = { path = "crates/mac-module" }
 mac-device-interface = { path = "crates/mac-device-interface" }
 mac-filesystem-interface = { path = "crates/mac-filesystem-interface" }

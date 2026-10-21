@@ -40,16 +40,43 @@ pub(in crate::toolbox::files) struct Plan
     pub creator:   [u8; 4],
     pub when:      u64,
     pub name:      Vec<u8>,
-    pub data:      Vec<u8>
+    pub data:      Vec<u8>,
+    pub directory: bool
 }
 impl Manager
 {
+    pub(in crate::toolbox::files) fn reserve_provider_directory(&mut self, owner: u64,
+                                                                volume: u32, parent: u32,
+                                                                name: &str, when: u64)
+                                                                -> Result<Plan, Status>
+    {
+        self.validate_provider_mutation(volume)?;
+        let provider = self.read_provider(volume)?.ok_or(BAD_ARGUMENT)?;
+        let mut call = DataWriteCall { volume,
+                                       parent,
+                                       when,
+                                       ..Default::default() };
+        self.reserve_provider_write(owner, &mut call, name, provider)?;
+        self.writes.get_mut(call.handle).ok_or(NOT_FOUND)?.directory = true;
+        match self.prepare_provider_write(owner, call.handle)
+        {
+            Ok(plan) => Ok(plan),
+            Err(error) =>
+            {
+                self.writes.remove(call.handle);
+                Err(error)
+            }
+        }
+    }
+
     pub(in crate::toolbox::files) fn reserve_provider_write(&mut self, owner: u64,
                                                             call: &mut DataWriteCall, name: &str,
                                                             provider: u32)
                                                             -> Result<(), Status>
     {
         fs::FileProperties::fresh(name, call.when).validate().map_err(|_| BAD_ARGUMENT)?;
+        let (file_type, creator) =
+            super::super::types::classify(name, call.file_type, call.creator);
         let parent = if call.parent == 0 { ROOT_ID } else { call.parent };
         if parent < ROOT_ID || call.expected_cnid == 1
         {
@@ -66,13 +93,14 @@ impl Manager
                                             volume: call.volume,
                                             parent,
                                             expected_cnid: call.expected_cnid,
-                                            file_type: call.file_type,
-                                            creator: call.creator,
+                                            file_type,
+                                            creator,
                                             when: call.when,
                                             name: input,
                                             comparison: Vec::new(),
                                             length: call.length,
                                             data,
+                                            directory: false,
                                             provider: Some(State { provider,
                                                                    phase: Phase::Staged,
                                                                    orphaned: false,
@@ -125,7 +153,8 @@ impl Manager
                   creator: mark.creator,
                   when: mark.when,
                   name: core::mem::take(&mut mark.name),
-                  data: core::mem::take(&mut mark.data) })
+                  data: core::mem::take(&mut mark.data),
+                  directory: mark.directory })
     }
 
     pub(in crate::toolbox::files) fn confirm_provider_write(&mut self, handle: u32, bytes: &[u8])
@@ -141,7 +170,7 @@ impl Manager
                             bytes,
                             (mark.expected_cnid != 0).then_some(mark.expected_cnid),
                             Some(mark.parent))?;
-        if entry.is_directory()
+        if entry.is_directory() != mark.directory
            || entry.data_length != mark.length as u64
            || mark.expected_cnid == 0
               && (entry.resource_length != 0

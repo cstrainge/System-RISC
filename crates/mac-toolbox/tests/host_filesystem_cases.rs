@@ -120,12 +120,25 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     let mut prior_scan = check_scan(system, writable.id)?;
     system.log("HOST_FS_STAGE catalog\n")?;
     let root = files.catalog(writable.id, mac_toolbox::files::ROOT_ID)?;
-    require(root.is_directory() && root.name() == "Native Host" && root.child_count == Some(2))?;
+    require(root.is_directory() && root.name() == "Native Host" && root.child_count == Some(5))?;
     require(files.parent(writable.id, root.id)? == root)?;
-    let first = files.child(writable.id, root.id, 0)?;
-    let second = files.child(writable.id, root.id, 1)?;
-    require(first.id != second.id && first.parent == root.id && second.parent == root.id)?;
-    let (folder, file) = if first.is_directory() { (first, second) } else { (second, first) };
+    let mut folder = None;
+    let mut file = None;
+    for index in 0..5
+    {
+        let entry = files.child(writable.id, root.id, index)?;
+        require(entry.parent == root.id)?;
+        if entry.name() == "Tools"
+        {
+            folder = Some(entry);
+        }
+        if entry.name() == "Café"
+        {
+            file = Some(entry);
+        }
+    }
+    let folder = folder.ok_or(Error::BadAbi)?;
+    let file = file.ok_or(Error::BadAbi)?;
     require(folder.is_directory() && folder.name() == "Tools" && folder.child_count.is_none())?;
     require(!file.is_directory()
             && file.name() == "Café"
@@ -133,7 +146,7 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             && file.resource_length == 0)?;
     require(files.catalog(writable.id, file.id)? == file)?;
     require(files.parent(writable.id, file.id)? == root)?;
-    require(files.child(writable.id, root.id, 2) == Err(Error::NotFound))?;
+    require(files.child(writable.id, root.id, 5) == Err(Error::NotFound))?;
     require(files.child(writable.id, file.id, 0) == Err(Error::BadArgument))?;
     let exact_folder = files.catalog(writable.id, folder.id)?;
     require(files.allocation_info(writable.id, file.id)?.total_bytes()?.is_none())?;
@@ -184,8 +197,8 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             && read_only.read_only
             && read_only.capacity.is_none())?;
     require(files.volume_count()? == before + 2)?;
-    require(files.catalog(read_only.id, mac_toolbox::files::ROOT_ID)?.child_count == Some(1))?;
-    require(files.child(read_only.id, mac_toolbox::files::ROOT_ID, 1) == Err(Error::NotFound))?;
+    require(files.catalog(read_only.id, mac_toolbox::files::ROOT_ID)?.child_count == Some(3))?;
+    require(files.child(read_only.id, mac_toolbox::files::ROOT_ID, 3) == Err(Error::NotFound))?;
     system.log("HOST_FS_STAGE resource-inspection\n")?;
     check_resources(system, read_only.id)?;
     require(files.new_folder(read_only.id, mac_toolbox::files::ROOT_ID, "Forbidden")
@@ -201,6 +214,9 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     require(matches!(write, Err(Error::ReadOnly)))?;
     system.log("HOST_FS_STAGE native-write\n")?;
     check_writes(system, writable.id, forks.id)?;
+    system.log("HOST_FS_STAGE plain-host-entries-and-folders\n")?;
+    check_plain(system, writable.id, true)?;
+    check_plain(system, read_only.id, false)?;
     require(files.scan_directory(writable.id, mac_toolbox::files::ROOT_ID, &mut prior_scan)
             == Err(Error::ScanStale))?;
     system.log("HOST_FS_STAGE unmount-and-reuse\n")?;
@@ -529,13 +545,13 @@ fn check_scan(system: &System<'_>, volume: VolumeId)
                 require(catalog.parent == ROOT_ID && catalog.volume == volume)?;
                 if catalog.is_directory()
                 {
-                    require(catalog.name() == "Tools"
+                    require(["Tools", "Host Folder"].contains(&catalog.name())
                             && data_allocated == Some(0)
                             && resource_allocated == Some(0))?;
                 }
                 else
                 {
-                    require(catalog.name() == "Café"
+                    require(["Café", "Host File.txt", "Raw.sit"].contains(&catalog.name())
                             && data_allocated.is_none()
                             && resource_allocated.is_none())?;
                 }
@@ -547,7 +563,7 @@ fn check_scan(system: &System<'_>, volume: VolumeId)
             }
             ScanStep::Done =>
             {
-                require(count == 2)?;
+                require(count == 5)?;
                 require(matches!(system.files().scan_directory(volume, ROOT_ID, &mut cursor)?,
                                  ScanStep::Done))?;
                 return Ok(cursor);
@@ -709,4 +725,55 @@ fn check_exit_cleanup(system: &System<'_>, volume: VolumeId) -> Result<(), Error
         }
     }
     Err(Error::ServiceBusy)
+}
+
+fn check_plain(system: &System<'_>, volume: VolumeId, writable: bool) -> Result<(), Error>
+{
+    use mac_toolbox::files::{DataFileSpec, Fork, ROOT_ID};
+    let files = system.files();
+    let file = files.lookup(volume, ROOT_ID, "Host File.txt")?;
+    system.log("HOST_FS_PLAIN raw-file\n")?;
+    require(file.data_length == 10
+            && file.resource_length == 0
+            && file.modified.mac_microseconds().is_some_and(|t| t > 3_800_000_000_000_000))?;
+    let mut fork = files.open(volume, file.id, Fork::Data)?;
+    let mut bytes = [0; 128];
+    require(fork.read(&mut bytes)? == 10 && &bytes[..10] == b"host data\n")?;
+    fork.close()?;
+    let mut fork = files.open(volume, file.id, Fork::Resource)?;
+    require(fork.read(&mut bytes)? == 0)?;
+    fork.close()?;
+    let folder = files.lookup(volume, ROOT_ID, "Host Folder")?;
+    system.log("HOST_FS_PLAIN raw-folder\n")?;
+    require(folder.is_directory())?;
+    if writable
+    {
+        let sit = files.lookup(volume, ROOT_ID, "Raw.sit")?;
+        system.log("HOST_FS_PLAIN registry\n")?;
+        require(sit.file_type == (*b"SIT!").into() && sit.creator == (*b"SIT!").into())?;
+        let made = files.new_folder(volume, folder.id, "Guest Folder")?;
+        system.log("HOST_FS_PLAIN created-folder\n")?;
+        require(made.is_directory()
+                && made.name() == "Guest Folder"
+                && made.child_count == Some(0))?;
+        require(files.new_folder(volume, folder.id, "guest folder") == Err(Error::AlreadyExists))?;
+        let mut writer = files.create_data(DataFileSpec { volume,
+                                                          parent: made.id,
+                                                          name: "Child",
+                                                          replacing: None,
+                                                          file_type: (*b"TEXT").into(),
+                                                          creator: (*b"TEST").into() },
+                                           4)?;
+        writer.write_all(b"data")?;
+        let saved = writer.finish()?;
+        require(files.lookup(volume, folder.id, "Guest Folder/Child")?.id == saved.id)?;
+        let mut fork = files.open(volume, saved.id, Fork::Data)?;
+        require(fork.read(&mut bytes)? == 4 && &bytes[..4] == b"data")?;
+        fork.close()?;
+    }
+    else
+    {
+        require(files.new_folder(volume, folder.id, "Refused") == Err(Error::ReadOnly))?;
+    }
+    Ok(())
 }

@@ -679,6 +679,10 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
     {
         return paths::start(owner, thread, key, call, name);
     }
+    if call.operation == NEW_FOLDER
+    {
+        return writes::folder(owner, thread, key, call, name);
+    }
     if call.operation == TRASH_DIRECTORY && call.index == 0
     {
         return paths::start(owner, thread, key, call, name);

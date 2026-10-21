@@ -85,12 +85,19 @@ def capture(output, sdk=False):
             forks.write_bytes(header + data + bytes(-len(data) % 128)
                               + resources + bytes(-len(resources) % 128))
             subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(export), str(forks), '/Tools'], check=True)
+            # Reproduce host provenance, without the guest/offline importer.
+            (export / 'Host Folder').mkdir()
+            (export / 'Host Folder/Child.txt').write_bytes(b'host child\n')
+            (export / 'Host File.txt').write_bytes(b'host data\n')
+            shutil.copyfile(vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/nested-v1.sit', export / 'Raw.sit')
         companion_args = [str(host / 'risc-host'), '--export', f'Test={export}']
         if sdk:
             readonly = output / 'readonly-export'
             subprocess.run([str(host / 'risc-forks'), 'init', str(readonly), 'Read Only Host'], check=True)
             subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(readonly),
                             str(base / 'ResEdit.bin')], check=True)
+            (readonly / 'Host Folder').mkdir()
+            (readonly / 'Host File.txt').write_bytes(b'host data\n')
             companion_args.extend(['--read-only-export', f'ReadOnly={readonly}'])
         with (output / 'companion.log').open('wb') as log:
             companion = subprocess.Popen(companion_args,

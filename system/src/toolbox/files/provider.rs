@@ -63,6 +63,11 @@ fn catalog_metadata(volume: u32, metadata: fs::Metadata<'_>, node: Option<u32>,
     {
         info.file_type.copy_from_slice(&metadata.finder_info[..4]);
         info.creator.copy_from_slice(&metadata.finder_info[4..8]);
+        let (kind, creator) = super::types::classify(metadata.name, info.file_type, info.creator);
+        info.file_type = kind;
+        info.creator = creator;
+        info.finder_info[..4].copy_from_slice(&kind);
+        info.finder_info[4..8].copy_from_slice(&creator);
     }
     info.name_length = utf8_name(metadata.name.as_bytes(), &mut info.name);
     Ok(info)

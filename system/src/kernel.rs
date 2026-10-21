@@ -290,6 +290,11 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                                                                               application: finder }
                               });
     boot_screen.completed(2);
+    crate::toolbox::files::types::initialize().map_err(|status| {
+                                                  serial!("FILE_TYPES_ERROR status={}", status);
+                                                  mac_formats::Error("File Types.json is invalid \
+                                                                      or unreadable")
+                                              })?;
     // Module-owned icon families resolve the System palettes at admission.
     // Publish immutable resource/font services before entering any driver;
     // exports still mount before Finder or another application can run.

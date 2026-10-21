@@ -1,5 +1,5 @@
 //! Finder catalog windows. Every volume, entry and fork comes from the File Manager.
-use core::fmt::Write;
+use core::{cell::Cell, fmt::Write};
 
 use mac_toolbox::{System,
                   files::{CatalogInfo, ROOT_ID, VolumeInfo},
@@ -42,7 +42,9 @@ pub struct Browser
     trash_selected:    bool,
     drag:              Option<IconDrag>,
     trash_hover:       bool,
-    pub startup:       VolumeId
+    pub startup:       VolumeId,
+    trash_cached:      Cell<u32>,
+    failures:          [Cell<Option<Error>>; 8]
 }
 
 pub struct Text<const N: usize = 160>
@@ -331,6 +333,14 @@ impl Browser
         {
             self.startup = files.volume_at(0)?.id;
         }
+        if let Err(error) = self.refresh_trash(system)
+        {
+            let mut line = Text::<160>::default();
+            let _ = writeln!(&mut line,
+                             "FINDER_TRASH_REFRESH_FAILED status={} error={error:?}",
+                             error.status());
+            system.log(line.as_str())?;
+        }
         self.draw_desktop(system)?;
         if self.startup != VolumeId::NONE
         {
@@ -374,7 +384,7 @@ impl Browser
             let mut label = [0u8; 768];
             let label = crate::ui::text(system, 0, &mut label)?;
             icon_view::draw_item(&mut draw,
-                                 if self.trash_count(system)? > 0
+                                 if self.cached_trash_count() > 0
                                  {
                                      standard::FULL_TRASH
                                  }
@@ -415,6 +425,7 @@ impl Browser
         {
             return Err(Error::NoMemory);
         };
+        self.failures[slot].set(None);
         let trash = location == Location::default();
         let folder = if trash
         {
@@ -524,6 +535,14 @@ impl Browser
 
     pub fn draw(&self, system: &System<'_>, id: WindowId) -> Result<(), Error>
     {
+        let slot = self.windows
+                       .iter()
+                       .position(|w| w.is_some_and(|w| w.window == id))
+                       .ok_or(Error::NotFound)?;
+        if let Some(error) = self.failures[slot].get()
+        {
+            return self.draw_failed(system, id, error);
+        }
         let Some(window) = self.windows.iter().flatten().find(|w| w.window == id)
         else
         {
@@ -642,10 +661,44 @@ impl Browser
             Ok(())
         })();
         system.end_update(id)?;
-        result?;
+        if let Err(error) = result
+        {
+            self.failures[slot].set(Some(error));
+            self.draw_failed(system, id, error)?;
+            return Err(error);
+        }
         let mut line = Text::<256>::default();
         let _ = writeln!(&mut line, "FINDER_FOLDER_READY window={}", id);
         system.log(line.as_str())
+    }
+
+    fn draw_failed(&self, system: &System<'_>, id: WindowId, error: Error) -> Result<(), Error>
+    {
+        let window = system.window(id)?;
+        let body = crate::ui::error_text(system, error, 1, window.title())?;
+        system.begin_update(id)?;
+        let result = (|| {
+            let port = system.quickdraw().graphics(id);
+            port.reset()?;
+            port.colors(0xffffff, 0xffffff)?;
+            port.paint_rect(Rect::new(0,
+                                      0,
+                                      window.bounds.right - window.bounds.left,
+                                      window.bounds.bottom - window.bounds.top))?;
+            for (index, line) in body.as_str().split('\r').enumerate()
+            {
+                port.text(FontSelection { family: 3,
+                                          size:   9,
+                                          face:   0 },
+                          Point { h: 12,
+                                  v: 20 + index as i16 * 16 },
+                          line,
+                          0)?;
+            }
+            Ok(())
+        })();
+        system.end_update(id)?;
+        result
     }
 
     pub fn click(&mut self, system: &System<'_>, event: Event) -> Result<(), Error>
@@ -691,6 +744,12 @@ impl Browser
                 .iter()
                 .position(|w| w.is_some_and(|w| w.window == event.window().unwrap_or_default()))
         {
+            // A failed catalog stays inert until a real change invalidates it.
+            // Clicking its error view must not repeat the failing I/O.
+            if self.failures[slot].get().is_some()
+            {
+                return Ok(());
+            }
             let window = self.windows[slot].unwrap();
             let bounds = system.window(window.window)?.bounds;
             let p = Point { h: event.input().at.h - bounds.left,
@@ -1095,8 +1154,24 @@ impl Browser
         Ok(count)
     }
 
+    pub fn cached_trash_count(&self) -> u32
+    {
+        self.trash_cached.get()
+    }
+
+    fn refresh_trash(&self, system: &System<'_>) -> Result<(), Error>
+    {
+        self.trash_cached.set(self.trash_count(system)?);
+        Ok(())
+    }
+
     fn files_changed(&mut self, system: &System<'_>) -> Result<(), Error>
     {
+        for failure in &self.failures
+        {
+            failure.set(None);
+        }
+        self.refresh_trash(system)?;
         self.last_click = None;
         self.drag = None;
         self.trash_hover = false;

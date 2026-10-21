@@ -1,5 +1,48 @@
 //! Finder text belongs to its resource fork, decoded by the Resource Manager.
+use core::fmt::Write;
+
 use mac_toolbox::{Error, WindowId, *};
+pub fn error_text(system: &System<'_>, status: Error, operation: u32, subject: &str)
+                  -> Result<crate::browser::Text<768>, Error>
+{
+    let index = match status
+    {
+        Error::BadAbi => 0,
+        Error::BadArgument => 1,
+        Error::NotFound => 2,
+        Error::NotSupported => 3,
+        Error::NoMemory => 4,
+        Error::TranslationRequired => 5,
+        Error::ServiceBusy => 6,
+        Error::WrongThread => 7,
+        Error::Io => 8,
+        Error::ReadOnly => 9,
+        Error::AlreadyExists => 10,
+        Error::AccessDenied => 11,
+        Error::DiskFull => 12,
+        Error::RollbackFailed => 13,
+        Error::DirectoryNotEmpty => 14,
+        Error::ScanStale => 15,
+        Error::Cancelled => 16,
+        Error::EventNotEnabled => 17,
+        Error::ScrapTypeUnavailable => 18,
+        Error::MemoryFull => 19,
+        Error::NilHandle => 20,
+        Error::InvalidZone => 21,
+        Error::HandleNotPurgeable => 22,
+        Error::HandleLocked => 23,
+        Error::CorruptData => 24,
+        Error::StorageUnavailable => 25,
+        _ => 26
+    };
+    let mut a = [0; 256];
+    let mut b = [0; 384];
+    let operation = system.resources().application().indexed_string(20020, operation, &mut a)?;
+    let cause = system.resources().application().indexed_string(20021, index, &mut b)?;
+    let mut out = crate::browser::Text::default();
+    write!(&mut out,"{operation}: {subject}\r{cause}\r{status:?} ({})",status.status()).map_err(|_|Error::BadArgument)?;
+    Ok(out)
+}
 pub fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8]) -> Result<&'b str, Error>
 {
     system.resources().application().indexed_string(2000, index, output)
@@ -8,8 +51,9 @@ pub fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8]) -> Result
 #[derive(Default)]
 pub struct Alerts<'a>
 {
-    alert: Option<dialogs::Alert<'a>>,
-    empty: bool
+    alert:   Option<dialogs::Alert<'a>>,
+    empty:   bool,
+    context: Option<Event>
 }
 impl<'a> Alerts<'a>
 {
@@ -20,22 +64,86 @@ impl<'a> Alerts<'a>
 
     pub fn error(&mut self, system: &System<'a>, status: Error) -> Result<(), Error>
     {
-        let index = match status
+        let op = match self.context
         {
-            mac_toolbox::Error::ReadOnly => 11,
-            mac_toolbox::Error::AlreadyExists => 12,
-            mac_toolbox::Error::AccessDenied => 13,
-            mac_toolbox::Error::Io | mac_toolbox::Error::RollbackFailed => 15,
-            mac_toolbox::Error::DiskFull => 16,
-            mac_toolbox::Error::ServiceBusy => 17,
-            _ => 14
+            Some(Event::Update { .. }) => 1,
+            Some(Event::MouseDown { .. }) => 2,
+            Some(Event::MenuCommand { menu: MenuId(1252),
+                                      item,
+                                      .. }) =>
+            {
+                match item
+                {
+                    1 => 3,
+                    2 => 2,
+                    6 => 6,
+                    10 => 10,
+                    4 => 9,
+                    _ => 8
+                }
+            }
+            Some(Event::MenuCommand { menu: MenuId(1255),
+                                      item: 2,
+                                      .. }) => 5,
+            Some(Event::KeyDown { .. }) =>
+            {
+                match self.context
+                          .unwrap()
+                          .key()
+                          .map_or('\0', |k| k.character().to_ascii_lowercase())
+                {
+                    'n' => 3,
+                    'o' => 2,
+                    'i' => 6,
+                    'w' => 9,
+                    _ => 8
+                }
+            }
+            None => 0,
+            _ => 8
         };
-        let mut bytes = [0; 768];
-        let body = text(system, index, &mut bytes)?;
-        self.alert = Some(system.dialogs().alert_owned(resources::APPLICATION, 2001, body)?);
+        let mut subject = crate::browser::Text::<256>::default();
+        let window = self.context.and_then(|e| e.window()).unwrap_or(WindowId(0));
+        if let Some(event) = self.context.filter(|e| e.window().is_none())
+        {
+            for i in 0..system.files().volume_count()?
+            {
+                if crate::icon_view::volume_bounds(i).contains(event.input().at)
+                {
+                    let v = system.files().volume_at(i)?;
+                    let _ = subject.write_str(v.name());
+                    break;
+                }
+            }
+        }
+        if subject.as_str().is_empty()
+        {
+            if let Ok(w) = system.window(window)
+            {
+                let _ = subject.write_str(w.title());
+            }
+            else
+            {
+                let _ = subject.write_str("Finder");
+            }
+        }
+        let body = error_text(system, status, op, subject.as_str())?;
+        let mut log = crate::browser::Text::<1024>::default();
+        let _ = writeln!(&mut log, "FINDER_ALERT_TEXT {:?}", body.as_str());
+        system.log(log.as_str())?;
+        self.alert =
+            Some(system.dialogs().alert_owned(resources::APPLICATION, 2001, body.as_str())?);
         self.empty = false;
         self.modal_menus(system, false)?;
         Ok(())
+    }
+
+    pub fn set_context(&mut self, event: Event)
+    {
+        if self.alert.is_none()
+        {
+            self.context = Some(event);
+        }
     }
 
     pub fn confirm_empty(&mut self, system: &System<'a>, browser: &crate::browser::Browser)

@@ -7,6 +7,7 @@ use crate::{Cause, Reply, Result, Rpc,
             rpc::{buffer, yield_once}};
 mod write;
 mod scan;
+mod plain;
 pub use write::{Create, Replace};
 const ROOT: u32 = 2;
 const MAX_MOUNTS: usize = 16;
@@ -88,7 +89,8 @@ pub struct Node
     pub parent:   u32,
     pub metadata: Metadata,
     pub layout:   Layout,
-    key:          String
+    key:          String,
+    host_name:    Option<Vec<u8>>
 }
 #[derive(Clone, Debug)]
 pub struct MountInfo
@@ -112,6 +114,14 @@ impl Node
         key.try_reserve_exact(self.key.len()).map_err(|_| Cause::NoMemory)?;
         key.push_str(&self.key);
         Ok(Self { metadata: self.metadata.try_clone()?,
+                  host_name: self.host_name
+                                 .as_ref()
+                                 .map(|name| -> Result<Vec<u8>> {
+                                     let mut out = buffer(name.len())?;
+                                     out.copy_from_slice(name);
+                                     Ok(out)
+                                 })
+                                 .transpose()?,
                   key,
                   ..*self })
     }
@@ -160,7 +170,8 @@ struct Open
     node:   u32,
     handle: u32,
     length: u64,
-    layout: Layout
+    layout: Layout,
+    plain:  bool
 }
 struct Capability
 {
@@ -232,6 +243,7 @@ impl<R: Rpc> Filesystem<R>
                                  | Op::ListBegin
                                  | Op::BeginWrite
                                  | Op::OpenLock);
+        let allocates = allocates || operation == Op::PublishDirectory;
         if object != 0 && !self.caps.iter().any(|cap| cap.id == object && cap.owner == self.owner)
         {
             return Err(Cause::NotFound.into());
@@ -297,7 +309,7 @@ impl<R: Rpc> Filesystem<R>
             // leases even when there was no transport error to trigger it.
             self.needs_cleanup = true;
         }
-        else if matches!(operation, Op::Close | Op::Commit)
+        if matches!(operation, Op::Close | Op::Commit | Op::PublishDirectory)
         {
             self.caps.retain(|cap| cap.id != object);
         }
@@ -366,6 +378,7 @@ impl<R: Rpc> Filesystem<R>
                     let key =
                         mac_hfs_b::names::comparison(&metadata.name).map_err(|_| Cause::Invalid)?;
                     Ok(Node { parent: 0,
+                              host_name: None,
                               metadata,
                               layout,
                               key })
@@ -481,9 +494,25 @@ impl<R: Rpc> Filesystem<R>
         {
             return Err(Cause::Invalid.into());
         }
-        let name = forks::host_name(Kind::File, cached.metadata.identity)?;
+        let plain = cached.host_name.is_some();
+        let mut name = buffer(cached.host_name.as_ref().map_or(34, Vec::len))?;
+        if let Some(raw) = &cached.host_name
+        {
+            name.copy_from_slice(raw);
+        }
+        else
+        {
+            name.copy_from_slice(&forks::host_name(Kind::File, cached.metadata.identity)?);
+        }
         let parent = mount.directories.get(cached.parent).ok_or(Cause::NotFound)?.handle;
-        let (handle, opened) = self.open_record(parent, &name).await?;
+        let (handle, opened) = if plain
+        {
+            self.open_plain(volume, parent, &name).await?
+        }
+        else
+        {
+            self.open_record(parent, &name).await?
+        };
         if opened.metadata != self.cached_node(volume, node)?.metadata
         {
             return self.cleanup(handle, Err(Cause::Stale.into())).await;
@@ -493,7 +522,15 @@ impl<R: Rpc> Filesystem<R>
                                        Open { volume,
                                               node,
                                               handle,
-                                              length: layout.total,
+                                              length: if plain
+                                              {
+                                                  layout.data.length
+                                              }
+                                              else
+                                              {
+                                                  layout.total
+                                              },
+                                              plain,
                                               layout });
         if let Err(error) = result
         {
@@ -513,6 +550,20 @@ impl<R: Rpc> Filesystem<R>
         let open =
             self.files.get(token).filter(|file| file.volume == volume).ok_or(Cause::NotFound)?;
         let (handle, length, layout) = (open.handle, open.length, open.layout.fork(kind));
+        if open.plain
+        {
+            let count = layout.length.saturating_sub(offset).min(capacity as u64) as u32;
+            if count == 0
+            {
+                return buffer(0);
+            }
+            let reply = self.call(Op::Read, handle, offset, count, &[]).await?;
+            if reply.body.len() != count as usize
+            {
+                return Err(Cause::Stale.into());
+            }
+            return Ok(reply.body);
+        }
         let count = layout.length.saturating_sub(offset).min(capacity as u64) as usize;
         let mut output = buffer(count)?;
         if count == 0

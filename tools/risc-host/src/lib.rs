@@ -11,6 +11,7 @@ use cap_std::fs::{Dir, OpenOptions, ReadDir};
 use mac_host_protocol::{self as wire, Header, Operation as Op, status};
 use mac_object_table::{Kind, Table};
 use sha2::{Digest, Sha256};
+mod nodes;
 
 pub type Result<T> = core::result::Result<T, Failure>;
 #[derive(Debug)]
@@ -254,18 +255,23 @@ struct OwnedFile
 }
 struct Transaction
 {
-    owner:       u32,
-    directory:   Directory,
-    name:        String,
-    file:        File,
-    dirty:       bool,
-    publication: Option<String>
+    owner:           u32,
+    directory:       Directory,
+    name:            String,
+    file:            File,
+    dirty:           bool,
+    publication:     Option<String>,
+    directory_stage: Option<String>
 }
 impl Drop for Transaction
 {
     fn drop(&mut self)
     {
         let _ = self.directory.root.remove_file(&self.name);
+        if let Some(name) = &self.directory_stage
+        {
+            let _ = self.directory.root.remove_dir_all(name);
+        }
     }
 }
 
@@ -279,7 +285,8 @@ pub struct Session
     hello:        bool,
     directories:  Table<DirectoryObject>,
     files:        Table<OwnedFile>,
-    transactions: Table<Transaction>
+    transactions: Table<Transaction>,
+    nodes:        Table<nodes::Node>
 }
 impl Session
 {
@@ -297,7 +304,8 @@ impl Session
                   hello: false,
                   directories: Table::new(Kind::HostDirectories),
                   files: Table::new(Kind::HostFiles),
-                  transactions: Table::new(Kind::HostTransactions) })
+                  transactions: Table::new(Kind::HostTransactions),
+                  nodes: Table::new(Kind::HostNodes) })
     }
 
     fn directory(&self, id: u32) -> Result<Directory>
@@ -401,6 +409,8 @@ impl Session
                                        | Op::Rename
                                        | Op::Remove
                                        | Op::OpenLock);
+        let permits_payload =
+            permits_payload || matches!(req.operation, Op::Describe | Op::PublishDirectory);
         let permits_offset =
             matches!(req.operation, Op::Export | Op::Read | Op::Write | Op::SetLength | Op::Rename);
         let permits_value =
@@ -474,7 +484,7 @@ impl Session
                     let entry = entry?;
                     let name = entry.file_name();
                     let name = name.to_str().ok_or(Failure(status::INVALID))?;
-                    if self.transactions.iter().any(|(_, t)| t.name == name)
+                    if self.transactions.iter().any(|(_, t)| t.name == name || t.directory_stage.as_deref() == Some(name))
                     {
                         continue;
                     }
@@ -571,7 +581,8 @@ impl Session
                                                 name,
                                                 file,
                                                 dirty: true,
-                                                publication: None };
+                                                publication: None,
+                                                directory_stage: None };
                 reply.object = self.transactions.insert(transaction)?;
             }
             Op::Write =>
@@ -753,6 +764,12 @@ impl Session
                 reply.value = 2;
                 return Ok(directory.revision()?.to_vec());
             }
+            Op::Describe => return self.describe(req.object, wire::component(payload)?, reply),
+            Op::PublishDirectory =>
+            {
+                let (name, record) = wire::rename_names(payload)?;
+                reply.object = self.publish_directory(req.object, name, record)?;
+            }
         }
         Ok(Vec::new())
     }
@@ -834,6 +851,10 @@ impl Session
 
     fn commit(&mut self, id: u32, name: &str, expected: u32) -> Result<()>
     {
+        if self.transaction(id)?.directory_stage.is_some()
+        {
+            return Err(Failure(status::INVALID));
+        }
         let directory = self.transactions
                             .get(id)
                             .filter(|t| t.owner == self.id)
@@ -880,6 +901,73 @@ impl Session
         sync(&directory.root)?;
         self.transactions.remove(id);
         Ok(())
+    }
+
+    /// Publish a directory containing the already flushed staged record. The
+    /// target is never visible without its record; retries after a durability
+    /// failure retain the original transaction and do not publish twice.
+    fn publish_directory(&mut self, id: u32, name: &str, record: &str) -> Result<u32>
+    {
+        self.directories.reserve()?;
+        let export = self.transaction(id)?.directory.export;
+        let owner = self.id;
+        let transaction = self.transaction(id)?;
+        let parent = transaction.directory.root.clone();
+        let directory = if let Some(published) = &transaction.publication
+        {
+            if published != name
+            {
+                return Err(Failure(status::CONFLICT));
+            }
+            parent.open_dir(name)?
+        }
+        else
+        {
+            if transaction.dirty
+            {
+                return Err(Failure(status::INVALID));
+            }
+            let stage = if let Some(stage) = &transaction.directory_stage
+            {
+                stage.clone()
+            }
+            else
+            {
+                let stage = unique()?;
+                parent.create_dir(&stage)?;
+                transaction.directory_stage = Some(stage.clone());
+                stage
+            };
+            let directory = parent.open_dir(&stage)?;
+            if parent.symlink_metadata(&transaction.name).is_ok()
+            {
+                move_noreplace(&parent, &transaction.name, &directory, record)?;
+            }
+            directory
+        };
+        let root = Arc::new(directory);
+        let capability = self.directories
+                             .insert(DirectoryObject::Open(Directory { root: root.clone(),
+                                                                       export,
+                                                                       owner }))?;
+        let result = (|| {
+            sync(&root)?;
+            let transaction = self.transaction(id)?;
+            if transaction.publication.is_none()
+            {
+                let stage = transaction.directory_stage.as_ref().ok_or(Failure(status::INVALID))?;
+                move_noreplace(&parent, stage, &parent, name)?;
+                transaction.publication = Some(name.into());
+            }
+            sync(&parent)
+        })();
+        if let Err(error) = result
+        {
+            self.directories.remove(capability);
+            return Err(error);
+        }
+        self.transactions.remove(id);
+        Ok(capability)
     }
 }
 

@@ -37,6 +37,16 @@ impl<R: Rpc> Filesystem<R>
         }
         if complete
         {
+            if revision.is_none()
+            {
+                self.mounts
+                    .get_mut(volume)
+                    .unwrap()
+                    .directories
+                    .get_mut(parent)
+                    .unwrap()
+                    .revision = Some(actual);
+            }
             return Ok(true);
         }
         let enumeration = if let Some(enumeration) = enumeration
@@ -104,12 +114,13 @@ impl<R: Rpc> Filesystem<R>
                 None;
             return Ok(false);
         }
-        let (kind, identity) = forks::parse_host_name(name)?;
-        if host_kind != if kind == Kind::Directory { 2 } else { 1 }
+        let kind = match host_kind
         {
-            return Err(Cause::Invalid.into());
-        }
-        let directory = if kind == Kind::Directory
+            1 => Kind::File,
+            2 => Kind::Directory,
+            _ => return Err(Cause::Invalid.into())
+        };
+        let directory = if host_kind == 2
         {
             if let Some(handle) = existing_directory
             {
@@ -135,23 +146,38 @@ impl<R: Rpc> Filesystem<R>
         {
             None
         };
-        let (record, mut node) = self.open_record(directory.unwrap_or(handle),
-                                                  if directory.is_some()
-                                                  {
-                                                      forks::DIRECTORY_RECORD.as_bytes()
-                                                  }
-                                                  else
-                                                  {
-                                                      name
-                                                  })
-                                     .await?;
-        self.close(record).await?;
+        let mut node = if let Some(directory) = directory
+        {
+            match self.open_record(directory, forks::DIRECTORY_RECORD.as_bytes()).await
+            {
+                Ok((record, node)) =>
+                {
+                    self.close(record).await?;
+                    node
+                }
+                Err(error) if error.cause == Cause::Host(wire::status::NOT_FOUND) =>
+                {
+                    self.plain_node(volume, handle, name).await?
+                }
+                Err(error) => return Err(error)
+            }
+        }
+        else
+        {
+            self.candidate(volume, handle, name).await?
+        };
+        if node.host_name.is_none()
+        {
+            let (encoded_kind, identity) = forks::parse_host_name(name)?;
+            if encoded_kind != kind || node.metadata.identity != identity
+            {
+                return Err(Cause::Invalid.into());
+            }
+        }
         node.parent = parent;
         let result = (|| {
             let mount = self.mounts.get_mut(volume).ok_or(Cause::NotFound)?;
-            if node.metadata.kind != kind
-               || node.metadata.identity != identity
-               || node.metadata.volume != mount.info.metadata.volume
+            if node.metadata.kind != kind || node.metadata.volume != mount.info.metadata.volume
             {
                 return Err(Cause::Invalid.into());
             }

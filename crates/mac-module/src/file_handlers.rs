@@ -3,7 +3,7 @@
 //! Icon IDs are local to the module's resource fork, never global aliases.
 use crate::{Error, Result};
 pub const HEADER_BYTES: usize = 8;
-pub const RULE_BYTES: usize = 32;
+pub const RULE_BYTES: usize = 12;
 pub const MAX_RULES: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
@@ -16,39 +16,19 @@ pub struct Rule
 {
     pub file_type: [u8; 4],
     pub action:    Action,
-    pub icon:      i16,
-    extension:     [u8; 16],
-    length:        u8
+    pub icon:      i16
 }
 impl Rule
 {
-    pub fn new(file_type: [u8; 4], action: Action, icon: i16, extension: &str) -> Result<Self>
+    pub fn new(file_type: [u8; 4], action: Action, icon: i16) -> Result<Self>
     {
         if !file_type.iter().all(u8::is_ascii_graphic)
-           || extension.len() > 16
-           || !extension.bytes().all(|b| b.is_ascii_alphanumeric())
         {
             return Err(Error::Malformed);
         }
-        let mut rule = Self { file_type,
-                              action,
-                              icon,
-                              extension: [0; 16],
-                              length: extension.len() as u8 };
-        rule.extension[..extension.len()].copy_from_slice(extension.as_bytes());
-        rule.extension.make_ascii_lowercase();
-        Ok(rule)
-    }
-
-    pub fn extension(&self) -> &str
-    {
-        core::str::from_utf8(&self.extension[..self.length as usize]).unwrap_or("")
-    }
-
-    pub fn matches_extension(&self, name: &str) -> bool
-    {
-        self.length != 0
-        && name.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(self.extension()))
+        Ok(Self { file_type,
+                  action,
+                  icon })
     }
 
     pub fn encode(self, out: &mut [u8]) -> Result<()>
@@ -58,19 +38,12 @@ impl Rule
         out[..4].copy_from_slice(&self.file_type);
         out[4..6].copy_from_slice(&(self.action as u16).to_be_bytes());
         out[6..8].copy_from_slice(&self.icon.to_be_bytes());
-        out[8] = self.length;
-        out[16..].copy_from_slice(&self.extension);
         Ok(())
     }
 
     fn decode(bytes: &[u8]) -> Result<Self>
     {
-        if bytes.len() != RULE_BYTES || bytes[9..16] != [0; 7] || bytes[8] > 16
-        {
-            return Err(Error::Malformed);
-        }
-        let length = bytes[8] as usize;
-        if bytes[16 + length..].iter().any(|b| *b != 0)
+        if bytes.len() != RULE_BYTES || bytes[8..] != [0; 4]
         {
             return Err(Error::Malformed);
         }
@@ -79,17 +52,9 @@ impl Rule
             1 => Action::MountFilesystem,
             _ => return Err(Error::Contract)
         };
-        let rule = Self::new(bytes[..4].try_into().map_err(|_| Error::Malformed)?,
-                             action,
-                             i16::from_be_bytes([bytes[6], bytes[7]]),
-                             core::str::from_utf8(&bytes[16..16 + length]).map_err(|_| {
-                                                                              Error::Malformed
-                                                                          })?)?;
-        if rule.extension[..length] != bytes[16..16 + length]
-        {
-            return Err(Error::Malformed);
-        }
-        Ok(rule)
+        Self::new(bytes[..4].try_into().map_err(|_| Error::Malformed)?,
+                  action,
+                  i16::from_be_bytes([bytes[6], bytes[7]]))
     }
 }
 pub struct Rules<'a>
@@ -123,7 +88,6 @@ impl<'a> Rules<'a>
             {
                 let previous = rules.at(j)?;
                 if previous.file_type == rule.file_type
-                   || !rule.extension().is_empty() && previous.extension() == rule.extension()
                 {
                     return Err(Error::Duplicate);
                 }
@@ -172,21 +136,18 @@ mod tests
     #[test]
     fn type_action_and_local_icon_round_trip_with_strict_reserved_fields()
     {
-        let rule = Rule::new(*b"SIT!", Action::MountFilesystem, 128, "SIT").unwrap();
-        assert_eq!(rule.extension(), "sit");
-        assert!(rule.matches_extension("Archive.SiT"));
-        assert!(!rule.matches_extension("Archive.sitx"));
-        let mut bytes = [0; 40];
+        let rule = Rule::new(*b"SIT!", Action::MountFilesystem, 128).unwrap();
+        let mut bytes = [0; 20];
         Rules::encode(&[rule], &mut bytes).unwrap();
         assert_eq!(Rules::decode(&bytes).unwrap().at(0), Ok(rule));
-        for at in [0, 4, 8 + 9, 8 + 31]
+        for at in [0, 4, 8 + 8, 8 + 11]
         {
             let mut bad = bytes;
             bad[at] ^= 1;
             assert!(Rules::decode(&bad).is_err());
         }
-        let mut bytes = [0; 72];
+        let mut bytes = [0; 32];
         assert!(Rules::encode(&[rule, rule], &mut bytes).is_err());
-        assert!(Rule::new(*b"SIT!", Action::MountFilesystem, 128, ".sit").is_err());
+        assert!(Rule::new([0; 4], Action::MountFilesystem, 128).is_err());
     }
 }
