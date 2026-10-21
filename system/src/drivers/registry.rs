@@ -145,6 +145,24 @@ impl Registry
         Ok(())
     }
 
+    #[cfg(any(target_arch = "riscv64", test))]
+    pub(crate) fn dependency_available(&self, dependency: mac_module::Dependency) -> bool
+    {
+        self.interfaces.iter().any(|(_, interface)| {
+                                  self.modules.get(interface.module).is_some_and(|module| {
+                                                                        module.state == State::Ready
+                                                                        && (dependency.module
+                                                                            == [0; 16]
+                                                                            || dependency.module
+                                                                               == module.identity)
+                                                                        && interface.offer.class
+                                                                           == dependency.class
+                                                                        && interface.offer.version
+                                                                           == dependency.version
+                                                                    })
+                              })
+    }
+
     pub fn admit(&self, contract: Contract<'_>, directory: PackageKind, file_type: [u8; 4])
                  -> Result<()>
     {
@@ -661,16 +679,22 @@ mod tests
         let other = metadata(*b"other-module-id!", &[OFFER], &[]);
         let mut registry = Registry::new(Target::RV64IMAC);
         let provider = stage(&mut registry, &bytes);
+        let dep = mac_module::Dependency { module:   *b"test-module-uuid",
+                                           class:    OFFER.class,
+                                           version:  1,
+                                           optional: false };
+        assert!(!registry.dependency_available(dep));
         assert_eq!(registry.stage(Contract::decode(&other).unwrap(),
                                   PackageKind::Driver,
                                   *b"DRVR"),
                    Err(Error::Exclusive));
         registry.commit(provider).unwrap();
+        assert!(registry.dependency_available(dep));
+        assert!(registry.dependency_available(mac_module::Dependency { module: [0; 16],
+                                                                       ..dep }));
+        assert!(!registry.dependency_available(mac_module::Dependency { version: 2,
+                                                                        ..dep }));
         let (interface, _) = registry.find(OFFER.class, 1).next().unwrap();
-        let dep = mac_module::Dependency { module:   *b"test-module-uuid",
-                                           class:    OFFER.class,
-                                           version:  1,
-                                           optional: false };
         let consumer_bytes = metadata(*b"consumer-module!", &[], &[dep]);
         let consumer = stage(&mut registry, &consumer_bytes);
         let no_dep_bytes = metadata(*b"unrelated-id!!!!", &[], &[]);

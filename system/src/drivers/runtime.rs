@@ -9,6 +9,8 @@ use mac_module::{ClassId, PackageKind, Target, abi};
 
 use super::{Error, Registry};
 use crate::state::TryState;
+mod discovery;
+pub(crate) use discovery::discover;
 static RUNTIME: TryState<Runtime> = TryState::new();
 struct Runtime
 {
@@ -427,86 +429,6 @@ unsafe fn invoke(caller: u64, provider: u32, pointer: *mut abi::Call) -> Result<
     Ok(result)
 }
 
-pub(crate) fn discover() -> Result<(), Status>
-{
-    let candidates=crate::kernel::with_files(|files|files.module_candidates()).map_err(crate::state::AccessError::status)??;
-    let mut waiting = Vec::new();
-    for candidate in candidates
-    {
-        if candidate.file_type != candidate.directory.file_type()
-        {
-            serial!("MODULE_REJECTED name={} reason=wrong-installation-directory",
-                    core::str::from_utf8(&candidate.name).unwrap_or("?"));
-            continue;
-        }
-        let metadata = crate::kernel::with_files(|files| {
-                           files.module_metadata(candidate.volume, candidate.cnid)
-                       }).map_err(crate::state::AccessError::status)?;
-        match metadata
-        {
-            Ok(metadata) if mac_module::Contract::decode(&metadata).is_ok() =>
-            {
-                waiting.push((candidate, metadata))
-            }
-            _ =>
-            {
-                serial!("MODULE_REJECTED name={} reason=missing-or-invalid-contract",
-                        core::str::from_utf8(&candidate.name).unwrap_or("?"))
-            }
-        }
-    }
-    while !waiting.is_empty()
-    {
-        let mut progress = false;
-        let mut index = 0;
-        while index < waiting.len()
-        {
-            let (candidate, metadata) = &waiting[index];
-            let contract = mac_module::Contract::decode(metadata).map_err(|_| BAD_ABI)?;
-            let admitted = RUNTIME.with(|runtime| {
-                                      runtime.registry.admit(contract, candidate.directory,
-                                                             candidate.file_type)
-                                  })
-                                  .map_err(crate::state::AccessError::status)?;
-            if admitted == Err(Error::Contract(mac_module::Error::MissingDependency))
-            {
-                index += 1;
-                continue;
-            }
-            let (candidate, _) = waiting.remove(index);
-            progress = true;
-            if let Err(error) = admitted
-            {
-                serial!("MODULE_REJECTED name={} reason={:?}",
-                        core::str::from_utf8(&candidate.name).unwrap_or("?"),
-                        error);
-                continue;
-            }
-            let resources = crate::kernel::with_files(|files| {
-                                files.module_resources(candidate.volume, candidate.cnid)
-                            }).map_err(crate::state::AccessError::status)?;
-            let result = resources.and_then(|resources| {
-                                      load(&resources, candidate.file_type, candidate.directory)
-                                  });
-            if let Err(status) = result
-            {
-                serial!("MODULE_REJECTED name={} status={}",
-                        core::str::from_utf8(&candidate.name).unwrap_or("?"),
-                        status);
-            }
-        }
-        if !progress
-        {
-            for (candidate, _) in waiting
-            {
-                serial!("MODULE_REJECTED name={} reason=missing-or-cyclic-dependency",
-                        core::str::from_utf8(&candidate.name).unwrap_or("?"));
-            }
-            break;
-        }
-    }
-    Ok(())
-}
 unsafe extern "C" fn resolve(caller: u64, class: u32, version: u32, output: *mut u32) -> Status
 {
     if output.is_null() || !output.addr().is_multiple_of(core::mem::align_of::<u32>())

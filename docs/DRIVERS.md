@@ -23,6 +23,23 @@ dependencies across the two discovered package sets through the common module
 registry, rather than treating directory enumeration order as startup order.
 The built-in bootstrap block provider does not require a disk package.
 
+Boot discovery takes one bounded snapshot of the platform's device inventory.
+A structurally valid, otherwise admissible package with declared device matches
+is loaded only when at least one match is present. A package with no matches is
+hardware independent. The generic loader compares bus IDs and masked keys;
+the platform adapter alone knows MMIO addresses and slot counts. Presence does
+not grant ownership: claiming a resident-owned or already-claimed device still
+fails through the normal service checks.
+
+Absent-device packages are reported as `MODULE_SKIPPED`, with no native entry
+or published interface. Required dependencies propagate the skip only when their
+matching providers are absent and no ready or waiting alternative can satisfy
+them, independent of directory order. Optional dependencies do not propagate a
+skip; wildcard dependencies remain eligible for another provider. Wrong ABI, target,
+installation directory and malformed contracts remain rejections. Missing or
+cyclic dependencies without a known absent device remain explicit failures.
+This is boot discovery, not hotplug detection or a per-event device scan.
+
 ## DRVR package and mandatory contract metadata
 
 Only a driver package marked `DRVR` may enter the driver-loading path. Use DRVR
@@ -165,6 +182,10 @@ bytes before the client can publish. Eight rejection boots cover missing and
 duplicate metadata, wrong installation directory, ABI, target and layout,
 code-digest mismatch, and malformed relocations with an updated digest. Rust
 requires rejection before any module entry and a working desktop in every case.
+Both provider/dependent catalog orders are exercised. Further boots cover absent
+device IDs, an unavailable bus, dependent skips, a usable wildcard alternative and the actual Host
+Transport/Host Filesystem pair with no VM host channel; matching-device boots
+still enter and publish both fixtures.
 The gate covers the kernel module SDK, not userspace filesystem mounts. The
 registry additionally tests hidden initialization, rollback/slot reuse, foreign
 identities, exclusive claims, declared dependencies, active requests and quiescing.

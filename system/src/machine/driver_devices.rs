@@ -68,6 +68,24 @@ impl Bus for VirtioBus
     }
 }
 static DEVICES: TryState<Devices<VirtioBus>> = TryState::new();
+/// Boot discovery takes one bounded snapshot. Match policy stays in the generic
+/// loader; only this adapter knows the board's MMIO slots.
+pub(crate) fn inventory() -> Result<[Option<Description>; 8], Status>
+{
+    with(|devices| {
+        let mut result = [None; 8];
+        for (ordinal, slot) in result.iter_mut().enumerate()
+        {
+            match devices.probe(ordinal as u32)
+            {
+                Ok(description) => *slot = Some(description),
+                Err(NOT_FOUND) => (),
+                Err(error) => return Err(error)
+            }
+        }
+        Ok(result)
+    })
+}
 fn with<R>(call: impl FnOnce(&mut Devices<VirtioBus>) -> Result<R, Status>) -> Result<R, Status>
 {
     DEVICES.with(call).map_err(crate::state::AccessError::status)?

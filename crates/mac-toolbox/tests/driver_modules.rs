@@ -46,14 +46,31 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
     assert_eq!(package.code.descriptor.load_base, 0x82000000);
     assert!(!resources.iter().any(|r| [*b"RV64", *b"NABI", *b"RLOC"].contains(&r.kind)));
     let mut cases = Vec::new();
-    for name in ["success", "wrong-directory", "missing-contract", "duplicate-contract",
-                 "wrong-abi", "wrong-target", "wrong-layout", "bad-digest", "bad-relocation"]
+    for name in ["success", "success-reversed", "no-device", "no-device-reversed", "unknown-bus",
+                 "wrong-directory", "missing-contract", "duplicate-contract", "wrong-abi",
+                 "wrong-target", "wrong-layout", "bad-digest", "bad-relocation"]
     {
         let mut entries = resources.clone();
         let contract = entries.iter().position(|r| r.kind == *b"DABI").unwrap();
         let code = entries.iter().position(|r| r.kind == *b"DRVR").unwrap();
         match name
         {
+            "no-device" | "no-device-reversed" | "unknown-bus" =>
+            {
+                let offset = mac_module::HEADER_BYTES
+                             + package.contract.offers().count() * mac_module::OFFER_BYTES
+                             + package.contract.dependencies().count()
+                               * mac_module::DEPENDENCY_BYTES
+                             + package.contract.services().count() * mac_module::SERVICE_BYTES;
+                if name.starts_with("no-device")
+                {
+                    entries[contract].data[offset+8..offset+12].copy_from_slice(&999u32.to_le_bytes());
+                }
+                else
+                {
+                    entries[contract].data[offset..offset + 4].copy_from_slice(b"PCIE");
+                }
+            }
             "missing-contract" =>
             {
                 entries.remove(contract);
@@ -98,18 +115,52 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
             _ =>
             {}
         }
-        if !matches!(name, "success" | "wrong-directory" | "wrong-target" | "wrong-abi")
+        if !matches!(name,
+                     "success"
+                     | "success-reversed"
+                     | "no-device"
+                     | "no-device-reversed"
+                     | "unknown-bus"
+                     | "wrong-directory"
+                     | "wrong-target"
+                     | "wrong-abi")
         {
             assert!(mac_formats::module::Package::inspect(&entries, *b"DRVR").is_err(), "{name}");
         }
         let mut file = provider.clone();
+        if name.ends_with("-reversed")
+        {
+            // Force the provider before ModuleClient in catalog name order;
+            // the ordinary names enumerate the dependent first.
+            file.name = b"A ModuleEcho".to_vec();
+        }
         file.resources = resource::encode(&entries).unwrap();
         let path = output.join(format!("{name}.bin"));
         fs::write(&path, macbinary::encode(&file).unwrap()).unwrap();
         cases.push(json!({"name":name,"files":[
             {"source":path,"directory":if name=="wrong-directory"{"/System Folder/Extensions"}else{"/System Folder/Drivers"}},
             {"source":client,"directory":"/System Folder/Drivers"}]}));
+        if name.ends_with("-reversed")
+        {
+            cases.last_mut().unwrap()["files"].as_array_mut().unwrap().reverse();
+        }
     }
+    let dist = mac_build::paths::dist_dir(&root);
+    let mut alternate_resources = resources.clone();
+    let contract = alternate_resources.iter_mut().find(|r| r.kind == *b"DABI").unwrap();
+    contract.data[55] = 0x20;
+    let mut alternate = provider.clone();
+    alternate.name = b"Z ModuleAlternate".to_vec();
+    alternate.resources = resource::encode(&alternate_resources).unwrap();
+    let alternate_path = output.join("alternate.bin");
+    fs::write(&alternate_path, macbinary::encode(&alternate).unwrap()).unwrap();
+    cases.push(json!({"name":"wildcard-alternative","files":[
+        {"source":output.join("no-device.bin"),"directory":"/System Folder/Drivers"},
+        {"source":alternate_path,"directory":"/System Folder/Drivers"},
+        {"source":client,"directory":"/System Folder/Drivers"}]}));
+    cases.push(json!({"name":"host-device-absent","files":[
+        {"source":dist.join("Host Filesystem.bin"),"directory":"/System Folder/Drivers"},
+        {"source":dist.join("Host Transport.bin"),"directory":"/System Folder/Drivers"}]}));
     let case_path = output.join("cases.json");
     fs::write(&case_path, serde_json::to_vec_pretty(&cases).unwrap()).unwrap();
     python(&script,
@@ -122,7 +173,7 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
         let name = case["name"].as_str().unwrap();
         let serial = fs::read_to_string(output.join(name).join("vm/serial.log")).unwrap();
         assert!(serial.contains("DESKTOP_READY"), "{name}: {serial}");
-        if name == "success"
+        if matches!(name, "success" | "success-reversed")
         {
             assert!(serial.contains("MODULE_PUBLISHED name=ModuleEcho"), "{serial}");
             assert!(serial.contains("MODULE_PUBLISHED name=ModuleClient"), "{serial}");
@@ -130,6 +181,36 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
             let client = serial.find("MODULE_ENTER name=ModuleClient").unwrap();
             assert!(echo < client, "dependency entered before provider was ready: {serial}");
             assert!(!serial.contains("MODULE_REJECTED"), "{serial}");
+        }
+        else if name == "wildcard-alternative"
+        {
+            assert!(serial.contains("MODULE_SKIPPED name=ModuleEcho reason=device-absent"),
+                    "{serial}");
+            assert!(serial.contains("MODULE_PUBLISHED name=ModuleClient"), "{serial}");
+            assert!(!serial.contains("MODULE_SKIPPED name=ModuleClient")
+                    && !serial.contains("MODULE_REJECTED"),
+                    "{serial}");
+        }
+        else if name == "host-device-absent"
+        {
+            assert!(serial.contains("MODULE_SKIPPED name=Host Transport reason=device-absent"),
+                    "{serial}");
+            assert!(serial.contains("MODULE_SKIPPED name=Host Filesystem \
+                                     reason=dependency-device-absent"),
+                    "{serial}");
+            assert!(!serial.contains("MODULE_ENTER") && !serial.contains("MODULE_REJECTED"),
+                    "{serial}");
+        }
+        else if matches!(name, "no-device" | "no-device-reversed" | "unknown-bus")
+        {
+            let echo = if name.ends_with("-reversed") { "A ModuleEcho" } else { "ModuleEcho" };
+            assert!(serial.contains(&format!("MODULE_SKIPPED name={echo} reason=device-absent")),
+                    "{serial}");
+            assert!(serial.contains("MODULE_SKIPPED name=ModuleClient \
+                                     reason=dependency-device-absent"),
+                    "{serial}");
+            assert!(!serial.contains("MODULE_ENTER") && !serial.contains("MODULE_REJECTED"),
+                    "{serial}");
         }
         else
         {
@@ -140,6 +221,7 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
         assert!(!serial.contains("SYSTEM_TRAP:"), "{serial}");
     }
     let acceptance = json!({"status":"passed","cases":cases.len(),"kernel_module_sdk":"actual DRVR entries and declared-dependency broker calls",
+        "device_admission":"matching devices; provider/dependent catalog orders; absent device and bus without entry; wildcard and exact required-dependency skips; a waiting wildcard alternative remains loadable; actual host driver pair skips cleanly without a VM host channel",
         "application_filesystem_mounts":"not covered by this gate","capture":report});
     fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join("results/system7/driver-module-checks.json"),
