@@ -154,6 +154,13 @@ impl CatalogInfo
                                                           self.finder_info[9]]))
     }
 
+    /// Initialized placement; (-1,-1) is the classic unplaced sentinel.
+    pub fn saved_icon_location(&self) -> Option<Point>
+    {
+        let point = self.icon_location();
+        (self.finder_flags().contains(FinderFlags::INITIALIZED) && (point.h != -1 || point.v != -1)).then_some(point)
+    }
+
     pub fn icon_location(&self) -> Point
     {
         Point { v: i16::from_be_bytes([self.finder_info[10], self.finder_info[11]]),

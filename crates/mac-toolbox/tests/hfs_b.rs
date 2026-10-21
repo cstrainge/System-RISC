@@ -550,3 +550,181 @@ fn ordinary_native_mutations_use_the_system_clock_without_app_date_plumbing()
                }
            });
 }
+
+#[test]
+fn icon_placement_is_identity_metadata_preserves_other_fields_and_survives_remounts()
+{
+    use mac_toolbox::{Error, Point, files::FinderFlags};
+    let fixture = Fixture::new();
+    // Seed nontrivial Finder/extended Finder information through the shared
+    // formatter, then exercise every mutation/assertion through the public SDK.
+    let mut image = hfs_b::Image::open(&fixture.disk, true).unwrap();
+    let partition = image.partition();
+    let mut disk = Volume::mount(&mut image, partition, Budget::default()).unwrap();
+    let file = disk.entry(fixture.file.0).unwrap();
+    let mut seeded = [0x42; 32];
+    seeded[..8].copy_from_slice(b"TEXTTEST");
+    seeded[8..10].copy_from_slice(&0x0c08u16.to_be_bytes());
+    seeded[28..32].fill(0);
+    disk.set_metadata(file.id,
+                      1,
+                      seeded,
+                      file.created,
+                      file.modified,
+                      Some(DiskTime(file.created.0 - 1)),
+                      DiskTime(WHEN.mac_microseconds().unwrap()))
+        .unwrap();
+    drop(disk);
+    drop(image);
+    let position = Point { h: -123,
+                           v: 456 };
+    let (expected, activity) = fixture.run(false, DiskFaults::default(), |system, volume| {
+        let files = system.files();
+        let before = files.catalog(volume, fixture.file).unwrap();
+        let mut open = files.open(volume, fixture.file, Fork::Data).unwrap();
+        let watch = files.watch_directory(volume, ROOT_ID).unwrap();
+        let changed = files.set_icon_location_at(volume, fixture.file, Some(position), WHEN).unwrap();
+        assert_eq!(changed.id, before.id);
+        assert_eq!(changed.name(), before.name());
+        assert_eq!((changed.created, changed.modified, changed.backup), (before.created, before.modified, before.backup));
+        assert_eq!((changed.data_length, changed.resource_length, changed.flags), (before.data_length, before.resource_length, before.flags));
+        let mut expected_info = seeded;
+        expected_info[8..10].copy_from_slice(&(0x0c08u16 | FinderFlags::INITIALIZED.bits()).to_be_bytes());
+        expected_info[10..12].copy_from_slice(&position.v.to_be_bytes());
+        expected_info[12..14].copy_from_slice(&position.h.to_be_bytes());
+        assert_eq!(changed.finder_info, expected_info);
+        assert_eq!(changed.saved_icon_location(), Some(position));
+        assert!(watch.poll().unwrap().is_some());
+        assert!(watch.poll().unwrap().is_none());
+        let mut bytes = [0; 13];
+        assert_eq!(open.read(&mut bytes).unwrap(), bytes.len());
+        assert_eq!(&bytes, b"original data", "open read lease lost its fork");
+        assert_eq!(files.set_icon_location_at(volume, fixture.file, Some(Point {h:-1,v:-1}), WHEN), Err(Error::BadArgument));
+        assert_eq!(files.set_icon_location_at(volume, mac_toolbox::Cnid(u32::MAX), Some(position), WHEN), Err(Error::NotFound));
+        changed
+    });
+    assert!(activity.writes > 0);
+    let (_, activity) =
+        fixture.run(false, DiskFaults::default(), |system, volume| {
+                   let files = system.files();
+                   assert_eq!(files.catalog(volume, fixture.file).unwrap().finder_info,
+                              expected.finder_info);
+                   let watch = files.watch_directory(volume, ROOT_ID).unwrap();
+                   let mut cursor = mac_toolbox::files::DirectoryCursor::default();
+                   files.scan_directory(volume, ROOT_ID, &mut cursor).unwrap();
+                   let same =
+                files.set_icon_location_at(volume,
+                                           fixture.file,
+                                           Some(position),
+                                           Timestamp::from_mac_microseconds(WHEN.mac_microseconds()
+                                                                                .unwrap()
+                                                                            + 100))
+                     .unwrap();
+                   assert_eq!(same, files.catalog(volume, fixture.file).unwrap());
+                   assert!(watch.poll().unwrap().is_none(),
+                           "identical placement invalidated the folder");
+                   files.scan_directory(volume, ROOT_ID, &mut cursor).unwrap();
+                   for invalid in
+                       [mac_toolbox::VolumeId(volume.0 & 0xffff), mac_toolbox::VolumeId(watch.id())]
+                   {
+                       assert_ne!(invalid, volume);
+                       assert_eq!(files.set_icon_location_at(invalid, fixture.file, None, WHEN),
+                                  Err(Error::NotFound),
+                                  "untagged/foreign ID aliased the live volume");
+                   }
+               });
+    assert_eq!(activity.writes, 0, "identical placement wrote the disk");
+    fixture.run(true, DiskFaults::default(), |system, volume| {
+               assert_eq!(system.files()
+                                .set_icon_location_at(volume, fixture.file, Some(position), WHEN),
+                          Err(Error::ReadOnly));
+               assert_eq!(system.files().catalog(volume, fixture.file).unwrap().finder_info,
+                          expected.finder_info);
+           });
+    fixture.run(false, DiskFaults::default(), |system, volume| {
+               let files = system.files();
+               files.set_locked_at(volume, fixture.file, false, WHEN).unwrap();
+               let renamed = files.rename_at(volume, fixture.file, "Renamed", WHEN).unwrap();
+               assert_eq!(renamed.saved_icon_location(), Some(position));
+               let moved = files.move_to_trash_at(volume, fixture.file, WHEN).unwrap();
+               assert_eq!(moved.id, fixture.file);
+               assert_eq!(moved.saved_icon_location(), Some(position));
+               let restored = files.put_away_at(volume, fixture.file, WHEN).unwrap();
+               assert_eq!(restored.id, fixture.file);
+               assert_eq!(restored.saved_icon_location(), Some(position));
+               assert_eq!(&restored.finder_info[..28], &expected.finder_info[..28]);
+               assert_eq!(restored.put_away_parent(), ROOT_ID);
+               let folder = files.new_folder_at(volume, ROOT_ID, "Folder", WHEN).unwrap();
+               let placed =
+                   files.set_icon_location_at(volume, folder.id, Some(position), WHEN).unwrap();
+               assert_eq!(placed.folder_window_bounds(), folder.folder_window_bounds());
+               assert_eq!(placed.saved_icon_location(), Some(position));
+               let clear = files.set_icon_location_at(volume, folder.id, None, WHEN).unwrap();
+               assert_eq!(clear.saved_icon_location(), None);
+               assert_eq!(clear.icon_location(),
+                          Point { h: -1,
+                                  v: -1 });
+               assert_eq!(clear.finder_flags().bits() & !FinderFlags::INITIALIZED.bits(),
+                          folder.finder_flags().bits());
+           });
+}
+
+#[test]
+fn legacy_placement_reply_projects_the_name_without_changing_native_storage()
+{
+    let fixture = Fixture::new();
+    let name = "café with a name longer than thirty one characters";
+    let point = mac_toolbox::Point { h: -21,
+                                     v: 37 };
+    with_file_disk(&fixture.disk, false, DiskFaults::default(), |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let volume = system.files().volume_at(0).unwrap().id;
+        let before = system.files().rename_at(volume, fixture.file, name, WHEN).unwrap();
+        let mut call = mac_abi::files::FileCall { operation: mac_abi::files::SET_ICON_LOCATION,
+                                                  volume: volume.0,
+                                                  cnid: fixture.file.0,
+                                                  fork: 1,
+                                                  index: u32::from(point.h as u16)
+                                                         | (u32::from(point.v as u16) << 16),
+                                                  position: WHEN.mac_microseconds().unwrap(),
+                                                  ..Default::default() };
+        assert_eq!(legacy(services.trap, mac_abi::traps::PSTRING_FILE, &mut call), 0);
+        assert_eq!(call.entry.name_length, 32);
+        assert_eq!(call.entry.name[0], 31);
+        assert_eq!(mac_formats::text::decode(&call.entry.name[1..32]),
+                   name.chars().take(31).collect::<String>());
+        let native = system.files().catalog(volume, fixture.file).unwrap();
+        assert_eq!(native.name(), name);
+        assert_eq!(native.saved_icon_location(), Some(point));
+        assert_eq!((native.created, native.modified, native.backup),
+                   (before.created, before.modified, before.backup));
+    }).unwrap();
+}
+
+#[test]
+fn placement_write_and_flush_failures_restore_the_original_metadata()
+{
+    let fixture = Fixture::new();
+    let before = fs::read(&fixture.disk).unwrap();
+    for fault in [DiskFaults { write_at: Some(3),
+                               partial_write: true,
+                               ..Default::default() },
+                  DiskFaults { flush_at: Some(1),
+                               ..Default::default() }]
+    {
+        fixture.run(false, fault, |system, volume| {
+                   assert_eq!(system.files().set_icon_location_at(volume, fixture.file,
+                Some(mac_toolbox::Point { h: 123, v: 456 }), WHEN), Err(mac_toolbox::Error::Io));
+               });
+        assert_eq!(fs::read(&fixture.disk).unwrap(),
+                   before,
+                   "placement rollback failed: {fault:?}");
+        fixture.run(true, DiskFaults::default(), |system, volume| {
+                   let entry = system.files().catalog(volume, fixture.file).unwrap();
+                   assert_eq!(entry.name(), "café");
+                   assert_eq!(entry.saved_icon_location(), None);
+                   assert_eq!(entry.data_length, 13);
+                   assert_eq!(entry.resource_length, 81 * 64 * 1024);
+               });
+    }
+}

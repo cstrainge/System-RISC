@@ -459,7 +459,8 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                         | files::PUT_AWAY
                         | files::RENAME
                         | files::SET_LOCKED
-                        | files::SET_STATIONERY =>
+                        | files::SET_STATIONERY
+                        | files::SET_ICON_LOCATION =>
                         {
                             inline_name_output(&mut call.entry.name, &mut call.entry.name_length)?
                         }

@@ -464,7 +464,56 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
             system.window(WindowId(0))?.id == root_window,
             "deactivation erased desktop volume double-click")?;
     checkpoint(system, "desktop-double-open")?;
-    system.log("FINDER_SELECTION_USERSPACE_PASS stages=25 outline_steps=4000\n")?;
+    let placed_folder = system.files().new_folder(volume, files::ROOT_ID, "Placement Lab")?;
+    let placed_file =
+        system.files()
+              .create_data(files::DataFileSpec { volume,
+                                                 parent: placed_folder.id,
+                                                 name: "Position follows this long file \
+                                                        name.txt",
+                                                 replacing: None,
+                                                 file_type: TypeCode::new(*b"TEXT"),
+                                                 creator: TypeCode::new(*b"ttxt") },
+                           0)?
+              .finish()?;
+    let saved = Point { h: 80,
+                        v: 40 };
+    let placed = system.files().set_icon_location(volume, placed_file.id, Some(saved))?;
+    require(system,
+            placed.id == placed_file.id
+            && placed.modified == placed_file.modified
+            && placed.created == placed_file.created,
+            "placement changed identity or dates")?;
+    let location = Location { volume,
+                              folder: placed_folder.id };
+    let first_window = browser.open(system, location)?;
+    fill(system, &mut browser)?;
+    let geometry = |window| {
+        (0..8).find_map(|slot| crate::cache::with(slot, |folder| {
+        (folder.window == window && folder.ready && folder.count == 1).then(|| folder.items[0].icon_bounds)
+    }))
+    };
+    require(system,
+            geometry(first_window) == Some(Rect::new(96, 68, 128, 100)),
+            "saved placement was not rendered")?;
+    checkpoint(system, "placement-saved")?;
+    system.close_window(first_window)?;
+    browser.prune(system)?;
+    let reopened = browser.open(system, location)?;
+    fill(system, &mut browser)?;
+    require(system,
+            reopened != first_window && geometry(reopened) == Some(Rect::new(96, 68, 128, 100)),
+            "placement did not survive folder close/reopen")?;
+    system.files().rename(volume, placed_file.id, "Renamed, same saved placement.txt")?;
+    browser.folder_changed(system, reopened)?;
+    fill(system, &mut browser)?;
+    require(system,
+            geometry(reopened) == Some(Rect::new(96, 68, 128, 100))
+            && system.files().catalog(volume, placed_file.id)?.saved_icon_location()
+               == Some(saved),
+            "rename detached placement from file identity")?;
+    checkpoint(system, "placement-reopened-renamed")?;
+    system.log("FINDER_SELECTION_USERSPACE_PASS stages=27 outline_steps=4000\n")?;
     loop
     {
         system.wait_event(EventMask::from_bits_retain(0), 30)?;

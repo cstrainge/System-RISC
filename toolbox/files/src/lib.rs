@@ -124,6 +124,36 @@ impl<'a> Files<'a>
         self.new_folder_at(volume, parent, name, self.client.now()?)
     }
 
+    /// Save Finder placement with this file/folder's persistent catalog identity.
+    /// None clears placement. Object dates, forks and unrelated Finder metadata
+    /// are preserved. Coordinates are the catalog's cell origin, not screen pixels.
+    pub fn set_icon_location(self, volume: VolumeId, cnid: Cnid, location: Option<mac_abi::Point>)
+                             -> Result<CatalogInfo>
+    {
+        self.set_icon_location_at(volume, cnid, location, self.client.now()?)
+    }
+
+    pub fn set_icon_location_at(self, volume: VolumeId, cnid: Cnid,
+                                location: Option<mac_abi::Point>, when: Timestamp)
+                                -> Result<CatalogInfo>
+    {
+        if cnid.0 < ROOT_ID.0 || location.is_some_and(|p| p.h == -1 && p.v == -1)
+        {
+            return Err(Error::BadArgument);
+        }
+        let packed = location.map_or(0, |p| u32::from(p.h as u16) | (u32::from(p.v as u16) << 16));
+        self.call(FileCall { operation: SET_ICON_LOCATION,
+                             volume: volume.0,
+                             cnid: cnid.0,
+                             index: packed,
+                             fork: u32::from(location.is_some()),
+                             position: when.mac_microseconds().ok_or(Error::BadArgument)?,
+                             ..Default::default() },
+                  "")?
+            .entry
+            .try_into()
+    }
+
     /// Use the System clock. Use `move_to_trash_at` when preserving an explicit date.
     pub fn move_to_trash(self, volume: VolumeId, cnid: Cnid) -> Result<CatalogInfo>
     {

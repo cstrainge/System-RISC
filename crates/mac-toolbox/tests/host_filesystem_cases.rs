@@ -203,6 +203,11 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     check_resources(system, read_only.id)?;
     require(files.new_folder(read_only.id, mac_toolbox::files::ROOT_ID, "Forbidden")
             == Err(Error::ReadOnly))?;
+    require(files.set_icon_location(read_only.id,
+                                    mac_toolbox::files::ROOT_ID,
+                                    Some(mac_toolbox::Point { h: 12,
+                                                              v: 34 }))
+            == Err(Error::ReadOnly))?;
     let write = files.create_data(mac_toolbox::files::DataFileSpec { volume:    read_only.id,
                                                                 parent:
                                                                     mac_toolbox::files::ROOT_ID,

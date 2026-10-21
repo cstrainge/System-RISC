@@ -551,31 +551,41 @@ impl Manager
         {
             return Err(BAD_ARGUMENT);
         }
+        if call.operation == SET_ICON_LOCATION
+           && (call.fork > 1
+               || call.fork == 0 && call.index != 0
+               || call.fork == 1 && call.index == u32::MAX)
+        {
+            return Err(BAD_ARGUMENT);
+        }
         let name = name.as_bytes();
         let mut protected = Vec::new();
-        protected.try_reserve_exact(MAX_OPEN_FILES).map_err(|_| NO_MEMORY)?;
-        for (_, file) in self.handles.iter()
+        if call.operation != SET_ICON_LOCATION
         {
-            if file.volume == call.volume
+            protected.try_reserve_exact(MAX_OPEN_FILES).map_err(|_| NO_MEMORY)?;
+            for (_, file) in self.handles.iter()
             {
-                protected.push(file.id);
+                if file.volume == call.volume
+                {
+                    protected.push(file.id);
+                }
+            }
+            for (_, pending) in self.writes.iter()
+            {
+                if pending.volume == call.volume && pending.expected_cnid != 0
+                {
+                    protected.push(pending.expected_cnid);
+                }
             }
         }
-        for (_, pending) in self.writes.iter()
-        {
-            if pending.volume == call.volume && pending.expected_cnid != 0
-            {
-                protected.push(pending.expected_cnid);
-            }
-        }
-        let changes_catalog = scan::writes_catalog(call.operation, call.index);
+        let mut changes_catalog = scan::writes_catalog(call.operation, call.index);
         let old_parent = if changes_catalog
         {
             match call.operation
             {
                 NEW_FOLDER => Some(if call.cnid == 0 { ROOT_ID } else { call.cnid }),
                 TRASH_DIRECTORY => Some(ROOT_ID),
-                EMPTY_TRASH => None,
+                EMPTY_TRASH | SET_ICON_LOCATION => None,
                 _ => Some(self.entry(call.volume, call.cnid)?.parent)
             }
         }
@@ -588,6 +598,11 @@ impl Manager
         {
             return Err(ROLLBACK_FAILED);
         }
+        if call.operation == SET_ICON_LOCATION && mounted.info.read_only != 0
+        {
+            return Err(READ_ONLY);
+        }
+        let previous_revision = mounted.catalog_revision;
         if changes_catalog
         {
             mounted.catalog_revision = scan::next_revision()?;
@@ -616,6 +631,20 @@ impl Manager
             }),
             SET_COMMENT => volume.set_comment(call.cnid, name, when, &protected).map(|()| None),
             RENAME => volume.rename(call.cnid, name, when, &protected).map(Some),
+            SET_ICON_LOCATION =>
+            {
+                let location = (call.fork == 1)
+                    .then_some((call.index as u16 as i16, (call.index >> 16) as u16 as i16));
+                volume.set_icon_location(call.cnid, location, when).map(|(entry, changed)|
+                {
+                    if !changed
+                    {
+                        changes_catalog = false;
+                        mounted.catalog_revision = previous_revision;
+                    }
+                    Some(entry)
+                })
+            }
             SET_LOCKED => volume.set_locked(call.cnid, call.index != 0, when, &protected).map(Some),
             SET_STATIONERY =>
             {
@@ -772,6 +801,7 @@ impl Manager
                     | RENAME
                     | SET_LOCKED
                     | SET_STATIONERY
+                    | SET_ICON_LOCATION
                     | COMMENT
                     | SET_COMMENT)
         {

@@ -42,6 +42,10 @@ pub const OPEN_ITEM: u32 = 30;
 pub const WATCH_DIRECTORY: u32 = 31;
 pub const POLL_WATCH: u32 = 32;
 pub const DISPOSE_WATCH: u32 = 33;
+/// Persist icon placement: fork=0 clears, fork=1 sets; index packs signed h/v
+/// in its low/high 16 bits. position is the catalog-change timestamp, not an
+/// object date. (-1,-1) is reserved for an unplaced item.
+pub const SET_ICON_LOCATION: u32 = 34;
 pub const SCAN_ENTRY: u32 = 0;
 pub const SCAN_PENDING: u32 = 1;
 pub const SCAN_DONE: u32 = 2;

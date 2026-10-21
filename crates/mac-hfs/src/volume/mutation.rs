@@ -972,6 +972,30 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         Ok(entry)
     }
 
+    /// Replace Finder information without changing file dates, forks or CNID.
+    /// Placement is permitted for locked/open files; it changes no fork bytes.
+    pub fn set_finder_info(&mut self, id: u32, info: [u8; 32], when: u32)
+                           -> MutationResult<CatalogEntry>
+    {
+        self.writable()?;
+        let mut cat = self.mutation_catalog()?;
+        let index = cat.index(id)?;
+        if cat.entries[index].finder_info == info
+        {
+            return Ok(cat.entries[index].clone());
+        }
+        let (record, start) = cat.record_index(id)?;
+        let directory = cat.entries[index].directory;
+        let first = start + if directory { 22 } else { 4 };
+        let last = start + if directory { 38 } else { 56 };
+        cat.tree.records[record][first..first + 16].copy_from_slice(&info[..16]);
+        cat.tree.records[record][last..last + 16].copy_from_slice(&info[16..]);
+        cat.entries[index].finder_info = info;
+        let entry = cat.entries[index].clone();
+        self.finish_mutation(cat, when, &[], &[], None)?;
+        Ok(entry)
+    }
+
     /// File catalog lock, independent of Finder flags. Clearing a lock is allowed.
     pub fn set_locked(&mut self, id: u32, locked: bool, when: u32, protected: &[u32])
                       -> MutationResult<CatalogEntry>

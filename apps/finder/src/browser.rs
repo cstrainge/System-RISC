@@ -265,9 +265,7 @@ fn grow_icon_clip(width: i16, height: i16) -> Rect
 pub(crate) fn entry_rect(layout: &mut Layout, entry: &CatalogInfo, caption: Caption) -> Rect
 {
     let automatic = layout.place(caption);
-    let saved = entry.icon_location();
-    if entry.finder_flags().contains(files::FinderFlags::INITIALIZED)
-       && (saved.h != -1 || saved.v != -1)
+    if let Some(saved) = entry.saved_icon_location()
     {
         // Ordinary catalog items store the cell origin. The 32px icon sits
         // 16px across and 28px down from it (including the information band).

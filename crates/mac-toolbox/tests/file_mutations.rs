@@ -2043,3 +2043,99 @@ fn legacy_standard_file_pascal_names_and_writer_share_native_validation()
         assert_eq!(with_owner(11, || call(&mut w)), 0);
     }).unwrap();
 }
+
+#[test]
+fn classic_hfs_positions_preserve_dates_and_forks_through_native_and_legacy_gates()
+{
+    use mac_toolbox::{Error, Point};
+    let fixture = Fixture::new();
+    let ((file, folder, before, first), activity) =
+        fixture.run(false, DiskFaults::default(), |system| {
+                   let files = system.files();
+                   let volume = files.volume_at(0).unwrap().id;
+                   let folder = files.lookup(volume, ROOT_ID, "Source").unwrap();
+                   let file = files.lookup(volume, folder.id, "Sample").unwrap();
+                   files.set_locked_at(volume, file.id, true, WHEN).unwrap();
+                   let mut open = files.open(volume, file.id, Fork::Data).unwrap();
+                   let first = Point { h: 120,
+                                       v: -45 };
+                   let placed =
+                       files.set_icon_location_at(volume, file.id, Some(first), WHEN).unwrap();
+                   assert_eq!(placed.saved_icon_location(), Some(first));
+                   assert_eq!((placed.created, placed.modified, placed.backup),
+                              (file.created, file.modified, file.backup));
+                   assert_eq!((placed.data_length, placed.resource_length),
+                              (file.data_length, file.resource_length));
+                   assert_eq!(&placed.finder_info[..8], &file.finder_info[..8]);
+                   assert_eq!(&placed.finder_info[14..], &file.finder_info[14..]);
+                   assert_eq!(placed.flags.bits() & 1, 1);
+                   let mut bytes = [0; 64];
+                   assert_eq!(open.read(&mut bytes).unwrap(), bytes.len());
+                   assert_eq!(bytes, core::array::from_fn(|n| (n * 17) as u8));
+                   let dir =
+                       files.set_icon_location_at(volume, folder.id, Some(first), WHEN).unwrap();
+                   assert_eq!(dir.saved_icon_location(), Some(first));
+                   assert_eq!(dir.folder_window_bounds(), folder.folder_window_bounds());
+                   (file.id, folder.id, file, first)
+               });
+    assert!(activity.writes > 0);
+    let (_, activity) =
+        fixture.run(false, DiskFaults::default(), |system| {
+                   let files = system.files();
+                   let volume = files.volume_at(0).unwrap().id;
+                   let watch = files.watch_directory(volume, before.parent).unwrap();
+                   files.set_icon_location_at(volume, file, Some(first), WHEN).unwrap();
+                   assert!(watch.poll().unwrap().is_none());
+               });
+    assert_eq!(activity.writes, 0);
+    let second = Point { h: -73,
+                         v: 81 };
+    with_file_disk(&fixture.disk, false, DiskFaults::default(), |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let volume = system.files().volume_at(0).unwrap().id;
+        let mut request = mac_abi::files::FileCall { operation:
+                                                         mac_abi::files::SET_ICON_LOCATION,
+                                                     volume: volume.0,
+                                                     cnid: file.0,
+                                                     fork: 1,
+                                                     index: u32::from(second.h as u16)
+                                                            | (u32::from(second.v as u16) << 16),
+                                                     position: WHEN.mac_microseconds().unwrap(),
+                                                     ..Default::default() };
+        let status = unsafe {
+            (services.trap)(mac_abi::traps::PSTRING_FILE,
+                            core::ptr::from_mut(&mut request).cast(),
+                            core::mem::size_of_val(&request))
+        };
+        assert_eq!(status, 0);
+        assert_eq!(request.entry.id, file.0);
+        assert_eq!(system.files().catalog(volume, file).unwrap().saved_icon_location(),
+                   Some(second));
+        request.index = u32::MAX;
+        let status = unsafe {
+            (services.trap)(mac_abi::traps::PSTRING_FILE,
+                            core::ptr::from_mut(&mut request).cast(),
+                            core::mem::size_of_val(&request))
+        };
+        assert_eq!(status, i64::from(mac_abi::BAD_ARGUMENT));
+    }).unwrap();
+    fixture.run(true, DiskFaults::default(), |system| {
+               let files = system.files();
+               let volume = files.volume_at(0).unwrap().id;
+               let entry = files.catalog(volume, file).unwrap();
+               assert_eq!(entry.saved_icon_location(), Some(second));
+               assert_eq!((entry.created, entry.modified, entry.backup),
+                          (before.created, before.modified, before.backup));
+               assert_eq!(files.catalog(volume, folder).unwrap().saved_icon_location(),
+                          Some(first));
+               assert_eq!(files.set_icon_location_at(volume, file, None, WHEN),
+                          Err(Error::ReadOnly));
+           });
+    fixture.hfs("hmount", &[fixture.disk.to_str().unwrap()]);
+    let payload = fixture.dir.join("placed.bin");
+    fixture.hfs("hcopy", &["-m", ":Source:Sample", payload.to_str().unwrap()]);
+    fixture.hfs("humount", &[]);
+    let extracted = mac_formats::macbinary::decode(&fs::read(payload).unwrap()).unwrap();
+    assert_eq!(extracted.data, (0..1700).map(|n| (n * 17) as u8).collect::<Vec<_>>());
+    assert_eq!(extracted.resources, (0..900).map(|n| (n * 31) as u8).collect::<Vec<_>>());
+}

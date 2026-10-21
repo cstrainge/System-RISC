@@ -272,8 +272,23 @@ Multiple Items window owns a stable selection snapshot and computes recursive
 totals in bounded steps, replacing only its value rows when finished.
 
 FILE requests and metadata are defined in mac-abi/src/files.rs. File IDs are
-opaque mounted-volume IDs plus persistent catalog IDs; volume and open handles include
-a generation. Reads copy into caller storage, and both forks have independent
+persisted catalog identities, scoped by the generation-checked mounted volume.
+Operation34 `SET_ICON_LOCATION` uses `fork=0/index=0` to clear placement, or
+`fork=1` and `index=(u16(h) | u16(v)<<16)` to save signed coordinates. The point
+(-1,-1) is reserved for unplaced items. `position` supplies the checked 1904-us
+catalog-change timestamp. The operation changes only Finder info's location at
+bytes10–13 and the initialization flag0x0100 at bytes8–9, preserving object dates,
+both forks and every unrelated Finder byte. Identical state performs no disk
+write or watch notification and does not invalidate an existing directory scan.
+HFS and HFS-B implement this through their shared filesystem facade; read-only
+mounts reject it. Writable provider support awaits FSYS metadata write-back and
+must return an error rather than pretend it saved. Legacy Pascal replies project
+the name to Str31; native replies retain full UTF-8 names. Finder reads this same
+catalog metadata after close/reopen and rename, rather than keeping a path-keyed
+position map.
+
+References pair opaque mounted-volume IDs with persistent catalog IDs; volume
+and open handles include a generation. Reads copy into caller storage, and both forks have independent
 marks. Native slash paths are distinct from classic colon paths. CONTROL requests
 use mac-abi/src/controls.rs and dispatch CDEF0 (standard controls) or CDEF1
 (scrollbars); their inline state does not expose classic ControlHandle or

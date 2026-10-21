@@ -134,6 +134,45 @@ impl<D: WritableBlockDevice> Volume<'_, D>
         Ok(entry)
     }
 
+    /// Return the unchanged entry without a write when placement already matches.
+    /// The bool reports an actual metadata change to notification publishers.
+    pub fn set_icon_location(&mut self, id: u32, location: Option<(i16, i16)>, when: u64)
+                             -> MutationResult<(CatalogEntry, bool)>
+    {
+        if location == Some((-1, -1))
+        {
+            return Err(MutationError::Invalid);
+        }
+        let before =
+            self.entry(id).map_err(|_| MutationError::Io)?.ok_or(MutationError::NotFound)?;
+        let mut info = before.finder_info;
+        let flags = u16::from_be_bytes(info[8..10].try_into().unwrap());
+        info[8..10].copy_from_slice(&(if location.is_some()
+                                     {
+                                         flags | 0x0100
+                                     }
+                                     else
+                                     {
+                                         flags & !0x0100
+                                     }).to_be_bytes());
+        let (h, v) = location.unwrap_or((-1, -1));
+        info[10..12].copy_from_slice(&v.to_be_bytes());
+        info[12..14].copy_from_slice(&h.to_be_bytes());
+        let changed = info != before.finder_info;
+        let entry = match &mut self.backend
+        {
+            Backend::Hfs(v) => v.set_finder_info(id, info, legacy_time(when)?)?.into(),
+            Backend::HfsB(v) =>
+            {
+                v.set_finder_metadata(id, before.flags, info, Timestamp(when))
+                 .map_err(mutation_error)?
+                 .into()
+            }
+        };
+        self.refresh();
+        Ok((entry, changed))
+    }
+
     pub fn set_locked(&mut self, id: u32, locked: bool, when: u64, protected: &[u32])
                       -> MutationResult<CatalogEntry>
     {
