@@ -1,7 +1,8 @@
 //! Native process acceptance through the real public SDK. These are native OS
 //! threading extensions, distinct from the original cooperative scheduling model.
 #![cfg(target_arch = "riscv64")]
-use mac_toolbox::{ACCESS_DENIED, EventKind, Rect, System, WindowId,
+use mac_toolbox::{Cnid, ProcessId, Rect, System, VolumeId, WindowId,
+                  abi::{ACCESS_DENIED, EventKind},
                   events::classic::{EVERY_EVENT, Event},
                   memory::Handle,
                   processes::ProcessInfo,
@@ -100,7 +101,7 @@ fn memory(handle: &Handle<'_>, expected: &[u8]) -> Result<()>
     let n = handle.read(0, &mut output)?;
     require(&output[..n] == expected, "private handle contents")
 }
-fn find(system: &System<'_>, id: u64) -> Result<Option<ProcessInfo>>
+fn find(system: &System<'_>, id: ProcessId) -> Result<Option<ProcessInfo>>
 {
     let processes = system.processes();
     // Count and indexed lookup are separate ECALLs, not an atomic snapshot.
@@ -114,7 +115,7 @@ fn find(system: &System<'_>, id: u64) -> Result<Option<ProcessInfo>>
             let info = match processes.at(i)
             {
                 Ok(info) => info,
-                Err(error) if error.status() == mac_toolbox::NOT_FOUND => continue 'snapshot,
+                Err(error) if error.status() == mac_toolbox::abi::NOT_FOUND => continue 'snapshot,
                 Err(error) => return Err(error.into())
             };
             if info.id == id
@@ -129,13 +130,14 @@ fn find(system: &System<'_>, id: u64) -> Result<Option<ProcessInfo>>
     }
     Err(Failure::Contract("process enumeration kept changing"))
 }
-fn state(system: &System<'_>, id: u64) -> Result<ProcessInfo>
+fn state(system: &System<'_>, id: ProcessId) -> Result<ProcessInfo>
 {
     find(system, id)?.ok_or(Failure::Contract("missing live process"))
 }
 /// Multiwindow application activation is a single focus transition, not a
 /// sequence of selections through every window in the application's plane.
-fn atomic_activation(system: &System<'_>, own: u64, other: u64, front: WindowId) -> Result<()>
+fn atomic_activation(system: &System<'_>, own: ProcessId, other: ProcessId, front: WindowId)
+                     -> Result<()>
 {
     let events = system.events();
     let activate = 1 << EventKind::Activate as u16;
@@ -150,7 +152,7 @@ fn atomic_activation(system: &System<'_>, own: u64, other: u64, front: WindowId)
                           .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                           .ok_or(Failure::Contract("missing activation edge"))?;
         require(event.message == front.0
-                && (event.modifiers & mac_toolbox::ACTIVE_FLAG != 0) == active,
+                && (event.modifiers & mac_toolbox::abi::ACTIVE_FLAG != 0) == active,
                 "application activation selected an intermediate window")?;
     }
     require(events.next(mac_toolbox::events::EventMask::from_bits_retain(activate))
@@ -167,8 +169,8 @@ fn atomic_activation(system: &System<'_>, own: u64, other: u64, front: WindowId)
         {
             break;
         };
-        system.begin_update(event.message)?;
-        system.end_update(event.message)?;
+        system.begin_update(mac_toolbox::WindowId(event.message))?;
+        system.end_update(mac_toolbox::WindowId(event.message))?;
     }
     for _ in 0..3
     {
@@ -185,7 +187,8 @@ fn atomic_activation(system: &System<'_>, own: u64, other: u64, front: WindowId)
                   .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                   .is_none(),
             "unchanged visibility generated damage")?;
-    require(system.window(0)?.id == front.0, "application window order changed")?;
+    require(system.window(mac_toolbox::WindowId(0))?.id == mac_toolbox::WindowId(front.0),
+            "application window order changed")?;
     system.log("PROCESS_ATOMIC_ACTIVATION_PASS cases=5\n")?;
     Ok(())
 }
@@ -241,24 +244,29 @@ pub fn observer(system: &System<'_>) -> Result<()>
     system.log("DESKTOP_READY: public Process Manager acceptance\n")?;
     let processes = system.processes();
     let me = processes.current()?;
-    require(me.id != 0 && me.thread != 0 && me.foreground != 0, "trusted observer identity")?;
+    require(me.id != mac_toolbox::ProcessId(0)
+            && me.thread != mac_toolbox::ThreadId(0)
+            && me.foreground == true,
+            "trusted observer identity")?;
     require(processes.count()? == 1, "initial process count")?;
     resource(system, "process-observer")?;
     menu(system)?;
-    let handle = system.memory().handle_from_bytes(b"observer-owned memory")?;
+    let mut handle = system.memory().handle_from_bytes(b"observer-owned memory")?;
     let own_window =
         system.windows()
               .create(WindowSpec::new(Rect::new(30, 60, 320, 170), "Process Observer"))?;
     let own_front =
         system.windows().create(WindowSpec::new(Rect::new(45, 80, 335, 190), "Observer Front"))?;
     let volume = system.files().volume_at(0)?.id;
-    for (disk, cnid) in [(volume, 2), (volume, u32::MAX), (u32::MAX, 2)]
+    for (disk, cnid) in [(volume, 2), (volume, u32::MAX), (mac_toolbox::VolumeId(u32::MAX), 2)]
     {
-        require(processes.launch(disk, cnid).is_err(), "invalid launch was accepted")?;
+        require(processes.launch(disk, mac_toolbox::Cnid(cnid)).is_err(),
+                "invalid launch was accepted")?;
         require(processes.count()? == 1, "invalid launch leaked a process")?;
     }
     system.log("PROCESS_INVALID_LAUNCH_PASS\n")?;
-    let spinner = system.files().lookup(volume, 2, "Applications/ProcessSpinner")?;
+    let spinner =
+        system.files().lookup(volume, mac_toolbox::Cnid(2), "Applications/ProcessSpinner")?;
     let busy = processes.launch(volume, spinner.id)?;
     require(busy.id != me.id && busy.thread != me.thread,
             "spinner is not an independent OS thread")?;
@@ -270,7 +278,8 @@ pub fn observer(system: &System<'_>) -> Result<()>
     wait(system, || Ok(find(system, busy.id)?.is_none()))?;
     require(processes.count()? == 1, "returned spinner was not reaped")?;
     system.log("PROCESS_PREEMPTION_PASS\n")?;
-    let worker = system.files().lookup(volume, 2, "Applications/ProcessWorker")?;
+    let worker =
+        system.files().lookup(volume, mac_toolbox::Cnid(2), "Applications/ProcessWorker")?;
     let mut prior = None;
     for round in 0..2
     {
@@ -334,14 +343,15 @@ pub fn observer(system: &System<'_>) -> Result<()>
                       .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                       .is_none(),
                 "background creation transiently activated its own window")?;
-        require(state(system, child.id)?.foreground != 0 && processes.current()?.foreground == 0,
+        require(state(system, child.id)?.foreground == true
+                && processes.current()?.foreground == false,
                 "background creation changed foreground application")?;
         system.windows().close(background)?;
         system.log("PROCESS_BACKGROUND_CREATE_PASS cases=2\n")?;
         system.events().flush(mac_toolbox::events::EventMask::from_bits_retain(activation_mask),
                                mac_toolbox::events::EventMask::from_bits_retain(0))?;
         system.windows().select_desktop()?;
-        require(processes.current()?.foreground != 0,
+        require(processes.current()?.foreground == true,
                 "background desktop selection did not activate Finder")?;
         require(system.events()
                       .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
@@ -353,7 +363,8 @@ pub fn observer(system: &System<'_>) -> Result<()>
                       .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
                       .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                       .is_none()
-                && system.window(0)?.id == own_front.0,
+                && system.window(mac_toolbox::WindowId(0))?.id
+                   == mac_toolbox::WindowId(own_front.0),
                 "repeated desktop selection changed activation or window order")?;
         system.log("PROCESS_BACKGROUND_DESKTOP_PASS cases=3\n")?;
         // Selecting a nonfront window from a background app must activate only
@@ -371,42 +382,48 @@ pub fn observer(system: &System<'_>) -> Result<()>
                       .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                       .ok_or(Failure::Contract("missing requested window activation"))?;
             require(event.message == selected.0
-                    && event.modifiers & mac_toolbox::ACTIVE_FLAG != 0,
+                    && event.modifiers & mac_toolbox::abi::ACTIVE_FLAG != 0,
                     "background select activated the previous front window")?;
             require(system.events()
                           .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
                           .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                           .is_none(),
                     "background select emitted intermediate activation")?;
-            require(system.window(0)?.id == selected.0 && processes.current()?.foreground != 0,
+            require(system.window(mac_toolbox::WindowId(0))?.id
+                    == mac_toolbox::WindowId(selected.0)
+                    && processes.current()?.foreground == true,
                     "background requested window did not become foreground")?;
         }
         system.log("PROCESS_BACKGROUND_SELECT_PASS cases=2\n")?;
         atomic_activation(system, me.id, child.id, own_front)?;
         processes.activate(me.id)?;
         menu(system)?;
-        require(state(system, me.id)?.foreground != 0 && state(system, child.id)?.foreground == 0,
+        require(state(system, me.id)?.foreground == true
+                && state(system, child.id)?.foreground == false,
                 "foreground activation")?;
         processes.hide_others()?;
         menu(system)?;
-        require(state(system, child.id)?.hidden != 0, "hide others did not hide worker")?;
+        require(state(system, child.id)?.hidden == true, "hide others did not hide worker")?;
         processes.activate(child.id)?;
         menu(system)?;
-        require(state(system, child.id)?.hidden == 0 && state(system, child.id)?.foreground != 0,
+        require(state(system, child.id)?.hidden == false
+                && state(system, child.id)?.foreground == true,
                 "activate did not restore hidden worker")?;
         processes.hide(child.id)?;
         menu(system)?;
-        require(state(system, child.id)?.hidden != 0 && state(system, me.id)?.foreground != 0,
+        require(state(system, child.id)?.hidden == true
+                && state(system, me.id)?.foreground == true,
                 "hide did not fall back to observer")?;
         processes.show_all()?;
         menu(system)?;
-        require(state(system, child.id)?.hidden == 0 && state(system, me.id)?.foreground != 0,
+        require(state(system, child.id)?.hidden == false
+                && state(system, me.id)?.foreground == true,
                 "show all changed foreground")?;
         processes.activate(child.id)?;
         menu(system)?;
         memory(&handle, b"observer-owned memory")?;
         resource(system, "process-observer")?;
-        require(system.windows().info(own_window)?.id == own_window.0,
+        require(system.windows().info(own_window)?.id == mac_toolbox::WindowId(own_window.0),
                 "observer window ownership survived switching")?;
         system.events().flush(mac_toolbox::events::EventMask::from_bits_retain(activation_mask),
                                mac_toolbox::events::EventMask::from_bits_retain(0))?;
@@ -429,7 +446,7 @@ pub fn observer(system: &System<'_>) -> Result<()>
                   .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                   .ok_or(Failure::Contract("missing final exit activation"))?;
         require(final_activation.message == own_front.0
-                && final_activation.modifiers & mac_toolbox::ACTIVE_FLAG != 0,
+                && final_activation.modifiers & mac_toolbox::abi::ACTIVE_FLAG != 0,
                 "multiwindow exit activated an intermediate window")?;
         require(system.events()
                       .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
@@ -438,7 +455,7 @@ pub fn observer(system: &System<'_>) -> Result<()>
                 "multiwindow exit emitted extra activation")?;
         system.log("PROCESS_MULTIWINDOW_EXIT_PASS cases=2\n")?;
         menu(system)?;
-        require(processes.count()? == 1 && processes.current()?.foreground != 0,
+        require(processes.count()? == 1 && processes.current()?.foreground == true,
                 "worker exit/focus cleanup")?;
         require(processes.activate(child.id).is_err(), "terminated AppId remained activatable")?;
         memory(&handle, b"observer-owned memory")?;
@@ -455,10 +472,11 @@ pub fn observer(system: &System<'_>) -> Result<()>
 }
 
 /// Real duplicate files keep independent images, mutable statics and identities.
-fn copies(system: &System<'_>, volume: u32, original: u32, parent: WindowId) -> Result<()>
+fn copies(system: &System<'_>, volume: mac_toolbox::VolumeId, original: Cnid, parent: WindowId)
+          -> Result<()>
 {
     let processes = system.processes();
-    let copy = system.files().lookup(volume, 2, "Copies/ProcessWorker")?;
+    let copy = system.files().lookup(volume, mac_toolbox::Cnid(2), "Copies/ProcessWorker")?;
     require(copy.id != original, "copy reused catalog ID")?;
     require(copy.name() == system.files().catalog(volume, original)?.name(),
             "copy fixture must retain the same filename in another folder")?;
@@ -493,24 +511,25 @@ fn copies(system: &System<'_>, volume: u32, original: u32, parent: WindowId) -> 
     require(processes.count()? == 3, "copies did not run concurrently")?;
     require(processes.is_running(volume, original)? && processes.is_running(volume, copy.id)?,
             "live file lookup lost a copy")?;
-    require(!processes.is_running(volume + 1000, original)?, "CNID lookup ignored mounted volume")?;
+    require(!processes.is_running(VolumeId(volume.0 + 1000), original)?,
+            "CNID lookup ignored mounted volume")?;
     let now = mac_toolbox::files::Timestamp::from_mac_seconds(3_875_209_985);
-    let renamed = system.files().rename(volume, original, "Moved Worker", now)?;
+    let renamed = system.files().rename_at(volume, original, "Moved Worker", now)?;
     require(renamed.id == original && processes.is_running(volume, renamed.id)?,
             "rename lost running file identity")?;
-    let moved = system.files().move_to_trash(volume, original, now)?;
+    let moved = system.files().move_to_trash_at(volume, original, now)?;
     require(moved.id == original
             && moved.parent != renamed.parent
             && processes.is_running(volume, moved.id)?,
             "folder move lost running identity")?;
-    let restored = system.files().put_away(volume, original, now)?;
+    let restored = system.files().put_away_at(volume, original, now)?;
     require(restored.id == original
             && restored.parent == renamed.parent
             && processes.is_running(volume, original)?,
             "put away lost running identity")?;
-    system.files().rename(volume, original, "ProcessWorker", now)?;
+    system.files().rename_at(volume, original, "ProcessWorker", now)?;
     require(processes.launch(volume, original)?.id == children[0].id
-            && processes.current()?.foreground == 0,
+            && processes.current()?.foreground == false,
             "running file did not foreground its existing instance")?;
     require(processes.count()? == 3, "same-file launch duplicated process")?;
     processes.hide(children[1].id)?;
@@ -549,8 +568,10 @@ pub fn worker(system: &System<'_>) -> Result<()>
     static POINTER: &core::sync::atomic::AtomicU64 = &INSTANCE;
     resource(system, "process-worker")?;
     let identity = system.processes().current()?;
-    require(identity.id != 0 && identity.thread != 0, "worker execution identity")?;
-    POINTER.store(identity.id, core::sync::atomic::Ordering::Relaxed);
+    require(identity.id != mac_toolbox::ProcessId(0)
+            && identity.thread != mac_toolbox::ThreadId(0),
+            "worker execution identity")?;
+    POINTER.store((identity.id).0, core::sync::atomic::Ordering::Relaxed);
     let handle = system.memory().handle_from_bytes(b"worker-owned memory")?;
     let window = system.windows()
                        .create(WindowSpec::new(Rect::new(100, 180, 400, 310), "Process Worker"))?;
@@ -584,7 +605,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
     {
         let event = system.next_event(mac_toolbox::events::EventMask::ALL)
                           .map(mac_toolbox::Event::into_record)?;
-        require(POINTER.load(core::sync::atomic::Ordering::Relaxed) == identity.id,
+        require(POINTER.load(core::sync::atomic::Ordering::Relaxed) == (identity.id).0,
                 "copies shared mutable static data or an unrelocated pointer")?;
         require(event.when != OBSERVER_SYNTHETIC,
                 "observer synthetic event reached foreign worker")?;
@@ -592,15 +613,16 @@ pub fn worker(system: &System<'_>) -> Result<()>
                 "worker input timeout")?;
         if event.kind == EventKind::Update && [window.0, second_window.0].contains(&event.message)
         {
-            system.begin_update(event.message)?;
-            system.end_update(event.message)?;
+            system.begin_update(mac_toolbox::WindowId(event.message))?;
+            system.end_update(mac_toolbox::WindowId(event.message))?;
         }
         if event.kind == EventKind::KeyDown && event.character() == b'x'
         {
             resource(system, "process-worker")?;
             memory(&handle, b"worker-owned memory")?;
             require(system.processes().current()?.id == identity.id, "worker identity changed")?;
-            require(system.windows().info(window)?.id == window.0, "worker owned window lost")?;
+            require(system.windows().info(window)?.id == mac_toolbox::WindowId(window.0),
+                    "worker owned window lost")?;
             system.log("PROCESS_WORKER_INPUT_PASS\n")?;
             // Deliberately leave window and handle live: exit must reclaim them.
             core::mem::forget(handle);

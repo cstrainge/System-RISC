@@ -119,7 +119,7 @@ pub fn original_control_hits(system: &System<'_>) -> Result<usize, Failure>
                                              50,
                                              100,
                                              page != 6,
-                                             point)?
+                                             point)? as i16
         }
         else
         {

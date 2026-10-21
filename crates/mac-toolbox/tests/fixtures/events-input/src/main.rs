@@ -3,8 +3,7 @@
 #![no_main]
 use core::fmt::{self, Write};
 
-use mac_toolbox::{Status, System, SystemServices,
-                  events::classic::{EVERY_EVENT, EventKind}};
+use mac_toolbox::{System, SystemServices, events::classic::{EVERY_EVENT, EventKind}};
 struct Text
 {
     bytes: [u8; 512],
@@ -79,14 +78,14 @@ fn still_probe(system: &System<'_>) -> mac_toolbox::events::Result<()>
 /// The loader supplies the live service table for the application's lifetime.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     let system = match unsafe { System::from_raw(services) }
     {
         Ok(s) => s,
         Err(e) => return e.status()
     };
-    if system.menus().clear().is_err() || system.menus().install_menu_resource(1, 128).is_err()
+    if system.menus().clear().is_err() || system.menus().install_menu_resource(mac_toolbox::ResourceScope::Application, 128).is_err()
     {
         let _ = system.log("EVENT_INPUT_FAIL menu\n");
         return -1;

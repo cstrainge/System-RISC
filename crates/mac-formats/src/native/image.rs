@@ -176,7 +176,7 @@ mod tests
     fn descriptor() -> Descriptor
     {
         Descriptor { role:        super::super::Role::CodeResource,
-                     abi_version: 6,
+                     abi_version: 7,
                      load_base:   0x82000000,
                      load_limit:  0x82001000,
                      entry:       0x82000000 }

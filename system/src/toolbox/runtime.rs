@@ -245,7 +245,7 @@ impl Desktop
         {
             return NOT_SUPPORTED;
         };
-        if call.menu_id == super::processes::menu::MENU_ID
+        if call.handle == 0 && call.menu_id == super::processes::menu::MENU_ID
         {
             return self.app_menu.query(call).map_or_else(|e| e, |_| OK);
         }

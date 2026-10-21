@@ -2,7 +2,8 @@
 #![cfg(not(target_arch = "riscv64"))]
 use mac_abi::scrollbox as wire;
 use mac_system::testing::files::with_owner;
-use mac_toolbox::{controls::{ScrollBoxId, ScrollBoxRef, ScrollBoxSpec},
+use mac_toolbox::{abi::{NOT_FOUND, OK},
+                  controls::{ScrollBoxId, ScrollBoxRef, ScrollBoxSpec},
                   *};
 fn spec(count: u32) -> ScrollBoxSpec
 {

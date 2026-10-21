@@ -2,7 +2,7 @@
 use mac_toolbox::textedit::CursorMovement;
 
 use super::*;
-impl Info
+impl Info<'_>
 {
     pub(super) fn commit(&mut self, system: &System<'_>) -> Result<(), Error>
     {
@@ -11,25 +11,21 @@ impl Info
         if self.dirty_comments
         {
             let mut bytes = [0; 1024];
-            let text = system.textedit().text(self.comments, &mut bytes)?;
-            system.files()
-                  .set_comment(self.identity.volume, self.identity.folder, text, system.now()?)?;
+            let text = system.textedit().text(self.comments.id(), &mut bytes)?;
+            system.files().set_comment(self.identity.volume, self.identity.folder, text)?;
             self.dirty_comments = false;
             system.log("FINDER_INFO_COMMENT_SAVED\n")?;
         }
         if self.dirty_name
         {
             let mut bytes = [0; 512];
-            let name = system.textedit().text(self.name, &mut bytes)?;
+            let name = system.textedit().text(self.name.id(), &mut bytes)?;
             if name != self.entry.name()
             {
                 self.entry =
-                    system.files().rename(self.identity.volume,
-                                           self.identity.folder,
-                                           name,
-                                           system.now()?)?;
+                    system.files().rename(self.identity.volume, self.identity.folder, name)?;
                 let title = draw::title(system, self.entry.name())?;
-                system.windows().set_title(WindowId(self.window), title.as_str())?;
+                system.windows().set_title(self.window, title.as_str())?;
                 let mut log = Text::<256>::default();
                 let _ = writeln!(&mut log,
                                  "FINDER_INFO_RENAMED volume={} cnid={} name={}",
@@ -141,7 +137,7 @@ impl Info
         // still pass UTF8 through resident TextEdit and clipboard services.
         if character == '\u{8}' || character == '\r' || !character.is_control()
         {
-            system.textedit().key(editor, char::from(character))?;
+            system.textedit().key(editor, character)?;
             if system.textedit().info(editor)?.revision != before
             {
                 self.dirty();
@@ -247,22 +243,19 @@ impl Info
 
     fn toggle(&mut self, system: &System<'_>, check: Check) -> Result<(), Error>
     {
-        let when = system.now()?;
         let result = match check
         {
             Check::Locked =>
             {
                 system.files().set_locked(self.identity.volume,
                                           self.identity.folder,
-                                          !self.entry.is_locked(),
-                                          when)
+                                          !self.entry.is_locked())
             }
             Check::Stationery =>
             {
                 system.files().set_stationery(self.identity.volume,
                                               self.identity.folder,
-                                              !self.entry.is_stationery(),
-                                              when)
+                                              !self.entry.is_stationery())
             }
         };
         match result

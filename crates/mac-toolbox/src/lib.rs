@@ -1,13 +1,13 @@
 //! Rust Toolbox facade over the resident System trap gate.
 #![no_std]
-pub use mac_abi::{ACCESS_DENIED, ACTIVE_FLAG, ALREADY_EXISTS, ApplicationEntry, BAD_ABI,
-                  BAD_ARGUMENT, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK,
-                  DIRECTORY_NOT_EMPTY, DISK_FULL, DRAW_BUTTON, DRAW_TEXT, EventKind, FRAME_RECT,
-                  IO_ERROR, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, OK, PAINT_RECT, Point, READ_ONLY,
-                  ROLLBACK_FAILED, Rect, ResourceKey, SCAN_STALE, SERVICE_BUSY, Status,
-                  SystemServices, TRANSLATION_REQUIRED, WRONG_THREAD, WindowId, WindowRequest,
-                  dates::Timestamp};
-pub use mac_traps::{Client, Error, Result as ToolboxResult};
+/// Explicit wire/entry-point escape hatch. Ordinary applications use decoded
+/// native services, typed identities and Error rather than numeric statuses.
+pub use mac_abi as abi;
+pub use mac_abi::{ApplicationEntry, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK, Point,
+                  Rect, SystemServices, WindowId, dates::Timestamp};
+pub use mac_traps::{Client, Cnid, Error, MenuId, ProcessId, Result as ToolboxResult, ThreadId,
+                    TypeCode, VolumeId,
+                    types::{ResourceKey, ResourceScope}};
 pub use toolbox_events::{Event, EventMask, Modifiers};
 pub mod panic;
 pub use toolbox_controls as controls;
@@ -131,22 +131,20 @@ impl<'a> System<'a>
     }
 
     pub fn new_window(&self, bounds: Rect, title: &str, minimum: (i16, i16), procedure: i16)
-                      -> core::result::Result<u32, Error>
+                      -> core::result::Result<WindowId, Error>
     {
-        self.windows()
-            .create(windows::WindowSpec::new(bounds, title).minimum(minimum.0, minimum.1)
-                                                           .procedure(procedure))
-            .map(|id| id.0)
+        self.windows().create(windows::WindowSpec::new(bounds, title).minimum(minimum.0, minimum.1)
+                                                                     .procedure(procedure))
     }
 
-    pub fn close_window(&self, id: u32) -> core::result::Result<(), Error>
+    pub fn close_window(&self, id: WindowId) -> core::result::Result<(), Error>
     {
-        self.windows().close(WindowId(id))
+        self.windows().close(id)
     }
 
-    pub fn select_window(&self, id: u32) -> core::result::Result<(), Error>
+    pub fn select_window(&self, id: WindowId) -> core::result::Result<(), Error>
     {
-        self.windows().select(WindowId(id))
+        self.windows().select(id)
     }
 
     pub fn select_desktop(&self) -> core::result::Result<(), Error>
@@ -154,25 +152,26 @@ impl<'a> System<'a>
         self.windows().select_desktop()
     }
 
-    pub fn window(&self, id: u32) -> core::result::Result<WindowRequest, Error>
+    pub fn window(&self, id: WindowId) -> core::result::Result<windows::WindowInfo, Error>
     {
-        self.windows().info(WindowId(id))
+        self.windows().info(id)
     }
 
-    pub fn begin_update(&self, id: u32) -> core::result::Result<Rect, Error>
+    pub fn begin_update(&self, id: WindowId) -> core::result::Result<Rect, Error>
     {
-        self.windows().begin_update(WindowId(id))
+        self.windows().begin_update(id)
     }
 
-    pub fn end_update(&self, id: u32) -> core::result::Result<(), Error>
+    pub fn end_update(&self, id: WindowId) -> core::result::Result<(), Error>
     {
-        self.windows().end_update(WindowId(id))
+        self.windows().end_update(id)
     }
 
-    pub fn draw(&self, id: u32, kind: u32, bounds: Rect, color: u32, text: &str)
+    pub fn draw(&self, id: WindowId, kind: quickdraw::DrawOperation, bounds: Rect, color: u32,
+                text: &str)
                 -> core::result::Result<(), Error>
     {
-        self.quickdraw().port(WindowId(id)).command(kind, bounds, color, text)
+        self.quickdraw().port(id).command(kind, bounds, color, text)
     }
 
     pub fn next_event(&self, mask: EventMask) -> core::result::Result<Event, Error>
@@ -189,7 +188,7 @@ impl<'a> System<'a>
 #[cfg(test)]
 mod tests
 {
-    use mac_abi::{Header, NEW_WINDOW, traps};
+    use mac_abi::{EventKind, Header, NEW_WINDOW, NOT_SUPPORTED, OK, traps};
 
     use super::*;
     unsafe extern "C" fn gate(number: u32, request: *mut (), size: usize) -> i64

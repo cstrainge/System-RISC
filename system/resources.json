@@ -3,7 +3,7 @@
   "file_type": "zsys",
   "creator": "MACS",
   "role": "system",
-  "abi_version": 6,
+  "abi_version": 7,
   "load_base": "0x80200000",
   "load_limit": "0x81000000",
   "description": "System RISC native operating system",
@@ -126,7 +126,7 @@
       "name": "Standard WDEF",
       "payload": {
         "format": "native_code",
-        "path": "../../build/system7/target/riscv64imac-unknown-none-elf/release/WDEF",
+        "artifact": "WDEF",
         "load_base": "0x82000000",
         "load_limit": "0x82100000"
       }
@@ -138,7 +138,7 @@
       "name": "Standard CDEF",
       "payload": {
         "format": "native_code",
-        "path": "../../build/system7/target/riscv64imac-unknown-none-elf/release/CDEF",
+        "artifact": "CDEF",
         "load_base": "0x82100000",
         "load_limit": "0x82200000"
       }
@@ -150,7 +150,7 @@
       "name": "Standard scrollbar CDEF",
       "payload": {
         "format": "native_code",
-        "path": "../../build/system7/target/riscv64imac-unknown-none-elf/release/SCROLLBAR",
+        "artifact": "SCROLLBAR",
         "load_base": "0x82200000",
         "load_limit": "0x82300000"
       }
@@ -162,7 +162,7 @@
       "name": "Standard MDEF",
       "payload": {
         "format": "native_code",
-        "path": "../../build/system7/target/riscv64imac-unknown-none-elf/release/MDEF",
+        "artifact": "MDEF",
         "load_base": "0x82300000",
         "load_limit": "0x82400000"
       }

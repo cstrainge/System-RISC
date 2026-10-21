@@ -1,11 +1,10 @@
 //! Resident, per-application monochrome TextEdit state. Native UTF-8 byte offsets
 //! are distinct from an original 68k TEHandle's MacRoman offsets.
 #![deny(unsafe_code)]
-use alloc::vec::Vec;
-
 use mac_abi::{textedit::*, *};
 
-use crate::toolbox::quickdraw::service::Port;
+use crate::toolbox::{handles::{Kind, Table},
+                     quickdraw::service::Port};
 mod layout;
 mod model;
 pub mod clipboard;
@@ -14,8 +13,7 @@ pub use model::Editor;
 pub mod native;
 struct Slot
 {
-    generation:     u16,
-    editor:         Option<Editor>,
+    editor:         Editor,
     cursor_enabled: bool,
     cursor:         Option<CursorBinding>,
     pending_cursor: Option<CursorBinding>
@@ -26,10 +24,16 @@ struct CursorBinding
     view:   Rect,
     port:   Port
 }
-#[derive(Default)]
 pub struct Manager
 {
-    slots: Vec<Slot>
+    slots: Table<Slot>
+}
+impl Default for Manager
+{
+    fn default() -> Self
+    {
+        Self { slots: Table::new(Kind::TextEdit) }
+    }
 }
 pub struct PreparedEdit
 {
@@ -44,7 +48,7 @@ impl Manager
                        -> Result<(), Status>
     {
         let view = self.inspect(id).ok_or(NOT_FOUND)?.info().view;
-        let slot = &mut self.slots[(id.0 & 0xffff) as usize - 1];
+        let slot = self.slots.get_mut(id.0).ok_or(NOT_FOUND)?;
         let binding = Some(CursorBinding { window,
                                            view,
                                            port });
@@ -62,7 +66,7 @@ impl Manager
     /// Begin a replacement scene without disturbing its committed hover regions.
     pub fn begin_cursor_update(&mut self, window: WindowId)
     {
-        for slot in &mut self.slots
+        for slot in self.slots.values_mut()
         {
             if slot.pending_cursor.as_ref().is_some_and(|binding| binding.window == window)
             {
@@ -74,7 +78,7 @@ impl Manager
     /// Publish exactly the editors drawn in a successfully committed scene.
     pub fn commit_cursor_update(&mut self, window: WindowId)
     {
-        for slot in &mut self.slots
+        for slot in self.slots.values_mut()
         {
             if slot.cursor.as_ref().is_some_and(|binding| binding.window == window)
             {
@@ -91,7 +95,7 @@ impl Manager
     pub fn forget_cursor_window(&mut self, window: WindowId)
     {
         self.begin_cursor_update(window);
-        for slot in &mut self.slots
+        for slot in self.slots.values_mut()
         {
             if slot.cursor.as_ref().is_some_and(|binding| binding.window == window)
             {
@@ -104,8 +108,8 @@ impl Manager
     /// `local` is in that window's coordinate system, before its port origin.
     pub fn cursor_hit(&self, window: WindowId, local: Point) -> bool
     {
-        self.slots.iter().any(|slot| {
-                             if slot.editor.is_none() || !slot.cursor_enabled
+        self.slots.iter().any(|(_, slot)| {
+                             if !slot.cursor_enabled
                              {
                                  return false;
                              }
@@ -220,14 +224,12 @@ impl Manager
 
     pub fn inspect(&self, id: EditorId) -> Option<&Editor>
     {
-        let slot = self.slots.get((id.0 & 0xffff).checked_sub(1)? as usize)?;
-        if u32::from(slot.generation) == id.0 >> 16 { slot.editor.as_ref() } else { None }
+        self.slots.get(id.0).map(|slot| &slot.editor)
     }
 
     pub fn inspect_mut(&mut self, id: EditorId) -> Option<&mut Editor>
     {
-        let slot = self.slots.get_mut((id.0 & 0xffff).checked_sub(1)? as usize)?;
-        if u32::from(slot.generation) == id.0 >> 16 { slot.editor.as_mut() } else { None }
+        self.slots.get_mut(id.0).map(|slot| &mut slot.editor)
     }
 
     pub fn request(&mut self, call: &mut TextEditCall, input: &str, output: &mut [u8]) -> Status
@@ -242,45 +244,16 @@ impl Manager
         if call.operation == CREATE
         {
             let editor = Editor::new(call.info.dest, call.info.view)?;
-            let index = if let Some(index) =
-                self.slots
-                    .iter()
-                    .position(|slot| slot.editor.is_none() && slot.generation != u16::MAX)
-            {
-                index
-            }
-            else
-            {
-                if self.slots.len() >= MAX_EDITORS
-                {
-                    return Err(NO_MEMORY);
-                }
-                self.slots.try_reserve(1).map_err(|_| NO_MEMORY)?;
-                self.slots.push(Slot { generation:     0,
-                                       editor:         None,
-                                       cursor_enabled: true,
-                                       cursor:         None,
-                                       pending_cursor: None });
-                self.slots.len() - 1
-            };
-            let slot = &mut self.slots[index];
-            slot.generation += 1;
-            call.id = EditorId((u32::from(slot.generation) << 16) | (index + 1) as u32);
-            slot.editor = Some(editor);
-            slot.cursor_enabled = true;
-            slot.cursor = None;
-            slot.pending_cursor = None;
+            call.id = EditorId(self.slots
+                                   .insert(Slot { editor,
+                                                  cursor_enabled: true,
+                                                  cursor: None,
+                                                  pending_cursor: None })
+                                   .map_err(|_| NO_MEMORY)?);
         }
         if call.operation == DISPOSE
         {
-            if self.inspect(call.id).is_none()
-            {
-                return Err(NOT_FOUND);
-            }
-            let slot = &mut self.slots[(call.id.0 & 0xffff) as usize - 1];
-            slot.editor = None;
-            slot.cursor = None;
-            slot.pending_cursor = None;
+            self.slots.remove(call.id.0).ok_or(NOT_FOUND)?;
             return Ok(());
         }
         if call.operation == SET_CURSOR_ENABLED
@@ -290,7 +263,7 @@ impl Manager
             {
                 return Err(BAD_ARGUMENT);
             }
-            self.slots[(call.id.0 & 0xffff) as usize - 1].cursor_enabled = call.index != 0;
+            self.slots.get_mut(call.id.0).ok_or(NOT_FOUND)?.cursor_enabled = call.index != 0;
             call.info = info;
             return Ok(());
         }

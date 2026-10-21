@@ -7,7 +7,7 @@ use toolbox_quickdraw::{Point, SurfacePort, WHITE, font::CHICAGO_12};
 #[derive(Clone, Copy)]
 enum CaptionFont
 {
-    Classic(u32),
+    Classic(toolbox_quickdraw::SurfaceFont),
     GenevaBold(mac_abi::quickdraw::FontSelection)
 }
 impl CaptionFont

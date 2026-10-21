@@ -5,7 +5,7 @@
 use core::{fmt::{self, Write},
            sync::atomic::{AtomicPtr, Ordering}};
 
-use mac_toolbox::{Status, System, SystemServices};
+use mac_toolbox::{System, SystemServices};
 #[path = "../../../event_latency_cases.rs"]
 mod cases;
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
@@ -51,7 +51,7 @@ impl Write for LogBuffer
 /// The loader supplies a live application service table.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     SERVICES.store(services.cast_mut(), Ordering::Release);
     let system = match unsafe { System::from_raw(services) }

@@ -3,7 +3,7 @@
   "file_type": "FNDR",
   "creator": "MACS",
   "role": "application",
-  "abi_version": 6,
+  "abi_version": 7,
   "load_base": "0x81000000",
   "load_limit": "0x82000000",
   "description": "Public SDK event wait correctness and monotonic dispatch timing",

@@ -23,8 +23,8 @@ fn update_menus(system: &System<'_>, browser: &browser::Browser, info: &get_info
     info.update_menus(system)
 }
 
-fn try_action<T>(system: &System<'_>, alerts: &mut ui::Alerts, result: Result<T, Error>)
-                 -> Result<Option<T>, Error>
+fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: Result<T, Error>)
+                     -> Result<Option<T>, Error>
 {
     use core::fmt::Write;
     match result
@@ -46,10 +46,10 @@ fn try_action<T>(system: &System<'_>, alerts: &mut ui::Alerts, result: Result<T,
     }
 }
 
-fn about(system: &System<'_>, id: u32) -> Result<(), Error>
+fn about(system: &System<'_>, id: WindowId) -> Result<(), Error>
 {
     system.begin_update(id)?;
-    let port = system.quickdraw().graphics(WindowId(id));
+    let port = system.quickdraw().graphics(id);
     port.reset()?;
     port.colors(0xffffff, 0xffffff)?;
     port.paint_rect(Rect::new(0, 0, 300, 210))?;
@@ -67,9 +67,9 @@ fn about(system: &System<'_>, id: u32) -> Result<(), Error>
     }
     system.end_update(id)
 }
-fn open_about(system: &System<'_>, id: &mut u32) -> Result<(), Error>
+fn open_about(system: &System<'_>, id: &mut WindowId) -> Result<(), Error>
 {
-    if *id == 0 || system.window(*id).is_err()
+    if *id == WindowId(0) || system.window(*id).is_err()
     {
         let mut bytes = [0; 768];
         let title = ui::text(system, 3, &mut bytes)?;
@@ -82,19 +82,19 @@ fn finder(system: &System<'_>) -> Result<(), Error>
 {
     let mut browser = browser::Browser::default();
     let mut info = get_info::Controller::default();
-    menus::install(system)?;
+    let _menus = menus::install(system)?;
     browser.initialize(system)?;
     let mut alerts = ui::Alerts::default();
     update_menus(system, &browser, &info)?;
-    let mut about_id = 0;
+    let mut about_id = WindowId(0);
     let mut clipboard = clipboard::Viewer::default();
     for _ in 0..32
     {
         let event = system.next_event(mac_toolbox::events::EventMask::ALL)?;
         if matches!(event, Event::Update { .. })
-           && browser.contains(event.window().map_or(0, |window| window.0))
+           && browser.contains(event.window().unwrap_or_default())
         {
-            browser.draw(system, event.window().map_or(0, |window| window.0))?;
+            browser.draw(system, event.window().unwrap_or_default())?;
         }
         if matches!(event, Event::Idle { .. })
         {
@@ -106,14 +106,14 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     {
         let event = system.wait_event(mac_toolbox::events::EventMask::ALL,
                                       if info.pending() { 0 } else { 30 })?;
-        if alerts.window != 0
+        if alerts.window() != WindowId(0)
         {
             let confirm = alerts.event(system, event)?;
-            if alerts.window == 0
+            if alerts.window() == WindowId(0)
             {
                 browser.redraw_all(system)?;
                 info.redraw_all(system)?;
-                if clipboard.window != 0
+                if clipboard.window != WindowId(0)
                 {
                     let _ = try_action(system, &mut alerts, clipboard.draw(system))?;
                 }
@@ -128,7 +128,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         }
         browser.prune(system)?;
         let _ = try_action(system, &mut alerts, clipboard.refresh(system))?;
-        if alerts.window != 0
+        if alerts.window() != WindowId(0)
         {
             continue;
         }
@@ -144,7 +144,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             // Finder policy enumerates Trash and must not run per keystroke.
             if matches!(event, Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Idle { .. })
                || matches!(event,
-                           Event::MenuCommand { menu: 1253,
+                           Event::MenuCommand { menu: MenuId(1253),
                                                 .. })
             {
                 info.update_menus(system)?;
@@ -155,7 +155,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             }
             continue;
         }
-        if alerts.window != 0
+        if alerts.window() != WindowId(0)
         {
             continue;
         }
@@ -168,12 +168,12 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             };
             continue;
         }
-        if alerts.window != 0
+        if alerts.window() != WindowId(0)
         {
             continue;
         }
         let _ = try_action(system, &mut alerts, browser.track(system, event))?;
-        if alerts.window != 0
+        if alerts.window() != WindowId(0)
         {
             continue;
         }
@@ -199,7 +199,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 }
                 menus::CLOSE =>
                 {
-                    if let Ok(front) = system.window(0)
+                    if let Ok(front) = system.window(WindowId(0))
                     {
                         system.close_window(front.id)?;
                     }
@@ -220,13 +220,13 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         {
             Event::Update { .. } =>
             {
-                if event.window().map_or(0, |window| window.0) == about_id && about_id != 0
+                if event.window().unwrap_or_default() == about_id && about_id != WindowId(0)
                 {
                     about(system, about_id)?;
                 }
-                else if browser.contains(event.window().map_or(0, |window| window.0))
+                else if browser.contains(event.window().unwrap_or_default())
                 {
-                    browser.draw(system, event.window().map_or(0, |window| window.0))?;
+                    browser.draw(system, event.window().unwrap_or_default())?;
                 }
             }
             Event::Activate { .. } =>
@@ -276,7 +276,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                                   .modifiers
                                   .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
-                    if let Ok(front) = system.window(0)
+                    if let Ok(front) = system.window(WindowId(0))
                     {
                         system.close_window(front.id)?;
                         browser.prune(system)?;
@@ -329,8 +329,8 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 }
             }
             Event::MouseDown { .. }
-                if event.window().map_or(0, |window| window.0) == 0
-                   || browser.contains(event.window().map_or(0, |window| window.0)) =>
+                if event.window().is_none()
+                   || browser.contains(event.window().unwrap_or_default()) =>
             {
                 let _ = try_action(system, &mut alerts, browser.click(system, event))?;
             }
@@ -348,7 +348,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
 /// Loader supplies initialized ELF segments and resident System services.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
     {
@@ -365,11 +365,11 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     }
     if system.capabilities() & CAP_GRAPHICS == 0
     {
-        return OK;
+        return mac_toolbox::abi::OK;
     }
     match finder(&system)
     {
-        Ok(()) => OK,
+        Ok(()) => mac_toolbox::abi::OK,
         Err(status) =>
         {
             let _ = system.log("FINDER_ERROR: Toolbox operation failed\n");

@@ -8,6 +8,9 @@ pub const COMMAND: u32 = 4;
 pub const LAYOUT: u32 = 5;
 /// Resolve a command-key character against current enabled resource items.
 pub const KEY: u32 = 6;
+/// Dispose a generation-checked menu object, not a semantic resource number.
+pub const DISPOSE: u32 = 7;
+pub const FIND: u32 = 8;
 pub const MAX_ITEMS: usize = 31;
 pub const MDEF: u32 = u32::from_be_bytes(*b"MDEF");
 pub const MEASURE: i16 = 0;
@@ -41,6 +44,7 @@ impl MenuIcon
 pub struct MenuCall
 {
     pub operation:    u32,
+    pub handle:       u32,
     pub scope:        i16,
     pub menu_id:      i16,
     pub item:         u16,

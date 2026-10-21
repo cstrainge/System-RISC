@@ -1,9 +1,9 @@
 //! Typed StandardGetFile/StandardPutFile over System-owned modal dialogs.
 #![no_std]
 #![forbid(unsafe_code)]
-pub use mac_abi::files::CatalogInfo;
 use mac_abi::standard_file::*;
 pub use mac_traps::{Client, Error, Result};
+pub use toolbox_files::{CatalogInfo, Cnid, TypeCode, VolumeId};
 #[derive(Clone, Copy)]
 pub struct StandardFile<'a>
 {
@@ -12,14 +12,14 @@ pub struct StandardFile<'a>
 #[derive(Clone, Copy, Default)]
 pub struct Location
 {
-    pub volume:    u32,
-    pub directory: u32
+    pub volume:    VolumeId,
+    pub directory: Cnid
 }
 #[derive(Clone, Copy)]
 pub enum TypeFilter<'a>
 {
     All,
-    Types(&'a [[u8; 4]])
+    Types(&'a [TypeCode])
 }
 /// A completed FSSpec-style choice. New files have id=0 until saved. The catalog
 /// name is UTF8; `replacing` is true only after System's replacement confirmation.
@@ -53,7 +53,7 @@ pub enum Progress
 pub struct Dialog<'a>
 {
     client: Client<'a>,
-    handle: u32
+    handle: mac_traps::types::DialogId
 }
 impl<'a> StandardFile<'a>
 {
@@ -64,8 +64,8 @@ impl<'a> StandardFile<'a>
 
     pub fn begin_get(self, location: Location, filter: TypeFilter<'_>) -> Result<Dialog<'a>>
     {
-        let mut call = StandardFileCall { volume: location.volume,
-                                          directory: location.directory,
+        let mut call = StandardFileCall { volume: location.volume.0,
+                                          directory: location.directory.0,
                                           ..Default::default() };
         if let TypeFilter::Types(types) = filter
         {
@@ -74,7 +74,10 @@ impl<'a> StandardFile<'a>
                 return Err(Error::BadArgument);
             }
             call.type_count = types.len() as i32;
-            call.types[..types.len()].copy_from_slice(types);
+            for (slot, kind) in call.types.iter_mut().zip(types)
+            {
+                *slot = kind.bytes();
+            }
         }
         self.begin(call)
     }
@@ -85,8 +88,8 @@ impl<'a> StandardFile<'a>
                      -> Result<Dialog<'a>>
     {
         let mut call = StandardFileCall { mode: PUT,
-                                          volume: location.volume,
-                                          directory: location.directory,
+                                          volume: location.volume.0,
+                                          directory: location.directory.0,
                                           ..Default::default() };
         if prompt.len() > call.prompt.len() || default_name.len() > call.name.len()
         {
@@ -103,7 +106,7 @@ impl<'a> StandardFile<'a>
     {
         self.client.standard_file(&mut call)?;
         Ok(Dialog { client: self.client,
-                    handle: call.handle })
+                    handle: mac_traps::types::DialogId(call.handle) })
     }
 
     pub fn standard_get_file(self, location: Location, filter: TypeFilter<'_>)
@@ -129,7 +132,7 @@ impl Dialog<'_>
     pub fn poll(&self) -> Result<Progress>
     {
         let mut call = StandardFileCall { operation: POLL,
-                                          handle: self.handle,
+                                          handle: self.handle.0,
                                           ..Default::default() };
         self.client.standard_file(&mut call)?;
         match call.state
@@ -138,7 +141,7 @@ impl Dialog<'_>
             CANCELLED => Ok(Progress::Cancelled),
             ACCEPTED =>
             {
-                Ok(Progress::Selected(Selection { entry:     call.entry,
+                Ok(Progress::Selected(Selection { entry:     call.entry.try_into()?,
                                                   replacing: call.replacing != 0 }))
             }
             _ => Err(Error::BadArgument)
@@ -166,7 +169,7 @@ impl Drop for Dialog<'_>
     fn drop(&mut self)
     {
         let _ = self.client.standard_file(&mut StandardFileCall { operation: DISPOSE,
-                                                                  handle: self.handle,
+                                                                  handle: self.handle.0,
                                                                   ..Default::default() });
     }
 }

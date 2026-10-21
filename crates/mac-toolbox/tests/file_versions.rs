@@ -69,11 +69,13 @@ fn legacy_info_mutations_convert_strings_only_at_the_trap_boundary()
         use mac_abi::files::*;
         let system = unsafe { System::from_raw(services) }.unwrap();
         let original =
-            system.files().lookup(system.files().volume_at(0).unwrap().id, 2, "Sample").unwrap();
+            system.files()
+                  .lookup(system.files().volume_at(0).unwrap().id, mac_toolbox::Cnid(2), "Sample")
+                  .unwrap();
         let name = b"\x04Caf\x8e";
         let mut call = FileCall { operation: RENAME,
-                                  volume: system.files().volume_at(0).unwrap().id,
-                                  cnid: original.id,
+                                  volume: (system.files().volume_at(0).unwrap().id).0,
+                                  cnid: (original.id).0,
                                   name: name.as_ptr(),
                                   name_length: name.len(),
                                   position: 3_875_209_985,
@@ -132,17 +134,25 @@ fn arbitrary_file_versions_are_utf8_scoped_and_read_only()
     let (_, activity) =
         with_file_disk(&fixture.path, true, DiskFaults::default(), |services| {
             let system = unsafe { System::from_raw(services) }.unwrap();
-            let file = system.files()
-                             .lookup(system.files().volume_at(0).unwrap().id, 2, "Sample")
-                             .unwrap();
-            let count = system.resources().system().count(*b"vers").unwrap();
+            let file =
+                system.files()
+                      .lookup(system.files().volume_at(0).unwrap().id,
+                              mac_toolbox::Cnid(2),
+                              "Sample")
+                      .unwrap();
+            let count =
+                system.resources().system().count(mac_toolbox::TypeCode::new(*b"vers")).unwrap();
             let version = system.resources()
                                 .file_version(system.files().volume_at(0).unwrap().id, file.id, 1)
                                 .unwrap();
             assert_eq!(version.short(), "Café");
             assert_eq!(version.long(), "Apple");
             assert_eq!(version.number, [0x12, 0x34, 0x80, 0]);
-            assert_eq!(system.resources().system().count(*b"vers").unwrap(), count);
+            assert_eq!(system.resources()
+                             .system()
+                             .count(mac_toolbox::TypeCode::new(*b"vers"))
+                             .unwrap(),
+                       count);
             assert_eq!(system.resources()
                              .file_version(system.files().volume_at(0).unwrap().id, file.id, 3)
                              .unwrap_err()
@@ -154,7 +164,9 @@ fn arbitrary_file_versions_are_utf8_scoped_and_read_only()
                              .status(),
                        mac_abi::BAD_ARGUMENT);
             let bad = system.files()
-                            .lookup(system.files().volume_at(0).unwrap().id, 2, "Malformed")
+                            .lookup(system.files().volume_at(0).unwrap().id,
+                                    mac_toolbox::Cnid(2),
+                                    "Malformed")
                             .unwrap();
             assert_eq!(system.resources()
                              .file_version(system.files().volume_at(0).unwrap().id, bad.id, 1)
@@ -162,18 +174,21 @@ fn arbitrary_file_versions_are_utf8_scoped_and_read_only()
                              .status(),
                        mac_abi::BAD_ARGUMENT);
             assert_eq!(system.resources()
-                             .file_version(system.files().volume_at(0).unwrap().id, 2, 1)
+                             .file_version(system.files().volume_at(0).unwrap().id,
+                                           mac_toolbox::Cnid(2),
+                                           1)
                              .unwrap_err()
                              .status(),
                        mac_abi::NOT_FOUND);
             let mut call =
                 mac_abi::resources::FileVersionCall { operation:
                                                           mac_abi::resources::FILE_VERSION,
-                                                      volume: system.files()
-                                                                    .volume_at(0)
-                                                                    .unwrap()
-                                                                    .id,
-                                                      cnid: file.id,
+                                                      volume: (system.files()
+                                                                     .volume_at(0)
+                                                                     .unwrap()
+                                                                     .id)
+                                                                         .0,
+                                                      cnid: (file.id).0,
                                                       id: 1,
                                                       ..Default::default() };
             let status = unsafe {
@@ -185,7 +200,7 @@ fn arbitrary_file_versions_are_utf8_scoped_and_read_only()
             assert_eq!(&call.info.short[..call.info.short_length as usize], b"\x04Caf\x8e");
             assert_eq!(&call.info.long[..call.info.long_length as usize], b"\x05Apple");
             assert_eq!(system.resources()
-                             .get(ResourceKey { kind: *b"RV64",
+                             .get(ResourceKey { kind: mac_toolbox::TypeCode::new(*b"RV64"),
                                                 id:   0 })
                              .err()
                              .map(|e| e.status()),

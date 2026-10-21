@@ -11,7 +11,7 @@ impl Viewer for IconViewer
         let size = ctx.file.read(ctx.item.info.key, 0, &mut data)?;
         let port = ctx.system.quickdraw().graphics(ctx.window);
         port.clip_rect(ctx.viewport())?;
-        if port.draw_icon(ctx.item.info.key.kind,
+        if port.draw_icon(ctx.item.info.key.kind.bytes(),
                           &data[..size],
                           Rect::new(ctx.area.left + 19,
                                     ctx.area.top + 91,

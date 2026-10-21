@@ -13,7 +13,17 @@ pub mod pictures;
 pub mod images;
 use mac_abi::*;
 pub use mac_abi::{DrawCommand, Point, Rect, WindowId};
-pub use mac_traps::{Client, Error, Result};
+pub use mac_traps::{Client, Error, Result,
+                    types::{SurfaceFont, SurfaceOperation}};
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawOperation
+{
+    PaintRect = PAINT_RECT,
+    FrameRect = FRAME_RECT,
+    Text      = DRAW_TEXT,
+    Button    = DRAW_BUTTON
+}
 pub const BLACK: u32 = 0;
 pub const WHITE: u32 = 0xffffff;
 #[derive(Clone, Copy)]
@@ -64,22 +74,25 @@ impl Port<'_>
 {
     pub fn paint_rect(self, bounds: Rect, color: u32) -> Result<()>
     {
-        self.command(PAINT_RECT, bounds, color, "")
+        self.command(DrawOperation::PaintRect, bounds, color, "")
     }
 
     pub fn frame_rect(self, bounds: Rect, color: u32) -> Result<()>
     {
-        self.command(FRAME_RECT, bounds, color, "")
+        self.command(DrawOperation::FrameRect, bounds, color, "")
     }
 
     pub fn text(self, point: Point, text: &str, color: u32) -> Result<()>
     {
-        self.command(DRAW_TEXT, Rect::new(point.h, point.v, point.h, point.v), color, text)
+        self.command(DrawOperation::Text,
+                     Rect::new(point.h, point.v, point.h, point.v),
+                     color,
+                     text)
     }
 
-    pub fn command(self, kind: u32, bounds: Rect, color: u32, text: &str) -> Result<()>
+    pub fn command(self, kind: DrawOperation, bounds: Rect, color: u32, text: &str) -> Result<()>
     {
-        let mut command = DrawCommand { kind,
+        let mut command = DrawCommand { kind: kind as u32,
                                         bounds,
                                         color,
                                         text_length: 0,
@@ -108,15 +121,17 @@ impl<'a> SurfacePort<'a>
     }
 
     /// Draw a resource icon through the resident Icon Utilities service.
-    pub fn icon_resource(&mut self, scope: i16, id: i16, bounds: Rect, flags: u16) -> Result<()>
+    pub fn icon_resource(&mut self, scope: mac_traps::types::ResourceScope, id: i16, bounds: Rect,
+                         flags: u16)
+                         -> Result<()>
     {
-        self.connection.icon(scope, id, bounds, flags)
+        self.connection.icon(scope.raw(), id, bounds, flags)
     }
 
     pub fn paint_rect(&mut self, bounds: Rect, color: u32) -> Result<()>
     {
         self.connection
-            .perform(mac_traps::SurfaceCommand { operation: 0,
+            .perform(mac_traps::SurfaceCommand { operation: SurfaceOperation::PaintRect,
                                                  bounds,
                                                  foreground: color,
                                                  ..Default::default() })
@@ -127,7 +142,7 @@ impl<'a> SurfacePort<'a>
                      -> Result<()>
     {
         self.connection
-            .perform(mac_traps::SurfaceCommand { operation: 2,
+            .perform(mac_traps::SurfaceCommand { operation: SurfaceOperation::FillRect,
                                                  bounds,
                                                  pattern,
                                                  foreground,
@@ -139,7 +154,7 @@ impl<'a> SurfacePort<'a>
     pub fn frame_rect(&mut self, bounds: Rect, color: u32) -> Result<()>
     {
         self.connection
-            .perform(mac_traps::SurfaceCommand { operation: 1,
+            .perform(mac_traps::SurfaceCommand { operation: SurfaceOperation::FrameRect,
                                                  bounds,
                                                  foreground: color,
                                                  ..Default::default() })
@@ -149,7 +164,7 @@ impl<'a> SurfacePort<'a>
     pub fn invert_rect(&mut self, bounds: Rect) -> Result<()>
     {
         self.connection
-            .perform(mac_traps::SurfaceCommand { operation: 3,
+            .perform(mac_traps::SurfaceCommand { operation: SurfaceOperation::InvertRect,
                                                  bounds,
                                                  ..Default::default() })
             .map(|_| ())
@@ -175,32 +190,34 @@ impl<'a> SurfacePort<'a>
                                   color)
     }
 
-    pub fn text_width(&mut self, font: u32, text: &str) -> Result<i16>
+    pub fn text_width(&mut self, font: SurfaceFont, text: &str) -> Result<i16>
     {
         Ok(self.connection
-               .perform(mac_traps::SurfaceCommand { operation: 4,
+               .perform(mac_traps::SurfaceCommand { operation: SurfaceOperation::TextWidth,
                                                     font,
                                                     text,
                                                     ..Default::default() })?
                .width)
     }
 
-    pub fn font_metrics(&mut self, font: u32) -> Result<FontMetrics>
+    pub fn font_metrics(&mut self, font: SurfaceFont) -> Result<FontMetrics>
     {
-        let reply = self.connection.perform(mac_traps::SurfaceCommand { operation: 5,
-                                                                         font,
-                                                                         ..Default::default() })?;
+        let reply =
+            self.connection
+                .perform(mac_traps::SurfaceCommand { operation: SurfaceOperation::FontMetrics,
+                                                     font,
+                                                     ..Default::default() })?;
         Ok(FontMetrics { ascent:  reply.ascent,
                          descent: reply.descent,
                          leading: reply.leading })
     }
 
-    pub fn draw_text(&mut self, font: u32, x: i16, baseline: i16, text: &str, limit: i16,
+    pub fn draw_text(&mut self, font: SurfaceFont, x: i16, baseline: i16, text: &str, limit: i16,
                      color: u32)
                      -> Result<()>
     {
         self.connection
-            .perform(mac_traps::SurfaceCommand { operation: 6,
+            .perform(mac_traps::SurfaceCommand { operation: SurfaceOperation::DrawText,
                                                  font,
                                                  x,
                                                  y: baseline,
@@ -220,8 +237,8 @@ pub struct FontMetrics
 }
 pub mod font
 {
-    pub const CHICAGO_12: u32 = 0;
-    pub const GENEVA_9: u32 = 1;
+    pub const CHICAGO_12: super::SurfaceFont = super::SurfaceFont::Chicago12;
+    pub const GENEVA_9: super::SurfaceFont = super::SurfaceFont::Geneva9;
 }
 
 impl QuickDraw<'_>

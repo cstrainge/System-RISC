@@ -1,13 +1,63 @@
-//! Thin resident TextEdit bindings. Editors require explicit disposal; IDs carry
-//! generations, so an old ID cannot accidentally access a replacement editor.
+//! Thin resident TextEdit bindings with owned editors and borrowed references.
+//! Generation checks reject editor IDs after disposal or slot reuse.
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::textedit::*;
 pub use mac_abi::{Point, Rect, WindowId,
                   quickdraw::FontSelection,
-                  textedit::{CursorMovement, EditorId, EditorInfo, LineInfo, MAX_BYTES,
-                             MAX_EDITORS}};
+                  textedit::{CursorMovement, EditorId, MAX_BYTES, MAX_EDITORS}};
 pub use mac_traps::{Client, Error, Result};
+
+/// Native editor snapshot. Boolean state and layout data do not expose requests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EditorInfo
+{
+    pub dest:            Rect,
+    pub view:            Rect,
+    pub selection_start: u32,
+    pub selection_end:   u32,
+    pub text_length:     u32,
+    pub line_count:      u32,
+    pub line_height:     i16,
+    pub ascent:          i16,
+    pub active:          bool,
+    pub caret_visible:   bool,
+    pub revision:        u32
+}
+impl From<mac_abi::textedit::EditorInfo> for EditorInfo
+{
+    fn from(info: mac_abi::textedit::EditorInfo) -> Self
+    {
+        Self { dest:            info.dest,
+               view:            info.view,
+               selection_start: info.selection_start,
+               selection_end:   info.selection_end,
+               text_length:     info.text_length,
+               line_count:      info.line_count,
+               line_height:     info.line_height,
+               ascent:          info.ascent,
+               active:          info.active != 0,
+               caret_visible:   info.caret_visible != 0,
+               revision:        info.revision }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LineInfo
+{
+    pub start: u32,
+    pub end:   u32,
+    pub width: i16
+}
+impl From<mac_abi::textedit::LineInfo> for LineInfo
+{
+    fn from(info: mac_abi::textedit::LineInfo) -> Self
+    {
+        Self { start: info.start,
+               end:   info.end,
+               width: info.width }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct TextEdit<'a>
 {
@@ -34,15 +84,17 @@ impl<'a> TextEdit<'a>
                                        ..Default::default() },
                         "",
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     pub fn create(self, dest: Rect, view: Rect) -> Result<EditorId>
     {
         Ok(self.request(TextEditCall { operation: CREATE,
-                                       info: EditorInfo { dest,
-                                                          view,
-                                                          ..Default::default() },
+                                       info:
+                                           mac_abi::textedit::EditorInfo { dest,
+                                                                           view,
+                                                                           ..Default::default() },
                                        ..Default::default() },
                         "",
                         &mut [])?
@@ -73,13 +125,15 @@ impl<'a> TextEdit<'a>
     {
         Ok(self.request(TextEditCall { id,
                                        operation: SET_RECTS,
-                                       info: EditorInfo { dest,
-                                                          view,
-                                                          ..Default::default() },
+                                       info:
+                                           mac_abi::textedit::EditorInfo { dest,
+                                                                           view,
+                                                                           ..Default::default() },
                                        ..Default::default() },
                         "",
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     pub fn info(self, id: EditorId) -> Result<EditorInfo>
@@ -96,7 +150,7 @@ impl<'a> TextEdit<'a>
                                           font,
                                           ..Default::default() };
         self.client.textedit_font(&mut call)?;
-        Ok(call.info)
+        Ok(call.info.into())
     }
 
     pub fn set_text(self, id: EditorId, text: &str) -> Result<EditorInfo>
@@ -106,7 +160,8 @@ impl<'a> TextEdit<'a>
                                        ..Default::default() },
                         text,
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     pub fn insert(self, id: EditorId, text: &str) -> Result<EditorInfo>
@@ -116,7 +171,8 @@ impl<'a> TextEdit<'a>
                                        ..Default::default() },
                         text,
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     pub fn delete(self, id: EditorId) -> Result<EditorInfo>
@@ -148,13 +204,15 @@ impl<'a> TextEdit<'a>
     {
         Ok(self.request(TextEditCall { id,
                                        operation: SELECT,
-                                       info: EditorInfo { selection_start: start,
-                                                          selection_end: end,
-                                                          ..Default::default() },
+                                       info:
+                                           mac_abi::textedit::EditorInfo { selection_start: start,
+                                                                           selection_end: end,
+                                                                           ..Default::default() },
                                        ..Default::default() },
                         "",
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     pub fn key(self, id: EditorId, key: char) -> Result<EditorInfo>
@@ -165,7 +223,8 @@ impl<'a> TextEdit<'a>
                                        ..Default::default() },
                         "",
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     /// Native movement with an optional fixed selection anchor. Unlike classic
@@ -180,7 +239,8 @@ impl<'a> TextEdit<'a>
                                        ..Default::default() },
                         "",
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     pub fn line(self, id: EditorId, index: u32) -> Result<LineInfo>
@@ -191,7 +251,8 @@ impl<'a> TextEdit<'a>
                                        ..Default::default() },
                         "",
                         &mut [])?
-               .line)
+               .line
+               .into())
     }
 
     pub fn offset(self, id: EditorId, point: Point) -> Result<u32>
@@ -225,7 +286,8 @@ impl<'a> TextEdit<'a>
                                        ..Default::default() },
                         "",
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     pub fn activate(self, id: EditorId, active: bool) -> Result<EditorInfo>
@@ -236,7 +298,8 @@ impl<'a> TextEdit<'a>
                                        ..Default::default() },
                         "",
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     /// Enable the automatic I-beam over this editor's most recently drawn view.
@@ -250,7 +313,8 @@ impl<'a> TextEdit<'a>
                                        ..Default::default() },
                         "",
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     pub fn idle(self, id: EditorId, ticks: u32) -> Result<EditorInfo>
@@ -261,7 +325,8 @@ impl<'a> TextEdit<'a>
                                        ..Default::default() },
                         "",
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     pub fn click(self, id: EditorId, point: Point, extend: bool) -> Result<EditorInfo>
@@ -273,7 +338,8 @@ impl<'a> TextEdit<'a>
                                        ..Default::default() },
                         "",
                         &mut [])?
-               .info)
+               .info
+               .into())
     }
 
     /// Append a snapshot to the window's retained frame, preserving its port
@@ -289,5 +355,211 @@ impl<'a> TextEdit<'a>
                      "",
                      &mut [])
             .map(|_| ())
+    }
+}
+
+/// A checked routing reference; this value does not own the editor lifetime.
+#[derive(Clone, Copy)]
+pub struct EditorRef<'a>
+{
+    client: Client<'a>,
+    id:     EditorId
+}
+/// The single destruction duty for an editor. Drop makes a best-effort disposal;
+/// explicit disposal retains ownership on service errors so callers can retry.
+#[must_use = "dropping an editor owner disposes it"]
+pub struct Editor<'a>
+{
+    editor: EditorRef<'a>,
+    live:   bool
+}
+impl<'a> TextEdit<'a>
+{
+    pub fn editor(self, id: EditorId) -> EditorRef<'a>
+    {
+        EditorRef { client: self.client,
+                    id }
+    }
+
+    pub fn create_owned(self, dest: Rect, view: Rect) -> Result<Editor<'a>>
+    {
+        Ok(Editor { editor: self.editor(self.create(dest, view)?),
+                    live:   true })
+    }
+}
+impl<'a> Editor<'a>
+{
+    pub fn id(&self) -> EditorId
+    {
+        self.editor.id
+    }
+
+    pub fn editor(&self) -> EditorRef<'a>
+    {
+        self.editor
+    }
+
+    pub fn into_id(self) -> EditorId
+    {
+        let id = self.id();
+        core::mem::forget(self);
+        id
+    }
+
+    pub fn dispose(&mut self) -> Result<()>
+    {
+        if self.live
+        {
+            match self.editor.dispose()
+            {
+                Ok(()) | Err(Error::NotFound) => self.live = false,
+                Err(error) => return Err(error)
+            }
+        }
+        Ok(())
+    }
+}
+impl<'a> core::ops::Deref for Editor<'a>
+{
+    type Target = EditorRef<'a>;
+
+    fn deref(&self) -> &Self::Target
+    {
+        &self.editor
+    }
+}
+impl Drop for Editor<'_>
+{
+    fn drop(&mut self)
+    {
+        let _ = self.dispose();
+    }
+}
+
+impl EditorRef<'_>
+{
+    pub fn id(self) -> EditorId
+    {
+        self.id
+    }
+
+    pub fn dispose(self) -> Result<()>
+    {
+        TextEdit::new(self.client).dispose(self.id)
+    }
+
+    pub fn copy(self) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).copy(self.id)
+    }
+
+    pub fn cut(self) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).cut(self.id)
+    }
+
+    pub fn paste(self) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).paste(self.id)
+    }
+
+    pub fn set_rects(self, dest: Rect, view: Rect) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).set_rects(self.id, dest, view)
+    }
+
+    pub fn info(self) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).info(self.id)
+    }
+
+    pub fn set_font(self, font: FontSelection) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).set_font(self.id, font)
+    }
+
+    pub fn set_text(self, text: &str) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).set_text(self.id, text)
+    }
+
+    pub fn insert(self, text: &str) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).insert(self.id, text)
+    }
+
+    pub fn delete(self) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).delete(self.id)
+    }
+
+    pub fn text(self, output: &mut [u8]) -> Result<&str>
+    {
+        TextEdit::new(self.client).text(self.id, output)
+    }
+
+    pub fn selection_text(self, output: &mut [u8]) -> Result<&str>
+    {
+        TextEdit::new(self.client).selection_text(self.id, output)
+    }
+
+    pub fn select(self, start: u32, end: u32) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).select(self.id, start, end)
+    }
+
+    pub fn key(self, key: char) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).key(self.id, key)
+    }
+
+    pub fn move_cursor(self, movement: CursorMovement, extend: bool) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).move_cursor(self.id, movement, extend)
+    }
+
+    pub fn line(self, index: u32) -> Result<LineInfo>
+    {
+        TextEdit::new(self.client).line(self.id, index)
+    }
+
+    pub fn offset(self, point: Point) -> Result<u32>
+    {
+        TextEdit::new(self.client).offset(self.id, point)
+    }
+
+    pub fn point(self, index: u32) -> Result<Point>
+    {
+        TextEdit::new(self.client).point(self.id, index)
+    }
+
+    pub fn scroll(self, dh: i16, dv: i16) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).scroll(self.id, dh, dv)
+    }
+
+    pub fn activate(self, active: bool) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).activate(self.id, active)
+    }
+
+    pub fn set_cursor_enabled(self, enabled: bool) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).set_cursor_enabled(self.id, enabled)
+    }
+
+    pub fn idle(self, ticks: u32) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).idle(self.id, ticks)
+    }
+
+    pub fn click(self, point: Point, extend: bool) -> Result<EditorInfo>
+    {
+        TextEdit::new(self.client).click(self.id, point, extend)
+    }
+
+    pub fn draw(self, window: WindowId) -> Result<()>
+    {
+        TextEdit::new(self.client).draw(self.id, window)
     }
 }

@@ -7,9 +7,11 @@ impl GraphicsPort<'_>
         self.client.picture(self.window.0, data, destination)
     }
 
-    pub fn picture_resource(self, scope: i16, id: i16, destination: Rect) -> Result<()>
+    pub fn picture_resource(self, scope: mac_traps::types::ResourceScope, id: i16,
+                            destination: Rect)
+                            -> Result<()>
     {
-        self.client.picture_resource(self.window.0, scope, id, destination)
+        self.client.picture_resource(self.window.0, scope.raw(), id, destination)
     }
 }
 impl crate::SurfacePort<'_>

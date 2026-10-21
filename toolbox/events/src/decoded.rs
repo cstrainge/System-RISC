@@ -157,7 +157,7 @@ pub enum Event
     },
     MenuCommand
     {
-        menu: i16, item: u16, input: Input
+        menu: mac_traps::MenuId, item: u16, input: Input
     },
     CloseRequested
     {
@@ -226,7 +226,7 @@ impl From<raw::Event> for Event
             }
             raw::EventKind::MenuCommand =>
             {
-                Self::MenuCommand { menu: (event.message >> 16) as i16,
+                Self::MenuCommand { menu: mac_traps::MenuId((event.message >> 16) as i16),
                                     item: event.message as u16,
                                     input }
             }
@@ -329,7 +329,7 @@ impl Event
                                 item,
                                 .. } =>
             {
-                (raw::EventKind::MenuCommand, ((menu as u16 as u32) << 16) | item as u32)
+                (raw::EventKind::MenuCommand, ((menu.0 as u16 as u32) << 16) | item as u32)
             }
             Self::CloseRequested { window,
                                    .. } =>

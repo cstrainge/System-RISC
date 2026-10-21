@@ -1,6 +1,7 @@
 //! Classic icon family/resource lookup and drawing are System services.
 use mac_abi::{quickdraw::*,
               resources::{APPLICATION, CHAIN, SYSTEM}};
+use mac_traps::{Cnid, TypeCode, VolumeId};
 
 use crate::{Client, Rect, Result, WindowId};
 #[derive(Clone, Copy, Default)]
@@ -68,13 +69,13 @@ impl<'a> Icons<'a>
                .id)
     }
 
-    pub fn for_file(self, creator: [u8; 4], file_type: [u8; 4]) -> Result<i16>
+    pub fn for_file(self, creator: TypeCode, file_type: TypeCode) -> Result<i16>
     {
         Ok(self.client
                .icon(IconCall { operation: ICON_FILE,
                                 scope: self.scope,
-                                creator,
-                                file_type,
+                                creator: creator.bytes(),
+                                file_type: file_type.bytes(),
                                 ..Default::default() })?
                .id)
     }
@@ -95,14 +96,14 @@ impl<'a> Icons<'a>
 
     /// Read the file's BNDL/FREF mapping and draw its own icon family. This works
     /// before the application has been launched and leaves the search chain alone.
-    pub fn plot_file(self, window: WindowId, volume: u32, cnid: u32, destination: Rect,
+    pub fn plot_file(self, window: WindowId, volume: VolumeId, cnid: Cnid, destination: Rect,
                      flags: IconFlags)
                      -> Result<()>
     {
         self.client.file_icon(&mut FileIconCall { operation: ICON_PLOT_FILE,
                                                   window: window.0,
-                                                  volume,
-                                                  cnid,
+                                                  volume: volume.0,
+                                                  cnid: cnid.0,
                                                   destination,
                                                   flags: flags.bits()?,
                                                   ..Default::default() })
@@ -117,16 +118,18 @@ impl<'a> crate::QuickDraw<'a>
 }
 impl crate::SurfacePort<'_>
 {
-    pub fn plot_file_icon(&mut self, volume: u32, cnid: u32, destination: Rect, flags: IconFlags)
+    pub fn plot_file_icon(&mut self, volume: VolumeId, cnid: Cnid, destination: Rect,
+                          flags: IconFlags)
                           -> Result<()>
     {
-        self.connection.file_icon(volume, cnid, destination, flags.bits()?)
+        self.connection.file_icon(volume.0, cnid.0, destination, flags.bits()?)
     }
 
-    pub fn plot_icon(&mut self, scope: i16, id: i16, destination: Rect, flags: IconFlags)
+    pub fn plot_icon(&mut self, scope: mac_traps::types::ResourceScope, id: i16,
+                     destination: Rect, flags: IconFlags)
                      -> Result<()>
     {
-        self.connection.icon(scope, id, destination, flags.bits()?)
+        self.connection.icon(scope.raw(), id, destination, flags.bits()?)
     }
 }
 /// Well-known System icon families, including original Macintosh IDs and native additions.

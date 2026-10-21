@@ -44,14 +44,16 @@ pub fn filesystem(system: &mac_toolbox::System<'_>) -> Result<(), Failure>
     let volume = fixture.ok_or(Failure::Mismatch("missing2026HFSfixture"))?;
     require(volume.created_at().unix_seconds() == 1_767_225_600, "2026 volume creation")?;
     require(volume.modified_at().unix_seconds() == 1_792_326_896, "2026 volume modification")?;
-    for entry in [files.catalog(volume.id, 2)?,
-                  files.lookup(volume.id, 2, "Folder")?,
-                  files.lookup(volume.id, 2, "Folder/Café")?]
+    for entry in [files.catalog(volume.id, mac_toolbox::Cnid(2))?,
+                  files.lookup(volume.id, mac_toolbox::Cnid(2), "Folder")?,
+                  files.lookup(volume.id, mac_toolbox::Cnid(2), "Folder/Café")?]
     {
         require(entry.created_at().unix_seconds() == 1_767_225_600, "2026 catalog creation")?;
         require(entry.modified_at().unix_seconds() == 1_792_326_896, "2026 catalog modification")?;
-        require(entry.backed_up_at().unix_seconds() == 1_798_761_599, "2026 catalog backup")?;
-        require(entry.created_at().mac_microseconds() == Some(entry.created)
+        require(entry.backed_up_at().unwrap().unix_seconds() == 1_798_761_599,
+                "2026 catalog backup")?;
+        require(entry.created_at().mac_microseconds()
+                == Some((entry.created).mac_microseconds().unwrap())
                 && entry.created_at()
                         .mac_seconds()
                         .is_some_and(|seconds| seconds > i32::MAX as u32),
@@ -75,7 +77,7 @@ pub fn filesystem(system: &mac_toolbox::System<'_>) -> Result<(), Failure>
     }
     let mut path = Path { bytes:  [0; 128],
                           length: 0 };
-    files.path(volume.id, 19, &mut path)?;
+    files.path(volume.id, mac_toolbox::Cnid(19), &mut path)?;
     require(&path.bytes[..path.length] == "/Folder/Café".as_bytes(), "2026 fixture UTF8 path")?;
     Ok(())
 }

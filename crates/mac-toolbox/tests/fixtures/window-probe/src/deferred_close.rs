@@ -1,9 +1,8 @@
 //! Collect actual close tracking observations through the public Window SDK.
 use core::fmt::Write;
 
-use mac_toolbox::{Rect, System, WindowId,
-                  events::classic::{EVERY_EVENT, EventKind},
-                  windows::{WINDOW_CLOSE_REQUEST, WindowSpec}};
+use mac_toolbox::abi::WINDOW_CLOSE_REQUEST;
+use mac_toolbox::{Rect, System, WindowId, events::classic::{EVERY_EVENT, EventKind}, windows::WindowSpec};
 struct Line
 {
     bytes: [u8; 256],

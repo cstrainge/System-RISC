@@ -1,5 +1,5 @@
 //! Finder's large-icon geometry and presentation. System supplies only primitives.
-use mac_toolbox::{Error, Point, Rect};
+use mac_toolbox::{Cnid, Error, Point, Rect, VolumeId};
 
 pub const GRID_WIDTH: i16 = 64;
 pub const GRID_HEIGHT: i16 = 52;
@@ -85,8 +85,8 @@ pub enum Icon
     Resource(i16),
     Application
     {
-        volume:   u32,
-        cnid:     u32,
+        volume:   VolumeId,
+        cnid:     Cnid,
         fallback: i16
     }
 }

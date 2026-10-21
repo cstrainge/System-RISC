@@ -2,8 +2,40 @@
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::*;
-pub use mac_abi::{Point, Rect, WINDOW_CLOSE_REQUEST, WindowId, WindowRequest};
+pub use mac_abi::{Point, Rect, WindowId};
+use mac_traps::types::InlineText;
 pub use mac_traps::{Client, Error, Result};
+
+/// An immutable native snapshot; transport buffers and request fields stay private.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowInfo
+{
+    pub id:        WindowId,
+    pub bounds:    Rect,
+    pub title:     InlineText<WINDOW_TITLE_BYTES>,
+    pub procedure: i16,
+    pub minimum:   (i16, i16)
+}
+impl WindowInfo
+{
+    pub fn title(&self) -> &str
+    {
+        self.title.as_str()
+    }
+}
+impl TryFrom<WindowRequest> for WindowInfo
+{
+    type Error = Error;
+
+    fn try_from(request: WindowRequest) -> Result<Self>
+    {
+        Ok(Self { id:        WindowId(request.id),
+                  bounds:    request.bounds,
+                  title:     InlineText::from_reply(request.title, request.title_length)?,
+                  procedure: request.procedure,
+                  minimum:   (request.minimum_width, request.minimum_height) })
+    }
+}
 
 pub struct WindowSpec<'a>
 {
@@ -109,16 +141,16 @@ impl<'a> Windows<'a>
         self.client.window(SELECT_DESKTOP, request(WindowId(0))).map(|_| ())
     }
 
-    pub fn info(self, id: WindowId) -> Result<WindowRequest>
+    pub fn info(self, id: WindowId) -> Result<WindowInfo>
     {
-        self.client.window(GET_WINDOW, request(id))
+        self.client.window(GET_WINDOW, request(id))?.try_into()
     }
 
     pub fn front(self) -> Result<Option<WindowId>>
     {
         match self.info(WindowId(0))
         {
-            Ok(r) => Ok(Some(WindowId(r.id))),
+            Ok(r) => Ok(Some(r.id)),
             Err(Error::NotFound) => Ok(None),
             Err(e) => Err(e)
         }
@@ -181,7 +213,7 @@ impl Window<'_>
         Windows::new(self.client)
     }
 
-    pub fn info(&self) -> Result<WindowRequest>
+    pub fn info(&self) -> Result<WindowInfo>
     {
         self.windows().info(self.id)
     }

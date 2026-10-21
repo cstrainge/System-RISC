@@ -43,8 +43,10 @@ impl Layout
         {
             12761
         };
-        let resource = system.resources().application().get(ResourceKey { kind: *b"gInf",
-                                                                           id })?;
+        let resource = system.resources()
+                             .application()
+                             .get(ResourceKey { kind: mac_toolbox::TypeCode::new(*b"gInf"),
+                                                id })?;
         let mut bytes = [0; 104];
         let read = resource.read(0, &mut bytes);
         let released = resource.release();

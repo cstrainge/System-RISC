@@ -84,7 +84,7 @@ pub enum Payload
     },
     NativeCode
     {
-        path: PathBuf, load_base: String, load_limit: String
+        artifact: String, load_base: String, load_limit: String
     }
 }
 
@@ -352,6 +352,11 @@ impl Manifest
         }
         for definition in &self.resources
         {
+            if let Payload::NativeCode { artifact, .. } = &definition.payload
+                && (artifact.is_empty() || !artifact.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+            {
+                return Err(error("native_code artifact must name one Cargo binary"));
+            }
             let kind = fourcc(&definition.kind)?;
             if !keys.insert((kind, definition.id))
             {
@@ -419,28 +424,29 @@ impl Manifest
                 .map(|r| (r.symbol.as_str(), r.kind.as_str(), r.id)),
         ) {
             let kind = fourcc(kind).expect("validated manifest");
-            output.push_str(&format!("#[allow(dead_code)]\npub const {symbol}: mac_abi::ResourceKey = mac_abi::ResourceKey {{ kind: {kind:?}, id: {id} }};\n"));
+            output.push_str(&format!("#[allow(dead_code)]\npub const {symbol}: mac_abi::ResourceKey = mac_abi::ResourceKey::from_bytes({kind:?}, {id});\n"));
         }
         output
     }
 
-    pub fn source_files(&self, path: &Path) -> Vec<PathBuf>
+    pub fn source_files(&self, path: &Path, artifacts: &Path) -> Vec<PathBuf>
     {
         self.resources
             .iter()
             .filter_map(|r| {
                 match &r.payload
                 {
-                    Payload::File { path: source }
-                    | Payload::NativeCode { path: source,
-                                          .. } => Some(path.parent().unwrap().join(source)),
+                    Payload::File { path: source } => Some(path.parent().unwrap().join(source)),
+                    Payload::NativeCode { artifact,
+                                          .. } => Some(artifacts.join(artifact)),
                     _ => None
                 }
             })
             .collect()
     }
 
-    pub fn compile_resources(&self, path: &Path, elf: &[u8]) -> Result<Vec<Resource>>
+    pub fn compile_resources(&self, path: &Path, elf: &[u8], artifacts: Option<&Path>)
+                             -> Result<Vec<Resource>>
     {
         self.validate()?;
         let mut resources = Vec::new();
@@ -554,11 +560,15 @@ impl Manifest
                                   .collect::<Result<Vec<u8>>>()?
                 }
                 Payload::File { path: source } => fs::read(path.parent().unwrap().join(source))?,
-                Payload::NativeCode { path: source,
+                Payload::NativeCode { artifact,
                                       load_base,
                                       load_limit } =>
                 {
-                    let source = path.parent().unwrap().join(source);
+                    let source = artifacts.ok_or_else(|| {
+                                              error("native_code requires this build's artifact \
+                                                     directory; rebuild with mac-build package")
+                                          })?
+                                          .join(artifact);
                     let elf = fs::read(&source)?;
                     let mut descriptor = Descriptor { role:        Role::CodeResource,
                                                       abi_version: self.abi_version,
@@ -639,7 +649,7 @@ mod tests
     {
         let m = manifest();
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../finder/resources.json");
-        let resources = m.compile_resources(&path, &elf_fixture()).unwrap();
+        let resources = m.compile_resources(&path, &elf_fixture(), None).unwrap();
         let menu = &resources.iter().find(|r| r.kind == *b"MENU" && r.id == 1252).unwrap().data;
         assert_eq!(&menu[..2], &1252i16.to_be_bytes());
         assert_eq!(&menu[12..17], b"\x04File");
@@ -651,7 +661,7 @@ mod tests
         assert!(m.rust_ids().contains("FILE_MENU"));
         let mut m = manifest();
         m.cargo_version = "12.3.4".into();
-        let resources = m.compile_resources(&path, &elf_fixture()).unwrap();
+        let resources = m.compile_resources(&path, &elf_fixture(), None).unwrap();
         let vers = &resources.iter().find(|r| r.kind == *b"vers").unwrap().data;
         assert_eq!(&vers[..2], &[0x12, 0x34]);
     }
@@ -674,7 +684,7 @@ mod tests
         }
         let mut manifest = manifest();
         manifest.cargo_version = "12.3.4-beta.2+build.2026".into();
-        let resources = manifest.compile_resources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../finder/resources.json"), &elf_fixture()).unwrap();
+        let resources = manifest.compile_resources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../finder/resources.json"), &elf_fixture(), None).unwrap();
         let vers = &resources.iter().find(|r| r.kind == *b"vers").unwrap().data;
         assert_eq!(&vers[..6], &[0x12, 0x34, 0x60, 2, 0, 0]);
         assert_eq!(&vers[7..7 + vers[6] as usize], b"12.3.4-beta.2+build.2026");
@@ -717,6 +727,6 @@ version="12.3.4-beta.2"
         assert!(m.validate().is_err());
         let mut m = manifest();
         m.resources[0].kind = "MENU".into();
-        assert!(m.compile_resources(Path::new("x"), b"").is_err());
+        assert!(m.compile_resources(Path::new("x"), b"", None).is_err());
     }
 }

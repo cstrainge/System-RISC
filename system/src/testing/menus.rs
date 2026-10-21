@@ -4,6 +4,7 @@ use core::cell::RefCell;
 use mac_abi::*;
 struct Session
 {
+    memory: RefCell<crate::toolbox::memory::Manager>,
     menus:  RefCell<crate::toolbox::menus::Manager>,
     system: std::vec::Vec<mac_formats::resource::Resource>,
     app:    std::vec::Vec<mac_formats::resource::Resource>,
@@ -26,7 +27,7 @@ pub fn with_resources<R>(system: &[u8], application: &[u8], run: impl FnOnce(&Sy
     let mut system = mac_formats::resource::decode(system).expect("system fork");
     let app = mac_formats::resource::decode(application).expect("application fork");
     let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system);
-    SESSION.with(|slot|{assert!(slot.borrow().is_none());*slot.borrow_mut()=Some(Session{menus:RefCell::new(crate::toolbox::menus::Manager::new(crate::test_mdef::standard_menu_definition,gate)),system,app,fonts});});
+    SESSION.with(|slot|{assert!(slot.borrow().is_none());*slot.borrow_mut()=Some(Session{memory:RefCell::new(Default::default()),menus:RefCell::new(crate::toolbox::menus::Manager::new(crate::test_mdef::standard_menu_definition,gate)),system,app,fonts});});
     let _scope = Scope;
     let services = SystemServices { header:       Header::for_type::<SystemServices>(),
                                     trap:         gate,
@@ -46,6 +47,17 @@ unsafe extern "C" fn gate(number: u32, pointer: *mut (), size: usize) -> i64
                {
                    return NOT_SUPPORTED as i64;
                };
+               if number == traps::MEMORY
+               {
+                   let Ok(mut memory) = session.memory.try_borrow_mut()
+                   else
+                   {
+                       return SERVICE_BUSY as i64;
+                   };
+                   return unsafe {
+                       crate::toolbox::memory::native::dispatch(&mut memory, number, pointer, size)
+                   };
+               }
                if number == traps::FONT
                {
                    return unsafe {

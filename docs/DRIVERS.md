@@ -64,6 +64,15 @@ request, interrupt, DMA-map and registration IDs use the shared generation-tagge
 facility with central namespaces and separate ownership checks. Validate claims
 and late completions against their originating driver/device incarnation.
 
+The module/driver core is class-neutral: it owns contract validation, discovery,
+dependency resolution, loading, registration, ownership and lifecycle. Class
+interfaces are identified and versioned independently; adding a filesystem,
+block, input, network, display, audio or other class must not change the core
+entry contract or assume that every device has sectors or catalog operations.
+A module may provide several class interfaces, and a transport module may be a
+dependency of a separate functional driver. Class-specific request layouts,
+capabilities and execution rules belong to that class's SDK contract.
+
 The core owns enumeration, matching, queues, lifetime and service registration;
 drivers own device-specific operation. Keep block, input, network and display
 class interfaces separate from each bus transport. Native apps and disk tools

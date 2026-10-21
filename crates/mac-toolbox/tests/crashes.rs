@@ -15,7 +15,7 @@ fn native_report_round_trips_long_utf8_and_scrolls_without_losing_text()
         {
             reports.append(text).unwrap();
         }
-        let top = reports.show(0).unwrap();
+        let top = reports.show(ReportFlags::NONE).unwrap();
         assert_eq!(top.report_bytes, text.len());
         assert!(top.line_count > 320);
         let bottom = reports.scroll(i32::MAX).unwrap();
@@ -35,10 +35,10 @@ fn native_report_round_trips_long_utf8_and_scrolls_without_losing_text()
         assert_eq!(restored, text.as_bytes());
         assert!(reports.read(text.len() + 1, &mut chunk).is_err());
         reports.dismiss().unwrap();
-        assert_eq!(reports.info().unwrap().dismissed, 1);
+        assert!(reports.info().unwrap().dismissed);
         reports.begin().unwrap();
         assert_eq!(reports.info().unwrap().report_bytes, 0);
-        assert_eq!(reports.info().unwrap().dismissed, 0);
+        assert!(!reports.info().unwrap().dismissed);
     });
 }
 
@@ -48,7 +48,7 @@ fn shared_handler_streams_every_byte_across_fixed_buffer_utf8_boundaries()
     support::with_system(|system| {
         let text = format!("{}café 🦀{}END", "a".repeat(511), "é".repeat(20_000));
         let report = panic::report(system.client(), format_args!("{text}")).unwrap();
-        assert_eq!(report.flags, 0);
+        assert_eq!(report.flags, ReportFlags::NONE);
         let mut bytes = vec![0; report.report_bytes];
         assert_eq!(system.crashes().read(0, &mut bytes).unwrap(), text.len() + 1);
         assert_eq!(String::from_utf8(bytes).unwrap(), text + "\n");
@@ -69,7 +69,7 @@ fn retention_and_formatter_failures_are_explicit_and_do_not_destroy_prior_diagno
     }
     support::with_system(|system| {
         let report = panic::report(system.client(), format_args!("{Fails}")).unwrap();
-        assert_ne!(report.flags & FORMAT_FAILED, 0);
+        assert!(report.flags.contains(ReportFlags::FORMAT_FAILED));
         let mut bytes = vec![0; report.report_bytes];
         system.crashes().read(0, &mut bytes).unwrap();
         let text = String::from_utf8(bytes).unwrap();
@@ -83,9 +83,9 @@ fn retention_and_formatter_failures_are_explicit_and_do_not_destroy_prior_diagno
             reports.append(&block).unwrap();
         }
         assert_eq!(reports.append("overflow"), Err(Error::NoMemory));
-        let report = reports.show(0).unwrap();
+        let report = reports.show(ReportFlags::NONE).unwrap();
         assert_eq!(report.report_bytes, MAX_REPORT_BYTES);
-        assert_ne!(report.flags & TRUNCATED, 0);
+        assert!(report.flags.contains(ReportFlags::TRUNCATED));
         let mut tail = [0; 4];
         assert_eq!(reports.read(MAX_REPORT_BYTES - 4, &mut tail).unwrap(), 4);
         assert_eq!(&tail, b"xxxx");
@@ -100,10 +100,10 @@ fn panic_service_uses_an_exclusive_native_number_and_rejects_invalid_utf8()
         let system = unsafe { System::from_raw(services) }.unwrap();
         system.crashes().begin().unwrap();
         let invalid = [0xffu8];
-        let mut call = CrashCall { operation: APPEND,
-                                   data: invalid.as_ptr(),
-                                   length: 1,
-                                   ..Default::default() };
+        let mut call = mac_abi::crashes::CrashCall { operation: mac_abi::crashes::APPEND,
+                                                     data: invalid.as_ptr(),
+                                                     length: 1,
+                                                     ..Default::default() };
         assert_eq!(unsafe {
                        (services.trap)(mac_abi::traps::CRASH,
                                        core::ptr::from_mut(&mut call).cast(),

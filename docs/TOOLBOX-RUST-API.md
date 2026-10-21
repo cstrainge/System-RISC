@@ -1,23 +1,23 @@
 # Public Rust Toolbox API worklist
 
-Current priority, before the driver/module milestone, per the user on 2026-10-20.
+Verified on 2026-10-20 before the driver/module milestone.
 Source review: workspace `toolbox-rust-api-audit-2026-10-20.md`, baseline `96461ba`.
 The ABI remains the transport and classic compatibility contract. Native apps use
 thin typed clients over the same resident services. Rebuild all apps together;
 remove superseded native paths rather than preserving old project APIs.
 
 - [x] Decoded events, modifiers and masks; Finder and shipped apps migrated.
-- [ ] Non-exhaustive typed errors, including lossless unknown status diagnostics;
+- [x] Non-exhaustive typed errors, including lossless unknown status diagnostics;
       the facade preserves SDK errors and identities.
-- [ ] Distinct volume, catalog, process and menu identities.
-- [ ] Decoded information snapshots, including precise timestamps and object kinds.
-- [ ] Owned TextEdit editors, menus and alerts, with explicit borrowed references
+- [x] Distinct volume, catalog, process and menu identities.
+- [x] Decoded information snapshots, including precise timestamps and object kinds.
+- [x] Owned TextEdit editors, menus and alerts, with explicit borrowed references
       and cleanup that retains ownership on errors.
-- [ ] Type codes, scrollbar parts, named drawing operations, memory states/errors,
+- [x] Type codes, scrollbar parts, named drawing operations, memory states/errors,
       private WindowSpec builders and automatic-clock mutation convenience APIs.
-- [ ] Document and verify the native threading contract.
+- [x] Document and verify the native threading contract.
 
-Event polling and waiting will consistently return a decoded Event. Idle is an
+Event polling and waiting consistently return a decoded Event. Idle is an
 explicit variant retaining the physical input snapshot (and an opaque classic
 null-event tag), so pointer-motion wakes and caret work require no extra trap.
 Peek remains Option because queue presence is observable, including posted idle
@@ -49,3 +49,43 @@ foundation, the native host-directory driver pair and StuffIt archive driver.
 Finder double-click on a StuffIt file mounts its filesystem. Keep both mounts
 loadable through real DRVR/DABI contracts; do not replace them with built-in
 shortcuts. Driver packages stay in Drivers; extensions stay in Extensions.
+
+## Verified native SDK milestone — ABI 7
+
+Native volume/catalog/process/thread/menu identities and resource scopes are
+distinct types. TypeCode preserves FourCC bytes; information snapshots expose
+checked UTF-8, Timestamp values, object kinds, boolean state and typed flags
+instead of request layouts. Explicit wire access lives under mac_toolbox::abi.
+PNG failures retain both a typed service error and a decoder-specific ErrorKind.
+Drawing operations, compact bitmap font selectors, scrollbar parts and memory
+states/errors use named vocabularies. Ordinary filesystem mutations and data-file
+creation own the clock; `_at` variants preserve supplied timestamps.
+
+TextEdit editors, menus and alerts have owners and borrowed references. Shipped
+apps retain those owners. Explicit cleanup retains ownership on service errors;
+Drop makes a non-panicking best effort. Native and Pascal TextEdit calls validate
+the same shared handle table. TextEdit and native menu objects use central,
+atomic generation histories across app-local contexts, with slot retirement.
+Memory's wire format and existing process-local policy are unchanged. MenuId
+names a semantic menu property; MenuHandle identifies a live object incarnation.
+
+All six shipped apps, fixtures, reference tools and tests build against ABI 7.
+Native definition manifests name an `artifact`, resolved beside the actual input
+ELF in its selected target/profile; Cargo dependency tracking follows that same
+profile. Private fixture caches are profile-local. The private ABI-7 guest passed
+while the regular profile still contained ABI-6 definitions, proving that those
+stale artifacts were no longer mixed into the check image.
+
+The complete cargo xtask check gate passed: 137 host SDK tests, 23 private
+graphical tests, an allocated fork crossing 4 GiB, 17 ROM boot/rejection cases,
+compiled dependency/symbol boundaries and the original visual comparisons.
+The normal optimized installation was rebuilt afterward. Strict SDK and shipped
+RV64 app Clippy checks pass; all 13 RV64 fixtures and the two optional window
+fixture modes compile. Obsolete generated images were pruned after checks.
+
+This closes the cited Rust API audit, not the remaining Toolbox roadmap. Original
+68k execution remains incomplete; TrueType/synthetic-style comparisons retain
+their recorded pixel differences. Event/cursor regression gates pass, but the
+existing latency report does not enforce its 1 ms target or measure complete
+host-input-to-present latency. Private evidence is in results/system7 outside
+this repository, including toolbox-api-full-check.log and toolchain-checks.json.

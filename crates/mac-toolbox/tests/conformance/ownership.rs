@@ -1,5 +1,6 @@
 //! Native Rust ownership contracts through the public Toolbox and real services.
-use mac_toolbox::{Error, NOT_FOUND, Rect, System, ToolboxResult, WindowId,
+use mac_toolbox::{Error, Rect, System, ToolboxResult, WindowId,
+                  abi::NOT_FOUND,
                   windows::{Window, WindowSpec}};
 
 use super::Failure;
@@ -71,7 +72,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     memory.operation = mac_abi::memory::DISPOSE;
     memory.handle = window.id().0;
     assert_eq!(system.client().memory(&mut memory, &[], &mut []), Err(Error::NilHandle));
-    assert_eq!(window.info()?.id, window.id().0);
+    assert_eq!(window.info()?.id, window.id());
     memory.operation = mac_abi::memory::SIZE;
     memory.handle = memory_id;
     system.client().memory(&mut memory, &[], &mut [])?;
@@ -100,7 +101,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
             window.set_title("Automatic cleanup")?;
             window.select()?;
             window.invalidate(Rect::new(0, 0, 240, 140))?;
-            assert_eq!(window.info()?.id, identity.0);
+            assert_eq!(window.info()?.id, identity);
             // Moving the Rust owner transfers the single destruction duty.
             let moved = window;
             assert_eq!(moved.id(), identity);
@@ -129,7 +130,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     assert!(matches!(window.info(), Err(Error::NotFound)));
     let replacement = create(system)?;
     drop(window);
-    assert_eq!(replacement.info()?.id, replacement.id().0);
+    assert_eq!(replacement.info()?.id, replacement.id());
     drop(replacement);
 
     let mut already_closed = create(system)?;
@@ -141,11 +142,11 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     rejected_window(system, identity, gate)?;
     already_closed.close()?;
     drop(already_closed);
-    assert_eq!(replacement.info()?.id, replacement.id().0);
+    assert_eq!(replacement.info()?.id, replacement.id());
     drop(replacement);
 
     let identity = create(system)?.into_id();
-    assert_eq!(system.windows().info(identity)?.id, identity.0);
+    assert_eq!(system.windows().info(identity)?.id, identity);
     system.windows().close(identity)?;
     // Reach the native24-bit event ceiling through normal SDK allocation.
     // A retired generation must move to a different slot, never wrap to an old ID.
@@ -166,6 +167,11 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
         }
     }
     assert!(retired, "window generations must retire rather than wrap into event flags");
+    editors(system, Some(gate))?;
+    system.log("OWNERSHIP_MENU_BEGIN\n")?;
+    menus(system, 257)?;
+    system.log("OWNERSHIP_ALERT_BEGIN\n")?;
+    alerts(system)?;
     scroll_boxes(system, gate)?;
     managed_controls(system, gate)?;
     system.log("HANDLE_REUSE_USERSPACE_PASS windows=40 native=9 legacy=3 retirement=passed \
@@ -248,4 +254,110 @@ fn scroll_boxes(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fail
     system.log("SCROLL_BOX_USERSPACE_PASS parent_cleanup=8 stale=passed legacy=passed \
                 rows=passed\n")
           .map_err(|error| Failure::Service(error.status()))
+}
+
+/// The same resident TextEdit identities protect native and Pascal trap callers.
+/// Runs on host and RV64 so generation safety is not just a model-unit assertion.
+pub fn editors(system: &System<'_>, gate: Option<mac_abi::TrapGate>) -> Result<(), Failure>
+{
+    use mac_toolbox::textedit::EditorId;
+    let te = system.textedit();
+    let bounds = Rect::new(0, 0, 120, 60);
+    let stale = te.create(bounds, bounds)?;
+    te.dispose(stale)?;
+    let replacement = te.create(bounds, bounds)?;
+    assert_eq!(stale.0 & 0xffff, replacement.0 & 0xffff, "force TextEdit slot reuse");
+    assert_ne!(stale, replacement);
+    // Use another live manager's real issued ID, not just an invalid integer.
+    let mut raw = mac_abi::memory::MemoryCall { operation: mac_abi::memory::NEW_CLEAR,
+                                                size: 4,
+                                                ..Default::default() };
+    system.client().memory(&mut raw, &[], &mut [])?;
+    for id in [stale, EditorId(raw.handle)]
+    {
+        assert_eq!(te.info(id), Err(Error::NotFound));
+        assert_eq!(te.set_text(id, "must not replace"), Err(Error::NotFound));
+        assert_eq!(te.dispose(id), Err(Error::NotFound));
+        let empty_pascal = [0u8];
+        let mut call = mac_abi::textedit::TextEditCall { operation: mac_abi::textedit::SET_TEXT,
+                                                         input: empty_pascal.as_ptr(),
+                                                         input_length: 1,
+                                                         id,
+                                                         ..Default::default() };
+        // The classic adapter reaches the same resident lifetime check.
+        if let Some(gate) = gate
+        {
+            let status = unsafe {
+                gate(mac_abi::traps::PSTRING_TEXTEDIT,
+                     core::ptr::from_mut(&mut call).cast(),
+                     core::mem::size_of_val(&call))
+            };
+            assert_eq!(status, mac_abi::NOT_FOUND as i64);
+        }
+    }
+    assert_eq!(te.info(replacement)?.text_length, 0);
+    te.dispose(replacement)?;
+    raw.operation = mac_abi::memory::DISPOSE;
+    system.client().memory(&mut raw, &[], &mut [])?;
+    Ok(())
+}
+
+/// Resource menu numbers remain semantic properties; references carry lifetimes.
+pub fn menus(system: &System<'_>, resource: i16) -> Result<(), Failure>
+{
+    use mac_toolbox::{ResourceScope, menus::MenuHandle};
+    let api = system.menus();
+    api.clear()?;
+    let owned = api.install_owned(ResourceScope::Application, resource)?;
+    let stale = owned.menu();
+    let id = owned.id()?;
+    assert_eq!(api.find(id)?.handle(), owned.handle());
+    drop(owned);
+    let mut replacement = api.install_owned(ResourceScope::Application, resource)?;
+    assert_eq!(stale.handle().0 & 0xffff, replacement.handle().0 & 0xffff);
+    assert_ne!(stale.handle(), replacement.handle());
+    for result in [stale.layout().map(|_| ()),
+                   stale.item_count().map(|_| ()),
+                   stale.set_item_enabled(0, false),
+                   stale.dispose()]
+    {
+        assert_eq!(result, Err(Error::NotFound));
+    }
+    let mut memory = mac_abi::memory::MemoryCall { operation: mac_abi::memory::NEW_CLEAR,
+                                                   size: 4,
+                                                   ..Default::default() };
+    system.client().memory(&mut memory, &[], &mut [])?;
+    assert_eq!(api.menu(MenuHandle(memory.handle)).layout(), Err(Error::NotFound));
+    memory.operation = mac_abi::memory::DISPOSE;
+    system.client().memory(&mut memory, &[], &mut [])?;
+    assert_eq!(replacement.id()?, id);
+    assert!(replacement.item_count()? > 0);
+    api.clear()?;
+    let current = api.install_owned(ResourceScope::Application, resource)?;
+    assert_ne!(current.handle(), replacement.handle());
+    replacement.dispose()?;
+    drop(replacement);
+    assert!(current.layout().is_ok(), "dropping a cleared menu must not dispose its replacement");
+    drop(current);
+    assert!(api.find(id).is_err());
+    Ok(())
+}
+
+fn alerts(system: &System<'_>) -> Result<(), Failure>
+{
+    let dialogs = system.dialogs();
+    let owned = dialogs.alert_owned(mac_toolbox::ResourceScope::Application, 6012, "Owned alert")?;
+    let stale = owned.alert();
+    let window = owned.window();
+    drop(owned);
+    assert!(matches!(system.windows().info(window), Err(Error::NotFound)));
+    let current =
+        dialogs.alert_owned(mac_toolbox::ResourceScope::Application, 6012, "Replacement alert")?;
+    assert_eq!(window.0 & 0xffff, current.window().0 & 0xffff);
+    assert_ne!(window, current.window());
+    assert_eq!(stale.draw(), Err(Error::NotFound));
+    assert_eq!(stale.close(), Err(Error::NotFound));
+    assert!(system.windows().info(current.window()).is_ok());
+    drop(current);
+    Ok(())
 }

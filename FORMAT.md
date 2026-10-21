@@ -151,7 +151,7 @@ unsafe extern "C" fn(*const SystemServices) -> i32
 ```
 
 An application validates the table before calling the loader-supplied trap gate.
-ABI 6's `SystemServices` is 24 bytes on RV64:
+ABI 7's `SystemServices` is 24 bytes on RV64:
 
 | Offset | Size | Field |
 | --- | --- | --- |
@@ -391,3 +391,14 @@ construct IDs from slot numbers. Removal/clear invalidates the old generation;
 an exhausted slot is permanently retired rather than wrapped. Existing owner
 checks and Pascal/68k adapter contracts are unchanged. Other resident managers
 must register and adopt this facility when their implementation is next touched.
+
+## Native menu object ownership (ABI 7)
+
+MenuCall includes a u32 generation-tagged handle after operation. INSTALL returns
+that handle and the resource's semantic menu_id. MenuId is a resource property,
+not an object lifetime. A nonzero handle on a query/mutation resolves the live
+object before accessing its semantic menu number; stale and foreign handles fail.
+FIND resolves a current semantic menu number explicitly, and DISPOSE requires a
+live handle. CLEAR retains generation history. Native owners use these handles;
+classic semantic menu operations continue to use their original resource IDs.
+All native applications, System and definition resources rebuild at ABI 7.

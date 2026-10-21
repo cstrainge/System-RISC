@@ -28,7 +28,7 @@ pub fn shared(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
                                        clip:   Rect::new(0, 0, 128, 16) };
     let connection = unsafe { mac_traps::SurfaceConnection::new(&mut native_surface, gate) };
     let mut port = mac_toolbox::quickdraw::SurfacePort::new(connection);
-    let expected_width = port.text_width(0, native)?;
+    let expected_width = port.text_width(mac_toolbox::quickdraw::font::CHICAGO_12, native)?;
     let mut request = SurfaceCall { operation: 4,
                                     surface: &mut surface,
                                     text: pascal.as_ptr(),
@@ -36,7 +36,7 @@ pub fn shared(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
                                     ..Default::default() };
     require(call(gate, PSTRING_SURFACE, &mut request) == 0, "Pascal text width status")?;
     require(request.width == expected_width, "Pascal decoded width")?;
-    port.draw_text(0, 2, 12, native, 128, 0)?;
+    port.draw_text(mac_toolbox::quickdraw::font::CHICAGO_12, 2, 12, native, 128, 0)?;
     request.operation = 6;
     request.x = 2;
     request.y = 12;
@@ -63,7 +63,7 @@ pub fn shared(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
         let ch = char::from_u32(scalar).ok_or(Failure::Mismatch("bad mapping fixture"))?;
         let mut bytes = [0; 4];
         let unicode = ch.encode_utf8(&mut bytes);
-        let expected = port.text_width(0, unicode)?;
+        let expected = port.text_width(mac_toolbox::quickdraw::font::CHICAGO_12, unicode)?;
         let pstring = [1, code as u8];
         request.operation = 4;
         request.text = pstring.as_ptr();
@@ -120,8 +120,8 @@ pub fn shared(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
     let mut expected = [0; 3];
     system.resources()
           .system()
-          .get(ResourceKey { kind: *b"FOND",
-                             id:   0 })?
+          .get((ResourceKey { kind: *b"FOND",
+                              id:   0 }).into())?
           .read(0, &mut expected)?;
     for operation in
         [mac_abi::resources::LOAD, mac_abi::resources::RELEASE, mac_abi::resources::READ]
@@ -149,19 +149,19 @@ pub fn graphical(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
     for index in 0..system.files().volume_count()?
     {
         let volume = system.files().volume_at(index)?;
-        if volume.startup != 0
+        if volume.startup
         {
             startup = Some(volume.id);
             break;
         }
     }
     let startup = startup.ok_or(Failure::Mismatch("missing startup volume"))?;
-    let finder = system.files().lookup(startup, 2, "System Folder/Finder")?;
+    let finder = system.files().lookup(startup, mac_toolbox::Cnid(2), "System Folder/Finder")?;
     let version = system.resources().file_version(startup, finder.id, 1)?;
     require(version.short() == env!("CARGO_PKG_VERSION"), "disk file version through ECALL")?;
     let mut version_call = FileVersionCall { operation: FILE_VERSION,
-                                             volume: startup,
-                                             cnid: finder.id,
+                                             volume: (startup).0,
+                                             cnid: (finder.id).0,
                                              id: 1,
                                              ..Default::default() };
     require(call(gate, PSTRING_RESOURCE, &mut version_call) == 0,
@@ -186,9 +186,9 @@ pub fn graphical(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
     request.request.title[0] = 255;
     request.request.title[1..256].fill(0xdb);
     require(call(gate, PSTRING_WINDOW, &mut request) == 0, "255-byte Pascal window creation")?;
-    let id = request.request.id;
-    system.windows().set_title(mac_abi::WindowId(id), "Native café")?;
-    require(system.window(id).map_err(|error| Failure::Service(error.status()))?.title_length
+    let id = mac_abi::WindowId(request.request.id);
+    system.windows().set_title(id, "Native café")?;
+    require(system.window(id).map_err(|error| Failure::Service(error.status()))?.title.len()
             == 12,
             "native title setter")?;
     request.operation = SET_WINDOW_TITLE;
@@ -197,18 +197,14 @@ pub fn graphical(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
     request.request.title_length = 5;
     require(call(gate, PSTRING_WINDOW, &mut request) == 0, "legacy title setter")?;
     let native_title = system.window(id).map_err(|error| Failure::Service(error.status()))?;
-    require(&native_title.title[..native_title.title_length as usize] == "Café".as_bytes(),
-            "legacy title UTF8")?;
+    require(native_title.title.as_bytes() == "Café".as_bytes(), "legacy title UTF8")?;
     request.request.title[0] = 255;
     request.request.title[1..256].fill(0xdb);
     request.request.title_length = 256;
     require(call(gate, PSTRING_WINDOW, &mut request) == 0, "restore legacy title")?;
     let native = system.window(id).map_err(|error| Failure::Service(error.status()))?;
-    require(native.title_length == 510, "Pascal window title expanded without truncation")?;
-    require(core::str::from_utf8(&native.title[..510]).is_ok_and(|s| {
-                                                          s.chars().count() == 255
-                                                          && s.chars().all(|c| c == '¤')
-                                                      }),
+    require(native.title.len() == 510, "Pascal window title expanded without truncation")?;
+    require(native.title().chars().count() == 255 && native.title().chars().all(|c| c == '¤'),
             "expanded window title Unicode")?;
     request.operation = GET_WINDOW;
     request.request.title.fill(0);
@@ -219,7 +215,7 @@ pub fn graphical(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
                                            .enumerate()
                                            .all(|(i, b)| *b == if i == 0 { 255 } else { 0xdb }),
             "Pascal window title output roundtrip")?;
-    let mut draw = DrawCall { window:  id,
+    let mut draw = DrawCall { window:  id.0,
                               command: DrawCommand { kind:        DRAW_TEXT,
                                                      bounds:      Rect::new(2, 12, 2, 12),
                                                      color:       0,
@@ -234,7 +230,7 @@ pub fn graphical(system: &System<'_>, gate: TrapGate) -> Result<(), Failure>
     system.close_window(id).map_err(|error| Failure::Service(error.status()))?;
     let id = system.new_window(Rect::new(100, 100, 300, 200), "🦀", (1, 1), 8)
                    .map_err(|error| Failure::Service(error.status()))?;
-    request.request.id = id;
+    request.request.id = id.0;
     request.operation = GET_WINDOW;
     require(call(gate, PSTRING_WINDOW, &mut request) == BAD_ARGUMENT as i64,
             "unrepresentable Pascal output rejected")?;

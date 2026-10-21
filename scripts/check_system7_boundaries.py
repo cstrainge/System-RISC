@@ -103,8 +103,11 @@ def check(args):
         return dependency_cache[identity]
 
     assert not normal_dependencies(by_name['mac-abi']), 'ABI must be independent of implementations'
+    # Decoded keyboard payloads use the shared allocation-free character table.
+    # This wire-text codec contains no service state or resident implementation.
+    assert not normal_dependencies(by_name['mac-text']), 'wire text codec must remain independent'
     for name in [p['name'] for p in packages.values() if p['name'].startswith('toolbox-')]:
-        assert all(dep in ('mac-abi', 'mac-traps') or dep.startswith('toolbox-')
+        assert all(dep in ('mac-abi', 'mac-traps', 'mac-text') or dep.startswith('toolbox-')
                    for dep in normal_dependencies(by_name[name])), (name, 'client depends on backend')
     assert not any(dep.startswith('toolbox-') for dep in normal_dependencies(by_name['mac-system'])), \
         'System must implement managers internally, without depending on public client bindings'

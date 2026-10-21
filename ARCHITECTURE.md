@@ -18,7 +18,7 @@ Finder / native application / definition resource
 ```
 
 The RV64 gate uses `a7` for the operation, `a0` for the request pointer and `a1`
-for its byte size. ABI 6 supplies one gate and capability bits in the 24-byte
+for its byte size. ABI 7 supplies one gate and capability bits in the 24-byte
 `SystemServices` structure. [FORMAT.md](FORMAT.md) describes the exact contract.
 Applications and System must be rebuilt together when this ABI changes.
 

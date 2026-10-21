@@ -4,7 +4,8 @@
 use mac_toolbox::events::classic::Event;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-use mac_toolbox::{EventKind, Status, System, SystemServices, events::classic::EVERY_EVENT};
+use mac_toolbox::{System, SystemServices, events::classic::EVERY_EVENT};
+use mac_toolbox::abi::{EventKind, };
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 static FILES: AtomicUsize = AtomicUsize::new(0);
 static MENUS: AtomicUsize = AtomicUsize::new(0);
@@ -69,7 +70,7 @@ mod icon_view;
 mod menus;
 mod ui
 {
-    use mac_toolbox::{Status, System};
+    use mac_toolbox::{System};
     pub fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8])
                     -> Result<&'b str, mac_toolbox::Error>
     {
@@ -163,13 +164,13 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
                         if index % 20 == 19 { *byte = b'\r'; }
                     }
                     system.scrap().clear()?;
-                    system.scrap().put_text(core::str::from_utf8(&text).map_err(|_| mac_toolbox::BAD_ARGUMENT)?)
+                    system.scrap().put_text(core::str::from_utf8(&text).map_err(|_| mac_toolbox::abi::BAD_ARGUMENT)?)
                           ?;
                     viewer.refresh(system)?;
                     let commits = COMMITS.load(Ordering::Relaxed);
                     viewer.event(system, Event { kind: EventKind::Activate,
-                                                message: viewer.window + 100,
-                                                modifiers: mac_toolbox::ACTIVE_FLAG,
+                                                message: viewer.window.0 + 100,
+                                                modifiers: mac_toolbox::abi::ACTIVE_FLAG,
                                                 ..Default::default() }.into())?;
                     require(COMMITS.load(Ordering::Relaxed) == commits,
                             system, "CLIPBOARD_SCROLL_FAIL unrelated activation repainted\n")?;
@@ -195,7 +196,7 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
 /// The loader supplies a live service table for the application's lifetime.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     SERVICES.store(services.cast_mut(), Ordering::Release);
     // SAFETY: the loader validates this service table for the whole call.

@@ -65,7 +65,13 @@ pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
     strip_runtime(elf_path, &runtime)?;
     let elf_bytes = fs::read(&runtime)?;
     elf::decode(&elf_bytes, descriptor.load_base, descriptor.load_limit)?;
-    let mut compiled = manifest.compile_resources(manifest_path, &elf_bytes)?;
+    let mut compiled =
+        manifest.compile_resources(manifest_path,
+                                   &elf_bytes,
+                                   Some(elf_path.parent()
+                                                .ok_or_else(|| {
+                                                    error("native ELF has no artifact directory")
+                                                })?))?;
     if matches!(descriptor.role, Role::Application | Role::CodeResource)
     {
         let image = elf::decode(&debug_elf, descriptor.load_base, descriptor.load_limit)?;
@@ -143,7 +149,7 @@ pub fn rebuild(manifest_path: &Path, out: &Path) -> Result<Value>
     {
         return Err(error("rebuild requires an archive manifest"));
     }
-    let resources = resource::encode(&manifest.compile_resources(manifest_path, &[])?)?;
+    let resources = resource::encode(&manifest.compile_resources(manifest_path, &[], None)?)?;
     let data = if let Some(crate::manifest::Payload::Hex { hex }) = &manifest.data_fork
     {
         if !hex.is_ascii() || !hex.len().is_multiple_of(2)

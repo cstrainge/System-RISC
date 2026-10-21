@@ -4,7 +4,7 @@
   "file_type": "APPL",
   "creator": "TEDT",
   "role": "application",
-  "abi_version": 6,
+  "abi_version": 7,
   "load_base": "0x84000000",
   "load_limit": "0x85000000",
   "description": "System RISC TextEdit Exerciser",

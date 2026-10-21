@@ -34,9 +34,9 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   disk and Unicode contract. Changing Unicode requires a new filesystem version
   and rebuilding all affected file/name/index representations with collision
   checks; the Unicode header field is validation, not an independent selector.
-- The current priority after P15 is resolving the public Rust Toolbox API audit
-  (see `docs/TOOLBOX-RUST-API.md`) before driver/module implementation.
-  The subsequent sequence is the driver/module interface, exercised by
+- P15 and the public Rust Toolbox API audit are verified
+  (see `docs/TOOLBOX-RUST-API.md`). The current sequence is the class-neutral
+  driver/module interface, exercised by
   StuffIt volumes and the vhost filesystem/block-device pair, then the virtual
   host clipboard extension. Bring in the necessary P6 loader/service machinery
   for these milestones; input/network/display extraction and std migration follow

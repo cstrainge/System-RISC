@@ -3,7 +3,7 @@ pub use mac_abi::SCAN_STALE;
 use mac_abi::files::{DirectoryScanCursor, FileScanCall, SCAN_DIRECTORY, SCAN_DONE, SCAN_ENTRY,
                      SCAN_PENDING};
 
-use super::{CatalogInfo, Error, Files, Result};
+use super::{CatalogInfo, Cnid, Error, Files, Result, VolumeId};
 
 /// Continuation bound to one volume, directory and catalog revision. Copying a
 /// cursor copies its position; reset with Default to start another enumeration.
@@ -32,12 +32,12 @@ impl Files<'_>
     /// ordinary progress: return to the event loop before advancing again.
     /// SCAN_STALE means a mutation invalidated this enumeration; discard all
     /// accumulated totals and restart with a fresh cursor.
-    pub fn scan_directory(self, volume: u32, directory: u32, cursor: &mut DirectoryCursor)
+    pub fn scan_directory(self, volume: VolumeId, directory: Cnid, cursor: &mut DirectoryCursor)
                           -> Result<ScanStep>
     {
         let mut call = FileScanCall { operation: SCAN_DIRECTORY,
-                                      volume,
-                                      directory,
+                                      volume: volume.0,
+                                      directory: directory.0,
                                       cursor: cursor.cursor,
                                       ..Default::default() };
         self.client.file_scan(&mut call)?;
@@ -45,7 +45,7 @@ impl Files<'_>
         {
             SCAN_ENTRY =>
             {
-                ScanStep::Entry { catalog:            call.entry,
+                ScanStep::Entry { catalog:            call.entry.try_into()?,
                                   data_allocated:     call.data_allocated,
                                   resource_allocated: call.resource_allocated }
             }

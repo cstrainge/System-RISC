@@ -4,13 +4,13 @@ use mac_toolbox::{files::{DirectoryCursor, ScanStep},
 #[derive(Clone, Copy, Default)]
 struct Level
 {
-    directory: u32,
+    directory: Cnid,
     cursor:    DirectoryCursor
 }
 pub(super) struct Job
 {
-    volume:        u32,
-    root:          u32,
+    volume:        VolumeId,
+    root:          Cnid,
     levels:        [Level; 64],
     depth:         usize,
     restarts:      u8,
@@ -22,7 +22,7 @@ pub(super) struct Job
 }
 impl Job
 {
-    pub fn new(volume: u32, directory: u32) -> Self
+    pub fn new(volume: VolumeId, directory: Cnid) -> Self
     {
         let mut levels = [Level::default(); 64];
         levels[0].directory = directory;

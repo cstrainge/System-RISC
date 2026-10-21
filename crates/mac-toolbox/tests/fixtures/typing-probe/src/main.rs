@@ -7,6 +7,7 @@ use core::{fmt::Write,
            sync::atomic::{AtomicPtr, AtomicUsize, Ordering}};
 
 use mac_toolbox::*;
+use mac_toolbox::abi::EventKind;
 #[path = "../../../../../../apps/textedit-exerciser/src/editor.rs"]
 mod editor;
 #[path = "../../../../../../apps/textedit-exerciser/src/batch.rs"]
@@ -49,7 +50,7 @@ unsafe extern "C" fn trace(number: u32, pointer: *mut (), size: usize) -> i64
     }
     // SAFETY: forwards each original synchronous borrowed request unchanged.
     let status = unsafe { ((*SERVICES.load(Ordering::Acquire)).trap)(number, pointer, size) };
-    if status == i64::from(OK)
+    if status == i64::from(mac_toolbox::abi::OK)
        && number == mac_abi::traps::TEXTEDIT
        && size == core::mem::size_of::<mac_abi::textedit::TextEditCall>()
     {
@@ -68,7 +69,7 @@ unsafe extern "C" fn trace(number: u32, pointer: *mut (), size: usize) -> i64
 }
 fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
 {
-    menus::install(system)?;
+    let _menus = menus::install(system)?;
     let mut editor = editor::Editor::default();
     editor.open(system)?;
     menus::update(system, &editor)?;
@@ -130,9 +131,9 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     for _ in 0..50
     {
         let api = system.menus();
-        let _ = api.layout(129)?;
-        let item = api.item(129, 3)?;
-        api.set_item_enabled(129, 3, item.enabled)?;
+        let _ = api.layout(MenuId(129))?;
+        let item = api.item(MenuId(129), 3)?;
+        api.set_item_enabled(MenuId(129), 3, item.enabled)?;
         let _ = system.events().next(mac_toolbox::events::EventMask::from_bits_retain(0)).map(mac_toolbox::Event::into_record)?;
     }
     let elapsed = system.events().uptime_ticks()? - start;
@@ -263,7 +264,7 @@ fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor) -> Result<()
 /// The loader supplies a live resident service table throughout this application.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     SERVICES.store(services.cast_mut(), Ordering::Release);
     let original = unsafe { &*services };
@@ -280,7 +281,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
         let _ = system.log("TYPING_PROFILE_FAIL\n");
         return e.status();
     }
-    OK
+    mac_toolbox::abi::OK
 }
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> !

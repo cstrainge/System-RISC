@@ -383,7 +383,7 @@ mod sdk_tests
                                           Point { h: 18,
                                                   v: 30 })
                            .unwrap(),
-                   SCROLL_UP);
+                   toolbox_controls::Part::Up);
         assert_eq!(controls.scrollbar_track_value(WindowId(42),
                                                   Rect::new(10, 20, 26, 220),
                                                   25,

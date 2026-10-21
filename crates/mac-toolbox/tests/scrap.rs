@@ -51,24 +51,29 @@ fn byte_and_record_limits_preserve_the_last_successful_clipboard()
         system.scrap().put_text("retained").unwrap();
         let before = system.scrap().info().unwrap();
         let excessive = vec![0xab; MAX_BYTES];
-        assert_eq!(system.scrap().put(*b"SIZE", &excessive), Err(Error::NoMemory));
+        assert_eq!(system.scrap().put(mac_toolbox::TypeCode::new(*b"SIZE"), &excessive),
+                   Err(Error::NoMemory));
         assert_eq!(system.scrap().info().unwrap(), before);
         let mut text = [0; 32];
         assert_eq!(system.scrap().text(&mut text).unwrap(), "retained");
         system.scrap().clear().unwrap();
         for _ in 0..MAX_FLAVORS
         {
-            system.scrap().put(*b"ZERO", &[]).unwrap();
+            system.scrap().put(mac_toolbox::TypeCode::new(*b"ZERO"), &[]).unwrap();
         }
         let before = system.scrap().info().unwrap();
         assert_eq!(before.size as usize, MAX_FLAVORS * 8);
-        assert_eq!(system.scrap().put(*b"LAST", &[]), Err(Error::NoMemory));
+        assert_eq!(system.scrap().put(mac_toolbox::TypeCode::new(*b"LAST"), &[]),
+                   Err(Error::NoMemory));
         assert_eq!(system.scrap().info().unwrap(), before);
         system.scrap().clear().unwrap();
-        system.scrap().put(*b"FULL", &excessive[..MAX_BYTES - 8]).unwrap();
+        system.scrap()
+              .put(mac_toolbox::TypeCode::new(*b"FULL"), &excessive[..MAX_BYTES - 8])
+              .unwrap();
         assert_eq!(system.scrap().info().unwrap().size as usize, MAX_BYTES);
         let before = system.scrap().info().unwrap();
-        assert_eq!(system.scrap().put(*b"ZERO", &[]), Err(Error::NoMemory));
+        assert_eq!(system.scrap().put(mac_toolbox::TypeCode::new(*b"ZERO"), &[]),
+                   Err(Error::NoMemory));
         assert_eq!(system.scrap().info().unwrap(), before);
         system.scrap().clear().unwrap();
         system.scrap().put_text("capacity recovered").unwrap();
@@ -90,7 +95,7 @@ fn transport_clears_borrowed_pointers_on_success_and_failure()
         system.client().scrap(&mut call, b"ABCD", &mut []).unwrap();
         assert!(call.input.is_null() && call.output.is_null());
         assert_eq!((call.input_length, call.capacity), (0, 0));
-        call.kind = TEXT;
+        call.kind = (TEXT).bytes();
         assert_eq!(system.client().scrap(&mut call, b"bypass", &mut []), Err(Error::BadArgument));
         assert!(call.input.is_null() && call.output.is_null());
         assert_eq!((call.input_length, call.capacity), (0, 0));
@@ -139,9 +144,15 @@ fn host_threads_share_one_clipboard_without_torn_payloads_or_lost_records()
                          let kind = [b'T', b'H', b'R', worker];
                          for _ in 0..16
                          {
-                             retry(busy, || system.scrap().put(kind, &pattern));
+                             retry(busy, || {
+                                 system.scrap().put(mac_toolbox::TypeCode::new(kind), &pattern)
+                             });
                              let mut output = [0u8; 4096];
-                             assert_eq!(retry(busy, || system.scrap().read(kind, 0, &mut output)),
+                             assert_eq!(retry(busy, || {
+                                            system.scrap().read(mac_toolbox::TypeCode::new(kind),
+                                                                0,
+                                                                &mut output)
+                                        }),
                                         4096);
                              assert_eq!(output, pattern);
                          }
@@ -155,8 +166,8 @@ fn host_threads_share_one_clipboard_without_torn_payloads_or_lost_records()
         for index in 0..128
         {
             let flavor = system.scrap().flavor_at(index).unwrap();
-            assert_eq!(&flavor.kind[..3], b"THR");
-            assert!((1..=8).contains(&flavor.kind[3]));
+            assert_eq!(&flavor.kind.as_bytes()[..3], b"THR");
+            assert!((1..=8).contains(&flavor.kind.as_bytes()[3]));
             assert_eq!(flavor.length, 4096);
             assert_eq!(flavor.offset, index as u32 * (4096 + 8) + 8);
         }

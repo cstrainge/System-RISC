@@ -5,7 +5,7 @@ pub mod image;
 pub mod code_types;
 
 pub const FORMAT_VERSION: u16 = 1;
-pub const ABI_VERSION: u32 = 6;
+pub const ABI_VERSION: u32 = 7;
 pub const DESCRIPTOR_SIZE: usize = 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

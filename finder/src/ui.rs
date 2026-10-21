@@ -1,19 +1,24 @@
 //! Finder text belongs to its resource fork, decoded by the Resource Manager.
-use mac_toolbox::{Error, *};
+use mac_toolbox::{Error, WindowId, *};
 pub fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8]) -> Result<&'b str, Error>
 {
     system.resources().application().indexed_string(2000, index, output)
 }
 
 #[derive(Default)]
-pub struct Alerts
+pub struct Alerts<'a>
 {
-    pub window: u32,
-    empty:      bool
+    alert: Option<dialogs::Alert<'a>>,
+    empty: bool
 }
-impl Alerts
+impl<'a> Alerts<'a>
 {
-    pub fn error(&mut self, system: &System<'_>, status: Error) -> Result<(), Error>
+    pub fn window(&self) -> WindowId
+    {
+        self.alert.as_ref().map_or(WindowId(0), |alert| alert.window())
+    }
+
+    pub fn error(&mut self, system: &System<'a>, status: Error) -> Result<(), Error>
     {
         let index = match status
         {
@@ -27,13 +32,13 @@ impl Alerts
         };
         let mut bytes = [0; 768];
         let body = text(system, index, &mut bytes)?;
-        self.window = system.dialogs().alert(resources::APPLICATION, 2001, body)?.0;
+        self.alert = Some(system.dialogs().alert_owned(resources::APPLICATION, 2001, body)?);
         self.empty = false;
         self.modal_menus(system, false)?;
         Ok(())
     }
 
-    pub fn confirm_empty(&mut self, system: &System<'_>, browser: &crate::browser::Browser)
+    pub fn confirm_empty(&mut self, system: &System<'a>, browser: &crate::browser::Browser)
                          -> Result<(), Error>
     {
         use core::fmt::Write;
@@ -74,7 +79,8 @@ impl Alerts
                 remaining = &remaining[ch.len_utf8()..];
             }
         }
-        self.window = system.dialogs().alert(resources::APPLICATION, 6012, body.as_str())?.0;
+        self.alert =
+            Some(system.dialogs().alert_owned(resources::APPLICATION, 6012, body.as_str())?);
         let mut log = crate::browser::Text::<800>::default();
         let _ = writeln!(&mut log, "FINDER_EMPTY_TEXT {}", body.as_str());
         system.log(log.as_str())?;
@@ -87,7 +93,7 @@ impl Alerts
     {
         for id in [1251, 1252, 1253, 1254, 1256, 1255]
         {
-            system.menus().set_item_enabled(id, 0, enabled)?;
+            system.menus().set_item_enabled(MenuId(id), 0, enabled)?;
         }
         Ok(())
     }
@@ -95,13 +101,18 @@ impl Alerts
     /// A true result authorizes the pending Empty Trash action, exactly once.
     pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Error>
     {
-        let Some(item) = system.dialogs().handle_event(WindowId(self.window), event)?
+        let Some(alert) = &mut self.alert
         else
         {
             return Ok(false);
         };
-        system.dialogs().close(WindowId(self.window))?;
-        self.window = 0;
+        let Some(item) = alert.handle_event(event)?
+        else
+        {
+            return Ok(false);
+        };
+        alert.close()?;
+        self.alert = None;
         self.modal_menus(system, true)?;
         let confirmed = self.empty && item == 1;
         self.empty = false;

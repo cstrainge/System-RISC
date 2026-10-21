@@ -35,7 +35,7 @@ fn substitute<const N: usize>(source: &str, values: &[&str]) -> Result<Text<N>, 
 pub(super) fn filesystem(system: &System<'_>, volume: &files::VolumeInfo)
                          -> Result<Text<256>, Error>
 {
-    let filesystem = files::Filesystem::of(volume)?;
+    let filesystem = volume.filesystem;
     if let Some(version) = filesystem.version()
     {
         let mut bytes = [0; 128];
@@ -148,7 +148,7 @@ fn body(system: &System<'_>, port: GraphicsPort<'_>, bounds: Rect, value: &str, 
     }
     Ok(())
 }
-impl Info
+impl Info<'_>
 {
     pub(super) fn control(&self, system: &System<'_>, check: Check, highlighted: bool)
                           -> Result<StandardState, Error>
@@ -226,7 +226,7 @@ impl Info
     {
         system.begin_update(self.window)?;
         let result: Result<(), Error> = (|| {
-            let port = system.quickdraw().graphics(WindowId(self.window));
+            let port = system.quickdraw().graphics(self.window);
             port.reset()?;
             port.colors(0xffffff, 0xffffff)?;
             port.paint_rect(Rect::new(0, 0, self.layout.width, self.layout.height))?;
@@ -262,7 +262,7 @@ impl Info
                                             self.icon,
                                             icon_bounds,
                                             crate::icon_view::State::default())?;
-            system.textedit().draw(self.name, WindowId(self.window))?;
+            system.textedit().draw(self.name.id(), self.window)?;
             if self.focus == Focus::Name && self.active && self.editable(Focus::Name)
             {
                 port.frame_rect(layout::inset(self.layout.name, -1))?;
@@ -322,7 +322,7 @@ impl Info
             {
                 port.frame_rect(self.layout.comments)?;
             }
-            system.textedit().draw(self.comments, WindowId(self.window))?;
+            system.textedit().draw(self.comments.id(), self.window)?;
             for (index, check) in [Check::Locked, Check::Stationery].into_iter().enumerate()
             {
                 if let Some(id) = self.controls[index]
@@ -340,7 +340,7 @@ impl Info
     }
 }
 
-pub(super) fn location(system: &System<'_>, volume_id: u32, parent: u32)
+pub(super) fn location(system: &System<'_>, volume_id: VolumeId, parent: Cnid)
                        -> Result<Text<768>, Error>
 {
     let mut output = Text::default();

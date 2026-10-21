@@ -35,7 +35,7 @@ pub fn events_and_errors(system: &System<'_>) -> Result<(), Failure>
                                     input:  Input { modifiers: input.modifiers
                                                                | Modifiers::ACTIVE,
                                                     ..input } },
-                  Event::MenuCommand { menu: -17,
+                  Event::MenuCommand { menu: mac_toolbox::MenuId(-17),
                                        item: 3,
                                        input },
                   Event::CloseRequested { window: id,
@@ -80,7 +80,7 @@ pub fn events_and_errors(system: &System<'_>) -> Result<(), Failure>
         require(system.windows().info(id).err() == Some(Error::NotFound),
                 "facade preserves typed stale-window error")?;
     }
-    let empty = system.memory().new_empty_handle()?;
+    let mut empty = system.memory().new_empty_handle()?;
     require(empty.len() == Err(Error::NilHandle), "typed Memory Manager error")?;
     empty.dispose()?;
     events.flush(EventMask::ALL, EventMask::NONE)?;

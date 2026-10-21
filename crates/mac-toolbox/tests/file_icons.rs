@@ -125,9 +125,12 @@ fn application_icons_use_their_own_bundle_family_sizes_colors_and_masks()
             let before_count = system.quickdraw().icons().count().unwrap();
             for (name, large, small) in [("Black", 0, 0xffffff), ("White", 0xffffff, 0)]
             {
-                let file = system.files()
-                                 .lookup(system.files().volume_at(0).unwrap().id, 2, name)
-                                 .unwrap();
+                let file =
+                    system.files()
+                          .lookup(system.files().volume_at(0).unwrap().id,
+                                  mac_toolbox::Cnid(2),
+                                  name)
+                          .unwrap();
                 for (size, color) in [(32, large), (16, small)]
                 {
                     let mut pixels = vec![0x123456; 40 * 40];
@@ -168,9 +171,12 @@ fn application_icons_use_their_own_bundle_family_sizes_colors_and_masks()
                     }
                 }
             }
-            let broken = system.files()
-                               .lookup(system.files().volume_at(0).unwrap().id, 2, "Broken")
-                               .unwrap();
+            let broken =
+                system.files()
+                      .lookup(system.files().volume_at(0).unwrap().id,
+                              mac_toolbox::Cnid(2),
+                              "Broken")
+                      .unwrap();
             let mut pixels = vec![0x123456; 32 * 32];
             let mut surface = mac_abi::Surface { pixels: pixels.as_mut_ptr(),
                                                  width:  32,
@@ -188,7 +194,7 @@ fn application_icons_use_their_own_bundle_family_sizes_colors_and_masks()
                            .status(),
                        mac_abi::BAD_ARGUMENT);
             assert_eq!(port.plot_file_icon(system.files().volume_at(0).unwrap().id,
-                                           2,
+                                           mac_toolbox::Cnid(2),
                                            Rect::new(0, 0, 32, 32),
                                            IconFlags::default())
                            .unwrap_err()
@@ -212,9 +218,11 @@ fn custom_document_icons_are_read_without_bundle_or_executable_loading()
         with_file_disk(&disk.path, true, DiskFaults::default(), |services| {
             let system = unsafe { System::from_raw(services) }.unwrap();
             let file = system.files()
-                             .lookup(system.files().volume_at(0).unwrap().id, 2, "Custom Document")
+                             .lookup(system.files().volume_at(0).unwrap().id,
+                                     mac_toolbox::Cnid(2),
+                                     "Custom Document")
                              .unwrap();
-            assert_eq!(file.file_type, *b"TEXT");
+            assert_eq!(file.file_type, mac_toolbox::TypeCode::new(*b"TEXT"));
             for size in [16, 32]
             {
                 let mut pixels = vec![0x123456; size * size];

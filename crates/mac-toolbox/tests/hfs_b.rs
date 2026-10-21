@@ -15,7 +15,7 @@ struct Fixture
 {
     dir:  PathBuf,
     disk: PathBuf,
-    file: u32
+    file: mac_toolbox::Cnid
 }
 impl Fixture
 {
@@ -35,7 +35,7 @@ impl Fixture
                                           uuid:    [23; 16] },
                           Budget::default()).unwrap();
         let mut volume = Volume::mount(&mut image, partition, Budget::default()).unwrap();
-        let file = volume.create(ROOT_ID,
+        let file = volume.create((ROOT_ID).0,
                                  "cafe\u{301}",
                                  false,
                                  DiskTime(WHEN.mac_microseconds().unwrap()))
@@ -61,10 +61,11 @@ impl Fixture
         volume.check().unwrap();
         Self { dir,
                disk,
-               file }
+               file: mac_toolbox::Cnid(file) }
     }
 
-    fn run<R>(&self, readonly: bool, faults: DiskFaults, f: impl FnOnce(&System<'_>, u32) -> R)
+    fn run<R>(&self, readonly: bool, faults: DiskFaults,
+              f: impl FnOnce(&System<'_>, mac_toolbox::VolumeId) -> R)
               -> (R, DiskActivity)
     {
         with_file_disk(&self.disk, readonly, faults, |services| {
@@ -105,15 +106,20 @@ fn legacy_names_project_to_str31_without_changing_native_names_or_disk()
     {
         let name = character.to_string().repeat(count);
         fixture.run(false, DiskFaults::default(), |system, volume| {
-                   system.files().rename(volume, fixture.file, &name, WHEN).unwrap();
+                   system.files().rename_at(volume, fixture.file, &name, WHEN).unwrap();
                });
         let before = fs::read(&fixture.disk).unwrap();
         with_file_disk(&fixture.disk, true, DiskFaults::default(), |services| {
             let system = unsafe { System::from_raw(services) }.unwrap();
             let volume = system.files().volume_at(0).unwrap().id;
-            let native = system.files().lookup(volume, ROOT_ID, &name).unwrap();
+            let native = system.files().lookup(volume, mac_toolbox::Cnid(ROOT_ID), &name).unwrap();
             assert_eq!(native.name(), name);
-            let mut projected = native;
+            let mut native_call = FileCall { operation: CATALOG,
+                                             volume: volume.0,
+                                             cnid: native.id.0,
+                                             ..Default::default() };
+            system.client().file(&mut native_call, "", &mut []).unwrap();
+            let mut projected = native_call.entry;
             projected.name.fill(0);
             let length = count.min(31);
             projected.name[0] = length as u8;
@@ -125,8 +131,8 @@ fn legacy_names_project_to_str31_without_changing_native_names_or_disk()
             {
                 let mut call =
                     FileCall { operation,
-                               volume,
-                               cnid: if operation == CATALOG { native.id } else { ROOT_ID },
+                               volume: volume.0,
+                               cnid: if operation == CATALOG { (native.id).0 } else { ROOT_ID },
                                name: pascal.as_ptr(),
                                name_length: pascal.len(),
                                ..Default::default() };
@@ -134,7 +140,7 @@ fn legacy_names_project_to_str31_without_changing_native_names_or_disk()
                 assert_eq!(call.entry, projected, "operation {operation}, name {name}");
             }
             let mut scan = FileScanCall { operation: SCAN_DIRECTORY,
-                                          volume,
+                                          volume: volume.0,
                                           directory: ROOT_ID,
                                           ..Default::default() };
             for _ in 0..1024
@@ -147,7 +153,7 @@ fn legacy_names_project_to_str31_without_changing_native_names_or_disk()
             }
             assert_eq!(scan.step, SCAN_ENTRY);
             assert_eq!(scan.entry, projected);
-            let mut dialog = sf::StandardFileCall { volume,
+            let mut dialog = sf::StandardFileCall { volume: volume.0,
                                                     directory: ROOT_ID,
                                                     ..Default::default() };
             assert_eq!(legacy(services.trap, PSTRING_STANDARD_FILE, &mut dialog), 0);
@@ -160,7 +166,7 @@ fn legacy_names_project_to_str31_without_changing_native_names_or_disk()
             assert_eq!(legacy(services.trap, PSTRING_STANDARD_FILE, &mut dialog), 0);
             // The projected name is not needed to open a file by its identity.
             let mut open = FileCall { operation: OPEN,
-                                      volume,
+                                      volume: volume.0,
                                       cnid: projected.id,
                                       ..Default::default() };
             assert_eq!(legacy(services.trap, PSTRING_FILE, &mut open), 0);
@@ -174,7 +180,8 @@ fn legacy_names_project_to_str31_without_changing_native_names_or_disk()
             open.operation = CLOSE;
             assert_eq!(legacy(services.trap, PSTRING_FILE, &mut open), 0);
             assert_eq!(system.files().catalog(volume, native.id).unwrap(), native);
-            assert_eq!(system.files().lookup(volume, ROOT_ID, &name).unwrap(), native);
+            assert_eq!(system.files().lookup(volume, mac_toolbox::Cnid(ROOT_ID), &name).unwrap(),
+                       native);
         }).unwrap();
         assert_eq!(fs::read(&fixture.disk).unwrap(), before, "projection changed stored bytes");
         fixture.run(true, DiskFaults::default(), |system, volume| {
@@ -191,7 +198,7 @@ fn legacy_name_projection_rejects_unrepresentable_characters_even_after_str31()
     for name in ["🦀".to_owned(), format!("{}🦀", "a".repeat(31))]
     {
         fixture.run(false, DiskFaults::default(), |system, volume| {
-                   system.files().rename(volume, fixture.file, &name, WHEN).unwrap();
+                   system.files().rename_at(volume, fixture.file, &name, WHEN).unwrap();
                });
         let before = fs::read(&fixture.disk).unwrap();
         with_file_disk(&fixture.disk, true, DiskFaults::default(), |services| {
@@ -199,11 +206,17 @@ fn legacy_name_projection_rejects_unrepresentable_characters_even_after_str31()
             let volume = system.files().volume_at(0).unwrap().id;
             for operation in [CATALOG, DIRECTORY_ENTRY]
             {
-                let mut call =
-                    FileCall { operation,
-                               volume,
-                               cnid: if operation == CATALOG { fixture.file } else { ROOT_ID },
-                               ..Default::default() };
+                let mut call = FileCall { operation,
+                                          volume: volume.0,
+                                          cnid: if operation == CATALOG
+                                          {
+                                              (fixture.file).0
+                                          }
+                                          else
+                                          {
+                                              ROOT_ID
+                                          },
+                                          ..Default::default() };
                 let untouched = call.entry;
                 assert_eq!(legacy(services.trap, PSTRING_FILE, &mut call),
                            mac_abi::BAD_ARGUMENT as i64);
@@ -222,10 +235,11 @@ fn native_names_precise_dates_and_large_forks_survive_real_remount()
     fixture.run(false, DiskFaults::default(), |system, id| {
                let files = system.files();
                let volume = files.volume(id).unwrap();
-               assert_eq!(Filesystem::of(&volume).unwrap(), Filesystem::HfsB { version: 1 });
+               assert_eq!(volume.filesystem, Filesystem::HfsB { version: 1 });
                assert_eq!(volume.created_at(), WHEN);
                assert!(volume.total_bytes > volume.free_bytes);
-               assert!(files.volume(1).is_err(), "an arbitrary slot number is not a volume handle");
+               assert!(files.volume(mac_toolbox::VolumeId(1)).is_err(),
+                       "an arbitrary slot number is not a volume handle");
                let entry = files.lookup(id, ROOT_ID, "CAFÉ").unwrap();
                assert_eq!(entry.id, fixture.file);
                assert_eq!(entry.name(), "café");
@@ -241,46 +255,46 @@ fn native_names_precise_dates_and_large_forks_survive_real_remount()
                drop(resource);
                let later =
                    Timestamp::from_mac_microseconds(WHEN.mac_microseconds().unwrap() + 1_000_001);
-               files.rename(id, entry.id, "Résumé 😀", later).unwrap();
-               files.set_comment(id, entry.id, "metadata", later).unwrap();
-               files.set_stationery(id, entry.id, true, later).unwrap();
-               files.set_locked(id, entry.id, true, later).unwrap();
+               files.rename_at(id, entry.id, "Résumé 😀", later).unwrap();
+               files.set_comment_at(id, entry.id, "metadata", later).unwrap();
+               files.set_stationery_at(id, entry.id, true, later).unwrap();
+               files.set_locked_at(id, entry.id, true, later).unwrap();
                assert_eq!(files.catalog(id, entry.id).unwrap().modified_at(), WHEN);
                let mut path = String::new();
                files.path(id, entry.id, &mut path).unwrap();
                assert!(path.ends_with("Résumé 😀"));
                let long = format!("{}abc", "😀".repeat(63));
-               let boundary = files.new_folder(id, ROOT_ID, &long, WHEN).unwrap();
-               assert_eq!(files.rename(id, boundary.id, &"😀".repeat(64), WHEN),
+               let boundary = files.new_folder_at(id, ROOT_ID, &long, WHEN).unwrap();
+               assert_eq!(files.rename_at(id, boundary.id, &"😀".repeat(64), WHEN),
                           Err(mac_toolbox::Error::BadArgument));
                assert_eq!(files.catalog(id, boundary.id).unwrap().name(), long);
                // Input exceeds 255 bytes; NFC storage is exactly 255 and valid.
                let decomposed = format!("{}e\u{301}", "a".repeat(253));
-               let renamed = files.rename(id, boundary.id, &decomposed, WHEN).unwrap();
+               let renamed = files.rename_at(id, boundary.id, &decomposed, WHEN).unwrap();
                assert_eq!(renamed.name(), format!("{}é", "a".repeat(253)));
                let cjk = format!("{}ab", "文".repeat(66));
                assert_eq!(cjk.len(), 200);
-               files.new_folder(id, ROOT_ID, &cjk, WHEN).unwrap();
-               let latin_i = files.new_folder(id, ROOT_ID, "I", WHEN).unwrap();
+               files.new_folder_at(id, ROOT_ID, &cjk, WHEN).unwrap();
+               let latin_i = files.new_folder_at(id, ROOT_ID, "I", WHEN).unwrap();
                assert_eq!(files.lookup(id, ROOT_ID, "i").unwrap().id, latin_i.id);
-               let dotless = files.new_folder(id, ROOT_ID, "ı", WHEN).unwrap();
+               let dotless = files.new_folder_at(id, ROOT_ID, "ı", WHEN).unwrap();
                assert_ne!(latin_i.id, dotless.id);
-               let dotted = files.new_folder(id, ROOT_ID, "İ", WHEN).unwrap();
+               let dotted = files.new_folder_at(id, ROOT_ID, "İ", WHEN).unwrap();
                assert_eq!(files.lookup(id, ROOT_ID, "i\u{307}").unwrap().id, dotted.id);
-               let marks = files.new_folder(id, ROOT_ID, "a\u{315}\u{300}", WHEN).unwrap();
+               let marks = files.new_folder_at(id, ROOT_ID, "a\u{315}\u{300}", WHEN).unwrap();
                assert_eq!(marks.name(), "à\u{315}");
                assert_eq!(files.lookup(id, ROOT_ID, "A\u{300}\u{315}").unwrap().id, marks.id);
-               assert_eq!(files.new_folder(id, ROOT_ID, &"😀".repeat(64), WHEN),
+               assert_eq!(files.new_folder_at(id, ROOT_ID, &"😀".repeat(64), WHEN),
                           Err(mac_toolbox::Error::BadArgument));
                for (stored, lookup) in [("Straße", "STRASSE"), ("ﬁ", "fi"), ("cafe\u{301}", "CAFÉ")]
                {
-                   let folder = files.new_folder(id, ROOT_ID, stored, WHEN).unwrap();
+                   let folder = files.new_folder_at(id, ROOT_ID, stored, WHEN).unwrap();
                    assert_eq!(files.lookup(id, ROOT_ID, lookup).unwrap().id, folder.id);
-                   assert_eq!(files.new_folder(id, ROOT_ID, lookup, WHEN),
+                   assert_eq!(files.new_folder_at(id, ROOT_ID, lookup, WHEN),
                               Err(mac_toolbox::Error::AlreadyExists));
                }
-               files.new_folder(id, ROOT_ID, "①", WHEN).unwrap();
-               files.new_folder(id, ROOT_ID, "1", WHEN).unwrap();
+               files.new_folder_at(id, ROOT_ID, "①", WHEN).unwrap();
+               files.new_folder_at(id, ROOT_ID, "1", WHEN).unwrap();
            });
     fixture.run(true, DiskFaults::default(), |system, id| {
                let e = system.files().lookup(id, ROOT_ID, "RÉSUMÉ 😀").unwrap();
@@ -290,19 +304,21 @@ fn native_names_precise_dates_and_large_forks_survive_real_remount()
            });
 }
 
-fn save(system: &System<'_>, volume: u32, expected: Option<u32>, data: &[u8])
+fn save(system: &System<'_>, volume: mac_toolbox::VolumeId, expected: Option<mac_toolbox::Cnid>,
+        data: &[u8])
         -> mac_toolbox::files::CatalogInfo
 {
-    let mut writer = system.files()
-                           .create_data(DataFileSpec { volume,
-                                                       parent: ROOT_ID,
-                                                       name: "Export 😀.json",
-                                                       replacing: expected,
-                                                       file_type: *b"TEXT",
-                                                       creator: *b"RSED",
-                                                       modified: WHEN },
-                                        data.len())
-                           .unwrap();
+    let mut writer =
+        system.files()
+              .create_data_at(DataFileSpec { volume,
+                                             parent: ROOT_ID,
+                                             name: "Export 😀.json",
+                                             replacing: expected,
+                                             file_type: mac_toolbox::TypeCode::new(*b"TEXT"),
+                                             creator: mac_toolbox::TypeCode::new(*b"RSED") },
+                              data.len(),
+                              WHEN)
+              .unwrap();
     writer.write_all(data).unwrap();
     writer.finish().unwrap()
 }
@@ -310,35 +326,36 @@ fn save(system: &System<'_>, volume: u32, expected: Option<u32>, data: &[u8])
 fn save_replace_trash_restore_and_empty_are_durable()
 {
     let fixture = Fixture::new();
-    let (cnid, _) =
-        fixture.run(false, DiskFaults::default(), |system, id| {
-                   let entry = save(system, id, None, b"{\"first\":true}");
-                   let next = save(system, id, Some(entry.id), b"{\"second\":true}");
-                   assert_eq!(entry.id, next.id);
-                   assert_eq!(next.created_at(), WHEN);
-                   system.files().set_comment(id, entry.id, "A Unicode comment 😀", WHEN).unwrap();
-                   let mut text = String::new();
-                   system.files().comment(id, entry.id, &mut text).unwrap();
-                   assert_eq!(text, "A Unicode comment 😀");
-                   system.files().move_to_trash(id, entry.id, WHEN).unwrap();
-                   assert_eq!(system.files().trash_usage(id).unwrap().items, 1);
-                   entry.id
-               });
+    let (cnid, _) = fixture.run(false, DiskFaults::default(), |system, id| {
+                               let entry = save(system, id, None, b"{\"first\":true}");
+                               let next = save(system, id, Some(entry.id), b"{\"second\":true}");
+                               assert_eq!(entry.id, next.id);
+                               assert_eq!(next.created_at(), WHEN);
+                               system.files()
+                                     .set_comment_at(id, entry.id, "A Unicode comment 😀", WHEN)
+                                     .unwrap();
+                               let mut text = String::new();
+                               system.files().comment(id, entry.id, &mut text).unwrap();
+                               assert_eq!(text, "A Unicode comment 😀");
+                               system.files().move_to_trash_at(id, entry.id, WHEN).unwrap();
+                               assert_eq!(system.files().trash_usage(id).unwrap().items, 1);
+                               entry.id
+                           });
     fixture.run(false, DiskFaults::default(), |system, id| {
-               let restored = system.files().put_away(id, cnid, WHEN).unwrap();
+               let restored = system.files().put_away_at(id, cnid, WHEN).unwrap();
                assert_eq!(restored.parent, ROOT_ID);
                let mut file = system.files().open(id, cnid, Fork::Data).unwrap();
                let mut bytes = [0; 15];
                assert_eq!(file.read(&mut bytes).unwrap(), bytes.len());
                assert_eq!(&bytes, b"{\"second\":true}");
                drop(file);
-               system.files().move_to_trash(id, cnid, WHEN).unwrap();
-               assert_eq!(system.files().empty_trash(id, WHEN).unwrap(), 1);
+               system.files().move_to_trash_at(id, cnid, WHEN).unwrap();
+               assert_eq!(system.files().empty_trash_at(id, WHEN).unwrap(), 1);
            });
     fixture.run(true, DiskFaults::default(), |system, id| {
                assert_eq!(system.files().catalog(id, cnid), Err(mac_toolbox::Error::NotFound));
                assert_eq!(system.files().trash_usage(id).unwrap().items, 0);
-               assert_eq!(system.files().new_folder(id, ROOT_ID, "denied", WHEN),
+               assert_eq!(system.files().new_folder_at(id, ROOT_ID, "denied", WHEN),
                           Err(mac_toolbox::Error::ReadOnly));
            });
 }
@@ -365,7 +382,7 @@ fn standard_save_as_accepts_native_unicode_and_normalizes_its_result()
                };
                assert_eq!(selection.name(), format!("{}café.json", "😀".repeat(50)));
                assert_eq!(selection.entry.volume, volume);
-               assert_eq!(selection.entry.id, 0);
+               assert_eq!(selection.entry.id, mac_toolbox::Cnid(0));
                assert!(!selection.replacing);
                assert!(system.files().lookup(volume, ROOT_ID, selection.name()).is_err(),
                        "choosing a destination must not create it");
@@ -384,7 +401,7 @@ fn native_partial_writes_and_flush_failures_do_not_publish_catalog_changes()
                                ..Default::default() }]
     {
         fixture.run(false, fault, |system, id| {
-                   assert_eq!(system.files().new_folder(id, ROOT_ID, "Unpublished 😀", WHEN),
+                   assert_eq!(system.files().new_folder_at(id, ROOT_ID, "Unpublished 😀", WHEN),
                               Err(mac_toolbox::Error::Io));
                });
         assert_eq!(fs::read(&fixture.disk).unwrap(),
@@ -419,15 +436,15 @@ fn mixed_native_and_classic_mounts_preserve_format_and_startup_identity()
             assert_ne!(a.id, b.id);
             for volume in [a, b]
             {
-                if Filesystem::of(&volume).unwrap() == (Filesystem::HfsB { version: 1 })
+                if volume.filesystem == (Filesystem::HfsB { version: 1 })
                 {
-                    assert_eq!(volume.startup, 1);
+                    assert!(volume.startup);
                     assert_eq!(files.lookup(volume.id, ROOT_ID, "CAFÉ").unwrap().id, fixture.file);
                 }
                 else
                 {
-                    assert_eq!(Filesystem::of(&volume).unwrap(), Filesystem::Hfs);
-                    assert_eq!(volume.startup, 0);
+                    assert_eq!(volume.filesystem, Filesystem::Hfs);
+                    assert!(!volume.startup);
                     assert_eq!(files.lookup(volume.id, ROOT_ID, "Folder/Café")
                                     .unwrap()
                                     .created_at()
@@ -456,7 +473,7 @@ fn allocated_native_fork_crosses_two_and_four_gib_through_public_sdk()
     fs::write(dir.join("pid"), std::process::id().to_string()).unwrap();
     let fixture = Fixture { disk: dir.join("disk.hfsb"),
                             dir,
-                            file: id };
+                            file: mac_toolbox::Cnid(id) };
     let mut image = fs::File::create(&fixture.disk).unwrap();
     image.set_len(disk.sectors * 512).unwrap();
     // Persist the adapter's equivalent sparse host image, not a fabricated
@@ -471,8 +488,9 @@ fn allocated_native_fork_crosses_two_and_four_gib_through_public_sdk()
     fixture.run(true, DiskFaults::default(), |system, volume| {
                let files = system.files();
                assert!(files.volume(volume).unwrap().total_bytes > 1u64 << 32);
-               assert_eq!(files.catalog(volume, id).unwrap().data_length, (1u64 << 32) + 4096);
-               let mut fork = files.open(volume, id, Fork::Data).unwrap();
+               assert_eq!(files.catalog(volume, mac_toolbox::Cnid(id)).unwrap().data_length,
+                          (1u64 << 32) + 4096);
+               let mut fork = files.open(volume, mac_toolbox::Cnid(id), Fork::Data).unwrap();
                assert_eq!(fork.len().unwrap(), (1u64 << 32) + 4096);
                for boundary in [1u64 << 31, 1u64 << 32]
                {
@@ -505,4 +523,30 @@ fn repeated_catalog_queries_do_not_repeat_physical_metadata_reads()
     assert!(single.reads > 0);
     assert_eq!(repeated.reads, single.reads, "unchanged catalog data must stay cached");
     assert_eq!((repeated.writes, repeated.flushes), (0, 0));
+}
+
+#[test]
+fn ordinary_native_mutations_use_the_system_clock_without_app_date_plumbing()
+{
+    let fixture = Fixture::new();
+    fixture.run(false, DiskFaults::default(), |system, volume| {
+               let before = system.now().unwrap().mac_microseconds().unwrap();
+               let folder = system.files().new_folder(volume, ROOT_ID, "Current dates").unwrap();
+               let spec = DataFileSpec { volume,
+                                         parent: folder.id,
+                                         name: "Now.json",
+                                         replacing: None,
+                                         file_type: mac_toolbox::TypeCode::new(*b"TEXT"),
+                                         creator: mac_toolbox::TypeCode::new(*b"TEST") };
+               let mut writer = system.files().create_data(spec, 2).unwrap();
+               writer.write_all(b"{}").unwrap();
+               let file = writer.finish().unwrap();
+               let after = system.now().unwrap().mac_microseconds().unwrap();
+               for info in [folder, file]
+               {
+                   assert!((before..=after).contains(&info.created.mac_microseconds().unwrap()));
+                   assert!((before..=after).contains(&info.modified.mac_microseconds().unwrap()));
+                   assert_ne!(info.created, WHEN, "automatic calls must not reuse the format date");
+               }
+           });
 }

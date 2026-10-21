@@ -1,5 +1,6 @@
 //! Original System 7.6.1 mono TextEdit observations through the native SDK.
-use mac_toolbox::{BAD_ARGUMENT, Error, Point, Rect, System,
+use mac_toolbox::{Error, Point, Rect, System,
+                  abi::BAD_ARGUMENT,
                   textedit::{EditorId, MAX_BYTES}};
 
 use super::{Failure, require};
@@ -146,8 +147,8 @@ pub fn native(system: &System<'_>) -> Result<usize, Failure>
     require(te.info(id)? == before, "bad rectangles preserve text state")?;
     te.activate(id, true)?;
     te.select(id, 0, 0)?;
-    require(te.idle(id, 10)?.caret_visible == 1, "active caret visible")?;
-    require(te.idle(id, 40)?.caret_visible == 0, "30tick caret blink")?;
+    require(te.idle(id, 10)?.caret_visible, "active caret visible")?;
+    require(!te.idle(id, 40)?.caret_visible, "30tick caret blink")?;
     te.dispose(id)?;
     let replacement = create(system, 100)?;
     require(replacement != id, "generation safe editor IDs")?;

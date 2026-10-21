@@ -26,8 +26,8 @@ pub fn current_name(system: &System<'_>, gate: TrapGate) -> Result<usize, Failur
     let size = core::mem::size_of::<ProcessCall>();
     require(invoke(gate, &mut call, size) == 0, "Pascal current process trap")?;
     let n = native.name().len();
-    require(call.info.id == native.id
-            && call.info.thread == native.thread
+    require(call.info.id == (native.id).0
+            && call.info.thread == (native.thread).0
             && call.info.name_length as usize == n + 1
             && call.info.name[0] as usize == n
             && &call.info.name[1..n + 1] == native.name().as_bytes(),
@@ -38,7 +38,7 @@ pub fn current_name(system: &System<'_>, gate: TrapGate) -> Result<usize, Failur
                          index: 0,
                          ..Default::default() };
     require(invoke(gate, &mut call, size) == 0
-            && call.info.id == native.id
+            && call.info.id == (native.id).0
             && call.info.name[0] as usize == n,
             "Pascal indexed process name conversion")?;
     call.index = u32::MAX;

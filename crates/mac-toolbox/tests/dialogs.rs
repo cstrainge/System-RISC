@@ -1,6 +1,7 @@
 #![cfg(not(target_arch = "riscv64"))]
 use mac_formats::resource::{Resource, encode};
-use mac_toolbox::{BAD_ARGUMENT, Error, NOT_SUPPORTED, System};
+use mac_toolbox::{Error, System,
+                  abi::{BAD_ARGUMENT, NOT_SUPPORTED}};
 fn fork(kind: [u8; 4], id: i16, data: &[u8]) -> Resource
 {
     Resource { kind,
@@ -23,8 +24,12 @@ fn original_alert_items_are_loaded_through_public_resource_and_dialog_services()
     mac_system::testing::with_resource_forks(&encode(&[]).unwrap(), &app, |services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
         let dialogs = system.dialogs();
-        assert_eq!(dialogs.validate_alert(1, 6012, "Permanently remove Café?"), Ok(4));
-        assert_eq!(dialogs.validate_alert(0, 6012, ""), Err(Error::NotFound));
+        assert_eq!(dialogs.validate_alert(mac_toolbox::ResourceScope::Application,
+                                          6012,
+                                          "Permanently remove Café?"),
+                   Ok(4));
+        assert_eq!(dialogs.validate_alert(mac_toolbox::ResourceScope::System, 6012, ""),
+                   Err(Error::NotFound));
         let mut legacy = mac_abi::dialogs::DialogCall { operation:
                                                             mac_abi::dialogs::VALIDATE_ALERT,
                                                         scope: 1,
@@ -60,7 +65,7 @@ fn malformed_or_unsupported_items_fail_before_creating_a_window()
                                                                       System::from_raw(services)
                                                                   }.unwrap();
                                                      assert_eq!(system.dialogs()
-                                                                      .validate_alert(1, 6012, ""),
+                                                                      .validate_alert(mac_toolbox::ResourceScope::Application, 6012, ""),
                                                                 Err(Error::from_status(expected)));
                                                  }).unwrap();
     }

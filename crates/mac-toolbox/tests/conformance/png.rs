@@ -1,8 +1,9 @@
 //! Shared no-std PNG acceptance through the public userspace API and real gate.
 //! Independent sample oracles are encoded by the Python fixture generator.
-use mac_toolbox::{BAD_ARGUMENT, NOT_SUPPORTED, System,
+use mac_toolbox::{System,
+                  abi::{BAD_ARGUMENT, NOT_SUPPORTED},
                   quickdraw::{Rect,
-                              images::{ImageError, errors}}};
+                              images::{ErrorKind, ImageError}}};
 
 use super::{Failure, require};
 pub struct Case
@@ -19,7 +20,7 @@ pub struct Case
 include!("png_oracle.rs");
 fn service(error: ImageError) -> Failure
 {
-    Failure::Service(error.status)
+    Failure::Service(error.service.status())
 }
 pub fn run(system: &System<'_>) -> Result<usize, Failure>
 {
@@ -31,7 +32,7 @@ pub fn run(system: &System<'_>) -> Result<usize, Failure>
            || info.height != case.height as u32
            || info.bit_depth != case.depth
            || info.color_type != case.color
-           || (info.flags & errors::HAS_ALPHA != 0) != case.alpha
+           || info.has_alpha != case.alpha
         {
             return Err(Failure::Observation { case:  case.name,
                                               field: "PNG metadata" });
@@ -84,29 +85,31 @@ pub fn run(system: &System<'_>) -> Result<usize, Failure>
             require(pixels[y * 6 + x] == color, "PNG scale/clip/alpha")?;
         }
     }
-    let invalid: [(&[u8], i32, u32); 8] =
-        [(include_bytes!("../data/png/adam7.png"), NOT_SUPPORTED, errors::UNSUPPORTED),
-         (include_bytes!("../data/png/apng.png"), NOT_SUPPORTED, errors::UNSUPPORTED),
+    let invalid: [(&[u8], i32, ErrorKind); 8] =
+        [(include_bytes!("../data/png/adam7.png"), NOT_SUPPORTED, ErrorKind::Unsupported),
+         (include_bytes!("../data/png/apng.png"), NOT_SUPPORTED, ErrorKind::Unsupported),
          (include_bytes!("../data/png/short-inflate.png"),
           BAD_ARGUMENT,
-          errors::BAD_COMPRESSED_DATA),
+          ErrorKind::BadCompressedData),
          (include_bytes!("../data/png/long-inflate.png"),
           BAD_ARGUMENT,
-          errors::BAD_COMPRESSED_DATA),
-         (include_bytes!("../data/png/bad-filter.png"), BAD_ARGUMENT, errors::BAD_COMPRESSED_DATA),
-         (include_bytes!("../data/png/bad-adler.png"), BAD_ARGUMENT, errors::BAD_COMPRESSED_DATA),
+          ErrorKind::BadCompressedData),
+         (include_bytes!("../data/png/bad-filter.png"),
+          BAD_ARGUMENT,
+          ErrorKind::BadCompressedData),
+         (include_bytes!("../data/png/bad-adler.png"), BAD_ARGUMENT, ErrorKind::BadCompressedData),
          (include_bytes!("../data/png/inflate-bomb.png"),
           BAD_ARGUMENT,
-          errors::BAD_COMPRESSED_DATA),
+          ErrorKind::BadCompressedData),
          (include_bytes!("../data/png/palette-index-outside.png"),
           BAD_ARGUMENT,
-          errors::INVALID_PALETTE)];
+          ErrorKind::InvalidPalette)];
     for (data, status, kind) in invalid
     {
         let mut pixels = [0x123456; 6];
         let r = Rect::new(0, 0, 3, 2);
         require(images.draw_to_surface(data, &mut pixels, 3, 2, r, r)
-                == Err(ImageError { status,
+                == Err(ImageError { service: mac_toolbox::Error::from_status(status),
                                     kind }),
                 "PNG invalid/unsupported error")?;
         require(pixels == [0x123456; 6], "PNG failed draw atomic")?;

@@ -285,3 +285,11 @@ native ABI boundary instead of assuming that `usize`, classic 32-bit pointers,
 RV64 pointers and a future x86 ABI have the same representation. Cross-target
 layout/codegen/boot/trap/context-switch tests are required before advertising a
 second architecture; a Rust compile target alone is insufficient.
+
+The shared handle facility allocates TextEdit and menu-object generations across
+all app-local tables. Two simultaneously live app contexts cannot mint the same
+object ID for corresponding slots, and dropping an old context does not reset
+that history. Counter allocation is atomic and exhausted slots are retired.
+Memory keeps its existing process-local wire contract and scheduler-slot history.
+Native MenuId values name semantic menu properties; MenuHandle values identify
+actual live menu objects. Owned menu references validate the latter on every call.

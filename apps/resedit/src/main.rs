@@ -45,8 +45,10 @@ fn label(system: &System<'_>, window: WindowId, x: i16, y: i16, index: u32) -> T
 }
 fn window_layout(system: &System<'_>) -> ToolboxResult<(Rect, i16)>
 {
-    let resource = system.resources().application().get(ResourceKey { kind: *b"WIND",
-                                                                       id:   2003 })?;
+    let resource = system.resources()
+                         .application()
+                         .get(ResourceKey { kind: mac_toolbox::TypeCode::new(*b"WIND"),
+                                            id:   2003 })?;
     let mut data = [0; 20];
     let size = resource.read(0, &mut data)?;
     resource.release()?;
@@ -81,8 +83,8 @@ struct Browser<'a>
     resource_count: u32,
     preview_count:  u32,
     saved:          Option<standard_file::Selection>,
-    volume:         u32,
-    directory:      u32,
+    volume:         VolumeId,
+    directory:      Cnid,
     status:         u32,
     export_number:  u32
 }
@@ -233,14 +235,14 @@ impl<'a> Browser<'a>
         {
             return Ok(());
         };
-        let kind = self.selected.map(|item| item.info.key.kind).unwrap_or(*b"    ");
+        let kind = self.selected.map(|item| item.info.key.kind).unwrap_or(TypeCode::new(*b"    "));
         for index in view.missing
         {
             let mut line = Text::<1024>::new();
             let selected = if pane == Pane::Types
             {
                 let kind = file.type_at(index)?;
-                line.roman(&kind);
+                line.roman(kind.as_bytes());
                 let _ = write!(line, " ({})", file.count(kind)?);
                 index == self.type_index
             }
@@ -309,7 +311,7 @@ impl<'a> Browser<'a>
         self.type_count = if let Some(file) = &self.file { file.type_count()? } else { 0 };
         let kind = if self.type_count == 0
         {
-            *b"    "
+            TypeCode::new(*b"    ")
         }
         else
         {
@@ -561,9 +563,8 @@ fn save(system: &System<'_>, browser: &mut Browser<'_>, save_as: bool) -> Toolbo
                                      parent:    choice.entry.parent,
                                      name:      choice.name(),
                                      replacing: choice.replacing.then_some(choice.entry.id),
-                                     file_type: *b"TEXT",
-                                     creator:   *b"ttxt",
-                                     modified:  system.now()? };
+                                     file_type: TypeCode::new(*b"TEXT"),
+                                     creator:   TypeCode::new(*b"ttxt") };
     let mut output = NativeExport { writer: system.files().create_data(spec, count.0)?,
                                     error:  None,
                                     bytes:  [0; 4096],
@@ -596,7 +597,7 @@ fn save(system: &System<'_>, browser: &mut Browser<'_>, save_as: bool) -> Toolbo
 fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
 {
     system.menus().clear()?;
-    system.menus().install_menu_resource(resources::APPLICATION, 128)?;
+    let _menu = system.menus().install_owned(resources::APPLICATION, 128)?;
     let (bounds, procedure) = window_layout(system)?;
     let mut title_buffer = [0; 128];
     let title = system.resources().application().string(128, &mut title_buffer)?;
@@ -620,8 +621,8 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
             owner.close()?;
             return Ok(());
         }
-        let mut redraw = matches!(event, Event::Update { .. })
-                         && event.window().map_or(0, |window| window.0) == window.0;
+        let mut redraw =
+            matches!(event, Event::Update { .. }) && event.window().unwrap_or_default() == window;
         if command == Some(*b"open")
         {
             if open_dialog(system, &mut browser, window).is_err()
@@ -669,8 +670,7 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
             system.log("RESEDIT_DRAW_READY\n")?;
             continue;
         }
-        if matches!(event, Event::MouseDown { .. })
-           && event.window().map_or(0, |window| window.0) == window.0
+        if matches!(event, Event::MouseDown { .. }) && event.window().unwrap_or_default() == window
         {
             let bounds = system.windows().info(window)?.bounds;
             let layout = Layout { width:  bounds.right - bounds.left,
@@ -744,7 +744,7 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
 /// The loader supplies initialized segments and a live service table.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
     {
@@ -757,7 +757,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     };
     match run(&system)
     {
-        Ok(()) => OK,
+        Ok(()) => mac_toolbox::abi::OK,
         Err(error) =>
         {
             let _ = system.log("RESEDIT_ERROR\n");

@@ -112,7 +112,7 @@ impl Context<'_, '_>
             self.label(3, 18, 5)?;
         }
         let mut meta = Text::<128>::new();
-        meta.roman(&self.item.info.key.kind);
+        meta.roman(self.item.info.key.kind.as_bytes());
         let _ = write!(meta, "  ID {}  {} bytes", self.item.info.key.id, self.item.info.length);
         self.text(4, 37, meta.as_str())?;
         let mut meta = Text::<128>::new();
@@ -259,7 +259,7 @@ impl<'a> ResourceView<'a>
         let mut log = Text::<128>::new();
         let _ = writeln!(log,
                          "RESEDIT_RESOURCE kind={} id={} bytes={} top={} mode={}",
-                         u32::from_be_bytes(ctx.item.info.key.kind),
+                         u32::from_be_bytes(ctx.item.info.key.kind.bytes()),
                          ctx.item.info.key.id,
                          ctx.item.info.length,
                          ctx.control.info()?.top,
@@ -295,7 +295,7 @@ impl<'a> ResourceView<'a>
             self.control().scroll_to(0)?;
             self.selected = Some(item.info.key);
         }
-        self.kind = match &item.info.key.kind
+        self.kind = match item.info.key.kind.as_bytes()
         {
             kind if *kind == *b"RV64"
                     || mac_code_resource::code_types::STANDARD_CODE_TYPES.iter()

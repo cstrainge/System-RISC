@@ -4,7 +4,7 @@ use mac_toolbox::{System, quickdraw::Rect};
 
 use super::{Failure, require};
 
-const MENU: i16 = -16489;
+const MENU: mac_toolbox::MenuId = mac_toolbox::MenuId(-16489);
 const MAX: usize = 21;
 
 /// Call after each launch, activation, hide, restore and exit transition. This
@@ -20,9 +20,9 @@ pub fn snapshot(system: &System<'_>) -> Result<usize, Failure>
         *entry = processes.at(index as u32)?;
     }
     let entries = &mut entries[..count];
-    require(entries.iter().filter(|entry| entry.foreground != 0).count() == 1,
+    require(entries.iter().filter(|entry| entry.foreground == true).count() == 1,
             "one application-menu foreground checkmark")?;
-    require(entries.iter().all(|entry| entry.foreground == 0 || entry.hidden == 0),
+    require(entries.iter().all(|entry| entry.foreground == false || entry.hidden == false),
             "foreground application is visible")?;
     // Captured ASCII names establish alphabetic ordering independently of launch
     // order. The native interface extends this to Unicode lowercase ordering.
@@ -45,9 +45,10 @@ pub fn snapshot(system: &System<'_>) -> Result<usize, Failure>
             "application popup and shadow stay within screen")?;
     require(menus.item_count(MENU)? == count as u16 + 4,
             "application menu includes every process")?;
-    let foreground = entries.iter().find(|entry| entry.foreground != 0).unwrap();
-    let others_visible = entries.iter().any(|entry| entry.id != foreground.id && entry.hidden == 0);
-    let any_hidden = entries.iter().any(|entry| entry.hidden != 0);
+    let foreground = entries.iter().find(|entry| entry.foreground == true).unwrap();
+    let others_visible =
+        entries.iter().any(|entry| entry.id != foreground.id && entry.hidden == false);
+    let any_hidden = entries.iter().any(|entry| entry.hidden == true);
     for (row, command, enabled) in
         [(1, *b"hcur", others_visible), (2, *b"hoth", others_visible), (3, *b"sall", any_hidden)]
     {
@@ -63,9 +64,9 @@ pub fn snapshot(system: &System<'_>) -> Result<usize, Failure>
     for (index, entry) in entries.iter().enumerate()
     {
         let item = menus.item(MENU, index as u16 + 5)?;
-        require(u64::from(item.command) == entry.id
+        require(u64::from(item.command) == (entry.id).0
                 && item.enabled
-                && item.checked == (entry.foreground != 0),
+                && item.checked == (entry.foreground == true),
                 "captured alphabetic process rows and foreground mark")?;
     }
     require(menus.set_item_enabled(MENU, 1, !others_visible)

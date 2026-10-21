@@ -13,8 +13,8 @@ pub fn run(system: &System<'_>) -> ToolboxResult<()>
     system.menus().clear()?;
     for &(id, _, width, height) in CASES
     {
-        system.menus().install_menu_resource(1, id)?;
-        let bounds = system.menus().layout(id)?.popup;
+        system.menus().install_menu_resource(mac_toolbox::ResourceScope::Application, id)?;
+        let bounds = system.menus().layout(mac_toolbox::MenuId(id))?.popup;
         if bounds.right - bounds.left != width || bounds.bottom - bounds.top != height
         {
             return Err(Error::BadArgument);

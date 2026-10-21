@@ -37,8 +37,10 @@ fn editor_view(width: i16, height: i16) -> Rect
 
 fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Error>
 {
-    let resource = system.resources().application().get(resources::ResourceKey { kind: *b"WIND",
-                                                                                  id:   2003 })?;
+    let resource = system.resources()
+                         .application()
+                         .get(resources::ResourceKey { kind: mac_toolbox::TypeCode::new(*b"WIND"),
+                                                       id:   2003 })?;
     let mut bytes = [0; 20];
     let read = if resource.size() == bytes.len()
     {
@@ -138,10 +140,8 @@ fn choose(system: &System<'_>, region: usize) -> Result<(), Error>
 fn run(system: &System<'_>) -> Result<(), Error>
 {
     system.menus().clear()?;
-    for id in [128, 129]
-    {
-        system.menus().install_menu_resource(resources::APPLICATION, id)?;
-    }
+    let _menus = [system.menus().install_owned(mac_toolbox::resources::APPLICATION, 128)?,
+                  system.menus().install_owned(mac_toolbox::resources::APPLICATION, 129)?];
     let mut buffer = [0; 128];
     let title = system.resources().application().string(128, &mut buffer)?;
     let (bounds, procedure) = window_layout(system)?;
@@ -152,7 +152,8 @@ fn run(system: &System<'_>) -> Result<(), Error>
     let window = window_owner.id();
     system.windows().set_grow_icon_clip(window, Some(Rect::ZERO))?;
     let view = editor_view(bounds.right - bounds.left, bounds.bottom - bounds.top);
-    let editor = system.textedit().create(view, view)?;
+    let mut editor_owner = system.textedit().create_owned(view, view)?;
+    let editor = editor_owner.id();
     system.textedit().set_text(editor, "Try typing here.\rThe I-beam follows this text area.")?;
     system.textedit().activate(editor, true)?;
     draw(system, window, editor)?;
@@ -234,8 +235,8 @@ fn run(system: &System<'_>) -> Result<(), Error>
         let active = system.windows().front()? == Some(window);
         let local = Point { h: event.input().at.h.saturating_sub(bounds.left),
                             v: event.input().at.v.saturating_sub(bounds.top) };
-        let mut redraw = matches!(event, Event::Update { .. })
-                         && event.window().map_or(0, |window| window.0) == window.0;
+        let mut redraw =
+            matches!(event, Event::Update { .. }) && event.window().unwrap_or_default() == window;
         let mut edited = false;
         if matches!(event, Event::Activate { .. })
         {
@@ -249,8 +250,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
             match event
             {
                 Event::MouseDown { .. }
-                    if event.window().map_or(0, |window| window.0) == window.0
-                       && view.contains(local) =>
+                    if event.window().unwrap_or_default() == window && view.contains(local) =>
                 {
                     system.textedit()
                           .click(editor,
@@ -290,7 +290,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
                     }
                     else
                     {
-                        let key = char::from(event.key().map_or('\0', |key| key.character()));
+                        let key = event.key().map_or('\0', |key| key.character());
                         if !key.is_control() || key == '\r' || key == '\u{8}'
                         {
                             system.textedit().key(editor, key)?;
@@ -342,7 +342,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
             system.log("CURSOR_TEST_EDIT\n")?;
         }
     }
-    system.textedit().dispose(editor)?;
+    editor_owner.dispose()?;
     system.quickdraw().cursors().init()
 }
 
@@ -350,7 +350,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
 /// The native loader supplies initialized segments and a live service table.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
     {
@@ -363,7 +363,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     };
     match run(&system)
     {
-        Ok(()) => OK,
+        Ok(()) => mac_toolbox::abi::OK,
         Err(status) =>
         {
             let _ = system.log("CURSOR_TEST_ERROR\n");

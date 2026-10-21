@@ -1,6 +1,6 @@
 //! Original-observation-backed handle checks, shared by host and RV64 userspace.
 use mac_toolbox::{System,
-                  memory::{Handle, LOCKED, PURGEABLE_BIT}};
+                  memory::{Handle, HandleState}};
 
 use super::Failure;
 #[derive(Clone, Copy)]
@@ -45,7 +45,9 @@ fn observe(system: &System<'_>, handle: &Handle<'_>, expected: &Observation,
     require(expected,
             "operation error",
             operation.map_or_else(|e| e.status(), |_| 0) == expected.error)?;
-    require(expected, "MemError after operation", system.memory().last_error()? == expected.error)?;
+    require(expected,
+            "MemError after operation",
+            system.memory().last_error()?.map_or(0, |error| error.status()) == expected.error)?;
     let length = handle.len();
     require(expected, "GetHandleSize result", match expected.size
     {
@@ -54,14 +56,18 @@ fn observe(system: &System<'_>, handle: &Handle<'_>, expected: &Observation,
     })?;
     require(expected,
             "GetHandleSize MemError",
-            system.memory().last_error()? == expected.size_error)?;
+            system.memory().last_error()?.map_or(0, |error| error.status())
+            == expected.size_error)?;
     let state = handle.state();
     require(expected, "HGetState result", match expected.state
     {
-        Some(n) => state == Ok(n),
+        Some(n) => state == Ok(HandleState::from_bits_retain(n)),
         None => state == Err(mac_toolbox::Error::from_status(expected.state_error))
     })?;
-    require(expected, "HGetState MemError", system.memory().last_error()? == expected.state_error)?;
+    require(expected,
+            "HGetState MemError",
+            system.memory().last_error()?.map_or(0, |error| error.status())
+            == expected.state_error)?;
     if !expected.payload.is_empty()
     {
         let mut bytes = [0xa5; 32];
@@ -72,9 +78,9 @@ fn observe(system: &System<'_>, handle: &Handle<'_>, expected: &Observation,
     }
     Ok(1)
 }
-fn release(handle: Handle<'_>) -> Result<(), Failure>
+fn release(mut handle: Handle<'_>) -> Result<(), Failure>
 {
-    handle.set_state(0)?;
+    handle.set_state(HandleState::NONE)?;
     handle.dispose()?;
     Ok(())
 }
@@ -128,7 +134,7 @@ pub fn memory_handles(system: &System<'_>) -> Result<usize, Failure>
                           (0x1f, "HSetState_1f"),
                           (0xff, "HSetState_ff")]
     {
-        let result = h.set_state(state);
+        let result = h.set_state(HandleState::from_bits_retain(state));
         count += observe(system, &h, oracle("state_steps", name)?, result)?;
     }
     release(h)?;
@@ -250,7 +256,7 @@ pub fn memory_handles(system: &System<'_>) -> Result<usize, Failure>
     count += observe(system, &h, oracle("copy", "PtrToXHand4")?, result)?;
     release(h)?;
     // These are public constants, not assumptions about private manager layouts.
-    if LOCKED != 0x80 || PURGEABLE_BIT != 0x40
+    if HandleState::LOCKED.bits() != 0x80 || HandleState::PURGEABLE.bits() != 0x40
     {
         return Err(Failure::Mismatch("public Memory state constants"));
     }

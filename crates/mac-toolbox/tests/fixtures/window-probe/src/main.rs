@@ -3,9 +3,7 @@
 #![no_main]
 use mac_toolbox::System;
 #[cfg(not(feature = "deferred-close"))]
-use mac_toolbox::{events::classic::{EVERY_EVENT, EventKind},
-                  quickdraw::Rect,
-                  windows::WindowSpec};
+use mac_toolbox::{events::classic::{EVERY_EVENT, EventKind}, quickdraw::Rect, windows::WindowSpec};
 #[cfg(feature = "menus")]
 #[path = "../../../conformance/menu_sizing.rs"]
 mod menu_sizing;
@@ -26,7 +24,7 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
     #[cfg(feature = "menus")]
     for id in 256..=261
     {
-        system.menus().install_menu_resource(1, id)?;
+        system.menus().install_menu_resource(mac_toolbox::ResourceScope::Application, id)?;
     }
     system.log("DESKTOP_READY: public SDK tracking fixture\n")?;
     loop
@@ -58,7 +56,7 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
             menu_sizing::run(system)?;
             system.log("MENU_SIZING_PASS cases=8\n")?;
             system.menus().clear()?;
-            system.menus().install_menu_resource(1, 30000)?;
+            system.menus().install_menu_resource(mac_toolbox::ResourceScope::Application, 30000)?;
             use core::fmt::Write;
             let width = system.quickdraw().fonts().text_width(Default::default(), KEYLESS_LABEL)?;
             let mut line = Line { bytes: [0; 128],
@@ -71,7 +69,7 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
         if event.kind == EventKind::KeyDown && event.character() == b'h'
         {
             system.menus().clear()?;
-            system.menus().install_menu_resource(1, 30001)?;
+            system.menus().install_menu_resource(mac_toolbox::ResourceScope::Application, 30001)?;
             system.log("MENU_KEYED_READY\n")?;
         }
         #[cfg(feature = "menus")]
@@ -126,7 +124,7 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 pub unsafe extern "C" fn _start(services: *const mac_toolbox::SystemServices)
-                                -> mac_toolbox::Status
+                                -> mac_toolbox::abi::Status
 {
     let system = match unsafe { System::from_raw(services) }
     {

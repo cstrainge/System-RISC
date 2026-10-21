@@ -11,7 +11,9 @@ fn finder_formats_real_unsigned_2026_catalog_dates_without_signed_time_t()
     mac_system::testing::with_disk(include_bytes!("data/files/dates-2026.hfs"), |services| {
         let system = unsafe { mac_toolbox::System::from_raw(services) }.unwrap();
         let file = system.files()
-                         .lookup(system.files().volume_at(0).unwrap().id, 2, "Folder/Café")
+                         .lookup(system.files().volume_at(0).unwrap().id,
+                                 mac_toolbox::Cnid::ROOT,
+                                 "Folder/Café")
                          .unwrap();
         assert!(file.created_at().mac_seconds().unwrap() > i32::MAX as u32);
         assert_eq!(presentation::calendar(file.created_at()),

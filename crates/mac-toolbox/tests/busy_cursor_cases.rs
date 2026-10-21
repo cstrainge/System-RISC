@@ -1,8 +1,10 @@
 //! Real userspace work deliberately stops pumping events, with and without traps.
 #![cfg(target_arch = "riscv64")]
-use mac_toolbox::{events::classic::EVERY_EVENT, quickdraw::cursors::StandardCursor, *};
+use mac_toolbox::{abi::EventKind, events::classic::EVERY_EVENT,
+                  quickdraw::cursors::StandardCursor, *};
 
-fn checkpoint(system: &System<'_>, window: u32, marker: &str) -> Result<(), mac_toolbox::Error>
+fn checkpoint(system: &System<'_>, window: WindowId, marker: &str)
+              -> Result<(), mac_toolbox::Error>
 {
     system.log(marker)?;
     loop
@@ -15,12 +17,10 @@ fn checkpoint(system: &System<'_>, window: u32, marker: &str) -> Result<(), mac_
         {
             return Ok(());
         }
-        if event.kind == EventKind::Update && event.message == window
+        if event.kind == EventKind::Update && event.message == (window).0
         {
             system.begin_update(window)?;
-            system.quickdraw()
-                  .port(WindowId(window))
-                  .paint_rect(Rect::new(0, 0, 400, 300), 0xffffff)?;
+            system.quickdraw().port(window).paint_rect(Rect::new(0, 0, 400, 300), 0xffffff)?;
             system.end_update(window)?;
         }
     }
@@ -33,7 +33,7 @@ pub fn run(system: &System<'_>, clock: impl Fn() -> u64) -> Result<(), mac_toolb
     let window = system.new_window(Rect::new(100, 100, 500, 400), "Busy Cursor", (100, 60), 0)?;
     system.select_window(window)?;
     system.begin_update(window)?;
-    system.quickdraw().port(WindowId(window)).paint_rect(Rect::new(0, 0, 400, 300), 0xffffff)?;
+    system.quickdraw().port(window).paint_rect(Rect::new(0, 0, 400, 300), 0xffffff)?;
     system.end_update(window)?;
     let cursor = system.quickdraw().cursors();
     cursor.set_standard(StandardCursor::Crosshair)?;
@@ -90,7 +90,8 @@ pub fn run(system: &System<'_>, clock: impl Fn() -> u64) -> Result<(), mac_toolb
     checkpoint(system, window, "BUSY_STAGE hidden-recovered\n")?;
     cursor.show()?;
     let volume = system.files().volume_at(0)?.id;
-    let child = system.files().lookup(volume, 2, "Applications/QuickDraw Test")?;
+    let child =
+        system.files().lookup(volume, mac_toolbox::Cnid(2), "Applications/QuickDraw Test")?;
     let child = system.processes().launch(volume, child.id)?;
     assert_ne!(child.thread, mine.thread);
     for _ in 0..10

@@ -3,9 +3,37 @@
   "file_type": "FNDR",
   "creator": "MACS",
   "role": "application",
-  "abi_version": 6,
+  "abi_version": 7,
   "load_base": "0x81000000",
   "load_limit": "0x82000000",
   "description": "Aggregate public Toolbox userspace conformance fixture",
-  "resources": []
+  "resources": [
+    {
+      "type": "MENU",
+      "id": 257,
+      "symbol": "OWNERSHIP_MENU",
+      "payload": {
+        "format": "file",
+        "path": "../../data/original-menu-257.bin"
+      }
+    },
+    {
+      "type": "ALRT",
+      "id": 6012,
+      "symbol": "OWNERSHIP_ALERT",
+      "payload": {
+        "format": "file",
+        "path": "../../../../../finder/assets/visual/414c5254-6012.bin"
+      }
+    },
+    {
+      "type": "DITL",
+      "id": 6012,
+      "symbol": "OWNERSHIP_ALERT_ITEMS",
+      "payload": {
+        "format": "file",
+        "path": "../../../../../finder/assets/visual/4449544c-6012.bin"
+      }
+    }
+  ]
 }

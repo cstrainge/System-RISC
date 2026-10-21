@@ -1,6 +1,7 @@
 //! Original TextEdit pixel cases rendered through actual resident RV64 traps.
 #![no_std]
 #![no_main]
+use mac_toolbox::abi::EventKind;
 use mac_toolbox::{events::classic::EVERY_EVENT, textedit::EditorId, *};
 const SAMPLE: &str = "one two three\rfour five six\rseven eight";
 
@@ -155,7 +156,7 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
 /// The loader supplies a valid resident service table for this application.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     let system = match unsafe { System::from_raw(services) }
     {
@@ -167,7 +168,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
         let _ = system.log("TEXTEDIT_PROBE_FAIL\n");
         return e.status();
     }
-    OK
+    mac_toolbox::abi::OK
 }
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> !

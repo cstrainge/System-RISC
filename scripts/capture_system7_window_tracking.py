@@ -19,7 +19,7 @@ import system7_observer as observer
 
 def private_probe_disk(output, menus=False, deferred=False):
     fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures/window-probe'
-    target = vm.ROOT / 'build/system7/window-probe-target'
+    target = vm.build_dir() / 'fixtures/window-probe'
     subprocess.run(['cargo','build','--manifest-path',str(fixture/'Cargo.toml'),'--locked',
                     '--release','--target','riscv64imac-unknown-none-elf','--bin','Finder',
                     '--target-dir',str(target),*(['--features','deferred-close'] if deferred else ['--features','menus'] if menus else [])],cwd=vm.ROOT,check=True)

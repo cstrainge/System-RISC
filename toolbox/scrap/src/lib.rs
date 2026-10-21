@@ -3,7 +3,41 @@
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::scrap::*;
-pub use mac_abi::scrap::{FlavorInfo, MAX_BYTES, MAX_FLAVORS, NO_TYPE_ERR, ScrapInfo, TEXT};
+pub use mac_abi::scrap::{MAX_BYTES, MAX_FLAVORS};
+pub use mac_traps::TypeCode;
+pub const TEXT: TypeCode = TypeCode::new(*b"TEXT");
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScrapInfo
+{
+    pub size:    u32,
+    pub count:   u16,
+    pub flavors: u16
+}
+impl From<mac_abi::scrap::ScrapInfo> for ScrapInfo
+{
+    fn from(info: mac_abi::scrap::ScrapInfo) -> Self
+    {
+        Self { size:    info.size,
+               count:   info.count,
+               flavors: info.flavors }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FlavorInfo
+{
+    pub kind:   TypeCode,
+    pub length: u32,
+    pub offset: u32
+}
+impl From<mac_abi::scrap::FlavorInfo> for FlavorInfo
+{
+    fn from(info: mac_abi::scrap::FlavorInfo) -> Self
+    {
+        Self { kind:   info.kind.into(),
+               length: info.length,
+               offset: info.offset }
+    }
+}
 pub use mac_traps::{Client, Error, Result};
 #[derive(Clone, Copy)]
 pub struct Scrap<'a>
@@ -22,7 +56,7 @@ impl<'a> Scrap<'a>
         let mut call = ScrapCall { operation: INFO,
                                    ..Default::default() };
         self.client.scrap(&mut call, &[], &mut [])?;
-        Ok(call.info)
+        Ok(call.info.into())
     }
 
     /// Start a new clipboard generation and discard every flavor record.
@@ -33,10 +67,10 @@ impl<'a> Scrap<'a>
 
     /// Append one binary flavor record. TEXT must use `put_text`, including
     /// when the caller already holds UTF-8 bytes. Repeated kinds remain records.
-    pub fn put(self, kind: [u8; 4], bytes: &[u8]) -> Result<()>
+    pub fn put(self, kind: TypeCode, bytes: &[u8]) -> Result<()>
     {
         let mut call = ScrapCall { operation: PUT,
-                                   kind,
+                                   kind: kind.bytes(),
                                    ..Default::default() };
         self.client.scrap(&mut call, bytes, &mut [])
     }
@@ -51,11 +85,11 @@ impl<'a> Scrap<'a>
     /// The first matching binary record is read, as in original GetScrap.
     /// Partial reads and a caller-owned buffer are native extensions. TEXT is
     /// accessible only through `text`, which returns a checked Rust string.
-    pub fn read(self, kind: [u8; 4], offset: usize, output: &mut [u8]) -> Result<usize>
+    pub fn read(self, kind: TypeCode, offset: usize, output: &mut [u8]) -> Result<usize>
     {
         let mut call =
             ScrapCall { operation: READ,
-                        kind,
+                        kind: kind.bytes(),
                         offset: u32::try_from(offset).map_err(|_| Error::BadArgument)?,
                         ..Default::default() };
         self.client.scrap(&mut call, &[], output)?;
@@ -80,7 +114,7 @@ impl<'a> Scrap<'a>
                                    index: u32::try_from(index).map_err(|_| Error::BadArgument)?,
                                    ..Default::default() };
         self.client.scrap(&mut call, &[], &mut [])?;
-        Ok(call.flavor)
+        Ok(call.flavor.into())
     }
 
     /// Disk-backed Scrap.dat awaits general writable file/fork services.

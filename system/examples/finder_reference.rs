@@ -2,11 +2,12 @@
 use std::{env, fs,
           io::{BufWriter, Write}};
 
-use mac_abi::{Point, Rect, Status};
+use mac_abi::{Point, Rect};
 use mac_formats::resource;
 use mac_system::toolbox::quickdraw::{Canvas,
                                      fonts::{FontManager, FontSelection},
                                      icons::{IconFamily, IconFlags}};
+use mac_toolbox::Error;
 #[path = "../../finder/src/icon_view.rs"]
 // This original-reference renderer only exercises System resource icons.
 #[allow(dead_code)]
@@ -20,21 +21,23 @@ struct Draw<'a, 'b>
 }
 impl Drawing for Draw<'_, '_>
 {
-    fn fill(&mut self, bounds: Rect, color: u32) -> Result<(), Status>
+    fn fill(&mut self, bounds: Rect, color: u32) -> Result<(), Error>
     {
         self.canvas.paint_rect(bounds, color);
         Ok(())
     }
 
-    fn text_width(&mut self, text: &str) -> Result<i16, Status>
+    fn text_width(&mut self, text: &str) -> Result<i16, Error>
     {
-        self.fonts.text_width(FontSelection { family: 3,
-                                              size:   9,
-                                              face:   0 },
-                              text)
+        self.fonts
+            .text_width(FontSelection { family: 3,
+                                        size:   9,
+                                        face:   0 },
+                        text)
+            .map_err(Error::from_status)
     }
 
-    fn text(&mut self, baseline: Point, text: &str, color: u32) -> Result<(), Status>
+    fn text(&mut self, baseline: Point, text: &str, color: u32) -> Result<(), Error>
     {
         self.fonts
             .draw(FontSelection { family: 3,
@@ -45,16 +48,17 @@ impl Drawing for Draw<'_, '_>
                   text,
                   color)
             .map(|_| ())
+            .map_err(Error::from_status)
     }
 
-    fn icon(&mut self, id: icon_view::Icon, bounds: Rect, state: State) -> Result<(), Status>
+    fn icon(&mut self, id: icon_view::Icon, bounds: Rect, state: State) -> Result<(), Error>
     {
         let icon_view::Icon::Resource(id) = id
         else
         {
-            return Err(-2);
+            return Err(Error::BadArgument);
         };
-        IconFamily::from_resources(self.resources, id).map_err(|_| -2)?
+        IconFamily::from_resources(self.resources, id).map_err(|_| Error::BadArgument)?
                                                       .draw(self.canvas,
                                                             bounds,
                                                             IconFlags { selected:
@@ -62,7 +66,7 @@ impl Drawing for Draw<'_, '_>
                                                                             && state.active,
                                                                         open: state.open,
                                                                         ..Default::default() })
-                                                      .map_err(|_| -2)
+                                                      .map_err(|_| Error::BadArgument)
     }
 }
 fn main()

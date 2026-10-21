@@ -146,35 +146,39 @@ fn public_lookup_preserves_negative_ids_metadata_and_pinned_home()
 {
     let key = ResourceKey { kind: *b"PICT",
                             id:   -32510 };
-    let overridden = resources().get(key).unwrap();
-    assert_eq!(overridden.key(), key);
-    assert_eq!(overridden.home(), APPLICATION);
-    assert_eq!(overridden.attributes(), 32);
+    let overridden = resources().get((key).into()).unwrap();
+    assert_eq!(overridden.key(), (key).into());
+    assert_eq!(overridden.home(), toolbox_resources::ResourceScope::from_raw(APPLICATION).unwrap());
+    assert_eq!(overridden.attributes(),
+               toolbox_resources::ResourceAttributes::from_bits_retain(32));
     assert_eq!(overridden.name(), "Application Picture");
     assert_eq!(read_all(&overridden), FINDER_PICTURE);
-    let original = resources().system().get(key).unwrap();
-    assert_eq!(original.home(), SYSTEM);
+    let original = resources().system().get((key).into()).unwrap();
+    assert_eq!(original.home(), toolbox_resources::ResourceScope::from_raw(SYSTEM).unwrap());
     assert_eq!(original.name(), "System Picture");
-    assert_eq!(original.attributes(), 96);
+    assert_eq!(original.attributes(), toolbox_resources::ResourceAttributes::from_bits_retain(96));
     assert_eq!(original.info().length, SYSTEM_PICTURE.len());
     assert_eq!(read_all(&original), SYSTEM_PICTURE);
     // A named System resource retains its home even though its ID is overridden.
-    let named = resources().named(*b"PICT", "System Picture").unwrap();
-    assert_eq!(named.home(), SYSTEM);
+    let named = resources().named(mac_traps::TypeCode::new(*b"PICT"), "System Picture").unwrap();
+    assert_eq!(named.home(), toolbox_resources::ResourceScope::from_raw(SYSTEM).unwrap());
     assert_eq!(read_all(&named), SYSTEM_PICTURE);
 }
 
 #[test]
 fn names_roundtrip_mac_roman_to_utf8_and_remain_case_sensitive()
 {
-    let picture = resources().named(*b"PICT", "Café À").unwrap();
+    let picture = resources().named(mac_traps::TypeCode::new(*b"PICT"), "Café À").unwrap();
     assert_eq!(picture.key(),
-               ResourceKey { kind: *b"PICT",
-                             id:   128 });
+               (ResourceKey { kind: *b"PICT",
+                              id:   128 }).into());
     assert_eq!(picture.name(), "Café À");
-    assert!(matches!(resources().named(*b"PICT", "café À"), Err(Error::NotFound)));
-    assert!(matches!(resources().named(*b"PICT", "Café A"), Err(Error::NotFound)));
-    assert!(matches!(resources().named(*b"ICN#", "Café À"), Err(Error::NotFound)));
+    assert!(matches!(resources().named(mac_traps::TypeCode::new(*b"PICT"), "café À"),
+                     Err(Error::NotFound)));
+    assert!(matches!(resources().named(mac_traps::TypeCode::new(*b"PICT"), "Café A"),
+                     Err(Error::NotFound)));
+    assert!(matches!(resources().named(mac_traps::TypeCode::new(*b"ICN#"), "Café À"),
+                     Err(Error::NotFound)));
     let long = resource(b"TEXT", 1, Some(&"".repeat(255)), 0, b"");
     let info = Manager::info(SYSTEM, &long);
     assert_eq!(info.name_length, 765);
@@ -186,8 +190,8 @@ fn names_roundtrip_mac_roman_to_utf8_and_remain_case_sensitive()
 fn partial_reads_eof_load_and_release_preserve_original_forks()
 {
     let icon = resources().system()
-                          .get(ResourceKey { kind: *b"ICN#",
-                                             id:   -32512 })
+                          .get((ResourceKey { kind: *b"ICN#",
+                                              id:   -32512 }).into())
                           .unwrap();
     assert_eq!(icon.size(), 256);
     icon.load().unwrap();
@@ -213,45 +217,47 @@ fn partial_reads_eof_load_and_release_preserve_original_forks()
 fn moved_font_resources_remain_in_the_system_search_chain()
 {
     assert_eq!(fixture().fonts.family_id("Chicago"), Some(0));
-    let fond = resources().named(*b"FOND", "Chicago").unwrap();
-    assert_eq!(fond.home(), SYSTEM);
+    let fond = resources().named(mac_traps::TypeCode::new(*b"FOND"), "Chicago").unwrap();
+    assert_eq!(fond.home(), toolbox_resources::ResourceScope::from_raw(SYSTEM).unwrap());
     assert_eq!(fond.key().id, 0);
-    let strike = resources().get(ResourceKey { kind: *b"FONT",
-                                               id:   12 })
+    let strike = resources().get((ResourceKey { kind: *b"FONT",
+                                                id:   12 }).into())
                             .unwrap();
-    assert_eq!(strike.home(), SYSTEM);
+    assert_eq!(strike.home(), toolbox_resources::ResourceScope::from_raw(SYSTEM).unwrap());
     assert_eq!(read_all(&strike), CHICAGO);
     assert!(matches!(resources().application().get(strike.key()), Err(Error::NotFound)));
     let info = client().resource(ResourceRequest { operation: INFO,
                                                    scope: SYSTEM,
-                                                   key: strike.key(),
+                                                   key: (strike.key()).into(),
                                                    ..Default::default() },
                                  &mut [])
                        .unwrap();
     assert_eq!(info.info.length, CHICAGO.len());
-    assert_eq!(resources().system().count(*b"sfnt"), Ok(1));
+    assert_eq!(resources().system().count(mac_traps::TypeCode::new(*b"sfnt")), Ok(1));
 }
 
 #[test]
 fn enumeration_visits_shadowed_resources_and_unique_types_without_losing_home()
 {
-    assert_eq!(resources().count(*b"PICT"), Ok(3));
-    assert_eq!(resources().application().count(*b"PICT"), Ok(2));
-    assert_eq!(resources().system().count(*b"PICT"), Ok(1));
-    assert_eq!(resources().count(*b"NONE"), Ok(0));
+    assert_eq!(resources().count(mac_traps::TypeCode::new(*b"PICT")), Ok(3));
+    assert_eq!(resources().application().count(mac_traps::TypeCode::new(*b"PICT")), Ok(2));
+    assert_eq!(resources().system().count(mac_traps::TypeCode::new(*b"PICT")), Ok(1));
+    assert_eq!(resources().count(mac_traps::TypeCode::new(*b"NONE")), Ok(0));
     let entries: Vec<_> =
-        (0..resources().count(*b"PICT").unwrap()).map(|index| {
-                                                     resources().at(*b"PICT", index).unwrap()
+        (0..resources().count(mac_traps::TypeCode::new(*b"PICT")).unwrap()).map(|index| {
+                                                     resources().at(mac_traps::TypeCode::new(*b"PICT"), index).unwrap()
                                                  })
                                                  .collect();
     assert_eq!(entries.iter().map(|r| (r.home(), r.key().id)).collect::<Vec<_>>(),
-               [(APPLICATION, -32510), (APPLICATION, 128), (SYSTEM, -32510)]);
+               [(toolbox_resources::APPLICATION, -32510),
+                (toolbox_resources::APPLICATION, 128),
+                (toolbox_resources::SYSTEM, -32510)]);
     assert_eq!(read_all(&entries[2]), SYSTEM_PICTURE);
-    assert!(matches!(resources().at(*b"PICT", 3), Err(Error::NotFound)));
+    assert!(matches!(resources().at(mac_traps::TypeCode::new(*b"PICT"), 3), Err(Error::NotFound)));
     let count = resources().type_count().unwrap();
     let types: BTreeSet<_> = (0..count).map(|index| resources().type_at(index).unwrap()).collect();
     assert_eq!(count as usize, types.len());
-    assert_eq!(types, BTreeSet::from([*b"PICT", *b"ICN#", *b"FOND", *b"FONT", *b"sfnt"]));
+    assert_eq!(types, BTreeSet::from([*b"PICT", *b"ICN#", *b"FOND", *b"FONT", *b"sfnt"].map(mac_traps::TypeCode::new)));
     assert!(matches!(resources().type_at(count), Err(Error::NotFound)));
     assert_eq!(resources().application().type_count(), Ok(1));
 }
@@ -281,5 +287,7 @@ fn low_level_client_rejects_invalid_scopes_operations_and_absent_keys()
         assert!(matches!(client().resource(request(operation, CHAIN, absent), &mut []),
                          Err(Error::NotFound)));
     }
-    assert!(matches!(resources().application().named(*b"FOND", "Chicago"), Err(Error::NotFound)));
+    assert!(matches!(resources().application()
+                                .named(mac_traps::TypeCode::new(*b"FOND"), "Chicago"),
+                     Err(Error::NotFound)));
 }

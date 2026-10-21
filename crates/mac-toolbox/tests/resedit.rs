@@ -79,7 +79,7 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
     }
     let descriptor = mac_formats::native::Descriptor { role:
                                                            mac_formats::native::Role::CodeResource,
-                                                       abi_version: 6,
+                                                       abi_version: 7,
                                                        load_base:   0x82000000,
                                                        load_limit:  0x82100000,
                                                        entry:       0x82000000 };
@@ -127,21 +127,21 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
     assert!(hex_lines[0].starts_with("00000010 00 ff 41"));
     let before = fs::read(&disk).unwrap();
     let (_,activity)=mac_system::testing::with_file_disk(&disk,true,Default::default(),|services| {
-        let system=unsafe {System::from_raw(services)}.unwrap();let files=system.files();let catalog=files.lookup(system.files().volume_at(0).unwrap().id,2,"Sample").unwrap();
+        let system=unsafe {System::from_raw(services)}.unwrap();let files=system.files();let catalog=files.lookup(system.files().volume_at(0).unwrap().id,mac_toolbox::Cnid(2),"Sample").unwrap();
         let a=system.resources().open_file(system.files().volume_at(0).unwrap().id,catalog.id).unwrap();let b=system.resources().open_file(system.files().volume_at(0).unwrap().id,catalog.id).unwrap();
         assert_eq!(a.type_count().unwrap(),type_count);
         let mut actual=Vec::new();
         for t in 0..a.type_count().unwrap() {let kind=a.type_at(t).unwrap();for i in 0..a.count(kind).unwrap() {
             let info=a.at(kind,i).unwrap();let mut data=vec![0;info.info.length];for (chunk_index,chunk) in data.chunks_mut(1024).enumerate() { assert_eq!(a.read(info.info.key,chunk_index*1024,chunk).unwrap(),chunk.len()); }
-            actual.push(Resource {kind,id:info.info.key.id,name:info.has_name.then(||mac_formats::text::encode(info.info.name()).unwrap()),attributes:info.info.attributes as u8,data});
+            actual.push(Resource {kind: kind.bytes(),id:info.info.key.id,name:info.has_name.then(||mac_formats::text::encode(info.info.name()).unwrap()),attributes:info.info.attributes.bits() as u8,data});
         }}
         let sort=|v:&mut Vec<Resource>|v.sort_by_key(|r|(r.kind,r.id));sort(&mut actual);sort(&mut expected);assert_eq!(actual,expected);
-        assert!(a.named(*b"STR ","").unwrap().has_name);assert!(a.named(*b"CODE","").is_err());
-        assert_eq!(a.get(ResourceKey {kind:*b"STR ",id:-1}).unwrap().info.attributes,0x28);
-        let mut guard=[0x77;8];assert!(a.read(ResourceKey {kind:*b"CODE",id:i16::MIN},5,&mut guard).is_err());assert_eq!(guard,[0x77;8]);
-        assert_eq!(a.read(ResourceKey {kind:*b"CODE",id:i16::MIN},4,&mut guard).unwrap(),0);
+        assert!(a.named(mac_toolbox::TypeCode::new(*b"STR "),"").unwrap().has_name);assert!(a.named(mac_toolbox::TypeCode::new(*b"CODE"),"").is_err());
+        assert_eq!(a.get(ResourceKey {kind:mac_toolbox::TypeCode::new(*b"STR "),id:-1}).unwrap().info.attributes,mac_toolbox::resources::ResourceAttributes::from_bits_retain(0x28));
+        let mut guard=[0x77;8];assert!(a.read(ResourceKey {kind:mac_toolbox::TypeCode::new(*b"CODE"),id:i16::MIN},5,&mut guard).is_err());assert_eq!(guard,[0x77;8]);
+        assert_eq!(a.read(ResourceKey {kind:mac_toolbox::TypeCode::new(*b"CODE"),id:i16::MIN},4,&mut guard).unwrap(),0);
         let mut json=String::new();document::export(&system,&a,&catalog,&mut json).unwrap();fs::write(dir.join("resources.json"),&json).unwrap();
-        let manifest=mac_build::Manifest::read(&dir.join("resources.json")).unwrap();let mut rebuilt=manifest.compile_resources(&dir.join("resources.json"),b"must not replace code").unwrap();sort(&mut rebuilt);assert_eq!(rebuilt,expected);
+        let manifest=mac_build::Manifest::read(&dir.join("resources.json")).unwrap();let mut rebuilt=manifest.compile_resources(&dir.join("resources.json"),b"must not replace code", None).unwrap();sort(&mut rebuilt);assert_eq!(rebuilt,expected);
         mac_build::package::rebuild(&dir.join("resources.json"),&dir.join("rebuilt")).unwrap();let output=macbinary::decode(&fs::read(dir.join("rebuilt/Sample.bin")).unwrap()).unwrap();
         assert_eq!(output.data,original.data);assert_eq!(output.file_type,original.file_type);assert_eq!(output.creator,original.creator);assert_eq!(output.flags,original.flags);assert_eq!(output.created,original.created);assert_eq!(output.modified,original.modified);let mut decoded=resource::decode(&output.resources).unwrap();sort(&mut decoded);assert_eq!(decoded,expected);
         let mut archive:serde_json::Value=serde_json::from_slice(&fs::read(dir.join("resources.json")).unwrap()).unwrap();
@@ -150,7 +150,7 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
         let rebuilt=macbinary::decode(&fs::read(host_path).unwrap()).unwrap();assert_eq!(rebuilt.name,b"A/B\\C");assert_eq!(rebuilt.data,original.data);let mut resources=resource::decode(&rebuilt.resources).unwrap();sort(&mut resources);assert_eq!(resources,expected);
         // Decode through the same public, owner-checked resource reader as the
         // installed app, including checkpoints and reads crossing cache edges.
-        let key=ResourceKey {kind:*b"RV64",id:0};
+        let key=ResourceKey {kind:mac_toolbox::TypeCode::new(*b"RV64"),id:0};
         let size=a.get(key).unwrap().info.length;
         let source=code::Source::open(&a,key,size).unwrap();let index=code::Index::build(source.length,&source.descriptor,|at,out|source.read(&a,at,out)).unwrap();
         assert_eq!(source.descriptor.entry,0x86800000);assert_eq!(index.rows,40002);
@@ -162,11 +162,11 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
                 else {format!("{:08x} {}",0x86800000u64+u64::from(row/2)*6+if row%2==0 {0}else{4},if row%2==0 {"li a0,1"}else{"ret"})}
             }).collect();assert_eq!(actual,expected,"row {start}");
         }
-        let mut loader=Vec::new();code::loader(&a,&source,|line|loader.push(line.to_owned()));assert_eq!(loader.len(),code::HEADER_ROWS as usize);assert!(loader[0].contains("RV64"));assert_eq!(loader[2],"NABI: format 1 role 2 ABI 6");assert_eq!(loader[3],"Load base: 0x86800000");assert_eq!(loader[4],"Load limit: 0x87000000");assert!(loader[5].starts_with("RLOC: 1 patches"));
-        let mut records=Vec::new();code::relocations(a.get(ResourceKey{kind:*b"RLOC",id:0}).unwrap().info.length,1,1,|at,out|a.read(ResourceKey{kind:*b"RLOC",id:0},at,out),|line|records.push(line.to_owned())).unwrap();assert_eq!(records,["+00000020  64-bit pointer"]);
-        assert!(code::Index::build(3,&source.descriptor,|at,out|a.read(ResourceKey{kind:*b"CODE",id:i16::MIN},at,out)).is_err());
+        let mut loader=Vec::new();code::loader(&a,&source,|line|loader.push(line.to_owned()));assert_eq!(loader.len(),code::HEADER_ROWS as usize);assert!(loader[0].contains("RV64"));assert_eq!(loader[2],"NABI: format 1 role 2 ABI 7");assert_eq!(loader[3],"Load base: 0x86800000");assert_eq!(loader[4],"Load limit: 0x87000000");assert!(loader[5].starts_with("RLOC: 1 patches"));
+        let mut records=Vec::new();code::relocations(a.get(ResourceKey{kind:mac_toolbox::TypeCode::new(*b"RLOC"),id:0}).unwrap().info.length,1,1,|at,out|a.read(ResourceKey{kind:mac_toolbox::TypeCode::new(*b"RLOC"),id:0},at,out),|line|records.push(line.to_owned())).unwrap();assert_eq!(records,["+00000020  64-bit pointer"]);
+        assert!(code::Index::build(3,&source.descriptor,|at,out|a.read(ResourceKey{kind:mac_toolbox::TypeCode::new(*b"CODE"),id:i16::MIN},at,out)).is_err());
         for &(kind,_) in mac_code_resource::code_types::STANDARD_CODE_TYPES {
-            let key=ResourceKey{kind,id:77};let source=code::Source::open(&a,key,a.get(key).unwrap().info.length).unwrap();
+            let key=ResourceKey{kind: mac_toolbox::TypeCode::new(kind),id:77};let source=code::Source::open(&a,key,a.get(key).unwrap().info.length).unwrap();
             assert_eq!(source.descriptor.role,mac_formats::native::Role::CodeResource);
             let index=code::Index::build(source.length,&source.descriptor,|at,out|source.read(&a,at,out)).unwrap();
             let mut lines=Vec::new();index.lines(0,2,|at,out|source.read(&a,at,out),|line|lines.push(line.to_owned())).unwrap();
@@ -175,8 +175,8 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
         }
         drop(a);assert_eq!(b.type_count().unwrap(),type_count);drop(b);
         for _ in 0..80 {drop(system.resources().open_file(system.files().volume_at(0).unwrap().id,catalog.id).unwrap());}
-        let empty=files.lookup(system.files().volume_at(0).unwrap().id,2,"Empty").unwrap();assert_eq!(system.resources().open_file(system.files().volume_at(0).unwrap().id,empty.id).unwrap().type_count().unwrap(),0);
-        let broken=files.lookup(system.files().volume_at(0).unwrap().id,2,"Broken").unwrap();assert!(system.resources().open_file(system.files().volume_at(0).unwrap().id,broken.id).is_err());
+        let empty=files.lookup(system.files().volume_at(0).unwrap().id,mac_toolbox::Cnid(2),"Empty").unwrap();assert_eq!(system.resources().open_file(system.files().volume_at(0).unwrap().id,empty.id).unwrap().type_count().unwrap(),0);
+        let broken=files.lookup(system.files().volume_at(0).unwrap().id,mac_toolbox::Cnid(2),"Broken").unwrap();assert!(system.resources().open_file(system.files().volume_at(0).unwrap().id,broken.id).is_err());
         // Failed opens also release their owned marks rather than exhaust slots.
         for _ in 0..80 {assert!(system.resources().open_file(system.files().volume_at(0).unwrap().id,broken.id).is_err());}
         let mut lines=Vec::new();assert!(preview::structured(*b"STR#",&[0,2,1,b'A',1,0x8e],|s|lines.push(s.to_owned())).unwrap());assert_eq!(lines,["1: A","2: é"]);
@@ -286,17 +286,19 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                                                           advances");
                                                  for row in source["resources"].as_array().unwrap()
                                                  {
-                                                     let kind = row["type"].as_str()
-                                                                           .unwrap()
-                                                                           .as_bytes()
-                                                                           .try_into()
-                                                                           .unwrap();
+                                                     let kind: [u8; 4] = row["type"].as_str()
+                                                                                    .unwrap()
+                                                                                    .as_bytes()
+                                                                                    .try_into()
+                                                                                    .unwrap();
                                                      let id = row["id"].as_i64().unwrap() as i16;
-                                                     let entry = system.resources()
-                                                                       .system()
-                                                                       .get(ResourceKey { kind,
-                                                                                          id })
-                                                                       .unwrap();
+                                                     let entry =
+                                                         system.resources()
+                                                               .system()
+                                                               .get(ResourceKey { kind:
+                                                                                      kind.into(),
+                                                                                  id })
+                                                               .unwrap();
                                                      let mut bytes = vec![0; entry.size()];
                                                      entry.read(0, &mut bytes).unwrap();
                                                      entry.release().unwrap();
@@ -364,7 +366,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                                                  clip:   mac_abi::Rect::new(0, 0, 16, 16) };
             let connection =
                 unsafe { mac_traps::SurfaceConnection::new(&mut surface, services.trap) };
-            mac_toolbox::quickdraw::SurfacePort::new(connection).plot_icon(scope,
+            mac_toolbox::quickdraw::SurfacePort::new(connection).plot_icon(mac_toolbox::ResourceScope::from_raw(scope).unwrap(),
                                                                            id,
                                                                            mac_abi::Rect::new(0,
                                                                                               0,
@@ -655,19 +657,19 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         let system = unsafe { System::from_raw(services) }.unwrap();
         assert!(system.resources()
                       .application()
-                      .get(ResourceKey { kind: *b"MENU",
+                      .get(ResourceKey { kind: mac_toolbox::TypeCode::new(*b"MENU"),
                                          id:   129 })
                       .is_err(),
                 "viewer mode belongs to code-view radio buttons");
         for item in icon_provenance["resources"].as_array().unwrap()
         {
-            let kind = mac_formats::text::encode(item["type"].as_str().unwrap()).unwrap()
-                                                                                .try_into()
-                                                                                .unwrap();
+            let kind: [u8; 4] = mac_formats::text::encode(item["type"].as_str().unwrap()).unwrap()
+                                                                                         .try_into()
+                                                                                         .unwrap();
             let id = item["id"].as_i64().unwrap() as i16;
             let resource = system.resources()
                                  .application()
-                                 .get(ResourceKey { kind,
+                                 .get(ResourceKey { kind: kind.into(),
                                                     id })
                                  .unwrap();
             let mut data = vec![0; resource.size()];
@@ -729,7 +731,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
 fn sample_descriptor() -> mac_formats::native::Descriptor
 {
     mac_formats::native::Descriptor { role:        mac_formats::native::Role::Application,
-                                      abi_version: 6,
+                                      abi_version: 7,
                                       load_base:   0x86800000,
                                       load_limit:  0x87000000,
                                       entry:       0x86800000 }

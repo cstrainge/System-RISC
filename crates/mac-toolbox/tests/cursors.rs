@@ -162,11 +162,12 @@ fn original_builtins_resources_and_application_lookup_are_exact()
             assert_eq!(state.cursor.hotspot,
                        Point { v,
                                h });
-            let resource = system.resources()
-                                 .system()
-                                 .get(mac_toolbox::ResourceKey { kind: *b"CURS",
-                                                                 id })
-                                 .unwrap();
+            let resource =
+                system.resources()
+                      .system()
+                      .get(mac_toolbox::ResourceKey { kind: mac_toolbox::TypeCode::new(*b"CURS"),
+                                                      id })
+                      .unwrap();
             let mut bytes = [0; 68];
             assert_eq!(resource.read(0, &mut bytes).unwrap(), 68);
             assert_eq!(state.cursor, mono(&bytes));
@@ -187,7 +188,7 @@ fn original_builtins_resources_and_application_lookup_are_exact()
                 {
                     (cursor.application(), system.resources().application())
                 };
-                let resource = resources.get(mac_toolbox::ResourceKey { kind: *b"CURS",
+                let resource = resources.get(mac_toolbox::ResourceKey { kind: mac_toolbox::TypeCode::new(*b"CURS"),
                                                                         id })
                                         .unwrap();
                 let mut bytes = [0; 68];
@@ -269,10 +270,12 @@ fn original_acur_sequences_wrap_and_failures_preserve_the_previous_cursor()
                 assert_eq!(state.frame_index as usize, frame % 8);
                 assert_eq!(state.frame_count, 8);
                 assert_ne!(state.flags & CURSOR_ANIMATED, 0);
-                let resource = system.resources()
-                                     .get(mac_toolbox::ResourceKey { kind: *b"CURS",
-                                                                     id:   frames[frame % 8] })
-                                     .unwrap();
+                let resource =
+                    system.resources()
+                          .get(mac_toolbox::ResourceKey { kind:
+                                                              mac_toolbox::TypeCode::new(*b"CURS"),
+                                                          id:   frames[frame % 8] })
+                          .unwrap();
                 let mut bytes = [0; 68];
                 resource.read(0, &mut bytes).unwrap();
                 assert_eq!(state.cursor, mono(&bytes));

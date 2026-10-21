@@ -2,15 +2,16 @@
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::resources::*;
-pub use mac_abi::{ResourceKey,
-                  resources::{APPLICATION, CHAIN, ResourceInfo, SYSTEM, VersionInfo}};
-use mac_traps::ResourceRequest;
-pub use mac_traps::{Client, Error, Result};
+mod info;
+pub use info::{APPLICATION, CHAIN, ImageScope, ResourceAttributes, ResourceInfo, ResourceKey,
+               ResourceScope, SYSTEM, VersionInfo};
+pub use mac_traps::{Client, Cnid, Error, Result, TypeCode, VolumeId};
+use mac_traps::{ResourceRequest, types::ResourceFileHandle};
 #[derive(Clone, Copy)]
 pub struct Resources<'a>
 {
     client: Client<'a>,
-    scope:  i16
+    scope:  ResourceScope
 }
 impl<'a> Resources<'a>
 {
@@ -40,17 +41,17 @@ impl<'a> Resources<'a>
 
     /// Read vers from an arbitrary catalog file without changing the current
     /// application/resource chain or loading its executable resources.
-    pub fn file_version(self, volume: u32, cnid: u32, id: i16) -> Result<VersionInfo>
+    pub fn file_version(self, volume: VolumeId, cnid: Cnid, id: i16) -> Result<VersionInfo>
     {
-        self.client.file_version(volume, cnid, id)
+        self.client.file_version(volume.0, cnid.0, id)?.try_into()
     }
 
     fn request(self, operation: u32, key: ResourceKey, index: u32, name: &str)
                -> Result<mac_traps::ResourceReply>
     {
         self.client.resource(ResourceRequest { operation,
-                                               scope: self.scope,
-                                               key,
+                                               scope: self.scope.raw(),
+                                               key: key.into(),
                                                index,
                                                name,
                                                ..Default::default() },
@@ -60,7 +61,7 @@ impl<'a> Resources<'a>
     /// Decode a STR resource to UTF8 through the resident Resource Manager.
     pub fn string(self, id: i16, output: &mut [u8]) -> Result<&str>
     {
-        self.string_value(ResourceKey { kind: *b"STR ",
+        self.string_value(ResourceKey { kind: TypeCode::new(*b"STR "),
                                         id },
                           0,
                           output)
@@ -69,7 +70,7 @@ impl<'a> Resources<'a>
     /// Rust indexes STR# elements from zero; the serialized resource remains classic.
     pub fn indexed_string(self, id: i16, index: u32, output: &mut [u8]) -> Result<&str>
     {
-        self.string_value(ResourceKey { kind: *b"STR#",
+        self.string_value(ResourceKey { kind: TypeCode::new(*b"STR#"),
                                         id },
                           index,
                           output)
@@ -78,8 +79,8 @@ impl<'a> Resources<'a>
     fn string_value(self, key: ResourceKey, index: u32, output: &mut [u8]) -> Result<&str>
     {
         let reply = self.client.resource(ResourceRequest { operation: STRING,
-                                                            scope: self.scope,
-                                                            key,
+                                                            scope: self.scope.raw(),
+                                                            key: key.into(),
                                                             index,
                                                             ..Default::default() },
                                           output)?;
@@ -89,26 +90,26 @@ impl<'a> Resources<'a>
 
     pub fn get(self, key: ResourceKey) -> Result<Resource<'a>>
     {
-        self.request(GET, key, 0, "").map(|r| {
-                                         Resource { client: self.client,
-                                                    info:   r.info }
+        self.request(GET, key, 0, "").and_then(|r| {
+                                         Ok(Resource { client: self.client,
+                                                       info:   r.info.try_into()? })
                                      })
     }
 
-    pub fn named(self, kind: [u8; 4], name: &str) -> Result<Resource<'a>>
+    pub fn named(self, kind: TypeCode, name: &str) -> Result<Resource<'a>>
     {
         self.request(NAMED,
                      ResourceKey { kind,
                                    id: 0 },
                      0,
                      name)
-            .map(|r| {
-                Resource { client: self.client,
-                           info:   r.info }
+            .and_then(|r| {
+                Ok(Resource { client: self.client,
+                              info:   r.info.try_into()? })
             })
     }
 
-    pub fn count(self, kind: [u8; 4]) -> Result<u32>
+    pub fn count(self, kind: TypeCode) -> Result<u32>
     {
         Ok(self.request(COUNT,
                         ResourceKey { kind,
@@ -119,16 +120,16 @@ impl<'a> Resources<'a>
     }
 
     /// Rust enumeration is zero-based; resource type/ID identity remains classic.
-    pub fn at(self, kind: [u8; 4], index: u32) -> Result<Resource<'a>>
+    pub fn at(self, kind: TypeCode, index: u32) -> Result<Resource<'a>>
     {
         self.request(INDEX,
                      ResourceKey { kind,
                                    id: 0 },
                      index,
                      "")
-            .map(|r| {
-                Resource { client: self.client,
-                           info:   r.info }
+            .and_then(|r| {
+                Ok(Resource { client: self.client,
+                              info:   r.info.try_into()? })
             })
     }
 
@@ -137,9 +138,9 @@ impl<'a> Resources<'a>
         Ok(self.request(COUNT_TYPES, ResourceKey::default(), 0, "")?.index)
     }
 
-    pub fn type_at(self, index: u32) -> Result<[u8; 4]>
+    pub fn type_at(self, index: u32) -> Result<TypeCode>
     {
-        Ok(self.request(TYPE_INDEX, ResourceKey::default(), index, "")?.kind)
+        Ok(TypeCode::new(self.request(TYPE_INDEX, ResourceKey::default(), index, "")?.kind))
     }
 }
 pub struct Resource<'a>
@@ -159,12 +160,12 @@ impl Resource<'_>
         self.info.length
     }
 
-    pub fn home(&self) -> i16
+    pub fn home(&self) -> ResourceScope
     {
         self.info.origin
     }
 
-    pub fn attributes(&self) -> u16
+    pub fn attributes(&self) -> ResourceAttributes
     {
         self.info.attributes
     }
@@ -183,8 +184,8 @@ impl Resource<'_>
     {
         self.client
             .resource(ResourceRequest { operation: LOAD,
-                                        scope: self.info.origin,
-                                        key: self.info.key,
+                                        scope: self.info.origin.raw(),
+                                        key: self.info.key.into(),
                                         ..Default::default() },
                       &mut [])
             .map(|_| ())
@@ -194,8 +195,8 @@ impl Resource<'_>
     {
         Ok(self.client
                .resource(ResourceRequest { operation: READ,
-                                           scope: self.info.origin,
-                                           key: self.info.key,
+                                           scope: self.info.origin.raw(),
+                                           key: self.info.key.into(),
                                            offset,
                                            ..Default::default() },
                          output)?
@@ -206,8 +207,8 @@ impl Resource<'_>
     {
         self.client
             .resource(ResourceRequest { operation: RELEASE,
-                                        scope: self.info.origin,
-                                        key: self.info.key,
+                                        scope: self.info.origin.raw(),
+                                        key: self.info.key.into(),
                                         ..Default::default() },
                       &mut [])
             .map(|_| ())
@@ -219,7 +220,7 @@ impl Resource<'_>
 pub struct ResourceFile<'a>
 {
     client: Client<'a>,
-    handle: u32
+    handle: ResourceFileHandle
 }
 #[derive(Clone, Copy, Debug)]
 pub struct FileResourceInfo
@@ -230,16 +231,16 @@ pub struct FileResourceInfo
 }
 impl<'a> Resources<'a>
 {
-    pub fn open_file(self, volume: u32, cnid: u32) -> Result<ResourceFile<'a>>
+    pub fn open_file(self, volume: VolumeId, cnid: Cnid) -> Result<ResourceFile<'a>>
     {
         let mut call = mac_abi::files::FileCall { operation: mac_abi::files::OPEN,
-                                                  volume,
-                                                  cnid,
+                                                  volume: volume.0,
+                                                  cnid: cnid.0,
                                                   fork: mac_abi::files::RESOURCE_FORK,
                                                   ..Default::default() };
         self.client.file(&mut call, "", &mut [])?;
         let file = ResourceFile { client: self.client,
-                                  handle: call.handle };
+                                  handle: ResourceFileHandle(call.handle) };
         file.type_count()?;
         Ok(file)
     }
@@ -251,8 +252,8 @@ impl ResourceFile<'_>
                -> Result<FileResourceCall>
     {
         let mut call = FileResourceCall { operation,
-                                          handle: self.handle,
-                                          key,
+                                          handle: self.handle.0,
+                                          key: key.into(),
                                           index,
                                           offset,
                                           ..Default::default() };
@@ -265,12 +266,14 @@ impl ResourceFile<'_>
         Ok(self.request(COUNT_TYPES, ResourceKey::default(), 0, "", 0, &mut [])?.index)
     }
 
-    pub fn type_at(&self, index: u32) -> Result<[u8; 4]>
+    pub fn type_at(&self, index: u32) -> Result<TypeCode>
     {
-        Ok(self.request(TYPE_INDEX, ResourceKey::default(), index, "", 0, &mut [])?.key.kind)
+        Ok(TypeCode::new(self.request(TYPE_INDEX, ResourceKey::default(), index, "", 0, &mut [])?
+                             .key
+                             .kind))
     }
 
-    pub fn count(&self, kind: [u8; 4]) -> Result<u32>
+    pub fn count(&self, kind: TypeCode) -> Result<u32>
     {
         Ok(self.request(COUNT,
                         ResourceKey { kind,
@@ -286,11 +289,11 @@ impl ResourceFile<'_>
                 -> Result<FileResourceInfo>
     {
         let call = self.request(operation, key, index, name, 0, &mut [])?;
-        Ok(FileResourceInfo { info:     call.info,
+        Ok(FileResourceInfo { info:     call.info.try_into()?,
                               has_name: call.has_name != 0 })
     }
 
-    pub fn at(&self, kind: [u8; 4], index: u32) -> Result<FileResourceInfo>
+    pub fn at(&self, kind: TypeCode, index: u32) -> Result<FileResourceInfo>
     {
         self.metadata(INDEX,
                       ResourceKey { kind,
@@ -304,7 +307,7 @@ impl ResourceFile<'_>
         self.metadata(GET, key, 0, "")
     }
 
-    pub fn named(&self, kind: [u8; 4], name: &str) -> Result<FileResourceInfo>
+    pub fn named(&self, kind: TypeCode, name: &str) -> Result<FileResourceInfo>
     {
         self.metadata(NAMED,
                       ResourceKey { kind,
@@ -318,13 +321,26 @@ impl ResourceFile<'_>
         Ok(self.request(READ, key, 0, "", offset, output)?.transferred)
     }
 }
+impl ResourceFile<'_>
+{
+    /// Retains ownership when resident close fails, allowing an explicit retry.
+    pub fn close(&mut self) -> Result<()>
+    {
+        if self.handle.0 != 0
+        {
+            let mut call = mac_abi::files::FileCall { operation: mac_abi::files::CLOSE,
+                                                      handle: self.handle.0,
+                                                      ..Default::default() };
+            self.client.file(&mut call, "", &mut [])?;
+            self.handle = ResourceFileHandle(0);
+        }
+        Ok(())
+    }
+}
 impl Drop for ResourceFile<'_>
 {
     fn drop(&mut self)
     {
-        let mut call = mac_abi::files::FileCall { operation: mac_abi::files::CLOSE,
-                                                  handle: self.handle,
-                                                  ..Default::default() };
-        let _ = self.client.file(&mut call, "", &mut []);
+        let _ = self.close();
     }
 }

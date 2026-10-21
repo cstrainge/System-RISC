@@ -3,7 +3,7 @@
 #![no_main]
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use mac_toolbox::{Status, System, SystemServices};
+use mac_toolbox::{System, SystemServices};
 #[path = "../../../busy_cursor_cases.rs"]
 mod busy_cursor_cases;
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
@@ -22,7 +22,7 @@ fn clock() -> u64
 /// The native loader supplies a valid table for the application's lifetime.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     SERVICES.store(services.cast_mut(), Ordering::Release);
     let system = match unsafe { System::from_raw(services) }

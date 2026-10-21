@@ -24,15 +24,15 @@ enum Check
     Locked,
     Stationery
 }
-struct Info
+struct Info<'a>
 {
-    window:         u32,
+    window:         WindowId,
     identity:       Location,
     entry:          files::CatalogInfo,
     volume_info:    Option<files::VolumeInfo>,
     layout:         Layout,
-    name:           EditorId,
-    comments:       EditorId,
+    name:           textedit::Editor<'a>,
+    comments:       textedit::Editor<'a>,
     focus:          Focus,
     dirty_name:     bool,
     dirty_comments: bool,
@@ -52,40 +52,23 @@ struct Info
     icon:           crate::icon_view::Icon
 }
 #[derive(Default)]
-pub struct Controller
+pub struct Controller<'a>
 {
-    windows:     [Option<Info>; CAPACITY],
+    windows:     [Option<Info<'a>>; CAPACITY],
     work_cursor: usize,
     changed:     bool
 }
-fn editor(system: &System<'_>, dest: Rect, view: Rect, text: &str) -> Result<EditorId, Error>
+fn editor<'a>(system: &System<'a>, dest: Rect, view: Rect, text: &str)
+              -> Result<textedit::Editor<'a>, Error>
 {
-    let id = system.textedit().create(dest, view)?;
-    let mut stage = "font";
-    let configured: ToolboxResult<_> = (|| {
-        system.textedit().set_font(id, FONT)?;
-        stage = "text";
-        system.textedit().set_text(id, text)?;
-        Ok(())
-    })();
-    if let Err(status) = configured
-    {
-        let mut log = Text::<160>::default();
-        let _ = writeln!(&mut log,
-                         "FINDER_INFO_EDITOR_FAILED stage={} editor={} top={} status={}",
-                         stage,
-                         id.0,
-                         dest.top,
-                         status.status());
-        let _ = system.log(log.as_str());
-        let _ = system.textedit().dispose(id);
-        return Err(status);
-    }
-    Ok(id)
+    let editor = system.textedit().create_owned(dest, view)?;
+    editor.set_font(FONT)?;
+    editor.set_text(text)?;
+    Ok(editor)
 }
-impl Info
+impl<'a> Info<'a>
 {
-    fn create(system: &System<'_>, identity: Location) -> Result<Self, Error>
+    fn create(system: &System<'a>, identity: Location) -> Result<Self, Error>
     {
         let mut entry = system.files().catalog(identity.volume, identity.folder)?;
         let volume = system.files().volume(identity.volume)?;
@@ -98,27 +81,27 @@ impl Info
         }
         // This first native profile uses ordinary file/folder original geometry.
         // APPL metadata is visible, but its memory-requirements extension is deferred.
-        let document = !folder && entry.file_type == *b"TEXT";
+        let document = !folder && entry.file_type == TypeCode::new(*b"TEXT");
         let layout = Layout::load(system, folder, document, is_volume)?;
         let title = draw::title(system, entry.name())?;
         let window = system.new_window(Rect::new(8, 46, 8 + layout.width, 46 + layout.height),
                                        title.as_str(),
                                        (layout.width, layout.height),
                                        4)?;
-        let mut name = EditorId(0);
-        let mut comments = EditorId(0);
+        let mut name = None;
+        let mut comments = None;
         let mut stage = "close-policy";
         let configured: ToolboxResult<_> = (|| {
-            system.windows().set_close_deferred(WindowId(window), true)?;
-            system.windows().set_grow_icon_clip(WindowId(window), Some(Rect::ZERO))?;
+            system.windows().set_close_deferred(window, true)?;
+            system.windows().set_grow_icon_clip(window, Some(Rect::ZERO))?;
             stage = "name-editor";
-            name = editor(system, layout.name, layout.name, entry.name())?;
+            name = Some(editor(system, layout.name, layout.name, entry.name())?);
             stage = "comments-load";
             let mut text = Text::<768>::default();
             system.files().comment(identity.volume, identity.folder, &mut text)?;
             stage = "comments-editor";
             let comment_bounds = layout::inset(layout.comments, 1);
-            comments = editor(system, comment_bounds, comment_bounds, text.as_str())?;
+            comments = Some(editor(system, comment_bounds, comment_bounds, text.as_str())?);
             stage = "allocation";
             let allocation = if folder
             {
@@ -131,20 +114,21 @@ impl Info
             stage = "resource-labels";
             let mut kind = Text::default();
             let mut bytes = [0; 512];
-            let label = system.resources().application().string(if folder
-                                                                 {
-                                                                     11252
-                                                                 }
-                                                                 else if entry.file_type
-                                                                           == *b"APPL"
-                                                                 {
-                                                                     17252
-                                                                 }
-                                                                 else
-                                                                 {
-                                                                     12752
-                                                                 },
-                                                                 &mut bytes)?;
+            let label = system.resources()
+                              .application()
+                              .string(if folder
+                                      {
+                                          11252
+                                      }
+                                      else if entry.file_type == TypeCode::new(*b"APPL")
+                                      {
+                                          17252
+                                      }
+                                      else
+                                      {
+                                          12752
+                                      },
+                                      &mut bytes)?;
             kind.write_str(label).map_err(|_| Error::NoMemory)?;
             if is_volume
             {
@@ -211,12 +195,12 @@ impl Info
                                   entry,
                                   volume_info: is_volume.then_some(volume),
                                   layout,
-                                  name,
-                                  comments,
+                                  name: name.take().ok_or(Error::BadArgument)?,
+                                  comments: comments.take().ok_or(Error::BadArgument)?,
                                   focus: Focus::Comments,
                                   dirty_name: false,
                                   dirty_comments: false,
-                                  read_only: volume.read_only != 0,
+                                  read_only: volume.read_only,
                                   active: true,
                                   controls: [None; 2],
                                   status: None,
@@ -244,7 +228,7 @@ impl Info
                 {
                     info.controls[index] =
                         Some(system.controls()
-                                   .create_standard(WindowId(window),
+                                   .create_standard(window,
                                                     controls::StandardKind::WindowFontCheckbox,
                                                     state)?
                                    .into_id());
@@ -271,14 +255,6 @@ impl Info
                                  window,
                                  status.status());
                 let _ = system.log(log.as_str());
-                if name.0 != 0
-                {
-                    let _ = system.textedit().dispose(name);
-                }
-                if comments.0 != 0
-                {
-                    let _ = system.textedit().dispose(comments);
-                }
                 let _ = system.close_window(window);
                 Err(status)
             }
@@ -295,12 +271,12 @@ impl Info
 
     fn current_editor(&self) -> EditorId
     {
-        if self.focus == Focus::Name { self.name } else { self.comments }
+        if self.focus == Focus::Name { self.name.id() } else { self.comments.id() }
     }
 
     fn activate_editor(&self, system: &System<'_>) -> Result<(), Error>
     {
-        for (focus, id) in [(Focus::Name, self.name), (Focus::Comments, self.comments)]
+        for (focus, id) in [(Focus::Name, self.name.id()), (Focus::Comments, self.comments.id())]
         {
             system.textedit().set_cursor_enabled(id, self.editable(focus))?;
             system.textedit()
@@ -322,16 +298,16 @@ impl Info
         self.draw(system)
     }
 
-    fn dispose(&self, system: &System<'_>) -> Result<(), Error>
+    fn dispose(&mut self, _system: &System<'_>) -> Result<(), Error>
     {
-        let first = system.textedit().dispose(self.name);
-        let second = system.textedit().dispose(self.comments);
+        let first = self.name.dispose();
+        let second = self.comments.dispose();
         first.and(second)
     }
 }
-impl Controller
+impl<'a> Controller<'a>
 {
-    pub fn open(&mut self, system: &System<'_>, identity: Location) -> Result<(), Error>
+    pub fn open(&mut self, system: &System<'a>, identity: Location) -> Result<(), Error>
     {
         if let Some(info) = self.windows.iter_mut().flatten().find(|info| info.identity == identity)
         {
@@ -403,7 +379,7 @@ impl Controller
         }
         system.close_window(info.window)?;
         self.changed |= info.changed;
-        let info = self.windows[slot].take().ok_or(Error::NotFound)?;
+        let mut info = self.windows[slot].take().ok_or(Error::NotFound)?;
         let cleanup = info.dispose(system);
         let mut log = Text::<128>::default();
         let _ = writeln!(&mut log,
@@ -430,7 +406,7 @@ impl Controller
                 {}
                 Err(Error::NotFound) =>
                 {
-                    let info = row.take().ok_or(Error::NotFound)?;
+                    let mut info = row.take().ok_or(Error::NotFound)?;
                     info.dispose(system)?;
                 }
                 Err(status) => return Err(status)
@@ -441,12 +417,12 @@ impl Controller
 
     pub fn update_menus(&self, system: &System<'_>) -> Result<(), Error>
     {
-        let front = system.window(0).ok().and_then(|window| {
-                                             self.windows
-                                                 .iter()
-                                                 .flatten()
-                                                 .find(|info| info.window == window.id)
-                                         });
+        let front = system.window(WindowId(0)).ok().and_then(|window| {
+                                                       self.windows
+                                                           .iter()
+                                                           .flatten()
+                                                           .find(|info| info.window == window.id)
+                                                   });
         let selected = front.is_some_and(|info| {
                                 system.textedit()
                                       .info(info.current_editor())
@@ -459,7 +435,7 @@ impl Controller
                                 (6, selected && writable),
                                 (7, front.is_some())]
         {
-            system.menus().set_item_enabled(1253, item, enabled)?;
+            system.menus().set_item_enabled(MenuId(1253), item, enabled)?;
         }
         Ok(())
     }
@@ -469,23 +445,20 @@ impl Controller
         self.prune(system)?;
         if let Event::CloseRequested { window,
                                        .. } = event
+           && let Some(slot) =
+               self.windows
+                   .iter()
+                   .position(|row| row.as_ref().is_some_and(|info| info.window == window))
         {
-            let window = window.0;
-            if let Some(slot) =
-                self.windows
-                    .iter()
-                    .position(|row| row.as_ref().is_some_and(|info| info.window == window))
-            {
-                self.close(system, slot)?;
-                return Ok(true);
-            }
+            self.close(system, slot)?;
+            return Ok(true);
         }
         if matches!(event, Event::Activate { .. })
            && let Some(info) =
                self.windows
                    .iter_mut()
                    .flatten()
-                   .find(|info| info.window == event.window().map_or(0, |window| window.0))
+                   .find(|info| info.window == event.window().unwrap_or_default())
         {
             info.active = event.input().modifiers.contains(mac_toolbox::events::Modifiers::ACTIVE);
             if !info.active
@@ -501,12 +474,12 @@ impl Controller
                self.windows
                    .iter()
                    .flatten()
-                   .find(|info| info.window == event.window().map_or(0, |window| window.0))
+                   .find(|info| info.window == event.window().unwrap_or_default())
         {
             info.draw(system)?;
             return Ok(true);
         }
-        let front = system.window(0).ok().map(|w| w.id);
+        let front = system.window(WindowId(0)).ok().map(|w| w.id);
         let Some(slot) =
             self.windows
                 .iter()
@@ -535,7 +508,7 @@ impl Controller
             }
         }
         if matches!(event, Event::MouseDown { .. })
-           && event.window().map_or(0, |window| window.0) == front.unwrap_or(0)
+           && event.window().unwrap_or_default() == front.unwrap_or_default()
         {
             let info = self.windows[slot].as_mut().ok_or(Error::NotFound)?;
             info.click(system, event)?;
@@ -550,7 +523,7 @@ impl Controller
             {
                 match system.events().peek(mac_toolbox::events::EventMask::ALL)?
                 {
-                    Some(next) if matches!(next, Event::KeyDown { .. } | Event::KeyUp { .. }) =>
+                    Some(Event::KeyDown { .. } | Event::KeyUp { .. }) =>
                     {
                         batch[count] = system.next_event(mac_toolbox::events::EventMask::ALL)?;
                         count += 1;

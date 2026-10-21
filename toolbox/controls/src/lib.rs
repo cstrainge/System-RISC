@@ -80,15 +80,15 @@ impl<'a> Controls<'a>
         self.client.control(&mut call)
     }
 
-    /// Hit parts use classic scrollbar codes20/21/22/23/129; zero means no hit.
+    /// Resolve the CDEF hit part into the same vocabulary as standard controls.
     pub fn scrollbar_hit(&self, window: WindowId, bounds: Rect, value: i16, maximum: i16,
                          active: bool, point: mac_abi::Point)
-                         -> Result<i16>
+                         -> Result<Part>
     {
         let mut call=mac_abi::controls::ControlCall {operation:mac_abi::controls::HIT_SCROLLBAR,window:window.0,
             scrollbar:mac_abi::controls::ScrollbarState {bounds,value,maximum,active:u32::from(active),..Default::default()},point,..Default::default()};
         self.client.control(&mut call)?;
-        Ok(call.result as i16)
+        Part::from_code(call.result as i16).map_err(|_| Error::BadAbi)
     }
 
     /// Map movement from a mouse-down anchor using CDEF-owned thumb geometry.
@@ -156,7 +156,7 @@ impl<'a> Controls<'a>
 
     pub fn button(&self, window: WindowId, bounds: Rect, title: &str) -> Result<()>
     {
-        toolbox_quickdraw::QuickDraw::new(self.client).port(window).command(mac_abi::DRAW_BUTTON,
+        toolbox_quickdraw::QuickDraw::new(self.client).port(window).command(toolbox_quickdraw::DrawOperation::Button,
                                                                             bounds,
                                                                             0,
                                                                             title)

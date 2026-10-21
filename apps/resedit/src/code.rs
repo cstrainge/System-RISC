@@ -225,14 +225,14 @@ impl Source
     pub fn open(file: &ResourceFile<'_>, key: ResourceKey, length: usize) -> ToolboxResult<Self>
     {
         let mut data = [0; DESCRIPTOR_SIZE];
-        let embedded = key.kind != *b"RV64";
+        let embedded = key.kind != mac_toolbox::TypeCode::new(*b"RV64");
         let abi = if embedded
         {
             key
         }
         else
         {
-            ResourceKey { kind: *b"NABI",
+            ResourceKey { kind: mac_toolbox::TypeCode::new(*b"NABI"),
                           id:   0 }
         };
         if !embedded && file.get(abi)?.info.length != DESCRIPTOR_SIZE
@@ -296,7 +296,7 @@ impl Source
         }
         else
         {
-            let key = ResourceKey { kind: *b"RLOC",
+            let key = ResourceKey { kind: mac_toolbox::TypeCode::new(*b"RLOC"),
                                     id:   0 };
             relocation_count(file.get(key)?.info.length, |offset, out| file.read(key, offset, out))
         }

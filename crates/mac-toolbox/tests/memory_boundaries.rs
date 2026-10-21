@@ -16,13 +16,13 @@ fn byte_access_checks_bounds_preserves_buffers_and_keeps_mem_error()
         assert_eq!(outside, [0xa5; 4]);
         assert!(matches!(system.memory().new_handle_clear(1024 * 1024 + 1),
                          Err(Error::MemoryFull)));
-        assert_eq!(system.memory().last_error().unwrap(), MEM_FULL_ERR);
+        assert_eq!(system.memory().last_error().unwrap(), Some(Error::MemoryFull));
         let mut bytes = [0; 16];
         assert_eq!(h.read(0, &mut bytes), Ok(16));
         assert_eq!(&bytes, b"0123456789abcdef");
-        assert_eq!(system.memory().last_error().unwrap(), MEM_FULL_ERR);
+        assert_eq!(system.memory().last_error().unwrap(), Some(Error::MemoryFull));
         assert_eq!(h.len(), Ok(16));
-        assert_eq!(system.memory().last_error().unwrap(), 0);
+        assert_eq!(system.memory().last_error().unwrap(), None);
     });
 }
 #[test]
@@ -71,7 +71,7 @@ fn handles_release_storage_at_scope_exit_and_sessions_are_independent()
                 let h = system.memory().new_handle_clear(8192).unwrap();
                 assert_eq!(h.len(), Ok(8192));
             }
-            let empty = system.memory().new_empty_handle().unwrap();
+            let mut empty = system.memory().new_empty_handle().unwrap();
             assert_eq!(empty.len(), Err(Error::NilHandle));
             empty.dispose().unwrap();
         });
@@ -87,7 +87,7 @@ fn application_cleanup_reclaims_zone_without_reusing_old_handle_generations()
         let mut old = system.memory().handle_from_bytes(b"old application").unwrap();
         assert_eq!(old.len(), Ok(15));
         clear_memory_services().unwrap();
-        assert_eq!(system.memory().last_error().unwrap(), 0);
+        assert_eq!(system.memory().last_error().unwrap(), None);
         let mut new = system.memory().handle_from_bytes(b"new application").unwrap();
         let mut output = [0xa5; 15];
         assert_eq!(old.read(0, &mut output), Err(Error::NilHandle));

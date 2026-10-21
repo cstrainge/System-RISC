@@ -18,16 +18,14 @@ const QUIT: u32 = u32::from_be_bytes(*b"quit");
 fn run(system: &System<'_>) -> Result<(), Error>
 {
     system.menus().clear()?;
-    for id in [128, 129]
-    {
-        system.menus().install_menu_resource(mac_toolbox::resources::APPLICATION, id)?;
-    }
+    let _menus = [system.menus().install_owned(mac_toolbox::resources::APPLICATION, 128)?,
+                  system.menus().install_owned(mac_toolbox::resources::APPLICATION, 129)?];
     let window = demo::open(system)?;
     let mut selectors = [controls::ControlId(0); 10];
     for (index, id) in selectors.iter_mut().enumerate()
     {
         *id = system.controls()
-                    .create_standard(WindowId(window),
+                    .create_standard(window,
                                      controls::StandardKind::WindowFontButton,
                                      demo::selector(system, index)?)?
                     .into_id();
@@ -46,7 +44,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
                 system.close_window(window)?;
                 return Ok(());
             }
-            if selection.menu_id == 129 && (1..=10).contains(&selection.item)
+            if selection.menu_id == MenuId(129) && (1..=10).contains(&selection.item)
             {
                 page = (selection.item - 1) as u8;
                 demo::draw(system, window, page, icon_offset, &selectors)?;
@@ -60,8 +58,8 @@ fn run(system: &System<'_>) -> Result<(), Error>
             Ok(_) =>
             {}
         }
-        let mut redraw = matches!(event, Event::Update { .. })
-                         && event.window().map_or(0, |window| window.0) == window;
+        let mut redraw =
+            matches!(event, Event::Update { .. }) && event.window().unwrap_or_default() == window;
         if matches!(event, Event::KeyDown { .. })
            && !event.input().modifiers.contains(mac_toolbox::events::Modifiers::COMMAND)
         {
@@ -92,8 +90,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
                 redraw = true;
             }
         }
-        if matches!(event, Event::MouseDown { .. })
-           && event.window().map_or(0, |window| window.0) == window
+        if matches!(event, Event::MouseDown { .. }) && event.window().unwrap_or_default() == window
         {
             let bounds = system.window(window)?.bounds;
             let local = Point { h: event.input().at.h - bounds.left,
@@ -121,7 +118,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
 /// The native loader supplies initialized segments and a live service table.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
     {
@@ -134,11 +131,11 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     };
     if system.capabilities() & CAP_GRAPHICS == 0
     {
-        return NOT_SUPPORTED;
+        return mac_toolbox::abi::NOT_SUPPORTED;
     }
     match run(&system)
     {
-        Ok(()) => OK,
+        Ok(()) => mac_toolbox::abi::OK,
         Err(status) =>
         {
             let _ = system.log("QUICKDRAW_TEST_ERROR\n");

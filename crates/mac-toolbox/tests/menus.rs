@@ -1,6 +1,6 @@
 //! Menu Manager compatibility through public SDK and real resource handlers.
 #![cfg(not(target_arch = "riscv64"))]
-use mac_toolbox::{Event, EventKind, System};
+use mac_toolbox::{Event, System, abi::EventKind};
 #[path = "conformance/menu_sizing.rs"]
 mod menu_sizing;
 #[test]
@@ -42,7 +42,7 @@ fn uncached_menu_sizes_match_original_calc_menu_size()
 fn malformed_menu_resources_fail_without_installing_partial_objects()
 {
     use mac_formats::resource::{Resource, encode};
-    use mac_toolbox::{BAD_ARGUMENT, NOT_FOUND, NOT_SUPPORTED};
+    use mac_toolbox::abi::{BAD_ARGUMENT, NOT_FOUND, NOT_SUPPORTED};
     let original = include_bytes!("data/original-menu-257.bin");
     for (bytes, command, expected) in
         [(original[..12].to_vec(), None, BAD_ARGUMENT),
@@ -72,9 +72,13 @@ fn malformed_menu_resources_fail_without_installing_partial_objects()
         let fork = encode(&records).unwrap();
         mac_system::testing::menus::with_resources(&fork, &fork, |services| {
             let system = unsafe { System::from_raw(services) }.unwrap();
-            assert_eq!(system.menus().install_menu_resource(1, 257).unwrap_err().status(),
+            assert_eq!(system.menus()
+                             .install_menu_resource(mac_toolbox::ResourceScope::Application, 257)
+                             .unwrap_err()
+                             .status(),
                        expected);
-            assert_eq!(system.menus().item_count(257).unwrap_err().status(), NOT_FOUND);
+            assert_eq!(system.menus().item_count(mac_toolbox::MenuId(257)).unwrap_err().status(),
+                       NOT_FOUND);
         });
     }
 }
@@ -90,10 +94,10 @@ fn original_menu_records_install_and_mutate_through_public_sdk()
         for menu in oracle["menus"].as_array().unwrap()
         {
             let id = menu["id"].as_i64().unwrap() as i16;
-            api.install_menu_resource(1, id).unwrap();
-            assert_eq!(api.item_count(id).unwrap() as usize,
+            api.install_menu_resource(mac_toolbox::ResourceScope::Application, id).unwrap();
+            assert_eq!(api.item_count(mac_toolbox::MenuId(id)).unwrap() as usize,
                        menu["items"].as_array().unwrap().len());
-            let layout = api.layout(id).unwrap();
+            let layout = api.layout(mac_toolbox::MenuId(id)).unwrap();
 
             assert_eq!(layout.title.left, menu["left"].as_i64().unwrap() as i16);
             if menu["width"].as_i64().unwrap() > 0
@@ -108,25 +112,25 @@ fn original_menu_records_install_and_mutate_through_public_sdk()
             for item in menu["items"].as_array().unwrap()
             {
                 let index = item["index"].as_u64().unwrap() as u16;
-                assert_eq!(api.item(id, index).unwrap().enabled,
+                assert_eq!(api.item(mac_toolbox::MenuId(id), index).unwrap().enabled,
                            item["enabled"].as_bool().unwrap(),
                            "menu{id} item{index}");
             }
         }
         assert_eq!(api.selection(&Event::default()).unwrap(), None);
-        api.set_item_enabled(257, 1, false).unwrap();
-        assert!(!api.item(257, 1).unwrap().enabled);
-        api.set_item_enabled(257, 1, true).unwrap();
-        api.set_item_checked(257, 1, true).unwrap();
-        assert!(api.item(257, 1).unwrap().checked);
+        api.set_item_enabled(mac_toolbox::MenuId(257), 1, false).unwrap();
+        assert!(!api.item(mac_toolbox::MenuId(257), 1).unwrap().enabled);
+        api.set_item_enabled(mac_toolbox::MenuId(257), 1, true).unwrap();
+        api.set_item_checked(mac_toolbox::MenuId(257), 1, true).unwrap();
+        assert!(api.item(mac_toolbox::MenuId(257), 1).unwrap().checked);
         let selection = api.selection(&mac_abi::Event { kind: EventKind::MenuCommand,
                                                         message: (257u32 << 16) | 1,
                                                         ..Default::default() }.into())
                            .unwrap()
                            .unwrap();
-        assert_eq!((selection.menu_id, selection.item), (257, 1));
+        assert_eq!((selection.menu_id, selection.item), (mac_toolbox::MenuId(257), 1));
         api.clear().unwrap();
-        assert!(api.item_count(257).is_err());
+        assert!(api.item_count(mac_toolbox::MenuId(257)).is_err());
     });
 }
 
@@ -318,14 +322,14 @@ fn queued_command_keys_resolve_using_current_resource_menu_policy()
     mac_system::testing::menus::with_resources(fork, fork, |services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
         let menus = system.menus();
-        menus.install_menu_resource(mac_abi::resources::APPLICATION, 257).unwrap();
-        menus.set_item_enabled(257, index, false).unwrap();
+        menus.install_menu_resource(mac_toolbox::ResourceScope::from_raw(mac_abi::resources::APPLICATION).unwrap(), 257).unwrap();
+        menus.set_item_enabled(mac_toolbox::MenuId(257), index, false).unwrap();
         assert_eq!(menus.selection(&event.into()).unwrap(), None);
         // The key was already queued while disabled. Prior selection handling
         // enables the item before this same event reaches the application's loop.
-        menus.set_item_enabled(257, index, true).unwrap();
+        menus.set_item_enabled(mac_toolbox::MenuId(257), index, true).unwrap();
         let selected = menus.selection(&event.into()).unwrap().unwrap();
-        assert_eq!((selected.menu_id, selected.item), (257, index));
+        assert_eq!((selected.menu_id, selected.item), (mac_toolbox::MenuId(257), index));
         assert_eq!(menus.selection(&mac_abi::Event { kind: EventKind::KeyUp,
                                                      ..event }.into())
                         .unwrap(),
@@ -334,7 +338,26 @@ fn queued_command_keys_resolve_using_current_resource_menu_policy()
                                                      ..event }.into())
                         .unwrap(),
                    None);
-        menus.set_item_enabled(257, index, false).unwrap();
+        menus.set_item_enabled(mac_toolbox::MenuId(257), index, false).unwrap();
         assert_eq!(menus.selection(&event.into()).unwrap(), None);
     });
 }
+
+#[test]
+fn owned_resource_menus_reject_stale_foreign_and_cleared_handles()
+{
+    let resource = mac_formats::resource::Resource { kind:       *b"MENU",
+                                                     id:         257,
+                                                     name:       None,
+                                                     attributes: 0,
+                                                     data:
+                                                         include_bytes!("data/original-menu-257.\
+                                                                         bin").to_vec() };
+    let fork = mac_formats::resource::encode(&[resource]).unwrap();
+    mac_system::testing::menus::with_resources(&fork, &fork, |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        conformance::ownership::menus(&system, 257).unwrap();
+    });
+}
+#[allow(dead_code)]
+mod conformance;

@@ -38,7 +38,12 @@ pub fn build_guest() -> Result<()>
     let out = env::var("OUT_DIR")?;
     let out = Path::new(&out);
     println!("cargo:rerun-if-changed={}", path.display());
-    for source in manifest.source_files(&path)
+    // Cargo places build-script output below the selected target/profile's
+    // build/<package>/out. Definition artifacts are siblings of the main ELF,
+    // including for private profiles; no normal-build path is read here.
+    let artifacts =
+        out.ancestors().nth(3).ok_or_else(|| error("unexpected Cargo OUT_DIR layout"))?;
+    for source in manifest.source_files(&path, artifacts)
     {
         println!("cargo:rerun-if-changed={}", source.display());
     }

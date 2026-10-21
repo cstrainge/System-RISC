@@ -17,10 +17,11 @@ impl<'a> Dialogs<'a>
     }
 
     /// Load ALRT + its DITL through the resource chain. `text` substitutes ^0.
-    pub fn alert(self, scope: i16, resource: i16, text: &str) -> Result<WindowId>
+    pub fn alert(self, scope: mac_traps::types::ResourceScope, resource: i16, text: &str)
+                 -> Result<WindowId>
     {
         let mut call = DialogCall { operation: OPEN_ALERT,
-                                    scope,
+                                    scope: scope.raw(),
                                     resource,
                                     ..Default::default() };
         if text.len() > call.text.len()
@@ -44,10 +45,11 @@ impl<'a> Dialogs<'a>
         Ok((call.item != 0).then_some(call.item))
     }
 
-    pub fn validate_alert(self, scope: i16, resource: i16, text: &str) -> Result<u16>
+    pub fn validate_alert(self, scope: mac_traps::types::ResourceScope, resource: i16, text: &str)
+                          -> Result<u16>
     {
         let mut call = DialogCall { operation: VALIDATE_ALERT,
-                                    scope,
+                                    scope: scope.raw(),
                                     resource,
                                     ..Default::default() };
         if text.len() > call.text.len()
@@ -75,5 +77,97 @@ impl<'a> Dialogs<'a>
         self.client.dialog(&mut DialogCall { operation,
                                              window: window.0,
                                              ..Default::default() })
+    }
+}
+
+/// A borrowed alert routes all tracking and event handling through System.
+#[derive(Clone, Copy)]
+pub struct AlertRef<'a>
+{
+    dialogs: Dialogs<'a>,
+    window:  WindowId
+}
+#[must_use = "dropping an alert owner closes its dialog"]
+pub struct Alert<'a>
+{
+    alert: AlertRef<'a>,
+    live:  bool
+}
+impl<'a> Dialogs<'a>
+{
+    pub fn alert_owned(self, scope: mac_traps::types::ResourceScope, resource: i16, text: &str)
+                       -> Result<Alert<'a>>
+    {
+        Ok(Alert { alert: self.alert_ref(self.alert(scope, resource, text)?),
+                   live:  true })
+    }
+
+    pub fn alert_ref(self, window: WindowId) -> AlertRef<'a>
+    {
+        AlertRef { dialogs: self,
+                   window }
+    }
+}
+impl AlertRef<'_>
+{
+    pub fn window(self) -> WindowId
+    {
+        self.window
+    }
+
+    pub fn draw(self) -> Result<()>
+    {
+        self.dialogs.draw(self.window)
+    }
+
+    pub fn handle_event(self, event: Event) -> Result<Option<u16>>
+    {
+        self.dialogs.handle_event(self.window, event)
+    }
+
+    pub fn close(self) -> Result<()>
+    {
+        self.dialogs.close(self.window)
+    }
+}
+impl<'a> Alert<'a>
+{
+    pub fn window(&self) -> WindowId
+    {
+        self.alert.window
+    }
+
+    pub fn alert(&self) -> AlertRef<'a>
+    {
+        self.alert
+    }
+
+    pub fn close(&mut self) -> Result<()>
+    {
+        if self.live
+        {
+            match self.alert.close()
+            {
+                Ok(()) | Err(Error::NotFound) => self.live = false,
+                Err(error) => return Err(error)
+            }
+        }
+        Ok(())
+    }
+}
+impl<'a> core::ops::Deref for Alert<'a>
+{
+    type Target = AlertRef<'a>;
+
+    fn deref(&self) -> &Self::Target
+    {
+        &self.alert
+    }
+}
+impl Drop for Alert<'_>
+{
+    fn drop(&mut self)
+    {
+        let _ = self.close();
     }
 }

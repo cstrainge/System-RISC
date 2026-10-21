@@ -27,20 +27,24 @@ pub struct ControlInfo
     pub handled:   bool,
     pub action:    bool,
     pub changed:   bool,
-    pub part:      i16
+    pub part:      super::Part
 }
-impl From<ControlCall> for ControlInfo
+impl TryFrom<ControlCall> for ControlInfo
 {
-    fn from(c: ControlCall) -> Self
+    type Error = super::Error;
+
+    fn try_from(c: ControlCall) -> Result<Self>
     {
-        Self { window:    WindowId(c.window),
-               standard:  c.standard,
-               scrollbar: c.scrollbar,
-               tracking:  c.flags & TRACKING != 0,
-               handled:   c.flags & HANDLED != 0,
-               action:    c.flags & ACTION != 0,
-               changed:   c.flags & CHANGED != 0,
-               part:      c.result as i16 }
+        Ok(Self { window:    WindowId(c.window),
+                  standard:  c.standard,
+                  scrollbar: c.scrollbar,
+                  tracking:  c.flags & TRACKING != 0,
+                  handled:   c.flags & HANDLED != 0,
+                  action:    c.flags & ACTION != 0,
+                  changed:   c.flags & CHANGED != 0,
+                  part:      super::Part::from_code(c.result as i16).map_err(|_| {
+                                                                        super::Error::BadAbi
+                                                                    })? })
     }
 }
 impl<'a> super::Controls<'a>
@@ -116,7 +120,7 @@ impl ControlRef<'_>
     {
         call.id = self.id.0;
         self.client.control(&mut call)?;
-        Ok(call.into())
+        call.try_into()
     }
 
     pub fn info(self) -> Result<ControlInfo>

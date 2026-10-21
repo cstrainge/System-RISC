@@ -23,7 +23,7 @@ def sha(path):
 
 def private_disk(output, fixture_name='conformance'):
     fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture_name
-    target = vm.ROOT / 'build/system7' / (fixture_name + '-probe-target')
+    target = vm.build_dir() / 'fixtures' / fixture_name
     manifest = fixture / 'Cargo.toml'
     subprocess.run(['cargo', 'build', '--manifest-path', str(manifest), '--locked',
                     '--release', '--target', 'riscv64imac-unknown-none-elf',

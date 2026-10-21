@@ -41,7 +41,7 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
             if icon.present != 0
             {
                 let left = state.title_bounds.left + 9;
-                canvas.icon_resource(icon.scope,
+                canvas.icon_resource(mac_traps::types::ResourceScope::from_raw(icon.scope)?,
                                      icon.id,
                                      Rect::new(left, 1, left + 16, 17),
                                      icon.flags)?;
@@ -62,12 +62,12 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
             let left = state.title_bounds.left
                        + (state.title_bounds.right - state.title_bounds.left - 16) / 2
                        + 1;
-            return canvas.icon_resource(0,
+            return canvas.icon_resource(mac_traps::types::ResourceScope::System,
                                         -16386,
                                         Rect::new(left, 1, left + 16, 17),
                                         u16::from(state.enabled == 0));
         }
-        canvas.draw_text(0,
+        canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
                          state.title_bounds.left + 8,
                          14,
                          text(&state.title, state.title_length).map_err(mac_traps::Error::from_status)?,
@@ -123,20 +123,30 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
             + if state.profile == APPLICATION_PROFILE && item.icon.present != 0 { 13 } else { 12 };
         if item.checked != 0
         {
-            canvas.draw_text(0, r.left + 2, baseline, "\u{12}", 14, fg)?;
+            canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
+                             r.left + 2,
+                             baseline,
+                             "\u{12}",
+                             14,
+                             fg)?;
         }
         let label = text(&item.text, item.text_length).map_err(mac_traps::Error::from_status)?;
         let label_left = r.left + if item.icon.present != 0 { 34 } else { 14 };
         if item.icon.present != 0
         {
-            canvas.icon_resource(item.icon.scope,
+            canvas.icon_resource(mac_traps::types::ResourceScope::from_raw(item.icon.scope)?,
                                  item.icon.id,
                                  Rect::new(r.left + 16, r.top + 1, r.left + 32, r.top + 17),
                                  item.icon.flags)?;
         }
         if item.style == 0
         {
-            canvas.draw_text(0, label_left, baseline, label, r.right - label_left, fg)?;
+            canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
+                             label_left,
+                             baseline,
+                             label,
+                             r.right - label_left,
+                             fg)?;
         }
         else
         {
@@ -150,15 +160,30 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
             }
             let bytes = [item.mark];
             let mark = core::str::from_utf8(&bytes).map_err(|_| mac_traps::Error::BadArgument)?;
-            canvas.draw_text(0, r.left + 2, baseline, mark, 14, fg)?;
+            canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
+                             r.left + 2,
+                             baseline,
+                             mark,
+                             14,
+                             fg)?;
         }
         if item.key != 0
         {
-            canvas.draw_text(0, r.right - 24, baseline, "\u{11}", 14, fg)?;
+            canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
+                             r.right - 24,
+                             baseline,
+                             "\u{11}",
+                             14,
+                             fg)?;
             let key = [item.key.to_ascii_uppercase()];
             let key = core::str::from_utf8(&key).map_err(|_| mac_traps::Error::NotSupported)?;
-            let command_width = canvas.text_width(0, "\u{11}")?;
-            canvas.draw_text(0, r.right - 24 + command_width, baseline, key, 13, fg)?;
+            let command_width = canvas.text_width(toolbox_quickdraw::font::CHICAGO_12, "\u{11}")?;
+            canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
+                             r.right - 24 + command_width,
+                             baseline,
+                             key,
+                             13,
+                             fg)?;
         }
         if invert
         {
@@ -181,7 +206,9 @@ fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_tra
     }
     else
     {
-        state.title_bounds.right = state.title_bounds.left + canvas.text_width(0, title)? + 13;
+        state.title_bounds.right = state.title_bounds.left
+                                   + canvas.text_width(toolbox_quickdraw::font::CHICAGO_12, title)?
+                                   + 13;
     }
     state.title_bounds.top = 0;
     state.title_bounds.bottom = 20;
@@ -191,7 +218,7 @@ fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_tra
         let label = text(&item.text, item.text_length).map_err(mac_traps::Error::from_status)?;
         let label_width = if item.style == 0
         {
-            canvas.text_width(0, label)?
+            canvas.text_width(toolbox_quickdraw::font::CHICAGO_12, label)?
         }
         else
         {

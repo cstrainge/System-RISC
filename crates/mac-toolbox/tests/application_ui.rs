@@ -43,7 +43,7 @@ fn icon_flags(root: &Path, package: &str, id: i16, size: usize,
                                              origin: Point::default(),
                                              clip:   Rect::new(0, 0, size as i16, size as i16) };
         let connection = unsafe { mac_traps::SurfaceConnection::new(&mut surface, services.trap) };
-        SurfacePort::new(connection).plot_icon(mac_abi::resources::APPLICATION,
+        SurfacePort::new(connection).plot_icon(mac_toolbox::ResourceScope::from_raw(mac_abi::resources::APPLICATION).unwrap(),
                                                id,
                                                Rect::new(0, 0, size as i16, size as i16),
                                                flags)
@@ -88,7 +88,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     {
         assert!(!serial.contains(failure), "unexpected {failure}:\n{serial}");
     }
-    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=6"));
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=7"));
     let snapshots = report["snapshots"].as_array().unwrap();
     let observation = |name: &str| snapshots.iter().find(|value| value["name"] == name).unwrap();
     let image = |name: &str| frame(&output.join(observation(name)["frame"].as_str().unwrap()));

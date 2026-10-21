@@ -19,23 +19,26 @@ fn legacy_file_names_and_paths_roundtrip_through_real_hfs()
 {
     mac_system::testing::with_disk(include_bytes!("data/files/dates-2026.hfs"), |services| {
         let system = unsafe { mac_toolbox::System::from_raw(services) }.unwrap();
-        let native = system.files()
-                           .lookup(system.files().volume_at(0).unwrap().id, 2, "Folder/Café")
-                           .unwrap();
+        let native =
+            system.files()
+                  .lookup(system.files().volume_at(0).unwrap().id,
+                          mac_toolbox::Cnid(2),
+                          "Folder/Café")
+                  .unwrap();
         let name = b"\x0bFolder/Caf\x8e";
         let mut call = FileCall { operation: LOOKUP,
-                                  volume: system.files().volume_at(0).unwrap().id,
+                                  volume: (system.files().volume_at(0).unwrap().id).0,
                                   cnid: 2,
                                   name: name.as_ptr(),
                                   name_length: name.len(),
                                   ..Default::default() };
         assert_eq!(raw(services.trap, PSTRING_FILE, &mut call), 0);
-        assert_eq!(call.entry.id, native.id);
+        assert_eq!(call.entry.id, (native.id).0);
         assert_eq!(&call.entry.name[..call.entry.name_length as usize], b"\x04Caf\x8e");
         assert_eq!(call.entry.created_at(), native.created_at());
         let mut output = [0xa5; 128];
         call.operation = PATH;
-        call.cnid = native.id;
+        call.cnid = (native.id).0;
         call.output = output.as_mut_ptr();
         call.capacity = output.len();
         assert_eq!(raw(services.trap, PSTRING_FILE, &mut call), 0);
@@ -76,32 +79,32 @@ fn maximum_macroman_resource_name_roundtrips_765_utf8_bytes_and_256_pascal_bytes
             let system = unsafe { mac_toolbox::System::from_raw(services) }.unwrap();
             let native_name = character.repeat(255);
             assert_eq!(native_name.len(), 765);
-            let key = mac_toolbox::resources::ResourceKey { kind: *b"NAME",
+            let key = mac_toolbox::resources::ResourceKey { kind: mac_toolbox::TypeCode::new(*b"NAME"),
                                                             id:   -19 };
-            let application = system.resources().named(*b"NAME", &native_name).unwrap();
+            let application = system.resources().named(mac_toolbox::TypeCode::new(*b"NAME"), &native_name).unwrap();
             assert_eq!(application.name(), native_name);
-            assert_eq!(application.info().name_length, 765);
+            assert_eq!(application.info().name.len(), 765);
             assert_eq!(application.name().chars().count(), 255);
             assert_eq!(application.key(), key);
-            assert_eq!(application.home(), APPLICATION);
+            assert_eq!(application.home(), mac_toolbox::ResourceScope::from_raw(APPLICATION).unwrap());
             let mut payload = [0xa5; 64];
             let length = application.read(0, &mut payload).unwrap();
             assert_eq!(&payload[..length], b"Application override payload");
             assert!(payload[length..].iter().all(|&b| b == 0xa5));
             let system_resource = system.resources().system().get(key).unwrap();
             assert_eq!(system_resource.name(), native_name);
-            assert_eq!(system_resource.info().name_length, 765);
-            assert_eq!(system_resource.home(), SYSTEM);
+            assert_eq!(system_resource.info().name.len(), 765);
+            assert_eq!(system_resource.home(), mac_toolbox::ResourceScope::from_raw(SYSTEM).unwrap());
             let mut pascal = [byte; 256];
             pascal[0] = 255;
             let mut legacy = ResourceCall { operation: NAMED,
                                             scope: CHAIN,
-                                            key,
+                                            key: key.into(),
                                             name: pascal.as_ptr(),
                                             name_length: pascal.len(),
                                             ..Default::default() };
             assert_eq!(raw(services.trap, PSTRING_RESOURCE, &mut legacy), 0);
-            assert_eq!(legacy.info.key, key);
+            assert_eq!(legacy.info.key, (key).into());
             assert_eq!(legacy.info.origin, APPLICATION);
             assert_eq!(legacy.info.name_length, 256);
             assert_eq!(&legacy.info.name[..256], &pascal);
@@ -127,8 +130,8 @@ fn maximum_macroman_resource_name_roundtrips_765_utf8_bytes_and_256_pascal_bytes
                 assert_eq!(legacy.info.name_length, 256);
                 assert_eq!(&legacy.info.name[..256], &pascal);
             }
-            let native_again = system.resources().system().named(*b"NAME", &native_name).unwrap();
-            assert_eq!(native_again.info().name_length, 765);
+            let native_again = system.resources().system().named(mac_toolbox::TypeCode::new(*b"NAME"), &native_name).unwrap();
+            assert_eq!(native_again.info().name.len(), 765);
             assert_eq!(native_again.name(), native_name);
         }).unwrap();
     }

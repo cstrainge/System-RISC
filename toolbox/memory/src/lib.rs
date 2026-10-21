@@ -2,7 +2,9 @@
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::memory::*;
-pub use mac_abi::memory::{LOCKED, PURGEABLE_BIT, RESOURCE};
+pub use mac_traps::types::MemoryHandleId;
+mac_traps::native_flags!(HandleState, u8; LOCKED = mac_abi::memory::LOCKED,
+    PURGEABLE = mac_abi::memory::PURGEABLE_BIT, RESOURCE = mac_abi::memory::RESOURCE);
 pub use mac_traps::{Client, Error, Result};
 
 #[derive(Clone, Copy)]
@@ -24,7 +26,7 @@ impl<'a> Memory<'a>
                                     ..Default::default() };
         self.client.memory(&mut call, &[], &mut [])?;
         Ok(Handle { client: self.client,
-                    id:     call.handle })
+                    id:     MemoryHandleId(call.handle) })
     }
 
     pub fn handle_from_bytes(self, bytes: &[u8]) -> Result<Handle<'a>>
@@ -33,15 +35,15 @@ impl<'a> Memory<'a>
                                     ..Default::default() };
         self.client.memory(&mut call, bytes, &mut [])?;
         Ok(Handle { client: self.client,
-                    id:     call.handle })
+                    id:     MemoryHandleId(call.handle) })
     }
 
-    pub fn last_error(self) -> Result<i32>
+    pub fn last_error(self) -> Result<Option<Error>>
     {
         let mut call = MemoryCall { operation: ERROR,
                                     ..Default::default() };
         self.client.memory(&mut call, &[], &mut [])?;
-        Ok(call.error)
+        Ok((call.error != 0).then(|| Error::from_status(call.error)))
     }
 
     pub fn new_empty_handle(self) -> Result<Handle<'a>>
@@ -50,7 +52,7 @@ impl<'a> Memory<'a>
                                     ..Default::default() };
         self.client.memory(&mut call, &[], &mut [])?;
         Ok(Handle { client: self.client,
-                    id:     call.handle })
+                    id:     MemoryHandleId(call.handle) })
     }
 }
 
@@ -60,7 +62,7 @@ impl<'a> Memory<'a>
 pub struct Handle<'a>
 {
     client: Client<'a>,
-    id:     u32
+    id:     MemoryHandleId
 }
 fn length(n: usize) -> Result<u32>
 {
@@ -71,7 +73,7 @@ impl<'a> Handle<'a>
     fn perform(&self, operation: u32) -> Result<MemoryCall>
     {
         let mut call = MemoryCall { operation,
-                                    handle: self.id,
+                                    handle: self.id.0,
                                     ..Default::default() };
         self.client.memory(&mut call, &[], &mut [])?;
         Ok(call)
@@ -89,16 +91,16 @@ impl<'a> Handle<'a>
         self.len().map(|size| size == 0)
     }
 
-    pub fn state(&self) -> Result<u8>
+    pub fn state(&self) -> Result<HandleState>
     {
-        Ok(self.perform(STATE)?.state as u8)
+        Ok(HandleState::from_bits_retain(self.perform(STATE)?.state as u8))
     }
 
-    pub fn set_state(&self, state: u8) -> Result<()>
+    pub fn set_state(&self, state: HandleState) -> Result<()>
     {
         let mut call = MemoryCall { operation: SET_STATE,
-                                    handle: self.id,
-                                    state: state as u32,
+                                    handle: self.id.0,
+                                    state: u32::from(state.bits()),
                                     ..Default::default() };
         self.client.memory(&mut call, &[], &mut [])
     }
@@ -132,7 +134,7 @@ impl<'a> Handle<'a>
     fn resize_with(&self, operation: u32, size: usize) -> Result<()>
     {
         let mut call = MemoryCall { operation,
-                                    handle: self.id,
+                                    handle: self.id.0,
                                     size: length(size)?,
                                     ..Default::default() };
         self.client.memory(&mut call, &[], &mut [])
@@ -147,13 +149,13 @@ impl<'a> Handle<'a>
     {
         let call = self.perform(DUPLICATE)?;
         Ok(Handle { client: self.client,
-                    id:     call.other })
+                    id:     MemoryHandleId(call.other) })
     }
 
     pub fn read(&self, offset: usize, output: &mut [u8]) -> Result<usize>
     {
         let mut call = MemoryCall { operation: READ,
-                                    handle: self.id,
+                                    handle: self.id.0,
                                     offset: length(offset)?,
                                     ..Default::default() };
         self.client.memory(&mut call, &[], output)?;
@@ -163,7 +165,7 @@ impl<'a> Handle<'a>
     pub fn write(&self, offset: usize, input: &[u8]) -> Result<()>
     {
         let mut call = MemoryCall { operation: WRITE,
-                                    handle: self.id,
+                                    handle: self.id.0,
                                     offset: length(offset)?,
                                     ..Default::default() };
         self.client.memory(&mut call, input, &mut [])
@@ -172,7 +174,7 @@ impl<'a> Handle<'a>
     pub fn append(&self, input: &[u8]) -> Result<()>
     {
         let mut call = MemoryCall { operation: APPEND_BYTES,
-                                    handle: self.id,
+                                    handle: self.id.0,
                                     ..Default::default() };
         self.client.memory(&mut call, input, &mut [])
     }
@@ -180,7 +182,7 @@ impl<'a> Handle<'a>
     pub fn replace(&self, input: &[u8]) -> Result<()>
     {
         let mut call = MemoryCall { operation: REPLACE_BYTES,
-                                    handle: self.id,
+                                    handle: self.id.0,
                                     ..Default::default() };
         self.client.memory(&mut call, input, &mut [])
     }
@@ -188,8 +190,8 @@ impl<'a> Handle<'a>
     pub fn append_handle(&self, source: &Handle<'_>) -> Result<()>
     {
         let mut call = MemoryCall { operation: APPEND_HANDLE,
-                                    handle: self.id,
-                                    other: source.id,
+                                    handle: self.id.0,
+                                    other: source.id.0,
                                     ..Default::default() };
         self.client.memory(&mut call, &[], &mut [])
     }
@@ -198,15 +200,15 @@ impl<'a> Handle<'a>
     /// scheduler-aware gate can block instead; callers must not spin in kernel.
     pub fn try_dispose(&mut self) -> Result<()>
     {
-        if self.id != 0
+        if self.id.0 != 0
         {
             self.perform(DISPOSE)?;
-            self.id = 0;
+            self.id = MemoryHandleId(0);
         }
         Ok(())
     }
 
-    pub fn dispose(mut self) -> Result<()>
+    pub fn dispose(&mut self) -> Result<()>
     {
         self.try_dispose()
     }
@@ -215,7 +217,7 @@ impl Drop for Handle<'_>
 {
     fn drop(&mut self)
     {
-        if self.id != 0
+        if self.id.0 != 0
         {
             let _ = self.perform(DISPOSE);
         }

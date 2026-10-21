@@ -29,7 +29,7 @@ enum Mode
 }
 pub struct Viewer
 {
-    pub window: u32,
+    pub window: WindowId,
     snapshot:   Option<ScrapInfo>,
     first:      FlavorInfo,
     mode:       Mode,
@@ -44,7 +44,7 @@ impl Default for Viewer
 {
     fn default() -> Self
     {
-        Self { window:     0,
+        Self { window:     WindowId(0),
                snapshot:   None,
                first:      FlavorInfo::default(),
                mode:       Mode::Empty,
@@ -69,8 +69,10 @@ fn horizontal(width: i16, height: i16) -> Rect
 /// STR# through Resource Manager instead of decoding Pascal text in an app.
 fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Error>
 {
-    let resource = system.resources().application().get(resources::ResourceKey { kind: *b"WIND",
-                                                                                  id:   2002 })?;
+    let resource = system.resources()
+                         .application()
+                         .get(resources::ResourceKey { kind: mac_toolbox::TypeCode::new(*b"WIND"),
+                                                       id:   2002 })?;
     let mut data = [0u8; 20];
     if resource.size() != data.len() || resource.read(0, &mut data)? != data.len()
     {
@@ -97,7 +99,7 @@ impl Viewer
 {
     pub fn open(&mut self, system: &System<'_>) -> Result<(), Error>
     {
-        if self.window == 0 || system.window(self.window).is_err()
+        if self.window == WindowId(0) || system.window(self.window).is_err()
         {
             let mut bytes = [0; 768];
             let title = crate::ui::text(system, TITLE, &mut bytes)?;
@@ -107,7 +109,7 @@ impl Viewer
             let height = bounds.bottom - bounds.top;
             let create = |bounds| {
                 system.controls()
-                      .create_scrollbar(WindowId(self.window),
+                      .create_scrollbar(self.window,
                                         controls::ScrollbarState { bounds,
                                                                    ..Default::default() },
                                         LINE_HEIGHT,
@@ -123,7 +125,7 @@ impl Viewer
                 Err(e) =>
                 {
                     let _ = system.close_window(self.window);
-                    self.window = 0;
+                    self.window = WindowId(0);
                     return Err(e);
                 }
             };
@@ -188,7 +190,7 @@ impl Viewer
     /// intentionally leave the original-style clear generation unchanged.
     pub fn refresh(&mut self, system: &System<'_>) -> Result<(), Error>
     {
-        if self.window == 0
+        if self.window == WindowId(0)
         {
             return Ok(());
         }
@@ -198,7 +200,7 @@ impl Viewer
             {}
             Err(Error::NotFound) =>
             {
-                self.window = 0;
+                self.window = WindowId(0);
                 return Ok(());
             }
             Err(status) => return Err(status)
@@ -226,14 +228,14 @@ impl Viewer
         let limits = self.limits(width, height);
         self.scroll.h = self.scroll.h.clamp(0, limits.h);
         self.scroll.v = self.scroll.v.clamp(0, limits.v);
-        system.windows().set_grow_icon_clip(WindowId(self.window),
+        system.windows().set_grow_icon_clip(self.window,
                                              Some(Rect::new(width - BAR,
                                                             height - BAR,
                                                             width,
                                                             height)))?;
         system.begin_update(self.window)?;
         let result: Result<(), Error> = (|| {
-            let port = system.quickdraw().graphics(WindowId(self.window));
+            let port = system.quickdraw().graphics(self.window);
             port.reset()?;
             port.colors(0xffffff, 0xffffff)?;
             port.paint_rect(Rect::new(0, 0, width, height))?;
@@ -255,7 +257,7 @@ impl Viewer
                 Mode::Text | Mode::Oversized => crate::ui::text(system, TEXT_LABEL, &mut bytes)?,
                 Mode::Binary =>
                 {
-                    kind.set(self.first.kind)?;
+                    kind.set(self.first.kind.bytes())?;
                     kind.as_str()
                 }
             };
@@ -306,7 +308,7 @@ impl Viewer
                 {}
             }
             port.clip_rect(Rect::new(0, 0, width, height))?;
-            let active = system.window(0)?.id == self.window;
+            let active = system.window(WindowId(0))?.id == self.window;
             for (index, bounds, value, maximum, page) in
                 [(0,
                   vertical(width, height),
@@ -334,12 +336,12 @@ impl Viewer
     /// Read-only document input. Loaded CDEF1 owns all scrollbar hit/drag math.
     pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Error>
     {
-        if self.window == 0
+        if self.window == WindowId(0)
         {
             return Ok(false);
         }
         if matches!(event, Event::Update { .. })
-           && event.window().map_or(0, |window| window.0) == self.window
+           && event.window().unwrap_or_default() == self.window
         {
             self.draw(system)?;
             return Ok(true);
@@ -355,7 +357,7 @@ impl Viewer
         {
             let control = system.controls().control(self.scrollbars[index]);
             if matches!(event, Event::Activate { .. })
-               && event.window().map_or(0, |window| window.0) == self.window
+               && event.window().unwrap_or_default() == self.window
                && !event.input().modifiers.contains(mac_toolbox::events::Modifiers::ACTIVE)
             {
                 control.cancel()?;
@@ -389,7 +391,7 @@ impl Viewer
             }
         }
         if matches!(event, Event::MouseDown { .. })
-           && event.window().map_or(0, |window| window.0) == self.window
+           && event.window().unwrap_or_default() == self.window
         {
             let input = system.events().input_state()?;
             for (index, id) in self.scrollbars.into_iter().enumerate()
@@ -415,7 +417,7 @@ impl Viewer
                 }
             }
         }
-        if matches!(event, Event::KeyDown { .. }) && system.window(0)?.id == self.window
+        if matches!(event, Event::KeyDown { .. }) && system.window(WindowId(0))?.id == self.window
         {
             let delta = match event.key().map_or(0, |key| key.code())
             {

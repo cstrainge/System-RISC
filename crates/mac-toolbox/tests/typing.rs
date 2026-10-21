@@ -32,7 +32,7 @@ fn finder_typing_avoids_disk_work_and_preserves_navigation_selection()
     assert_eq!(report["original_before"], report["original_after"]);
     let profile = fs::read_to_string(output.join("profile-vm/serial.log")).unwrap();
     assert!(!profile.contains("TYPING_PROFILE_FAIL"), "{profile}");
-    assert!(profile.contains("TRAPS_READY: resident ecall dispatcher ABI=6"));
+    assert!(profile.contains("TRAPS_READY: resident ecall dispatcher ABI=7"));
     let fields = profile.lines().find_map(|line| line.strip_prefix("TYPING_PROFILE ")).unwrap();
     let field = |name: &str| {
         fields.split_whitespace()

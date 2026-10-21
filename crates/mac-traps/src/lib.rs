@@ -3,7 +3,9 @@
 use mac_abi::{traps::*, *};
 
 mod error;
+pub mod types;
 pub use error::Error;
+pub use types::{Cnid, MenuId, ProcessId, ThreadId, TypeCode, VolumeId};
 pub type Result<T> = core::result::Result<T, Error>;
 mod files;
 mod images;
@@ -232,12 +234,12 @@ impl<'a> Client<'a>
 #[derive(Default)]
 pub struct SurfaceCommand<'a>
 {
-    pub operation:  u32,
+    pub operation:  types::SurfaceOperation,
     pub bounds:     Rect,
     pub foreground: u32,
     pub background: u32,
     pub pattern:    [u8; 8],
-    pub font:       u32,
+    pub font:       types::SurfaceFont,
     pub x:          i16,
     pub y:          i16,
     pub limit:      i16,
@@ -268,13 +270,13 @@ impl<'a> SurfaceConnection<'a>
 
     pub fn perform(&mut self, command: SurfaceCommand<'_>) -> Result<SurfaceReply>
     {
-        let mut call = SurfaceCall { operation:   command.operation,
+        let mut call = SurfaceCall { operation:   command.operation as u32,
                                      surface:     self.surface,
                                      bounds:      command.bounds,
                                      foreground:  command.foreground,
                                      background:  command.background,
                                      pattern:     command.pattern,
-                                     font:        command.font,
+                                     font:        command.font as u32,
                                      x:           command.x,
                                      y:           command.y,
                                      limit:       command.limit,

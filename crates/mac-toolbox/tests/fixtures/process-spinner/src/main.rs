@@ -5,7 +5,7 @@
 use core::{fmt::{self, Write},
            sync::atomic::{AtomicPtr, Ordering}};
 
-use mac_toolbox::{Status, System, SystemServices};
+use mac_toolbox::{System, SystemServices};
 #[path = "../../../process_cases.rs"]
 mod process_cases;
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
@@ -62,7 +62,7 @@ fn clock() -> u64
 /// The loader supplies a valid service table for this application's lifetime.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     SERVICES.store(services.cast_mut(), Ordering::Release);
     let system = match unsafe { System::from_raw(services) }

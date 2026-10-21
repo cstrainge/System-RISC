@@ -2,7 +2,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-pub const ABI_VERSION: u32 = 6;
+pub const ABI_VERSION: u32 = 7;
 pub type Status = i32;
 pub const OK: Status = 0;
 pub const BAD_ABI: Status = -1;
@@ -43,6 +43,15 @@ pub struct ResourceKey
 {
     pub kind: [u8; 4],
     pub id:   i16
+}
+
+impl ResourceKey
+{
+    pub const fn from_bytes(kind: [u8; 4], id: i16) -> Self
+    {
+        Self { kind,
+               id }
+    }
 }
 
 /// Firmware block devices remain available while System is running. Device
@@ -246,6 +255,14 @@ pub mod resources;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct WindowId(pub u32);
+impl core::fmt::Display for WindowId
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        self.0.fmt(f)
+    }
+}
+
 
 pub mod definitions;
 

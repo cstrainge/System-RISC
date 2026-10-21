@@ -22,8 +22,10 @@ fn label<'a>(system: &System<'_>, index: usize, buffer: &'a mut [u8]) -> Result<
 
 fn layout(system: &System<'_>) -> Result<(Rect, i16), Error>
 {
-    let resource = system.resources().application().get(resources::ResourceKey { kind: *b"WIND",
-                                                                                  id:   2003 })?;
+    let resource = system.resources()
+                         .application()
+                         .get(resources::ResourceKey { kind: mac_toolbox::TypeCode::new(*b"WIND"),
+                                                       id:   2003 })?;
     let mut bytes = [0; 20];
     let read = if resource.size() == bytes.len()
     {
@@ -100,7 +102,7 @@ fn command(system: &System<'_>, command: u32) -> Result<bool, Error>
 fn run(system: &System<'_>) -> Result<(), Error>
 {
     system.menus().clear()?;
-    system.menus().install_menu_resource(resources::APPLICATION, 128)?;
+    let _menu = system.menus().install_owned(resources::APPLICATION, 128)?;
     let mut buffer = [0; 128];
     let title = system.resources().application().string(128, &mut buffer)?;
     let (bounds, procedure) = layout(system)?;
@@ -138,11 +140,11 @@ fn run(system: &System<'_>) -> Result<(), Error>
         };
         match event
         {
-            Event::Update { .. } if event.window().map_or(0, |window| window.0) == window.0 =>
+            Event::Update { .. } if event.window().unwrap_or_default() == window =>
             {
                 draw(system, window, &buttons)?
             }
-            Event::MouseDown { .. } if event.window().map_or(0, |window| window.0) == window.0 =>
+            Event::MouseDown { .. } if event.window().unwrap_or_default() == window =>
             {
                 let local = Point { h: event.input().at.h.saturating_sub(bounds.left),
                                     v: event.input().at.v.saturating_sub(bounds.top) };
@@ -176,7 +178,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
 /// The native loader supplies initialized segments and a live service table.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
     {
@@ -189,7 +191,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     };
     match run(&system)
     {
-        Ok(()) => OK,
+        Ok(()) => mac_toolbox::abi::OK,
         Err(status) =>
         {
             let _ = system.log("PANIC_TEST_ERROR\n");

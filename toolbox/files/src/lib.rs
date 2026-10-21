@@ -2,9 +2,13 @@
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::files::*;
+use mac_traps::types::{FileHandle, FileWriteHandle};
 mod scan;
-pub use mac_abi::{dates::Timestamp,
-                  files::{COMMENT_MAX_BYTES, CatalogInfo, ROOT_ID, VolumeInfo}};
+pub use mac_abi::{dates::Timestamp, files::COMMENT_MAX_BYTES};
+pub use mac_traps::{Cnid, TypeCode, VolumeId};
+mod info;
+pub use info::{CatalogFlags, CatalogInfo, EntryKind, FinderFlags, VolumeAttributes, VolumeInfo};
+pub const ROOT_ID: Cnid = Cnid::ROOT;
 pub use mac_traps::{Client, Error, Result};
 pub use scan::{DirectoryCursor, SCAN_STALE, ScanStep};
 /// Native filesystem identity reported by the mounted backend. Classic HFS has
@@ -20,21 +24,6 @@ pub enum Filesystem
 }
 impl Filesystem
 {
-    pub fn of(volume: &VolumeInfo) -> Result<Self>
-    {
-        match volume.filesystem
-        {
-            FILESYSTEM_HFS if volume.filesystem_version == 0 => Ok(Self::Hfs),
-            FILESYSTEM_HFS_B if volume.filesystem_version != 0 =>
-            {
-                Ok(Self::HfsB { version: u16::try_from(volume.filesystem_version).map_err(|_| {
-                                                                                     Error::BadAbi
-                                                                                 })? })
-            }
-            _ => Err(Error::BadAbi)
-        }
-    }
-
     pub const fn name(self) -> &'static str
     {
         match self
@@ -71,6 +60,55 @@ impl<'a> Files<'a>
         Ok(call)
     }
 
+    /// Use the System clock. Use `rename_at` when preserving an explicit date.
+    pub fn rename(self, volume: VolumeId, cnid: Cnid, name: &str) -> Result<CatalogInfo>
+    {
+        self.rename_at(volume, cnid, name, self.client.now()?)
+    }
+
+    /// Use the System clock. Use `set_locked_at` when preserving an explicit date.
+    pub fn set_locked(self, volume: VolumeId, cnid: Cnid, locked: bool) -> Result<CatalogInfo>
+    {
+        self.set_locked_at(volume, cnid, locked, self.client.now()?)
+    }
+
+    /// Use the System clock. Use `set_stationery_at` when preserving an explicit date.
+    pub fn set_stationery(self, volume: VolumeId, cnid: Cnid, stationery: bool)
+                          -> Result<CatalogInfo>
+    {
+        self.set_stationery_at(volume, cnid, stationery, self.client.now()?)
+    }
+
+    /// Use the System clock. Use `set_comment_at` when preserving an explicit date.
+    pub fn set_comment(self, volume: VolumeId, cnid: Cnid, comment: &str) -> Result<()>
+    {
+        self.set_comment_at(volume, cnid, comment, self.client.now()?)
+    }
+
+    /// Use the System clock. Use `new_folder_at` when preserving an explicit date.
+    pub fn new_folder(self, volume: VolumeId, parent: Cnid, name: &str) -> Result<CatalogInfo>
+    {
+        self.new_folder_at(volume, parent, name, self.client.now()?)
+    }
+
+    /// Use the System clock. Use `move_to_trash_at` when preserving an explicit date.
+    pub fn move_to_trash(self, volume: VolumeId, cnid: Cnid) -> Result<CatalogInfo>
+    {
+        self.move_to_trash_at(volume, cnid, self.client.now()?)
+    }
+
+    /// Use the System clock. Use `put_away_at` when preserving an explicit date.
+    pub fn put_away(self, volume: VolumeId, cnid: Cnid) -> Result<CatalogInfo>
+    {
+        self.put_away_at(volume, cnid, self.client.now()?)
+    }
+
+    /// Use the System clock. Use `empty_trash_at` when preserving an explicit date.
+    pub fn empty_trash(self, volume: VolumeId) -> Result<u32>
+    {
+        self.empty_trash_at(volume, self.client.now()?)
+    }
+
     pub fn volume_count(self) -> Result<u32>
     {
         Ok(self.call(FileCall { operation: VOLUME_COUNT,
@@ -82,39 +120,42 @@ impl<'a> Files<'a>
     /// Mounted-volume enumeration is zero based. IDs remain stable for this boot.
     pub fn volume_at(self, index: u32) -> Result<VolumeInfo>
     {
-        Ok(self.call(FileCall { operation: VOLUME_INDEX,
-                                index,
-                                ..Default::default() },
-                     "")?
-               .volume_info)
+        self.call(FileCall { operation: VOLUME_INDEX,
+                             index,
+                             ..Default::default() },
+                  "")?
+            .volume_info
+            .try_into()
     }
 
-    pub fn volume(self, id: u32) -> Result<VolumeInfo>
+    pub fn volume(self, id: VolumeId) -> Result<VolumeInfo>
     {
-        Ok(self.call(FileCall { operation: VOLUME_INFO,
-                                volume: id,
-                                ..Default::default() },
-                     "")?
-               .volume_info)
+        self.call(FileCall { operation: VOLUME_INFO,
+                             volume: id.0,
+                             ..Default::default() },
+                  "")?
+            .volume_info
+            .try_into()
     }
 
-    pub fn catalog(self, volume: u32, cnid: u32) -> Result<CatalogInfo>
+    pub fn catalog(self, volume: VolumeId, cnid: Cnid) -> Result<CatalogInfo>
     {
-        Ok(self.call(FileCall { operation: CATALOG,
-                                volume,
-                                cnid,
-                                ..Default::default() },
-                     "")?
-               .entry)
+        self.call(FileCall { operation: CATALOG,
+                             volume: volume.0,
+                             cnid: cnid.0,
+                             ..Default::default() },
+                  "")?
+            .entry
+            .try_into()
     }
 
     /// Exact bytes allocated to each fork, including preallocation. Directories
     /// return zero; this does not recursively total their descendants.
-    pub fn allocation_info(self, volume: u32, cnid: u32) -> Result<AllocationInfo>
+    pub fn allocation_info(self, volume: VolumeId, cnid: Cnid) -> Result<AllocationInfo>
     {
         let call = self.call(FileCall { operation: ALLOCATION_INFO,
-                                        volume,
-                                        cnid,
+                                        volume: volume.0,
+                                        cnid: cnid.0,
                                         ..Default::default() },
                              "")?;
         Ok(AllocationInfo { data_bytes:     call.position,
@@ -122,50 +163,52 @@ impl<'a> Files<'a>
     }
 
     /// Rename one catalog item without changing its identity or fork contents.
-    /// Classic HFS requires1..31 representable MacRoman bytes, without colon/NUL.
+    /// Classic HFS requires 1..31 representable MacRoman bytes, without colon/NUL.
     /// Locked/protected items and items with open forks are rejected explicitly.
-    pub fn rename(self, volume: u32, cnid: u32, name: &str, when: Timestamp)
-                  -> Result<CatalogInfo>
+    pub fn rename_at(self, volume: VolumeId, cnid: Cnid, name: &str, when: Timestamp)
+                     -> Result<CatalogInfo>
     {
-        Ok(self.mutation(RENAME, volume, cnid, name, when)?.entry)
+        self.mutation(RENAME, volume, cnid, name, when)?.entry.try_into()
     }
 
     /// Change a file's catalog lock while preserving all other catalog flags.
     /// Directories have no file-lock control in this native profile.
-    pub fn set_locked(self, volume: u32, cnid: u32, locked: bool, when: Timestamp)
-                      -> Result<CatalogInfo>
+    pub fn set_locked_at(self, volume: VolumeId, cnid: Cnid, locked: bool, when: Timestamp)
+                         -> Result<CatalogInfo>
     {
         self.set_flag(SET_LOCKED, volume, cnid, locked, when)
     }
 
-    /// Change only the file-only Finder stationery flag0x0800.
-    pub fn set_stationery(self, volume: u32, cnid: u32, stationery: bool, when: Timestamp)
-                          -> Result<CatalogInfo>
+    /// Change only the file-only Finder stationery flag 0x0800.
+    pub fn set_stationery_at(self, volume: VolumeId, cnid: Cnid, stationery: bool, when: Timestamp)
+                             -> Result<CatalogInfo>
     {
         self.set_flag(SET_STATIONERY, volume, cnid, stationery, when)
     }
 
-    fn set_flag(self, operation: u32, volume: u32, cnid: u32, value: bool, when: Timestamp)
+    fn set_flag(self, operation: u32, volume: VolumeId, cnid: Cnid, value: bool, when: Timestamp)
                 -> Result<CatalogInfo>
     {
         let time = when.mac_microseconds().ok_or(Error::BadArgument)?;
-        Ok(self.call(FileCall { operation,
-                                volume,
-                                cnid,
-                                index: u32::from(value),
-                                position: time,
-                                ..Default::default() },
-                     "")?
-               .entry)
+        self.call(FileCall { operation,
+                             volume: volume.0,
+                             cnid: cnid.0,
+                             index: u32::from(value),
+                             position: time,
+                             ..Default::default() },
+                  "")?
+            .entry
+            .try_into()
     }
 
     /// Write the file/folder's Desktop DB comment as UTF8 to an application
     /// string writer. Missing comment records return an empty string.
-    pub fn comment(self, volume: u32, cnid: u32, output: &mut impl core::fmt::Write) -> Result<()>
+    pub fn comment(self, volume: VolumeId, cnid: Cnid, output: &mut impl core::fmt::Write)
+                   -> Result<()>
     {
         let mut call = FileCall { operation: COMMENT,
-                                  volume,
-                                  cnid,
+                                  volume: volume.0,
+                                  cnid: cnid.0,
                                   ..Default::default() };
         let mut bytes = [0; 768];
         self.client.file(&mut call, "", &mut bytes)?;
@@ -176,57 +219,62 @@ impl<'a> Files<'a>
 
     /// Persist a Desktop DB comment. Empty text deletes only that comment key.
     /// Storage is limited to255 losslessly representable MacRoman bytes.
-    pub fn set_comment(self, volume: u32, cnid: u32, comment: &str, when: Timestamp) -> Result<()>
+    pub fn set_comment_at(self, volume: VolumeId, cnid: Cnid, comment: &str, when: Timestamp)
+                          -> Result<()>
     {
         self.mutation(SET_COMMENT, volume, cnid, comment, when).map(|_| ())
     }
 
-    pub fn child(self, volume: u32, directory: u32, index: u32) -> Result<CatalogInfo>
+    pub fn child(self, volume: VolumeId, directory: Cnid, index: u32) -> Result<CatalogInfo>
     {
-        Ok(self.call(FileCall { operation: DIRECTORY_ENTRY,
-                                volume,
-                                cnid: directory,
-                                index,
-                                ..Default::default() },
-                     "")?
-               .entry)
+        self.call(FileCall { operation: DIRECTORY_ENTRY,
+                             volume: volume.0,
+                             cnid: directory.0,
+                             index,
+                             ..Default::default() },
+                  "")?
+            .entry
+            .try_into()
     }
 
     /// Alias for direct-child enumeration, matching catalog entry terminology.
-    pub fn entry(self, volume: u32, directory: u32, index: u32) -> Result<CatalogInfo>
+    pub fn entry(self, volume: VolumeId, directory: Cnid, index: u32) -> Result<CatalogInfo>
     {
         self.child(volume, directory, index)
     }
 
     /// Resolve a UTF8 slash path relative to a directory, or from root with '/'.
     /// '.' and '..' are accepted. A CNID can address names containing literal '/'.
-    pub fn lookup(self, volume: u32, directory: u32, path: &str) -> Result<CatalogInfo>
+    pub fn lookup(self, volume: VolumeId, directory: Cnid, path: &str) -> Result<CatalogInfo>
     {
-        Ok(self.call(FileCall { operation: LOOKUP,
-                                volume,
-                                cnid: directory,
-                                ..Default::default() },
-                     path)?
-               .entry)
+        self.call(FileCall { operation: LOOKUP,
+                             volume: volume.0,
+                             cnid: directory.0,
+                             ..Default::default() },
+                  path)?
+            .entry
+            .try_into()
     }
 
-    pub fn parent(self, volume: u32, cnid: u32) -> Result<CatalogInfo>
+    pub fn parent(self, volume: VolumeId, cnid: Cnid) -> Result<CatalogInfo>
     {
-        Ok(self.call(FileCall { operation: PARENT,
-                                volume,
-                                cnid,
-                                ..Default::default() },
-                     "")?
-               .entry)
+        self.call(FileCall { operation: PARENT,
+                             volume: volume.0,
+                             cnid: cnid.0,
+                             ..Default::default() },
+                  "")?
+            .entry
+            .try_into()
     }
 
     /// Write a native UTF-8 path to a Rust string writer without requiring an
     /// application allocator. `String` and fixed-capacity fmt::Write buffers work.
-    pub fn path(self, volume: u32, cnid: u32, output: &mut impl core::fmt::Write) -> Result<()>
+    pub fn path(self, volume: VolumeId, cnid: Cnid, output: &mut impl core::fmt::Write)
+                -> Result<()>
     {
         let mut call = FileCall { operation: PATH,
-                                  volume,
-                                  cnid,
+                                  volume: volume.0,
+                                  cnid: cnid.0,
                                   ..Default::default() };
         let mut bytes = [0; 4096];
         self.client.file(&mut call, "", &mut bytes)?;
@@ -234,78 +282,80 @@ impl<'a> Files<'a>
         output.write_str(text).map_err(|_| Error::NoMemory)
     }
 
-    fn mutation(self, operation: u32, volume: u32, cnid: u32, name: &str, when: Timestamp)
+    fn mutation(self, operation: u32, volume: VolumeId, cnid: Cnid, name: &str, when: Timestamp)
                 -> Result<FileCall>
     {
         let time = when.mac_microseconds().ok_or(Error::BadArgument)?;
         self.call(FileCall { operation,
-                             volume,
-                             cnid,
+                             volume: volume.0,
+                             cnid: cnid.0,
                              position: time,
                              ..Default::default() },
                   name)
     }
 
-    pub fn new_folder(self, volume: u32, parent: u32, name: &str, when: Timestamp)
-                      -> Result<CatalogInfo>
+    pub fn new_folder_at(self, volume: VolumeId, parent: Cnid, name: &str, when: Timestamp)
+                         -> Result<CatalogInfo>
     {
-        Ok(self.mutation(NEW_FOLDER, volume, parent, name, when)?.entry)
+        self.mutation(NEW_FOLDER, volume, parent, name, when)?.entry.try_into()
     }
 
-    pub fn trash_directory(self, volume: u32, create: bool) -> Result<CatalogInfo>
+    pub fn trash_directory(self, volume: VolumeId, create: bool) -> Result<CatalogInfo>
     {
         let when = if create { self.client.now()? } else { Timestamp::from_mac_seconds(0) };
         self.trash_directory_at(volume, create, when)
     }
 
-    pub fn trash_directory_at(self, volume: u32, create: bool, when: Timestamp)
+    pub fn trash_directory_at(self, volume: VolumeId, create: bool, when: Timestamp)
                               -> Result<CatalogInfo>
     {
         let time = when.mac_microseconds().ok_or(Error::BadArgument)?;
-        Ok(self.call(FileCall { operation: TRASH_DIRECTORY,
-                                volume,
-                                index: u32::from(create),
-                                position: time,
-                                ..Default::default() },
-                     "")?
-               .entry)
+        self.call(FileCall { operation: TRASH_DIRECTORY,
+                             volume: volume.0,
+                             index: u32::from(create),
+                             position: time,
+                             ..Default::default() },
+                  "")?
+            .entry
+            .try_into()
     }
 
-    pub fn move_to_trash(self, volume: u32, cnid: u32, when: Timestamp) -> Result<CatalogInfo>
+    pub fn move_to_trash_at(self, volume: VolumeId, cnid: Cnid, when: Timestamp)
+                            -> Result<CatalogInfo>
     {
-        Ok(self.mutation(MOVE_TO_TRASH, volume, cnid, "", when)?.entry)
+        self.mutation(MOVE_TO_TRASH, volume, cnid, "", when)?.entry.try_into()
     }
 
-    pub fn put_away(self, volume: u32, cnid: u32, when: Timestamp) -> Result<CatalogInfo>
+    pub fn put_away_at(self, volume: VolumeId, cnid: Cnid, when: Timestamp) -> Result<CatalogInfo>
     {
-        Ok(self.mutation(PUT_AWAY, volume, cnid, "", when)?.entry)
+        self.mutation(PUT_AWAY, volume, cnid, "", when)?.entry.try_into()
     }
 
-    pub fn trash_usage(self, volume: u32) -> Result<TrashUsage>
+    pub fn trash_usage(self, volume: VolumeId) -> Result<TrashUsage>
     {
         let call = self.call(FileCall { operation: TRASH_USAGE,
-                                        volume,
+                                        volume: volume.0,
                                         ..Default::default() },
                              "")?;
         Ok(TrashUsage { items:           call.index,
                         allocated_bytes: call.length })
     }
 
-    pub fn empty_trash(self, volume: u32, when: Timestamp) -> Result<u32>
+    pub fn empty_trash_at(self, volume: VolumeId, when: Timestamp) -> Result<u32>
     {
-        Ok(self.mutation(EMPTY_TRASH, volume, 0, "", when)?.index)
+        Ok(self.mutation(EMPTY_TRASH, volume, Cnid::UNSAVED, "", when)?.index)
     }
 
-    pub fn open(self, volume: u32, cnid: u32, fork: Fork) -> Result<OpenFile<'a>>
+    pub fn open(self, volume: VolumeId, cnid: Cnid, fork: Fork) -> Result<OpenFile<'a>>
     {
         let call = self.call(FileCall { operation: OPEN,
-                                        volume,
-                                        cnid,
+                                        volume: volume.0,
+                                        cnid: cnid.0,
                                         fork: fork as u32,
                                         ..Default::default() },
                              "")?;
         Ok(OpenFile { client: self.client,
-                      handle: call.handle })
+                      handle: FileHandle(call.handle) })
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -327,14 +377,14 @@ pub enum SeekFrom
 pub struct OpenFile<'a>
 {
     client: Client<'a>,
-    handle: u32
+    handle: FileHandle
 }
 impl OpenFile<'_>
 {
     pub fn read(&mut self, output: &mut [u8]) -> Result<usize>
     {
         let mut call = FileCall { operation: READ,
-                                  handle: self.handle,
+                                  handle: self.handle.0,
                                   ..Default::default() };
         self.client.file(&mut call, "", output)?;
         Ok(call.transferred)
@@ -349,7 +399,7 @@ impl OpenFile<'_>
             SeekFrom::End(n) => (SEEK_END, n)
         };
         let mut call = FileCall { operation: SEEK,
-                                  handle: self.handle,
+                                  handle: self.handle.0,
                                   whence,
                                   offset,
                                   ..Default::default() };
@@ -360,7 +410,7 @@ impl OpenFile<'_>
     pub fn position(&self) -> Result<u64>
     {
         let mut call = FileCall { operation: TELL,
-                                  handle: self.handle,
+                                  handle: self.handle.0,
                                   ..Default::default() };
         self.client.file(&mut call, "", &mut [])?;
         Ok(call.position)
@@ -369,7 +419,7 @@ impl OpenFile<'_>
     pub fn len(&self) -> Result<u64>
     {
         let mut call = FileCall { operation: TELL,
-                                  handle: self.handle,
+                                  handle: self.handle.0,
                                   ..Default::default() };
         self.client.file(&mut call, "", &mut [])?;
         Ok(call.length)
@@ -380,13 +430,17 @@ impl OpenFile<'_>
         Ok(self.len()? == 0)
     }
 
-    pub fn close(mut self) -> Result<()>
+    pub fn close(&mut self) -> Result<()>
     {
+        if self.handle.0 == 0
+        {
+            return Ok(());
+        }
         let mut call = FileCall { operation: CLOSE,
-                                  handle: self.handle,
+                                  handle: self.handle.0,
                                   ..Default::default() };
         self.client.file(&mut call, "", &mut [])?;
-        self.handle = 0;
+        self.handle = FileHandle(0);
         Ok(())
     }
 }
@@ -394,10 +448,10 @@ impl Drop for OpenFile<'_>
 {
     fn drop(&mut self)
     {
-        if self.handle != 0
+        if self.handle.0 != 0
         {
             let mut call = FileCall { operation: CLOSE,
-                                      handle: self.handle,
+                                      handle: self.handle.0,
                                       ..Default::default() };
             let _ = self.client.file(&mut call, "", &mut []);
         }
@@ -424,38 +478,44 @@ pub struct AllocationInfo
 pub struct DataWriter<'a>
 {
     client: Client<'a>,
-    handle: u32
+    handle: FileWriteHandle
 }
 /// Destination and metadata for one atomic ordinary data-fork save.
 #[derive(Clone, Copy)]
 pub struct DataFileSpec<'a>
 {
-    pub volume:    u32,
-    pub parent:    u32,
+    pub volume:    VolumeId,
+    pub parent:    Cnid,
     pub name:      &'a str,
     /// None creates; Some(id) replaces only that exact confirmed catalog item.
-    pub replacing: Option<u32>,
-    pub file_type: [u8; 4],
-    pub creator:   [u8; 4],
-    pub modified:  Timestamp
+    pub replacing: Option<Cnid>,
+    pub file_type: TypeCode,
+    pub creator:   TypeCode
 }
 impl<'a> Files<'a>
 {
     pub fn create_data(self, spec: DataFileSpec<'_>, length: usize) -> Result<DataWriter<'a>>
     {
-        let mut call =
-            DataWriteCall { operation: BEGIN_DATA_WRITE,
-                            volume: spec.volume,
-                            parent: spec.parent,
-                            expected_cnid: spec.replacing.unwrap_or(0),
-                            file_type: spec.file_type,
-                            creator: spec.creator,
-                            length,
-                            when: spec.modified.mac_microseconds().ok_or(Error::BadArgument)?,
-                            ..Default::default() };
+        self.create_data_at(spec, length, self.client.now()?)
+    }
+
+    /// Preserve an explicit creation/modification date, such as when copying a file.
+    pub fn create_data_at(self, spec: DataFileSpec<'_>, length: usize, when: Timestamp)
+                          -> Result<DataWriter<'a>>
+    {
+        let mut call = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                       volume: spec.volume.0,
+                                       parent: spec.parent.0,
+                                       expected_cnid: spec.replacing.unwrap_or(Cnid::UNSAVED).0,
+                                       file_type: spec.file_type.bytes(),
+                                       creator: spec.creator.bytes(),
+                                       length,
+                                       when: when.mac_microseconds()
+                                                 .ok_or(Error::BadArgument)?,
+                                       ..Default::default() };
         self.client.data_write(&mut call, spec.name, &[])?;
         Ok(DataWriter { client: self.client,
-                        handle: call.handle })
+                        handle: FileWriteHandle(call.handle) })
     }
 }
 impl DataWriter<'_>
@@ -465,30 +525,30 @@ impl DataWriter<'_>
         for chunk in data.chunks(64 * 1024)
         {
             let mut call = DataWriteCall { operation: APPEND_DATA_WRITE,
-                                           handle: self.handle,
+                                           handle: self.handle.0,
                                            ..Default::default() };
             self.client.data_write(&mut call, "", chunk)?;
         }
         Ok(())
     }
 
-    pub fn finish(mut self) -> Result<CatalogInfo>
+    pub fn finish(&mut self) -> Result<CatalogInfo>
     {
         let mut call = DataWriteCall { operation: COMMIT_DATA_WRITE,
-                                       handle: self.handle,
+                                       handle: self.handle.0,
                                        ..Default::default() };
         self.client.data_write(&mut call, "", &[])?;
-        self.handle = 0;
-        Ok(call.entry)
+        self.handle = FileWriteHandle(0);
+        call.entry.try_into()
     }
 
-    pub fn abort(mut self) -> Result<()>
+    pub fn abort(&mut self) -> Result<()>
     {
         let mut call = DataWriteCall { operation: ABORT_DATA_WRITE,
-                                       handle: self.handle,
+                                       handle: self.handle.0,
                                        ..Default::default() };
         self.client.data_write(&mut call, "", &[])?;
-        self.handle = 0;
+        self.handle = FileWriteHandle(0);
         Ok(())
     }
 }
@@ -496,10 +556,10 @@ impl Drop for DataWriter<'_>
 {
     fn drop(&mut self)
     {
-        if self.handle != 0
+        if self.handle.0 != 0
         {
             let mut call = DataWriteCall { operation: ABORT_DATA_WRITE,
-                                           handle: self.handle,
+                                           handle: self.handle.0,
                                            ..Default::default() };
             let _ = self.client.data_write(&mut call, "", &[]);
         }

@@ -1,7 +1,38 @@
 //! Client for System-owned, scrollable native panic diagnostics.
 #![no_std]
 #![forbid(unsafe_code)]
-pub use mac_abi::crashes::*;
+pub use mac_abi::crashes::MAX_REPORT_BYTES;
+use mac_abi::crashes::*;
+pub use mac_traps::types::{ProcessId, ThreadId};
+mac_traps::native_flags!(ReportFlags, u32; TRUNCATED = mac_abi::crashes::TRUNCATED, FORMAT_FAILED = mac_abi::crashes::FORMAT_FAILED);
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CrashInfo
+{
+    pub window:       mac_abi::WindowId,
+    pub report_bytes: usize,
+    pub line_count:   u32,
+    pub first_line:   u32,
+    pub page_lines:   u32,
+    pub dismissed:    bool,
+    pub flags:        ReportFlags,
+    pub app:          ProcessId,
+    pub thread:       ThreadId
+}
+impl From<mac_abi::crashes::CrashInfo> for CrashInfo
+{
+    fn from(info: mac_abi::crashes::CrashInfo) -> Self
+    {
+        Self { window:       info.window,
+               report_bytes: info.report_bytes,
+               line_count:   info.line_count,
+               first_line:   info.first_line,
+               page_lines:   info.page_lines,
+               dismissed:    info.dismissed != 0,
+               flags:        ReportFlags::from_bits_retain(info.flags),
+               app:          ProcessId(info.app),
+               thread:       ThreadId(info.thread) }
+    }
+}
 pub use mac_traps::{Client, Error, Result};
 #[derive(Clone, Copy)]
 pub struct Crashes<'a>
@@ -25,12 +56,12 @@ impl<'a> Crashes<'a>
         let mut call = CrashCall { operation: APPEND,
                                    ..Default::default() };
         self.client.crash(&mut call, text, &mut [])?;
-        Ok(call.info)
+        Ok(call.info.into())
     }
 
-    pub fn show(self, flags: u32) -> Result<CrashInfo>
+    pub fn show(self, flags: ReportFlags) -> Result<CrashInfo>
     {
-        self.command(SHOW, flags, 0)
+        self.command(SHOW, flags.bits(), 0)
     }
 
     pub fn info(self) -> Result<CrashInfo>
@@ -65,6 +96,6 @@ impl<'a> Crashes<'a>
                                    delta,
                                    ..Default::default() };
         self.client.crash(&mut call, "", &mut [])?;
-        Ok(call.info)
+        Ok(call.info.into())
     }
 }

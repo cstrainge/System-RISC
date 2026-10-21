@@ -72,7 +72,10 @@ fn boot_art_panel_and_mounted_volume_info_match_public_toolbox_services()
             (0..32 * 32).map(|n| if (n % 32 + n / 32) & 1 == 0 { 0x878787 } else { 0xc0c0c0 })
                         .collect();
         let expected = render(&root, 32, 32, checker, |p| {
-            p.plot_icon(mac_abi::resources::SYSTEM, id, Rect::new(0, 0, 32, 32), Default::default())
+            p.plot_icon(mac_toolbox::ResourceScope::from_raw(mac_abi::resources::SYSTEM).unwrap(),
+                        id,
+                        Rect::new(0, 0, 32, 32),
+                        Default::default())
              .unwrap()
         });
         assert_eq!(region(&actual, 304, 224, 32, 32),
@@ -93,7 +96,10 @@ fn boot_art_panel_and_mounted_volume_info_match_public_toolbox_services()
     assert_eq!(region(&panel, 170, 150, 300, 1), vec![0; 300 * 3]);
     assert_eq!(region(&panel, 174, 326, 300, 4), vec![0; 300 * 4 * 3], "panel shadow");
     let happy = render(&root, 64, 64, vec![0xffffff; 64 * 64], |p| {
-        p.plot_icon(mac_abi::resources::SYSTEM, 32740, Rect::new(0, 0, 64, 64), Default::default())
+        p.plot_icon(mac_toolbox::ResourceScope::from_raw(mac_abi::resources::SYSTEM).unwrap(),
+                    32740,
+                    Rect::new(0, 0, 64, 64),
+                    Default::default())
          .unwrap()
     });
     assert_eq!(region(&panel, 288, 170, 64, 64), happy);
@@ -114,7 +120,10 @@ fn boot_art_panel_and_mounted_volume_info_match_public_toolbox_services()
     });
     same(region(&info, 79, 91, 163, 12), kind, "volume Info filesystem/version text");
     let icon = render(&root, 32, 32, vec![0xffffff; 32 * 32], |p| {
-        p.plot_icon(mac_abi::resources::SYSTEM, 24000, Rect::new(0, 0, 32, 32), Default::default())
+        p.plot_icon(mac_toolbox::ResourceScope::from_raw(mac_abi::resources::SYSTEM).unwrap(),
+                    24000,
+                    Rect::new(0, 0, 32, 32),
+                    Default::default())
          .unwrap()
     });
     same(region(&info, 38, 53, 32, 32), icon, "volume Info must show its normal driver icon");
@@ -128,10 +137,9 @@ fn boot_art_panel_and_mounted_volume_info_match_public_toolbox_services()
                                                     }.unwrap();
                                                          system.files().volume_at(0).unwrap()
                                                      }).unwrap();
-    assert_eq!(mac_toolbox::files::Filesystem::of(&v).unwrap(),
-               mac_toolbox::files::Filesystem::HfsB { version: 1 });
+    assert_eq!(v.filesystem, mac_toolbox::files::Filesystem::HfsB { version: 1 });
     assert_eq!(v.total_bytes, 500 * 1024 * 1024);
-    assert!(v.blessed_folder >= 16);
+    assert!(v.blessed_folder.0 >= 16);
     let total = render(&root, 163, 12, vec![0xffffff; 163 * 12], |p| {
         p.draw_text(font::GENEVA_9, 0, 10, "500 MB total", 163, 0).unwrap()
     });

@@ -4,15 +4,18 @@ use alloc::{boxed::Box, vec::Vec};
 
 use mac_abi::{menus::*, *};
 
-use crate::toolbox::{quickdraw::{Canvas, SurfaceExt},
+use crate::toolbox::{handles::{Kind, Table},
+                     quickdraw::{Canvas, SurfaceExt},
                      resources::manager::Manager as Resources};
 struct Menu
 {
-    state: Box<MenuDefinitionState>
+    handle: u32,
+    state:  Box<MenuDefinitionState>
 }
 pub struct Manager
 {
     menus:       Vec<Menu>,
+    objects:     Table<i16>,
     entry:       DefinitionEntry,
     gate:        TrapGate,
     tracking:    bool,
@@ -24,6 +27,7 @@ impl Manager
     pub fn new(entry: DefinitionEntry, gate: TrapGate) -> Self
     {
         Self { menus: Vec::new(),
+               objects: Table::new(Kind::Menus),
                entry,
                gate,
                tracking: false,
@@ -62,8 +66,56 @@ impl Manager
     pub fn request(&mut self, call: &mut MenuCall, resources: Resources<'_>)
                    -> Result<bool, Status>
     {
+        if call.handle != 0
+        {
+            if matches!(call.operation, INSTALL | CLEAR | KEY)
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            call.menu_id = *self.objects.get(call.handle).ok_or(NOT_FOUND)?;
+        }
         match call.operation
         {
+            FIND =>
+            {
+                call.handle = self.menus
+                                  .iter()
+                                  .find(|menu| menu.state.menu_id == call.menu_id)
+                                  .ok_or(NOT_FOUND)?
+                                  .handle;
+                Ok(false)
+            }
+            DISPOSE =>
+            {
+                self.objects.get(call.handle).ok_or(NOT_FOUND)?;
+                let index = self.menus
+                                .iter()
+                                .position(|menu| menu.handle == call.handle)
+                                .ok_or(NOT_FOUND)?;
+                // Measure replacement positions before mutating live state. A failed
+                // definition service leaves the bar and ownership untouched.
+                let mut replacements = Vec::new();
+                replacements.try_reserve(self.menus.len() - index - 1).map_err(|_| NO_MEMORY)?;
+                let mut left = self.menus[index].state.title_bounds.left;
+                for menu in &self.menus[index + 1..]
+                {
+                    let mut state = *menu.state;
+                    state.title_bounds.left = left;
+                    self.measure(&mut state)?;
+                    left = state.title_bounds.right;
+                    replacements.push(Box::new(state));
+                }
+                self.objects.remove(call.handle).ok_or(NOT_FOUND)?;
+                self.menus.remove(index);
+                for (menu, state) in self.menus[index..].iter_mut().zip(replacements)
+                {
+                    menu.state = state;
+                }
+                self.tracking = false;
+                self.active = None;
+                self.highlighted = 0;
+                Ok(true)
+            }
             KEY =>
             {
                 let key = u8::try_from(call.value).map_err(|_| BAD_ARGUMENT)?;
@@ -115,13 +167,19 @@ impl Manager
                 state.title_bounds.left =
                     self.menus.last().map_or(10, |m| m.state.title_bounds.right);
                 self.measure(&mut state)?;
-                self.menus.push(Menu { state: Box::new(state) });
+                self.menus.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                let handle = self.objects.insert(state.menu_id).map_err(|_| NO_MEMORY)?;
+                call.handle = handle;
+                call.menu_id = state.menu_id;
+                self.menus.push(Menu { handle,
+                                       state: Box::new(state) });
                 Ok(true)
             }
             CLEAR =>
             {
                 let changed = !self.menus.is_empty() || self.tracking;
                 self.menus.clear();
+                self.objects.clear();
                 self.tracking = false;
                 self.active = None;
                 self.highlighted = 0;

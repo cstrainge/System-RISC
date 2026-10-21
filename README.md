@@ -396,7 +396,8 @@ Definitions support:
 - `menu`: basic classic `MENU` resources, including item terminators.
 - `hex`: arbitrary binary resource data, such as `SIZE`.
 - `file`: binary data read relative to the manifest, for icons and other assets.
-- `native_code`: build-time native ELF converted to a descriptor, compact segment
+- `native_code`: a Cargo binary named by `artifact`, resolved beside this build's
+  input ELF and converted to a descriptor, compact segment
   stream and RLOC table for a relocatable executable definition resource.
 
 Each definition has a four-byte `type`, signed 16-bit `id`, unique uppercase

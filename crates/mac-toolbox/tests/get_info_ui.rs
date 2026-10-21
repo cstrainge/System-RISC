@@ -57,11 +57,12 @@ fn finder_info_resource_layouts_are_observed_through_the_public_resource_manager
         let system = unsafe { System::from_raw(services) }.unwrap();
         for (id, height, comment_top) in [(17011, 261, 179), (11261, 217, 155)]
         {
-            let resource = system.resources()
-                                 .application()
-                                 .get(mac_toolbox::ResourceKey { kind: *b"gInf",
-                                                                 id })
-                                 .unwrap();
+            let resource =
+                system.resources()
+                      .application()
+                      .get(mac_toolbox::ResourceKey { kind: mac_toolbox::TypeCode::new(*b"gInf"),
+                                                      id })
+                      .unwrap();
             let mut bytes = [0; 104];
             assert_eq!(resource.read(0, &mut bytes).unwrap(), 104);
             resource.release().unwrap();
@@ -133,7 +134,7 @@ fn editable_info_windows_persist_through_real_filesystem_commits_and_cold_boot()
         {
             assert!(!serial.contains(failure), "unexpected{failure}:\n{serial}");
         }
-        assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=6"));
+        assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=7"));
     }
     let observations = report["observations"].as_array().unwrap();
     for observation in observations
@@ -217,12 +218,12 @@ fn editable_info_windows_persist_through_real_filesystem_commits_and_cold_boot()
         let(snapshot,activity)=mac_system::testing::with_file_disk(&output.join(name),true,Default::default(),|services|{
             let system=unsafe{System::from_raw(services)}.unwrap();let files=system.files();
             let file=files.lookup(system.files().volume_at(0).unwrap().id,ROOT_ID,"0 Info Cases/z file").unwrap();let folder=files.lookup(system.files().volume_at(0).unwrap().id,ROOT_ID,"0 Info Cases/z folder").unwrap();
-            assert_eq!((file.id,folder.id),(file_cnid,folder_cnid));assert_eq!(file.is_locked(),locked);assert!(file.is_stationery());
+            assert_eq!((file.id.0,folder.id.0),(file_cnid,folder_cnid));assert_eq!(file.is_locked(),locked);assert!(file.is_stationery());
             assert_eq!(file.data_length,36);assert_eq!(file.resource_length,0);assert_eq!(file.created_at(),mac_toolbox::Timestamp::from_mac_seconds(3_875_209_985));assert_eq!(file.modified,file.created);
             let mut file_comment=String::new();files.comment(system.files().volume_at(0).unwrap().id,file.id,&mut file_comment).unwrap();assert_eq!(file_comment,"native comment\rsecond line","locked editing changed the comment");
             let mut folder_comment=String::new();files.comment(system.files().volume_at(0).unwrap().id,folder.id,&mut folder_comment).unwrap();assert_eq!(folder_comment,"folder comment\rsecond line");
             let mut opened=files.open(system.files().volume_at(0).unwrap().id,file.id,Fork::Data).unwrap();let mut bytes=[0;36];assert_eq!(opened.read(&mut bytes).unwrap(),36);assert_eq!(&bytes[..24],b"Native Get Info fixture\r");
-            serde_json::json!({"file_cnid":file.id,"folder_cnid":folder.id,"locked":file.is_locked(),"stationery":file.is_stationery(),"file_comment":file_comment,"folder_comment":folder_comment,"creation":file.created,"modification":file.modified})
+            serde_json::json!({"file_cnid":file.id.0,"folder_cnid":folder.id.0,"locked":file.is_locked(),"stationery":file.is_stationery(),"file_comment":file_comment,"folder_comment":folder_comment,"creation":file.created.mac_microseconds().unwrap(),"modification":file.modified.mac_microseconds().unwrap()})
         }).unwrap();
         assert_eq!(activity.writes, 0);
         persisted.push(snapshot);

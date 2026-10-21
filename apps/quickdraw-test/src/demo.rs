@@ -1,5 +1,5 @@
 //! Interactive QuickDraw exercise. Every operation crosses the public Toolbox API.
-use mac_toolbox::{Error, Point, Rect, Status, System, WindowId,
+use mac_toolbox::{Error, Point, Rect, System, WindowId,
                   quickdraw::{bitmaps::Bitmap,
                               fonts::{BOLD, FontSelection, ITALIC, UNDERLINE},
                               graphics::{GraphicsPort, Shape, TransferMode, Verb}}};
@@ -18,7 +18,7 @@ fn text(port: GraphicsPort<'_>, x: i16, y: i16, s: &str) -> Result<(), Error>
               0)
         .map(|_| ())
 }
-pub fn open(system: &System<'_>) -> Result<u32, Error>
+pub fn open(system: &System<'_>) -> Result<WindowId, Error>
 {
     let layout = system.resources().application().get(crate::resources::WINDOW_LAYOUT)?;
     let mut bytes = [0; 20];
@@ -36,10 +36,7 @@ pub fn selector(system: &System<'_>, index: usize)
                 -> Result<mac_toolbox::controls::StandardState, Error>
 {
     let mut bytes = [0; 128];
-    let label = system.resources()
-                      .application()
-                      .indexed_string(2000, index as u32, &mut bytes)
-                      .map_err(mac_traps_error_status)?;
+    let label = system.resources().application().indexed_string(2000, index as u32, &mut bytes)?;
     let left = 2 + index as i16 * 56;
     let mut state =
         mac_toolbox::controls::StandardState::new(Rect::new(left, 1, left + 53, 22), label);
@@ -48,19 +45,15 @@ pub fn selector(system: &System<'_>, index: usize)
                                  face:   BOLD };
     Ok(state)
 }
-fn mac_traps_error_status(error: mac_toolbox::Error) -> Status
-{
-    error.status()
-}
 
-pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32,
+pub fn draw(system: &System<'_>, id: WindowId, page: u8, icon_offset: u32,
             selectors: &[mac_toolbox::controls::ControlId; 10])
             -> Result<(), Error>
 {
     let r = system.window(id)?.bounds;
     let (w, h) = (r.right - r.left, r.bottom - r.top);
     system.begin_update(id)?;
-    let port = system.quickdraw().graphics(WindowId(id));
+    let port = system.quickdraw().graphics(id);
     let run = (|| -> mac_toolbox::ToolboxResult<()> {
         port.reset()?;
         port.colors(0, 0xffffff)?;
@@ -73,7 +66,7 @@ pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32,
             system.controls()
                   .control(*id)
                   .update(mac_toolbox::controls::StandardKind::WindowFontButton,
-                          selector(system, index).map_err(mac_traps_error)?)?;
+                          selector(system, index)?)?;
         }
         port.move_to(point(0, 23))?;
         port.line_to(point(w, 23))?;
@@ -92,14 +85,11 @@ pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32,
         }
         let mut bytes = [0; 128];
         let footer = system.resources().application().indexed_string(2000, 10, &mut bytes)?;
-        text(port, 10, h - 24, footer).map_err(mac_traps_error)?;
+        text(port, 10, h - 24, footer)?;
         Ok(())
     })();
     system.end_update(id)?;
-    if let Err(e) = run
-    {
-        return Err(e);
-    }
+    run?;
     let marker = match page
     {
         0 => "QD_DEMO_READY page=1 shapes\n",
@@ -115,15 +105,11 @@ pub fn draw(system: &System<'_>, id: u32, page: u8, icon_offset: u32,
     };
     system.log(marker)
 }
-fn mac_traps_error(status: Error) -> mac_toolbox::Error
-{
-    status
-}
 fn shapes(port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResult<()>
 {
     for (i, label) in ["Frame", "Paint", "Erase", "Invert", "Fill"].iter().enumerate()
     {
-        text(port, 18 + i as i16 * 107, 40, label).map_err(mac_traps_error)?;
+        text(port, 18 + i as i16 * 107, 40, label)?;
     }
     for column in 0..5
     {
@@ -188,7 +174,7 @@ fn modes(port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResult<()>
     {
         let x = 14 + (i % 4) as i16 * 136;
         let y = 44 + (i / 4) as i16 * 69;
-        text(port, x, y, labels[i]).map_err(mac_traps_error)?;
+        text(port, x, y, labels[i])?;
         port.pen_mode(PatternCopy)?;
         port.pen_pattern([255; 8])?;
         port.colors(0x8ab4d9, 0xffffff)?;
@@ -227,7 +213,7 @@ fn regions(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::ToolboxR
     }
     port.set_origin(point(0, 0))?;
     port.colors(0, 0xffffff)?;
-    text(port,20,244,"Union                 Intersection           Difference            XOR").map_err(mac_traps_error)?;
+    text(port, 20, 244, "Union                 Intersection           Difference            XOR")?;
     let clip = regions.oval(Rect::new(30, 260, 530, 322), &mut ab)?;
     port.clip_region(clip.bytes())?;
     port.colors(0x276cb1, 0xffffff)?;
@@ -242,7 +228,7 @@ fn bitmaps(port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResult<()>
     let bitmap = Bitmap::Mono { data:      &mono,
                                 row_bytes: 1,
                                 bounds:    Rect::new(0, 0, 8, 8) };
-    text(port, 16, 42, "1-bit scaled CopyBits").map_err(mac_traps_error)?;
+    text(port, 16, 42, "1-bit scaled CopyBits")?;
     port.copy_bits(&bitmap, bitmap.bounds(), Rect::new(16, 53, 144, 181), TransferMode::Copy, &[])?;
     let mut palette = [0u32; 256];
     for (i, p) in palette.iter_mut().enumerate()
@@ -259,7 +245,7 @@ fn bitmaps(port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResult<()>
                                     bounds:    Rect::new(0, 0, 16, 16),
                                     depth:     8,
                                     palette:   &palette };
-    text(port, 195, 42, "8-bit indexed palette").map_err(mac_traps_error)?;
+    text(port, 195, 42, "8-bit indexed palette")?;
     port.copy_bits(&indexed,
                    indexed.bounds(),
                    Rect::new(195, 53, 323, 181),
@@ -273,9 +259,9 @@ fn bitmaps(port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResult<()>
     let color = Bitmap::Rgb32 { pixels:     &rgb,
                                 row_pixels: 16,
                                 bounds:     Rect::new(0, 0, 16, 16) };
-    text(port, 375, 42, "32-bit RGB scaling").map_err(mac_traps_error)?;
+    text(port, 375, 42, "32-bit RGB scaling")?;
     port.copy_bits(&color, color.bounds(), Rect::new(375, 53, 503, 181), TransferMode::Copy, &[])?;
-    text(port,16,220,"Source clipping, scaling and all pixel reads happen in System.").map_err(mac_traps_error)?;
+    text(port, 16, 220, "Source clipping, scaling and all pixel reads happen in System.")?;
     for (i, mode) in
         [TransferMode::Copy, TransferMode::Or, TransferMode::Xor, TransferMode::Bic].iter()
                                                                                     .enumerate()
@@ -295,7 +281,7 @@ fn fonts(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::ToolboxRes
     {
         let family = fonts.family(i)?;
         let y = 48 + i as i16 * 29;
-        text(port, 10, y, family.name()).map_err(mac_traps_error)?;
+        text(port, 10, y, family.name())?;
         for (column, size) in [12, 17, 24].iter().enumerate()
         {
             let selection = FontSelection { family: family.selection.family,
@@ -315,7 +301,7 @@ fn fonts(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::ToolboxRes
 
 fn worlds(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResult<()>
 {
-    text(port,16,45,"Resident offscreen GWorld, then CopyBits into this window").map_err(mac_traps_error)?;
+    text(port, 16, 45, "Resident offscreen GWorld, then CopyBits into this window")?;
     let world = system.quickdraw().new_gworld(64, 64)?;
     let offscreen = world.graphics();
     offscreen.colors(0x325bab, 0xffffff)?;
@@ -341,15 +327,15 @@ fn worlds(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::ToolboxRe
     world.copy_to(port, Rect::new(0, 0, 64, 64), Rect::new(300, 62, 428, 190), TransferMode::Copy)?;
     world.copy_to(port, Rect::new(0, 0, 64, 64), Rect::new(450, 62, 514, 126), TransferMode::Copy)?;
     drop(world);
-    text(port, 285, 230, "Readback verified; source disposed.").map_err(mac_traps_error)?;
-    text(port, 285, 250, "Retained copies survive redraw.").map_err(mac_traps_error)?;
+    text(port, 285, 230, "Readback verified; source disposed.")?;
+    text(port, 285, 250, "Retained copies survive redraw.")?;
     Ok(())
 }
 
 fn pictures(port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResult<()>
 {
     let picture = crate::resources::QUICKDRAW_DEMO_PICTURE.id;
-    text(port,16,44,"Original System 7 recorded PICT, replayed by resident Rust QuickDraw").map_err(mac_traps_error)?;
+    text(port, 16, 44, "Original System 7 recorded PICT, replayed by resident Rust QuickDraw")?;
     port.picture_resource(mac_toolbox::resources::APPLICATION,
                           picture,
                           Rect::new(16, 65, 236, 185))?;
@@ -365,7 +351,7 @@ fn icons(system: &System<'_>, port: GraphicsPort<'_>, offset: u32)
          -> mac_toolbox::ToolboxResult<()>
 {
     let icons = system.quickdraw().icons();
-    text(port,16,42,"Original resource families: normal / selected / disabled").map_err(mac_traps_error)?;
+    text(port, 16, 42, "Original resource families: normal / selected / disabled")?;
     for i in 0..16
     {
         let index = offset + i;
@@ -394,9 +380,9 @@ fn icons(system: &System<'_>, port: GraphicsPort<'_>, offset: u32)
         let mut label = Label::default();
         use core::fmt::Write;
         let _ = write!(&mut label, "Icon {}", id);
-        text(port, x, y + 45, label.as_str()).map_err(mac_traps_error)?;
+        text(port, x, y + 45, label.as_str())?;
     }
-    text(port, 16, 320, "Left/right: browse every bundled icon family.").map_err(mac_traps_error)?;
+    text(port, 16, 320, "Left/right: browse every bundled icon family.")?;
     Ok(())
 }
 #[derive(Default)]
@@ -431,14 +417,14 @@ fn resources(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::Toolbo
     let resources = system.resources();
     // Exercise the real disk-loaded font store through the Resource Manager,
     // including name lookup and scope pinning after ownership moves to fonts.
-    if resources.system().count(*b"sfnt")? != 17
-       || resources.system().count(*b"FOND")? != 9
+    if resources.system().count(mac_toolbox::TypeCode::new(*b"sfnt"))? != 17
+       || resources.system().count(mac_toolbox::TypeCode::new(*b"FOND"))? != 9
        || resources.type_count()? == 0
     {
         return Err(mac_toolbox::Error::BadArgument);
     }
     resources.type_at(0)?;
-    let chicago = resources.system().named(*b"FOND", "Chicago")?;
+    let chicago = resources.system().named(mac_toolbox::TypeCode::new(*b"FOND"), "Chicago")?;
     if chicago.key().id != 0 || chicago.home() != mac_toolbox::resources::SYSTEM
     {
         return Err(mac_toolbox::Error::BadArgument);
@@ -452,20 +438,20 @@ fn resources(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::Toolbo
         return Err(mac_toolbox::Error::BadArgument);
     }
     picture.release()?;
-    text(port,16,45,"Resource Manager: application -> System search chain").map_err(mac_traps_error)?;
+    text(port, 16, 45, "Resource Manager: application -> System search chain")?;
     for (row, kind) in [*b"ICN#", *b"icl8", *b"ics#", *b"cicn", *b"PICT", *b"CURS", *b"FOND",
                         *b"FONT", *b"NFNT", *b"sfnt", *b"BNDL", *b"FREF"].into_iter()
                                                                          .enumerate()
     {
-        let count = resources.count(kind)?;
+        let count = resources.count(mac_toolbox::TypeCode::new(kind))?;
         let mut label = Label::default();
         use core::fmt::Write;
         let name = core::str::from_utf8(&kind).unwrap_or("????");
         let _ = write!(&mut label, "{}: {} resources", name, count);
-        text(port,16+(row as i16/6)*270,75+(row as i16%6)*32,label.as_str()).map_err(mac_traps_error)?;
+        text(port, 16 + (row as i16 / 6) * 270, 75 + (row as i16 % 6) * 32, label.as_str())?;
         if count > 0
         {
-            let resource = resources.at(kind, 0)?;
+            let resource = resources.at(mac_toolbox::TypeCode::new(kind), 0)?;
             resource.load()?;
             let mut prefix = [0; 16];
             let got = resource.read(0, &mut prefix)?;
@@ -476,7 +462,8 @@ fn resources(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::Toolbo
             resource.release()?;
         }
     }
-    text(port,16,310,"Lookup, enumeration, metadata, partial reads, load and release verified.").map_err(mac_traps_error)?;
+    text(port, 16, 310,
+         "Lookup, enumeration, metadata, partial reads, load and release verified.")?;
     Ok(())
 }
 
@@ -490,11 +477,8 @@ fn png(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResul
     }
     let count = resource.read(0, &mut bytes)?;
     let image = &bytes[..count];
-    let info = system.quickdraw()
-                     .images()
-                     .info(image)
-                     .map_err(|e| mac_toolbox::Error::from_status(e.status))?;
-    text(port,16,44,"PNG: resident decoding, alpha composition, scaling and clipping").map_err(mac_traps_error)?;
+    let info = system.quickdraw().images().info(image).map_err(|e| e.service)?;
+    text(port, 16, 44, "PNG: resident decoding, alpha composition, scaling and clipping")?;
     // A checkerboard makes translucent pixels easy to distinguish from opaque RGB.
     for row in 0..14i16
     {
@@ -508,18 +492,15 @@ fn png(system: &System<'_>, port: GraphicsPort<'_>) -> mac_toolbox::ToolboxResul
                                       76 + row * 16))?;
         }
     }
-    port.draw_png(image, Rect::new(24, 76, 120, 140))
-        .map_err(|e| mac_toolbox::Error::from_status(e.status))?;
-    port.draw_png(image, Rect::new(160, 76, 448, 268))
-        .map_err(|e| mac_toolbox::Error::from_status(e.status))?;
+    port.draw_png(image, Rect::new(24, 76, 120, 140)).map_err(|e| e.service)?;
+    port.draw_png(image, Rect::new(160, 76, 448, 268)).map_err(|e| e.service)?;
     port.clip_rect(Rect::new(460, 100, 520, 240))?;
-    port.draw_png(image, Rect::new(440, 76, 536, 268))
-        .map_err(|e| mac_toolbox::Error::from_status(e.status))?;
+    port.draw_png(image, Rect::new(440, 76, 536, 268)).map_err(|e| e.service)?;
     port.clip_rect(Rect::new(0, 0, i16::MAX, i16::MAX))?;
     let mut label = Label::default();
     use core::fmt::Write;
     let _ = write!(&mut label, "PNG {}x{}, {} bit", info.width, info.height, info.bit_depth);
-    text(port, 16, 308, label.as_str()).map_err(mac_traps_error)?;
-    text(port,16,326,"Static PNG. Transparency blends over existing QuickDraw pixels.").map_err(mac_traps_error)?;
+    text(port, 16, 308, label.as_str())?;
+    text(port, 16, 326, "Static PNG. Transparency blends over existing QuickDraw pixels.")?;
     Ok(())
 }

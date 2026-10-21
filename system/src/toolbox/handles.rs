@@ -3,6 +3,13 @@
 //! are retired permanently rather than wrapping. Managers retain owner checks.
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU16, Ordering};
+
+// App-local tables share generation histories so the same slot in two apps
+// cannot issue the same ID. The classic memory wire contract stays unchanged.
+static EDITOR_GENERATIONS: [AtomicU16; mac_abi::textedit::MAX_EDITORS] =
+    [const { AtomicU16::new(0) }; mac_abi::textedit::MAX_EDITORS];
+static MENU_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 
 struct Slot<T>
 {
@@ -26,7 +33,9 @@ pub(crate) enum Kind
     StandardFiles,
     ScrollBoxes,
     Controls,
-    Volumes
+    Volumes,
+    TextEdit,
+    Menus
 }
 impl Kind
 {
@@ -34,6 +43,8 @@ impl Kind
     {
         match self
         {
+            Self::Menus => 8,
+            Self::TextEdit => mac_abi::textedit::MAX_EDITORS,
             Self::Volumes => 128,
             Self::ScrollBoxes => 96,
             Self::Controls => 256,
@@ -48,6 +59,8 @@ impl Kind
     {
         match self
         {
+            Self::Menus => Self::TextEdit.first_slot() + Self::TextEdit.capacity() as u32,
+            Self::TextEdit => Self::Volumes.first_slot() + Self::Volumes.capacity() as u32,
             Self::Volumes => Self::Controls.first_slot() + Self::Controls.capacity() as u32,
             Self::Controls => Self::ScrollBoxes.first_slot() + Self::ScrollBoxes.capacity() as u32,
             Self::ScrollBoxes =>
@@ -65,6 +78,16 @@ impl Kind
         }
     }
 
+    fn shared_generation(self, index: usize) -> Option<&'static AtomicU16>
+    {
+        match self
+        {
+            Self::TextEdit => EDITOR_GENERATIONS.get(index),
+            Self::Menus => MENU_GENERATIONS.get(index),
+            _ => None
+        }
+    }
+
     const fn last_generation(self) -> u16
     {
         match self
@@ -75,7 +98,7 @@ impl Kind
             | Self::StandardFiles
             | Self::ScrollBoxes
             | Self::Controls => u16::MAX,
-            Self::Volumes => u16::MAX,
+            Self::Volumes | Self::TextEdit | Self::Menus => u16::MAX,
             Self::Windows => 255
         }
     }
@@ -83,7 +106,8 @@ impl Kind
 
 /// Service-scoped identity storage; managers retain their existing owner policy.
 /// Keep the table across resets and use clear(): replacing it resets identity
-/// history. The central namespace registry also bounds generations for each ABI.
+/// history. App-local kinds use centrally shared generation histories instead.
+/// The central namespace registry also bounds generations for each ABI.
 pub(crate) struct Table<T>
 {
     kind:  Kind,
@@ -102,25 +126,34 @@ impl<T> Table<T>
                slots: Vec::new() }
     }
 
+    fn available(&self, index: usize, slot: &Slot<T>) -> bool
+    {
+        slot.value.is_none()
+        && self.kind
+               .shared_generation(index)
+               .map_or(slot.generation, |generation| generation.load(Ordering::Relaxed))
+           < self.kind.last_generation()
+    }
+
     fn vacant(&mut self) -> Result<usize, Exhausted>
     {
         if let Some(index) =
-            self.slots
-                .iter()
-                .position(|slot| {
-                    slot.value.is_none() && slot.generation < self.kind.last_generation()
-                })
+            self.slots.iter().enumerate().position(|(index, slot)| self.available(index, slot))
         {
             return Ok(index);
         }
-        if self.slots.len() >= self.kind.capacity()
+        while self.slots.len() < self.kind.capacity()
         {
-            return Err(Exhausted);
+            self.slots.try_reserve(1).map_err(|_| Exhausted)?;
+            self.slots.push(Slot { generation: 0,
+                                   value:      None });
+            let index = self.slots.len() - 1;
+            if self.available(index, &self.slots[index])
+            {
+                return Ok(index);
+            }
         }
-        self.slots.try_reserve(1).map_err(|_| Exhausted)?;
-        self.slots.push(Slot { generation: 0,
-                               value:      None });
-        Ok(self.slots.len() - 1)
+        Err(Exhausted)
     }
 
     /// Reserve capacity before a manager performs fallible object initialization.
@@ -137,12 +170,30 @@ impl<T> Table<T>
 
     pub(crate) fn insert_with(&mut self, create: impl FnOnce(u32) -> T) -> Result<u32, Exhausted>
     {
-        let index = self.vacant()?;
-        let slot = &mut self.slots[index];
-        slot.generation += 1;
-        let id = Self::id(self.kind, index, slot.generation);
-        slot.value = Some(create(id));
-        Ok(id)
+        loop
+        {
+            let index = self.vacant()?;
+            let generation = if let Some(shared) = self.kind.shared_generation(index)
+            {
+                let Ok(previous) = shared.try_update(Ordering::Relaxed,
+                                                     Ordering::Relaxed,
+                                                     |generation| generation.checked_add(1))
+                else
+                {
+                    continue;
+                };
+                previous + 1
+            }
+            else
+            {
+                self.slots[index].generation + 1
+            };
+            let slot = &mut self.slots[index];
+            slot.generation = generation;
+            let id = Self::id(self.kind, index, generation);
+            slot.value = Some(create(id));
+            return Ok(id);
+        }
     }
 
     fn id(kind: Kind, index: usize, generation: u16) -> u32

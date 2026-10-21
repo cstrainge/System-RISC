@@ -1,5 +1,16 @@
 # Verified milestones
 
+## Typed native Toolbox SDK — ABI7
+
+The public Rust API audit is closed across Finder and all shipped apps. Native
+identities, errors, events, information snapshots, dates and FourCCs are typed;
+editors, menus and alerts have retained owners and borrowed references. Shared
+generation tables reject stale/foreign editor and menu objects, including across
+app-local contexts, while preserving the Memory Manager wire contract. Native
+definition packaging and private fixture caches use the selected build profile.
+The complete check gate and normal optimized image build pass. See the
+[SDK acceptance and limits](TOOLBOX-RUST-API.md#verified-native-sdk-milestone--abi-7).
+
 ## Running-file identities and independent copies
 
 Finder marks running APPLs by mounted volume and catalog ID, with Finder exempt.

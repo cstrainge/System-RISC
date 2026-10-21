@@ -5,7 +5,7 @@
 use core::{fmt::{self, Write},
            sync::atomic::{AtomicPtr, Ordering}};
 
-use mac_toolbox::{Status, System, SystemServices};
+use mac_toolbox::{System, SystemServices};
 #[path = "../../../conformance/mod.rs"]
 mod conformance;
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
@@ -58,7 +58,7 @@ fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::
 /// The loader supplies a live table that remains valid throughout the application.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     let system = match unsafe { System::from_raw(services) }
     {

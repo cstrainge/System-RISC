@@ -16,7 +16,7 @@ fn fill(ctx: &Context<'_, '_>, rows: core::ops::Range<u32>) -> ToolboxResult<()>
             error = Some(e);
         }
     };
-    if super::super::preview::structured(ctx.item.info.key.kind, &bytes[..size], |line| {
+    if super::super::preview::structured(ctx.item.info.key.kind.bytes(), &bytes[..size], |line| {
            emit(row, line);
            row += 1;
        }).is_err()
@@ -35,7 +35,9 @@ fn draw(ctx: &Context<'_, '_>) -> ToolboxResult<View>
     let mut bytes = [0; 32768];
     let size = data(ctx, &mut bytes)?;
     let mut count = 0;
-    if super::super::preview::structured(ctx.item.info.key.kind, &bytes[..size], |_| count += 1).is_err()
+    if super::super::preview::structured(ctx.item.info.key.kind.bytes(), &bytes[..size], |_| {
+           count += 1
+       }).is_err()
     {
         count += 1;
     }

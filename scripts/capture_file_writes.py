@@ -23,7 +23,7 @@ def sha(path):
 
 def private_disk(output):
     fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures/file-writes'
-    target = vm.ROOT / 'build/system7/file-writes-probe-target'
+    target = vm.build_dir() / 'fixtures/file-writes'
     manifest = fixture / 'Cargo.toml'
     subprocess.run(['cargo', 'build', '--manifest-path', str(manifest), '--locked',
                     '--release', '--target', 'riscv64imac-unknown-none-elf',

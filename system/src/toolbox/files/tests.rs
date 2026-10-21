@@ -436,10 +436,10 @@ fn public_safe_client_crosses_actual_filecall_and_drop_releases_handles()
     let volume = files.volume_at(0).unwrap();
     assert_eq!(volume.name(), "Test");
     assert_eq!(files.volume(volume.id).unwrap(), volume);
-    assert_eq!(files.entry(volume.id, 2, 0).unwrap().name(), "Folder");
-    let entry = files.lookup(volume.id, 2, "Folder/Café").unwrap();
+    assert_eq!(files.entry(volume.id, mac_traps::Cnid(2), 0).unwrap().name(), "Folder");
+    let entry = files.lookup(volume.id, mac_traps::Cnid(2), "Folder/Café").unwrap();
     assert_eq!(files.catalog(volume.id, entry.id).unwrap(), entry);
-    assert_eq!(files.parent(volume.id, entry.id).unwrap().id, 16);
+    assert_eq!(files.parent(volume.id, entry.id).unwrap().id, mac_traps::Cnid(16));
     let mut path = alloc::string::String::new();
     files.path(volume.id, entry.id, &mut path).unwrap();
     assert_eq!(path, "/Folder/Café");
@@ -463,7 +463,7 @@ fn public_safe_client_crosses_actual_filecall_and_drop_releases_handles()
     API.with(|fixture| assert!(fixture.borrow().manager.handles.iter().next().is_none()));
     // Untrusted scalar fields do not let safe callers supply unrelated raw pointers.
     let mut raw = FileCall { operation: LOOKUP,
-                             volume: volume.id,
+                             volume: volume.id.0,
                              cnid: 2,
                              name: core::ptr::dangling(),
                              name_length: usize::MAX,

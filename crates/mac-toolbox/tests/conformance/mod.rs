@@ -150,10 +150,10 @@ pub fn memory_new_clear(system: &System<'_>) -> Result<usize, Failure>
 {
     for size in [0, 1, 16]
     {
-        let handle = system.memory().new_handle_clear(size)?;
-        require(system.memory().last_error()? == 0, "new clear MemError")?;
+        let mut handle = system.memory().new_handle_clear(size)?;
+        require(system.memory().last_error()?.is_none(), "new clear MemError")?;
         require(handle.len()? == size, "new clear size")?;
-        require(handle.state()? == 0, "new clear state")?;
+        require(handle.state()?.is_empty(), "new clear state")?;
         let mut output = [0xa5; 32];
         let count = handle.read(0, &mut output)?;
         require(count == size, "new clear read length")?;
@@ -213,6 +213,7 @@ pub fn run_all(system: &System<'_>) -> Result<(), Failure>
     rust_api::events_and_errors(system)?;
     textedit::original(system)?;
     textedit::native(system)?;
+    ownership::editors(system, None)?;
     textedit::navigation(system)?;
     dates::values()?;
     run_core(system)?;

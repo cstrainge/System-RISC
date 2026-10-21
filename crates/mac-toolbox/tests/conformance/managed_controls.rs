@@ -1,5 +1,6 @@
 //! Managed controls through the public SDK, shared by host and RV64 userspace.
-use mac_toolbox::{controls::{ControlId, ScrollbarState, StandardKind, StandardState},
+use mac_toolbox::{abi::{NOT_FOUND, OK},
+                  controls::{ControlId, ScrollbarState, StandardKind, StandardState},
                   *};
 
 use super::Failure;
@@ -80,7 +81,7 @@ pub fn tracking(system: &System<'_>, window: WindowId) -> Result<(), Failure>
                                                   Point { h: 16,
                                                           v })
                                    .ok()
-                             == Some(controls::SCROLL_THUMB)
+                             == Some(controls::Part::Thumb)
                          })
                          .unwrap();
     let anchor = Point { h: 16,

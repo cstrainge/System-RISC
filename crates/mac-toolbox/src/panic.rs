@@ -4,7 +4,7 @@ use core::{fmt::{self, Write},
            panic::PanicInfo,
            sync::atomic::{AtomicBool, AtomicPtr, Ordering}};
 
-use crate::{Client, Status, SystemServices,
+use crate::{Client, SystemServices,
             crashes::{self, Crashes}};
 
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
@@ -15,7 +15,7 @@ static PANICKING: AtomicBool = AtomicBool::new(false);
 /// # Safety
 /// The table and callbacks must remain valid until every application thread has
 /// terminated, including while its panic handler is running.
-pub unsafe fn install(services: *const SystemServices) -> Result<(), Status>
+pub unsafe fn install(services: *const SystemServices) -> Result<(), crate::abi::Status>
 {
     unsafe { Client::from_raw(services) }.map_err(|error| error.status())?;
     SERVICES.store(services.cast_mut(), Ordering::Release);
@@ -28,7 +28,7 @@ struct Writer<'a>
     buffer:   [u8; 512],
     used:     usize,
     resident: bool,
-    flags:    u32
+    flags:    crashes::ReportFlags
 }
 impl Writer<'_>
 {
@@ -40,7 +40,7 @@ impl Writer<'_>
         if self.resident && Crashes::new(self.client).append(text).is_err()
         {
             self.resident = false;
-            self.flags |= crashes::TRUNCATED;
+            self.flags |= crashes::ReportFlags::TRUNCATED;
         }
         self.used = 0;
     }
@@ -86,19 +86,18 @@ pub fn report(client: Client<'_>, arguments: fmt::Arguments<'_>)
                               buffer: [0; 512],
                               used: 0,
                               resident: begin.is_ok(),
-                              flags: 0 };
-    let mut process = mac_abi::processes::ProcessCall::default();
-    if client.process(&mut process).is_ok()
+                              flags: crashes::ReportFlags::NONE };
+    if let Ok(process) = crate::processes::Processes::new(client).current()
     {
         let _ = writeln!(writer,
                          "Application: {}\nApp: {}  Thread: {}",
-                         process.info.name(),
-                         process.info.id,
-                         begin.as_ref().map_or(process.info.thread, |info| info.thread));
+                         process.name(),
+                         process.id,
+                         begin.as_ref().map_or(process.thread, |info| info.thread));
     }
     if writer.write_fmt(arguments).is_err()
     {
-        writer.flags |= crashes::FORMAT_FAILED;
+        writer.flags |= crashes::ReportFlags::FORMAT_FAILED;
         let _ = writer.write_str("\n[Formatting the panic information failed.]\n");
     }
     let _ = writer.write_str("\n");
@@ -139,7 +138,7 @@ fn park(client: Client<'_>, shown: bool) -> !
 {
     loop
     {
-        let dismissed = !shown || Crashes::new(client).info().is_ok_and(|info| info.dismissed != 0);
+        let dismissed = !shown || Crashes::new(client).info().is_ok_and(|info| info.dismissed);
         if dismissed
         {
             let mut call = mac_abi::processes::ProcessCall { operation: mac_abi::processes::EXIT,

@@ -6,9 +6,9 @@ mod support;
 // aggregate acceptance target and the real graphical ECALL runner.
 #[allow(dead_code)]
 mod conformance;
-use mac_toolbox::{BAD_ARGUMENT, NO_MEMORY, NOT_SUPPORTED,
+use mac_toolbox::{abi::{BAD_ARGUMENT, NO_MEMORY, NOT_SUPPORTED},
                   quickdraw::{Rect,
-                              images::{ImageError, errors::*}}};
+                              images::{ErrorKind, ImageError, MAX_INPUT_BYTES}}};
 const ORACLE: &str = include_str!("data/png/oracle.json");
 const ALPHA: &[u8] = include_bytes!("data/png/alpha-composite.png");
 fn file(name: &str) -> Vec<u8>
@@ -85,14 +85,14 @@ fn png_straight_alpha_nearest_scaling_and_clip_are_exact()
 #[test]
 fn malformed_or_unsupported_png_never_partially_draws_and_reports_precise_errors()
 {
-    let cases = [("adam7", NOT_SUPPORTED, UNSUPPORTED),
-                 ("apng", NOT_SUPPORTED, UNSUPPORTED),
-                 ("short-inflate", BAD_ARGUMENT, BAD_COMPRESSED_DATA),
-                 ("long-inflate", BAD_ARGUMENT, BAD_COMPRESSED_DATA),
-                 ("bad-filter", BAD_ARGUMENT, BAD_COMPRESSED_DATA),
-                 ("bad-adler", BAD_ARGUMENT, BAD_COMPRESSED_DATA),
-                 ("inflate-bomb", BAD_ARGUMENT, BAD_COMPRESSED_DATA),
-                 ("palette-index-outside", BAD_ARGUMENT, INVALID_PALETTE)];
+    let cases = [("adam7", NOT_SUPPORTED, ErrorKind::Unsupported),
+                 ("apng", NOT_SUPPORTED, ErrorKind::Unsupported),
+                 ("short-inflate", BAD_ARGUMENT, ErrorKind::BadCompressedData),
+                 ("long-inflate", BAD_ARGUMENT, ErrorKind::BadCompressedData),
+                 ("bad-filter", BAD_ARGUMENT, ErrorKind::BadCompressedData),
+                 ("bad-adler", BAD_ARGUMENT, ErrorKind::BadCompressedData),
+                 ("inflate-bomb", BAD_ARGUMENT, ErrorKind::BadCompressedData),
+                 ("palette-index-outside", BAD_ARGUMENT, ErrorKind::InvalidPalette)];
     support::with_system(|system| {
         let images = system.quickdraw().images();
         for (name, status, kind) in cases
@@ -104,7 +104,7 @@ fn malformed_or_unsupported_png_never_partially_draws_and_reports_precise_errors
                                               2,
                                               Rect::new(0, 0, 3, 2),
                                               Rect::new(0, 0, 3, 2)),
-                       Err(ImageError { status,
+                       Err(ImageError { service: mac_toolbox::Error::from_status(status),
                                         kind }),
                        "{name}");
             assert_eq!(pixels, [0x123456; 6]);
@@ -112,16 +112,16 @@ fn malformed_or_unsupported_png_never_partially_draws_and_reports_precise_errors
         let mut bad_crc = ALPHA.to_vec();
         bad_crc[29] ^= 1;
         assert_eq!(images.info(&bad_crc),
-                   Err(ImageError { status: BAD_ARGUMENT,
-                                    kind:   CRC_MISMATCH }));
+                   Err(ImageError { service: mac_toolbox::Error::from_status(BAD_ARGUMENT),
+                                    kind:    ErrorKind::CrcMismatch }));
         for end in 0..ALPHA.len()
         {
             assert!(images.info(&ALPHA[..end]).is_err(), "prefix{end}");
         }
         let huge = vec![0; MAX_INPUT_BYTES + 1];
         assert_eq!(images.info(&huge),
-                   Err(ImageError { status: NO_MEMORY,
-                                    kind:   LIMIT_EXCEEDED }));
+                   Err(ImageError { service: mac_toolbox::Error::from_status(NO_MEMORY),
+                                    kind:    ErrorKind::LimitExceeded }));
         let mut pixels = [0xabcdef; 6];
         assert_eq!(images.draw_to_surface(ALPHA,
                                           &mut pixels,
@@ -129,8 +129,8 @@ fn malformed_or_unsupported_png_never_partially_draws_and_reports_precise_errors
                                           2,
                                           Rect::ZERO,
                                           Rect::new(0, 0, 3, 2)),
-                   Err(ImageError { status: BAD_ARGUMENT,
-                                    kind:   INVALID_DESTINATION }));
+                   Err(ImageError { service: mac_toolbox::Error::from_status(BAD_ARGUMENT),
+                                    kind:    ErrorKind::InvalidDestination }));
         assert_eq!(pixels, [0xabcdef; 6]);
         assert_eq!(images.draw_to_surface(ALPHA,
                                           &mut pixels,
@@ -138,8 +138,8 @@ fn malformed_or_unsupported_png_never_partially_draws_and_reports_precise_errors
                                           2,
                                           Rect::new(0, 0, 3, 2),
                                           Rect::new(0, 0, 3, 2)),
-                   Err(ImageError { status: BAD_ARGUMENT,
-                                    kind:   INVALID_DESTINATION }));
+                   Err(ImageError { service: mac_toolbox::Error::from_status(BAD_ARGUMENT),
+                                    kind:    ErrorKind::InvalidDestination }));
     });
 }
 fn crc(bytes: &[u8]) -> u32
@@ -160,10 +160,10 @@ fn dimensions_ordering_and_chunk_sizes_are_checked_before_allocation()
 {
     support::with_system(|system| {
         let images = system.quickdraw().images();
-        for (w, h, status, kind) in [(0u32, 2u32, BAD_ARGUMENT, INVALID_HEADER),
-                                     (1025, 2, NO_MEMORY, LIMIT_EXCEEDED),
-                                     (1024, 257, NO_MEMORY, LIMIT_EXCEEDED),
-                                     (u32::MAX, 2, BAD_ARGUMENT, INVALID_HEADER)]
+        for (w, h, status, kind) in [(0u32, 2u32, BAD_ARGUMENT, ErrorKind::InvalidHeader),
+                                     (1025, 2, NO_MEMORY, ErrorKind::LimitExceeded),
+                                     (1024, 257, NO_MEMORY, ErrorKind::LimitExceeded),
+                                     (u32::MAX, 2, BAD_ARGUMENT, ErrorKind::InvalidHeader)]
         {
             let mut input = ALPHA.to_vec();
             input[16..20].copy_from_slice(&w.to_be_bytes());
@@ -171,20 +171,20 @@ fn dimensions_ordering_and_chunk_sizes_are_checked_before_allocation()
             let c = crc(&input[12..29]);
             input[29..33].copy_from_slice(&c.to_be_bytes());
             assert_eq!(images.info(&input),
-                       Err(ImageError { status,
+                       Err(ImageError { service: mac_toolbox::Error::from_status(status),
                                         kind }));
         }
         let mut duplicate = ALPHA[..33].to_vec();
         duplicate.extend_from_slice(&ALPHA[8..33]);
         duplicate.extend_from_slice(&ALPHA[33..]);
         assert_eq!(images.info(&duplicate),
-                   Err(ImageError { status: BAD_ARGUMENT,
-                                    kind:   INVALID_HEADER }));
+                   Err(ImageError { service: mac_toolbox::Error::from_status(BAD_ARGUMENT),
+                                    kind:    ErrorKind::InvalidHeader }));
         let mut oversized_chunk = ALPHA.to_vec();
         oversized_chunk[33..37].copy_from_slice(&0xffffffffu32.to_be_bytes());
         assert_eq!(images.info(&oversized_chunk),
-                   Err(ImageError { status: BAD_ARGUMENT,
-                                    kind:   INVALID_CHUNK }));
+                   Err(ImageError { service: mac_toolbox::Error::from_status(BAD_ARGUMENT),
+                                    kind:    ErrorKind::InvalidChunk }));
     });
 }
 #[test]

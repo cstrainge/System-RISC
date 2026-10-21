@@ -3,7 +3,8 @@
 #![cfg(target_arch = "riscv64")]
 use core::fmt::Write;
 
-use mac_toolbox::{EventKind, System,
+use mac_toolbox::{System,
+                  abi::EventKind,
                   events::classic::{EVERY_EVENT, Event}};
 #[derive(Debug)]
 pub enum Failure
@@ -190,12 +191,14 @@ pub fn run(system: &System<'_>) -> Result<()>
     let processes = system.processes();
     let me = processes.current()?;
     let volume = system.files().volume_at(0)?.id;
-    let quickdraw = system.files().lookup(volume, 2, "Applications/QuickDraw Test")?;
+    let quickdraw =
+        system.files().lookup(volume, mac_toolbox::Cnid(2), "Applications/QuickDraw Test")?;
     processes.launch(volume, quickdraw.id)?;
     // Let the independently scheduled application finish its initial drawing.
     let _ = events.wait_event(mac_toolbox::events::EventMask::from_bits_retain(APP2), 12)
                   .map(mac_toolbox::Event::into_record)?;
-    let spinner = system.files().lookup(volume, 2, "Applications/ProcessSpinner")?;
+    let spinner =
+        system.files().lookup(volume, mac_toolbox::Cnid(2), "Applications/ProcessSpinner")?;
     let busy = processes.launch(volume, spinner.id)?;
     processes.activate(me.id)?;
     require(processes.count()? == 3 && busy.thread != me.thread,

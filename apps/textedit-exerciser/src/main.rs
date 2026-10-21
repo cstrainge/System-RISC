@@ -18,7 +18,7 @@ use ui::{Text, text};
 
 fn run(system: &System<'_>) -> Result<(), Error>
 {
-    menus::install(system)?;
+    let _menus = menus::install(system)?;
     let mut editor = editor::Editor::default();
     editor.open(system)?;
     menus::update(system, &editor)?;
@@ -40,14 +40,14 @@ fn run(system: &System<'_>) -> Result<(), Error>
         if batch::is_keyboard(event)
         {
             batch::keyboard(system, &mut editor, event)?;
-            if editor.window == 0
+            if editor.window == WindowId(0)
             {
                 return Ok(());
             }
             continue;
         }
         editor.event(system, event)?;
-        if editor.window == 0
+        if editor.window == WindowId(0)
         {
             return Ok(());
         }
@@ -62,7 +62,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
 /// The native loader supplies initialized segments and a live service table.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
 {
     if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
     {
@@ -75,11 +75,11 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     };
     if system.capabilities() & CAP_GRAPHICS == 0
     {
-        return NOT_SUPPORTED;
+        return mac_toolbox::abi::NOT_SUPPORTED;
     }
     match run(&system)
     {
-        Ok(()) => OK,
+        Ok(()) => mac_toolbox::abi::OK,
         Err(status) =>
         {
             let _ = system.log("TEXTEDIT_EXERCISER_ERROR\n");

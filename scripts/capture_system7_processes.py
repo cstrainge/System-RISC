@@ -17,7 +17,7 @@ import system7_vm as vm
 
 def child(output, fixture, binary):
     manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
-    target = vm.ROOT / 'build/system7' / (fixture + '-probe-target')
+    target = vm.build_dir() / 'fixtures' / fixture
     subprocess.run(['cargo', 'build', '--manifest-path', str(manifest), '--locked',
                     '--release', '--target', 'riscv64imac-unknown-none-elf',
                     '--bin', binary, '--target-dir', str(target)], cwd=vm.ROOT, check=True)

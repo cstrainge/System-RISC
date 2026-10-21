@@ -1,7 +1,7 @@
 //! Native retained drawing is committed by EndUpdate, including while another
 //! actual application thread polls events and the writer explicitly presents.
 #![cfg(target_arch = "riscv64")]
-use mac_toolbox::{EventKind, Rect, System, WindowId, events::classic::EVERY_EVENT};
+use mac_toolbox::{Rect, System, WindowId, abi::EventKind, events::classic::EVERY_EVENT};
 
 pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
 {
@@ -9,7 +9,8 @@ pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     let mine = system.processes().current()?;
     let window = system.new_window(Rect::new(350, 350, 630, 450), "Atomic Update", (100, 60), 0)?;
     let volume = system.files().volume_at(0)?.id;
-    let child = system.files().lookup(volume, 2, "Applications/QuickDraw Test")?;
+    let child =
+        system.files().lookup(volume, mac_toolbox::Cnid(2), "Applications/QuickDraw Test")?;
     let child = system.processes().launch(volume, child.id)?;
     assert_ne!(child.thread, mine.thread, "background presenter needs its own OS thread");
     let start = system.events().uptime_ticks()?;
@@ -28,7 +29,7 @@ pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     }
     system.processes().activate(mine.id)?;
     system.select_window(window)?;
-    let port = system.quickdraw().port(WindowId(window));
+    let port = system.quickdraw().port(window);
     let bounds = Rect::new(0, 0, 280, 100);
     system.begin_update(window)?;
     port.paint_rect(bounds, 0xff0000)?;
@@ -52,7 +53,7 @@ pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     // Exercise repeated presentations of an unchanged, clipped pattern at an
     // origin which is not aligned to its eight-pixel phase. Then append drawing
     // outside BeginUpdate and expose a previously obscured fragment.
-    let graphics = system.quickdraw().graphics(WindowId(window));
+    let graphics = system.quickdraw().graphics(window);
     system.begin_update(window)?;
     graphics.colors(0x123456, 0xfedcba)?;
     graphics.pen_pattern([0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01])?;
@@ -63,7 +64,7 @@ pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     checkpoint(system, "RETAINED_UPDATE_STAGE appended-black\n")?;
     let cover = system.new_window(Rect::new(400, 375, 530, 420), "Cover", (80, 30), 0)?;
     system.begin_update(cover)?;
-    system.quickdraw().port(WindowId(cover)).paint_rect(Rect::new(0, 0, 130, 45), 0x00ffff)?;
+    system.quickdraw().port(cover).paint_rect(Rect::new(0, 0, 130, 45), 0x00ffff)?;
     system.end_update(cover)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE pattern-occluded\n")?;
     system.close_window(cover)?;
@@ -94,7 +95,7 @@ pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     checkpoint(system, "RETAINED_UPDATE_STAGE desktop-magenta\n")?;
     let cover = system.new_window(Rect::new(90, 195, 290, 275), "Desktop Cover", (100, 40), 0)?;
     system.begin_update(cover)?;
-    system.quickdraw().port(WindowId(cover)).paint_rect(Rect::new(0, 0, 200, 80), 0x123456)?;
+    system.quickdraw().port(cover).paint_rect(Rect::new(0, 0, 200, 80), 0x123456)?;
     system.end_update(cover)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE desktop-covered\n")?;
     system.close_window(cover)?;
@@ -113,14 +114,14 @@ pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     text.activate(editor, false)?;
     system.begin_update(window)?;
     port.paint_rect(bounds, 0xffffff)?;
-    text.draw(editor, WindowId(window))?;
+    text.draw(editor, window)?;
     system.end_update(window)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE cursor-left\n")?;
 
     system.begin_update(window)?;
     port.paint_rect(bounds, 0xffffff)?;
     text.set_rects(editor, right, right)?;
-    text.draw(editor, WindowId(window))?;
+    text.draw(editor, window)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE cursor-pending-right\n")?;
     system.end_update(window)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE cursor-right\n")?;

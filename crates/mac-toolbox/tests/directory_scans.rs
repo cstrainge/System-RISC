@@ -107,8 +107,8 @@ impl Drop for Fixture
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
-type Entries = BTreeMap<u32, (mac_toolbox::files::CatalogInfo, u64, u64)>;
-fn collect(system: &System<'_>, parent: u32) -> (Entries, usize, usize)
+type Entries = BTreeMap<mac_toolbox::Cnid, (mac_toolbox::files::CatalogInfo, u64, u64)>;
+fn collect(system: &System<'_>, parent: mac_toolbox::Cnid) -> (Entries, usize, usize)
 {
     let mut cursor = DirectoryCursor::default();
     let mut entries = BTreeMap::new();
@@ -221,7 +221,10 @@ fn directory_scan_mutation_remount_and_binding_guards_prevent_mixed_totals()
                                         parent,
                                         &mut cursor)
                         .unwrap();
-                   files.new_folder(system.files().volume_at(0).unwrap().id, parent, "Added", WHEN)
+                   files.new_folder_at(system.files().volume_at(0).unwrap().id,
+                                       parent,
+                                       "Added",
+                                       WHEN)
                         .unwrap();
                    let before = cursor;
                    assert_eq!(files.scan_directory(system.files().volume_at(0).unwrap().id,
@@ -252,8 +255,8 @@ fn forged_scan_cursor_fields_are_rejected_through_public_native_client()
     fixture.run(|system| {
                use mac_abi::files::{FileScanCall, SCAN_DIRECTORY};
                let mut call = FileScanCall { operation: SCAN_DIRECTORY,
-                                             volume: system.files().volume_at(0).unwrap().id,
-                                             directory: ROOT_ID,
+                                             volume: (system.files().volume_at(0).unwrap().id).0,
+                                             directory: (ROOT_ID).0,
                                              ..Default::default() };
                system.client().file_scan(&mut call).unwrap();
                let good = call;
@@ -344,7 +347,7 @@ fn malformed_physical_lengths_cannot_be_reported_as_completed_folder_totals()
                for _ in 0..256
                {
                    match system.files().scan_directory(system.files().volume_at(0).unwrap().id,
-                                                       parent,
+                                                       mac_toolbox::Cnid(parent),
                                                        &mut cursor)
                    {
                        Err(Error::Io) => return,
@@ -372,11 +375,12 @@ fn native_and_legacy_incremental_entries_share_cursor_and_physical_metadata()
                                 .lookup(system.files().volume_at(0).unwrap().id, parent, "Alpha")
                                 .unwrap();
                system.files()
-                     .rename(system.files().volume_at(0).unwrap().id, item.id, "Café Ω", WHEN)
+                     .rename_at(system.files().volume_at(0).unwrap().id, item.id, "Café Ω", WHEN)
                      .unwrap();
                let mut native = FileScanCall { operation: SCAN_DIRECTORY,
-                                               volume: system.files().volume_at(0).unwrap().id,
-                                               directory: parent,
+                                               volume:
+                                                   (system.files().volume_at(0).unwrap().id).0,
+                                               directory: (parent).0,
                                                ..Default::default() };
                let mut legacy = native;
                let mut unicode_seen = false;

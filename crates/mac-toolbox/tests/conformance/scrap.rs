@@ -2,7 +2,7 @@
 //! TEXT is ASCII in the compatibility trace, so native UTF-8 byte lengths equal
 //! original MacRoman lengths. Unicode and Pascal coverage are native extensions.
 use mac_toolbox::{Error, System,
-                  scrap::{FlavorInfo, NO_TYPE_ERR, TEXT}};
+                  scrap::{FlavorInfo, TEXT}};
 
 use super::{Failure, require};
 #[derive(Clone, Copy)]
@@ -39,7 +39,7 @@ fn clear(system: &System<'_>, action: &'static str) -> Result<u16, Failure>
             "ZeroScrap empties all flavors")?;
     Ok(after.count)
 }
-fn get(system: &System<'_>, action: &'static str, kind: [u8; 4], generation: u16,
+fn get(system: &System<'_>, action: &'static str, kind: mac_toolbox::TypeCode, generation: u16,
        flavor_index: usize)
        -> Result<(), Failure>
 {
@@ -80,7 +80,7 @@ pub fn original_scrap(system: &System<'_>) -> Result<usize, Failure>
     // compare count changes, never absolute counts or undocumented increments.
     clear(system, "zero_first")?;
     let generation = clear(system, "zero_second")?;
-    get(system, "missing_empty", *b"NONE", generation, 0)?;
+    get(system, "missing_empty", mac_toolbox::TypeCode::new(*b"NONE"), generation, 0)?;
     system.scrap().put_text("abc")?;
     info(system, "put_odd_TEXT", generation)?;
     get(system, "get_TEXT", TEXT, generation, 0)?;
@@ -89,17 +89,17 @@ pub fn original_scrap(system: &System<'_>) -> Result<usize, Failure>
             && query.offset == oracle("query_TEXT_nil")?.offset,
             "original GetScrap nil destination query")?;
     info(system, "query_TEXT_nil", generation)?;
-    system.scrap().put(*b"PICT", b"1234")?;
+    system.scrap().put(mac_toolbox::TypeCode::new(*b"PICT"), b"1234")?;
     info(system, "put_even_PICT", generation)?;
-    get(system, "get_PICT", *b"PICT", generation, 1)?;
-    get(system, "missing_flavor", *b"NONE", generation, 0)?;
+    get(system, "get_PICT", mac_toolbox::TypeCode::new(*b"PICT"), generation, 1)?;
+    get(system, "missing_flavor", mac_toolbox::TypeCode::new(*b"NONE"), generation, 0)?;
     system.scrap().put_text("DEFGH")?;
     info(system, "put_repeat_TEXT", generation)?;
     get(system, "repeat_get_TEXT", TEXT, generation, 0)?;
-    get(system, "repeat_get_PICT", *b"PICT", generation, 1)?;
-    system.scrap().put(*b"TEST", b"")?;
+    get(system, "repeat_get_PICT", mac_toolbox::TypeCode::new(*b"PICT"), generation, 1)?;
+    system.scrap().put(mac_toolbox::TypeCode::new(*b"TEST"), b"")?;
     info(system, "put_zero_TEST", generation)?;
-    get(system, "get_zero_TEST", *b"TEST", generation, 3)?;
+    get(system, "get_zero_TEST", mac_toolbox::TypeCode::new(*b"TEST"), generation, 3)?;
     system.scrap().put_text("")?;
     info(system, "put_zero_TEXT", generation)?;
     get(system, "get_zero_TEXT", TEXT, generation, 0)?;
@@ -116,7 +116,7 @@ pub fn original_scrap(system: &System<'_>) -> Result<usize, Failure>
             "zero TEXT remains an appended record")?;
     let generation = clear(system, "zero_final")?;
     get(system, "get_after_zero", TEXT, generation, 0)?;
-    require(NO_TYPE_ERR == -102, "public missing-flavor error mapping")?;
+    require(mac_abi::scrap::NO_TYPE_ERR == -102, "public missing-flavor error mapping")?;
     Ok(18)
 }
 
@@ -144,14 +144,19 @@ pub fn native_scrap(system: &System<'_>) -> Result<usize, Failure>
             "invalid native UTF-8 rejected at gate")?;
     require(system.scrap().info()? == before, "failed UTF-8 put preserves clipboard")?;
     const BINARY: &[u8] = &[0, 0xff, 0xfe, 0x80, 0, 0x41, 0x0d];
-    system.scrap().put(*b"BINR", BINARY)?;
+    system.scrap().put(mac_toolbox::TypeCode::new(*b"BINR"), BINARY)?;
     let mut binary = [0xa5; 10];
-    require(system.scrap().read(*b"BINR", 2, &mut binary)? == 5 && binary[..5] == BINARY[2..],
+    require(system.scrap().read(mac_toolbox::TypeCode::new(*b"BINR"), 2, &mut binary)? == 5
+            && binary[..5] == BINARY[2..],
             "native partial arbitrary binary read")?;
     require(binary[5..] == [0xa5; 5], "binary output tail")?;
     binary.fill(0xa5);
-    require(system.scrap().read(*b"BINR", BINARY.len(), &mut binary)? == 0, "binary EOF")?;
-    require(system.scrap().read(*b"BINR", BINARY.len() + 1, &mut binary)
+    require(system.scrap()
+                  .read(mac_toolbox::TypeCode::new(*b"BINR"), BINARY.len(), &mut binary)?
+            == 0,
+            "binary EOF")?;
+    require(system.scrap()
+                  .read(mac_toolbox::TypeCode::new(*b"BINR"), BINARY.len() + 1, &mut binary)
             == Err(Error::BadArgument),
             "binary read beyond EOF")?;
     require(binary == [0xa5; 10], "failed binary output preserved")?;

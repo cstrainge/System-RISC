@@ -154,7 +154,7 @@ fn finder_menus_and_trash_are_resource_based_and_persist_across_disk_boots()
                                                                                    .volume_at(0)
                                                                                    .unwrap()
                                                                                    .id,
-                                                                             2,
+                                                                             mac_toolbox::Cnid(2),
                                                                              "untitled folder"),
                                                        Err(mac_toolbox::Error::NotFound));
                                             assert!(system.files()
@@ -162,7 +162,7 @@ fn finder_menus_and_trash_are_resource_based_and_persist_across_disk_boots()
                                                                         .volume_at(0)
                                                                         .unwrap()
                                                                         .id,
-                                                                  2,
+                                                                  mac_toolbox::Cnid(2),
                                                                   "System Folder/System")
                                                           .is_ok());
                                             assert!(system.files()
@@ -170,7 +170,7 @@ fn finder_menus_and_trash_are_resource_based_and_persist_across_disk_boots()
                                                                         .volume_at(0)
                                                                         .unwrap()
                                                                         .id,
-                                                                  2,
+                                                                  mac_toolbox::Cnid(2),
                                                                   "System Folder/Finder")
                                                           .is_ok());
                                         }).unwrap();

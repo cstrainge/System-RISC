@@ -9,7 +9,7 @@ use std::{fs,
 use mac_abi::files::*;
 use mac_system::testing::{files::{close_owner, with_owner},
                           with_disk};
-use mac_toolbox::{ACCESS_DENIED, Error, System};
+use mac_toolbox::{Error, System, abi::ACCESS_DENIED};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 fn disk() -> Vec<u8>
@@ -51,11 +51,13 @@ fn open(system: &System<'_>, owner: u64) -> u32
 {
     with_owner(owner, || {
         let entry = system.files()
-                          .lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Folder/Café")
+                          .lookup(system.files().volume_at(0).unwrap().id,
+                                  mac_toolbox::Cnid(ROOT_ID),
+                                  "Folder/Café")
                           .unwrap();
         let mut call = FileCall { operation: OPEN,
-                                  volume: system.files().volume_at(0).unwrap().id,
-                                  cnid: entry.id,
+                                  volume: (system.files().volume_at(0).unwrap().id).0,
+                                  cnid: (entry.id).0,
                                   fork: DATA_FORK,
                                   ..Default::default() };
         system.client().file(&mut call, "", &mut []).unwrap();
@@ -132,11 +134,13 @@ fn exit_releases_only_its_handles_and_old_ids_do_not_alias_relaunch()
             exited.push(open(system, 11));
         }
         let entry = system.files()
-                          .lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Folder/Café")
+                          .lookup(system.files().volume_at(0).unwrap().id,
+                                  mac_toolbox::Cnid(ROOT_ID),
+                                  "Folder/Café")
                           .unwrap();
         let mut call = FileCall { operation: OPEN,
-                                  volume: system.files().volume_at(0).unwrap().id,
-                                  cnid: entry.id,
+                                  volume: (system.files().volume_at(0).unwrap().id).0,
+                                  cnid: (entry.id).0,
                                   fork: DATA_FORK,
                                   ..Default::default() };
         assert_eq!(with_owner(33, || system.client().file(&mut call, "", &mut [])),
@@ -172,7 +176,9 @@ fn separate_apps_have_independent_marks_and_foreign_sdk_values_are_rejected()
 {
     with_system(|system| {
         let entry = system.files()
-                          .lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Folder/Café")
+                          .lookup(system.files().volume_at(0).unwrap().id,
+                                  mac_toolbox::Cnid(ROOT_ID),
+                                  "Folder/Café")
                           .unwrap();
         let mut first = with_owner(11, || {
                             system.files().open(system.files().volume_at(0).unwrap().id,
@@ -190,6 +196,9 @@ fn separate_apps_have_independent_marks_and_foreign_sdk_values_are_rejected()
         assert_eq!(with_owner(22, || second.read(&mut bytes)), Ok(8));
         assert_eq!(with_owner(22, || first.position()), Err(Error::AccessDenied));
         assert_eq!(with_owner(11, || first.position()), Ok(8));
+        assert_eq!(with_owner(22, || first.close()), Err(Error::AccessDenied));
+        assert_eq!(with_owner(11, || first.position()), Ok(8), "failed close retains the owner");
+        with_owner(11, || first.close()).unwrap();
         with_owner(11, || first.close()).unwrap();
         with_owner(22, || second.close()).unwrap();
         assert_eq!(close_owner(11), 0);
