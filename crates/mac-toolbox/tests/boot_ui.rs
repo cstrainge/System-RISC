@@ -138,13 +138,13 @@ fn boot_art_panel_and_mounted_volume_info_match_public_toolbox_services()
                                                          system.files().volume_at(0).unwrap()
                                                      }).unwrap();
     assert_eq!(v.filesystem, mac_toolbox::files::Filesystem::HfsB { version: 1 });
-    assert_eq!(v.total_bytes, 500 * 1024 * 1024);
+    assert_eq!(v.capacity.unwrap().total_bytes, 500 * 1024 * 1024);
     assert!(v.blessed_folder.0 >= 16);
     let total = render(&root, 163, 12, vec![0xffffff; 163 * 12], |p| {
         p.draw_text(font::GENEVA_9, 0, 10, "500 MB total", 163, 0).unwrap()
     });
     assert_eq!(region(&info, 79, 103, 163, 12), total);
-    let tenths = v.free_bytes * 10 / (1024 * 1024);
+    let tenths = v.capacity.unwrap().free_bytes * 10 / (1024 * 1024);
     let free = if tenths.is_multiple_of(10)
     {
         format!("{} MB free", tenths / 10)

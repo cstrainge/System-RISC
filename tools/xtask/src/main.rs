@@ -64,6 +64,7 @@ impl Workspace
     {
         let mut command = self.command(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
         command.current_dir(&self.root);
+        command.env("CARGO_TARGET_DIR", self.build.join("host"));
         command
     }
 
@@ -301,6 +302,10 @@ impl Workspace
         });
         let mut report = report;
         report["host_filesystem_driver"] = host_driver;
+        report["host_filesystem_mounts"] =
+            serde_json::from_slice(&fs::read(self.repo
+                                                 .join("results/system7/\
+                                                        host-filesystem-mount-checks.json"))?)?;
         let path = self.repo.join("results/system7/toolchain-checks.json");
         write_json(&path, &report)?;
         println!("System/Finder toolchain checks passed: {}", path.display());

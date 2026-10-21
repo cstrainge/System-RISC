@@ -237,7 +237,7 @@ fn native_names_precise_dates_and_large_forks_survive_real_remount()
                let volume = files.volume(id).unwrap();
                assert_eq!(volume.filesystem, Filesystem::HfsB { version: 1 });
                assert_eq!(volume.created_at(), WHEN);
-               assert!(volume.total_bytes > volume.free_bytes);
+               assert!(volume.capacity.unwrap().total_bytes > volume.capacity.unwrap().free_bytes);
                assert!(files.volume(mac_toolbox::VolumeId(1)).is_err(),
                        "an arbitrary slot number is not a volume handle");
                let entry = files.lookup(id, ROOT_ID, "CAFÉ").unwrap();
@@ -487,7 +487,7 @@ fn allocated_native_fork_crosses_two_and_four_gib_through_public_sdk()
     drop(image);
     fixture.run(true, DiskFaults::default(), |system, volume| {
                let files = system.files();
-               assert!(files.volume(volume).unwrap().total_bytes > 1u64 << 32);
+               assert!(files.volume(volume).unwrap().capacity.unwrap().total_bytes > 1u64 << 32);
                assert_eq!(files.catalog(volume, mac_toolbox::Cnid(id)).unwrap().data_length,
                           (1u64 << 32) + 4096);
                let mut fork = files.open(volume, mac_toolbox::Cnid(id), Fork::Data).unwrap();

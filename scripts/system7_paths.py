@@ -15,6 +15,11 @@ def dist_dir():
     return build_dir() / 'dist'
 
 
+def host_dir():
+    """One compiler cache for host tools/examples within the selected build."""
+    return build_dir() / 'host'
+
+
 def describe(path):
     """Reports accept output directories outside the outer workspace too."""
     path = Path(path)

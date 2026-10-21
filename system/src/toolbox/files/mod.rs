@@ -6,11 +6,14 @@ use alloc::{string::String, vec::Vec};
 
 mod scan;
 mod cache;
-
+mod provider;
 use mac_abi::{files::*, *};
 use mac_filesystem::{BlockDevice, CatalogEntry, Fork, MutationError, Partition, Volume,
                      WritableBlockDevice};
 pub use mac_formats::macbinary::MacFile;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use provider::runtime::{abandon_thread as abandon_provider_thread,
+                                   pump as pump_provider_operations};
 
 pub const MAX_DISKS: u32 = 32;
 pub const MAX_VOLUMES: usize = crate::toolbox::handles::Kind::Volumes.capacity();
@@ -151,7 +154,7 @@ impl WritableBlockDevice for Device
         }
     }
 }
-struct Mounted
+struct BlockMounted
 {
     device:           Device,
     partition:        Partition,
@@ -159,6 +162,27 @@ struct Mounted
     poisoned:         bool,
     scanner:          Option<mac_filesystem::scan::CatalogScanner>,
     catalog_revision: u64
+}
+// At most 128 slots, each already sized for a block mount before this enum.
+// Retain inline storage rather than adding a heap allocation/indirection to
+// every existing mounted disk solely to shrink provider slots by 224 bytes.
+#[allow(clippy::large_enum_variant)]
+enum Mounted
+{
+    Block(BlockMounted),
+    #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
+    Provider(provider::Mounted)
+}
+impl Mounted
+{
+    fn info(&self) -> Option<VolumeInfo>
+    {
+        match self
+        {
+            Self::Block(mounted) => Some(mounted.info),
+            Self::Provider(mounted) => mounted.info
+        }
+    }
 }
 struct OpenFile
 {
@@ -292,6 +316,7 @@ impl Manager
                                  partition_start: partition.start,
                                  total_bytes: volume.allocation_bytes,
                                  free_bytes: volume.free_bytes,
+                                 capacity_known: 1,
                                  created: volume.created,
                                  modified: volume.modified,
                                  filesystem: match volume.format
@@ -314,20 +339,20 @@ impl Manager
                                  icon_id: info.icon_id,
                                  ..Default::default() };
                 summary.name_length = utf8_name(&volume.name, &mut summary.name);
-                let mounted = Mounted { device: Device { storage,
-                                                         index,
-                                                         info,
-                                                         cache: Default::default() },
-                                        partition,
-                                        info: summary,
-                                        poisoned: false,
-                                        scanner: volume.catalog_scanner().ok(),
-                                        catalog_revision: scan::next_revision()? };
+                let mounted = BlockMounted { device: Device { storage,
+                                                              index,
+                                                              info,
+                                                              cache: Default::default() },
+                                             partition,
+                                             info: summary,
+                                             poisoned: false,
+                                             scanner: volume.catalog_scanner().ok(),
+                                             catalog_revision: scan::next_revision()? };
                 result.volumes
                       .insert_with(|id| {
                           let mut mounted = mounted;
                           mounted.info.id = id;
-                          mounted
+                          Mounted::Block(mounted)
                       })
                       .map_err(|_| NO_MEMORY)?;
             }
@@ -335,9 +360,13 @@ impl Manager
         Err(NO_MEMORY)
     }
 
-    fn mounted(&mut self, id: u32) -> Result<&mut Mounted, Status>
+    fn mounted(&mut self, id: u32) -> Result<&mut BlockMounted, Status>
     {
-        self.volumes.get_mut(id).ok_or(NOT_FOUND)
+        match self.volumes.get_mut(id).ok_or(NOT_FOUND)?
+        {
+            Mounted::Block(mounted) => Ok(mounted),
+            Mounted::Provider(_) => Err(NOT_SUPPORTED)
+        }
     }
 
     fn with_volume<T>(&mut self, id: u32,
@@ -656,17 +685,32 @@ impl Manager
                     | COMMENT
                     | SET_COMMENT)
         {
+            if scan::writes_catalog(call.operation, call.index)
+            {
+                self.validate_provider_mutation(call.volume)?;
+            }
             return self.mutation(call, name, output);
         }
         match call.operation
         {
-            VOLUME_COUNT => call.index = self.volumes.len() as u32,
+            VOLUME_COUNT =>
+            {
+                call.index =
+                    self.volumes.iter().filter_map(|(_, mounted)| mounted.info()).count() as u32
+            }
             VOLUME_INDEX =>
             {
-                call.volume_info =
-                    self.volumes.iter().nth(call.index as usize).ok_or(NOT_FOUND)?.1.info
+                call.volume_info = self.volumes
+                                       .iter()
+                                       .filter_map(|(_, mounted)| mounted.info())
+                                       .nth(call.index as usize)
+                                       .ok_or(NOT_FOUND)?
             }
-            VOLUME_INFO => call.volume_info = self.mounted(call.volume)?.info,
+            VOLUME_INFO =>
+            {
+                call.volume_info =
+                    self.volumes.get(call.volume).and_then(Mounted::info).ok_or(NOT_FOUND)?
+            }
             CATALOG => call.entry = metadata(call.volume, &self.entry(call.volume, call.cnid)?),
             ALLOCATION_INFO =>
             {

@@ -930,12 +930,12 @@ fn info_band(system: &System<'_>, draw: &mut impl Drawing, width: i16, count: u3
                       v: 12 },
               text.as_str(),
               0)?;
-    if let Some(volume) = volume
+    if let Some(capacity) = volume.and_then(|volume| volume.capacity)
     {
         let mut used = Text::<64>::default();
         let _ = write!(&mut used,
                        "{}{}",
-                       size_text(volume.total_bytes.saturating_sub(volume.free_bytes)).as_str(),
+                       size_text(capacity.total_bytes.saturating_sub(capacity.free_bytes)).as_str(),
                        crate::ui::text(system, 20, &mut bytes)?);
         let w = draw.text_width(used.as_str())?;
         draw.text(Point { h: (width - w) / 2,
@@ -945,7 +945,7 @@ fn info_band(system: &System<'_>, draw: &mut impl Drawing, width: i16, count: u3
         let mut free = Text::<64>::default();
         let _ = write!(&mut free,
                        "{}{}",
-                       size_text(volume.free_bytes).as_str(),
+                       size_text(capacity.free_bytes).as_str(),
                        crate::ui::text(system, 21, &mut bytes)?);
         let w = draw.text_width(free.as_str())?;
         draw.text(Point { h: width - 5 - w,

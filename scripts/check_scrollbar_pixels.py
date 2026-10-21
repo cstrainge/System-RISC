@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from system7_paths import host_dir
 import subprocess
 from PIL import Image, ImageChops
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,7 +16,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--no-build',action='store_true')
     args=parser.parse_args()
-    target=ROOT/'build/system7/files-work'
+    target = host_dir()
     if not args.no_build:
         subprocess.run(['cargo','build','--locked','--manifest-path','System7/Cargo.toml','--target-dir',str(target),'-p','mac-system','--example','scrollbar_render'],cwd=ROOT,check=True)
     binary=target/'debug/examples/scrollbar_render'

@@ -217,9 +217,17 @@ must be rebuilt together; no earlier BootInfo layout is decoded.
 Native catalog and volume names have256-byte UTF8 buffers, enough for255-byte
 NFC names plus a spare byte. Catalog dates are unsigned64-bit microseconds since
 1904, with a separate backup-presence flag so the actual epoch is representable.
-VolumeInfo carries filesystem kind and whole filesystem version (HFS has no
+VolumeInfo carries a big-endian FourCC value in its filesystem-kind u32 and a
+whole filesystem version (HFS has no
 explicit disk version; HFS-B currently reports1) and an explicit blessed-folder
 CNID; HFS-B does not overload the Finder-info bytes to carry its blessing.
+Builtin identities are `HFS ` and `HFSB`; provider identities must be four
+printable ASCII bytes (space permitted, all-space rejected), not private enum
+ordinals. The old reserved u16 is `capacity_known`: 0 requires zero total/free
+fields and means unknown; 1 requires free <= total. A disk ordinal of `u32::MAX`
+with partition-start zero identifies a filesystem mount without a block device.
+The public Rust SDK exposes `Option<VolumeCapacity>` and `VolumeSource`, with
+provider FourCC/version carried by `Filesystem::Driver`; it exposes no sentinel.
 CatalogInfo and VolumeInfo are
 each368bytes; FileCall is832bytes on RV64. Native clock results carry signed Unix
 seconds and a checked microsecond fraction; classic seconds projections are
@@ -792,3 +800,9 @@ The exact header/metadata fields and allocated operation numbers are documented
 in [FILESYSTEM-INTERFACE.md](docs/FILESYSTEM-INTERFACE.md); their shared checked
 codec lives in `crates/mac-filesystem-interface`. This adds a class contract and
 does not change the generic module entry boundary or the native code envelope.
+Native FileCall operations 26, 27 and 28 are host-export count, mount host export
+(index selector), and unmount volume. All other input fields must be zero except
+the volume for unmount. Mounted identities are issued by resident File Manager,
+remain hidden until validated publication, and retire only after acknowledgement
+or cancellation known not to have reached the provider. The public SDK names are
+`host_export_count`, `mount_host_export` and `unmount`.

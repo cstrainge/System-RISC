@@ -7,15 +7,17 @@ from functools import cache
 import json
 from pathlib import Path
 import subprocess
+from system7_paths import host_dir
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 @cache
 def tool():
+    target = host_dir()
     subprocess.run(['cargo', 'build', '--locked', '-p', 'hfs-b', '--target-dir',
-                    str(ROOT / 'build/system7/host')], cwd=ROOT / 'System7', check=True)
-    return ROOT / 'build/system7/host/debug/hfs-b'
+                    str(target)], cwd=ROOT / 'System7', check=True)
+    return target / 'debug/hfs-b'
 
 
 class Image:

@@ -134,7 +134,8 @@ impl<'a> Mount<'a>
     {
         if self.capabilities & !ALL_CAPABILITIES != 0
            || self.capabilities & READ == 0
-           || self.filesystem == [0; 4]
+           || !self.filesystem.iter().all(|b| b.is_ascii_graphic() || *b == b' ')
+           || self.filesystem == *b"    "
            || self.filesystem_version == 0
            || self.root.id != 2
            || !self.root.directory

@@ -4,13 +4,14 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from system7_paths import host_dir
 from system7_paths import dist_dir, describe
 import subprocess
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / 'results/quickdraw-reference'
-BUILD = ROOT / 'build/system7/quickdraw-host'
+BUILD = host_dir()
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

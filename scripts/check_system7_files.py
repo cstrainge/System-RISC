@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from system7_paths import host_dir, build_dir
 from system7_paths import dist_dir, describe
 import struct
 import subprocess
@@ -37,7 +38,7 @@ def main():
                               "No hotplug/unmount; extents-overflow tree itself must fit inline extents",
                               "Native paths use slash syntax; slash-containing names require catalog/CNID operations",
                               "Seek restricted to [0, fork_length]"]}
-    target = ROOT / "build/system7/files-work"
+    target = host_dir()
     base = ["cargo", "test", "--manifest-path", "System7/Cargo.toml", "--target-dir", str(target)]
 
     def run(name, command, env=None):
@@ -83,7 +84,7 @@ def main():
         if not args.skip_clippy:
             common = ["cargo", "clippy", "--manifest-path", "System7/Cargo.toml"]
             run("host-clippy", common + ["--target-dir", str(target), "-p", "mac-hfs", "-p", "toolbox-files", "-p", "mac-system", "--lib", "--tests", "--", "-D", "warnings"])
-            run("rv64-clippy", common + ["--target-dir", str(ROOT / "build/system7/files-rv64"), "--target", "riscv64imac-unknown-none-elf", "-p", "mac-system", "-p", "toolbox-files", "--lib", "--", "-D", "warnings"])
+            run("rv64-clippy", common + ["--target-dir", str(build_dir() / "target"), "--target", "riscv64imac-unknown-none-elf", "-p", "mac-system", "-p", "toolbox-files", "--lib", "--", "-D", "warnings"])
         report["status"] = "passed"
     except Exception as error:
         report["status"] = "failed"

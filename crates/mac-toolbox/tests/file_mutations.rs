@@ -108,8 +108,11 @@ fn folders_trash_putaway_and_recursive_empty_persist_across_remounts()
                                     Err(mac_toolbox::Error::NotFound)));
                    let data = fork_bytes(system, (sample.id).0, Fork::Data);
                    let resources = fork_bytes(system, (sample.id).0, Fork::Resource);
-                   let free =
-                       files.volume(system.files().volume_at(0).unwrap().id).unwrap().free_bytes;
+                   let free = files.volume(system.files().volume_at(0).unwrap().id)
+                                   .unwrap()
+                                   .capacity
+                                   .unwrap()
+                                   .free_bytes;
                    let folder = files.new_folder_at(system.files().volume_at(0).unwrap().id,
                                                     source.id,
                                                     "Café",
@@ -133,6 +136,8 @@ fn folders_trash_putaway_and_recursive_empty_persist_across_remounts()
                    assert_eq!(moved.parent, trash.id);
                    assert_eq!(moved.put_away_parent(), source.id);
                    assert_eq!(files.volume(system.files().volume_at(0).unwrap().id)
+                                   .unwrap()
+                                   .capacity
                                    .unwrap()
                                    .free_bytes,
                               free);
@@ -164,7 +169,11 @@ fn folders_trash_putaway_and_recursive_empty_persist_across_remounts()
                           3);
                assert!(matches!(files.catalog(system.files().volume_at(0).unwrap().id, sample),
                                 Err(mac_toolbox::Error::NotFound)));
-               assert!(files.volume(system.files().volume_at(0).unwrap().id).unwrap().free_bytes
+               assert!(files.volume(system.files().volume_at(0).unwrap().id)
+                            .unwrap()
+                            .capacity
+                            .unwrap()
+                            .free_bytes
                        > before);
            });
     fixture.run(true, DiskFaults::default(), |system| {
@@ -1641,8 +1650,11 @@ fn native_data_save_is_atomic_owned_and_preserves_resource_forks()
                        files.lookup(system.files().volume_at(0).unwrap().id, source.id, "Sample")
                             .unwrap();
                    let resource = fork_bytes(system, (sample.id).0, Fork::Resource);
-                   let free =
-                       files.volume(system.files().volume_at(0).unwrap().id).unwrap().free_bytes;
+                   let free = files.volume(system.files().volume_at(0).unwrap().id)
+                                   .unwrap()
+                                   .capacity
+                                   .unwrap()
+                                   .free_bytes;
                    let spec = DataFileSpec { volume:    system.files().volume_at(0).unwrap().id,
                                              parent:    source.id,
                                              name:      "Café.json",
@@ -1701,6 +1713,8 @@ fn native_data_save_is_atomic_owned_and_preserves_resource_forks()
                           3);
                assert!(system.files()
                              .volume(system.files().volume_at(0).unwrap().id)
+                             .unwrap()
+                             .capacity
                              .unwrap()
                              .free_bytes
                        < free);

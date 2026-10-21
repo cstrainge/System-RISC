@@ -286,6 +286,11 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         FILE =>
         {
             let owner = crate::context::current_thread_context().identity().app.0;
+            if let Some(result) =
+                unsafe { toolbox::files::native::dispatch_async(owner, pointer, size) }
+            {
+                return result;
+            }
             crate::kernel::with_files(|files| unsafe {
                 toolbox::files::native::dispatch_owned(files, owner, pointer, size)
             }).unwrap_or_else(|error| error.status() as i64)

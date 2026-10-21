@@ -5,13 +5,14 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+from system7_paths import host_dir
 import subprocess
 
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS = ROOT / 'results/wdef-reference'
-BUILD = ROOT / 'build/system7/wdef-host'
+BUILD = host_dir()
 
 
 def build_renderer():

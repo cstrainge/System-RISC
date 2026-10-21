@@ -142,13 +142,39 @@ desktop boot, absence of traps/rejections, and unchanged base media. This gate i
 part of `cargo xtask check`. It verifies native callbacks and transport, not
 mounted public File Manager APIs or UI responsiveness during I/O.
 
+The same gate has a separate userspace case calling `Files::host_export_count`,
+`mount_host_export` and `unmount` through the real ECALL service. File Manager
+owns a common generation-tagged mount table for block and provider volumes;
+reservations are hidden until validated publication. Repeated mounting returns
+the existing live identity. Mount errors drain Unmount before retiring the
+reservation; failed cleanup quarantines the binding instead of reusing its ID.
+Unmount is acknowledged before retirement. The caller parks outside the Files
+I/O handoff, and the resident retains job/result ownership separately from its
+waiting thread. Thread exit requests cleanup without dropping an actual result.
+
+Userspace assertions cover writable/read-only mount metadata, unknown capacity,
+source classification, invalid export cleanup, duplicate mounting, unmount,
+forced slot reuse and stale/foreign volume rejection. Read-only folder creation
+and data-write admission fail as ReadOnly. The public snapshot carries
+`Option<VolumeCapacity>`, `VolumeSource` and provider FourCC/whole version;
+Finder omits unavailable capacity figures and Get Info describes virtual volumes
+without fabricating a block-device number. This gate does not yet establish
+provider catalog/fork APIs, write-back, app-exit/disconnect or responsiveness.
+
+Verification builds now share `<selected build>/host` for workspace host tests,
+examples, formatter tools and rustdoc. Native images/binaries and fixture targets
+retain their explicit private roots. The selected root is propagated through
+xtask's Cargo environment and the Python path helper; reference renderers no
+longer each compile another copy of the workspace into a separate ad hoc cache.
+
 `cargo xtask build` also builds and packages Host Transport and Host Filesystem
 as release DRVR/DABI files in the selected output's `dist` directory. The safe
 filesystem engine is wrapped by a narrow native entry with a private 1 MiB heap
 and an exact HDIR dependency. The allocation helper is a separate
 `mac-driver-alloc` crate so allocation-free modules do not acquire an allocator
 requirement through Cargo feature unification. These packages are not installed
-in the default disk yet: resident dispatch, launcher export configuration and
-public-SDK guest mount acceptance remain in progress. Passing these component
-tests or building the native packages is not a mounted host directory or StuffIt
-volume, and is not a hard latency acceptance result.
+in the default disk yet: provider catalog/fork dispatch, write-back, normal
+launcher export configuration and complete public-SDK filesystem acceptance
+remain in progress. Private guest mounting works; that is not yet a usable host
+directory in Finder or a mounted StuffIt volume, and is not a hard latency
+acceptance result.

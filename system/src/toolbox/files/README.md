@@ -1,24 +1,38 @@
 # Resident File Manager
 
-The System owns the HFS parser and all open fork marks. `toolbox-files` contains
+The System owns the block-backed HFS/HFS-B service and all open fork marks.
+Filesystem-class drivers own their external formats; File Manager owns their
+mounted identities and publishes validated metadata in the same mounted table.
+`toolbox-files` contains
 borrowed native service calls and small typed handles; applications neither parse
 the disk nor embed a catalog. Finder can therefore enumerate the actual disks
 attached to QEMU, including disks other than the startup volume.
 
 Firmware retains every successfully opened block device for the whole System
-lifetime. Native ABI 4 supplies stable disk ordinals, device information and one
-512-byte sector-read callback. `BootStorage::from_boot_info` is the narrow unsafe
+lifetime. BootInfo supplies stable disk ordinals, device information and checked
+512-byte sector read/write and flush callbacks. `BootStorage::from_boot_info` is the narrow unsafe
 boundary: its context/callbacks must remain live and storage calls serialized.
 The kernel initializes the safe `Manager` once and serializes requests separately
 from its drawing/runtime manager.
 
-`Manager::new` recognizes bare classic HFS volumes and every `Apple_HFS` entry in
+`Manager::new` recognizes native HFS-B, bare classic HFS and every `Apple_HFS` entry in
 a 512-byte Apple Partition Map. APM logical data offsets/counts are checked and
-applied. Each mounted volume has a stable nonzero ID for this boot. Discovery is
-bounded to 32 devices and 128 HFS volumes; exceeding those capacities fails
+applied. Each mounted volume has a generation-tagged nonzero ID for its lifetime.
+Discovery is bounded to 32 devices and 128 mounted volumes; exceeding those capacities fails
 explicitly. Non-HFS devices and malformed volumes are skipped and counted in
 `rejected_volumes`. This count includes rejected devices/partition maps, not just
-partitions. There is no hotplug or unmount operation in this slice.
+partitions. Provider mounts can be unmounted after acknowledgement; block-device
+hotplug/unmount remains outside the current slice. Host export mount/count/
+unmount now has private public-SDK guest acceptance. Provider catalog/fork and
+write dispatch is still in progress; see [the filesystem class contract](../../../../docs/FILESYSTEM-INTERFACE.md).
+
+Provider requests own their input/results, select the exact generation-checked
+interface incarnation, and park the caller outside the synchronous firmware I/O
+handoff. A separate resident-owned job retains actual publication/cleanup state
+if its waiting app thread exits. Unavailable cleanup quarantines a mount rather
+than recycling its identity. Provider volume snapshots carry an explicit unknown
+capacity and non-block source; applications receive Rust enums/options rather
+than internal sentinels.
 
 The native API provides:
 

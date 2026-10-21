@@ -2273,7 +2273,8 @@
           "The item couldn't be saved.",
           "^0 total\r^1 free",
           "^0, version ^1",
-          "Block device ^0"
+          "Block device ^0",
+          "Virtual volume"
         ]
       }
     },

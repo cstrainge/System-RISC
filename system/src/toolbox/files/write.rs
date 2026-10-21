@@ -49,6 +49,7 @@ impl Manager
             {
                 return Err(NO_MEMORY);
             }
+            self.validate_provider_mutation(call.volume)?;
             let format = match self.mounted(call.volume)?.info.filesystem
             {
                 FILESYSTEM_HFS => mac_filesystem::Format::Hfs,

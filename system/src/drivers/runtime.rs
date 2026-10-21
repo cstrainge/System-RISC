@@ -535,6 +535,22 @@ fn resolve_kernel(class: ClassId, version: u32) -> Result<u32, Status>
            .map_err(crate::state::AccessError::status)?
 }
 
+/// Select a provider by declared capabilities, independently of driver names.
+pub(crate) fn find_kernel_provider(class: ClassId, version: u32, capabilities: u64)
+                                   -> Result<u32, Status>
+{
+    RUNTIME.with(|runtime| {
+               runtime.registry
+                      .find(class, version)
+                      .find(|(_, interface)| {
+                          interface.offer.capabilities & capabilities == capabilities
+                      })
+                      .map(|(id, _)| id)
+                      .ok_or(NOT_FOUND)
+           })
+           .map_err(crate::state::AccessError::status)?
+}
+
 struct NativeBroker;
 impl super::jobs::Broker for NativeBroker
 {
@@ -636,6 +652,8 @@ pub(crate) fn discard_thread_jobs(thread: u64)
     let mut queue = JOBS.lock();
     queue.discard_owner(super::jobs::Owner::Thread(thread));
     JOBS_READY.store(queue.has_ready(), core::sync::atomic::Ordering::Release);
+    drop(queue);
+    crate::toolbox::files::abandon_provider_thread(thread);
 }
 
 /// At most one bounded callback per scheduler sample. Empty queues cost one
@@ -785,6 +803,31 @@ pub fn submit_background_job(class: ClassId, version: u32, operation: u32, input
                              -> Result<OwnedJob, Status>
 {
     enqueue_job(super::jobs::Owner::Kernel, class, version, operation, input, output_bytes)
+}
+
+/// Submit to the exact provider incarnation retained by a resident mount.
+pub(crate) fn submit_background_to(provider: u32, class: ClassId, version: u32, operation: u32,
+                                   input: Vec<u8>, output_bytes: usize)
+                                   -> Result<OwnedJob, Status>
+{
+    RUNTIME.with(|runtime| {
+               let interface = runtime.registry.interface(provider).map_err(status)?;
+               if interface.offer.class != class
+                  || interface.offer.version != version
+                  || input.len() > interface.offer.max_request as usize
+                  || output_bytes > interface.offer.max_reply as usize
+               {
+                   return Err(BAD_ARGUMENT);
+               }
+               Ok(())
+           })
+           .map_err(crate::state::AccessError::status)??;
+    let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
+    let mut queue = JOBS.lock();
+    let id = queue.submit(super::jobs::Owner::Kernel, work).map_err(|error| error.status)?;
+    JOBS_READY.store(true, core::sync::atomic::Ordering::Release);
+    Ok(OwnedJob { owner: super::jobs::Owner::Kernel,
+                  id })
 }
 
 pub(crate) fn abandon_deferred_job(thread: u64, id: u32)

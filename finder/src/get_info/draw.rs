@@ -36,17 +36,19 @@ pub(super) fn filesystem(system: &System<'_>, volume: &files::VolumeInfo)
                          -> Result<Text<256>, Error>
 {
     let filesystem = volume.filesystem;
+    let mut name = Text::<64>::default();
+    write!(&mut name, "{filesystem}").map_err(|_| Error::NoMemory)?;
     if let Some(version) = filesystem.version()
     {
         let mut bytes = [0; 128];
         let mut number = Text::<16>::default();
         write!(&mut number, "{version}").map_err(|_| Error::NoMemory)?;
-        substitute(text(system, 46, &mut bytes)?, &[filesystem.name(), number.as_str()])
+        substitute(text(system, 46, &mut bytes)?, &[name.as_str(), number.as_str()])
     }
     else
     {
         let mut result = Text::default();
-        result.write_str(filesystem.name()).map_err(|_| Error::NoMemory)?;
+        result.write_str(name.as_str()).map_err(|_| Error::NoMemory)?;
         Ok(result)
     }
 }
@@ -55,7 +57,15 @@ pub(super) fn volume_location(system: &System<'_>, volume: &files::VolumeInfo)
 {
     let mut bytes = [0; 128];
     let mut number = Text::<16>::default();
-    write!(&mut number, "{}", volume.disk).map_err(|_| Error::NoMemory)?;
+    let files::VolumeSource::BlockDevice { disk,
+                                           .. } = volume.source
+    else
+    {
+        let mut result = Text::default();
+        result.write_str(text(system, 48, &mut bytes)?).map_err(|_| Error::NoMemory)?;
+        return Ok(result);
+    };
+    write!(&mut number, "{disk}").map_err(|_| Error::NoMemory)?;
     substitute(text(system, 47, &mut bytes)?, &[number.as_str()])
 }
 pub(super) fn title(system: &System<'_>, name: &str) -> Result<Text<768>, Error>
@@ -180,9 +190,15 @@ impl Info<'_>
         let mut bytes = [0; 512];
         if let Some(volume) = self.volume_info
         {
-            let total = crate::browser::disk_size_text(volume.total_bytes);
-            let free = crate::browser::disk_size_text(volume.free_bytes);
-            return substitute(text(system, 45, &mut bytes)?, &[total.as_str(), free.as_str()]);
+            if let Some(capacity) = volume.capacity
+            {
+                let total = crate::browser::disk_size_text(capacity.total_bytes);
+                let free = crate::browser::disk_size_text(capacity.free_bytes);
+                return substitute(text(system, 45, &mut bytes)?, &[total.as_str(), free.as_str()]);
+            }
+            let mut result = Text::default();
+            result.write_str(text(system, 10, &mut bytes)?).map_err(|_| Error::NoMemory)?;
+            return Ok(result);
         }
         if let Some(status) = self.job.as_ref().and_then(|job| job.error)
         {

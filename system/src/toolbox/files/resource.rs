@@ -49,7 +49,7 @@ impl Manager
     {
         let id = self.volumes
                      .iter()
-                     .find(|(_, v)| v.info.startup != 0)
+                     .find(|(_, v)| v.info().is_some_and(|info| info.startup != 0))
                      .map(|(id, _)| id)
                      .ok_or(NOT_FOUND)?;
         self.with_volume(id, |volume| {
@@ -161,7 +161,7 @@ impl Manager
     {
         let id = self.volumes
                      .iter()
-                     .find(|(_, v)| v.info.startup != 0)
+                     .find(|(_, v)| v.info().is_some_and(|info| info.startup != 0))
                      .map(|(id, _)| id)
                      .ok_or(NOT_FOUND)?;
         self.with_volume(id, |volume| {

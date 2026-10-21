@@ -3,6 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
+from system7_paths import host_dir
 from system7_paths import dist_dir
 import re
 import subprocess
@@ -13,7 +14,7 @@ from extract_standard_wdef_assets import resources
 ROOT=Path(__file__).resolve().parents[2]
 RESULTS=ROOT/'results/system7/fonts'
 REFERENCE=ROOT/'results/quickdraw-reference'
-BUILD=ROOT/'build/system7/font-work'
+BUILD = host_dir()
 
 
 def sha(path):

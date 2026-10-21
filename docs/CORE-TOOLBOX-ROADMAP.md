@@ -70,6 +70,15 @@ for each gate; the full P6 control-panel suite, SMP, networking and std port are
 not prerequisites. Resume broader driver extraction, std and Toolbox delivery
 after this sequence. Each milestone remains subject to its runtime acceptance.
 
+2026-10-21 checkpoint: the actual FSYS/HDIR release modules relocate and reach
+the Linux companion in a private guest. Public Toolbox host-export count,
+mount, duplicate-mount reuse, volume metadata and unmount now run through owned
+resident jobs with native thread park/replay. Guest assertions cover writable
+and read-only sources, invalid-source cleanup and stale/foreign volume IDs after
+slot reuse. This is partial P17: provider catalog/fork dispatch, native write-back,
+normal launcher exports, disconnect/exit/performance acceptance and P16 remain
+to be completed. See [the exact filesystem contract and coverage](FILESYSTEM-INTERFACE.md).
+
 The next queued Finder performance task is the
 [browser selection-change stall](FINDER-SELECTION-PERFORMANCE.md): cache folder
 items/layout against catalog revisions, repaint only the changed items through

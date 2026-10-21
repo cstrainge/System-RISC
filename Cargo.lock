@@ -439,6 +439,7 @@ dependencies = [
  "mac-build",
  "mac-device-interface",
  "mac-filesystem",
+ "mac-filesystem-interface",
  "mac-formats",
  "mac-hfs",
  "mac-module",

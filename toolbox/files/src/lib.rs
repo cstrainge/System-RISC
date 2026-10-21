@@ -7,7 +7,8 @@ mod scan;
 pub use mac_abi::{dates::Timestamp, files::COMMENT_MAX_BYTES};
 pub use mac_traps::{Cnid, TypeCode, VolumeId};
 mod info;
-pub use info::{CatalogFlags, CatalogInfo, EntryKind, FinderFlags, VolumeAttributes, VolumeInfo};
+pub use info::{CatalogFlags, CatalogInfo, EntryKind, FinderFlags, VolumeAttributes,
+               VolumeCapacity, VolumeInfo, VolumeSource};
 pub const ROOT_ID: Cnid = Cnid::ROOT;
 pub use mac_traps::{Client, Error, Result};
 pub use scan::{DirectoryCursor, SCAN_STALE, ScanStep};
@@ -19,7 +20,13 @@ pub enum Filesystem
     Hfs,
     HfsB
     {
-        version: u16
+        version: u32
+    },
+    /// A provider-defined filesystem FourCC and whole-number format version.
+    Driver
+    {
+        kind:    TypeCode,
+        version: u32
     }
 }
 impl Filesystem
@@ -29,16 +36,40 @@ impl Filesystem
         match self
         {
             Self::Hfs => "HFS",
-            Self::HfsB { .. } => "HFS-B"
+            Self::HfsB { .. } => "HFS-B",
+            Self::Driver { kind,
+                           .. } =>
+            {
+                match kind.bytes()
+                {
+                    [b'H', b'O', b'S', b'T'] => "Host directory",
+                    [b'S', b'I', b'T', b' '] => "StuffIt",
+                    _ => "Filesystem"
+                }
+            }
         }
     }
 
-    pub const fn version(self) -> Option<u16>
+    pub const fn version(self) -> Option<u32>
     {
         match self
         {
             Self::Hfs => None,
-            Self::HfsB { version } => Some(version)
+            Self::HfsB { version } => Some(version),
+            Self::Driver { version,
+                           .. } => Some(version)
+        }
+    }
+}
+impl core::fmt::Display for Filesystem
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Driver { kind,
+                           .. } if self.name() == "Filesystem" => write!(f, "{kind}"),
+            _ => f.write_str(self.name())
         }
     }
 }
@@ -115,6 +146,37 @@ impl<'a> Files<'a>
                                 ..Default::default() },
                      "")?
                .index)
+    }
+
+    /// Exports explicitly offered by the VM host. No host path is inferred.
+    pub fn host_export_count(self) -> Result<u32>
+    {
+        Ok(self.call(FileCall { operation: HOST_EXPORT_COUNT,
+                                ..Default::default() },
+                     "")?
+               .index)
+    }
+
+    /// Mount an explicit host export through the resident filesystem driver.
+    /// An already-mounted export returns the existing mounted volume identity.
+    pub fn mount_host_export(self, index: u32) -> Result<VolumeInfo>
+    {
+        self.call(FileCall { operation: MOUNT_HOST_EXPORT,
+                             index,
+                             ..Default::default() },
+                  "")?
+            .volume_info
+            .try_into()
+    }
+
+    /// Unmount a provider volume after all forks/transactions have closed.
+    pub fn unmount(self, volume: VolumeId) -> Result<()>
+    {
+        self.call(FileCall { operation: UNMOUNT_VOLUME,
+                             volume: volume.0,
+                             ..Default::default() },
+                  "")
+            .map(|_| ())
     }
 
     /// Mounted-volume enumeration is zero based. IDs remain stable for this boot.

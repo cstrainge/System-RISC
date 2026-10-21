@@ -28,6 +28,9 @@ pub const COMMENT: u32 = 23;
 pub const SET_COMMENT: u32 = 24;
 /// Size-distinct incremental request; the existing FileCall remains unchanged.
 pub const SCAN_DIRECTORY: u32 = 25;
+pub const HOST_EXPORT_COUNT: u32 = 26;
+pub const MOUNT_HOST_EXPORT: u32 = 27;
+pub const UNMOUNT_VOLUME: u32 = 28;
 pub const SCAN_ENTRY: u32 = 0;
 pub const SCAN_PENDING: u32 = 1;
 pub const SCAN_DONE: u32 = 2;
@@ -70,8 +73,9 @@ pub const SEEK_END: u32 = 2;
 pub const FILE: u32 = 0;
 pub const DIRECTORY: u32 = 1;
 pub const ROOT_ID: u32 = 2;
-pub const FILESYSTEM_HFS: u32 = 1;
-pub const FILESYSTEM_HFS_B: u32 = 2;
+/// Filesystem identity is its big-endian FourCC, independent of its backend.
+pub const FILESYSTEM_HFS: u32 = u32::from_be_bytes(*b"HFS ");
+pub const FILESYSTEM_HFS_B: u32 = u32::from_be_bytes(*b"HFSB");
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,7 +96,8 @@ pub struct VolumeInfo
     pub startup:            u32,
     pub icon_kind:          [u8; 4],
     pub icon_id:            i16,
-    pub reserved:           u16,
+    /// 0 = capacity unknown (both byte fields zero); 1 = measured capacity.
+    pub capacity_known:     u16,
     pub finder_info:        [u8; 32],
     pub name_length:        u32,
     pub name:               [u8; 256]
@@ -116,7 +121,7 @@ impl Default for VolumeInfo
                startup:            0,
                icon_kind:          [0; 4],
                icon_id:            0,
-               reserved:           0,
+               capacity_known:     0,
                finder_info:        [0; 32],
                name_length:        0,
                name:               [0; 256] }

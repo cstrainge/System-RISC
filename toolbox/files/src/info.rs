@@ -172,24 +172,38 @@ impl CatalogInfo
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VolumeCapacity
+{
+    pub total_bytes: u64,
+    pub free_bytes:  u64
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VolumeSource
+{
+    BlockDevice
+    {
+        disk:            u32,
+        partition_start: u64
+    },
+    Filesystem
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VolumeInfo
 {
-    pub id:              VolumeId,
-    pub disk:            u32,
-    pub partition_start: u64,
-    pub total_bytes:     u64,
-    pub free_bytes:      u64,
-    pub created:         Timestamp,
-    pub modified:        Timestamp,
-    pub filesystem:      Filesystem,
-    pub blessed_folder:  Cnid,
-    pub attributes:      VolumeAttributes,
-    pub read_only:       bool,
-    pub startup:         bool,
-    pub icon_kind:       TypeCode,
-    pub icon_id:         i16,
-    pub finder_info:     [u8; 32],
-    pub name:            InlineText<256>
+    pub id:             VolumeId,
+    pub source:         VolumeSource,
+    pub capacity:       Option<VolumeCapacity>,
+    pub created:        Timestamp,
+    pub modified:       Timestamp,
+    pub filesystem:     Filesystem,
+    pub blessed_folder: Cnid,
+    pub attributes:     VolumeAttributes,
+    pub read_only:      bool,
+    pub startup:        bool,
+    pub icon_kind:      TypeCode,
+    pub icon_id:        i16,
+    pub finder_info:    [u8; 32],
+    pub name:           InlineText<256>
 }
 impl TryFrom<wire::VolumeInfo> for VolumeInfo
 {
@@ -197,32 +211,59 @@ impl TryFrom<wire::VolumeInfo> for VolumeInfo
 
     fn try_from(info: wire::VolumeInfo) -> Result<Self>
     {
-        Ok(Self { id:              VolumeId(info.id),
-                  disk:            info.disk,
-                  partition_start: info.partition_start,
-                  total_bytes:     info.total_bytes,
-                  free_bytes:      info.free_bytes,
-                  created:         info.created_at(),
-                  modified:        info.modified_at(),
-                  filesystem:      match (info.filesystem, info.filesystem_version)
+        Ok(Self { id:             VolumeId(info.id),
+                  source:         if info.disk == u32::MAX
+                  {
+                      if info.partition_start != 0
+                      {
+                          return Err(Error::BadAbi);
+                      }
+                      VolumeSource::Filesystem
+                  }
+                  else
+                  {
+                      VolumeSource::BlockDevice { disk:            info.disk,
+                                                  partition_start: info.partition_start }
+                  },
+                  capacity:       match info.capacity_known
+                  {
+                      0 if info.total_bytes == 0 && info.free_bytes == 0 => None,
+                      1 if info.free_bytes <= info.total_bytes =>
+                      {
+                          Some(VolumeCapacity { total_bytes: info.total_bytes,
+                                                free_bytes:  info.free_bytes })
+                      }
+                      _ => return Err(Error::BadAbi)
+                  },
+                  created:        info.created_at(),
+                  modified:       info.modified_at(),
+                  filesystem:     match (info.filesystem, info.filesystem_version)
                   {
                       (wire::FILESYSTEM_HFS, 0) => Filesystem::Hfs,
                       (wire::FILESYSTEM_HFS_B, version) if version != 0 =>
                       {
-                          Filesystem::HfsB { version: u16::try_from(version).map_err(|_| {
-                                                                                Error::BadAbi
-                                                                            })? }
+                          Filesystem::HfsB { version }
+                      }
+                      (kind, version)
+                          if version != 0
+                             && kind.to_be_bytes()
+                                    .iter()
+                                    .all(|b| b.is_ascii_graphic() || *b == b' ')
+                             && kind.to_be_bytes() != *b"    " =>
+                      {
+                          Filesystem::Driver { kind: TypeCode::new(kind.to_be_bytes()),
+                                               version }
                       }
                       _ => return Err(Error::BadAbi)
                   },
-                  blessed_folder:  Cnid(info.blessed_folder),
-                  attributes:      VolumeAttributes::from_bits_retain(info.attributes),
-                  read_only:       info.read_only != 0,
-                  startup:         info.startup != 0,
-                  icon_kind:       TypeCode::new(info.icon_kind),
-                  icon_id:         info.icon_id,
-                  finder_info:     info.finder_info,
-                  name:            InlineText::from_reply(info.name, info.name_length)? })
+                  blessed_folder: Cnid(info.blessed_folder),
+                  attributes:     VolumeAttributes::from_bits_retain(info.attributes),
+                  read_only:      info.read_only != 0,
+                  startup:        info.startup != 0,
+                  icon_kind:      TypeCode::new(info.icon_kind),
+                  icon_id:        info.icon_id,
+                  finder_info:    info.finder_info,
+                  name:           InlineText::from_reply(info.name, info.name_length)? })
     }
 }
 impl VolumeInfo

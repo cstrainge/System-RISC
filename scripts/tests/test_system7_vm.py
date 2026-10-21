@@ -9,9 +9,26 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import system7_vm as vm
+import system7_paths as paths
+import hfs_b_tool
 
 
 class LauncherTests(unittest.TestCase):
+    def test_host_cache_and_hfs_tool_follow_the_selected_build_root(self):
+        with tempfile.TemporaryDirectory(prefix='system risc ') as folder, \
+             patch.dict(os.environ, {'SYSTEM7_BUILD_DIR': folder}), \
+             patch.object(hfs_b_tool.subprocess, 'run') as run:
+            hfs_b_tool.tool.cache_clear()
+            try:
+                expected = Path(folder) / 'host'
+                self.assertEqual(paths.host_dir(), expected)
+                self.assertEqual(hfs_b_tool.tool(), expected / 'debug/hfs-b')
+                command = run.call_args.args[0]
+                self.assertEqual(command[-2:], ['--target-dir', str(expected)])
+                self.assertEqual(run.call_args.kwargs['cwd'], vm.ROOT / 'System7')
+            finally:
+                hfs_b_tool.tool.cache_clear()
+
     def test_invalid_bridge_is_rejected_before_touching_vm_storage_or_processes(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(vm.subprocess, 'Popen') as process:
             state = Path(folder) / 'new-vm'

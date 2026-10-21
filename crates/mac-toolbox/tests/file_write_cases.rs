@@ -147,9 +147,10 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
         files.move_to_trash_at(volume.id, folder.id, WHEN)?;
         let usage = files.trash_usage(volume.id)?;
         require(usage.items == 3 && usage.allocated_bytes >= 2600, "recursive Trash usage")?;
-        let free = files.volume(volume.id)?.free_bytes;
+        let free = files.volume(volume.id)?.capacity.unwrap().free_bytes;
         require(files.empty_trash_at(volume.id, WHEN)? == 3, "recursive delete count")?;
-        require(files.volume(volume.id)?.free_bytes == free + usage.allocated_bytes,
+        require(files.volume(volume.id)?.capacity.unwrap().free_bytes
+                == free + usage.allocated_bytes,
                 "actual allocation blocks released")?;
         let done = files.new_folder_at(volume.id, ROOT_ID, DONE, WHEN)?;
         files.set_comment_at(volume.id, done.id, "Boot two sentinel", WHEN)?;
