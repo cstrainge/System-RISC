@@ -1,6 +1,7 @@
 //! Host-only resource compiler and guest build support.
 //! Binary encoders/decoders live in the no_std mac-formats crate.
 pub mod manifest;
+pub mod module;
 pub mod package;
 pub mod paths;
 
@@ -48,6 +49,11 @@ pub fn build_guest() -> Result<()>
         println!("cargo:rerun-if-changed={}", source.display());
     }
     fs::write(out.join("resource_ids.rs"), manifest.rust_ids())?;
+    if module::kind(&manifest).is_some()
+    {
+        println!("cargo:rerun-if-changed={}", Path::new(&root).join("module.json").display());
+        fs::write(out.join("module_contract.bin"), module::declaration(&path, &manifest)?)?;
+    }
     let descriptor = manifest.descriptor()?;
     let script =
         include_str!("native.ld").replace("@BASE@", &format!("0x{:x}", descriptor.load_base))

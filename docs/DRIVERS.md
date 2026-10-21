@@ -1,6 +1,7 @@
 # Built-in block storage and loadable kernel drivers
 
-Status: design/backlog, tracked as [P14](CORE-TOOLBOX-ROADMAP.md#p14--loadable-kernel-drivers).
+Status: the initial class-neutral contract/registry/relocating module loader is
+implemented; storage class providers and deferred I/O remain in progress, tracked as [P14](CORE-TOOLBOX-ROADMAP.md#p14--loadable-kernel-drivers).
 The minimal block-device path remains built into System for boot/storage access.
 Other device backends move into separately packaged drivers loaded through P6's
 extension machinery. These modules execute in the kernel, not isolated driver
@@ -145,3 +146,32 @@ Test duplicate/exclusive claims, init rollback, stale completions, timeout/reset
 driver-disabled boot, block durability and cross-app operation. Keep each module's
 code/data lifetime, one-hart/SMP synchronization, resource bounds, interrupt/queue
 latency and Cursor Test responsiveness in the acceptance report.
+
+
+## Initial implementation evidence
+
+`mac-module` owns the allocation-free contract codec, open class identifiers and
+admission rules. `mac-driver` supplies the borrowed-buffer C boundary and safe
+Rust driver body/dependency client. `mac-build` generates and verifies linked
+contracts and emits native DRVR/DABI (or INIT/EABI) resources. The resident
+`system/src/drivers` registry owns staged registration, generations, dependency
+resolution and request state; callbacks execute outside registry/File Manager
+guards. The current machine adapter reserves a module arena disjoint from the
+ROM's still-live storage heap and all application/definition images.
+
+The `mac-toolbox/tests/driver_modules.rs` private-guest gate loads a test provider
+and dependent client linked elsewhere. Their module SDK call verifies returned
+bytes before the client can publish. Eight rejection boots cover missing and
+duplicate metadata, wrong installation directory, ABI, target and layout,
+code-digest mismatch, and malformed relocations with an updated digest. Rust
+requires rejection before any module entry and a working desktop in every case.
+The gate covers the kernel module SDK, not userspace filesystem mounts. The
+registry additionally tests hidden initialization, rollback/slot reuse, foreign
+identities, exclusive claims, declared dependencies, active requests and quiescing.
+
+This foundation does not complete hardware driver extraction, asynchronous I/O
+scheduling, DMA/interrupt ownership, reset/timeout handling, or hot unloading.
+The forthcoming host/StuffIt class gates must qualify those portions they use,
+including cancellation and failure cleanup, before they can be called working
+filesystem providers. Declared heap/stack limits are admission checks rather
+than allocation quotas or isolation of trusted kernel code.

@@ -1,0 +1,8 @@
+[package]
+name = "mac-driver"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+[dependencies]
+mac-module.workspace = true
+mac-abi.workspace = true

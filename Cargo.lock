@@ -214,6 +214,7 @@ name = "mac-build"
 version = "0.1.0"
 dependencies = [
  "mac-formats",
+ "mac-module",
  "serde",
  "serde_json",
  "sha2",
@@ -222,6 +223,14 @@ dependencies = [
 [[package]]
 name = "mac-code-resource"
 version = "0.1.0"
+
+[[package]]
+name = "mac-driver"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-module",
+]
 
 [[package]]
 name = "mac-filesystem"
@@ -246,7 +255,9 @@ name = "mac-formats"
 version = "0.1.0"
 dependencies = [
  "mac-code-resource",
+ "mac-module",
  "mac-text",
+ "sha2",
 ]
 
 [[package]]
@@ -265,6 +276,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-module"
+version = "0.1.0"
+
+[[package]]
 name = "mac-system"
 version = "0.1.0"
 dependencies = [
@@ -277,6 +292,7 @@ dependencies = [
  "mac-filesystem",
  "mac-formats",
  "mac-hfs",
+ "mac-module",
  "mac-toolbox",
  "mac-traps",
  "minipng",
@@ -307,6 +323,7 @@ dependencies = [
  "mac-code-resource",
  "mac-formats",
  "mac-hfs-b",
+ "mac-module",
  "mac-system",
  "mac-text",
  "mac-traps",

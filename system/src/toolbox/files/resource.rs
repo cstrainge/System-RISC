@@ -142,3 +142,149 @@ impl Manager
             })
     }
 }
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) struct ModuleCandidate
+{
+    pub directory: mac_module::PackageKind,
+    pub volume:    u32,
+    pub cnid:      u32,
+    pub file_type: [u8; 4],
+    pub name:      Vec<u8>
+}
+#[cfg(target_arch = "riscv64")]
+impl Manager
+{
+    /// Discover metadata only in the selected blessed installation. This never
+    /// enters DRVR/INIT code, including packages placed in the wrong directory.
+    pub(crate) fn module_candidates(&mut self) -> Result<Vec<ModuleCandidate>, Status>
+    {
+        let id = self.volumes
+                     .iter()
+                     .find(|(_, v)| v.info.startup != 0)
+                     .map(|(id, _)| id)
+                     .ok_or(NOT_FOUND)?;
+        self.with_volume(id, |volume| {
+                let system = io(volume.blessed_folder())?;
+                let mut candidates = Vec::new();
+                for (name, directory) in [(b"Drivers".as_slice(), mac_module::PackageKind::Driver),
+                                          (b"Extensions".as_slice(),
+                                           mac_module::PackageKind::Extension)]
+                {
+                    let Some(folder) = io(volume.lookup(system.id, name))?
+                    else
+                    {
+                        continue;
+                    };
+                    if !folder.directory
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    for index in 0..=256
+                    {
+                        let Some(entry) = io(volume.child(folder.id, index))?
+                        else
+                        {
+                            break;
+                        };
+                        if index == 256
+                        {
+                            return Err(NO_MEMORY);
+                        }
+                        if entry.directory
+                        {
+                            continue;
+                        }
+                        let file_type =
+                            entry.finder_info[..4].try_into().map_err(|_| BAD_ARGUMENT)?;
+                        if ![*b"DRVR", *b"INIT"].contains(&file_type)
+                        {
+                            continue;
+                        }
+                        if candidates.len() >= 32
+                        {
+                            return Err(NO_MEMORY);
+                        }
+                        candidates.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                        candidates.push(ModuleCandidate { directory,
+                                                          volume: id,
+                                                          cnid: entry.id,
+                                                          file_type,
+                                                          name: entry.name });
+                    }
+                }
+                Ok(candidates)
+            })
+    }
+
+    pub(crate) fn module_metadata(&mut self, volume: u32, cnid: u32) -> Result<Vec<u8>, Status>
+    {
+        self.with_volume(volume, |volume| {
+                let entry = required(io(volume.entry(cnid))?)?;
+                let mut fork = entry.resources.ok_or(NOT_FOUND)?;
+                let mut metadata =
+                    crate::toolbox::resources::file::read_selected(fork.length,
+                                                                   |key| {
+                                                                       key.kind == *b"DABI"
+                                                                       || key.kind == *b"EABI"
+                                                                   },
+                                                                   mac_module::MAX_BYTES,
+                                                                   |offset, output| {
+                                                                       if io(volume.read(&mut fork,
+                                                                                     offset,
+                                                                                     output))?
+                                                                      == output.len()
+                                                                   {
+                                                                       Ok(())
+                                                                   }
+                                                                   else
+                                                                   {
+                                                                       Err(IO_ERROR)
+                                                                   }
+                                                                   })?;
+                if metadata.len() != 1 || metadata[0].id != 0 || metadata[0].attributes & 1 != 0
+                {
+                    return Err(BAD_ABI);
+                }
+                Ok(metadata.remove(0).data)
+            })
+    }
+
+    pub(crate) fn module_resources(&mut self, volume: u32, cnid: u32)
+                                   -> Result<Vec<mac_formats::resource::Resource>, Status>
+    {
+        self.with_volume(volume, |volume| {
+                let entry = required(io(volume.entry(cnid))?)?;
+                if entry.directory
+                   || ![*b"DRVR", *b"INIT"].contains(&entry.finder_info[..4].try_into()
+                                                                            .map_err(|_| {
+                                                                                BAD_ARGUMENT
+                                                                            })?)
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                let mut fork = entry.resources.ok_or(NOT_FOUND)?;
+                crate::toolbox::resources::file::read_selected(fork.length,
+                                                               |key| {
+                                                                   [*b"DRVR", *b"INIT", *b"DABI",
+                                                                    *b"EABI", *b"NABI", *b"RV64",
+                                                                    *b"RLOC"].contains(&key.kind)
+                                                               },
+                                                               2 * 1024 * 1024
+                                                               + mac_module::MAX_BYTES,
+                                                               |offset, output| {
+                                                                   if io(volume.read(&mut fork,
+                                                                                     offset,
+                                                                                     output))?
+                                                                      == output.len()
+                                                                   {
+                                                                       Ok(())
+                                                                   }
+                                                                   else
+                                                                   {
+                                                                       Err(IO_ERROR)
+                                                                   }
+                                                               })
+            })
+    }
+}

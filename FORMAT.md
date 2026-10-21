@@ -402,3 +402,130 @@ FIND resolves a current semantic menu number explicitly, and DISPOSE requires a
 live handle. CLEAR retains generation history. Native owners use these handles;
 classic semantic menu operations continue to use their original resource IDs.
 All native applications, System and definition resources rebuild at ABI 7.
+
+## Native kernel module contracts (DABI/EABI, schema 1)
+
+A driver has Finder type `DRVR`, exactly one native `DRVR` entry resource and one
+`DABI` 0 resource. A System extension has Finder type `INIT`, exactly one native
+`INIT` entry and one `EABI` 0 resource. Discovery is restricted to the selected
+blessed System Folder's Drivers and Extensions directories respectively; placement
+in the other directory is rejected before entry. The common module registry and
+its class identifiers are independent of these discovery paths.
+
+The entry resource uses the existing version-1 definition envelope: 40-byte NABI
+with role CodeResource, minimal RV64 segment stream, then RLOC. There are no
+separate NABI/RV64/RLOC resources and no ELF in a module fork. Its reservation is
+compacted to the page-rounded linked memory extent, including BSS. All module
+code is relocatable. The code digest below covers the complete envelope, including
+NABI, initialized segments and relocations. This detects mismatched code/contract
+artifacts; it is not an authentication signature.
+
+`mac-module` is the shared, allocation-free, safe Rust metadata reader/writer.
+DABI and EABI contain the same little-endian binary layout (the surrounding
+classic resource fork remains big-endian):
+
+| Offset | Size | Meaning |
+| --- | --- | --- |
+| 0 | 4 | `KMOD` magic |
+| 4 | 2 | schema, exactly 1 |
+| 6 | 2 | fixed header length, exactly 128 |
+| 8 | 4 | exact total resource length |
+| 12 | 4 | package kind, `DRVR` or `INIT` |
+| 16 | 4 | exact native kernel service ABI |
+| 20 | 4 | exact generic module broker/entry ABI, 1 |
+| 24 | 2 | target architecture: 1 RV64; 2 reserved for x86-64 |
+| 26 | 1 | pointer width in bits |
+| 27 | 1 | endian: 1 little, 2 big |
+| 28 | 4 | calling convention, 1 C ABI |
+| 32 | 8 | required ISA features; RV64 bits 0..3 are I/M/A/C |
+| 40 | 16 | nonzero module identity |
+| 56 | 4 | native entry resource type, matching package kind |
+| 60 | 2 | signed entry resource ID |
+| 62 | 2 | provided interface count |
+| 64 | 2 | required provider/dependency count |
+| 66 | 2 | required resident service count |
+| 68 | 2 | device match count |
+| 70 | 2 | zero |
+| 72 | 4 | declared heap budget in bytes |
+| 76 | 4 | declared callback stack budget in bytes |
+| 80 | 2 | UTF-8 name length |
+| 82 | 2 | UTF-8 Cargo version length |
+| 84 | 2 | UTF-8 build provenance length |
+| 86 | 2 | zero |
+| 88 | 32 | SHA-256 of the native entry envelope |
+| 120 | 8 | exact C boundary layout fingerprint |
+
+The fingerprint encodes pointer width (bits 0..7), Host size (bits 8..23), Instance
+size (bits 24..39), and Call size (bits 40..55); bits 56..63 are zero. Current RV64
+sizes are 64,40,24,56 respectively. Compile-time SDK assertions and the resident
+reject a mismatch. Changing these layouts requires rebuilding all modules; there
+is no alternate old layout decoder.
+
+After the header come the interface, dependency, service and device-match tables,
+then the name, Cargo version and provenance bytes, with no padding or trailing
+data. Each table has at most 32 records; the resource is at most 16 KiB. Text must
+be valid UTF-8 with no control characters; byte limits are 128/64/128, and name
+and version are nonempty.
+
+An interface record is40 bytes: FourCC class at 0, exact interface version at 4,
+request schema at 8, reply schema at 12, maximum request bytes at 16, maximum reply
+bytes at 20, flags(u64) at 24, class-specific capabilities(u64) at 32. Maximum request
+and reply lengths are 1 MiB. Flags are exclusive provider(1), serialized interface
+requests(2), and kernel-only(4); unknown flags are rejected. Class, version and
+schemas are nonzero; duplicate class offers are rejected. Classes are open FourCC
+identifiers, not an enumeration of filesystem/block operations. A single module
+may offer several independently versioned classes. Filesystem, block, directory
+transport, input, network, display and future class SDKs own their request/reply
+layouts and capability bits.
+
+A dependency record is32 bytes: optional provider identity at 0 (all-zero means any
+provider), class at 16, exact interface version at 20, optional flag(u32,0 or1) at 24,
+and zero at 28. Class/version are nonzero. A dependency binds to a successfully
+published provider, not directory ordering. Duplicate identity/class requirements
+are rejected, including conflicting versions. Optional dependencies may be absent;
+they do not waive validation on calls to a provider that is present.
+
+A resident service requirement is16 bytes: service FourCC at 0, exact version at 4,
+optional flag(u32,0 or1) at 8, zero at 12. Service/version are nonzero and duplicate
+service requirements are rejected. A device match is40 bytes: bus FourCC at 0,
+zero at 4,16-byte value at 8,16-byte mask at 24. A bus matches only when its class
+matches and `(key & mask) == value` bytewise; value bits outside mask are invalid.
+The common matcher does not assume PCI, virtio or sector-addressable storage.
+
+mac-build generates contracts from module.json declarations, the resolved Cargo
+version, current native service and broker SDK constants, target and compiler
+provenance. `mac-driver::export_driver!` retains that generated declaration in a
+build-time ELF section. Packaging requires an exact match to the linked declaration,
+then fills the actual code-envelope digest and emits DABI/EABI. The ELF section
+is build evidence; ELF section tables/headers never enter a native resource fork.
+LLVM's GNU retained-section OSABI marker is accepted by the build-time extractor.
+
+The generic C entry receives a borrowed Host descriptor and initializes Instance.
+Host exposes module identity, dependency resolution and broker invocation; it and
+the code stay pinned until reboot. Instance carries an opaque u64 state and a
+module-local executable dispatch address, validated before publication. Rust
+traits, String/Vec, allocator ownership and private struct layouts never cross
+this boundary. The SDK exposes borrowed slices to ordinary driver bodies.
+
+Call carries a generation-tagged resident ticket, phase, class, class operation,
+borrowed input and exclusive output bytes. START allocates a ticket; POLL and
+CANCEL validate the same caller/provider/request incarnation. QUIESCE has no
+class or buffers. Each callback returns a terminal status/length or PENDING(1).
+Pending callbacks retain no buffer pointers. They must do bounded work and
+return; the interface does not authorize waiting on hardware with interrupts
+masked. Current broker polling is caller-driven; deferred I/O scheduling and
+class-specific cancellation/progress gates accompany the storage providers.
+
+Initialization is staged. No interface is visible until entry and callback-address
+validation succeed and every interface is registered transactionally. Registry
+locks and File Manager guards are released before any module callback. New
+requests are withdrawn before quiescing; pending requests prevent finalization
+until completed/cancelled. Module, interface and request identities use the shared
+generation-tagged facility, including rejection of foreign IDs and slot reuse.
+Code/host descriptors remain pinned after failure; hot unloading is not implemented.
+The initial budget checks are admission limits, not an MMU or heap quota.
+
+On the current 128 MiB QEMU virt board, the machine adapter reserves
+`0x87800000..0x87e00000` for modules. This leaves the ROM's live storage scratch
+heap at `0x87000000..0x87800000` and the high2 MiB device-tree reservation untouched.
+These addresses belong to the machine adapter, not the class-neutral registry.

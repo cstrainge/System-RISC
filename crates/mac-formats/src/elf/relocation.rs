@@ -188,6 +188,35 @@ pub fn patches(bytes: &[u8], image: &Image, table: &[u8], base: u64, destination
     })
 }
 
+/// A named build-time section. Duplicate names and malformed string tables are
+/// rejected; no section-table information is retained in native code resources.
+pub fn named_section<'a>(bytes: &'a [u8], name: &[u8]) -> Result<Option<&'a [u8]>>
+{
+    let count = usize::from(u16le(bytes, 60)?);
+    let names = contents(bytes, section(bytes, usize::from(u16le(bytes, 62)?))?)?;
+    let mut found = None;
+    for index in 0..count
+    {
+        let header = section(bytes, index)?;
+        let offset = u32le(header, 0)? as usize;
+        let tail = names.get(offset..).ok_or(Error("invalid section name"))?;
+        let end = tail.iter().position(|&b| b == 0).ok_or(Error("unterminated section name"))?;
+        if &tail[..end] == name
+        {
+            if found.is_some()
+            {
+                return Err(Error("duplicate ELF section name"));
+            }
+            if u32le(header, 4)? != 1
+            {
+                return Err(Error("expected section file data"));
+            }
+            found = Some(contents(bytes, header)?);
+        }
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests
 {

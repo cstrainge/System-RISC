@@ -244,8 +244,18 @@ pub(crate) fn resources() -> Option<crate::toolbox::resources::manager::Manager<
                                                           fonts()?.resources()))
 }
 
-fn launch(_info: &BootInfo) -> mac_formats::Result<()>
+fn launch(info: &BootInfo) -> mac_formats::Result<()>
 {
+    let ram_end =
+        info.ram_base.checked_add(info.ram_size).ok_or(mac_formats::Error("RAM range overflow"))?;
+    let module_arena =
+        crate::machine::memory::module_arena(ram_end).map_err(|_| {
+                                                         mac_formats::Error("module RAM \
+                                                                             reservation \
+                                                                             unavailable")
+                                                     })?;
+    crate::drivers::initialize(module_arena,mac_module::Target::RV64IMAC).map_err(|_|mac_formats::Error("module runtime initialization failed"))?;
+    crate::drivers::discover().map_err(|_| mac_formats::Error("module discovery failed"))?;
     let mut system = crate::loader::read_startup("System")?;
     let finder = crate::loader::read_startup("Finder")?;
     let finder_entry = crate::loader::application(&finder)?;

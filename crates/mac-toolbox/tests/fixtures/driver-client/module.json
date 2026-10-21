@@ -1,0 +1,10 @@
+{
+  "identity": "7731a000000000000000000000000002",
+  "stack_bytes": 8192,
+  "dependencies": [
+    {
+      "class": "TEST",
+      "version": 1
+    }
+  ]
+}

@@ -26,6 +26,7 @@ toolbox-dialogs = { path = "../../toolbox/dialogs" }
 mac-system = { path = "../../system", features = ["test-support"] }
 serde_json.workspace = true
 mac-formats.workspace = true
+mac-module.workspace = true
 mac-code-resource = { path = "../mac-code-resource" }
 mac-build.workspace = true
 mac-text = { path = "../mac-text" }

@@ -37,8 +37,22 @@ pub fn inspect(bytes: &[u8]) -> Result<Value>
                  .find(|r| r.kind == kind && r.id == 0)
                  .ok_or_else(|| error("missing native code or ABI resource"))
     };
-    let descriptor = Descriptor::decode(&find(*b"NABI")?.data)?;
-    let code = &find(*b"RV64")?.data;
+    let module = if [*b"DRVR", *b"INIT"].contains(&file.file_type)
+    {
+        Some(mac_formats::module::Package::inspect(&resources, file.file_type)?)
+    }
+    else
+    {
+        None
+    };
+    let (descriptor, code) = if let Some(module) = &module
+    {
+        (module.code.descriptor, &module.code.code)
+    }
+    else
+    {
+        (Descriptor::decode(&find(*b"NABI")?.data)?, &find(*b"RV64")?.data)
+    };
     let image = image::decode(code, &descriptor)?;
     Ok(json!({
         "name": text::decode(&file.name), "file_type": text::decode(&file.file_type), "creator": text::decode(&file.creator),
@@ -84,6 +98,10 @@ pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
                                                attributes: 0,
                                                data });
         }
+    }
+    if crate::module::kind(&manifest).is_some()
+    {
+        crate::module::finish(manifest_path, &manifest, &debug_elf, &mut compiled)?;
     }
     let resources = resource::encode(&compiled)?;
     let packaged_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();

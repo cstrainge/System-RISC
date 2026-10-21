@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
     "crates/mac-abi",
+    "crates/mac-module",
+    "crates/mac-driver",
     "crates/mac-toolbox",
     "crates/mac-traps",
     "crates/mac-formats",
@@ -31,6 +33,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+mac-module = { path = "crates/mac-module" }
 mac-traps = { path = "crates/mac-traps" }
 mac-abi = { path = "crates/mac-abi" }
 mac-toolbox = { path = "crates/mac-toolbox" }

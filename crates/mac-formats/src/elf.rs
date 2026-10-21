@@ -1,4 +1,4 @@
-//! Strict ELF64 little-endian RV64IMAC loader metadata; never executes code.
+//! Strict build-time ELF64 little-endian RV64IMAC extraction; never executes code.
 pub mod relocation;
 use alloc::vec::Vec;
 
@@ -39,9 +39,12 @@ fn u64le(bytes: &[u8], offset: usize) -> Result<u64>
 pub fn decode(bytes: &[u8], load_base: u64, load_limit: u64) -> Result<Image>
 {
     slice(bytes, 0, 64)?;
-    if &bytes[..7] != b"\x7fELF\x02\x01\x01" || bytes[7] != 0
+    // LLVM marks retained SDK declaration sections SHF_GNU_RETAIN and sets
+    // OSABI GNU. Both System V and GNU use the same supported static load/reloc
+    // contracts; this build-only marker is never copied into native resources.
+    if &bytes[..7] != b"\x7fELF\x02\x01\x01" || !matches!(bytes[7], 0 | 3)
     {
-        return Err(Error("expected ELF64 little-endian System V image"));
+        return Err(Error("expected ELF64 little-endian static System V/GNU image"));
     }
     if u16le(bytes, 16)? != 2 || u16le(bytes, 18)? != 243 || u32le(bytes, 20)? != 1
     {
@@ -159,6 +162,15 @@ mod tests
         b
     }
 
+    #[test]
+    fn llvm_retained_contract_sections_allow_gnu_osabi_only_at_build_time()
+    {
+        let mut bytes = fixture();
+        bytes[7] = 3;
+        assert!(decode(&bytes, 0x80200000, 0x81000000).is_ok());
+        bytes[7] = 9;
+        assert!(decode(&bytes, 0x80200000, 0x81000000).is_err());
+    }
     #[test]
     fn validates_machine_entry_ranges_and_bss()
     {
