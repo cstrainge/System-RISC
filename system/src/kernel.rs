@@ -259,6 +259,7 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                                                     mac_formats::Error("device service \
                                                                         initialization failed")
                                                 })?;
+    crate::drivers::file_sources::runtime::initialize().map_err(|_| mac_formats::Error("backing-file service initialization failed"))?;
     crate::drivers::discover().map_err(|_| mac_formats::Error("module discovery failed"))?;
     if let Err(status) = crate::toolbox::files::mount_startup_exports()
     {

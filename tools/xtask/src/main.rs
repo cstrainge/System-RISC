@@ -185,8 +185,8 @@ impl Workspace
                                                              toolbox-boundaries.json"))?)?;
         let image = disk::image(self)?;
         let smoke = smoke::check(self, &reports)?;
-        for test in ["driver_modules", "host_filesystem_module", "userspace_graphical",
-                     "window_interactions", "finder_png"]
+        for test in ["driver_modules", "host_filesystem_module", "file_sources",
+                     "userspace_graphical", "window_interactions", "finder_png"]
         {
             self.private_guest_test(test)?;
         }
@@ -302,6 +302,9 @@ impl Workspace
         });
         let mut report = report;
         report["host_filesystem_driver"] = host_driver;
+        report["file_sources"] =
+            serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
+                                                             file-source-checks.json"))?)?;
         report["host_filesystem_mounts"] =
             serde_json::from_slice(&fs::read(self.repo
                                                  .join("results/system7/\

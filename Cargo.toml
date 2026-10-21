@@ -10,6 +10,7 @@ members = [
     "crates/mac-driver-alloc",
     "crates/mac-device-interface",
     "crates/mac-filesystem-interface",
+    "crates/mac-file-source-interface",
     "crates/mac-toolbox",
     "crates/mac-traps",
     "crates/mac-formats",
@@ -45,6 +46,7 @@ publish = false
 mac-module = { path = "crates/mac-module" }
 mac-device-interface = { path = "crates/mac-device-interface" }
 mac-filesystem-interface = { path = "crates/mac-filesystem-interface" }
+mac-file-source-interface = { path = "crates/mac-file-source-interface" }
 mac-object-table = { path = "crates/mac-object-table" }
 mac-traps = { path = "crates/mac-traps" }
 mac-abi = { path = "crates/mac-abi" }

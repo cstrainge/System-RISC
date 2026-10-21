@@ -31,6 +31,8 @@ pub const SCAN_DIRECTORY: u32 = 25;
 pub const HOST_EXPORT_COUNT: u32 = 26;
 pub const MOUNT_HOST_EXPORT: u32 = 27;
 pub const UNMOUNT_VOLUME: u32 = 28;
+/// Mount a leased data fork using a file-backed filesystem provider.
+pub const MOUNT_FILE: u32 = 29;
 pub const SCAN_ENTRY: u32 = 0;
 pub const SCAN_PENDING: u32 = 1;
 pub const SCAN_DONE: u32 = 2;

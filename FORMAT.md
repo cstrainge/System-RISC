@@ -580,6 +580,47 @@ On the current 128 MiB QEMU virt board, the machine adapter reserves
 heap at `0x87000000..0x87800000` and the high2 MiB device-tree reservation untouched.
 These addresses belong to the machine adapter, not the class-neutral registry.
 
+## Backing-file service (FORK v1)
+
+Filesystem providers with `SOURCE_FILE` (FSYS capability bit 1) receive a
+resident source capability in Mount's auxiliary field. `Files::mount_file`
+selects this class using a generation-checked mounted volume and persistent file
+CNID. A source belongs to the admitted provider module incarnation and identifies
+the original `(volume generation, CNID, fork)`; repeated mounting reuses the live
+mount, while copied files have distinct identities. No host path is supplied.
+
+The driver declares the kernel-only `FORK` service, version 1. All fields are
+little endian. Both operations have an exact 24-byte START argument:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | generation-tagged resident source capability |
+| 4 | 4 | reserved zero |
+| 8 | 8 | logical fork offset |
+| 16 | 4 | requested read length, at most 65536 |
+| 20 | 4 | reserved zero |
+
+Info (operation 1) requires zero offset/length and returns an eight-byte u64 fork
+length. It is resident metadata only. Read (2) returns positional fork bytes,
+short at EOF, without changing any public file mark. Overflowing ranges and
+offsets beyond EOF fail. POLL/CANCEL carry empty input and retain the same broker
+ticket and source lease; borrowed input/output storage never survives a call.
+
+Sources and requests use the common generation facility plus separate module
+ownership checks. A source pins its backing file and volume against mutation
+and unmount. Publication follows acknowledged acquisition. Unmount/cancellation
+cannot recycle it before provider teardown and backing Close acknowledge;
+uncertain cleanup quarantines the binding. The initial runtime adapter supports
+block-backed source files only. Provider-backed source acquisition/read/close is
+the next adapter milestone, not an implicit synchronous callback fallback.
+
+`mac-file-source-interface` owns this codec and `mac-driver::file_sources` the
+borrowed Rust client. The private `file_sources` public-SDK gate loads a test FSYS
+DRVR, mounts real HFS-B backing files, checks large positional reads, retained
+pins, distinct copies, repeated mounts, failed-mount cleanup and stale IDs after
+slot reuse. Its provider also verifies that a source remains live inside Unmount
+and fails after acknowledgement. This is not a production StuffIt decoder.
+
 ## Native host fork containers (RSFORK01, version 1)
 
 `mac-fork-file` is the safe no_std reader/writer used by host tools and the native

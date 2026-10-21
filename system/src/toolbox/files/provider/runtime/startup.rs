@@ -14,7 +14,7 @@ pub(super) enum HostMount
 
 pub(super) fn host_mount(provider: u32, index: u32) -> Result<HostMount, Status>
 {
-    let source = u64::from(index);
+    let source = super::super::Source::Export(u64::from(index));
     if let Some(info) = files(|manager| manager.existing_provider_mount(provider, source))?
     {
         return Ok(HostMount::Existing(info));

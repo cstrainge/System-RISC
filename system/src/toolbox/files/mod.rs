@@ -7,6 +7,8 @@ use alloc::{string::String, vec::Vec};
 mod scan;
 mod cache;
 mod provider;
+#[cfg(target_arch = "riscv64")]
+mod backing;
 use mac_abi::{files::*, *};
 use mac_filesystem::{BlockDevice, CatalogEntry, Fork, MutationError, Partition, Volume,
                      WritableBlockDevice};

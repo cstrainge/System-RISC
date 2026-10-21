@@ -76,6 +76,19 @@ pub(crate) fn device_allowed(module: u32, bus: ClassId, key: [u8; 16]) -> Result
            .map_err(crate::state::AccessError::status)?
 }
 
+pub(crate) fn provider_module(interface: u32) -> Result<u32, Status>
+{
+    RUNTIME.with(|runtime| {
+               let module = runtime.registry.interface(interface).map_err(status)?.module;
+               if module == 0
+               {
+                   return Err(ACCESS_DENIED);
+               }
+               Ok(module)
+           })
+           .map_err(crate::state::AccessError::status)?
+}
+
 /// Only the admitted module's pinned load reservation can be offered for DMA.
 /// The bus adapter still checks device ownership and maps it for that device.
 pub(crate) fn owns_memory(module: u32, base: u64, length: u64) -> Result<(), Status>

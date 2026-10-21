@@ -26,6 +26,7 @@ static DEVICE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
 static THREAD_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static JOB_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DMA_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
+static FILE_SOURCE_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
 
 struct Slot<T>
 {
@@ -62,7 +63,8 @@ pub enum Kind
     DriverDevices,
     DriverDma,
     DriverJobs,
-    Threads
+    Threads,
+    FileSources
 }
 impl Kind
 {
@@ -70,6 +72,7 @@ impl Kind
     {
         match self
         {
+            Self::FileSources => 16,
             Self::Threads => 8,
             Self::DriverJobs => 128,
             Self::DriverDevices => 64,
@@ -97,6 +100,7 @@ impl Kind
     {
         match self
         {
+            Self::FileSources => Self::Threads.first_slot() + Self::Threads.capacity() as u32,
             Self::Threads => Self::DriverJobs.first_slot() + Self::DriverJobs.capacity() as u32,
             Self::DriverJobs => Self::DriverDma.first_slot() + Self::DriverDma.capacity() as u32,
             Self::DriverDevices =>
@@ -152,6 +156,7 @@ impl Kind
     {
         match self
         {
+            Self::FileSources => FILE_SOURCE_GENERATIONS.get(index),
             Self::Threads => THREAD_GENERATIONS.get(index),
             Self::DriverJobs => JOB_GENERATIONS.get(index),
             Self::DriverDevices => DEVICE_GENERATIONS.get(index),
@@ -180,6 +185,7 @@ impl Kind
             | Self::ScrollBoxes
             | Self::Controls => u16::MAX,
             Self::Threads
+            | Self::FileSources
             | Self::DriverJobs
             | Self::DriverDevices
             | Self::DriverDma

@@ -16,6 +16,14 @@ bounded progress, and source/provider leases survive cancellation until ACK.
 
 ## Bytes and operations
 
+File-backed providers use the resident [FORK v1 service](../FORMAT.md#backing-file-service-fork-v1),
+through `mac-driver::file_sources`. `Files::mount_file` binds the source's actual
+volume generation/CNID to its admitted module, and keeps a kernel-owned fork mark
+until acknowledged unmount/cleanup. The initial native gate verifies block-backed
+source files. Provider-backed files, including archives on Transfer, still need
+their deferred acquisition/read/close adapter before the StuffIt mount path is
+usable there.
+
 All integers are little endian. Exact length, schema, reserved fields, bounds,
 UTF-8 and catalog structure are checked before use. Unsupported old schemas
 require rebuilding producers/consumers; there is no second decoder.

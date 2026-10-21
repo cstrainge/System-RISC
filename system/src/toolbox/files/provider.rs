@@ -13,10 +13,16 @@ pub(super) use forks::Open;
 #[cfg(target_arch = "riscv64")]
 pub(super) mod runtime;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Source
+{
+    Export(u64),
+    File(u32)
+}
 pub(super) struct Mounted
 {
     pub provider: u32,
-    pub source:   u64,
+    pub source:   Source,
     pub info:     Option<VolumeInfo>,
     pub phase:    Phase,
     reads:        usize,
@@ -118,7 +124,7 @@ impl Manager
         }
     }
 
-    pub(crate) fn reserve_provider_mount(&mut self, provider: u32, source: u64)
+    pub(crate) fn reserve_provider_mount(&mut self, provider: u32, source: Source)
                                          -> Result<u32, Status>
     {
         if provider == 0
@@ -178,7 +184,7 @@ impl Manager
         Ok(())
     }
 
-    pub(crate) fn existing_provider_mount(&self, provider: u32, source: u64)
+    pub(crate) fn existing_provider_mount(&self, provider: u32, source: Source)
                                           -> Result<Option<VolumeInfo>, Status>
     {
         for (_, mounted) in self.volumes.iter()
@@ -191,6 +197,12 @@ impl Manager
             }
         }
         Ok(None)
+    }
+
+    pub(crate) fn provider_source(&mut self, volume: u32) -> Result<(u32, Source), Status>
+    {
+        let mount = self.provider_mount(volume)?;
+        Ok((mount.provider, mount.source))
     }
 
     pub(crate) fn begin_provider_unmount(&mut self, id: u32) -> Result<u32, Status>
@@ -307,7 +319,7 @@ mod tests
     fn provider_scan_cursors_validate_binding_revision_and_bounded_progress()
     {
         let mut manager = Manager::default();
-        let volume = manager.reserve_provider_mount(77, 0).unwrap();
+        let volume = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
         manager.publish_provider_mount(volume, &descriptor()).unwrap();
         let mut call = FileScanCall { operation: SCAN_DIRECTORY,
                                       volume,
@@ -367,7 +379,7 @@ mod tests
         assert!(matches!(scan::reply(wrong, &bytes), Err(BAD_ABI)));
         manager.begin_provider_unmount(volume).unwrap();
         manager.retire_provider_mount(volume).unwrap();
-        let next = manager.reserve_provider_mount(77, 0).unwrap();
+        let next = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
         manager.publish_provider_mount(next, &descriptor()).unwrap();
         call.volume = next;
         assert_eq!(manager.begin_provider_scan(&call), Err(BAD_ARGUMENT));
@@ -376,7 +388,7 @@ mod tests
     fn provider_fork_marks_validate_owner_busy_state_lengths_and_acknowledged_reuse()
     {
         let mut manager = Manager::default();
-        let volume = manager.reserve_provider_mount(77, 0).unwrap();
+        let volume = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
         manager.publish_provider_mount(volume, &descriptor()).unwrap();
         let (_, handle) = manager.reserve_provider_file(7, volume, 16, DATA_FORK).unwrap();
         assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
@@ -425,7 +437,7 @@ mod tests
     fn app_exit_retains_provider_marks_until_pending_reads_and_cleanup_acknowledge()
     {
         let mut manager = Manager::default();
-        let volume = manager.reserve_provider_mount(77, 0).unwrap();
+        let volume = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
         manager.publish_provider_mount(volume, &descriptor()).unwrap();
         let (_, handle) = manager.reserve_provider_file(7, volume, 16, DATA_FORK).unwrap();
         manager.publish_provider_file(handle, &open_reply(9, 0)).unwrap();
@@ -452,7 +464,7 @@ mod tests
     fn provider_reads_pin_mount_generation_until_actual_completion()
     {
         let mut manager = Manager::default();
-        let id = manager.reserve_provider_mount(77, 0).unwrap();
+        let id = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
         assert_eq!(manager.begin_provider_read(id), Err(SERVICE_BUSY));
         manager.publish_provider_mount(id, &descriptor()).unwrap();
         assert_eq!(manager.begin_provider_read(id), Ok(77));
@@ -469,7 +481,7 @@ mod tests
         manager.begin_provider_unmount(id).unwrap();
         assert_eq!(manager.begin_provider_read(id), Err(SERVICE_BUSY));
         manager.retire_provider_mount(id).unwrap();
-        let next = manager.reserve_provider_mount(77, 0).unwrap();
+        let next = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
         manager.publish_provider_mount(next, &descriptor()).unwrap();
         assert_eq!(next & 0xffff, id & 0xffff);
         assert_eq!(manager.begin_provider_read(id), Err(NOT_FOUND));
@@ -515,7 +527,7 @@ mod tests
     fn provider_writer_owns_staging_and_retains_uncertain_leases_through_exit()
     {
         let mut manager = Manager::default();
-        let volume = manager.reserve_provider_mount(77, 0).unwrap();
+        let volume = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
         let descriptor_bytes = descriptor();
         manager.publish_provider_mount(volume, &descriptor_bytes).unwrap();
         let initial = FileScanCall { operation: SCAN_DIRECTORY,
@@ -603,9 +615,9 @@ mod tests
     fn mount_publication_is_validated_and_ack_retirement_preserves_generations()
     {
         let mut manager = Manager::default();
-        let first = manager.reserve_provider_mount(77, 0).unwrap();
+        let first = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
         assert_eq!(count(&mut manager), 0);
-        assert_eq!(manager.reserve_provider_mount(77, 0), Err(SERVICE_BUSY));
+        assert_eq!(manager.reserve_provider_mount(77, Source::Export(0)), Err(SERVICE_BUSY));
         assert_eq!(manager.publish_provider_mount(first, b"bad"), Err(BAD_ABI));
         assert_eq!(count(&mut manager), 0);
         let bytes = descriptor();
@@ -615,17 +627,17 @@ mod tests
         assert_eq!((info.capacity_known, info.total_bytes, info.free_bytes), (0, 0, 0));
         assert_eq!(count(&mut manager), 1);
         assert_eq!(manager.retire_provider_mount(first), Err(SERVICE_BUSY));
-        assert_eq!(manager.existing_provider_mount(77, 0).unwrap(), Some(info));
+        assert_eq!(manager.existing_provider_mount(77, Source::Export(0)).unwrap(), Some(info));
         assert_eq!(manager.begin_provider_unmount(first).unwrap(), 77);
         manager.quarantine_provider_mount(first).unwrap();
-        assert_eq!(manager.existing_provider_mount(77, 0), Err(SERVICE_BUSY));
+        assert_eq!(manager.existing_provider_mount(77, Source::Export(0)), Err(SERVICE_BUSY));
         assert_eq!(manager.begin_provider_unmount(first).unwrap(), 77);
         manager.retire_provider_mount(first).unwrap();
-        let next = manager.reserve_provider_mount(77, 0).unwrap();
+        let next = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
         assert_eq!(next & 0xffff, first & 0xffff);
         assert_ne!(next, first);
         assert_eq!(manager.publish_provider_mount(first, &bytes), Err(NOT_FOUND));
-        let foreign = Manager::default().reserve_provider_mount(77, 0).unwrap();
+        let foreign = Manager::default().reserve_provider_mount(77, Source::Export(0)).unwrap();
         assert_eq!(manager.publish_provider_mount(foreign, &bytes), Err(NOT_FOUND));
         manager.publish_provider_mount(next, &bytes).unwrap();
         assert_eq!(count(&mut manager), 1);

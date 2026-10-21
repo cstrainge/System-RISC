@@ -440,7 +440,8 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                 {
                     match call.operation
                     {
-                        files::VOLUME_INDEX | files::VOLUME_INFO =>
+                        files::VOLUME_INDEX | files::VOLUME_INFO
+                        | files::MOUNT_HOST_EXPORT | files::MOUNT_FILE =>
                         {
                             inline_name_output(&mut call.volume_info.name,
                                                &mut call.volume_info.name_length)?

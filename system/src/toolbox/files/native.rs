@@ -74,19 +74,21 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
                            | files::PATH);
     let trash_query = call.operation == files::TRASH_DIRECTORY && call.index == 0;
     let opening = call.operation == files::OPEN;
+    let mounting_file = call.operation == files::MOUNT_FILE;
     let fork_io = matches!(call.operation, files::READ | files::CLOSE);
     if !matches!(call.operation,
                  files::HOST_EXPORT_COUNT | files::MOUNT_HOST_EXPORT | files::UNMOUNT_VOLUME)
        && !catalog
        && !opening
        && !fork_io
+       && !mounting_file
        && !trash_query
     {
         return None;
     }
-    if (!(catalog || opening) && call.cnid != 0)
-       || ((catalog || opening) && call.cnid == 1)
-       || ((catalog || opening || fork_io)
+    if (!(catalog || opening || mounting_file) && call.cnid != 0)
+       || ((catalog || opening || mounting_file) && call.cnid == 1)
+       || ((catalog || opening || fork_io || mounting_file)
            && call.operation != files::DIRECTORY_ENTRY
            && call.index != 0)
        || (fork_io && call.volume != 0)

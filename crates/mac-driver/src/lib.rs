@@ -2,6 +2,7 @@
 //! this module is the narrow, audited C/pointer boundary. This is not an app SDK.
 #![no_std]
 pub mod devices;
+pub mod file_sources;
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, NOT_SUPPORTED, OK, Status};
 pub use mac_module::{ClassId, Offer, abi};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

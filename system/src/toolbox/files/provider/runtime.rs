@@ -12,6 +12,7 @@ use spinning_top::Spinlock;
 use crate::drivers::{OwnedJob, jobs::Failure};
 mod forks;
 mod paths;
+mod mounts;
 mod startup;
 pub(crate) use startup::mount_startup_exports;
 mod resources;
@@ -208,6 +209,19 @@ fn cleanup_mount(mut flight: Flight, volume: u32, error: Status) -> Progress
 }
 fn retire(volume: u32) -> Result<Reply, Status>
 {
+    let (provider, source) = files(|manager| manager.provider_source(volume))?;
+    if let super::Source::File(source) = source
+    {
+        match crate::drivers::file_sources::runtime::release(provider, source)
+        {
+            Ok(()) | Err(NOT_FOUND) => (),
+            Err(error) =>
+            {
+                let _ = files(|manager| manager.quarantine_provider_mount(volume));
+                return Err(error);
+            }
+        }
+    }
     files(|manager| manager.retire_provider_mount(volume)).map(|()| Reply::Unmounted)
 }
 fn finish_read(volume: u32, result: Result<CatalogInfo, Status>) -> Progress
@@ -609,6 +623,10 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
     if matches!(call.operation, OPEN | READ | CLOSE)
     {
         return forks::start(owner, thread, key, call, output);
+    }
+    if call.operation == MOUNT_FILE
+    {
+        return mounts::start_file(owner, thread, key, call, output);
     }
     if matches!(call.operation, CATALOG | PARENT | DIRECTORY_ENTRY | ALLOCATION_INFO)
     {

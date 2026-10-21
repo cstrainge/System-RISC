@@ -200,6 +200,19 @@ impl<'a> Files<'a>
             .try_into()
     }
 
+    /// The filesystem provider validates the container before publication.
+    /// Source identity is volume/CNID; repeating a live mount reuses its volume.
+    pub fn mount_file(self, volume: VolumeId, file: Cnid) -> Result<VolumeInfo>
+    {
+        self.call(FileCall { operation: MOUNT_FILE,
+                             volume: volume.0,
+                             cnid: file.0,
+                             ..Default::default() },
+                  "")?
+            .volume_info
+            .try_into()
+    }
+
     pub fn catalog(self, volume: VolumeId, cnid: Cnid) -> Result<CatalogInfo>
     {
         self.call(FileCall { operation: CATALOG,

@@ -100,6 +100,14 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-device-interface",
+ "mac-file-source-interface",
+ "mac-module",
+]
+
+[[package]]
+name = "mac-file-source-interface"
+version = "0.1.0"
+dependencies = [
  "mac-module",
 ]
 

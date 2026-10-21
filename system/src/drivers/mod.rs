@@ -1,5 +1,6 @@
 //! Native kernel modules: generic admission/lifetime plus narrow executable ABI.
 pub mod devices;
+pub mod file_sources;
 pub mod jobs;
 mod registry;
 pub use registry::*;
