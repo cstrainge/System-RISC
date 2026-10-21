@@ -9,7 +9,9 @@ use mac_abi::{files::{FileCall, SEEK, SEEK_START, TELL},
 use mac_formats::resource::{index::{Index, MapLayout},
                             stream::Budget};
 
-fn format_status(error: mac_formats::Error) -> Status
+mod query;
+pub(crate) use query::{Need, prepare};
+pub(crate) fn format_status(error: mac_formats::Error) -> Status
 {
     if error.0.contains("budget") || error.0.contains("allocation")
     {
@@ -62,85 +64,31 @@ fn entries(files: &mut crate::toolbox::files::Manager, owner: u64, handle: u32)
     read(files, owner, handle, layout.map_offset(), &mut map)?;
     Index::decode(layout, map).map_err(format_status)
 }
-fn query(files: &mut crate::toolbox::files::Manager, owner: u64, call: &mut FileResourceCall,
-         name: &str, output: &mut [u8], index: &mut Index)
-         -> Result<(), Status>
+fn run_query(files: &mut crate::toolbox::files::Manager, owner: u64, call: &mut FileResourceCall,
+             name: &str, output: &mut [u8], index: &mut Index)
+             -> Result<(), Status>
 {
-    match call.operation
+    loop
     {
-        COUNT_TYPES =>
+        match prepare(index, call, name, output.len())?
         {
-            call.index = index.type_count() as u32;
-            return Ok(());
+            Need::Done => return Ok(()),
+            Need::Length { number,
+                           offset } =>
+            {
+                let mut bytes = [0; 4];
+                read(files, owner, call.handle, offset, &mut bytes)?;
+                index.record_length(number, u32::from_be_bytes(bytes)).map_err(format_status)?;
+            }
+            Need::Data { offset,
+                         length } =>
+            {
+                read(files, owner, call.handle, offset, &mut output[..length])?;
+                call.transferred = length;
+                return Ok(());
+            }
         }
-        TYPE_INDEX =>
-        {
-            call.key.kind = index.type_at(call.index as usize).ok_or(NOT_FOUND)?;
-            return Ok(());
-        }
-        COUNT =>
-        {
-            call.index = index.count(call.key.kind) as u32;
-            return Ok(());
-        }
-        GET | INFO | INDEX | NAMED | READ => (),
-        _ => return Err(NOT_SUPPORTED)
     }
-    let entry = match call.operation
-                {
-                    INDEX => index.at(call.key.kind, call.index as usize),
-                    NAMED => index.named(call.key.kind, name),
-                    _ => index.get(call.key.kind, call.key.id)
-                }.ok_or(NOT_FOUND)?;
-    let (number, position, cached) = (entry.number, entry.offset, entry.length);
-    let length = if let Some(length) = cached
-    {
-        length
-    }
-    else
-    {
-        let mut bytes = [0; 4];
-        read(files, owner, call.handle, position, &mut bytes)?;
-        let length = u32::from_be_bytes(bytes);
-        index.record_length(number, length).map_err(format_status)?;
-        length
-    } as usize;
-    let entry = index.entry(number).ok_or(BAD_ARGUMENT)?;
-    call.info = ResourceInfo { key: ResourceKey { kind: entry.kind,
-                                                  id:   entry.id },
-                               attributes: u16::from(entry.attributes),
-                               length,
-                               ..Default::default() };
-    call.has_name = u32::from(entry.name.is_some());
-    if let Some(name) = entry.name
-    {
-        let mut used = 0;
-        for character in name.iter().map(|&byte| mac_formats::text::character(byte))
-        {
-            let mut bytes = [0; 4];
-            let bytes = character.encode_utf8(&mut bytes).as_bytes();
-            let end = used + bytes.len();
-            call.info.name.get_mut(used..end).ok_or(BAD_ARGUMENT)?.copy_from_slice(bytes);
-            used = end;
-        }
-        call.info.name_length = used as u32;
-    }
-    call.key = call.info.key;
-    call.transferred = 0;
-    if call.operation == READ
-    {
-        let size = length.checked_sub(call.offset).ok_or(BAD_ARGUMENT)?.min(output.len());
-        if size != 0
-        {
-            read(files,
-                 owner,
-                 call.handle,
-                 position + 4 + call.offset as u64,
-                 &mut output[..size])?;
-        }
-        call.transferred = size;
-    }
-    Ok(())
 }
 fn request(files: &mut crate::toolbox::files::Manager, owner: u64, call: &mut FileResourceCall,
            name: &str, output: &mut [u8])
@@ -163,15 +111,53 @@ fn request(files: &mut crate::toolbox::files::Manager, owner: u64, call: &mut Fi
         Some(index) => index,
         None => entries(files, owner, call.handle)?
     };
-    let result = query(files, owner, call, name, output, &mut index);
+    let result = run_query(files, owner, call, name, output, &mut index);
     files.restore_resource_index(owner, call.handle, index)?;
     result
 }
 /// # Safety
 /// Request and its declared borrowed buffers must be initialized and exclusive.
+#[cfg(target_arch = "riscv64")]
+pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -> i64
+{
+    unsafe {
+        checked(pointer, size, |call, name, output| {
+            let routed = crate::kernel::with_files(|files| {
+                match files.resource_provider(owner, call.handle)?
+                {
+                    None => request(files, owner, call, name, output).map(|()| true),
+                    Some(_) => files.cached_resource_query(owner, call, name, output.len())
+                }
+            });
+            match routed
+            {
+                Ok(Ok(true)) => OK,
+                Ok(Ok(false)) => crate::toolbox::files::request_resource(owner, call, name, output),
+                Ok(Err(error)) => error,
+                Err(error) => error.status()
+            }
+        })
+    }
+}
+/// # Safety
+/// Request and its declared borrowed buffers must be initialized and exclusive.
+#[cfg(not(target_arch = "riscv64"))]
 pub(crate) unsafe fn dispatch(files: &mut crate::toolbox::files::Manager, owner: u64,
                               pointer: *mut (), size: usize)
                               -> i64
+{
+    unsafe {
+        checked(pointer, size, |call, name, output| {
+            request(files, owner, call, name, output).err().unwrap_or(OK)
+        })
+    }
+}
+/// # Safety
+/// All request and nested buffers are live exclusive borrows for this call.
+/// The callback must retain no caller borrow when it requests an I/O wait.
+unsafe fn checked(pointer: *mut (), size: usize,
+                  invoke: impl FnOnce(&mut FileResourceCall, &str, &mut [u8]) -> Status)
+                  -> i64
 {
     if pointer.is_null()
        || size != size_of::<FileResourceCall>()
@@ -210,5 +196,5 @@ pub(crate) unsafe fn dispatch(files: &mut crate::toolbox::files::Manager, owner:
     {
         unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
     };
-    request(files, owner, call, name, output).err().unwrap_or(OK) as i64
+    invoke(call, name, output) as i64
 }

@@ -93,7 +93,12 @@ reuse checks. The Pascal-string trap path shares those resident services. A real
 second app also exits with a forgotten staged writer without publishing it;
 uncertain remote-write ownership/exit retention has resident tests. Visible
 volume/folder dates change after publication, including retryable cleanup.
-This is partial P17: resource inspection/application-loading dispatch, remaining
+Resource-file inspection now passes against a real host-mounted ResEdit through
+the public SDK: all types, metadata, names and bytes match the startup-disk copy,
+including payloads spanning class-read batches. Cached queries avoid provider
+jobs, positioned inspection preserves fork position, and stale resource-fork
+marks fail after slot reuse. Original Pascal resource calls share the service.
+This is partial P17: application-loading dispatch, remaining
 folder/metadata/rename/move/delete and full two-fork copy operations, refresh/watches,
 normal launcher exports, disconnect/pending-I/O-exit/performance acceptance and P16 remain
 to be completed. See [the exact filesystem contract and coverage](FILESYSTEM-INTERFACE.md).
@@ -504,7 +509,8 @@ integrity, unsupported formats and stale IDs. See [the archive-volume plan](ARCH
 
 ### P17 — Vhost shared-directory volumes
 
-Status: backlog, after P15. Provide a separate vhost filesystem/block-device
+Status: implementation in progress after P15; the checkpoint above records the
+verified private-guest subset and remaining gates. Provide a separate vhost filesystem/block-device
 driver pair: VM transport/device I/O below, guest catalog and fork semantics
 above, each with DRVR/DABI contracts. Directory exports need directory operations
 alongside the transport's actual block-export interface; do not model host paths

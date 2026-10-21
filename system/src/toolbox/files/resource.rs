@@ -2,6 +2,87 @@
 use super::*;
 use crate::toolbox::quickdraw::{icons, icons_service};
 
+#[cfg(target_arch = "riscv64")]
+pub(crate) struct ProviderInspection
+{
+    pub provider: u32,
+    pub volume:   u32,
+    pub fork:     u32,
+    pub offset:   u64,
+    pub length:   u64,
+    pub index:    Option<mac_formats::resource::index::Index>
+}
+#[cfg(target_arch = "riscv64")]
+impl Manager
+{
+    pub(crate) fn resource_provider(&self, owner: u64, handle: u32) -> Result<Option<u32>, Status>
+    {
+        self.file_provider(owner, handle)
+    }
+
+    pub(crate) fn cached_resource_query(&mut self, owner: u64,
+                                        call: &mut mac_abi::resources::FileResourceCall,
+                                        name: &str, capacity: usize)
+                                        -> Result<bool, Status>
+    {
+        let file = self.slot(owner, call.handle)?;
+        let length = match file.fork.length()
+        {
+            Ok(length) => length,
+            Err(SERVICE_BUSY) => return Ok(false),
+            Err(error) => return Err(error)
+        };
+        if file.resource_index.is_none() && length == 0
+        {
+            file.resource_index = Some(mac_formats::resource::index::Index::empty());
+        }
+        let Some(index) = &file.resource_index
+        else
+        {
+            return Ok(false);
+        };
+        let mut reply = *call;
+        match crate::toolbox::resources::inspect::prepare(index, &mut reply, name, capacity)?
+        {
+            crate::toolbox::resources::inspect::Need::Done =>
+            {
+                *call = reply;
+                Ok(true)
+            }
+            _ => Ok(false)
+        }
+    }
+
+    pub(crate) fn begin_resource_inspection(&mut self, owner: u64, handle: u32)
+                                            -> Result<ProviderInspection, Status>
+    {
+        let length = self.slot(owner, handle)?.fork.length()?;
+        // A composite positioned read holds the normal read lease but leaves
+        // the public mark's position untouched. No provider callback runs here.
+        let (provider, args) = self.begin_provider_file_read(owner, handle, 0)?;
+        let index = self.slot(owner, handle)?.resource_index.take();
+        Ok(ProviderInspection { provider,
+                                volume: args.volume,
+                                fork: args.flags,
+                                offset: args.offset,
+                                length,
+                                index })
+    }
+
+    pub(crate) fn end_resource_inspection(&mut self, owner: u64, handle: u32, offset: u64,
+                                          index: Option<mac_formats::resource::index::Index>)
+                                          -> Result<(), Status>
+    {
+        self.finish_provider_file_read(handle, offset, 0, None)?;
+        let file = self.slot(owner, handle)?;
+        if !file.fork.orphaned()
+        {
+            file.resource_index = index;
+        }
+        Ok(())
+    }
+}
+
 fn read_icon(length: u64, id: i16, resident: crate::toolbox::resources::manager::Manager<'_>,
              read: &mut impl FnMut(u64, &mut [u8]) -> Result<(), Status>)
              -> Result<icons::IconFamily, Status>

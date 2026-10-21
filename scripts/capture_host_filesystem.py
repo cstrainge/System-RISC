@@ -91,6 +91,8 @@ def capture(output, sdk=False):
         if sdk:
             readonly = output / 'readonly-export'
             subprocess.run([str(host / 'risc-forks'), 'init', str(readonly), 'Read Only Host'], check=True)
+            subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(readonly),
+                            str(base / 'ResEdit.bin')], check=True)
             companion_args.extend(['--read-only-export', f'ReadOnly={readonly}'])
         with (output / 'companion.log').open('wb') as log:
             companion = subprocess.Popen(companion_args,

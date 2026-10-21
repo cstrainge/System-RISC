@@ -318,7 +318,8 @@ fn key(operation: u32, handle: u32, volume: u32) -> Key
           handle,
           fork: 0,
           capacity: 0,
-          cursor: DirectoryScanCursor::default() }
+          cursor: DirectoryScanCursor::default(),
+          resource: None }
 }
 pub(in crate::toolbox::files) fn request(owner: u64, call: &mut DataWriteCall) -> Status
 {

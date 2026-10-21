@@ -308,10 +308,9 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 if size == size_of::<mac_abi::resources::FileResourceCall>()
                 {
                     let owner = crate::context::current_thread_context().identity().app.0;
-                    let status = crate::kernel::with_files(|files| unsafe {
-                                     crate::toolbox::resources::inspect::dispatch(files, owner,
-                                                                                  pointer, size)
-                                 }).unwrap_or_else(|e| e.status() as i64);
+                    let status = unsafe {
+                        crate::toolbox::resources::inspect::dispatch_async(owner, pointer, size)
+                    };
                     return if status == 0 { Ok(()) } else { Err(status as Status) };
                 }
                 #[cfg(target_arch = "riscv64")]

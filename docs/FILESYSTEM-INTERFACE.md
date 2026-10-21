@@ -273,8 +273,20 @@ unknown allocation through folder totals and renders n/a using existing resource
 Block-backed exact-allocation behavior is unchanged and its SDK tests use known
 values explicitly.
 
-Resource Manager inspection and application loading from provider forks remain
-to be connected. This does not yet make external directories usable in Finder.
+Resource Manager inspection now uses the same owned job/replay boundary for
+provider forks. The resident flight holds an exclusive read phase, its validated
+map and length cache, and only semantic query fields; no app pointer or Files
+guard survives a callback or park. Positioned inspection preserves the public
+fork position. Payload reads use at most 64 KiB per class request and retain
+bounded chunks until successful delivery, so a failed read leaves caller output
+bytes untouched. Cached metadata completes without queueing another job.
+Abandoned flights drain the current read acknowledgment, release the phase and
+let the ordinary orphan-close path retain the generation until Close is acknowledged.
+Native and legacy resource calls use this service. The native public SDK test
+compares all ResEdit types, metadata and bytes against the startup-disk copy,
+including reads crossing the class boundary, position preservation and stale IDs
+after slot reuse. Application loading from provider forks remains to be connected;
+this does not yet make external directories usable in Finder.
 
 Their checked-map prerequisite is now shared: `mac-formats::resource::index`
 uses the same header/reference validator as the borrowed and streaming resource
@@ -323,8 +335,7 @@ filesystem engine is wrapped by a narrow native entry with a private 1 MiB heap
 and an exact HDIR dependency. The allocation helper is a separate
 `mac-driver-alloc` crate so allocation-free modules do not acquire an allocator
 requirement through Cargo feature unification. These packages are not installed
-in the default disk yet: provider resource-inspection/application-loading
-dispatch, write-back, normal
+in the default disk yet: provider application loading, remaining write-back APIs, normal
 launcher export configuration and complete public-SDK filesystem acceptance
 remain in progress. Private guest mounting works; that is not yet a usable host
 directory in Finder or a mounted StuffIt volume, and is not a hard latency
@@ -335,5 +346,5 @@ decomposed input normalizing to the 255-byte boundary, full metadata round trips
 distinct operation/source dates, data-only replacement retaining both metadata
 and resource bytes, readers acquired during staging, and abort after a partial
 resource-copy failure. Metadata snapshots allocate fallibly before publication;
-root-cache updates do not allocate after their host commit. Native public writer
-acceptance is still pending.
+root-cache updates do not allocate after their host commit. The public writer
+gate described above now covers the installed native driver path as well.

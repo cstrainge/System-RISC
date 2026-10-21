@@ -1,7 +1,7 @@
 //! Park/replay boundary for owned filesystem operations. No app pointer, Files
 //! guard or native I/O stack handoff survives a provider callback or wait.
 #![forbid(unsafe_code)]
-use alloc::{string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use mac_abi::{files::*, *};
@@ -12,8 +12,10 @@ use spinning_top::Spinlock;
 use crate::drivers::{OwnedJob, jobs::Failure};
 mod forks;
 mod paths;
+mod resources;
 mod writes;
 pub(in crate::toolbox::files::provider) use forks::request_fork_cleanup;
+pub(crate) use resources::request as request_resource;
 pub(in crate::toolbox::files) use writes::request as request_write;
 pub(in crate::toolbox::files::provider) use writes::request_write_cleanup;
 
@@ -30,7 +32,8 @@ enum Record
 {
     File,
     Scan,
-    Write
+    Write,
+    Resource
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key
@@ -43,7 +46,8 @@ struct Key
     handle:    u32,
     fork:      u32,
     capacity:  usize,
-    cursor:    DirectoryScanCursor
+    cursor:    DirectoryScanCursor,
+    resource:  Option<(ResourceKey, usize)>
 }
 enum Step
 {
@@ -52,6 +56,7 @@ enum Step
     Unmount(u32),
     File(forks::Action),
     Write(writes::State),
+    Resource(Box<resources::State>),
     Scan(DirectoryScanCursor),
     Allocation
     {
@@ -120,6 +125,7 @@ enum Reply
     Entry(CatalogInfo),
     Opened(u32, u64),
     Scan(FileScanCall),
+    Resource(Box<resources::Response>),
     Allocation(u64, u64),
     Path(Vec<u8>),
     Read
@@ -235,6 +241,7 @@ fn advance(mut flight: Flight) -> Progress
     {
         Step::File(_) => forks::advance(flight, result, never_sent),
         Step::Write(_) => writes::advance(flight, result, never_sent),
+        Step::Resource(_) => resources::advance(flight, result),
         Step::Scan(cursor) =>
         {
             let result = result.and_then(|bytes| super::scan::reply(cursor, &bytes));
@@ -394,7 +401,7 @@ fn reply(call: &mut FileCall, output: &mut [u8], result: Result<Reply, Status>) 
             call.length = resource;
             OK
         }
-        Ok(Reply::Scan(_)) => BAD_ABI,
+        Ok(Reply::Scan(_) | Reply::Resource(_)) => BAD_ABI,
         Ok(Reply::Path(bytes)) =>
         {
             call.length = bytes.len() as u64;
@@ -506,7 +513,8 @@ pub(crate) fn request_scan(owner: u64, call: &mut FileScanCall) -> Status
                     handle:    0,
                     fork:      0,
                     capacity:  0,
-                    cursor:    call.cursor };
+                    cursor:    call.cursor,
+                    resource:  None };
     match claim(owner, thread, key, "")
     {
         Ok(Some(flight)) =>
@@ -571,7 +579,8 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
                     handle:    call.handle,
                     fork:      call.fork,
                     capacity:  output.len(),
-                    cursor:    DirectoryScanCursor::default() };
+                    cursor:    DirectoryScanCursor::default(),
+                    resource:  None };
     match claim(owner, thread, key, name)
     {
         Ok(Some(flight)) =>

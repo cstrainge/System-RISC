@@ -50,6 +50,39 @@ pub fn check_legacy_writer(system: &System<'_>, gate: mac_toolbox::abi::TrapGate
                                   ..Default::default() };
     require(invoke(&mut old) == Err(Error::NotFound))?;
     check_pattern(system, volume, native.id, mac_toolbox::files::Fork::Data, 3, 1, b'a' as usize)?;
+    files.unmount(volume)?;
+    check_legacy_resources(system, gate)
+}
+
+fn check_legacy_resources(system: &System<'_>, gate: mac_toolbox::abi::TrapGate)
+                          -> Result<(), Error>
+{
+    use mac_toolbox::abi::{files::*, resources::FileResourceCall, traps::PSTRING_RESOURCE};
+    system.log("HOST_FS_STAGE legacy-resources\n")?;
+    let files = system.files();
+    let volume = files.mount_host_export(1)?.id;
+    let entry = files.lookup(volume, mac_toolbox::files::ROOT_ID, "ResEdit")?;
+    let mut file = FileCall { operation: OPEN,
+                              volume: volume.0,
+                              cnid: entry.id.0,
+                              fork: RESOURCE_FORK,
+                              ..Default::default() };
+    system.client().file(&mut file, "", &mut [])?;
+    let mut call = FileResourceCall { operation: mac_toolbox::abi::resources::COUNT_TYPES,
+                                      handle: file.handle,
+                                      ..Default::default() };
+    // The same resident service handles original Pascal/MacRoman resource calls;
+    // this fixture owns all live buffers until the trap returns.
+    let status = unsafe {
+        gate(PSTRING_RESOURCE,
+             core::ptr::from_mut(&mut call).cast(),
+             core::mem::size_of::<FileResourceCall>())
+    };
+    require(status == 0 && call.index > 0)?;
+    let mut close = FileCall { operation: CLOSE,
+                               handle: file.handle,
+                               ..Default::default() };
+    system.client().file(&mut close, "", &mut [])?;
     files.unmount(volume)
 }
 pub fn check(system: &System<'_>) -> Result<(), Error>
@@ -121,6 +154,9 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             && forks.resource_length == 70003)?;
     system.log("HOST_FS_STAGE fork-io\n")?;
     check_forks(system, writable.id, forks.id)?;
+    require(system.resources().open_file(writable.id, file.id)?.type_count()? == 0)?;
+    require(matches!(system.resources().open_file(writable.id, forks.id),
+                     Err(Error::BadArgument)))?;
     require(files.volume(writable.id)? == writable)?;
     require(files.mount_host_export(0)?.id == writable.id)?;
     require(files.volume_count()? == before + 1)?;
@@ -133,8 +169,10 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             && read_only.read_only
             && read_only.capacity.is_none())?;
     require(files.volume_count()? == before + 2)?;
-    require(files.catalog(read_only.id, mac_toolbox::files::ROOT_ID)?.child_count == Some(0))?;
-    require(files.child(read_only.id, mac_toolbox::files::ROOT_ID, 0) == Err(Error::NotFound))?;
+    require(files.catalog(read_only.id, mac_toolbox::files::ROOT_ID)?.child_count == Some(1))?;
+    require(files.child(read_only.id, mac_toolbox::files::ROOT_ID, 1) == Err(Error::NotFound))?;
+    system.log("HOST_FS_STAGE resource-inspection\n")?;
+    check_resources(system, read_only.id)?;
     require(files.new_folder(read_only.id, mac_toolbox::files::ROOT_ID, "Forbidden")
             == Err(Error::ReadOnly))?;
     let write = files.create_data(mac_toolbox::files::DataFileSpec { volume:    read_only.id,
@@ -167,6 +205,137 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     files.unmount(replacement.id)?;
     files.unmount(read_only.id)?;
     require(files.volume_count()? == before)?;
+    Ok(())
+}
+
+fn check_resources(system: &System<'_>, volume: VolumeId) -> Result<(), Error>
+{
+    use mac_toolbox::{ResourceKey, TypeCode, files::ROOT_ID};
+    let files = system.files();
+    let entry = files.lookup(volume, ROOT_ID, "ResEdit")?;
+    let startup = files.volume_at(0)?.id;
+    let original = files.lookup(startup, ROOT_ID, "/Applications/ResEdit")?;
+    let expected = system.resources().open_file(startup, original.id)?;
+    let mut actual = system.resources().open_file(volume, entry.id)?;
+    require(files.unmount(volume) == Err(Error::ServiceBusy))?;
+    let types = expected.type_count()?;
+    require(actual.type_count()? == types)?;
+    let mut large = false;
+    for t in 0..types
+    {
+        let kind = expected.type_at(t)?;
+        require(actual.type_at(t)? == kind)?;
+        let count = expected.count(kind)?;
+        require(actual.count(kind)? == count)?;
+        for r in 0..count
+        {
+            let info = expected.at(kind, r)?;
+            let got = actual.at(kind, r)?;
+            require(got.info == info.info && got.has_name == info.has_name)?;
+            require(actual.get(info.info.key)?.info == info.info)?;
+            if info.has_name
+            {
+                require(actual.named(kind, info.info.name())?.info == info.info)?;
+            }
+            compare_resource(&actual, &expected, info.info.key, info.info.length)?;
+            large |= info.info.length > 64 * 1024;
+            let mut tail = [0xa5; 7];
+            require(actual.read(info.info.key, info.info.length, &mut tail)? == 0
+                    && tail == [0xa5; 7])?;
+            require(actual.read(info.info.key, info.info.length + 1, &mut tail)
+                    == Err(Error::BadArgument)
+                    && tail == [0xa5; 7])?;
+        }
+        require(matches!(actual.at(kind, count), Err(Error::NotFound)))?;
+    }
+    require(large)?;
+    require(actual.type_at(types) == Err(Error::NotFound))?;
+    require(matches!(actual.get(ResourceKey { kind: TypeCode::new(*b"MISS"),
+                                              id:   0 }),
+                     Err(Error::NotFound)))?;
+    for _ in 0..100
+    {
+        require(actual.type_count()? == types)?;
+    }
+    actual.close()?;
+    require(actual.type_count() == Err(Error::NotFound))?;
+    check_resource_mark(system, volume, entry.id, types)?;
+    Ok(())
+}
+
+fn check_resource_mark(system: &System<'_>, volume: VolumeId, id: mac_toolbox::Cnid, types: u32)
+                       -> Result<(), Error>
+{
+    use mac_toolbox::abi::{files::*, resources::FileResourceCall};
+    system.log("HOST_FS_STAGE resource-position\n")?;
+    let client = system.client();
+    let mut file = FileCall { operation: OPEN,
+                              volume: volume.0,
+                              cnid: id.0,
+                              fork: RESOURCE_FORK,
+                              ..Default::default() };
+    client.file(&mut file, "", &mut [])?;
+    let stale = file.handle;
+    file = FileCall { operation: SEEK,
+                      handle: stale,
+                      whence: SEEK_START,
+                      offset: 17,
+                      ..Default::default() };
+    client.file(&mut file, "", &mut [])?;
+    let mut resource = FileResourceCall { operation: mac_toolbox::abi::resources::COUNT_TYPES,
+                                          handle: stale,
+                                          ..Default::default() };
+    client.file_resource(&mut resource, "", &mut [])?;
+    require(resource.index == types)?;
+    file = FileCall { operation: TELL,
+                      handle: stale,
+                      ..Default::default() };
+    client.file(&mut file, "", &mut [])?;
+    require(file.position == 17)?;
+    system.log("HOST_FS_STAGE resource-reuse\n")?;
+    file = FileCall { operation: CLOSE,
+                      handle: stale,
+                      ..Default::default() };
+    client.file(&mut file, "", &mut [])?;
+    file = FileCall { operation: OPEN,
+                      volume: volume.0,
+                      cnid: id.0,
+                      fork: RESOURCE_FORK,
+                      ..Default::default() };
+    client.file(&mut file, "", &mut [])?;
+    require(file.handle != stale && file.handle & 0xffff == stale & 0xffff)?;
+    system.log("HOST_FS_STAGE resource-stale\n")?;
+    require(client.file_resource(&mut resource, "", &mut []) == Err(Error::NotFound))?;
+    resource.handle = file.handle ^ 0x1000_0000;
+    require(client.file_resource(&mut resource, "", &mut []) == Err(Error::NotFound))?;
+    resource.handle = file.handle;
+    client.file_resource(&mut resource, "", &mut [])?;
+    require(resource.index == types)?;
+    let mut close = FileCall { operation: CLOSE,
+                               handle: file.handle,
+                               ..Default::default() };
+    client.file(&mut close, "", &mut [])
+}
+
+#[inline(never)]
+fn compare_resource(actual: &mac_toolbox::resources::ResourceFile<'_>,
+                    expected: &mac_toolbox::resources::ResourceFile<'_>,
+                    key: mac_toolbox::ResourceKey, length: usize)
+                    -> Result<(), Error>
+{
+    // Cross the 64 KiB class-read boundary without an app-local allocator.
+    // This isolated frame fits the native fixture's 256 KiB thread stack.
+    let mut left = [0; 65537];
+    let mut right = [0; 65537];
+    let mut at = 0;
+    while at < length
+    {
+        let count = (length - at).min(left.len());
+        require(actual.read(key, at, &mut left[..count])? == count)?;
+        require(expected.read(key, at, &mut right[..count])? == count)?;
+        require(left[..count] == right[..count])?;
+        at += count;
+    }
     Ok(())
 }
 

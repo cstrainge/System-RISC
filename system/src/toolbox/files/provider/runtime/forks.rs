@@ -291,7 +291,8 @@ pub(super) fn pump_cleanup()
                             handle,
                             fork: 0,
                             capacity: 0,
-                            cursor: DirectoryScanCursor::default() };
+                            cursor: DirectoryScanCursor::default(),
+                            resource: None };
             let step = Step::File(Action::Cleanup { handle,
                                                     error: OPERATION_CANCELLED });
             FLIGHTS.lock().push(Flight { thread: 0,
