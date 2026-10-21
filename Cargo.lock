@@ -393,6 +393,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-host-protocol"
+version = "0.1.0"
+
+[[package]]
 name = "mac-module"
 version = "0.1.0"
 
@@ -624,6 +628,18 @@ dependencies = [
  "mac-formats",
  "mac-hfs-b",
  "serde_json",
+]
+
+[[package]]
+name = "risc-host"
+version = "0.1.0"
+dependencies = [
+ "cap-std",
+ "getrandom",
+ "mac-host-protocol",
+ "mac-object-table",
+ "rustix",
+ "sha2",
 ]
 
 [[package]]

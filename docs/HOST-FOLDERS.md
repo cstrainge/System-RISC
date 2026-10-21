@@ -67,7 +67,7 @@ Tools must wrap/unwrap both forks losslessly and validate without modifying file
 The native utility uses public Toolbox services for mounted storage.
 
 The shared codec and `tools/risc-forks` init/import/export/check utility are now
-implemented. The [container layout](../FORMAT.md#native-host-fork-container-v1)
+implemented. The [container layout](../FORMAT.md#native-host-fork-containers-rsfork01-version-1)
 fixes offsets, identities, Unicode, integrity checks and staged publication.
 Tests exchange both forks and native metadata with HFS-B. Bulk import holds the
 writer lock and updates a cached directory index after each publication. This

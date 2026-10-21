@@ -632,3 +632,80 @@ mkdir/check. Its lossless `system-risc-forks` JSON+fork bundles interoperate wit
 the HFS-B tool, preserving both forks, complete Finder information, comments,
 attributes, and unsigned 64-bit microsecond dates. Copying assigns destination
 identities; IDs/revisions are not restored as another live object's identity.
+
+## Host directory wire protocol (RSHOST01, version 1)
+
+`mac-host-protocol` owns the allocation-free codec and incremental reply decoder.
+The VM byte channel carries a 48-byte little-endian header followed by exactly
+`payload_length` bytes (maximum 65536). There are no native pointers, Rust enum
+layouts or implicit host paths on the wire. Unsupported versions require a
+matching rebuild; there is no older decoder.
+
+| Offset | Bytes | Meaning |
+| --- | --- | --- |
+| 0 | 8 | `RSHOST01` |
+| 8 | 2 | whole protocol version, 1 |
+| 10 | 2 | header length, 48 |
+| 12 | 4 | payload length, at most 65536 |
+| 16 | 4 | nonzero correlation ticket, echoed unchanged in reply |
+| 20 | 2 | operation below |
+| 22 | 2 | 0 request, 1 reply; other bits invalid |
+| 24 | 4 | session capability; zero only during Hello |
+| 28 | 4 | object capability |
+| 32 | 8 | operation-specific offset |
+| 40 | 4 | operation-specific value |
+| 44 | 4 | signed status; requests must contain zero |
+
+The guest broker's generation-tagged request ticket supplies correlation; it
+confers no object authority. The companion issues session/file/directory/iterator/
+transaction capabilities through the shared object table. Owners are validated
+separately. Disconnect discards the old session; a new transport incarnation
+must invalidate every old guest mount/lease before admitting new host IDs.
+
+A path is one UTF-8 component of 1..255 bytes. Dot components, control characters,
+slash, backslash and colon are invalid. The filesystem's opaque identity tokens
+fit this representation. Guest names and Macintosh metadata are encoded in the
+separate fork-container format, never inferred by this transport.
+
+| Op | Request | Successful reply |
+| --- | --- | --- |
+| 1 Hello | session/object/offset/value zero; empty body | new session; value=export count |
+| 2 Export | object zero; offset=export ordinal | object=directory capability, value=capability bits, body=export label |
+| 3 OpenDirectory | object=parent, body=component | object=directory capability |
+| 4 ListBegin | object=directory | object=iterator capability |
+| 5 ListNext | object=iterator | value=1 regular file or 2 directory, body=component; value=0/empty at end |
+| 6 OpenRead | object=parent, body=component | object=snapshot, offset=length, body=32-byte opaque revision |
+| 7 Read | object=snapshot, offset=position, value=maximum bytes | body=bytes up to EOF |
+| 8 Close | object=capability | terminal; transaction cancellation removes its unpublished stage |
+| 9 BeginWrite | object=parent | object=unpublished transaction capability |
+| 10 Write | object=transaction, offset=position, body=bytes | value=written byte count |
+| 11 SetLength | object=transaction, offset=new length | empty |
+| 12 Flush | object=transaction | empty, file sync acknowledged |
+| 13 Commit | object=transaction, value=expected snapshot or zero for new, body=destination component | empty, file publication and directory sync acknowledged; transaction consumed |
+| 14 MakeDirectory | object=parent, body=component | empty, containing directory synced |
+| 15 Rename | object=source directory, offset=destination directory capability, value=expected source snapshot/directory, body=two names | empty, no destination replacement; directories synced |
+| 16 Remove | object=parent, value=expected source snapshot/directory, body=component | empty; only empty directories removable; parent synced |
+| 17 SyncDirectory | object=directory | empty, sync acknowledged |
+| 18 OpenLock | object=parent, body=existing regular lock-file component | object=lock capability |
+| 19 Lock | object=lock, value=0 shared or 1 exclusive | empty; nonblocking, Busy on contention |
+| 20 Unlock | object=lock | empty |
+| 21 Stat | object=snapshot/directory | value=1 file or 2 directory, offset=file length, body=32-byte opaque revision |
+
+Unused request fields must be zero. Rename encodes `u16 first_name_length`, first
+name, then second name. Enumerations stop with Stale if their directory changes.
+Only currently active transaction stages are hidden; leftover crash stages remain
+visible for explicit format validation/recovery. Read-only exports refuse every
+mutation and exclusive lock. Export capability bits are Read=1, Write=2,
+Durable=4, AtomicPublish=8; Linux read/write exports qualify all four at startup.
+
+Status zero is success. Negative values are Invalid=-1, Stale=-2,
+Unavailable=-3, ReadOnly=-4, Conflict=-5, Limit=-6, IO=-7, NotFound=-8,
+Busy=-9, Unsupported=-10. Errors contain no body or object/offset/value result.
+Malformed framing closes the connection. Correlation/direction/operation or
+storage-bound failures poison the guest incremental receiver; partial replies
+cannot become a different live request. A partial header/body is never an EOF
+success.
+
+See `tools/risc-host/README.md` for staged-publication, cooperating-lock and
+external-edit limits. This protocol is a directory class, not a block protocol;
+actual block exports require their own class contract.
