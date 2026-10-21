@@ -46,7 +46,8 @@ def capture(output):
                       'pattern-revealed', 'desktop-cyan', 'desktop-pending',
                       'desktop-cancelled', 'desktop-magenta', 'desktop-covered',
                       'desktop-revealed', 'cursor-left', 'cursor-pending-right',
-                      'cursor-right', 'cursor-omitted']:
+                      'cursor-right', 'cursor-omitted', 'scroll-rows-red',
+                      'scroll-row-pending', 'scroll-row-committed']:
             wait('RETAINED_UPDATE_STAGE ' + stage + '\n')
             # Leave both actual app threads running across multiple timer
             # slices before capture, including event polling and presentation.
@@ -60,13 +61,15 @@ def capture(output):
                     frames.append({'point': point, 'frame': frame})
                 stages.append({'stage': stage, 'cursor_frames': frames})
             else:
+                if stage.startswith('scroll-'):
+                    driver.move(16, 444)
                 frame = stage + '.ppm'
                 vm.qmp('screendump', {'filename': str(output / frame)}, endpoint)
                 stages.append({'stage': stage, 'frame': frame})
             vm.qmp('input-send-event', {'events': [
                 {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'spc'},
                                          'down': down}} for down in [True, False]]}, endpoint)
-        wait('RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=21\n')
+        wait('RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=24\n')
         report = {'transport': 'private blessed disk -> live System -> two native SDK app threads',
                   'assertion_owner': 'mac-toolbox/tests/retained_update{,_cases}.rs',
                   'termination': 'guest-outcome',

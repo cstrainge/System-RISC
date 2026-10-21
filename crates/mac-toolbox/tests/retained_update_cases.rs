@@ -130,7 +130,27 @@ pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     port.paint_rect(bounds, 0xffffff)?;
     system.end_update(window)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE cursor-omitted\n")?;
-    system.log("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=21\n")?;
+    let owned_rows=system.controls().create_scroll_box(window,mac_toolbox::controls::ScrollBoxSpec {
+        viewport:Rect::new(8,8,248,88),scrollbar:Rect::new(248,8,264,88),count:5,
+        selected_background:0xff0000,..Default::default() })?;
+    let rows = owned_rows.control();
+    for row in rows.info()?.missing
+    {
+        rows.set_row(row, "", true)?;
+    }
+    system.begin_update(window)?;
+    port.paint_rect(bounds, 0xffffff)?;
+    rows.draw()?;
+    system.end_update(window)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE scroll-rows-red\n")?;
+    system.begin_update(window)?;
+    port.paint_rect(bounds, 0xffffff)?;
+    rows.set_row(0, "", false)?;
+    rows.draw()?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE scroll-row-pending\n")?;
+    system.end_update(window)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE scroll-row-committed\n")?;
+    system.log("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=24\n")?;
     // Keep the last committed scene available until the owned VM is stopped.
     loop
     {

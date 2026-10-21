@@ -44,11 +44,19 @@ does not decide geometry or draw the scrollbar. Offscreen controls use
 
 DRAW publishes an immutable raster snapshot only after every required row is
 valid. Incomplete publication returns `SERVICE_BUSY`; callback/allocation errors
-leave the previous committed image available. Raster updates copy on write,
-then scroll with pixel copies rather than rerasterizing unchanged text. The
+leave the previous committed image available. The raster is an immutable table
+of independently owned row tiles. Updating a shared snapshot copies only the
+small table; supplying text allocates/reuses only that row. Scrolling rotates
+row references and invalidates the exposed range, without copying viewport
+pixels or rerasterizing unchanged text. Configuration and invalidation allocate
+no full-viewport pixel buffer; blank and partial trailing rows use the retained
+background color. The
 compositor replays viewport blits directly instead of keeping a duplicate
 whole-window cache. Viewport double-buffer reserves and whole-window caches
-share a 2 MiB budget; allocation failures return `NO_MEMORY`.
+share a 2 MiB budget; allocation failures return `NO_MEMORY`. Shared row/table
+ownership uses `Arc::try_new`, including the small reference-count allocation.
+Fault-injected public calls verify both allocation stages return an error and
+leave the control usable; they cannot abort the kernel on shared-owner OOM.
 
 A stable DRAW damages only the viewport and scrollbar, never the parent window
 or neighboring controls. Moving/reconfiguring or disposing a published control
@@ -69,6 +77,11 @@ Canonical public-SDK tests are `crates/mac-toolbox/tests/scrollbox.rs` and the
 disk-booted `tests/conformance/ownership.rs` suite. They cover exact pixel
 equivalence after scroll/resize/jumps, exposed-row ranges, large endpoints,
 UTF8/Pascal parity, incomplete draws, stale IDs after forced slot reuse, owner
-checks, parent cleanup and Drop. ResEdit's real-app test checks independent
+checks, parent cleanup and Drop. An allocation-instrumented public test creates,
+reconfigures, fills and scrolls a 300-by-300 viewport while refusing allocations
+above 64 KiB, reproducing the contiguous-allocation pressure that previously
+failed ResEdit despite free heap space. The native retained-update test proves
+that changing one shared row stays invisible until EndUpdate and leaves other
+rows intact. ResEdit's real-app test checks independent
 navigation panes, Monaco pixels, radio CDEF animation, native JSON saving and
 one-row rendering timings. Python supplies input/captures; Rust owns acceptance.

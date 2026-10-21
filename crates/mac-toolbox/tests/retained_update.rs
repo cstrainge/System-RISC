@@ -62,10 +62,10 @@ fn staged_window_drawing_stays_private_until_end_update()
     assert_eq!(report["owned_vm_exited"], true);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert!(!serial.contains("RETAINED_UPDATE_FAIL"), "{serial}");
-    assert!(serial.contains("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=21\n"),
+    assert!(serial.contains("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=24\n"),
             "{serial}");
     let stages = report["stages"].as_array().unwrap();
-    assert_eq!(stages.len(), 21);
+    assert_eq!(stages.len(), 24);
     let header = b"P6\n640 480\n255\n";
     let mut checked = 0;
     let mut cursor_pixels = 0;
@@ -104,6 +104,32 @@ fn staged_window_drawing_stays_private_until_end_update()
         let frame = fs::read(output.join(stage["frame"].as_str().unwrap())).unwrap();
         assert!(frame.starts_with(header));
         assert_eq!(frame.len(), header.len() + 640 * 480 * 3);
+        if name.starts_with("scroll-")
+        {
+            for row in 0..5
+            {
+                let expected = if name == "scroll-row-committed" && row == 0
+                {
+                    [255, 255, 255]
+                }
+                else
+                {
+                    [255, 0, 0]
+                };
+                for y in 360 + row * 16..370 + row * 16
+                {
+                    for x in 365..585
+                    {
+                        let offset = header.len() + (y * 640 + x) * 3;
+                        assert_eq!(&frame[offset..offset + 3],
+                                   expected,
+                                   "{name}: shared row snapshot changed at {x},{y}");
+                        checked += 1;
+                    }
+                }
+            }
+            continue;
+        }
         // Exclude the standard definition's reserved scrollbar/grow strips.
         for y in 360..430
         {
@@ -180,7 +206,8 @@ fn staged_window_drawing_stays_private_until_end_update()
         }
     }
     assert_eq!(cursor_pixels, 8 * 32 * 32);
-    let acceptance = serde_json::json!({"status":"passed","stages":21,"native_app_threads":2,
+    let acceptance = serde_json::json!({"status":"passed","stages":24,"native_app_threads":2,
+        "scroll_rows_commit_atomically_without_mutating_other_rows":true,
         "pixels":checked,"pending_frames_retain_last_commit":true,
         "cursor_binding_pixels":cursor_pixels,"cursor_bindings_commit_atomically":true,
         "omitted_editor_removes_cursor_binding":true,

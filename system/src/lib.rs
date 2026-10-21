@@ -1,5 +1,6 @@
 //! Resident System RISC code. This crate is not an application dependency.
 #![no_std]
+#![feature(allocator_ext)]
 extern crate alloc;
 #[cfg(target_arch = "riscv64")]
 macro_rules! serial { ($($arg:tt)*) => {{ use core::fmt::Write as _; let _ = writeln!($crate::kernel::Serial, $($arg)*); }} }

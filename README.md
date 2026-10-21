@@ -173,7 +173,8 @@ raw or qcow2 disk without modifying it. `cargo xtask rom` builds just the ROM.
 Prerequisites:
 
 - Rust, Cargo and rustfmt. The supplied `rustfmt.toml` uses nightly formatting
-  options; the ROM also uses nightly's allocation-error handler. The workspace
+  options; the ROM uses nightly's allocation-error handler and System uses
+  `allocator_ext` for fallible shared raster ownership. The workspace
   was verified with the installed nightly toolchain.
 - The `riscv64imac-unknown-none-elf` Rust target. If needed, install it with
   `rustup target add riscv64imac-unknown-none-elf`.

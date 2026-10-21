@@ -10,10 +10,25 @@ use mac_abi::{controls::*,
 use crate::toolbox::{handles::{Kind, Table},
                      quickdraw::{Canvas, fonts::FontManager, fonts_service}};
 const PIXEL_BUDGET: usize = 2 * 1024 * 1024;
+struct Row
+{
+    pixels: Vec<u32>
+}
 struct Raster
 {
-    pixels: Vec<u32>,
-    valid:  Vec<bool>
+    width:      usize,
+    height:     usize,
+    row_height: usize,
+    background: u32,
+    rows:       Vec<Option<Arc<Row>>>,
+    valid:      Vec<bool>
+}
+impl Raster
+{
+    fn pixels(&self) -> usize
+    {
+        self.width * self.height
+    }
 }
 struct Object
 {
@@ -59,7 +74,7 @@ impl Drawing
 
     pub fn storage(&self) -> usize
     {
-        self.raster.pixels.capacity() * 4 + self.raster.valid.capacity() + self.bar.storage()
+        self.raster.pixels() * 4 + self.raster.valid.capacity() + self.bar.storage()
     }
 
     pub fn paint(&self, canvas: &mut Canvas<'_>)
@@ -79,10 +94,19 @@ impl Drawing
             let n = (right - left) as usize;
             for y in top..bottom
             {
-                let src = (y - i32::from(o.v) - i32::from(b.top)) as usize * width
-                          + (left - i32::from(o.h) - i32::from(b.left)) as usize;
+                let local_y = (y - i32::from(o.v) - i32::from(b.top)) as usize;
+                let local_x = (left - i32::from(o.h) - i32::from(b.left)) as usize;
                 let dest = y as usize * canvas.width + left as usize;
-                canvas.pixels[dest..dest + n].copy_from_slice(&self.raster.pixels[src..src + n]);
+                let output = &mut canvas.pixels[dest..dest + n];
+                if let Some(Some(row)) = self.raster.rows.get(local_y / self.raster.row_height)
+                {
+                    let src = (local_y % self.raster.row_height) * width + local_x;
+                    output.copy_from_slice(&row.pixels[src..src + n]);
+                }
+                else
+                {
+                    output.fill(self.raster.background);
+                }
             }
         }
         self.bar.paint(canvas);
@@ -111,31 +135,54 @@ fn dimensions(spec: Spec) -> Result<(usize, usize, usize), Status>
 }
 fn raster(spec: Spec) -> Result<Arc<Raster>, Status>
 {
-    let (w, h, rows) = dimensions(spec)?;
-    let mut pixels = Vec::new();
-    pixels.try_reserve_exact(w * h).map_err(|_| NO_MEMORY)?;
-    pixels.resize(w * h, spec.background);
+    let (width, height, count) = dimensions(spec)?;
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(count).map_err(|_| NO_MEMORY)?;
+    rows.resize_with(count, || None);
     let mut valid = Vec::new();
-    valid.try_reserve_exact(rows).map_err(|_| NO_MEMORY)?;
-    valid.resize(rows, false);
-    Ok(Arc::new(Raster { pixels,
-                         valid }))
+    valid.try_reserve_exact(count).map_err(|_| NO_MEMORY)?;
+    valid.resize(count, false);
+    Arc::try_new(Raster { width,
+                          height,
+                          row_height: spec.row_height as usize,
+                          background: spec.background,
+                          rows,
+                          valid }).map_err(|_| NO_MEMORY)
 }
 fn writable(object: &mut Object) -> Result<&mut Raster, Status>
 {
     if Arc::get_mut(&mut object.raster).is_none()
     {
         let source = &object.raster;
-        let mut pixels = Vec::new();
-        pixels.try_reserve_exact(source.pixels.len()).map_err(|_| NO_MEMORY)?;
-        pixels.extend_from_slice(&source.pixels);
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(source.rows.len()).map_err(|_| NO_MEMORY)?;
+        rows.extend(source.rows.iter().cloned());
         let mut valid = Vec::new();
         valid.try_reserve_exact(source.valid.len()).map_err(|_| NO_MEMORY)?;
         valid.extend_from_slice(&source.valid);
-        object.raster = Arc::new(Raster { pixels,
-                                          valid });
+        // A snapshot shares immutable row tiles. Copy only the small row table;
+        // filling a row later replaces that row, never the entire viewport.
+        object.raster = Arc::try_new(Raster { width: source.width,
+                                              height: source.height,
+                                              row_height: source.row_height,
+                                              background: source.background,
+                                              rows,
+                                              valid }).map_err(|_| NO_MEMORY)?;
     }
     Arc::get_mut(&mut object.raster).ok_or(SERVICE_BUSY)
+}
+fn row_pixels(raster: &mut Raster, index: usize) -> Result<&mut [u32], Status>
+{
+    let slot = raster.rows.get_mut(index).ok_or(BAD_ARGUMENT)?;
+    if slot.as_mut().and_then(Arc::get_mut).is_none()
+    {
+        let size = raster.width * raster.row_height;
+        let mut pixels = Vec::new();
+        pixels.try_reserve_exact(size).map_err(|_| NO_MEMORY)?;
+        pixels.resize(size, raster.background);
+        *slot = Some(Arc::try_new(Row { pixels }).map_err(|_| NO_MEMORY)?);
+    }
+    Ok(&mut Arc::get_mut(slot.as_mut().unwrap()).unwrap().pixels)
 }
 impl Object
 {
@@ -185,30 +232,27 @@ impl Object
             return Ok(());
         }
         let spec = self.spec;
-        let (w, h, rows) = dimensions(spec)?;
+        let (_, _, rows) = dimensions(spec)?;
         let data = writable(self)?;
         let distance = delta.unsigned_abs().min(rows as u64) as usize;
-        let pixel_rows = rows * spec.row_height as usize;
-        let shift = distance * spec.row_height as usize * w;
         if distance == rows
         {
-            data.pixels.fill(spec.background);
+            data.rows.fill(None);
             data.valid.fill(false);
         }
         else if delta > 0
         {
-            data.pixels.copy_within(shift..pixel_rows * w, 0);
-            data.pixels[pixel_rows * w - shift..].fill(spec.background);
+            data.rows.rotate_left(distance);
+            data.rows[rows - distance..].fill(None);
             data.valid.copy_within(distance..rows, 0);
             data.valid[rows - distance..].fill(false);
         }
         else
         {
-            data.pixels.copy_within(0..pixel_rows * w - shift, shift);
-            data.pixels[..shift].fill(spec.background);
+            data.rows.rotate_right(distance);
+            data.rows[..distance].fill(None);
             data.valid.copy_within(0..rows - distance, distance);
             data.valid[..distance].fill(false);
-            data.pixels[pixel_rows * w..w * h].fill(spec.background);
         }
         self.top = top;
         Ok(())
@@ -241,7 +285,7 @@ impl Manager
     /// shared cache budget, so viewport acceleration cannot starve file I/O.
     pub fn raster_storage(&self) -> usize
     {
-        self.objects.iter().map(|(_, object)| object.raster.pixels.capacity() * 8).sum()
+        self.objects.iter().map(|(_, object)| object.raster.pixels() * 8).sum()
     }
 
     pub fn remove_window(&mut self, window: u32)
@@ -281,13 +325,13 @@ impl Manager
             fonts.metrics(fonts_service::selection(call.spec.font))?;
             let previous = if call.operation == CONFIGURE
             {
-                self.get(call.id, owner)?.raster.pixels.len() * 8
+                self.get(call.id, owner)?.raster.pixels() * 8
             }
             else
             {
                 0
             };
-            let used = self.objects.iter().map(|(_, o)| o.raster.pixels.len() * 8).sum::<usize>();
+            let used = self.objects.iter().map(|(_, o)| o.raster.pixels() * 8).sum::<usize>();
             if used - previous + w * h * 8 > PIXEL_BUDGET
             {
                 return Err(NO_MEMORY);
@@ -333,9 +377,8 @@ impl Manager
             CREATE | CONFIGURE | INFO => (),
             INVALIDATE =>
             {
-                let bg = object.spec.background;
                 let data = writable(object)?;
-                data.pixels.fill(bg);
+                data.rows.fill(None);
                 data.valid.fill(false);
             }
             SCROLL_TO => object.scroll(call.top)?,
@@ -349,23 +392,21 @@ impl Manager
                     return Err(BAD_ARGUMENT);
                 }
                 let spec = object.spec;
-                let (w, h, _) = dimensions(spec)?;
+                let (w, _, _) = dimensions(spec)?;
                 let data = writable(object)?;
-                let mut canvas = Canvas::new(&mut data.pixels, w, h);
-                let top = index as i16 * spec.row_height;
-                canvas.set_clip(Rect::new(0, top, w as i16, top + spec.row_height));
-                canvas.paint_rect(Rect::new(0, top, w as i16, top + spec.row_height),
-                                  spec.background);
+                let pixels = row_pixels(data, index)?;
+                let mut canvas = Canvas::new(pixels, w, spec.row_height as usize);
+                canvas.paint_rect(Rect::new(0, 0, w as i16, spec.row_height), spec.background);
                 let selected = call.flags & SELECTED != 0;
                 if selected
                 {
-                    canvas.paint_rect(Rect::new(1, top, w as i16, top + spec.row_height - 1),
+                    canvas.paint_rect(Rect::new(1, 0, w as i16, spec.row_height - 1),
                                       spec.selected_background);
                 }
                 fonts.draw(fonts_service::selection(spec.font),
                            &mut canvas,
                            Point { h: spec.padding.h,
-                                   v: top + spec.padding.v },
+                                   v: spec.padding.v },
                            text,
                            if selected { spec.selected_foreground } else { spec.foreground })?;
                 data.valid[index] = true;

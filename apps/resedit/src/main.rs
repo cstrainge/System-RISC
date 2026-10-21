@@ -760,7 +760,9 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
         Ok(()) => mac_toolbox::abi::OK,
         Err(error) =>
         {
-            let _ = system.log("RESEDIT_ERROR\n");
+            let mut message = Text::<128>::new();
+            let _ = writeln!(message, "RESEDIT_ERROR status={}", error.status());
+            let _ = system.log(message.as_str());
             error.status()
         }
     }
