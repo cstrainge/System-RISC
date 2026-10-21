@@ -132,6 +132,16 @@ request tickets, retained replies, quiesce/cleanup, and cancellation before and
 after a real host commit. Resumable scan tests also drop a scan after ListNext
 consumed a child and inject metadata failures: retry must not skip that child.
 
+The `host_filesystem_module` private SDK gate also boots the actual release
+Host Transport and Host Filesystem packages, relocates both into the resident
+module arena, resolves their exact dependencies, and invokes FSYS Exports from
+a separately loaded INIT probe. Its request passes through HDIR/virtio-console
+to the real loopback Linux companion; successful probe initialization verifies
+the returned export count. Rust checks dependency order, successful publication,
+desktop boot, absence of traps/rejections, and unchanged base media. This gate is
+part of `cargo xtask check`. It verifies native callbacks and transport, not
+mounted public File Manager APIs or UI responsiveness during I/O.
+
 `cargo xtask build` also builds and packages Host Transport and Host Filesystem
 as release DRVR/DABI files in the selected output's `dist` directory. The safe
 filesystem engine is wrapped by a narrow native entry with a private 1 MiB heap

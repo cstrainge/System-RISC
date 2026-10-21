@@ -12,6 +12,15 @@ import system7_vm as vm
 
 
 class LauncherTests(unittest.TestCase):
+    def test_invalid_bridge_is_rejected_before_touching_vm_storage_or_processes(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(vm.subprocess, 'Popen') as process:
+            state = Path(folder) / 'new-vm'
+            for port in [0, -1, 65536, True, '4444;anything']:
+                with self.assertRaisesRegex(ValueError, 'loopback TCP port'):
+                    vm.launch(state, host_bridge=port)
+                self.assertFalse(state.exists())
+            process.assert_not_called()
+
     def test_custom_build_directory_reaches_builder_without_shell_splitting(self):
         with tempfile.TemporaryDirectory(prefix='system risc ') as folder, \
              patch.dict(os.environ), patch.object(vm, 'DIST'), patch.object(vm, 'STATE'), \

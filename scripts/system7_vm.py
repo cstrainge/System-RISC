@@ -31,13 +31,15 @@ def build():
 
 
 def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
-           qmp_port=4447):
+           qmp_port=4447, host_bridge=None):
     """Launch a private disk copy. Tests default to read-only and fresh copies.
 
     Persistent desktop starts retain their writable copy while the build is unchanged.
     A new OS build replaces that copy; obsolete boot disks are not retained.
     """
     state = Path(state).resolve()
+    if host_bridge is not None and (type(host_bridge) is not int or not 0 < host_bridge < 65536):
+        raise ValueError('host bridge must be an explicit loopback TCP port')
     state.mkdir(parents=True, exist_ok=True)
     native = frontend in ('native', 'native-headless')
     if native and not native_executable():
@@ -83,6 +85,13 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
             '-device', 'ramfb', '-device', 'virtio-keyboard-device', '-device', 'virtio-tablet-device',
             '-display', display, '-nic', 'none', '-serial', 'file:' + host_path(serial),
             '-parallel', 'none', '-monitor', 'none', '-qmp', monitor]
+    if host_bridge is not None:
+        # Bus 3 is reserved for this optional transport. Extra disks start at 4.
+        # The listener owns the explicit exports; this never exports a default
+        # workspace or accepts an arbitrary QEMU device/command string.
+        args.extend(['-chardev', f'socket,id=hostbridge,host=127.0.0.1,port={host_bridge},reconnect-ms=100',
+                     '-device', 'virtio-serial-device,bus=virtio-mmio-bus.3',
+                     '-device', 'virtconsole,chardev=hostbridge'])
     for index, source in enumerate(extra_disks, start=1):
         if index > 4:
             raise ValueError('At most four additional disks fit beside graphics/input devices')
