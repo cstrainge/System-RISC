@@ -334,8 +334,11 @@ as release DRVR/DABI files in the selected output's `dist` directory. The safe
 filesystem engine is wrapped by a narrow native entry with a private 1 MiB heap
 and an exact HDIR dependency. The allocation helper is a separate
 `mac-driver-alloc` crate so allocation-free modules do not acquire an allocator
-requirement through Cargo feature unification. These packages are not installed
-in the default disk yet: provider application loading, remaining write-back APIs, normal
+requirement through Cargo feature unification. `cargo xtask image` installs both
+packages in the blessed `System Folder/Drivers` directory and verifies their
+forks and metadata with the other installed files. Without the optional host
+channel, discovery skips the transport and its dependent filesystem cleanly.
+Provider application loading, remaining write-back APIs, normal
 launcher export configuration and complete public-SDK filesystem acceptance
 remain in progress. Private guest mounting works; that is not yet a usable host
 directory in Finder or a mounted StuffIt volume, and is not a hard latency

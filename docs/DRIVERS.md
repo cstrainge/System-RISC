@@ -229,10 +229,13 @@ included in `cargo xtask check` as well as its standalone gate.
 `drivers/vhost-transport` contains the first production transport module. Its
 safe packet engine has host tests for bounded fragments, borrowed-input lifetime,
 initial connection retry, cancellation drainage and link/protocol failure. The
-RV64 MMIO/DMA adapter builds and packages as `DRVR` + `DABI`; it has **not yet
-passed a live production-module packet-transfer gate**. The earlier disposable
-channel qualification is separate evidence. It is not installed in the ordinary
-System image yet, and no host directory is mounted by this checkpoint.
+RV64 MMIO/DMA adapter packages as `DRVR` + `DABI`. The ordinary image installs
+Host Transport and Host Filesystem in `System Folder/Drivers`; both remain
+external, independently loaded files. The private native filesystem gates pass
+requests through these production modules to the real Linux host companion.
+Without the optional host channel, discovery skips both packages and boots
+normally. Normal launcher export configuration remains delivery work; installing
+the drivers does not automatically mount a host directory.
 
 `system::drivers::jobs` is the safe owned-request queue for subsequent resident
 integration. Jobs use the shared generation facility, retain bounded owned input

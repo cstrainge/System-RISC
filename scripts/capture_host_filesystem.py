@@ -51,8 +51,6 @@ def capture(output, sdk=False):
         subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                         str(base / 'system7.qcow2'), str(raw)], check=True)
         image = Image(raw)
-        for name in ['Host Transport', 'Host Filesystem']:
-            image.import_macbinary(base / f'{name}.bin', '/System Folder/Drivers')
         if sdk:
             image.remove('/System Folder/Finder')
             image.import_macbinary(output / 'packages/Finder.bin', '/System Folder')

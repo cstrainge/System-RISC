@@ -145,7 +145,6 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
             cases.last_mut().unwrap()["files"].as_array_mut().unwrap().reverse();
         }
     }
-    let dist = mac_build::paths::dist_dir(&root);
     let mut alternate_resources = resources.clone();
     let contract = alternate_resources.iter_mut().find(|r| r.kind == *b"DABI").unwrap();
     contract.data[55] = 0x20;
@@ -158,9 +157,9 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
         {"source":output.join("no-device.bin"),"directory":"/System Folder/Drivers"},
         {"source":alternate_path,"directory":"/System Folder/Drivers"},
         {"source":client,"directory":"/System Folder/Drivers"}]}));
-    cases.push(json!({"name":"host-device-absent","files":[
-        {"source":dist.join("Host Filesystem.bin"),"directory":"/System Folder/Drivers"},
-        {"source":dist.join("Host Transport.bin"),"directory":"/System Folder/Drivers"}]}));
+    // Use the unmodified installation: the regular image must contain both
+    // drivers, and boot must succeed without the optional host channel.
+    cases.push(json!({"name":"host-device-absent","files":[]}));
     let case_path = output.join("cases.json");
     fs::write(&case_path, serde_json::to_vec_pretty(&cases).unwrap()).unwrap();
     python(&script,

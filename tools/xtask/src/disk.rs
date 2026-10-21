@@ -77,7 +77,8 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     let system = volume.create(2, "System Folder", true, when)?.id;
     let applications = volume.create(2, "Applications", true, when)?.id;
     volume.create(2, "Documents", true, when)?;
-    for name in ["Drivers", "Extensions", "Fonts", "Control Panels", "Preferences"]
+    let drivers = volume.create(system, "Drivers", true, when)?.id;
+    for name in ["Extensions", "Fonts", "Control Panels", "Preferences"]
     {
         volume.create(system, name, true, when)?;
     }
@@ -88,7 +89,9 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                       (applications, "Applications", "TextEdit Exerciser"),
                                       (applications, "Applications", "Cursor Test"),
                                       (applications, "Applications", "Panic Test"),
-                                      (applications, "Applications", "ResEdit")]
+                                      (applications, "Applications", "ResEdit"),
+                                      (drivers, "System Folder/Drivers", "Host Transport"),
+                                      (drivers, "System Folder/Drivers", "Host Filesystem")]
     {
         let bytes = fs::read(workspace.build.join("dist").join(format!("{name}.bin")))?;
         let original = macbinary::decode(&bytes)?;
@@ -152,7 +155,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
         "blessed_system_folder_id":system,"files":verified,"catalog_files":checked.files,"catalog_directories":checked.directories,
         "qcow2_check":"passed","raw_qcow2_comparison":"passed","riscv_disk_boot_available":true,"boot_rom":workspace.describe(&dist.join("bootrom.bin"))});
     write_json(&dist.join("disk.json"), &report)?;
-    println!("Built 500 MiB HFS-B v1/qcow2; all application forks, metadata, blessing and \
+    println!("Built 500 MiB HFS-B v1/qcow2; all installed forks, metadata, blessing and \
               structural checks passed.");
     Ok(report)
 }

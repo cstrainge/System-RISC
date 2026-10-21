@@ -48,6 +48,11 @@ def capture(output, cases):
             subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                             str(original / 'system7.qcow2'), str(raw)], check=True)
             image = Image(raw)
+            if name != 'host-device-absent':
+                # Malformed/synthetic module cases need an isolated discovery
+                # set. The host-device case exercises the image's installation.
+                for driver in ['Host Transport', 'Host Filesystem']:
+                    image.remove('/System Folder/Drivers/' + driver)
             for file in case['files']:
                 image.import_macbinary(Path(file['source']), file['directory'])
             shutil.copyfile(original / 'bootrom.bin', dist / 'bootrom.bin')

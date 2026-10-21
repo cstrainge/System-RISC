@@ -22,14 +22,16 @@ A higher-level cancellable batch transfer must handle rollback of its outputs.
 `tests/reader.rs` runs against real host directories and the production host
 companion session, with split future polls, both forks, Unicode/case collisions,
 external changes, stale/foreign tokens, flush/close failures, cancellation and
-ID reservation. This is component coverage. The library is **not yet a loadable
-module or a mounted guest filesystem**; File Manager routing, the native wrapper,
-rename/directory/delete operations and public-SDK VM acceptance remain delivery
-work. Host-directory mounting is not ready for interactive use yet.
+ID reservation. These are component tests; native public-SDK guest coverage is
+documented in `docs/FILESYSTEM-INTERFACE.md`. Host-directory mounting is not ready
+for interactive use yet: normal launcher export configuration, provider app
+loading, remaining mutations and external-change refresh are still delivery work.
 
-The common `FSYS` v1 byte codec and its library-side service dispatch now exist;
+The common `FSYS` v2 byte codec and its library-side service dispatch now exist;
 see `docs/FILESYSTEM-INTERFACE.md`. `DirectoryRpc` adapts the checked module
 provider capability into bounded futures with reusable packet buffers. Its ticket
 survives an abandoned future, and draining returns an acknowledged host mutation
-instead of pretending cancellation undid it. These remain component contracts,
-not an installed native module or public File Manager mount.
+instead of pretending cancellation undid it. The native Host Filesystem module
+and its separate Host Transport dependency are installed as `DRVR` files in
+`System Folder/Drivers` by the normal image build. Discovery skips them when the
+optional virtual-host channel is absent.
