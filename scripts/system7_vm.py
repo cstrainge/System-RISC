@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -31,7 +32,7 @@ def build():
 
 
 def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
-           qmp_port=4447, host_bridge=None):
+           qmp_port=4447, host_bridge=None, expected_exports=None):
     """Launch a private disk copy. Tests default to read-only and fresh copies.
 
     Persistent desktop starts retain their writable copy while the build is unchanged.
@@ -40,6 +41,10 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     state = Path(state).resolve()
     if host_bridge is not None and (type(host_bridge) is not int or not 0 < host_bridge < 65536):
         raise ValueError('host bridge must be an explicit loopback TCP port')
+    if expected_exports is not None and (type(expected_exports) is not int
+                                         or not 1 <= expected_exports <= 16
+                                         or host_bridge is None):
+        raise ValueError('expected exports require a host bridge and a count from 1 to 16')
     state.mkdir(parents=True, exist_ok=True)
     native = frontend in ('native', 'native-headless')
     if native and not native_executable():
@@ -111,13 +116,20 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
         process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                    env=env, start_new_session=True)
     (state / 'pid').write_text(str(process.pid) + '\n')
-    deadline = time.monotonic() + 25
+    # Native Windows QEMU reads WSL-hosted media through UNC paths. Its GTK
+    # profile cold-boots this image in ~33 seconds, beyond the Linux budget.
+    deadline = time.monotonic() + (60 if native else 25)
     try:
         while time.monotonic() < deadline:
             log = serial.read_text(errors='replace')
             if process.poll() is not None:
                 raise RuntimeError((state / 'qemu.log').read_text() + '\n' + log)
             if 'DESKTOP_READY' in log:
+                if expected_exports is not None:
+                    mounted = {int(index) for index in re.findall(
+                        r'^HOST_VOLUME_MOUNTED index=(\d+) ', log, flags=re.MULTILINE)}
+                    if mounted != set(range(expected_exports)):
+                        raise RuntimeError('Requested host volumes did not all mount:\n' + log)
                 qmp('query-status', endpoint=endpoint)
                 return process, endpoint
             if any(marker in log for marker in ['BOOT_NO_SYSTEM:', 'BOOT_TRAP:', 'BOOT_PANIC:',
@@ -140,23 +152,54 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
         raise
 
 
-def start(frontend='auto', rebuild=True, qmp_port=4447):
+def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_exports=(), transfer=True):
+    count = len(exports) + len(readonly_exports) + int(transfer)
+    if count > 16:
+        raise ValueError('select at most sixteen explicit host exports')
     try:
         status = qmp('query-status')
     except (OSError, ValueError, RuntimeError):
         pass
     else:
+        if exports or readonly_exports:
+            raise RuntimeError('VM is already running; stop it before changing host exports')
         print(json.dumps({'already_running': status}))
         return
     if rebuild:
         build()
     if frontend == 'auto':
         frontend = 'native' if native_executable() else 'gtk'
-    process, _ = launch(STATE, frontend, writable=True, preserve=True, qmp_port=qmp_port)
+    companion = None
+    port = None
+    initialize = None
+    if transfer:
+        # Private build profiles get private exports; tests never touch the
+        # user's persistent source-root transfer volume.
+        initialize = ((ROOT / 'System7') if build_dir() == ROOT / 'build/system7'
+                      else build_dir()) / 'transfer'
+        exports = [f'Transfer={initialize}', *exports]
+    try:
+        if count:
+            import system7_exports
+            companion, port = system7_exports.start(STATE, exports, readonly_exports,
+                                                     initialize=initialize)
+        STATE.mkdir(parents=True, exist_ok=True)
+        (STATE / 'host-exports.json').write_text(json.dumps({
+            'exports': list(exports), 'read_only_exports': list(readonly_exports),
+            'companion_pid': companion.pid if companion is not None else None,
+            'port': port}, indent=2) + '\n')
+        process, endpoint = launch(STATE, frontend, writable=True, preserve=True,
+                                   qmp_port=qmp_port, host_bridge=port,
+                                   expected_exports=count or None)
+    except BaseException:
+        if companion is not None:
+            system7_exports.stop(companion)
+        raise
     print(json.dumps({'pid': process.pid, 'frontend': 'native-gtk' if frontend == 'native' else frontend,
                       'bootrom': describe(STATE / 'bootrom.bin'),
                       'disk': describe(STATE / 'system7.qcow2'), 'build_dir': str(build_dir())}))
     print((STATE / 'serial.log').read_text())
+    return process, endpoint
 
 
 def check(rebuild=True, state=None):
@@ -213,6 +256,13 @@ def main():
     launch_parser = sub.add_parser('start')
     launch_parser.add_argument('--frontend', choices=['auto', 'native', 'gtk', 'headless'], default='auto')
     launch_parser.add_argument('--no-build', action='store_true')
+    launch_parser.add_argument('--no-transfer', action='store_true',
+                               help='Disable the default Transfer volume for this VM')
+    from system7_exports import export_argument
+    launch_parser.add_argument('--export', action='append', default=[], type=export_argument,
+                               metavar='NAME=PATH', help='Expose a prepared read/write host volume (repeatable)')
+    launch_parser.add_argument('--read-only-export', action='append', default=[], type=export_argument,
+                               metavar='NAME=PATH', help='Expose a prepared read-only host volume (repeatable)')
     launch_parser.add_argument('--qmp-port', type=int, default=4447,
                                help='Native Windows QMP port; choose another for a second VM')
     check_parser = sub.add_parser('check')
@@ -239,7 +289,9 @@ def main():
     if args.action == 'build':
         build()
     elif args.action == 'start':
-        start(args.frontend, not args.no_build, args.qmp_port)
+        start(args.frontend, not args.no_build, args.qmp_port,
+              exports=args.export, readonly_exports=args.read_only_export,
+              transfer=not args.no_transfer)
     elif args.action == 'check':
         check(not args.no_build, args.state_dir.resolve() if args.state_dir else None)
     elif args.action == 'status':

@@ -260,6 +260,10 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                                                                         initialization failed")
                                                 })?;
     crate::drivers::discover().map_err(|_| mac_formats::Error("module discovery failed"))?;
+    if let Err(status) = crate::toolbox::files::mount_startup_exports()
+    {
+        serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
+    }
     let mut system = crate::loader::read_startup("System")?;
     let finder = crate::loader::read_startup("Finder")?;
     let finder_entry = crate::loader::application(&finder)?;

@@ -13,7 +13,8 @@ use mac_filesystem::{BlockDevice, CatalogEntry, Fork, MutationError, Partition, 
 pub use mac_formats::macbinary::MacFile;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use provider::runtime::{abandon_thread as abandon_provider_thread,
-                                   pump as pump_provider_operations, request_resource};
+                                   mount_startup_exports, pump as pump_provider_operations,
+                                   request_resource};
 
 pub const MAX_DISKS: u32 = 32;
 pub const MAX_VOLUMES: usize = crate::toolbox::handles::Kind::Volumes.capacity();

@@ -6,6 +6,42 @@ use std::{fs,
 
 use mac_host_protocol::{self as wire, Header, Operation as Op, status};
 use risc_host::{Export, Session};
+#[test]
+fn one_session_companion_exits_when_its_vm_disconnects()
+{
+    use std::{io::{BufRead, BufReader},
+              process::{Command, Stdio},
+              time::{Duration, Instant}};
+    let temp = Temp::new();
+    let mut child =
+        Command::new(env!("CARGO_BIN_EXE_risc-host")).args(["--one-session", "--read-only-export"])
+                                                     .arg(format!("Test={}", temp.0.display()))
+                                                     .stdout(Stdio::piped())
+                                                     .spawn()
+                                                     .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    let address = line.trim().strip_prefix("HOST_BRIDGE_READY ").unwrap();
+    let stream = TcpStream::connect(address).unwrap();
+    drop(stream);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop
+    {
+        if let Some(status) = child.try_wait().unwrap()
+        {
+            break status;
+        }
+        if Instant::now() >= deadline
+        {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("companion retained its listener after VM disconnect");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(status.success(), "{status}");
+}
+
 struct Temp(PathBuf);
 impl Temp
 {

@@ -23,9 +23,10 @@ A higher-level cancellable batch transfer must handle rollback of its outputs.
 companion session, with split future polls, both forks, Unicode/case collisions,
 external changes, stale/foreign tokens, flush/close failures, cancellation and
 ID reservation. These are component tests; native public-SDK guest coverage is
-documented in `docs/FILESYSTEM-INTERFACE.md`. Host-directory mounting is not ready
-for interactive use yet: normal launcher export configuration, provider app
-loading, remaining mutations and external-change refresh are still delivery work.
+documented in `docs/FILESYSTEM-INTERFACE.md`. The normal launcher exposes a default
+Transfer volume plus explicitly selected exports. System mounts them before
+launching Finder. Provider app loading, remaining mutations, complete Finder
+copying and external-change refresh are still delivery work.
 
 The common `FSYS` v2 byte codec and its library-side service dispatch now exist;
 see `docs/FILESYSTEM-INTERFACE.md`. `DirectoryRpc` adapts the checked module

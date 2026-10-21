@@ -72,6 +72,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
                            | files::LOOKUP
                            | files::ALLOCATION_INFO
                            | files::PATH);
+    let trash_query = call.operation == files::TRASH_DIRECTORY && call.index == 0;
     let opening = call.operation == files::OPEN;
     let fork_io = matches!(call.operation, files::READ | files::CLOSE);
     if !matches!(call.operation,
@@ -79,6 +80,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
        && !catalog
        && !opening
        && !fork_io
+       && !trash_query
     {
         return None;
     }
@@ -94,7 +96,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
        || call.whence != 0
        || call.reserved != 0
        || call.offset != 0
-       || call.position != 0
+       || (!trash_query && call.position != 0)
        || call.length != 0
        || (call.operation != files::LOOKUP && call.name_length != 0)
        || call.name_length > 4096
@@ -131,7 +133,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
         unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
     };
     call.transferred = 0;
-    if catalog || opening || fork_io
+    if catalog || opening || fork_io || trash_query
     {
         // Complete local reads in the same handoff used for routing. Introducing
         // providers must not add a second Files guard/stack switch to disk reads.

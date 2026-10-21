@@ -4,6 +4,7 @@
 /dist/
 /results/
 /working/
+/transfer/
 # Generated rustdoc, refreshed by cargo xtask doc/check.
 /docs/api/
 /.toolchains/

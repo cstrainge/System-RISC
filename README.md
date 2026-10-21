@@ -79,6 +79,33 @@ before and after the gate; reports, screenshots and original reference media
 remain. Its QMP port is4447;
 the classic Mac and old QuickDraw machines keep their own state and ports.
 
+Normal startup initializes `System7/transfer` on first use and exposes it as a
+read/write **Transfer** volume. It is ignored by Git and survives disk rebuilds.
+System detects and mounts the driver's exports before launching Finder; Finder
+uses ordinary mounted-volume APIs. `--no-transfer` disables this default share.
+Custom build profiles use `BUILD_DIR/transfer`, keeping checks away from the
+normal desktop's files. The launcher owns a one-session host companion, which
+exits when QEMU disconnects; failed launches stop their companion too.
+
+Transfer uses the native fork-container format. Import ordinary host files or
+MacBinary applications explicitly so resource forks and metadata survive:
+
+```sh
+cargo run --release -p risc-forks -- import transfer /path/to/file-or-folder
+cargo run --release -p risc-forks -- import-macbinary transfer /path/to/application.bin
+cargo run --release -p risc-forks -- export transfer /Documents /tmp/saved-documents
+# Additional prepared volumes; both flags are repeatable:
+./scripts/system7_vm.py start --export 'Software=/path/to/prepared-volume' \
+  --read-only-export 'Reference=/path/to/readonly-volume'
+```
+
+Read/write exports use the Linux companion, including with native Windows QEMU.
+Provider application loading, folder/rename/delete mutations, full Finder copy
+operations and external-change refresh remain implementation work; a mounted
+volume does not imply those paths are complete. Restart the VM to change its
+export configuration. An existing unprepared, nonempty transfer directory is
+rejected rather than reformatted.
+
 Normal builds use `build/system7`; full checks, `boot-check` and the launcher's `check` command
 default to `build/system7/check`. Checks build their own ROM, applications and
 disk there, and every Rust/Python acceptance reader uses that installation.

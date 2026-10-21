@@ -103,6 +103,10 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
             {
                 return finish_read(volume, Err(BAD_ARGUMENT));
             }
+            if flight.key.operation == TRASH_DIRECTORY && entry.kind != DIRECTORY
+            {
+                return finish_read(volume, Err(ALREADY_EXISTS));
+            }
             if entry.kind == DIRECTORY
             {
                 // Obtain/validate the final count only; ancestors were metadata
@@ -189,7 +193,7 @@ pub(super) fn start(owner: u64, thread: u64, key: Key, call: &FileCall, name: &s
     {
         call.cnid
     };
-    let (step, path) = if call.operation == LOOKUP
+    let (step, path) = if matches!(call.operation, LOOKUP | TRASH_DIRECTORY)
     {
         (Step::Lookup { volume,
                         node: Some(node),

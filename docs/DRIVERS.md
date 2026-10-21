@@ -234,8 +234,11 @@ Host Transport and Host Filesystem in `System Folder/Drivers`; both remain
 external, independently loaded files. The private native filesystem gates pass
 requests through these production modules to the real Linux host companion.
 Without the optional host channel, discovery skips both packages and boots
-normally. Normal launcher export configuration remains delivery work; installing
-the drivers does not automatically mount a host directory.
+normally. The launcher supplies a default Transfer export and accepts additional
+explicit exports. After discovery, resident File Manager enumerates and mounts
+the provider's exports before starting userspace; Finder has no special mounting
+path. A bounded startup wait retains pending cancellation and cleanup for the
+normal worker pump if a provider times out.
 
 `system::drivers::jobs` is the safe owned-request queue for subsequent resident
 integration. Jobs use the shared generation facility, retain bounded owned input

@@ -14,6 +14,10 @@ workspace directory is exported implicitly. `--read-only-export NAME=PATH` opens
 a read-only export. `--listen 127.0.0.1:PORT` selects a fixed loopback endpoint.
 A companion serves one VM connection at a time; a reconnect gets fresh IDs and
 drops old locks, snapshots, enumerations and unpublished transactions.
+`--one-session` serves one connection and exits when the VM disconnects. It also
+exits if no VM connects within 30 seconds. The normal launcher uses this mode,
+exposes its prepared Transfer folder by default, and accepts additional explicit
+exports; it never exports an arbitrary workspace directory.
 
 Read/write exports currently require the qualified Linux host adapter. Startup
 probes staged creation, file sync, no-replace publication/move, replacement and

@@ -88,6 +88,21 @@ fn check_legacy_resources(system: &System<'_>, gate: mac_toolbox::abi::TrapGate)
 pub fn check(system: &System<'_>) -> Result<(), Error>
 {
     let files = system.files();
+    // System, not this fixture or Finder, mounts device exports before starting
+    // userspace. Repeated explicit requests must find those same live volumes.
+    system.log("HOST_FS_STAGE automatic-mounts\n")?;
+    require(files.volume_count()? == 3)?;
+    let automatic_rw = files.volume_at(1)?;
+    let automatic_ro = files.volume_at(2)?;
+    require(files.trash_directory(automatic_rw.id, false) == Err(Error::NotFound))?;
+    require(files.trash_directory(automatic_ro.id, false) == Err(Error::NotFound))?;
+    require(automatic_rw.name() == "Native Host" && !automatic_rw.read_only)?;
+    require(automatic_ro.name() == "Read Only Host" && automatic_ro.read_only)?;
+    require(files.mount_host_export(0)?.id == automatic_rw.id)?;
+    require(files.mount_host_export(1)?.id == automatic_ro.id)?;
+    require(files.volume_count()? == 3)?;
+    files.unmount(automatic_rw.id)?;
+    files.unmount(automatic_ro.id)?;
     let before = files.volume_count()?;
     system.log("HOST_FS_STAGE exports\n")?;
     require(files.host_export_count()? == 2)?;

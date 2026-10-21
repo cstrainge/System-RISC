@@ -338,11 +338,18 @@ requirement through Cargo feature unification. `cargo xtask image` installs both
 packages in the blessed `System Folder/Drivers` directory and verifies their
 forks and metadata with the other installed files. Without the optional host
 channel, discovery skips the transport and its dependent filesystem cleanly.
-Provider application loading, remaining write-back APIs, normal
-launcher export configuration and complete public-SDK filesystem acceptance
-remain in progress. Private guest mounting works; that is not yet a usable host
-directory in Finder or a mounted StuffIt volume, and is not a hard latency
-acceptance result.
+Resident startup mounts all advertised exports before launching any application,
+using the same owned jobs and acknowledged cleanup as explicit SDK mounts.
+`system7_vm.py start` exposes `System7/transfer` by default and accepts repeatable
+`--export`/`--read-only-export` options. Custom profiles use a private transfer
+root. The normal-launcher gate opens mounted volumes in the actual Finder and
+checks that its one-session companion exits with QEMU. Public SDK cases replace
+Finder and independently verify automatic mounts and repeated-mount identity.
+Read-only Trash-directory queries use provider lookup/catalog services, including
+absent folders; they do not require mutation support.
+Provider application loading, remaining mutations, full two-fork copying and
+external refresh remain in progress. This is not a mounted StuffIt volume or a
+hard latency acceptance result.
 
 Real-host component tests additionally cover creation properties, long
 decomposed input normalizing to the 255-byte boundary, full metadata round trips,

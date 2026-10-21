@@ -12,6 +12,8 @@ use spinning_top::Spinlock;
 use crate::drivers::{OwnedJob, jobs::Failure};
 mod forks;
 mod paths;
+mod startup;
+pub(crate) use startup::mount_startup_exports;
 mod resources;
 mod writes;
 pub(in crate::toolbox::files::provider) use forks::request_fork_cleanup;
@@ -566,6 +568,8 @@ pub(crate) fn request_scan(owner: u64, call: &mut FileScanCall) -> Status
 
 pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut [u8]) -> Status
 {
+    // Replay identity includes resident-derived paths as well as app strings.
+    let name = if call.operation == TRASH_DIRECTORY && call.index == 0 { "Trash" } else { name };
     let thread = crate::context::current_thread().0;
     if thread <= 1
     {
@@ -595,6 +599,10 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
         Err(error) => return error
     }
     if matches!(call.operation, LOOKUP | PATH)
+    {
+        return paths::start(owner, thread, key, call, name);
+    }
+    if call.operation == TRASH_DIRECTORY && call.index == 0
     {
         return paths::start(owner, thread, key, call, name);
     }
@@ -702,20 +710,26 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
         HOST_EXPORT_COUNT => (Step::Count, Operation::Exports, 0, 0),
         MOUNT_HOST_EXPORT =>
         {
-            match files(|manager| manager.existing_provider_mount(provider, u64::from(call.index)))
+            return match startup::host_mount(provider, call.index)
             {
-                Ok(Some(info)) => return reply(call, output, Ok(Reply::Mounted(info))),
-                Ok(None) => (),
-                Err(error) => return error
-            }
-            let id = match files(|manager| {
-                      manager.reserve_provider_mount(provider, u64::from(call.index))
-                  })
-            {
-                Ok(id) => id,
-                Err(error) => return error
+                Ok(startup::HostMount::Existing(info)) =>
+                {
+                    reply(call, output, Ok(Reply::Mounted(info)))
+                }
+                Ok(startup::HostMount::Pending(volume, job)) =>
+                {
+                    waiting(Flight { thread,
+                                     owner,
+                                     key,
+                                     provider,
+                                     step: Step::Mount(volume),
+                                     job,
+                                     abandoned: false,
+                                     input: String::new(),
+                                     path: None })
+                }
+                Err(error) => error
             };
-            (Step::Mount(id), Operation::Mount, id, u64::from(call.index))
         }
         UNMOUNT_VOLUME => (Step::Unmount(call.volume), Operation::Unmount, call.volume, 0),
         _ => return BAD_ARGUMENT
@@ -725,11 +739,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
         Ok(job) => job,
         Err(error) =>
         {
-            if operation == Operation::Mount
-            {
-                let _ = files(|manager| manager.retire_provider_mount(volume));
-            }
-            else if operation == Operation::Unmount
+            if operation == Operation::Unmount
             {
                 let _ = files(|manager| manager.quarantine_provider_mount(volume));
             }

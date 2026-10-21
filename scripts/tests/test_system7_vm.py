@@ -11,9 +11,54 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import system7_vm as vm
 import system7_paths as paths
 import hfs_b_tool
+import system7_exports
 
 
 class LauncherTests(unittest.TestCase):
+    def test_transfer_follows_the_profile_and_is_initialized_before_launch(self):
+        for normal in [False, True]:
+            with self.subTest(normal=normal), tempfile.TemporaryDirectory() as folder:
+                state = Path(folder) / 'vm'
+                selected = vm.ROOT / 'build/system7' if normal else Path(folder)
+                expected = vm.ROOT / 'System7/transfer' if normal else selected / 'transfer'
+                from unittest.mock import Mock
+                companion = Mock(pid=123)
+                process = Mock(pid=456)
+                state.mkdir()
+                (state / 'serial.log').write_text('DESKTOP_READY\n')
+                with patch.object(vm, 'STATE', state), patch.object(vm, 'qmp', side_effect=OSError), \
+                     patch.object(vm, 'build_dir', return_value=selected), \
+                     patch.object(system7_exports, 'start', return_value=(companion, 1234)) as bridge, \
+                     patch.object(vm, 'launch', return_value=(process, {})) as launch:
+                    vm.start('headless', False)
+                    bridge.assert_called_once_with(state, [f'Transfer={expected}'], (), initialize=expected)
+                    self.assertEqual(launch.call_args.kwargs['expected_exports'], 1)
+                    self.assertEqual(launch.call_args.kwargs['host_bridge'], 1234)
+
+    def test_failed_vm_launch_reaps_its_own_companion(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as folder, patch.object(vm, 'STATE', Path(folder)), \
+             patch.object(vm, 'qmp', side_effect=OSError), \
+             patch.object(system7_exports, 'start', return_value=(Mock(pid=123), 1234)) as bridge, \
+             patch.object(system7_exports, 'stop') as stop, \
+             patch.object(vm, 'launch', side_effect=RuntimeError('failed boot')):
+            with self.assertRaisesRegex(RuntimeError, 'failed boot'):
+                vm.start('headless', False, exports=['Test=' + folder], transfer=False)
+            stop.assert_called_once_with(bridge.return_value[0])
+
+    def test_export_limit_is_checked_before_building_or_starting_anything(self):
+        with patch.object(vm, 'build') as build, patch.object(vm, 'qmp') as qmp:
+            with self.assertRaisesRegex(ValueError, 'sixteen'):
+                vm.start(exports=['Unused=/tmp'] * 16)
+            build.assert_not_called()
+            qmp.assert_not_called()
+
+    def test_exports_cannot_silently_change_a_running_vm(self):
+        with patch.object(vm, 'qmp', return_value={}), patch.object(vm, 'build') as build:
+            with self.assertRaisesRegex(RuntimeError, 'already running'):
+                vm.start(exports=['Test=/tmp'])
+            build.assert_not_called()
+
     def test_host_cache_and_hfs_tool_follow_the_selected_build_root(self):
         with tempfile.TemporaryDirectory(prefix='system risc ') as folder, \
              patch.dict(os.environ, {'SYSTEM7_BUILD_DIR': folder}), \
