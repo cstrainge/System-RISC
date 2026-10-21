@@ -20,6 +20,12 @@ the whole state); every object ID through the shared generation-tagged
 facility; typed errors; RAII owners in the public SDK; canonical tests
 in `crates/mac-toolbox/tests` via the public SDK.
 
+As part of this Finder phase, move the source project from `finder/` to
+`apps/finder/`. Update Cargo/build/resource paths, tooling, checks and active
+documentation together; do not retain a duplicate source tree. This is source
+organization only: the packaged Finder remains physically installed in the
+blessed **System Folder**, not in the disk's Applications folder.
+
 ## 2. Part 1 — the performance fix (substrate)
 
 Finding, for reference: `Browser::click` hit-tests by re-enumerating
@@ -230,6 +236,12 @@ retired in favor of the manager.
   identical values, and coalesce progress to visible changes. No folder scans,
   full-window repaints or event storm per copied chunk. Close after successful
   completion/cancellation and release all managed controls/windows through RAII.
+- Once this progress-bar CDEF/control is available, replace the kernel boot
+  screen's custom progress drawing with the same managed control. Establish its
+  resources/services early enough for boot, before Finder or any application
+  event loop exists. Preserve desktop-background styling and bounded updates;
+  do not keep a duplicate kernel-only progress implementation. The ROM's early
+  Happy Mac/missing-disk indicators remain a separate bootstrap concern.
 - TextEdit is the validation second client when its surface is
   ready (text flavor, promise-kept) — not a Part 3 deliverable.
 
