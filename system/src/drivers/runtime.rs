@@ -10,7 +10,9 @@ use mac_module::{ClassId, PackageKind, Target, abi};
 use super::{Error, Registry};
 use crate::state::TryState;
 mod discovery;
+mod file_handlers;
 pub(crate) use discovery::discover;
+pub(crate) use file_handlers::{file_handler_icon, file_handler_provider};
 static RUNTIME: TryState<Runtime> = TryState::new();
 struct Runtime
 {
@@ -22,11 +24,12 @@ struct Runtime
 }
 struct Binding
 {
-    module:   u32,
-    base:     u64,
-    limit:    u64,
-    _host:    Box<abi::Host>,
-    instance: Option<abi::Instance>
+    module:        u32,
+    base:          u64,
+    limit:         u64,
+    _host:         Box<abi::Host>,
+    instance:      Option<abi::Instance>,
+    file_handlers: Vec<file_handlers::Icon>
 }
 /// Class adapters receive checked fresh borrows, never C pointers or registry
 /// guards. They may return Pending but cannot retain either borrowed buffer.
@@ -146,6 +149,10 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
                                                                     error);
                                                             BAD_ABI
                                                         })?;
+    let handlers = file_handlers::prepare(resources, package.contract)?;
+    let mut rules = Vec::new();
+    rules.try_reserve_exact(handlers.len()).map_err(|_| NO_MEMORY)?;
+    rules.extend(handlers.iter().map(|h| h.rule));
     let (module, entry, host, base, limit) =
         RUNTIME.with(|runtime| {
                    let extent =
@@ -164,6 +171,11 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
                    let module = runtime.registry
                                        .stage(package.contract, directory, file_type)
                                        .map_err(status)?;
+                   if let Err(error) = runtime.registry.install_file_handlers(module, rules)
+                   {
+                       let _ = runtime.registry.rollback(module);
+                       return Err(status(error));
+                   }
                    let host = Box::new(abi::Host { header: abi::Header::of::<abi::Host>(),
                                                    module,
                                                    reserved: 0,
@@ -188,7 +200,8 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
                                                    base,
                                                    limit,
                                                    _host: host,
-                                                   instance: None });
+                                                   instance: None,
+                                                   file_handlers: handlers });
                    Ok((module, entry, pointer, base, limit))
                })
                .map_err(crate::state::AccessError::status)??;

@@ -500,9 +500,12 @@ host-directory mounts remain a separate workstream.
 
 ### P16 — StuffIt archive volumes
 
-Status: backlog, after P15 and the required mount interfaces. Finder opening a
-`.sit` mounts it as an ordinary read-only volume through a file-backed filesystem
-driver. Preserve both forks and Macintosh metadata; decode on demand with bounded
+Status: classic v1 read-only native driver verified on HFS-B and writable/read-only
+host exports. Driver-owned file associations and 16/32 color/mono icons accompany
+the generic Finder open path; a missing driver supplies neither. Native tests cover
+double-click, both fork reads, data copy-out, source pins and stale IDs. Full
+two-fork copy transactions, original Macintosh comparisons and guest cancellation
+during deferred reads remain open. Preserve both forks and Macintosh metadata; decode on demand with bounded
 caches and work. Standard File, Resource Manager and copy-out use the existing
 public services. Qualify an explicit format/codec matrix, source leases, eject,
 integrity, unsupported formats and stale IDs. See [the archive-volume plan](ARCHIVE-VOLUMES.md).

@@ -23,7 +23,7 @@ pub(super) fn host_mount(provider: u32, index: u32) -> Result<HostMount, Status>
     match submit(provider, Operation::Mount, volume, u64::from(index))
     {
         Ok(job) => Ok(HostMount::Pending(volume, job)),
-        Err(error) => retire(volume).and(Err(error))
+        Err(error) => retire_unstarted_export(volume).and(Err(error))
     }
 }
 
@@ -60,8 +60,7 @@ fn complete(provider: u32, step: Step, job: OwnedJob) -> Result<Reply, Status>
         };
         if crate::platform::ticks().wrapping_sub(start) >= 50_000_000
         {
-            flight.abandoned = true;
-            let _ = flight.job.cancel();
+            flight.abandon();
             FLIGHTS.lock().push(flight);
             REAP.store(true, Ordering::Release);
             return Err(IO_ERROR);

@@ -3,11 +3,13 @@
 import argparse
 import hashlib
 import json
+import select
 from pathlib import Path
 import shutil
 import subprocess
 import time
 
+from capture_system7_applications_ui import Driver
 from hfs_b_tool import Image
 import system7_vm as vm
 
@@ -16,10 +18,10 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def capture(output):
+def capture(output, without_driver=False, finder=False):
     output.mkdir(parents=True, exist_ok=False)
     target = vm.build_dir() / 'fixtures/modules'
-    for fixture, binary in [('stuffit-app', 'Finder')]:
+    for fixture, binary in ([] if finder else [('stuffit-app', 'Finder')]):
         manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
         subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
                         '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin', binary,
@@ -29,25 +31,65 @@ def capture(output):
                         str(target / 'riscv64imac-unknown-none-elf/release' / binary),
                         str(output / 'packages')], check=True)
     base = vm.DIST
+    subprocess.run(['cargo', 'build', '--locked', '-p', 'risc-host', '-p', 'risc-forks',
+                    '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.ROOT / 'System7', check=True)
     before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
     dist = output / 'dist'
     dist.mkdir()
     raw = dist / 'stuffit.raw'
-    process = None
+    process = companion = None
     try:
         subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                         str(base / 'system7.qcow2'), str(raw)], check=True)
         image = Image(raw)
-        image.remove('/System Folder/Finder')
-        image.import_macbinary(output / 'packages/Finder.bin', '/System Folder')
+        if not finder:
+            image.remove('/System Folder/Finder')
+            image.import_macbinary(output / 'packages/Finder.bin', '/System Folder')
+        if without_driver:
+            image.remove('/System Folder/Drivers/StuffIt Filesystem')
+            image.mkdir('/No StuffIt Driver')
         subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                         str(dist / 'system7.qcow2')], check=True)
         shutil.copyfile(base / 'bootrom.bin', dist / 'bootrom.bin')
+        host = vm.build_dir() / 'host/debug'
+        exports = []
+        for directory in ['writable', 'readonly']:
+            folder = output / directory
+            subprocess.run([str(host / 'risc-forks'), 'init', str(folder), directory], check=True)
+            source = output / 'Examples.sit'
+            shutil.copyfile(vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/nested-v1.sit', source)
+            subprocess.run([str(host / 'risc-forks'), 'import', str(folder), str(source)], check=True)
+            exports.append(folder)
+        companion_log = (output / 'host.log').open('w')
+        companion = subprocess.Popen([str(host / 'risc-host'), '--export', f'Writable={exports[0]}',
+                                      '--read-only-export', f'ReadOnly={exports[1]}'],
+                                     stdout=subprocess.PIPE, stderr=companion_log, text=True)
+        companion_log.close()
+        if not select.select([companion.stdout], [], [], 5)[0]:
+            raise TimeoutError('private StuffIt host companion did not become ready')
+        ready = companion.stdout.readline().strip()
+        port = int(ready.rsplit(':', 1)[1])
         vm.DIST = dist
-        process, endpoint = vm.launch(output / 'vm', writable=True)
+        process, endpoint = vm.launch(output / 'vm', writable=True, host_bridge=port, expected_exports=2)
         termination = 'timeout'
+        if finder:
+            driver = Driver(endpoint, output / 'vm/serial.log')
+            driver.click(600, 96)
+            driver.key('o', ('ctrl',))
+            driver.wait(' name=writable\n')
+            driver.wait_state(lambda s: s['windows'] == '2')
+            # Folder-open acknowledges retained drawing; allow the separate
+            # presentation path to reach the framebuffer before capturing it.
+            time.sleep(.15)
+            vm.qmp('screendump', {'filename': str(output / 'archive-icon.ppm')}, endpoint)
+            driver.click(56, 106, double=True)
+            driver.wait(' name=Examples.sit\n')
+            driver.wait_state(lambda s: s['windows'] == '3')
+            time.sleep(.15)
+            vm.qmp('screendump', {'filename': str(output / 'archive-volume.ppm')}, endpoint)
+            termination = 'finder-opened-archive'
         deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
+        while not finder and time.monotonic() < deadline:
             text = (output / 'vm/serial.log').read_text(errors='replace')
             if 'STUFFIT_PASS' in text or 'STUFFIT_FAIL' in text:
                 termination = 'guest-outcome'
@@ -67,6 +109,10 @@ def capture(output):
                     vm.qmp('quit', endpoint=endpoint)
                 process.wait(timeout=10)
         finally:
+            if companion is not None:
+                companion.terminate()
+                companion.wait(timeout=10)
+                companion.stdout.close()
             vm.DIST = base
             for folder in [dist, output / 'vm']:
                 for pattern in ['*.raw', '*.qcow2', '*.bin']:
@@ -77,4 +123,7 @@ def capture(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
-    capture(parser.parse_args().output.resolve())
+    parser.add_argument('--without-driver', action='store_true')
+    parser.add_argument('--finder', action='store_true')
+    args = parser.parse_args()
+    capture(args.output.resolve(), args.without_driver, args.finder)

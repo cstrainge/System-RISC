@@ -51,7 +51,8 @@ impl Drawing for Draw<'_, '_>
             .map_err(Error::from_status)
     }
 
-    fn icon(&mut self, id: icon_view::Icon, bounds: Rect, state: State) -> Result<(), Error>
+    fn icon(&mut self, id: icon_view::Icon, _name: &str, bounds: Rect, state: State)
+            -> Result<(), Error>
     {
         let icon_view::Icon::Resource(id) = id
         else

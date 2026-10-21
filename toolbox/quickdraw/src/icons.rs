@@ -108,6 +108,26 @@ impl<'a> Icons<'a>
                                                   flags: flags.bits()?,
                                                   ..Default::default() })
     }
+
+    /// Use the loaded driver's immutable icon family. This performs no catalog,
+    /// resource-fork or decoder work while repainting an existing item.
+    pub fn plot_file_default(self, window: WindowId, file_type: TypeCode, name: &str,
+                             destination: Rect, flags: IconFlags)
+                             -> Result<()>
+    {
+        if name.len() > 255 || name.contains('\0')
+        {
+            return Err(mac_traps::Error::BadArgument);
+        }
+        let mut call = DefaultFileIconCall { window: window.0,
+                                             file_type: file_type.bytes(),
+                                             name_length: name.len() as u32,
+                                             destination,
+                                             flags: flags.bits()?,
+                                             ..Default::default() };
+        call.name[..name.len()].copy_from_slice(name.as_bytes());
+        self.client.default_file_icon(&mut call)
+    }
 }
 impl<'a> crate::QuickDraw<'a>
 {

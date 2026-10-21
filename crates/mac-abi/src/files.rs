@@ -33,6 +33,9 @@ pub const MOUNT_HOST_EXPORT: u32 = 27;
 pub const UNMOUNT_VOLUME: u32 = 28;
 /// Mount a leased data fork using a file-backed filesystem provider.
 pub const MOUNT_FILE: u32 = 29;
+/// Dispatch a loaded driver's association. index=0 means unhandled; index=1
+/// returns its mounted volume. Applications don't select a driver by name.
+pub const OPEN_ITEM: u32 = 30;
 pub const SCAN_ENTRY: u32 = 0;
 pub const SCAN_PENDING: u32 = 1;
 pub const SCAN_DONE: u32 = 2;

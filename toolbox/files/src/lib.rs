@@ -213,6 +213,23 @@ impl<'a> Files<'a>
             .try_into()
     }
 
+    /// Ask System to dispatch a registered file-code/extension action. The
+    /// association belongs to the loaded driver, and disappears with it.
+    pub fn open_item(self, volume: VolumeId, file: Cnid) -> Result<Option<VolumeInfo>>
+    {
+        let reply = self.call(FileCall { operation: OPEN_ITEM,
+                                         volume: volume.0,
+                                         cnid: file.0,
+                                         ..Default::default() },
+                              "")?;
+        match reply.index
+        {
+            0 => Ok(None),
+            1 => Ok(Some(reply.volume_info.try_into()?)),
+            _ => Err(Error::BadAbi)
+        }
+    }
+
     pub fn catalog(self, volume: VolumeId, cnid: Cnid) -> Result<CatalogInfo>
     {
         self.call(FileCall { operation: CATALOG,

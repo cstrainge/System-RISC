@@ -31,7 +31,7 @@ NABI has exactly 40 bytes. All numeric fields are big endian:
 | 0 | 4 | Magic `RVN1` |
 | 4 | 2 | Format version: 1 |
 | 6 | 2 | Role: 1 = resident System, 2 = application, 3 = code resource |
-| 8 | 4 | Native System service ABI version: 6 |
+| 8 | 4 | Native System service ABI version: 7 |
 | 12 | 4 | Reserved, must be zero |
 | 16 | 8 | Inclusive preferred load reservation base |
 | 24 | 8 | Exclusive preferred load reservation limit |
@@ -580,6 +580,35 @@ On the current 128 MiB QEMU virt board, the machine adapter reserves
 heap at `0x87000000..0x87800000` and the high2 MiB device-tree reservation untouched.
 These addresses belong to the machine adapter, not the class-neutral registry.
 
+## Driver-owned file associations (FASS 0, version 1)
+
+A native module can include one `FASS` resource, ID 0. `mac-module` owns its
+allocation-free codec. The resource is big endian, with an eight-byte header:
+magic `FAS1`, u16 version 1, u16 rule count (1..32), then exact 32-byte records:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | Exact Finder file-type code, ASCII graphic bytes |
+| 4 | 2 | Action: 1 = mount filesystem |
+| 6 | 2 | Signed icon family ID in this module's fork; 0 = no default icon |
+| 8 | 1 | Optional extension length (0..16) |
+| 9 | 7 | Reserved zero |
+| 16 | 16 | Lowercase ASCII alphanumeric extension, zero-padded, without dot |
+
+Duplicate file codes or nonempty extension hints are rejected, including
+conflicts with another initializing/ready module. Exact file codes take priority;
+extension hints only classify zero/BINA untyped files, never override APPL/TEXT.
+Mount actions require a driver offering FSYS v2 `SOURCE_FILE`. Local icon families
+are decoded once at admission and shared while painting; they do not reserve
+global System icon IDs or read resource forks during repaint.
+
+Declarations publish atomically when the module becomes Ready and stop matching
+on quiesce/failure. An absent driver supplies neither an open action nor an icon.
+Current module code stays pinned until reboot: deleting its file is not hot unload.
+`Files::open_item` returns `None` for an unclaimed document and `Some(VolumeInfo)`
+after an acknowledged mount; explicit `mount_file` returns NotSupported if unclaimed.
+Finder uses this generic service, with no archive-type or suffix special case.
+
 ## Backing-file service (FORK v1)
 
 Filesystem providers with `SOURCE_FILE` (FSYS capability bit 1) receive a
@@ -613,9 +642,13 @@ Sources and requests use the common generation facility plus separate module
 ownership checks. A source pins its backing file and volume against mutation
 and unmount. Publication follows acknowledged acquisition. Unmount/cancellation
 cannot recycle it before provider teardown and backing Close acknowledge;
-uncertain cleanup quarantines the binding. The initial runtime adapter supports
-block-backed source files only. Provider-backed source acquisition/read/close is
-the next adapter milestone, not an implicit synchronous callback fallback.
+uncertain cleanup quarantines the binding. Block-backed and provider-backed files
+use the same source identities. Provider acquisition (Catalog/Open), positional
+reads, and Close run as owned deferred jobs, with no File Manager or registry
+guard across callbacks. Pending read/cancel storage survives until acknowledgement;
+an uncertain read quarantines its source instead of making it reusable. A
+serialized filesystem cannot mount its own files recursively, because that
+requires reentrant provider instances; this currently returns NotSupported.
 
 `mac-file-source-interface` owns this codec and `mac-driver::file_sources` the
 borrowed Rust client. The private `file_sources` public-SDK gate loads a test FSYS

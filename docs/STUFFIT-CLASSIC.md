@@ -68,11 +68,11 @@ LZW width transitions/reset, bounded full Huffman trees, RLE escapes and
 malformed/encrypted/unknown methods. These tests do not yet prove a production
 StuffIt mount, native copy-out, or original Macintosh runtime compatibility.
 The production `drivers/stuffit-filesystem` DRVR now passes a private native
-public-SDK gate for HFS-B source files: nested mounting, Unicode lookup, bounded
+public-SDK gate for HFS-B and writable/read-only host source files: nested mounting, Unicode lookup, bounded
 reads/seek/EOF, both forks, data copy-out, read-only rejection, corrupt payloads,
 distinct copies, source position independence and stale volume generations.
 The default image installs it in the blessed Drivers folder. Module tests also
 cover deferred short reads, cancellation acknowledgement and fresh callback
-buffers. Provider-backed sources (including Transfer), Finder double-click,
-full two-fork copy transactions and original Macintosh comparisons remain
+buffers. Full two-fork copy transactions, original Macintosh comparisons and
+guest cancellation during a deferred provider-backed read remain
 integration gates. See the [driver README](../drivers/stuffit-filesystem/README.md).

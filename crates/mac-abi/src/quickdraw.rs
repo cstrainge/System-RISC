@@ -362,6 +362,36 @@ pub const ICON_COUNT: u32 = 1;
 pub const ICON_AT: u32 = 2;
 pub const ICON_FILE: u32 = 3;
 pub const ICON_PLOT_FILE: u32 = 4;
+pub const ICON_PLOT_FILE_DEFAULT: u32 = 5;
+/// Draw a registered type/extension default without doing catalog or fork I/O.
+#[repr(C)]
+pub struct DefaultFileIconCall
+{
+    pub operation:   u32,
+    pub window:      u32,
+    pub surface:     *mut Surface,
+    pub file_type:   [u8; 4],
+    pub name_length: u32,
+    pub name:        [u8; 256],
+    pub destination: Rect,
+    pub flags:       u16,
+    pub reserved:    u16
+}
+impl Default for DefaultFileIconCall
+{
+    fn default() -> Self
+    {
+        Self { operation:   ICON_PLOT_FILE_DEFAULT,
+               window:      0,
+               surface:     core::ptr::null_mut(),
+               file_type:   [0; 4],
+               name_length: 0,
+               name:        [0; 256],
+               destination: Rect::default(),
+               flags:       0,
+               reserved:    0 }
+    }
+}
 /// Draw an application's own icon without adding its fork to the resource chain.
 #[repr(C)]
 #[derive(Default)]

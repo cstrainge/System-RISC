@@ -368,7 +368,8 @@ impl Manager
                                                                |key| {
                                                                    [*b"DRVR", *b"INIT", *b"DABI",
                                                                     *b"EABI", *b"NABI", *b"RV64",
-                                                                    *b"RLOC"].contains(&key.kind)
+                                                                    *b"RLOC", *b"FASS", *b"ICN#", *b"icl4", *b"icl8",
+                                                                    *b"ics#", *b"ics4", *b"ics8", *b"ICON", *b"SICN", *b"cicn"].contains(&key.kind)
                                                                },
                                                                2 * 1024 * 1024
                                                                + mac_module::MAX_BYTES,

@@ -338,6 +338,17 @@ impl super::Desktop
         {
             None
         };
+        let actual =
+            actual.or_else(|| {
+                      if entry.is_directory()
+                      {
+                          None
+                      }
+                      else
+                      {
+                          Drawing::file_default(entry.file_type, entry.name(), destination, 0).ok()
+                      }
+                  });
         let drawing =
             if let Some(drawing) = actual
             {

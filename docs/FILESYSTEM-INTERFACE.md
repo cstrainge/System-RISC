@@ -19,10 +19,19 @@ bounded progress, and source/provider leases survive cancellation until ACK.
 File-backed providers use the resident [FORK v1 service](../FORMAT.md#backing-file-service-fork-v1),
 through `mac-driver::file_sources`. `Files::mount_file` binds the source's actual
 volume generation/CNID to its admitted module, and keeps a kernel-owned fork mark
-until acknowledged unmount/cleanup. The initial native gate verifies block-backed
-source files. Provider-backed files, including archives on Transfer, still need
-their deferred acquisition/read/close adapter before the StuffIt mount path is
-usable there.
+until acknowledged unmount/cleanup. Block-backed and provider-backed sources,
+including archives on writable/read-only Transfer exports, are supported through
+owned deferred Catalog/Open/Read/Close jobs. No guard or app-buffer borrow crosses
+a provider callback. Cancellation retains source identity and buffers until ACK;
+uncertain cleanup quarantines the source. Recursive mounting from the same
+serialized provider is explicitly NotSupported.
+
+File actions and default icon families are declared by the provider's `FASS 0`
+resource (see FORMAT.md), published with its Ready module and withdrawn on
+quiesce/failure. `Files::open_item` is the generic document-open route: `None`
+means no loaded module claimed it, `Some(VolumeInfo)` means the provider mounted
+it. Exact file codes win; declared suffix hints only classify untyped host imports.
+Finder owns no archive-specific matching policy.
 
 All integers are little endian. Exact length, schema, reserved fields, bounds,
 UTF-8 and catalog structure are checked before use. Unsupported old schemas
@@ -362,8 +371,8 @@ Finder and independently verify automatic mounts and repeated-mount identity.
 Read-only Trash-directory queries use provider lookup/catalog services, including
 absent folders; they do not require mutation support.
 Provider application loading, remaining mutations, full two-fork copying and
-external refresh remain in progress. This is not a mounted StuffIt volume or a
-hard latency acceptance result.
+external refresh remain in progress. Mounted classic StuffIt acceptance has its
+own `stuffit` public-SDK gate; neither gate is a hard latency acceptance result.
 
 Real-host component tests additionally cover creation properties, long
 decomposed input normalizing to the 255-byte boundary, full metadata round trips,

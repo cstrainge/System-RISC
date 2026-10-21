@@ -1,7 +1,22 @@
 {
-  "name": "File Source Provider", "binary_name": "FileSourceProvider",
-  "file_type": "DRVR", "creator": "TEST", "role": "code_resource",
-  "abi_version": 7, "load_base": "0x82400000", "load_limit": "0x82500000",
+  "name": "File Source Provider",
+  "binary_name": "FileSourceProvider",
+  "file_type": "DRVR",
+  "creator": "TEST",
+  "role": "code_resource",
+  "abi_version": 7,
+  "load_base": "0x82400000",
+  "load_limit": "0x82500000",
   "description": "Private backing-file capability conformance provider",
-  "resources": []
+  "resources": [
+    {
+      "type": "FASS",
+      "id": 0,
+      "payload": {
+        "format": "file",
+        "path": "file-associations.bin"
+      },
+      "symbol": "FILE_ASSOCIATIONS"
+    }
+  ]
 }

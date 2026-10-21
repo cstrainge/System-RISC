@@ -142,6 +142,16 @@ pub struct Drawing
 }
 impl Drawing
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn file_default(file_type: [u8; 4], name: &str, destination: Rect, flags: u16)
+                               -> Result<Self, Status>
+    {
+        Ok(Self { family: crate::drivers::file_handler_icon(file_type, name)?.ok_or(NOT_FOUND)?,
+                  destination,
+                  flags: IconFlags::from_transform(flags).map_err(status)?,
+                  port: Port::default() })
+    }
+
     pub(crate) fn bytes(kind: [u8; 4], data: &[u8], destination: Rect) -> Result<Self, Status>
     {
         if !matches!(&kind,

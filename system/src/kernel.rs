@@ -260,11 +260,6 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                                                                         initialization failed")
                                                 })?;
     crate::drivers::file_sources::runtime::initialize().map_err(|_| mac_formats::Error("backing-file service initialization failed"))?;
-    crate::drivers::discover().map_err(|_| mac_formats::Error("module discovery failed"))?;
-    if let Err(status) = crate::toolbox::files::mount_startup_exports()
-    {
-        serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
-    }
     let mut system = crate::loader::read_startup("System")?;
     let finder = crate::loader::read_startup("Finder")?;
     let finder_entry = crate::loader::application(&finder)?;
@@ -295,6 +290,14 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                                                                               application: finder }
                               });
     boot_screen.completed(2);
+    // Module-owned icon families resolve the System palettes at admission.
+    // Publish immutable resource/font services before entering any driver;
+    // exports still mount before Finder or another application can run.
+    crate::drivers::discover().map_err(|_| mac_formats::Error("module discovery failed"))?;
+    if let Err(status) = crate::toolbox::files::mount_startup_exports()
+    {
+        serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
+    }
     let definitions = crate::loader::Definitions::new(files);
     boot_screen.completed(3);
     let runtime =

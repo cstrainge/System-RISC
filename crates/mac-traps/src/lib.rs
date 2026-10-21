@@ -794,6 +794,12 @@ impl Client<'_>
         call.surface = core::ptr::null_mut();
         status(self.invoke(ICON, call))
     }
+
+    pub fn default_file_icon(self, call: &mut quickdraw::DefaultFileIconCall) -> Result<()>
+    {
+        call.surface = core::ptr::null_mut();
+        status(self.invoke(ICON, call))
+    }
 }
 impl SurfaceConnection<'_>
 {

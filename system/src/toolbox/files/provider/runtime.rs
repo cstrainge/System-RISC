@@ -57,6 +57,13 @@ enum Step
     Count,
     Mount(u32),
     Unmount(u32),
+    Source(mounts::Acquire),
+    Release
+    {
+        volume:  Option<u32>,
+        closing: crate::drivers::file_sources::runtime::Closing,
+        status:  Status
+    },
     File(forks::Action),
     Write(writes::State),
     Resource(Box<resources::State>),
@@ -112,6 +119,20 @@ struct Flight
     input:     String,
     path:      Option<super::path::Builder>
 }
+impl Flight
+{
+    fn abandon(&mut self)
+    {
+        self.abandoned = true;
+        // Once provider teardown has acknowledged, backing Close is mandatory
+        // cleanup. A dead waiter cannot cancel that close and recycle its mark.
+        if !matches!(self.step,
+                     Step::Release { .. } | Step::Source(mounts::Acquire::Cleanup { .. }))
+        {
+            let _ = self.job.cancel();
+        }
+    }
+}
 // Keep the terminal metadata inline: allocation after publishing a mounted
 // object would make delivery depend on another fallible heap reservation.
 #[allow(clippy::large_enum_variant)]
@@ -137,7 +158,8 @@ enum Reply
         position: u64,
         length:   u64
     },
-    Unmounted
+    Unmounted,
+    NoHandler
 }
 
 fn files<T>(call: impl FnOnce(&mut super::Manager) -> Result<T, Status>) -> Result<T, Status>
@@ -207,22 +229,31 @@ fn cleanup_mount(mut flight: Flight, volume: u32, error: Status) -> Progress
         }
     }
 }
-fn retire(volume: u32) -> Result<Reply, Status>
+fn retire_unstarted_export(volume: u32) -> Result<Reply, Status>
 {
-    let (provider, source) = files(|manager| manager.provider_source(volume))?;
-    if let super::Source::File(source) = source
+    let (_, source) = files(|manager| manager.provider_source(volume))?;
+    if !matches!(source, super::Source::Export(_))
     {
-        match crate::drivers::file_sources::runtime::release(provider, source)
-        {
-            Ok(()) | Err(NOT_FOUND) => (),
-            Err(error) =>
-            {
-                let _ = files(|manager| manager.quarantine_provider_mount(volume));
-                return Err(error);
-            }
-        }
+        return Err(BAD_ARGUMENT);
     }
     files(|manager| manager.retire_provider_mount(volume)).map(|()| Reply::Unmounted)
+}
+fn retired(volume: Option<u32>, status: Status) -> Progress
+{
+    let result = volume.map_or(Ok(()), |v| files(|m| m.retire_provider_mount(v)));
+    Progress::Done(result.and(if status == OK { Ok(Reply::Unmounted) } else { Err(status) }))
+}
+fn retire_mount(flight: Flight, volume: u32, status: Status) -> Progress
+{
+    match files(|manager| manager.provider_source(volume))
+    {
+        Ok((_, super::Source::Export(_))) => retired(Some(volume), status),
+        Ok((_, super::Source::File(source))) =>
+        {
+            mounts::release(flight, source, Some(volume), status)
+        }
+        Err(error) => Progress::Done(Err(error))
+    }
 }
 fn finish_read(volume: u32, result: Result<CatalogInfo, Status>) -> Progress
 {
@@ -256,6 +287,24 @@ fn advance(mut flight: Flight) -> Progress
     match flight.step
     {
         Step::File(_) => forks::advance(flight, result, never_sent),
+        Step::Source(_) => mounts::advance(flight, result, never_sent),
+        Step::Release { volume,
+                        closing,
+                        status } =>
+        {
+            match crate::drivers::file_sources::runtime::finish_release(closing, result)
+            {
+                Ok(()) => retired(volume, status),
+                Err(error) =>
+                {
+                    if let Some(v) = volume
+                    {
+                        let _ = files(|m| m.quarantine_provider_mount(v));
+                    }
+                    Progress::Done(Err(error))
+                }
+            }
+        }
         Step::Write(_) => writes::advance(flight, result, never_sent),
         Step::Resource(_) => resources::advance(flight, result),
         Step::Scan(cursor) =>
@@ -360,7 +409,7 @@ fn advance(mut flight: Flight) -> Progress
             {
                 // The queue guarantees this cancellation never reached the
                 // provider. Retiring its reservation needs no redundant RPC.
-                return Progress::Done(retire(volume).and(Err(OPERATION_CANCELLED)));
+                return retire_mount(flight, volume, OPERATION_CANCELLED);
             }
             let result = if flight.abandoned
             {
@@ -382,8 +431,8 @@ fn advance(mut flight: Flight) -> Progress
         {
             match result
             {
-                Ok(bytes) if bytes.is_empty() => Progress::Done(retire(volume)),
-                Err(NOT_FOUND) => Progress::Done(retire(volume)),
+                Ok(bytes) if bytes.is_empty() => retire_mount(flight, volume, OK),
+                Err(NOT_FOUND) => retire_mount(flight, volume, OK),
                 error =>
                 {
                     let _ = files(|manager| manager.quarantine_provider_mount(volume));
@@ -396,7 +445,7 @@ fn advance(mut flight: Flight) -> Progress
         {
             if matches!(&result, Ok(bytes) if bytes.is_empty()) || matches!(result, Err(NOT_FOUND))
             {
-                Progress::Done(retire(volume).and(Err(status)))
+                retire_mount(flight, volume, status)
             }
             else
             {
@@ -457,11 +506,27 @@ fn reply(call: &mut FileCall, output: &mut [u8], result: Result<Reply, Status>) 
         }
         Ok(Reply::Mounted(info)) =>
         {
+            if call.operation == OPEN_ITEM
+            {
+                call.index = 1;
+            }
             call.volume = info.id;
             call.volume_info = info;
             OK
         }
         Ok(Reply::Unmounted) => OK,
+        Ok(Reply::NoHandler) =>
+        {
+            if call.operation == OPEN_ITEM
+            {
+                call.index = 0;
+                OK
+            }
+            else
+            {
+                NOT_SUPPORTED
+            }
+        }
         Ok(Reply::Entry(entry)) =>
         {
             call.entry = entry;
@@ -479,8 +544,7 @@ fn waiting(flight: Flight) -> Status
     let mut flight = flight;
     if result.is_err()
     {
-        flight.abandoned = true;
-        let _ = flight.job.cancel();
+        flight.abandon();
         REAP.store(true, Ordering::Release);
     }
     flights.push(flight); // capacity was reserved before any mount side effect
@@ -496,8 +560,7 @@ fn claim(owner: u64, thread: u64, key: Key, name: &str) -> Result<Option<Flight>
            || flights[at].abandoned
            || flights[at].input != name
         {
-            flights[at].abandoned = true;
-            let _ = flights[at].job.cancel();
+            flights[at].abandon();
             REAP.store(true, Ordering::Release);
             return Err(BAD_ABI);
         }
@@ -624,7 +687,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
     {
         return forks::start(owner, thread, key, call, output);
     }
-    if call.operation == MOUNT_FILE
+    if matches!(call.operation, MOUNT_FILE | OPEN_ITEM)
     {
         return mounts::start_file(owner, thread, key, call, output);
     }
@@ -782,8 +845,7 @@ pub(crate) fn abandon_thread(thread: u64)
     let mut flights = FLIGHTS.lock();
     if let Some(flight) = flights.iter_mut().find(|flight| flight.thread == thread)
     {
-        flight.abandoned = true;
-        let _ = flight.job.cancel();
+        flight.abandon();
         REAP.store(true, Ordering::Release);
     }
 }

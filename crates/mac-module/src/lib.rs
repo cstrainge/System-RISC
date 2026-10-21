@@ -4,6 +4,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 pub mod abi;
+pub mod file_handlers;
 mod contract;
 pub use contract::*;
 mod encode;

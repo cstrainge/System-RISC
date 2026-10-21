@@ -113,7 +113,7 @@ impl Drawing for Port<'_, '_>
             .map(|_| ())
     }
 
-    fn icon(&mut self, icon: Icon, bounds: Rect, state: State) -> Result<(), Error>
+    fn icon(&mut self, icon: Icon, name: &str, bounds: Rect, state: State) -> Result<(), Error>
     {
         let icons = self.system.quickdraw().icons();
         let flags = IconFlags { selected: state.selected && state.active,
@@ -122,6 +122,20 @@ impl Drawing for Port<'_, '_>
         let id = match icon
         {
             Icon::Resource(id) => id,
+            Icon::Associated { file_type,
+                               fallback } =>
+            {
+                match icons.plot_file_default(self.graphics.window_id(),
+                                              file_type,
+                                              name,
+                                              bounds,
+                                              flags)
+                {
+                    Ok(()) => return Ok(()),
+                    Err(Error::NotFound | Error::NotSupported) => fallback,
+                    Err(error) => return Err(error)
+                }
+            }
             Icon::Application { volume,
                                 cnid,
                                 fallback } =>
@@ -206,7 +220,8 @@ pub(crate) fn entry_icon(system: &System<'_>, volume: &VolumeInfo, entry: &Catal
     }
     else
     {
-        fallback.into()
+        Icon::Associated { file_type: entry.file_type,
+                           fallback }
     }
 }
 // The 16-pixel controls overlap the content frame and size-box borders by 1px.
@@ -276,6 +291,27 @@ fn folder_entry(system: &System<'_>, location: Location, mut index: u32)
 }
 impl Browser
 {
+    fn open_entry(&mut self, system: &System<'_>, entry: &CatalogInfo) -> Result<(), Error>
+    {
+        if entry.is_directory()
+        {
+            self.open(system,
+                      Location { volume: entry.volume,
+                                 folder: entry.id })?;
+        }
+        else if entry.file_type == TypeCode::new(*b"APPL")
+        {
+            system.processes().launch(entry.volume, entry.id)?;
+        }
+        else if let Some(mounted) = system.files().open_item(entry.volume, entry.id)?
+        {
+            self.open(system,
+                      Location { volume: mounted.id,
+                                 folder: ROOT_ID })?;
+        }
+        Ok(())
+    }
+
     pub fn initialize(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         let files = system.files();
@@ -746,16 +782,7 @@ impl Browser
                 return Ok(());
             }
             let entry = system.files().catalog(volume, folder)?;
-            if entry.is_directory()
-            {
-                self.open(system,
-                          Location { volume,
-                                     folder })?;
-            }
-            else if entry.file_type == TypeCode::new(*b"APPL")
-            {
-                system.processes().launch(volume, folder)?;
-            }
+            self.open_entry(system, &entry)?;
         }
         self.redraw_all(system)?;
         system.log("FINDER_CLICK_HANDLED\n")
@@ -818,16 +845,7 @@ impl Browser
            && let Some(id) = w.selected
         {
             let entry = system.files().catalog(id.volume, id.folder)?;
-            if entry.is_directory()
-            {
-                self.open(system,
-                          Location { volume: entry.volume,
-                                     folder: entry.id })?;
-            }
-            else if entry.file_type == TypeCode::new(*b"APPL")
-            {
-                system.processes().launch(entry.volume, entry.id)?;
-            }
+            self.open_entry(system, &entry)?;
         }
         else if let Some(volume) = self.desktop_selection
         {

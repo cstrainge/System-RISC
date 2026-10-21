@@ -4,6 +4,87 @@
 use super::*;
 impl Manager
 {
+    pub(crate) fn source_provider(&self, volume: u32) -> Result<Option<u32>, Status>
+    {
+        self.read_provider(volume)
+    }
+
+    pub(crate) fn reserve_provider_source(&mut self, volume: u32, cnid: u32)
+                                          -> Result<(u32, u32), Status>
+    {
+        self.reserve_provider_file(0, volume, cnid, DATA_FORK)
+    }
+
+    pub(crate) fn source_mark_provider(&self, handle: u32) -> Result<Option<u32>, Status>
+    {
+        self.file_provider(0, handle)
+    }
+
+    pub(crate) fn publish_provider_source(&mut self, handle: u32, bytes: &[u8])
+                                          -> Result<u64, Status>
+    {
+        self.slot(0, handle)?;
+        self.publish_provider_file(handle, bytes)
+    }
+
+    pub(crate) fn begin_provider_source_read(
+        &mut self, handle: u32, offset: u64, length: usize)
+        -> Result<(u32, mac_filesystem_interface::Arguments<'static>), Status>
+    {
+        let file = self.slot(0, handle)?;
+        let FileFork::Provider(fork) = &file.fork
+        else
+        {
+            return Err(BAD_ARGUMENT);
+        };
+        if offset > fork.ready_length()?
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        // This mark is private to the source lease, never a public app mark.
+        file.position = offset;
+        self.begin_provider_file_read(0, handle, length)
+    }
+
+    pub(crate) fn finish_provider_source_read(&mut self, handle: u32, offset: u64, length: u64,
+                                              delivered: Option<usize>)
+                                              -> Result<(), Status>
+    {
+        self.slot(0, handle)?;
+        self.finish_provider_file_read(handle, offset, length, delivered).map(|_| ())
+    }
+
+    pub(crate) fn close_provider_source(
+        &mut self, handle: u32, cleanup: bool)
+        -> Result<(u32, mac_filesystem_interface::Arguments<'static>), Status>
+    {
+        let provider = self.source_mark_provider(handle)?.ok_or(BAD_ARGUMENT)?;
+        let volume = if cleanup
+        {
+            self.cleanup_provider_file(handle)?
+        }
+        else
+        {
+            self.begin_provider_file_close(0, handle)?.1
+        };
+        Ok((provider,
+            mac_filesystem_interface::Arguments { volume,
+                                                  token: handle,
+                                                  ..Default::default() }))
+    }
+
+    pub(crate) fn retire_provider_source(&mut self, handle: u32) -> Result<(), Status>
+    {
+        self.slot(0, handle)?;
+        self.retire_provider_file(handle)
+    }
+
+    pub(crate) fn quarantine_provider_source(&mut self, handle: u32) -> Result<(), Status>
+    {
+        self.slot(0, handle)?;
+        self.quarantine_provider_file(handle)
+    }
+
     pub(crate) fn describe_block_source(&mut self, volume: u32, cnid: u32)
                                         -> Result<Vec<u8>, Status>
     {

@@ -8,5 +8,56 @@
   "load_base": "0x82400000",
   "load_limit": "0x82600000",
   "description": "Read-only classic StuffIt 1.5.1 archive volumes",
-  "resources": []
+  "resources": [
+    {
+      "type": "ICN#",
+      "id": 128,
+      "name": "Classic archive document",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/49434e23-128.bin"
+      },
+      "symbol": "ARCHIVE_LARGE_MONO"
+    },
+    {
+      "type": "icl8",
+      "id": 128,
+      "name": "Classic archive document",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/69636c38-128.bin"
+      },
+      "symbol": "ARCHIVE_LARGE_COLOR"
+    },
+    {
+      "type": "ics#",
+      "id": 128,
+      "name": "Classic archive document",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/69637323-128.bin"
+      },
+      "symbol": "ARCHIVE_SMALL_MONO"
+    },
+    {
+      "type": "ics8",
+      "id": 128,
+      "name": "Classic archive document",
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/69637338-128.bin"
+      },
+      "symbol": "ARCHIVE_SMALL_COLOR"
+    },
+    {
+      "type": "FASS",
+      "id": 0,
+      "name": "StuffIt file handlers",
+      "payload": {
+        "format": "file",
+        "path": "assets/file-associations.bin"
+      },
+      "symbol": "FILE_ASSOCIATIONS"
+    }
+  ]
 }

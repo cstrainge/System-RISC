@@ -1,7 +1,8 @@
 //! Real FSYS DRVR and resident FORK broker, exercised solely through Toolbox.
 #![forbid(unsafe_code)]
 use mac_toolbox::{Cnid, Error, System, VolumeId,
-                  files::{CatalogInfo, DataFileSpec, Filesystem, Fork, ROOT_ID, SeekFrom}};
+                  files::{CatalogInfo, DataFileSpec, Filesystem, Fork, ROOT_ID, SeekFrom},
+                  quickdraw::{Rect, icons::IconFlags}};
 const NESTED: &[u8] = include_bytes!("../../mac-sit/tests/fixtures/nested-v1.sit");
 const FORKS: &[u8] = include_bytes!("../../mac-sit/tests/fixtures/forks-v1.sit");
 fn require(value: bool) -> Result<(), Error>
@@ -21,20 +22,100 @@ fn create(system: &System<'_>, volume: VolumeId, name: &str, bytes: &[u8])
     writer.write_all(bytes)?;
     writer.finish()
 }
+fn icons(system: &System<'_>, present: bool) -> Result<(), Error>
+{
+    let world = system.quickdraw().new_gworld(32, 32)?;
+    let icons = system.quickdraw().icons();
+    let target = world.graphics().window_id();
+    let flags = IconFlags::default();
+    let mut pixels = [0; 1024];
+    // File code wins over a misleading suffix; untyped host imports use the
+    // driver's hint. Unknown and explicitly typed TEXT files keep their icons.
+    for (kind, name) in
+        [(*b"SIT!", "Archive.bin"), (*b"SITD", "Archive"), (*b"BINA", "Archive.SiT")]
+    {
+        for size in [16, 32]
+        {
+            world.set_pixels(&[0x123456; 1024])?;
+            let result = icons.plot_file_default(target,
+                                                 kind.into(),
+                                                 name,
+                                                 Rect::new(0, 0, size, size),
+                                                 flags);
+            if !present
+            {
+                require(result == Err(Error::NotFound))?;
+                continue;
+            }
+            result?;
+            require(world.pixels(&mut pixels)? == pixels.len())?;
+            let mut black = 0;
+            let mut white = 0;
+            let mut colored = 0;
+            for y in 0..32
+            {
+                for x in 0..32
+                {
+                    let pixel = pixels[y * 32 + x];
+                    if x >= size as usize || y >= size as usize
+                    {
+                        require(pixel == 0x123456)?;
+                    }
+                    match pixel
+                    {
+                        0 => black += 1,
+                        0xffffff => white += 1,
+                        0x123456 => (),
+                        _ => colored += 1
+                    }
+                }
+            }
+            require(black > 15 && white > 15 && colored > 4)?;
+        }
+    }
+    for (kind, name) in [(*b"BINA", "Archive.sitx"), (*b"TEXT", "Archive.sit")]
+    {
+        require(icons.plot_file_default(target,
+                                        kind.into(),
+                                        name,
+                                        Rect::new(0, 0, 32, 32),
+                                        flags)
+                == Err(Error::NotFound))?;
+    }
+    Ok(())
+}
 pub fn check(system: &System<'_>) -> Result<(), Error>
 {
     let files = system.files();
     let startup = files.volume_at(0)?.id;
+    if files.lookup(startup, ROOT_ID, "No StuffIt Driver").is_ok()
+    {
+        let archive = create(system, startup, "Examples.sit", NESTED)?;
+        require(files.open_item(startup, archive.id)?.is_none())?;
+        require(files.mount_file(startup, archive.id) == Err(Error::NotSupported))?;
+        return icons(system, false);
+    }
+    system.log("STUFFIT_STAGE associations-and-icons\n")?;
+    icons(system, true)?;
     system.log("STUFFIT_STAGE create\n")?;
-    let archive = create(system, startup, "Examples.sit", NESTED)?;
+    let archive = create(system, startup, "Examples.bin", NESTED)?;
     let forked = create(system, startup, "Forked.sit", FORKS)?;
     let duplicate = create(system, startup, "Copy.sit", NESTED)?;
     let mut public = files.open(startup, archive.id, Fork::Data)?;
     public.seek(SeekFrom::Start(17))?;
     system.log("STUFFIT_STAGE mount\n")?;
-    let mount = files.mount_file(startup, archive.id)?;
+    let unknown = files.create_data(DataFileSpec { volume:    startup,
+                                                   parent:    ROOT_ID,
+                                                   name:      "Unclaimed.bin",
+                                                   replacing: None,
+                                                   file_type: (*b"BINA").into(),
+                                                   creator:   (*b"TEST").into() },
+                                    0)?
+                       .finish()?;
+    require(files.open_item(startup, unknown.id)?.is_none())?;
+    let mount = files.open_item(startup, archive.id)?.ok_or(Error::BadAbi)?;
     let volume = mount.id;
-    require(mount.read_only && mount.name() == "Examples.sit" && mount.capacity.is_none())?;
+    require(mount.read_only && mount.name() == "Examples.bin" && mount.capacity.is_none())?;
     require(mount.filesystem
             == Filesystem::Driver { kind:    (*b"SIT ").into(),
                                     version: 1 })?;
@@ -128,5 +209,84 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     files.unmount(forks)?;
     // Kernel-owned source marks must disappear after acknowledged teardown.
     files.rename(startup, archive.id, "Released.sit")?;
+    system.log("STUFFIT_STAGE transfer\n")?;
+    let mut hosts = 0;
+    let mut host_ids = [VolumeId::NONE; 2];
+    // Both writable and read-only exports are mounted automatically at boot.
+    let count = files.volume_count()?;
+    for i in 0..count
+    {
+        let host = files.volume_at(i)?;
+        if host.filesystem
+           != (Filesystem::Driver { kind:    (*b"HOST").into(),
+                                    version: 1 })
+        {
+            continue;
+        }
+        require(hosts < host_ids.len())?;
+        host_ids[hosts] = host.id;
+        hosts += 1;
+    }
+    require(hosts == 2)?;
+    for id in host_ids
+    {
+        let host = files.volume(id)?;
+        system.log("STUFFIT_STAGE transfer-mount\n")?;
+        let archive = files.lookup(host.id, ROOT_ID, "Examples.sit")?;
+        system.log("STUFFIT_STAGE transfer-open-source\n")?;
+        let mut public = files.open(host.id, archive.id, Fork::Data)?;
+        public.seek(SeekFrom::Start(17))?;
+        system.log("STUFFIT_STAGE transfer-acquire\n")?;
+        let mount = files.open_item(host.id, archive.id)?.ok_or(Error::BadAbi)?;
+        system.log("STUFFIT_STAGE transfer-acquired\n")?;
+        require(mount.read_only && mount.name() == "Examples.sit")?;
+        system.log("STUFFIT_STAGE transfer-repeat\n")?;
+        require(files.mount_file(host.id, archive.id)?.id == mount.id)?;
+        system.log("STUFFIT_STAGE transfer-position\n")?;
+        require(public.position()? == 17)?;
+        public.close()?;
+        system.log("STUFFIT_STAGE transfer-pin\n")?;
+        require(files.unmount(host.id) == Err(Error::ServiceBusy))?;
+        if !host.read_only
+        {
+            let spec = DataFileSpec { volume:    host.id,
+                                      parent:    ROOT_ID,
+                                      name:      "Examples.sit",
+                                      replacing: Some(archive.id),
+                                      file_type: (*b"SIT!").into(),
+                                      creator:   (*b"SIT!").into() };
+            match files.create_data(spec, 0)
+            {
+                Err(Error::ServiceBusy) => (),
+                Err(error) => return Err(error),
+                Ok(mut staged) => require(staged.finish() == Err(Error::ServiceBusy))?
+            }
+        }
+        let pattern = files.lookup(mount.id, ROOT_ID, "Top/Sub/Pattern")?;
+        system.log("STUFFIT_STAGE transfer-read\n")?;
+        let mut file = files.open(mount.id, pattern.id, Fork::Data)?;
+        require(file.seek(SeekFrom::Start(8187))? == 8187)?;
+        require(file.read(&mut bytes)? == 5 && bytes[..5] == [251, 252, 253, 254, 255])?;
+        file.close()?;
+        files.unmount(mount.id)?;
+        let again = files.mount_file(host.id, archive.id)?.id;
+        require(again != mount.id)?;
+        require(files.child(mount.id, ROOT_ID, 0) == Err(Error::NotFound))?;
+        files.unmount(again)?;
+        system.log("STUFFIT_STAGE transfer-close\n")?;
+        if !host.read_only
+        {
+            // Unmount must wait for backing Close ACK, not merely queue it.
+            let spec = DataFileSpec { volume:    host.id,
+                                      parent:    ROOT_ID,
+                                      name:      "Examples.sit",
+                                      replacing: Some(archive.id),
+                                      file_type: (*b"SIT!").into(),
+                                      creator:   (*b"SIT!").into() };
+            let mut replacement = files.create_data(spec, 0)?;
+            replacement.finish()?;
+        }
+        files.unmount(host.id)?;
+    }
     Ok(())
 }

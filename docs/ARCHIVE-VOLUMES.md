@@ -1,15 +1,20 @@
 # StuffIt archive volumes
 
-Status: design/backlog, tracked as
-[P16](CORE-TOOLBOX-ROADMAP.md#p16--stuffit-archive-volumes). Implementation follows
-the P15 HFS-B cutover and the necessary filesystem mount interfaces. Planning
-this backend does not move it ahead of the required native startup filesystem.
+Status: classic version-1 read-only driver implemented, tracked as
+[P16](CORE-TOOLBOX-ROADMAP.md#p16--stuffit-archive-volumes). The current gate covers
+HFS-B and host-backed sources, both fork reads, data copy-out, driver-owned
+associations/icons, and real Finder double-click. Full two-fork copy transactions,
+original Macintosh runtime comparisons and deferred-read cancellation in a guest
+remain outstanding. The precise format/codec matrix is in
+[STUFFIT-CLASSIC.md](STUFFIT-CLASSIC.md).
 
 ## Mount and application behavior
 
-Double-clicking a `.sit` in Finder requests an archive mount through the public
-File/Volume Manager service. System identifies and validates the container;
-Finder does not contain a decoder. Publish an ordinary volume with a desktop
+The driver's `FASS 0` resource registers the file-code association, optional
+untyped `.sit` hint, local icon family and mount action. Double-clicking in Finder
+requests generic document opening through the public File/Volume Manager service;
+Finder contains no archive matcher or decoder. An absent driver registers nothing.
+System identifies and validates the container. Publish an ordinary volume with a desktop
 icon, directory windows and eject behavior. Standard File dialogs, Resource
 Manager, ResEdit and native/legacy file APIs see ordinary files and both forks.
 Mounting or inspecting an archive never executes code from it. Explicit app
@@ -38,7 +43,7 @@ filesystem operations alongside the block-based filesystem contract. Capture an
 owned backing lease and release manager locks before reading/decoding; recursive
 File Manager calls while holding its global state must not deadlock.
 
-A shared safe no_std crate (proposed `mac-stuffit`) owns container parsing,
+A shared safe no_std crate (`mac-sit`) owns container parsing,
 indexing and decoding, with bounded fallible allocation and no platform I/O.
 Linux inspection/fixture tools and the resident adapter reuse it. Evaluate source
 licensing, supported formats, no_std suitability and memory/work bounds before

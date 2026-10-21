@@ -76,7 +76,7 @@ pub trait Drawing
     fn fill(&mut self, bounds: Rect, color: u32) -> Result<(), Error>;
     fn text_width(&mut self, text: &str) -> Result<i16, Error>;
     fn text(&mut self, baseline: Point, text: &str, color: u32) -> Result<(), Error>;
-    fn icon(&mut self, id: Icon, bounds: Rect, state: State) -> Result<(), Error>;
+    fn icon(&mut self, id: Icon, name: &str, bounds: Rect, state: State) -> Result<(), Error>;
 }
 
 #[derive(Clone, Copy)]
@@ -88,6 +88,11 @@ pub enum Icon
         volume:   VolumeId,
         cnid:     Cnid,
         fallback: i16
+    },
+    Associated
+    {
+        file_type: mac_toolbox::TypeCode,
+        fallback:  i16
     }
 }
 impl From<i16> for Icon
@@ -109,7 +114,7 @@ pub fn draw_item(draw: &mut impl Drawing, id: impl Into<Icon>, icon: Rect, name:
                  state: State)
                  -> Result<Rect, Error>
 {
-    draw.icon(id.into(), icon, state)?;
+    draw.icon(id.into(), name, icon, state)?;
     let width = draw.text_width(name)?;
     let label = label_bounds(icon, width);
     let selected = state.selected && state.active;

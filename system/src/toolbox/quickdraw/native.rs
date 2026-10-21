@@ -400,6 +400,36 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     return drawing.paint(&mut unsafe { surface.canvas() }.ok_or(BAD_ARGUMENT)?);
                 }
                 #[cfg(target_arch = "riscv64")]
+                if size == size_of::<DefaultFileIconCall>()
+                {
+                    let call = unsafe { request::<DefaultFileIconCall>(pointer, size) }?;
+                    if call.operation != ICON_PLOT_FILE_DEFAULT
+                       || call.reserved != 0
+                       || call.name_length > 255
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    let name=core::str::from_utf8(&call.name[..call.name_length as usize]).map_err(|_|BAD_ARGUMENT)?;
+                    if name.contains('\0')
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    let drawing =
+                        super::icons_service::Drawing::file_default(call.file_type, name,
+                                                                    call.destination, call.flags)?;
+                    if call.surface.is_null()
+                    {
+                        return crate::kernel::with_desktop(|d| {
+                                   d.icon(&IconCall { window: call.window,
+                                                      ..Default::default() },
+                                          drawing)
+                               }).unwrap_or_else(|error| Err(error.status()));
+                    }
+                    let surface =
+                        unsafe { request::<Surface>(call.surface.cast(), size_of::<Surface>()) }?;
+                    return drawing.paint(&mut unsafe { surface.canvas() }.ok_or(BAD_ARGUMENT)?);
+                }
+                #[cfg(target_arch = "riscv64")]
                 if size == size_of::<FileIconCall>()
                 {
                     let call = unsafe { request::<FileIconCall>(pointer, size) }?;

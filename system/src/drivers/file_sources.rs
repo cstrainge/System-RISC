@@ -168,6 +168,18 @@ impl<B: Copy> Sources<B>
         Ok(())
     }
 
+    /// An adapter lost evidence of the lower completion. Retain the binding;
+    /// an uncertain read must never make its backing mark reusable.
+    pub fn quarantine_read(&mut self, owner: u32, source: u32, ticket: u32) -> Result<(), Status>
+    {
+        if self.owned(owner, source)?.phase != Phase::Reading(ticket)
+        {
+            return Err(BAD_ABI);
+        }
+        self.entries.get_mut(source).ok_or(NOT_FOUND)?.phase = Phase::Quarantined;
+        Ok(())
+    }
+
     /// Return an owned token, retaining its source identity until Close ACK.
     pub fn begin_close(&mut self, owner: u32, source: u32) -> Result<B, Status>
     {
@@ -213,6 +225,18 @@ mod tests
     const FILE: Identity = Identity { volume: 66513,
                                       cnid:   42,
                                       fork:   0 };
+    #[test]
+    fn uncertain_read_acknowledgement_quarantines_the_source_identity()
+    {
+        let mut sources = Sources::new();
+        let source = sources.publish(7, FILE, 11, 20).unwrap();
+        sources.begin_read(7, source, 88, 0, 10).unwrap();
+        assert_eq!(sources.quarantine_read(7, source, 89), Err(BAD_ABI));
+        sources.quarantine_read(7, source, 88).unwrap();
+        assert_eq!(sources.info(7, source), Err(ROLLBACK_FAILED));
+        assert_eq!(sources.find(7, FILE), Err(ROLLBACK_FAILED));
+        assert_eq!(sources.begin_close(7, source), Err(ROLLBACK_FAILED));
+    }
     #[test]
     fn reads_and_teardown_retain_generations_until_acknowledged()
     {

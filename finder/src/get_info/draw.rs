@@ -273,6 +273,7 @@ impl Info<'_>
             crate::icon_view::Drawing::icon(&mut crate::browser::Port { system,
                                                                         graphics: port },
                                             self.icon,
+                                            self.entry.name(),
                                             icon_bounds,
                                             crate::icon_view::State::default())?;
             system.textedit().draw(self.name.id(), self.window)?;

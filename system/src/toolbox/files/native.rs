@@ -74,7 +74,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
                            | files::PATH);
     let trash_query = call.operation == files::TRASH_DIRECTORY && call.index == 0;
     let opening = call.operation == files::OPEN;
-    let mounting_file = call.operation == files::MOUNT_FILE;
+    let mounting_file = matches!(call.operation, files::MOUNT_FILE | files::OPEN_ITEM);
     let fork_io = matches!(call.operation, files::READ | files::CLOSE);
     if !matches!(call.operation,
                  files::HOST_EXPORT_COUNT | files::MOUNT_HOST_EXPORT | files::UNMOUNT_VOLUME)

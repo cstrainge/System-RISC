@@ -1,0 +1,12 @@
+{
+  "author": "System RISC",
+  "design": "folded document with compressed contents and zipper; independently drawn native sizes",
+  "generator": "scripts/build_stuffit_icon.py",
+  "family": 128,
+  "variants": {
+    "49434e23-128.bin": "6036e80fc463d80e513c2c2aa95bfecf102a96ff735bd64cb8137dbe8d794443",
+    "69636c38-128.bin": "98005f76eb164098ab1892c988e4af8c4686f427dd1feee823f84b58378419e2",
+    "69637323-128.bin": "03c154b79cf2ec86c67a105e2eb347ad9b6d590f302e01b0f11cf8a8fdc14841",
+    "69637338-128.bin": "e74b0720155ca5375e14f77a7c5a1332b0bd794b58544d59d00764c8fd03087d"
+  }
+}
