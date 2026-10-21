@@ -1,6 +1,6 @@
 //! Finder presentation regressions using dates returned by the public file SDK.
 #![cfg(not(target_arch = "riscv64"))]
-#[path = "../../../finder/src/get_info/format.rs"]
+#[path = "../../../apps/finder/src/get_info/format.rs"]
 mod presentation;
 use mac_toolbox::Timestamp;
 use presentation::Calendar;

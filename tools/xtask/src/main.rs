@@ -107,7 +107,7 @@ impl Workspace
         let mut reports = Vec::new();
         for (directory, name, binary) in
             [("system", "System", "System"),
-             ("finder", "Finder", "Finder"),
+             ("apps/finder", "Finder", "Finder"),
              ("apps/quickdraw-test", "QuickDraw Test", "QuickDrawTest"),
              ("apps/textedit-exerciser", "TextEdit Exerciser", "TextEditExerciser"),
              ("apps/cursor-test", "Cursor Test", "CursorTest"),

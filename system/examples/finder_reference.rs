@@ -8,7 +8,7 @@ use mac_system::toolbox::quickdraw::{Canvas,
                                      fonts::{FontManager, FontSelection},
                                      icons::{IconFamily, IconFlags}};
 use mac_toolbox::Error;
-#[path = "../../finder/src/icon_view.rs"]
+#[path = "../../apps/finder/src/icon_view.rs"]
 // This original-reference renderer only exercises System resource icons.
 #[allow(dead_code)]
 mod icon_view;

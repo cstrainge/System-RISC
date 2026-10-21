@@ -48,8 +48,8 @@ fn fields(line: &str) -> std::collections::HashMap<&str, &str>
 #[test]
 fn finder_info_resource_layouts_are_observed_through_the_public_resource_manager()
 {
-    let file = include_bytes!("../../../finder/assets/get-info/layout-17011.bin");
-    let folder = include_bytes!("../../../finder/assets/get-info/layout-11261.bin");
+    let file = include_bytes!("../../../apps/finder/assets/get-info/layout-17011.bin");
+    let folder = include_bytes!("../../../apps/finder/assets/get-info/layout-11261.bin");
     let resources=[(17011,file.as_slice()),(11261,folder.as_slice())].into_iter()
         .map(|(id,data)|mac_formats::resource::Resource{kind:*b"gInf",id,name:None,attributes:0,data:data.to_vec()}).collect::<Vec<_>>();
     let fork = mac_formats::resource::encode(&resources).unwrap();

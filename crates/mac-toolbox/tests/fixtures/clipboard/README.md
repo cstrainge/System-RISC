@@ -1,6 +1,6 @@
 # Clipboard viewer test application
 
-This private application compiles the actual `finder/src/clipboard.rs` and uses
+This private application compiles the actual `apps/finder/src/clipboard.rs` and uses
 only the aggregate Toolbox SDK. It packages the same WIND2002 and STR#2000
 resources as Finder. T seeds ASCII `abc` through the real Scrap service; E clears
 it. These keys belong only to the test application. The capture runner also boots

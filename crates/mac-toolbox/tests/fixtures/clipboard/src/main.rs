@@ -57,26 +57,21 @@ fn require(value: bool, system: &System<'_>, message: &str) -> Result<(), mac_to
 {
     if value { Ok(()) } else { system.log(message)?; Err(mac_toolbox::Error::BadArgument) }
 }
-#[path = "../../../../../../finder/src/clipboard.rs"]
+#[path = "../../../../../../apps/finder/src/clipboard.rs"]
 mod clipboard;
 #[allow(dead_code)]
-#[path = "../../../../../../finder/src/browser.rs"]
+#[path = "../../../../../../apps/finder/src/browser.rs"]
 mod browser;
 #[allow(dead_code)]
-#[path = "../../../../../../finder/src/icon_view.rs"]
+#[path = "../../../../../../apps/finder/src/icon_view.rs"]
 mod icon_view;
 #[allow(dead_code)]
-#[path = "../../../../../../finder/src/menus.rs"]
+#[path = "../../../../../../apps/finder/src/menus.rs"]
 mod menus;
-mod ui
-{
-    use mac_toolbox::{System};
-    pub fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8])
-                    -> Result<&'b str, mac_toolbox::Error>
-    {
-        system.resources().application().indexed_string(2000, index, output)
-    }
-}
+#[allow(dead_code)]
+#[path = "../../../../../../apps/finder/src/ui.rs"]
+mod ui;
+
 fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
 {
     system.log("CLIPBOARD_PROBE_START\n")?;

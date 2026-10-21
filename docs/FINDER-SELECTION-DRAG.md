@@ -20,11 +20,9 @@ the whole state); every object ID through the shared generation-tagged
 facility; typed errors; RAII owners in the public SDK; canonical tests
 in `crates/mac-toolbox/tests` via the public SDK.
 
-As part of this Finder phase, move the source project from `finder/` to
-`apps/finder/`. Update Cargo/build/resource paths, tooling, checks and active
-documentation together; do not retain a duplicate source tree. This is source
-organization only: the packaged Finder remains physically installed in the
-blessed **System Folder**, not in the disk's Applications folder.
+The Finder source lives in `apps/finder/`, alongside the other applications.
+Its packaged file remains physically installed in the blessed **System Folder**.
+Cargo, builders, fixtures and reference tools use that single source tree.
 
 ## 2. Part 1 — the performance fix (substrate)
 

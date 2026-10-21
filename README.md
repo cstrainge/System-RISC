@@ -227,7 +227,7 @@ System7/
   system/                  Resident System executable and resources
     src/machine/           Hardware and RV64 trap entry
     src/toolbox/           Resident manager implementations
-  finder/                  Finder executable and resources
+  apps/finder/             Finder executable and resources (installed in System Folder)
   bootrom/                 Read-only flash firmware and virtio-block driver
   definitions/             Independently linked native WDEF and CDEF resources
   crates/
@@ -434,7 +434,7 @@ Each definition has a four-byte `type`, signed 16-bit `id`, unique uppercase
 Compressed resources are not supported. The compiler adds `vers` resource 1
 for Cargo-derived version metadata and generates constants such as
 `resources::FILE_MENU`, of type `mac_abi::ResourceKey`.
-See [Finder's definitions](finder/resources.json) for examples.
+See [Finder's definitions](apps/finder/resources.json) for examples.
 
 The packager reserves:
 

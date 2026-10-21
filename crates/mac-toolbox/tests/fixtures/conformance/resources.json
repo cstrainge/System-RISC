@@ -23,7 +23,7 @@
       "symbol": "OWNERSHIP_ALERT",
       "payload": {
         "format": "file",
-        "path": "../../../../../finder/assets/visual/414c5254-6012.bin"
+        "path": "../../../../../apps/finder/assets/visual/414c5254-6012.bin"
       }
     },
     {
@@ -32,7 +32,7 @@
       "symbol": "OWNERSHIP_ALERT_ITEMS",
       "payload": {
         "format": "file",
-        "path": "../../../../../finder/assets/visual/4449544c-6012.bin"
+        "path": "../../../../../apps/finder/assets/visual/4449544c-6012.bin"
       }
     }
   ]

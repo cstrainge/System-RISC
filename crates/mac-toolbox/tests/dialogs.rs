@@ -14,13 +14,13 @@ fn resources(ditl: &[u8]) -> Vec<u8>
 {
     encode(&[fork(*b"ALRT",
                   6012,
-                  include_bytes!("../../../finder/assets/visual/414c5254-6012.bin")),
+                  include_bytes!("../../../apps/finder/assets/visual/414c5254-6012.bin")),
              fork(*b"DITL", 6012, ditl)]).unwrap()
 }
 #[test]
 fn original_alert_items_are_loaded_through_public_resource_and_dialog_services()
 {
-    let app = resources(include_bytes!("../../../finder/assets/visual/4449544c-6012.bin"));
+    let app = resources(include_bytes!("../../../apps/finder/assets/visual/4449544c-6012.bin"));
     mac_system::testing::with_resource_forks(&encode(&[]).unwrap(), &app, |services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
         let dialogs = system.dialogs();
@@ -51,7 +51,7 @@ fn malformed_or_unsupported_items_fail_before_creating_a_window()
 {
     for (data, expected) in [(vec![0, 3], BAD_ARGUMENT),
                              ({
-                                  let mut d = include_bytes!("../../../finder/assets/visual/\
+                                  let mut d = include_bytes!("../../../apps/finder/assets/visual/\
                                                               4449544c-6012.bin").to_vec();
                                   d[14] = 7;
                                   d

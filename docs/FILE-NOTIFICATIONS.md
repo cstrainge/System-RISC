@@ -1,8 +1,10 @@
 # File and directory change notifications
 
 Required for the filesystem-driver work and Finder cache refresh. This document
-records the contract; runtime subscriptions and Finder integration are not yet
-implemented.
+records the full target contract. Native directory subscriptions and open-folder
+Finder refresh are implemented; file subscriptions, terminal notifications and
+the Apple compatibility surfaces remain pending. See
+[implemented contract and gates](FILESYSTEM-INTERFACE.md#directory-watches).
 
 Resident File Manager owns subscriptions. Native Toolbox exposes an owned Rust
 watch with `Drop`, backed by the shared generation-tagged object facility and

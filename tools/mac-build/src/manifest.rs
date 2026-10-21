@@ -620,7 +620,8 @@ mod tests
     use super::*;
     fn manifest() -> Manifest
     {
-        Manifest::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../finder/resources.json")).unwrap()
+        Manifest::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/finder/resources.\
+                                                                    json")).unwrap()
     }
 
     fn elf_fixture() -> Vec<u8>
@@ -648,7 +649,7 @@ mod tests
     fn compiles_real_menu_strings_and_version()
     {
         let m = manifest();
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../finder/resources.json");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/finder/resources.json");
         let resources = m.compile_resources(&path, &elf_fixture(), None).unwrap();
         let menu = &resources.iter().find(|r| r.kind == *b"MENU" && r.id == 1252).unwrap().data;
         assert_eq!(&menu[..2], &1252i16.to_be_bytes());
@@ -684,7 +685,7 @@ mod tests
         }
         let mut manifest = manifest();
         manifest.cargo_version = "12.3.4-beta.2+build.2026".into();
-        let resources = manifest.compile_resources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../finder/resources.json"), &elf_fixture(), None).unwrap();
+        let resources = manifest.compile_resources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/finder/resources.json"), &elf_fixture(), None).unwrap();
         let vers = &resources.iter().find(|r| r.kind == *b"vers").unwrap().data;
         assert_eq!(&vers[..6], &[0x12, 0x34, 0x60, 2, 0, 0]);
         assert_eq!(&vers[7..7 + vers[6] as usize], b"12.3.4-beta.2+build.2026");

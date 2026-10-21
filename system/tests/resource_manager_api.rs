@@ -9,7 +9,7 @@ use mac_traps::{Client, Error, ResourceRequest};
 use toolbox_resources::Resources;
 
 const SYSTEM_PICTURE: &[u8] = include_bytes!("../assets/visual/50494354--32510.bin");
-const FINDER_PICTURE: &[u8] = include_bytes!("../../finder/assets/visual/50494354-128.bin");
+const FINDER_PICTURE: &[u8] = include_bytes!("../../apps/finder/assets/visual/50494354-128.bin");
 const SYSTEM_ICON: &[u8] = include_bytes!("../assets/visual/49434e23--32512.bin");
 const CHICAGO: &[u8] = include_bytes!("../assets/fonts/FONT-12.bin");
 
