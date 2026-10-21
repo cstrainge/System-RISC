@@ -180,7 +180,7 @@ impl Workspace
                                                              toolbox-boundaries.json"))?)?;
         let image = disk::image(self)?;
         let smoke = smoke::check(self, &reports)?;
-        for test in ["userspace_graphical", "window_interactions", "finder_png"]
+        for test in ["driver_modules", "userspace_graphical", "window_interactions", "finder_png"]
         {
             self.private_guest_test(test)?;
         }
@@ -191,6 +191,9 @@ impl Workspace
         {
             self.private_guest_test(test)?;
         }
+        let drivers: Value =
+            serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
+                                                             driver-module-checks.json"))?)?;
         let resource_desktop: Value =
             serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
                                                              finder-trash-checks.json"))?)?;
@@ -284,7 +287,7 @@ impl Workspace
                                                                  .join("results/system7/\
                                                                         panic-checks.json"))?)?;
         let report = json!({
-            "target": TARGET, "host_tests": "passed", "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"processes":processes,"application_ui":application_ui,"retained_update":retained_update,"event_latency":event_latency,"cursors":cursors,"panics":panics,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
+            "target": TARGET, "host_tests": "passed", "driver_modules": drivers, "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"processes":processes,"application_ui":application_ui,"retained_update":retained_update,"event_latency":event_latency,"cursors":cursors,"panics":panics,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
             "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS-B, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, resource menus/alerts, captured Event/Scrap and monochrome TextEdit services with Finder exercisers, shared native HFS-B read/write services with UTF-8 names and microsecond dates, unchanged classic HFS exchange access, and read-only resource-fork inspection. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
         });
         let path = self.repo.join("results/system7/toolchain-checks.json");

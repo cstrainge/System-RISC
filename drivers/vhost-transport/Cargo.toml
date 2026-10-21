@@ -1,0 +1,21 @@
+[package]
+name = "vhost-transport"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+[features]
+guest = []
+[[bin]]
+name = "HostTransport"
+path = "src/main.rs"
+required-features = ["guest"]
+test = false
+bench = false
+[dependencies]
+mac-driver = { path = "../../crates/mac-driver" }
+mac-abi.workspace = true
+mac-host-protocol = { path = "../../crates/mac-host-protocol" }
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+spinning_top = "=0.2.5"
+[build-dependencies]
+mac-build.workspace = true

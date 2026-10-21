@@ -175,3 +175,49 @@ The forthcoming host/StuffIt class gates must qualify those portions they use,
 including cancellation and failure cleanup, before they can be called working
 filesystem providers. Declared heap/stack limits are admission checks rather
 than allocation quotas or isolation of trusted kernel code.
+
+## Resident device-service foundation
+
+The module registry now publishes real resident services through the same
+interface/request facility. Required services are validated before entry;
+module dependencies and resident requirements remain distinct. The `VDEV` v1
+class has its own `mac-device-interface` layout and thin `mac-driver::devices`
+binding. Its safe resident manager owns generation-tagged claims and DMA maps,
+with a narrow QEMU virt MMIO bus adapter. It checks DABI bus matches, module RAM
+bounds and owners, and refuses map release before stopped acknowledgement.
+Polling/cancellation reset requests retain their broker ticket until terminal.
+Firmware block devices and resident input are reserved, so modules cannot steal
+them while extraction is incomplete. See [FORMAT.md](../FORMAT.md#resident-device-service-vdev-version-1).
+
+Unit tests cover resident-service declarations, ownership, stale/foreign/reused
+claims/maps and deferred reset with live DMA. The private native module gate
+also resolves/calls the real service and proves that an admitted matching driver
+cannot claim firmware-owned boot storage. This is not evidence of console DMA,
+a mounted host directory, archive decoding or complete device reset/hotplug
+support; those have separate provider acceptance gates.
+
+### Current device and deferred-request checkpoint
+
+The resident `VDEV` service now enforces declared bus matches, independent device
+ownership, generation-tagged claim/mapping IDs, admitted module-memory DMA bounds,
+and reset acknowledgement before mapping/claim release. Firmware-owned block and
+input devices cannot be claimed by a driver. The private module gate invokes the
+real resident service and proves that the boot disk remains protected. It is now
+included in `cargo xtask check` as well as its standalone gate.
+
+`drivers/vhost-transport` contains the first production transport module. Its
+safe packet engine has host tests for bounded fragments, borrowed-input lifetime,
+initial connection retry, cancellation drainage and link/protocol failure. The
+RV64 MMIO/DMA adapter builds and packages as `DRVR` + `DABI`; it has **not yet
+passed a live production-module packet-transfer gate**. The earlier disposable
+channel qualification is separate evidence. It is not installed in the ordinary
+System image yet, and no host directory is mounted by this checkpoint.
+
+`system::drivers::jobs` is the safe owned-request queue for subsequent resident
+integration. Jobs use the shared generation facility, retain bounded owned input
+and output buffers, dispatch outside queue guards, and keep live tickets until
+completion/cancellation acknowledgement. Tests cover exit/discard during pending
+I/O, cancellation during a callback, actual mutation results after cancellation,
+foreign and reused IDs, separate owners, fairness and memory limits. Scheduler
+parking, the runtime pump, filesystem provider and mount/read/write SDK acceptance
+remain the next integration work; this queue alone does not implement them.

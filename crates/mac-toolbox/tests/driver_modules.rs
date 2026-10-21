@@ -38,6 +38,10 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
     let client = output.join("packages/ModuleClient.bin");
     let resources = resource::decode(&provider.resources).unwrap();
     let package = mac_formats::module::Package::inspect(&resources, *b"DRVR").unwrap();
+    let service = package.contract.services().next().unwrap().unwrap();
+    assert_eq!(service.service.0, *b"VDEV");
+    assert_eq!(service.version, 1);
+    assert!(!service.optional);
     assert_eq!(package.code.descriptor.role, native::Role::CodeResource);
     assert_eq!(package.code.descriptor.load_base, 0x82000000);
     assert!(!resources.iter().any(|r| [*b"RV64", *b"NABI", *b"RLOC"].contains(&r.kind)));

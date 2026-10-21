@@ -1,6 +1,7 @@
 //! Native in-kernel module SDK. Ordinary driver logic uses borrowed Rust slices;
 //! this module is the narrow, audited C/pointer boundary. This is not an app SDK.
 #![no_std]
+pub mod devices;
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, NOT_SUPPORTED, OK, Status};
 pub use mac_module::{ClassId, Offer, abi};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,7 +85,10 @@ pub struct Provider
 impl Provider
 {
     /// A provider handle is issued by the resident registry, never an address.
-    /// The resident validates the declaring module's dependency on every call.
+    /// The resident validates the declaring module's dependency/service on every
+    /// call. Pending and pre-dispatch contention retain a live ticket; terminal
+    /// completion clears it. Never discard a pending ticket before cancellation
+    /// is acknowledged.
     pub fn invoke(self, ticket: &mut u32, phase: Phase, operation: u32, input: &[u8],
                   output: &mut [u8])
                   -> Result<Completion>

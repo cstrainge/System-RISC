@@ -77,6 +77,7 @@ name = "mac-build"
 version = "0.1.0"
 dependencies = [
  "mac-formats",
+ "mac-module",
  "serde",
  "serde_json",
  "sha2",
@@ -91,8 +92,14 @@ name = "mac-formats"
 version = "0.1.0"
 dependencies = [
  "mac-code-resource",
+ "mac-module",
  "mac-text",
+ "sha2",
 ]
+
+[[package]]
+name = "mac-module"
+version = "0.1.0"
 
 [[package]]
 name = "mac-text"

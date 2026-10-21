@@ -7,6 +7,7 @@ members = [
     "crates/mac-fork-file",
     "crates/mac-host-protocol",
     "crates/mac-driver",
+    "crates/mac-device-interface",
     "crates/mac-toolbox",
     "crates/mac-traps",
     "crates/mac-formats",
@@ -29,6 +30,7 @@ members = [
     "tests/abi-smoke",
     "bootrom",
     "definitions/*",
+    "drivers/*",
 ]
 default-members = ["crates/mac-abi", "crates/mac-toolbox", "crates/mac-formats", "crates/mac-hfs", "tools/mac-build", "tools/xtask"]
 
@@ -39,6 +41,7 @@ publish = false
 
 [workspace.dependencies]
 mac-module = { path = "crates/mac-module" }
+mac-device-interface = { path = "crates/mac-device-interface" }
 mac-object-table = { path = "crates/mac-object-table" }
 mac-traps = { path = "crates/mac-traps" }
 mac-abi = { path = "crates/mac-abi" }

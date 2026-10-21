@@ -11,5 +11,18 @@
       "max_reply": 32,
       "serialized": true
     }
+  ],
+  "services": [
+    {
+      "class": "VDEV",
+      "version": 1
+    }
+  ],
+  "matches": [
+    {
+      "bus": "VMMI",
+      "value": "02000000000000000000000000000000",
+      "mask": "ffffffff000000000000000000000000"
+    }
   ]
 }

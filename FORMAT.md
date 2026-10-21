@@ -511,10 +511,52 @@ Call carries a generation-tagged resident ticket, phase, class, class operation,
 borrowed input and exclusive output bytes. START allocates a ticket; POLL and
 CANCEL validate the same caller/provider/request incarnation. QUIESCE has no
 class or buffers. Each callback returns a terminal status/length or PENDING(1).
+Terminal completion clears Call's ticket to zero. Pending and pre-dispatch
+contention retain the live ticket, so a caller can distinguish an unfinished
+operation from a terminal provider error. A callback receives its live ticket;
+the broker clears it only after validating and retiring the request.
 Pending callbacks retain no buffer pointers. They must do bounded work and
 return; the interface does not authorize waiting on hardware with interrupts
 masked. Current broker polling is caller-driven; deferred I/O scheduling and
 class-specific cancellation/progress gates accompany the storage providers.
+
+### Resident device service (VDEV, version 1)
+
+Resident class providers use the same generated interface/request capabilities
+as independently loaded modules. Their provider owner is the reserved kernel
+owner zero. A module declares resident classes in `services`, not module
+`dependencies`; resolution and every request check that declaration separately.
+Only an admitted DRVR with a matching bus key can claim physical hardware.
+
+`mac-device-interface` owns this class's byte layouts; `mac-driver::devices`
+provides the Rust binding. These payloads do not alter the generic C entry ABI.
+All fields are little-endian. Description is 48 bytes: claim handle u32 (zero
+for probe), bus class four bytes, 16-byte match key, register base u64, register
+length u64, interrupt u32, flags u32. Flags are coherent DMA=1, MMIO=2,
+resident-owned=4. Mapping is 24 bytes: generation-tagged handle u32, zero u32,
+device address u64, length u64. Invalid lengths, overflow and reserved bits fail.
+
+| Op | Input | Output |
+| --- | --- | --- |
+| 0 Probe | bus ordinal u32 | 48-byte description, no claim |
+| 1 Claim | bus ordinal u32 | 48-byte description with owned claim |
+| 2 Map | claim u32, zero u32, module RAM address u64, length u64 | 24-byte mapping |
+| 3 Reset | START: claim u32; POLL/CANCEL: empty | empty; Pending until stopped acknowledgement |
+| 4 Unmap | mapping u32 | empty; refused while DMA can still run |
+| 5 Release | claim u32 | empty; requires no mappings/pending reset and stopped device |
+
+Claims and mappings use centrally registered shared handle namespaces plus
+independent module-owner checks. A reset associates its broker-issued ticket
+with the claim; polling and cancellation use that incarnation without retaining
+input pointers. No operation spins waiting for hardware. RAM mappings are
+restricted to the caller's pinned native module reservation. The current QEMU
+virt bus uses coherent identity DMA; this is not an IOMMU/isolation claim.
+
+The board bus class is `VMMI`; its match key is device ID u32, vendor ID u32,
+then eight zero bytes. Probe ordinals 0..7 describe the board's eight 4 KiB
+virtio-MMIO windows. Boot storage and input stay resident-owned until their
+explicit extraction milestones; declaring a matching DABI key cannot steal
+them. Claim publication re-probes the exact authorized descriptor.
 
 Initialization is staged. No interface is visible until entry and callback-address
 validation succeed and every interface is registered transactionally. Registry
@@ -709,3 +751,35 @@ success.
 See `tools/risc-host/README.md` for staged-publication, cooperating-lock and
 external-edit limits. This protocol is a directory class, not a block protocol;
 actual block exports require their own class contract.
+
+### Host directory transport class (`HDIR`, version 1)
+
+The loadable Host Transport driver publishes the serialized, exclusive `HDIR`
+class. This is a byte/directory transport, not a block device and not a Macintosh
+catalog implementation. The separate filesystem provider consumes it. Operations
+use the `RSHOST01` operation numbers above. START input is a 24-byte little-endian
+argument record followed by its exact payload:
+
+| Offset | Bytes | Meaning |
+| --- | --- | --- |
+| 0 | 4 | Host session capability; zero only for Hello |
+| 4 | 4 | Host object capability |
+| 8 | 8 | Byte offset |
+| 16 | 4 | Operation value |
+| 20 | 4 | Exact following payload length, at most 65,536 |
+| 24 | variable | Payload |
+
+The broker's live request ticket supplies wire correlation; callers cannot choose
+it. POLL/CANCEL have empty inputs. A completed output is the full checked 48-byte
+`RSHOST01` reply header followed by its exact payload. Transport errors and host
+operation status are distinct: a completed transport can carry a failed host
+operation. Each callback transfers at most two 4 KiB fragments in each direction,
+plus bounded device control work. Packet buffers belong to the driver, never to
+an application or its borrowed call frame. Cancellation drains an already-sent
+operation and reports its actual result; it does not promise to undo publication.
+A lost established connection or malformed reply poisons that driver incarnation.
+
+The current RV64 adapter claims only a declared modern virtio-console device via
+`VDEV`. Four pinned queues implement data RX/TX and multiport control RX/TX. DMA
+mappings remain live until a positively acknowledged reset; failed initialization
+cannot reclaim DMA-visible module memory. The module remains pinned until reboot.

@@ -22,6 +22,10 @@ static HOST_DIRECTORY_GENERATIONS: [AtomicU16; 256] = [const { AtomicU16::new(0)
 static HOST_TRANSACTION_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
 static HOST_SESSION_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
 
+static DEVICE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
+static JOB_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
+static DMA_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
+
 struct Slot<T>
 {
     generation: u16,
@@ -53,7 +57,10 @@ pub enum Kind
     HostFiles,
     HostDirectories,
     HostTransactions,
-    HostSessions
+    HostSessions,
+    DriverDevices,
+    DriverDma,
+    DriverJobs
 }
 impl Kind
 {
@@ -61,6 +68,9 @@ impl Kind
     {
         match self
         {
+            Self::DriverJobs => 128,
+            Self::DriverDevices => 64,
+            Self::DriverDma => 128,
             Self::HostFiles => 1024,
             Self::HostDirectories => 256,
             Self::HostTransactions => 64,
@@ -84,6 +94,15 @@ impl Kind
     {
         match self
         {
+            Self::DriverJobs => Self::DriverDma.first_slot() + Self::DriverDma.capacity() as u32,
+            Self::DriverDevices =>
+            {
+                Self::HostSessions.first_slot() + Self::HostSessions.capacity() as u32
+            }
+            Self::DriverDma =>
+            {
+                Self::DriverDevices.first_slot() + Self::DriverDevices.capacity() as u32
+            }
             Self::HostFiles =>
             {
                 Self::DriverRequests.first_slot() + Self::DriverRequests.capacity() as u32
@@ -129,6 +148,9 @@ impl Kind
     {
         match self
         {
+            Self::DriverJobs => JOB_GENERATIONS.get(index),
+            Self::DriverDevices => DEVICE_GENERATIONS.get(index),
+            Self::DriverDma => DMA_GENERATIONS.get(index),
             Self::HostFiles => HOST_FILE_GENERATIONS.get(index),
             Self::HostDirectories => HOST_DIRECTORY_GENERATIONS.get(index),
             Self::HostTransactions => HOST_TRANSACTION_GENERATIONS.get(index),
@@ -152,7 +174,10 @@ impl Kind
             | Self::StandardFiles
             | Self::ScrollBoxes
             | Self::Controls => u16::MAX,
-            Self::HostFiles
+            Self::DriverJobs
+            | Self::DriverDevices
+            | Self::DriverDma
+            | Self::HostFiles
             | Self::HostDirectories
             | Self::HostTransactions
             | Self::HostSessions
@@ -188,7 +213,7 @@ impl<T> Table<T>
         self.iter().next().is_none()
     }
 
-    pub fn new(kind: Kind) -> Self
+    pub const fn new(kind: Kind) -> Self
     {
         Self { kind,
                slots: Vec::new() }

@@ -20,7 +20,7 @@ impl Driver for Device
         let mut output = [0; 32];
         let mut ticket = 0;
         let result = provider.invoke(&mut ticket, Phase::Start, 7, b"class-neutral", &mut output)?;
-        if result != Completion::Complete(13) || &output[..13] != b"lartuen-ssalc"
+        if result != Completion::Complete(13) || &output[..13] != b"lartuen-ssalc" || ticket != 0
         {
             return Err(Error(-1));
         }

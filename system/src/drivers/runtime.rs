@@ -12,10 +12,11 @@ use crate::state::TryState;
 static RUNTIME: TryState<Runtime> = TryState::new();
 struct Runtime
 {
-    registry: Registry,
-    bindings: Vec<Binding>,
-    next:     u64,
-    limit:    u64
+    registry:  Registry,
+    bindings:  Vec<Binding>,
+    residents: Vec<ResidentBinding>,
+    next:      u64,
+    limit:     u64
 }
 struct Binding
 {
@@ -25,6 +26,75 @@ struct Binding
     _host:    Box<abi::Host>,
     instance: Option<abi::Instance>
 }
+/// Class adapters receive checked fresh borrows, never C pointers or registry
+/// guards. They may return Pending but cannot retain either borrowed buffer.
+pub(crate) struct ResidentCall<'a>
+{
+    pub caller:    u32,
+    pub ticket:    u32,
+    pub phase:     u32,
+    pub operation: u32,
+    pub input:     &'a [u8]
+}
+pub(crate) enum ResidentCompletion
+{
+    Complete(usize),
+    Pending
+}
+pub(crate) type ResidentCallback =
+    fn(ResidentCall<'_>, &mut [u8]) -> Result<ResidentCompletion, Status>;
+struct ResidentBinding
+{
+    interface: u32,
+    callback:  ResidentCallback
+}
+#[derive(Clone, Copy)]
+enum DispatchTarget
+{
+    Module(abi::Instance),
+    Resident(ResidentCallback)
+}
+
+pub(crate) fn register_service(offer: mac_module::Offer, callback: ResidentCallback)
+                               -> Result<u32, Status>
+{
+    RUNTIME.with(|runtime| {
+               runtime.residents.try_reserve(1).map_err(|_| NO_MEMORY)?;
+               let interface = runtime.registry.register_service(offer).map_err(status)?;
+               runtime.residents.push(ResidentBinding { interface,
+                                                        callback });
+               Ok(interface)
+           })
+           .map_err(crate::state::AccessError::status)?
+}
+
+pub(crate) fn device_allowed(module: u32, bus: ClassId, key: [u8; 16]) -> Result<(), Status>
+{
+    RUNTIME.with(|runtime| runtime.registry.device_allowed(module, bus, key).map_err(status))
+           .map_err(crate::state::AccessError::status)?
+}
+
+/// Only the admitted module's pinned load reservation can be offered for DMA.
+/// The bus adapter still checks device ownership and maps it for that device.
+pub(crate) fn owns_memory(module: u32, base: u64, length: u64) -> Result<(), Status>
+{
+    let end = base.checked_add(length).ok_or(BAD_ARGUMENT)?;
+    if length == 0
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    RUNTIME.with(|runtime| {
+               let binding =
+                   runtime.bindings.iter().find(|b| b.module == module).ok_or(NOT_FOUND)?;
+               if base < binding.base || end > binding.limit
+               {
+                   return Err(ACCESS_DENIED);
+               }
+               Ok(())
+           })
+           .map_err(crate::state::AccessError::status)?
+}
+
 fn status(error: Error) -> Status
 {
     match error
@@ -43,10 +113,11 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
     {
         return Err(BAD_ARGUMENT);
     }
-    RUNTIME.publish(Runtime { registry: Registry::new(target, &[]),
-                              bindings: Vec::new(),
-                              next:     arena.start,
-                              limit:    arena.end })
+    RUNTIME.publish(Runtime { registry:  Registry::new(target),
+                              bindings:  Vec::new(),
+                              residents: Vec::new(),
+                              next:      arena.start,
+                              limit:     arena.end })
            .map_err(crate::state::AccessError::status)
 }
 
@@ -193,7 +264,7 @@ unsafe fn invoke(caller: u64, provider: u32, pointer: *mut abi::Call) -> Result<
 {
     let call = unsafe { checked_call(pointer) }?;
     call.output_len = 0;
-    let (module, ticket, instance) =
+    let (module, ticket, target) =
         RUNTIME.with(|runtime| {
                    let interface = if call.phase == abi::START
                                    {
@@ -232,19 +303,78 @@ unsafe fn invoke(caller: u64, provider: u32, pointer: *mut abi::Call) -> Result<
                        }
                        _ => return Err(BAD_ARGUMENT)
                    };
-                   let instance = runtime.bindings
-                                         .iter()
-                                         .find(|b| b.module == interface.module)
-                                         .and_then(|b| b.instance)
-                                         .ok_or(NOT_FOUND)?;
+                   let target = if interface.module == 0
+                   {
+                       DispatchTarget::Resident(runtime.residents
+                                                       .iter()
+                                                       .find(|r| r.interface == provider)
+                                                       .ok_or(NOT_FOUND)?
+                                                       .callback)
+                   }
+                   else
+                   {
+                       DispatchTarget::Module(runtime.bindings
+                                                     .iter()
+                                                     .find(|b| b.module == interface.module)
+                                                     .and_then(|b| b.instance)
+                                                     .ok_or(NOT_FOUND)?)
+                   };
                    runtime.registry.enter_request(caller, ticket).map_err(status)?;
-                   Ok((interface.module, ticket, instance))
+                   Ok((interface.module, ticket, target))
                })
                .map_err(crate::state::AccessError::status)??;
     call.ticket = ticket;
-    let dispatch = instance.dispatch.ok_or(NOT_SUPPORTED)?;
     let original = *call;
-    let result = unsafe { dispatch(instance.state, call) };
+    let result = match target
+    {
+        DispatchTarget::Module(instance) =>
+        {
+            let dispatch = instance.dispatch.ok_or(NOT_SUPPORTED)?;
+            unsafe { dispatch(instance.state, call) }
+        }
+        DispatchTarget::Resident(callback) =>
+        {
+            // checked_call validated lengths, non-null pointers and disjoint
+            // live borrows. No registry guard survives into this safe callback.
+            let input = if call.input_len == 0
+            {
+                &[]
+            }
+            else
+            {
+                unsafe { core::slice::from_raw_parts(call.input, call.input_len as usize) }
+            };
+            let output = if call.output_capacity == 0
+            {
+                &mut []
+            }
+            else
+            {
+                unsafe {
+                    core::slice::from_raw_parts_mut(call.output, call.output_capacity as usize)
+                }
+            };
+            match callback(ResidentCall { caller: u32::try_from(caller).map_err(|_| {
+                                                                           ACCESS_DENIED
+                                                                       })?,
+                                          ticket,
+                                          phase: call.phase,
+                                          operation: call.operation,
+                                          input },
+                           output)
+            {
+                Ok(ResidentCompletion::Complete(length)) if length <= output.len() =>
+                {
+                    call.output_len = length as u32;
+                    OK
+                }
+                Ok(ResidentCompletion::Complete(_)) => BAD_ABI,
+                Ok(ResidentCompletion::Pending) => abi::PENDING,
+                Err(status) if status < 0 => status,
+                Err(_) => BAD_ABI
+            }
+        }
+    };
     let output_len = call.output_len;
     let mutated = call.header.version != original.header.version
                   || call.header.size != original.header.size
@@ -285,6 +415,10 @@ unsafe fn invoke(caller: u64, provider: u32, pointer: *mut abi::Call) -> Result<
                Ok(())
            })
            .map_err(crate::state::AccessError::status)??;
+    // The mutable field denotes a live request, not a historical identifier.
+    // In particular, callers can distinguish pre-dispatch contention (retained
+    // ticket) from a terminal provider error (cleared ticket).
+    call.ticket = 0;
     if malformed || result > 0
     {
         call.output_len = 0;

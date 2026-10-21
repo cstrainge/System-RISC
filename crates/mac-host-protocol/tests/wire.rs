@@ -86,3 +86,36 @@ fn receiver_rejects_wrong_tickets_directions_operations_and_small_storage()
     let mut receiver = Receiver::new(7, Operation::Read);
     assert_eq!(receiver.feed(&reply.encode().unwrap(), &mut [0; 10]), Err(Error::Header));
 }
+
+#[test]
+fn directory_class_arguments_exclude_correlation_and_check_exact_payload_length()
+{
+    let arguments = Arguments { session: 0x11223344,
+                                object:  0x55667788,
+                                offset:  0x1020304050607080,
+                                value:   4096,
+                                payload: b"fork" };
+    let mut bytes = [0; ARGUMENT_BYTES + 4];
+    assert_eq!(arguments.encode(&mut bytes), Ok(bytes.len()));
+    assert_eq!(&bytes[..8], b"\x44\x33\x22\x11\x88\x77\x66\x55");
+    assert_eq!(&bytes[20..], b"\x04\0\0\0fork");
+    let decoded = Arguments::decode(&bytes).unwrap();
+    let header = decoded.header(Operation::Write, 0x12345678).unwrap();
+    assert_eq!(header.request, 0x12345678);
+    assert_eq!(header.session, arguments.session);
+    assert_eq!(header.object, arguments.object);
+    assert_eq!(header.offset, arguments.offset);
+    assert_eq!(header.payload, 4);
+    assert_eq!(decoded.payload, b"fork");
+    assert!(decoded.header(Operation::Write, 0).is_err());
+    assert!(Arguments { session: 0,
+                        ..arguments }.header(Operation::Write, 1)
+                                     .is_err());
+    for size in 0..bytes.len()
+    {
+        assert!(Arguments::decode(&bytes[..size]).is_err());
+    }
+    assert!(arguments.encode(&mut [0; ARGUMENT_BYTES]).is_err());
+    bytes[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(Arguments::decode(&bytes).is_err());
+}

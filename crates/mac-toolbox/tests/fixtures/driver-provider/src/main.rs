@@ -14,9 +14,28 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> !
 }
 impl Driver for Device
 {
-    fn initialize(&self, _: Client) -> Result<()>
+    fn initialize(&self, host: Client) -> Result<()>
     {
-        Ok(())
+        let devices = mac_driver::devices::DeviceService::new(host)?;
+        for ordinal in 0..8
+        {
+            match devices.probe(ordinal)
+            {
+                Ok(info) if info.key[..4] == 2u32.to_le_bytes() =>
+                {
+                    // This fixture declares the bus match, but firmware still
+                    // owns boot storage. Resident ownership is an independent
+                    // admission rule and must reject the real service call.
+                    if info.flags & mac_driver::devices::interface::RESIDENT_OWNED == 0
+                       || devices.claim(ordinal) != Err(Error(-12))
+                    { return Err(Error(-1)); }
+                    return Ok(());
+                }
+                Ok(_) | Err(Error(-3)) => (),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(Error(-3))
     }
 
     fn request(&self, call: Request<'_>, output: &mut [u8]) -> Result<Completion>

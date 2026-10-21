@@ -255,6 +255,10 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                                                                              unavailable")
                                                      })?;
     crate::drivers::initialize(module_arena,mac_module::Target::RV64IMAC).map_err(|_|mac_formats::Error("module runtime initialization failed"))?;
+    crate::machine::driver_devices::initialize().map_err(|_| {
+                                                    mac_formats::Error("device service \
+                                                                        initialization failed")
+                                                })?;
     crate::drivers::discover().map_err(|_| mac_formats::Error("module discovery failed"))?;
     let mut system = crate::loader::read_startup("System")?;
     let finder = crate::loader::read_startup("Finder")?;

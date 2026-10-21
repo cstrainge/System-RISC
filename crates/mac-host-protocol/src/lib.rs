@@ -323,3 +323,64 @@ impl Receiver
         Ok(header_count + count)
     }
 }
+
+/// Kernel-module directory class. The broker supplies operation and correlation
+/// ticket; class input contains only session/object arguments and payload. The
+/// transport creates the actual wire header after it receives its live ticket.
+pub const DIRECTORY_CLASS: [u8; 4] = *b"HDIR";
+pub const ARGUMENT_BYTES: usize = 24;
+pub struct Arguments<'a>
+{
+    pub session: u32,
+    pub object:  u32,
+    pub offset:  u64,
+    pub value:   u32,
+    pub payload: &'a [u8]
+}
+impl<'a> Arguments<'a>
+{
+    pub fn encode(&self, output: &mut [u8]) -> Result<usize, Error>
+    {
+        if self.payload.len() > MAX_PAYLOAD
+        {
+            return Err(Error::Length);
+        }
+        let length = ARGUMENT_BYTES + self.payload.len();
+        let output = output.get_mut(..length).ok_or(Error::Length)?;
+        output[..4].copy_from_slice(&self.session.to_le_bytes());
+        output[4..8].copy_from_slice(&self.object.to_le_bytes());
+        output[8..16].copy_from_slice(&self.offset.to_le_bytes());
+        output[16..20].copy_from_slice(&self.value.to_le_bytes());
+        output[20..24].copy_from_slice(&(self.payload.len() as u32).to_le_bytes());
+        output[24..].copy_from_slice(self.payload);
+        Ok(length)
+    }
+
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, Error>
+    {
+        if bytes.len() < ARGUMENT_BYTES || bytes.len() > ARGUMENT_BYTES + MAX_PAYLOAD
+        {
+            return Err(Error::Length);
+        }
+        if u32::from_le_bytes(bytes[20..24].try_into().unwrap()) as usize
+           != bytes.len() - ARGUMENT_BYTES
+        {
+            return Err(Error::Length);
+        }
+        Ok(Self { session: u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                  object:  u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+                  offset:  u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+                  value:   u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+                  payload: &bytes[24..] })
+    }
+
+    pub fn header(&self, operation: Operation, ticket: u32) -> Result<Header, Error>
+    {
+        let header = Header { offset: self.offset,
+                              value: self.value,
+                              payload: self.payload.len() as u32,
+                              ..Header::request(operation, ticket, self.session, self.object) };
+        header.validate()?;
+        Ok(header)
+    }
+}
