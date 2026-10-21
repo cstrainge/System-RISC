@@ -686,13 +686,19 @@ impl Manager
         }
         loop
         {
-            let id = self.writes.iter().find_map(|(id, file)| (file.owner == owner).then_some(id));
+            let id =
+                self.writes
+                    .iter()
+                    .find_map(|(id, file)| (file.owner == owner && !file.orphaned()).then_some(id));
             let Some(id) = id
             else
             {
                 break;
             };
-            self.writes.remove(id);
+            if !self.abandon_write(id)
+            {
+                self.writes.remove(id);
+            }
             count += 1;
         }
         count

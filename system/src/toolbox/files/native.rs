@@ -5,6 +5,55 @@ use mac_abi::{files::FileCall, *};
 #[cfg(target_arch = "riscv64")]
 pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -> Option<i64>
 {
+    if size == size_of::<files::DataWriteCall>()
+    {
+        return Some(unsafe {
+            super::write::checked(pointer, size, |call, name, data| {
+                if call.reserved != [0; 2]
+                {
+                    return BAD_ARGUMENT;
+                }
+                let routed = crate::kernel::with_files(|manager| {
+                    let asynchronous = if matches!(call.operation,
+                                                   files::COMMIT_DATA_WRITE
+                                                   | files::ABORT_DATA_WRITE)
+                    {
+                        match manager.write_provider(owner, call.handle)
+                        {
+                            Ok(Some(_)) =>
+                            {
+                                call.operation != files::ABORT_DATA_WRITE
+                                || manager.writes
+                                          .get(call.handle)
+                                          .and_then(|mark| mark.provider.as_ref())
+                                          .is_none_or(|state| !state.staged())
+                            }
+                            Ok(None) => false,
+                            Err(error) => return Some(error)
+                        }
+                    }
+                    else
+                    {
+                        false
+                    };
+                    if asynchronous
+                    {
+                        None
+                    }
+                    else
+                    {
+                        Some(manager.write_request(owner, call, name, data).err().unwrap_or(OK))
+                    }
+                });
+                match routed
+                {
+                    Ok(Some(status)) => status,
+                    Ok(None) => super::provider::runtime::request_write(owner, call),
+                    Err(error) => error.status()
+                }
+            })
+        });
+    }
     if size == size_of::<files::FileScanCall>()
     {
         return Some(unsafe { dispatch_scan_async(owner, pointer, size) });

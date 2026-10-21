@@ -50,6 +50,7 @@ struct Host
     tickets:                  Table<()>,
     calls:                    Vec<Operation>,
     trace:                    Vec<(Operation, u32, u64, usize)>,
+    commits:                  Vec<Vec<u8>>,
     fail_next:                Option<Operation>,
     fail_resource_read_after: Option<usize>,
     reached_child:            Arc<AtomicBool>
@@ -61,7 +62,7 @@ impl Host
         Self {
             session: Session::new(Arc::new(vec![Export::open("Share", &temp.0, writable).unwrap()])).unwrap(),
             tickets: Table::new(ObjectKind::DriverRequests),
-            calls: Vec::new(), trace: Vec::new(), fail_next: None, fail_resource_read_after: None,
+            calls: Vec::new(), trace: Vec::new(), commits: Vec::new(), fail_next: None, fail_resource_read_after: None,
             reached_child: Arc::new(AtomicBool::new(false))
         }
     }
@@ -102,6 +103,10 @@ impl Rpc for Host
         {
             self.fail_next = None;
             return Err(Cause::Host(mac_host_protocol::status::IO).into());
+        }
+        if operation == Operation::Commit
+        {
+            self.commits.push(arguments.payload.to_vec());
         }
         let ticket = self.tickets.insert(()).unwrap();
         let header = arguments.header(operation, ticket).unwrap();
@@ -248,7 +253,7 @@ fn native_writer_creates_both_forks_replaces_atomically_and_keeps_unrelated_dire
                                                   when })).unwrap();
     assert_eq!(run(filesystem.finish_write(volume, token)).unwrap_err().cause,
                Cause::Format(mac_fork_file::Error::Incomplete));
-    for bytes in data.chunks(mac_fork_file::CHUNK_BYTES)
+    for bytes in data.chunks(mac_filesystem_interface::MAX_TRANSFER)
     {
         run(filesystem.write_chunk(volume, token, Fork::Data, bytes)).unwrap();
     }
@@ -309,6 +314,8 @@ fn aborted_create_removes_stage_preserves_catalog_and_never_reuses_reserved_iden
     let volume = volumes.insert(()).unwrap();
     run(filesystem.mount(volume, 0)).unwrap();
     let parent = run(filesystem.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
+    let root_modified = filesystem.info(volume).unwrap().metadata.modified;
+    let parent_modified = filesystem.cached_node(volume, parent).unwrap().metadata.modified;
     let mut writes = Table::new(ObjectKind::FileWrites);
     let first = writes.insert(()).unwrap();
     let reserved = run(filesystem.begin_create(Create { volume,
@@ -320,6 +327,10 @@ fn aborted_create_removes_stage_preserves_catalog_and_never_reuses_reserved_iden
                                                         when: 10 })).unwrap();
     assert_eq!(run(filesystem.unmount(volume)).unwrap_err().cause, Cause::Busy);
     assert!(!run(filesystem.abort_write(volume, first)).unwrap());
+    assert_eq!(filesystem.info(volume).unwrap().metadata.modified, root_modified);
+    assert_eq!(filesystem.cached_node(volume, parent).unwrap().metadata.modified, parent_modified);
+    assert_eq!(Volume::open(&temp.0).unwrap().resolve("/").unwrap().metadata.modified,
+               root_modified);
     writes.remove(first);
     assert_eq!(run(filesystem.lookup(volume, parent, "Cancelled")).unwrap_err().cause,
                Cause::NotFound);
@@ -419,10 +430,15 @@ fn cleanup_failure_after_publication_keeps_actual_result_and_does_not_repeat_com
     fs.transport().fail_next = Some(Operation::Close);
     assert_eq!(run(fs.finish_write(volume, token)).unwrap_err().cause,
                Cause::Host(mac_host_protocol::status::IO));
-    let commits = fs.transport().calls.iter().filter(|&&op| op == Operation::Commit).count();
+    let commits = fs.transport().commits.clone();
     run(fs.cleanup_orphans()).unwrap();
     assert_eq!(run(fs.finish_write(volume, token)).unwrap(), id);
-    assert_eq!(fs.transport().calls.iter().filter(|&&op| op == Operation::Commit).count(), commits);
+    let actual = &fs.transport().commits;
+    assert_eq!(&actual[..commits.len()], commits);
+    // The failure closed the updated volume record before the nested parent's
+    // update could run. Retry finishes that remaining record exactly once; it
+    // must not republish the file, reserve an ID or repeat the volume update.
+    assert_eq!(&actual[commits.len()..], &[mac_fork_file::DIRECTORY_RECORD.as_bytes().to_vec()]);
     assert_eq!(fs.cached_node(volume, parent).unwrap().metadata.modified, 30);
     run(fs.unmount(volume)).unwrap();
     let physical = Volume::open(&temp.0).unwrap();
@@ -631,7 +647,19 @@ fn data_only_replacement_preserves_resources_and_aborts_partial_copy_failures()
     assert_eq!(prospective.id, node);
     assert_eq!(prospective.data_length, data.len() as u64);
     assert_eq!(prospective.resource_length, resources.len() as u64);
-    for bytes in data.chunks(mac_fork_file::CHUNK_BYTES)
+    let before_calls = filesystem.transport().calls.len();
+    for bytes in [&b"bad"[..], &b""[..]]
+    {
+        assert_eq!(serve(&mut filesystem,
+                         O::WriteChunk,
+                         A { token,
+                             payload: bytes,
+                             ..args }).unwrap_err()
+                                      .cause,
+                   Cause::Invalid);
+    }
+    assert_eq!(filesystem.transport().calls.len(), before_calls);
+    for bytes in data.chunks(fs::MAX_TRANSFER)
     {
         serve(&mut filesystem,
               O::WriteChunk,
@@ -712,6 +740,7 @@ fn data_only_replacement_preserves_resources_and_aborts_partial_copy_failures()
                          ..args }).unwrap(),
                0u32.to_le_bytes());
     assert_eq!(physical.resolve("/Tools/Café").unwrap().metadata, expected);
+    assert_eq!(physical.resolve("/").unwrap().metadata.modified, when);
     serve(&mut filesystem, O::Unmount, args).unwrap();
     physical.check().unwrap();
 }

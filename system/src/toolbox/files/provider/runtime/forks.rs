@@ -283,7 +283,8 @@ pub(super) fn pump_cleanup()
     {
         Ok(job) =>
         {
-            let key = Key { operation: CLOSE,
+            let key = Key { record: Record::File,
+                            operation: CLOSE,
                             volume,
                             cnid: 0,
                             index: 0,

@@ -33,6 +33,16 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     require(data.read(&mut bytes)? == 3 && bytes == [7, 38, 69])?;
     require(resources.read(&mut bytes)? == 3 && bytes == [11, 24, 37])?;
     require(files.unmount(volume) == Err(Error::ServiceBusy))?;
+    let mut writer =
+        files.create_data(mac_toolbox::files::DataFileSpec { volume,
+                                                             parent: ROOT_ID,
+                                                             name: "Exit staging",
+                                                             replacing: None,
+                                                             file_type: (*b"TEXT").into(),
+                                                             creator: (*b"TEST").into() },
+                          3)?;
+    writer.write_all(b"abc")?;
+    core::mem::forget(writer);
     core::mem::forget(data);
     core::mem::forget(resources);
     system.log("HOST_FS_EXIT_WORKER_READY\n")?;

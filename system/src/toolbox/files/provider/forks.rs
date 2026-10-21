@@ -95,6 +95,14 @@ impl Manager
             return Err(BAD_ARGUMENT);
         }
         let provider = self.read_provider(volume)?.ok_or(BAD_ARGUMENT)?;
+        if self.writes.iter().any(|(_, mark)| {
+                                 mark.volume == volume
+                                 && mark.expected_cnid == node
+                                 && mark.provider.as_ref().is_some_and(|state| !state.staged())
+                             })
+        {
+            return Err(SERVICE_BUSY);
+        }
         let handle = self.handles
                          .insert(OpenFile { owner,
                                             volume,

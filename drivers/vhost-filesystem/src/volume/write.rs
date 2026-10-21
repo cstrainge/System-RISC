@@ -42,6 +42,7 @@ pub(super) struct Pending
     replacing:         bool,
     revision_updated:  bool,
     parent_updated:    bool,
+    volume_updated:    bool,
     when:              u64,
     locked:            bool
 }
@@ -152,7 +153,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    async fn update_root(&mut self, volume: u32, when: u64, reserve: bool) -> Result<u32>
+    async fn update_root(&mut self, volume: u32, when: Option<u64>, reserve: bool) -> Result<u32>
     {
         let mount = self.mounts.get(volume).ok_or(Cause::NotFound)?;
         let root = mount.root;
@@ -166,14 +167,29 @@ impl<R: Rpc> Filesystem<R>
                 }
                 let mut metadata = node.metadata;
                 let id = metadata.next_catalog_id;
+                let already = !reserve && when == Some(metadata.modified);
                 if reserve
                 {
                     metadata.next_catalog_id = id.checked_add(1).ok_or(Cause::NoMemory)?;
                 }
-                metadata.revision = metadata.revision.checked_add(1).ok_or(Cause::NoMemory)?;
-                metadata.modified = when;
+                if !already
+                {
+                    metadata.revision = metadata.revision.checked_add(1).ok_or(Cause::NoMemory)?;
+                    if let Some(when) = when
+                    {
+                        metadata.modified = when;
+                    }
+                }
                 let info = metadata.try_clone()?;
-                self.publish_record(root, forks::ROOT_RECORD.as_bytes(), old, &metadata).await?;
+                if already
+                {
+                    self.call(Op::SyncDirectory, root, 0, 0, &[]).await?;
+                }
+                else
+                {
+                    self.publish_record(root, forks::ROOT_RECORD.as_bytes(), old, &metadata)
+                        .await?;
+                }
                 let revision = self.directory_revision(root).await?;
                 let mount = self.mounts.get_mut(volume).unwrap();
                 mount.info.metadata = info;
@@ -234,6 +250,7 @@ impl<R: Rpc> Filesystem<R>
                      replacing,
                      revision_updated: false,
                      parent_updated: false,
+                     volume_updated: false,
                      when,
                      locked: true })
     }
@@ -291,7 +308,9 @@ impl<R: Rpc> Filesystem<R>
                 {
                     return Err(Cause::Stale.into());
                 }
-                let id = self.update_root(volume, when, true).await?;
+                // Reserving an identity is durable bookkeeping, not a visible
+                // catalog publication. An aborted create must not change dates.
+                let id = self.update_root(volume, None, true).await?;
                 metadata.catalog_id = id;
                 metadata.identity = forks::catalog_identity(metadata.volume, id)?;
                 let node = Node { parent,
@@ -376,10 +395,6 @@ impl<R: Rpc> Filesystem<R>
                                   metadata,
                                   layout,
                                   key: cached.key };
-                if let Err(error) = self.update_root(volume, when, false).await
-                {
-                    return self.cleanup(expected, Err(error)).await;
-                }
                 match self.stage_file(volume, node.parent, lock, expected, node, true).await
                 {
                     Ok(pending) => Ok(pending),
@@ -446,6 +461,40 @@ impl<R: Rpc> Filesystem<R>
     pub async fn write_chunk(&mut self, volume: u32, token: u32, kind: Fork, bytes: &[u8])
                              -> Result<()>
     {
+        const {
+            assert!(forks::CHUNK_BYTES == mac_filesystem_interface::WRITE_ALIGNMENT);
+        }
+        let pending = self.writes
+                          .get(token)
+                          .filter(|pending| pending.volume == volume)
+                          .ok_or(Cause::NotFound)?;
+        if pending.header_written || pending.published || pending.aborting
+        {
+            return Err(Cause::Invalid.into());
+        }
+        let fork = pending.node.as_ref().ok_or(Cause::Invalid)?.layout.fork(kind);
+        let chunks = if kind == Fork::Data { pending.data_chunks } else { pending.resource_chunks };
+        let remaining =
+            fork.length
+                .checked_sub(chunks.checked_mul(forks::CHUNK_BYTES as u64).ok_or(Cause::Invalid)?)
+                .ok_or(Cause::Invalid)?;
+        if bytes.is_empty()
+           || bytes.len() > mac_filesystem_interface::MAX_TRANSFER
+           || bytes.len() as u64 > remaining
+           || bytes.len() as u64 != remaining && !bytes.len().is_multiple_of(forks::CHUNK_BYTES)
+        {
+            return Err(Cause::Invalid.into());
+        }
+        for chunk in bytes.chunks(forks::CHUNK_BYTES)
+        {
+            self.write_one(volume, token, kind, chunk).await?;
+            yield_once().await;
+        }
+        Ok(())
+    }
+
+    async fn write_one(&mut self, volume: u32, token: u32, kind: Fork, bytes: &[u8]) -> Result<()>
+    {
         self.owner = volume;
         let pending = self.writes
                           .get(token)
@@ -472,6 +521,22 @@ impl<R: Rpc> Filesystem<R>
             Fork::Data => pending.data_chunks += 1,
             Fork::Resource => pending.resource_chunks += 1
         };
+        Ok(())
+    }
+
+    async fn update_volume_after_publication(&mut self, token: u32) -> Result<()>
+    {
+        let pending = self.writes.get(token).ok_or(Cause::NotFound)?;
+        if pending.volume_updated
+        {
+            return Ok(());
+        }
+        let (volume, when) = (pending.volume, pending.when);
+        if self.info(volume)?.metadata.modified != when
+        {
+            self.update_root(volume, Some(when), false).await?;
+        }
+        self.writes.get_mut(token).unwrap().volume_updated = true;
         Ok(())
     }
 
@@ -644,6 +709,7 @@ impl<R: Rpc> Filesystem<R>
                 directory.by_name.insert(name_at, id);
             }
         }
+        self.update_volume_after_publication(token).await?;
         self.update_parent_after_create(token).await?;
         let pending = self.writes.get(token).unwrap();
         if !pending.revision_updated
@@ -671,6 +737,7 @@ impl<R: Rpc> Filesystem<R>
         self.writes.get_mut(token).unwrap().aborting = true;
         if published
         {
+            self.update_volume_after_publication(token).await?;
             self.update_parent_after_create(token).await?;
         }
         self.cleanup_write(token).await?;

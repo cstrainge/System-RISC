@@ -15,7 +15,8 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> i32
         Err(error) => return error.status()
     };
     let _ = system.log("DESKTOP_READY: public host filesystem fixture\n");
-    match cases::check(&system)
+    let gate = unsafe { (*services).trap };
+    match cases::check(&system).and_then(|()| cases::check_legacy_writer(&system, gate))
     {
         Ok(()) =>
         {

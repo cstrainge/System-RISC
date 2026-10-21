@@ -87,8 +87,14 @@ metadata-only ancestry does not enumerate unused directory children.
 Public incremental cursor scans now pass in the guest, including remount binding;
 unknown child counts/allocation use Rust options, with Finder preserving unknown
 folder allocation. Resident tests cover cursor revision/field/progress checks.
-This is partial P17: resource
-inspection/application-loading dispatch, native write-back,
+Native bounded data saves now pass creation, replacement, resource-fork
+preservation, exact-ID/reader contention, cursor invalidation and write-token
+reuse checks. The Pascal-string trap path shares those resident services. A real
+second app also exits with a forgotten staged writer without publishing it;
+uncertain remote-write ownership/exit retention has resident tests. Visible
+volume/folder dates change after publication, including retryable cleanup.
+This is partial P17: resource inspection/application-loading dispatch, remaining
+folder/metadata/rename/move/delete and full two-fork copy operations, refresh/watches,
 normal launcher exports, disconnect/pending-I/O-exit/performance acceptance and P16 remain
 to be completed. See [the exact filesystem contract and coverage](FILESYSTEM-INTERFACE.md).
 

@@ -44,7 +44,7 @@ Operation is the broker operation number. Unused arguments must be zero:
 | Close (9) | volume, token | empty |
 | BeginCreate (10) | volume, parent, resident write token, data length, resource length in auxiliary, operation timestamp in when, FileProperties payload | prospective Metadata, including reserved CNID and normalized name |
 | BeginReplace (11) | volume, node, write token, fork lengths and when; optional PRESERVE_RESOURCE_FORK flag | prospective Metadata, including actual retained resource length |
-| WriteChunk (12) | volume, write token, fork flag, next chunk bytes | empty |
+| WriteChunk (12) | volume, write token, fork flag, next sequential bytes (up to 64 KiB) | empty |
 | FinishWrite (13) | volume, write token | WriteReceipt containing actual published Metadata and Mount |
 | AbortWrite (14) | volume, write token | AbortReceipt: u32 publication-observed boolean; WriteReceipt follows only when true |
 | Refresh (15) | volume | empty; existing read leases remain bound to their original source |
@@ -52,7 +52,9 @@ Operation is the broker operation number. Unused arguments must be zero:
 Rename/Move/MakeDirectory/Remove/SetMetadata (16–20) are allocated operation codes;
 the host provider currently rejects them as unsupported. Their payload contracts
 must be specified and tested with their implementation. This checkpoint is not
-full File Manager mutation coverage, nor native public writer integration.
+full File Manager mutation coverage. Public data-fork saves are connected; folder
+creation, metadata edits, rename/move/delete and full two-fork copy still need
+their resident/provider contracts and acceptance gates.
 
 Class version 2 replaces the old raw-name creation request directly. There is no
 v1 producer/decoder path. Rebuild System, driver packages and their dependents
@@ -76,6 +78,9 @@ them in a template. Name input is bounded to 16 KiB before provider normalizatio
 HOST still stores NFC with its 255-byte post-normalization limit. Comments retain
 the existing 255-byte UTF-8 limit. Creation preserves all supplied metadata while
 parent/volume modification dates use the separate operation timestamp.
+Durable catalog-ID reservation does not change visible modification dates.
+Volume/folder dates change after file publication; retry finishes outstanding
+metadata/durability work without republishing the file or re-reserving its ID.
 
 BeginReplace flag bit 0 (`PRESERVE_RESOURCE_FORK`) requires auxiliary zero. The
 provider verifies and streams the actual original resource fork into its private
@@ -84,6 +89,12 @@ resource fork is buffered, and validated physical chunks are copied without
 hashing the same bytes again. Layout as well as metadata is revalidated before
 replacement. A newly opened reader also blocks publication, even if it opened
 after staging began. Partial-copy failures remain unpublished and require Abort.
+WriteChunk accepts nonempty batches up to 64 KiB. Nonfinal batches are multiples
+of 4096 bytes (`WRITE_ALIGNMENT`); the final batch ends at the declared fork
+length. Providers validate the whole batch length before I/O and yield between
+bounded physical operations. After a failed batch, Abort drains any acknowledged
+prefix; callers must not blindly replay it. The native writer uses full batches,
+so each physical hash chunk does not add another broker/job/park round trip.
 
 Metadata uses a 112-byte header followed by its UTF-8 name and comment:
 
@@ -263,8 +274,32 @@ Block-backed exact-allocation behavior is unchanged and its SDK tests use known
 values explicitly.
 
 Resource Manager inspection and application loading from provider forks remain
-to be connected. This does
-not yet make external directories usable in Finder.
+to be connected. This does not yet make external directories usable in Finder.
+
+The public `DataWriter` now routes provider-backed saves through owned resident
+jobs. Begin/append use the existing fallible 4 MiB bounded staging buffer. Commit
+validates the actual parent and exact expected replacement ID, then issues
+BeginCreate/BeginReplace, full 64 KiB batches, and FinishWrite outside Files
+guards and firmware handoffs. New files use provider normalization, requested
+type/creator and checked dates. Replacing data preserves the original resource
+fork, name, creation date, Finder metadata and attributes. Existing read marks
+block replacement; uncertain cleanup pins the generation-tagged write/volume
+identities. Publication updates volume metadata, invalidates catalog cursors and
+retires the write mark in one short resident operation. Owner exit discards
+RAM-only staging and retains active/uncertain remote writes for acknowledged
+cleanup, independent of the dead app stack.
+
+The native SDK gate verifies Unicode creation, multi-batch readback, zero-length
+files, duplicate refusal, partial staging/Drop, replacement/read-mark contention,
+complete resource-fork preservation, stale/foreign write tokens and cursor
+invalidation. Its separate app exits with two forgotten read marks and a staged
+writer; cleanup permits unmount and the staged file remains unpublished. Resident
+tests cover uncertain-write ownership and generation retention through owner exit.
+The native Pascal-string trap gate also creates, appends, commits and reads back
+a MacRoman-named file through these same resident writer services; stale write
+tokens fail there as well. Rust applications keep their native string facade.
+This does not yet verify process exit during a pending write, disconnect recovery
+or interactive responsiveness under sustained storage traffic.
 
 Verification builds now share `<selected build>/host` for workspace host tests,
 examples, formatter tools and rustdoc. Native images/binaries and fixture targets

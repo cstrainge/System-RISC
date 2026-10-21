@@ -812,6 +812,10 @@ documented WriteReceipt envelope containing the published file and Mount
 metadata; its storage is reserved before publication, including cancellation
 cleanup that observes a successful commit. No post-commit allocation or extra
 catalog query is needed to report the actual result.
+AbortWrite reports an unpublished boolean or the complete observed publication
+receipt. Sequential write payloads are at most 64 KiB, aligned to 4096 bytes
+except at the declared fork end. A failed batch must be aborted rather than
+blindly replayed; providers may have acknowledged a bounded prefix.
 Native FileCall operations 26, 27 and 28 are host-export count, mount host export
 (index selector), and unmount volume. All other input fields must be zero except
 the volume for unmount. Mounted identities are issued by resident File Manager,

@@ -12,16 +12,30 @@ use spinning_top::Spinlock;
 use crate::drivers::{OwnedJob, jobs::Failure};
 mod forks;
 mod paths;
+mod writes;
 pub(in crate::toolbox::files::provider) use forks::request_fork_cleanup;
+pub(in crate::toolbox::files) use writes::request as request_write;
+pub(in crate::toolbox::files::provider) use writes::request_write_cleanup;
 
 const MAX_WAITERS: usize = crate::toolbox::handles::Kind::Threads.capacity();
-const MAX_FLIGHTS: usize = MAX_WAITERS + super::super::MAX_OPEN_FILES;
+const MAX_FLIGHTS: usize = MAX_WAITERS
+                           + super::super::MAX_OPEN_FILES
+                           + crate::toolbox::handles::Kind::FileWrites.capacity();
 static FLIGHTS: Spinlock<Vec<Flight>> = Spinlock::new(Vec::new());
 static REAP: AtomicBool = AtomicBool::new(false);
 static FORK_CLEANUP: AtomicBool = AtomicBool::new(false);
+static WRITE_CLEANUP: AtomicBool = AtomicBool::new(false);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Record
+{
+    File,
+    Scan,
+    Write
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key
 {
+    record:    Record,
     operation: u32,
     volume:    u32,
     index:     u32,
@@ -37,6 +51,7 @@ enum Step
     Mount(u32),
     Unmount(u32),
     File(forks::Action),
+    Write(writes::State),
     Scan(DirectoryScanCursor),
     Allocation
     {
@@ -138,9 +153,14 @@ fn submit_args(provider: u32, op: Operation, args: Arguments<'_>) -> Result<Owne
     let size = match op
     {
         Operation::Exports => 4,
-        Operation::Mount => fs::MOUNT_BYTES + fs::METADATA_BYTES + 510,
-        Operation::Catalog | Operation::Lookup => fs::METADATA_BYTES + 510,
-        Operation::Scan => 4 + fs::METADATA_BYTES + 510,
+        Operation::Mount => fs::MAX_MOUNT_BYTES,
+        Operation::Catalog
+        | Operation::Lookup
+        | Operation::BeginCreate
+        | Operation::BeginReplace => fs::MAX_METADATA_BYTES,
+        Operation::Scan => 4 + fs::MAX_METADATA_BYTES,
+        Operation::FinishWrite => fs::MAX_WRITE_RECEIPT_BYTES,
+        Operation::AbortWrite => fs::MAX_ABORT_RECEIPT_BYTES,
         Operation::Open => 16,
         Operation::Read => usize::try_from(args.length).map_err(|_| BAD_ARGUMENT)?,
         _ => 0
@@ -214,6 +234,7 @@ fn advance(mut flight: Flight) -> Progress
     match flight.step
     {
         Step::File(_) => forks::advance(flight, result, never_sent),
+        Step::Write(_) => writes::advance(flight, result, never_sent),
         Step::Scan(cursor) =>
         {
             let result = result.and_then(|bytes| super::scan::reply(cursor, &bytes));
@@ -477,7 +498,8 @@ pub(crate) fn request_scan(owner: u64, call: &mut FileScanCall) -> Status
     {
         return WRONG_THREAD;
     }
-    let key = Key { operation: SCAN_DIRECTORY,
+    let key = Key { record:    Record::Scan,
+                    operation: SCAN_DIRECTORY,
                     volume:    call.volume,
                     cnid:      call.directory,
                     index:     0,
@@ -541,7 +563,8 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
     {
         return WRONG_THREAD;
     }
-    let key = Key { operation: call.operation,
+    let key = Key { record:    Record::File,
+                    operation: call.operation,
                     volume:    call.volume,
                     index:     call.index,
                     cnid:      call.cnid,
@@ -730,6 +753,7 @@ pub(crate) fn abandon_thread(thread: u64)
 pub(crate) fn pump()
 {
     forks::pump_cleanup();
+    writes::pump_cleanup();
     if !REAP.load(Ordering::Acquire)
     {
         return;

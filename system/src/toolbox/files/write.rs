@@ -1,20 +1,29 @@
-//! Owned bounded data-file transactions. Payload is staged fallibly, then HFS
-//! publishes a copy-on-write data fork. No resource fork writer is exposed.
+//! Owned bounded data-file transactions. Payload is staged fallibly, then the
+//! block filesystem or an owned provider job publishes it. Existing resource
+//! forks are preserved; no direct resource fork writer is exposed.
 #![cfg_attr(not(any(target_arch = "riscv64", feature = "test-support")), allow(dead_code))]
 use super::*;
 pub(super) struct Pending
 {
     pub owner:         u64,
     pub volume:        u32,
-    parent:            u32,
+    pub parent:        u32,
     pub expected_cnid: u32,
-    file_type:         [u8; 4],
-    creator:           [u8; 4],
-    when:              u64,
-    name:              Vec<u8>,
-    comparison:        Vec<u8>,
-    length:            usize,
-    data:              Vec<u8>
+    pub file_type:     [u8; 4],
+    pub creator:       [u8; 4],
+    pub when:          u64,
+    pub name:          Vec<u8>,
+    pub comparison:    Vec<u8>,
+    pub length:        usize,
+    pub data:          Vec<u8>,
+    pub provider:      Option<provider::writes::State>
+}
+impl Pending
+{
+    pub(super) fn orphaned(&self) -> bool
+    {
+        self.provider.as_ref().is_some_and(|state| state.orphaned())
+    }
 }
 fn status(error: MutationError) -> Status
 {
@@ -50,6 +59,10 @@ impl Manager
                 return Err(NO_MEMORY);
             }
             self.validate_provider_mutation(call.volume)?;
+            if let Some(provider) = self.read_provider(call.volume)?
+            {
+                return self.reserve_provider_write(owner, call, name, provider);
+            }
             let format = match self.mounted(call.volume)?.info.filesystem
             {
                 FILESYSTEM_HFS => mac_filesystem::Format::Hfs,
@@ -89,7 +102,8 @@ impl Manager
                                                 name,
                                                 comparison,
                                                 length: call.length,
-                                                data: bytes })
+                                                data: bytes,
+                                                provider: None })
                               .map_err(|_| NO_MEMORY)?;
             return Ok(());
         }
@@ -97,6 +111,10 @@ impl Manager
         if pending.owner != owner
         {
             return Err(ACCESS_DENIED);
+        }
+        if pending.provider.as_ref().is_some_and(|state| !state.staged())
+        {
+            return Err(SERVICE_BUSY);
         }
         match call.operation
         {
@@ -119,6 +137,10 @@ impl Manager
                 if pending.data.len() != pending.length
                 {
                     return Err(BAD_ARGUMENT);
+                }
+                if pending.provider.is_some()
+                {
+                    return Err(NOT_SUPPORTED);
                 }
                 let pending = self.writes.remove(call.handle).ok_or(NOT_FOUND)?;
                 let mut protected = Vec::new();
@@ -176,6 +198,19 @@ impl Manager
 pub(super) unsafe fn dispatch(manager: &mut Manager, owner: u64, pointer: *mut (), size: usize)
                               -> i64
 {
+    unsafe {
+        checked(pointer, size, |call, name, data| {
+            manager.write_request(owner, call, name, data).err().unwrap_or(OK)
+        })
+    }
+}
+/// # Safety
+/// All declared request/name/data ranges must be valid for this call. The
+/// callback must not retain these borrows when returning a park request.
+pub(super) unsafe fn checked(pointer: *mut (), size: usize,
+                             request: impl FnOnce(&mut DataWriteCall, &str, &[u8]) -> Status)
+                             -> i64
+{
     if pointer.is_null()
        || size != size_of::<DataWriteCall>()
        || !(pointer as usize).is_multiple_of(align_of::<DataWriteCall>())
@@ -212,5 +247,5 @@ pub(super) unsafe fn dispatch(manager: &mut Manager, owner: u64, pointer: *mut (
     {
         unsafe { core::slice::from_raw_parts(call.data, call.data_length) }
     };
-    manager.write_request(owner, call, name, data).err().unwrap_or(OK) as i64
+    request(call, name, data) as i64
 }

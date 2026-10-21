@@ -8,6 +8,7 @@ use super::*;
 mod forks;
 mod path;
 mod scan;
+pub(super) mod writes;
 pub(super) use forks::Open;
 #[cfg(target_arch = "riscv64")]
 pub(super) mod runtime;
@@ -28,6 +29,12 @@ fn catalog(volume: u32, bytes: &[u8], node: Option<u32>, parent: Option<u32>)
            -> Result<CatalogInfo, Status>
 {
     let metadata = fs::Metadata::decode(bytes).map_err(|_| BAD_ABI)?;
+    catalog_metadata(volume, metadata, node, parent)
+}
+fn catalog_metadata(volume: u32, metadata: fs::Metadata<'_>, node: Option<u32>,
+                    parent: Option<u32>)
+                    -> Result<CatalogInfo, Status>
+{
     if node.is_some_and(|id| metadata.id != id) || parent.is_some_and(|id| metadata.parent != id)
     {
         return Err(BAD_ABI);
@@ -73,6 +80,25 @@ pub(super) enum Phase
     Live,
     Unmounting,
     Quarantined
+}
+fn volume_info(id: u32, descriptor: fs::Mount<'_>) -> VolumeInfo
+{
+    let root = descriptor.root;
+    let (total_bytes, free_bytes) = descriptor.capacity.unwrap_or((0, 0));
+    let mut info = VolumeInfo { id,
+                                disk: u32::MAX,
+                                capacity_known: u16::from(descriptor.capacity.is_some()),
+                                total_bytes,
+                                free_bytes,
+                                created: root.created,
+                                modified: root.modified,
+                                filesystem: u32::from_be_bytes(descriptor.filesystem),
+                                filesystem_version: descriptor.filesystem_version,
+                                read_only: u16::from(descriptor.capabilities & fs::WRITE == 0),
+                                finder_info: root.finder_info,
+                                ..Default::default() };
+    info.name_length = utf8_name(root.name.as_bytes(), &mut info.name);
+    info
 }
 impl Manager
 {
@@ -122,23 +148,8 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        let root = descriptor.root;
         let revision = super::scan::next_revision()?;
-        let (total_bytes, free_bytes) = descriptor.capacity.unwrap_or((0, 0));
-        let mut info = VolumeInfo { id,
-                                    disk: u32::MAX,
-                                    capacity_known: u16::from(descriptor.capacity.is_some()),
-                                    total_bytes,
-                                    free_bytes,
-                                    created: root.created,
-                                    modified: root.modified,
-                                    filesystem: u32::from_be_bytes(descriptor.filesystem),
-                                    filesystem_version: descriptor.filesystem_version,
-                                    read_only: u16::from(descriptor.capabilities & fs::WRITE
-                                                         == 0),
-                                    finder_info: root.finder_info,
-                                    ..Default::default() };
-        info.name_length = utf8_name(root.name.as_bytes(), &mut info.name);
+        let info = volume_info(id, descriptor);
         mounted.info = Some(info);
         mounted.phase = Phase::Live;
         mounted.revision = revision;
@@ -499,6 +510,94 @@ mod tests
             assert_eq!(scan_entry(123, ROOT_ID, &header.to_le_bytes()), result);
             assert_eq!(scan_entry(123, ROOT_ID, &[header as u8, 0, 0, 0, 0]), Err(BAD_ABI));
         }
+    }
+    #[test]
+    fn provider_writer_owns_staging_and_retains_uncertain_leases_through_exit()
+    {
+        let mut manager = Manager::default();
+        let volume = manager.reserve_provider_mount(77, 0).unwrap();
+        let descriptor_bytes = descriptor();
+        manager.publish_provider_mount(volume, &descriptor_bytes).unwrap();
+        let initial = FileScanCall { operation: SCAN_DIRECTORY,
+                                     volume,
+                                     directory: ROOT_ID,
+                                     ..Default::default() };
+        let (_, cursor) = manager.begin_provider_scan(&initial).unwrap();
+        manager.end_provider_read(volume).unwrap();
+        let mut begin = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                        volume,
+                                        parent: ROOT_ID,
+                                        length: 3,
+                                        when: 55,
+                                        file_type: *b"TEXT",
+                                        creator: *b"TEST",
+                                        ..Default::default() };
+        manager.write_request(7, &mut begin, "Cafe\u{301}", &[]).unwrap();
+        let handle = begin.handle;
+        assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+        let mut append = DataWriteCall { operation: APPEND_DATA_WRITE,
+                                         handle,
+                                         ..Default::default() };
+        assert_eq!(manager.write_request(8, &mut append, "", b"abc"), Err(ACCESS_DENIED));
+        assert_eq!(manager.prepare_provider_write(7, handle).err(), Some(BAD_ARGUMENT));
+        manager.write_request(7, &mut append, "", b"abc").unwrap();
+        let plan = manager.prepare_provider_write(7, handle).unwrap();
+        assert_eq!(plan.name, "Cafe\u{301}".as_bytes());
+        assert_eq!(plan.data, b"abc");
+        assert_eq!(manager.write_request(7, &mut append, "", b"x"), Err(SERVICE_BUSY));
+        let mut finder_info = [0; 32];
+        finder_info[..8].copy_from_slice(b"TEXTTEST");
+        let file = fs::Metadata { id: 16,
+                                  parent: ROOT_ID,
+                                  directory: false,
+                                  data_length: 3,
+                                  resource_length: 0,
+                                  created: 55,
+                                  modified: 55,
+                                  backup: None,
+                                  child_count: 0,
+                                  attributes: 0,
+                                  finder_info,
+                                  revision: 1,
+                                  name: "Café",
+                                  comment: "" };
+        let mut bytes = [0; fs::MAX_METADATA_BYTES];
+        let n = file.encode(&mut bytes).unwrap();
+        manager.confirm_provider_write(handle, &bytes[..n]).unwrap();
+        // Model failed cleanup followed by actual app exit: never retire a
+        // potentially published remote transaction along with its app stack.
+        manager.quarantine_provider_write(handle).unwrap();
+        assert_eq!(manager.cleanup_provider_write(8, handle), Err(ACCESS_DENIED));
+        assert_eq!(manager.close_all(7), 1);
+        assert_eq!(manager.close_all(7), 0);
+        assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+        assert_eq!(manager.next_orphaned_write(), Some((handle, 77, volume)));
+        assert_eq!(manager.next_orphaned_write(), None);
+        let root = fs::Mount::decode(&descriptor_bytes).unwrap();
+        let receipt = fs::WriteReceipt { file,
+                                         volume: fs::Mount { root:
+                                                                 fs::Metadata { modified: 55,
+                                                                                ..root.root },
+                                                             ..root } };
+        assert_eq!(manager.publish_provider_write(handle,
+                                                  fs::WriteReceipt { file:
+                                                                         fs::Metadata { id: 17,
+                                                                                        ..file },
+                                                                     ..receipt }),
+                   Err(BAD_ABI));
+        let entry = manager.publish_provider_write(handle, receipt).unwrap();
+        assert_eq!(entry.id, 16);
+        assert_eq!(manager.provider_mount(volume).unwrap().info.unwrap().modified, 55);
+        assert_eq!(manager.begin_provider_scan(&FileScanCall { cursor,
+                                                               ..initial }),
+                   Err(SCAN_STALE));
+        assert_eq!(manager.write_provider(7, handle), Err(NOT_FOUND));
+        begin.handle = 0;
+        manager.write_request(7, &mut begin, "Next", &[]).unwrap();
+        assert_ne!(begin.handle, handle);
+        assert_eq!(begin.handle & 0xffff, handle & 0xffff);
+        assert_eq!(manager.close_all(7), 1); // RAM-only staging needs no provider ACK.
+        assert_eq!(manager.begin_provider_unmount(volume), Ok(77));
     }
     #[test]
     fn mount_publication_is_validated_and_ack_retirement_preserves_generations()

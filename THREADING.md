@@ -329,6 +329,18 @@ results; dropping the owning job still abandons delivery and drains cancellation
 Completion-before-attachment and completion-before-park both remain observable
 as ready, and cancellation completed before dispatch wakes an attached waiter.
 
+Provider-backed data saves now retain their RAM buffers, exact parent/expected
+file identity and generation-tagged write marks in resident state. Parent/lookup,
+begin, batched write and commit/abort callbacks run after Files guards and native
+firmware handoffs are released. The waiting application owns no driver-facing
+buffer. Actual publication updates volume/catalog state and retires the mark in
+one Files operation; cancellation cannot claim an acknowledged write was undone.
+App exit removes RAM-only staging and keeps active or uncertain provider leases
+until their cleanup acknowledgement. A failed cleanup keeps the mark quarantined
+instead of allowing slot reuse. The native SDK gate covers parked saves and a
+second app exiting with forgotten read marks/staged writer; exit during pending
+I/O, disconnect and interactive latency still need their own gates.
+
 This supplies the integration boundary for filesystem drivers; it does not by
 itself establish live host filesystem behavior. Public mount/read/write tests must
 exercise parking, cancellation/disconnect, other-app progress and single delivery

@@ -17,6 +17,9 @@ pub const VERSION: u32 = 2;
 pub const SCHEMA: u16 = 1;
 pub const HEADER_BYTES: usize = 64;
 pub const MAX_TRANSFER: usize = 64 * 1024;
+/// Sequential writes are batched up to MAX_TRANSFER. Nonfinal payloads are
+/// multiples of this size; a final payload may end at the declared fork length.
+pub const WRITE_ALIGNMENT: usize = 4096;
 pub const MAX_REQUEST: usize = HEADER_BYTES + MAX_TRANSFER;
 pub const MAX_REPLY: usize = MAX_TRANSFER;
 pub const MAX_NAME_INPUT: usize = 16 * 1024;

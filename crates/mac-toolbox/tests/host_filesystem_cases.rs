@@ -4,6 +4,54 @@ fn require(value: bool) -> Result<(), Error>
 {
     if value { Ok(()) } else { Err(Error::BadAbi) }
 }
+/// Original string-boundary callers share the resident writer and generation
+/// checks. Only this conformance fixture uses a raw Pascal-string gate.
+pub fn check_legacy_writer(system: &System<'_>, gate: mac_toolbox::abi::TrapGate)
+                           -> Result<(), Error>
+{
+    use mac_toolbox::abi::{files::*, traps::PSTRING_FILE};
+    system.log("HOST_FS_STAGE legacy-write\n")?;
+    let files = system.files();
+    let volume = files.mount_host_export(0)?.id;
+    let name = b"\x0bLegacy Caf\x8e";
+    let mut call = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                   volume: volume.0,
+                                   parent: ROOT_ID,
+                                   name: name.as_ptr(),
+                                   name_length: name.len(),
+                                   length: 3,
+                                   when: 3_875_171_696_123_456,
+                                   file_type: *b"TEXT",
+                                   creator: *b"TEST",
+                                   ..Default::default() };
+    let invoke = |call: &mut DataWriteCall| {
+        // Every pointer is a live fixture-owned buffer for this invocation;
+        // the resident boundary converts text and owns bytes before parking.
+        let status = unsafe {
+            gate(PSTRING_FILE,
+                 core::ptr::from_mut(call).cast(),
+                 core::mem::size_of::<DataWriteCall>())
+        };
+        if status == 0 { Ok(()) } else { Err(Error::from_status(status as i32)) }
+    };
+    invoke(&mut call)?;
+    let stale = call.handle;
+    call.operation = APPEND_DATA_WRITE;
+    call.data = b"abc".as_ptr();
+    call.data_length = 3;
+    invoke(&mut call)?;
+    call.operation = COMMIT_DATA_WRITE;
+    invoke(&mut call)?;
+    require(&call.entry.name[..call.entry.name_length as usize] == name)?;
+    let native = files.lookup(volume, mac_toolbox::files::ROOT_ID, "Legacy Café")?;
+    require(native.id.0 == call.entry.id && native.data_length == 3)?;
+    let mut old = DataWriteCall { operation: ABORT_DATA_WRITE,
+                                  handle: stale,
+                                  ..Default::default() };
+    require(invoke(&mut old) == Err(Error::NotFound))?;
+    check_pattern(system, volume, native.id, mac_toolbox::files::Fork::Data, 3, 1, b'a' as usize)?;
+    files.unmount(volume)
+}
 pub fn check(system: &System<'_>) -> Result<(), Error>
 {
     let files = system.files();
@@ -98,11 +146,17 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
                                                                 creator:   (*b"TEST").into() },
                              0);
     require(matches!(write, Err(Error::ReadOnly)))?;
+    system.log("HOST_FS_STAGE native-write\n")?;
+    check_writes(system, writable.id, forks.id)?;
+    require(files.scan_directory(writable.id, mac_toolbox::files::ROOT_ID, &mut prior_scan)
+            == Err(Error::ScanStale))?;
     system.log("HOST_FS_STAGE unmount-and-reuse\n")?;
     check_exit_cleanup(system, writable.id)?;
     require(files.volume(writable.id) == Err(Error::NotFound))?;
     require(files.catalog(writable.id, root.id) == Err(Error::NotFound))?;
     let replacement = files.mount_host_export(0)?;
+    require(files.lookup(replacement.id, mac_toolbox::files::ROOT_ID, "Exit staging")
+            == Err(Error::NotFound))?;
     require(files.scan_directory(replacement.id, mac_toolbox::files::ROOT_ID, &mut prior_scan)
             == Err(Error::BadArgument))?;
     require(replacement.id != writable.id && replacement.id.0 & 0xffff == writable.id.0 & 0xffff)?;
@@ -114,6 +168,164 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     files.unmount(read_only.id)?;
     require(files.volume_count()? == before)?;
     Ok(())
+}
+
+fn check_writes(system: &System<'_>, volume: VolumeId, forked: mac_toolbox::Cnid)
+                -> Result<(), Error>
+{
+    use mac_toolbox::{Timestamp,
+                      files::{DataFileSpec, Fork, ROOT_ID}};
+    let files = system.files();
+    let when = Timestamp::from_mac_microseconds(3_875_171_696_123_456);
+    let spec = DataFileSpec { volume,
+                              parent: ROOT_ID,
+                              name: "Re\u{301}sume\u{301}.json",
+                              replacing: None,
+                              file_type: (*b"TEXT").into(),
+                              creator: (*b"TEST").into() };
+    let mut writer = files.create_data_at(spec, 131089, when)?;
+    require(files.unmount(volume) == Err(Error::ServiceBusy))?;
+    write_pattern(&mut writer, 131089, 17, 3)?;
+    let entry = writer.finish()?;
+    require(entry.name() == "Résumé.json"
+            && entry.data_length == 131089
+            && entry.resource_length == 0)?;
+    require(entry.created_at() == when && entry.modified_at() == when)?;
+    require(entry.file_type == spec.file_type && entry.creator == spec.creator)?;
+    require(files.lookup(volume, ROOT_ID, "RE\u{301}SUME\u{301}.JSON")?.id == entry.id)?;
+    check_pattern(system, volume, entry.id, Fork::Data, 131089, 17, 3)?;
+    let mut duplicate = files.create_data_at(spec, 0, when)?;
+    require(duplicate.finish() == Err(Error::AlreadyExists))?;
+    let mut mismatched = files.create_data_at(DataFileSpec { replacing: Some(forked),
+                                                             ..spec },
+                                              0,
+                                              when)?;
+    require(mismatched.finish() == Err(Error::NotFound))?;
+    let partial = DataFileSpec { name: "Unpublished",
+                                 ..spec };
+    let mut writer = files.create_data_at(partial, 4, when)?;
+    writer.write_all(b"ab")?;
+    require(writer.finish() == Err(Error::BadArgument))?;
+    drop(writer);
+    require(files.lookup(volume, ROOT_ID, "Unpublished") == Err(Error::NotFound))?;
+    let mut zero = files.create_data_at(DataFileSpec { name: "Zero",
+                                                       ..spec },
+                                        0,
+                                        when)?;
+    let zero = zero.finish()?;
+    require(zero.data_length == 0 && zero.resource_length == 0)?;
+    let mut empty = files.open(volume, zero.id, Fork::Data)?;
+    require(empty.read(&mut [0; 1])? == 0)?;
+    drop(empty);
+    // Replace only an exact confirmed ID; preserve original type/creator,
+    // creation date and the complete original resource fork.
+    let original = files.catalog(volume, forked)?;
+    let replacement = DataFileSpec { parent: original.parent,
+                                     name: original.name(),
+                                     replacing: Some(forked),
+                                     ..spec };
+    let mut writer = files.create_data_at(replacement, 70021, when)?;
+    write_pattern(&mut writer, 70021, 29, 5)?;
+    let reader = files.open(volume, forked, Fork::Data)?;
+    require(writer.finish() == Err(Error::ServiceBusy))?;
+    drop(reader);
+    let changed = writer.finish()?;
+    require(changed.id == original.id
+            && changed.name() == original.name()
+            && changed.created_at() == original.created_at()
+            && changed.modified_at() == when
+            && changed.file_type == original.file_type
+            && changed.creator == original.creator
+            && changed.resource_length == original.resource_length
+            && changed.finder_info == original.finder_info
+            && changed.flags == original.flags)?;
+    check_pattern(system, volume, forked, Fork::Data, 70021, 29, 5)?;
+    check_pattern(system, volume, forked, Fork::Resource, 70003, 13, 11)?;
+    let mut writer = files.create_data_at(replacement, 131089, when)?;
+    write_pattern(&mut writer, 131089, 31, 7)?;
+    writer.finish()?;
+    check_pattern(system, volume, forked, Fork::Data, 131089, 31, 7)?;
+    check_pattern(system, volume, forked, Fork::Resource, 70003, 13, 11)?;
+    // The public escape hatch verifies generation/namespace behavior; normal
+    // owned writers never expose their transaction token.
+    use mac_toolbox::abi::files::*;
+    let mut raw = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                  volume: volume.0,
+                                  parent: ROOT_ID.0,
+                                  ..Default::default() };
+    system.client().data_write(&mut raw, "Never published", &[])?;
+    let stale = raw.handle;
+    system.client().data_write(&mut DataWriteCall { operation: ABORT_DATA_WRITE,
+                                                     handle: stale,
+                                                     ..Default::default() },
+                                "",
+                                &[])?;
+    raw = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                          volume: volume.0,
+                          parent: ROOT_ID.0,
+                          ..Default::default() };
+    system.client().data_write(&mut raw, "Never published", &[])?;
+    require(raw.handle != stale && raw.handle & 0xffff == stale & 0xffff)?;
+    for operation in [APPEND_DATA_WRITE, COMMIT_DATA_WRITE, ABORT_DATA_WRITE]
+    {
+        require(system.client().data_write(&mut DataWriteCall { operation,
+                                                                handle: stale,
+                                                                ..Default::default() },
+                                           "",
+                                           &[])
+                == Err(Error::NotFound))?;
+    }
+    require(system.client().data_write(&mut DataWriteCall { operation: ABORT_DATA_WRITE,
+                                                            handle: raw.handle ^ 0x1000_0000,
+                                                            ..Default::default() },
+                                       "",
+                                       &[])
+            == Err(Error::NotFound))?;
+    system.client().data_write(&mut DataWriteCall { operation: ABORT_DATA_WRITE,
+                                                     handle: raw.handle,
+                                                     ..Default::default() },
+                                "",
+                                &[])?;
+    Ok(())
+}
+fn write_pattern(writer: &mut mac_toolbox::files::DataWriter<'_>, length: usize, factor: usize,
+                 bias: usize)
+                 -> Result<(), Error>
+{
+    let mut bytes = [0; 4096];
+    let mut at = 0;
+    while at < length
+    {
+        let count = (length - at).min(bytes.len());
+        for (i, b) in bytes[..count].iter_mut().enumerate()
+        {
+            *b = ((at + i) * factor + bias) as u8;
+        }
+        writer.write_all(&bytes[..count])?;
+        at += count;
+    }
+    Ok(())
+}
+fn check_pattern(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid,
+                 kind: mac_toolbox::files::Fork, length: usize, factor: usize, bias: usize)
+                 -> Result<(), Error>
+{
+    let mut fork = system.files().open(volume, node, kind)?;
+    require(fork.len()? == length as u64)?;
+    let mut bytes = [0; 4096];
+    let mut at = 0;
+    while at < length
+    {
+        let count = fork.read(&mut bytes)?;
+        require(count != 0 && count <= length - at)?;
+        for (i, b) in bytes[..count].iter().enumerate()
+        {
+            require(*b == ((at + i) * factor + bias) as u8)?;
+        }
+        at += count;
+    }
+    require(fork.read(&mut bytes)? == 0)?;
+    fork.close()
 }
 
 fn check_scan(system: &System<'_>, volume: VolumeId)
