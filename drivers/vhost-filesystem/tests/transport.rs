@@ -159,6 +159,7 @@ fn abandoned_future_keeps_its_ticket_and_cancel_delivers_the_actual_acknowledgem
         let mut f = pin!(rpc.invoke(Operation::Commit, args()));
         let mut cx = Context::from_waker(Waker::noop());
         assert!(f.as_mut().poll(&mut cx).is_pending());
+        assert!(f.as_mut().poll(&mut cx).is_pending());
     }
     assert!(rpc.is_pending());
     assert_eq!(run(rpc.invoke(Operation::Commit, args())).unwrap_err().cause, Cause::Busy);

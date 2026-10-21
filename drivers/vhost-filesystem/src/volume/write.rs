@@ -45,6 +45,11 @@ pub(super) struct Pending
 }
 impl Pending
 {
+    pub(super) fn node_id(&self) -> u32
+    {
+        self.cnid
+    }
+
     pub(super) fn references(&self, id: u32) -> bool
     {
         self.stage == id || self.expected == id || self.lock == id
@@ -52,6 +57,24 @@ impl Pending
 }
 impl<R: Rpc> Filesystem<R>
 {
+    fn writable(&self, volume: u32) -> Result<()>
+    {
+        let mount = self.mounts.get(volume).ok_or(Cause::NotFound)?;
+        if mount.info.read_only
+        {
+            return Err(Cause::ReadOnly.into());
+        }
+        if mount.ejecting
+        {
+            return Err(Cause::Busy.into());
+        }
+        if mount.invalidated
+        {
+            return Err(Cause::Stale.into());
+        }
+        Ok(())
+    }
+
     async fn writer_lock(&mut self, volume: u32) -> Result<u32>
     {
         self.owner = volume;
@@ -208,6 +231,7 @@ impl<R: Rpc> Filesystem<R>
                      data_length,
                      resource_length,
                      when } = request;
+        self.writable(volume)?;
         self.writes.reserve(token)?;
         let normalized = mac_hfs_b::names::normalize(name).map_err(|_| Cause::Invalid)?;
         let key = mac_hfs_b::names::comparison(&normalized).map_err(|_| Cause::Invalid)?;
@@ -269,6 +293,7 @@ impl<R: Rpc> Filesystem<R>
 
     pub async fn begin_replace(&mut self, request: Replace) -> Result<()>
     {
+        self.writable(request.volume)?;
         let Replace { volume,
                       node,
                       token,

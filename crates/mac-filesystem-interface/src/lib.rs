@@ -5,7 +5,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 mod metadata;
-pub use metadata::{Metadata, Mount};
+pub use metadata::{METADATA_BYTES, MOUNT_BYTES, Metadata, Mount};
 pub const CLASS: [u8; 4] = *b"FSYS";
 pub const VERSION: u32 = 1;
 pub const SCHEMA: u16 = 1;
@@ -183,7 +183,7 @@ pub(crate) fn name(bytes: &[u8]) -> Result<&str, Error>
     if bytes.is_empty()
        || bytes.len() > 255
        || matches!(text, "." | "..")
-       || text.chars().any(|c| c.is_control() || matches!(c, '/' | ':'))
+       || text.contains(['\0', '/', ':'])
     {
         return Err(Error::Invalid);
     }

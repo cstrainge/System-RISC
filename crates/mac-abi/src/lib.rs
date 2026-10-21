@@ -24,6 +24,8 @@ pub const ROLLBACK_FAILED: Status = -14;
 pub const DIRECTORY_NOT_EMPTY: Status = -15;
 /// A catalog mutation invalidated an incremental directory scan; restart totals.
 pub const SCAN_STALE: Status = -16;
+/// Cancellation was acknowledged before the requested operation completed.
+pub const OPERATION_CANCELLED: Status = -17;
 
 pub mod crashes;
 pub mod dates;

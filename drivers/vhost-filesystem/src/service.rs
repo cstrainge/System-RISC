@@ -16,9 +16,15 @@ impl<R: Rpc> Filesystem<R>
         self.validate_request(op, args)?;
         match op
         {
-            Operation::Exports => Ok(self.connect().await?.to_le_bytes().to_vec()),
+            Operation::Exports =>
+            {
+                let mut out = buffer(4)?;
+                out.copy_from_slice(&self.connect().await?.to_le_bytes());
+                Ok(out)
+            }
             Operation::Mount =>
             {
+                let mut out = buffer(fs::MOUNT_BYTES + fs::METADATA_BYTES + 510)?;
                 let export = u32::try_from(args.auxiliary).map_err(|_| Cause::Invalid)?;
                 let info = self.mount(args.volume, export).await?;
                 let result: Result<Vec<u8>> =
@@ -38,7 +44,6 @@ impl<R: Rpc> Filesystem<R>
                                                      filesystem_version: mac_fork_file::VERSION,
                                                      capacity: None,
                                                      root };
-                        let mut out = buffer(1024)?;
                         let count = descriptor.encode(&mut out).map_err(|_| Cause::Invalid)?;
                         out.truncate(count);
                         Ok(out)
@@ -82,19 +87,21 @@ impl<R: Rpc> Filesystem<R>
             }
             Operation::Scan =>
             {
+                let mut out = buffer(4 + fs::METADATA_BYTES + 510)?;
                 let index = usize::try_from(args.offset).map_err(|_| Cause::Invalid)?;
                 if self.child(args.volume, args.parent, index).is_err()
                 {
                     let done = self.scan_step(args.volume, args.parent).await?;
                     if self.child(args.volume, args.parent, index).is_err()
                     {
-                        return Ok(if done { 2u32 } else { 0 }.to_le_bytes().to_vec());
+                        out[..4].copy_from_slice(&if done { 2u32 } else { 0 }.to_le_bytes());
+                        out.truncate(4);
+                        return Ok(out);
                     }
                 }
                 let node = self.child(args.volume, args.parent, index)?;
                 // Child count is not needed for drawing a folder icon. Mark its
                 // unknown count explicitly; Catalog/Lookup obtain an exact count.
-                let mut out = buffer(1028)?;
                 let count = self.project_node(args.volume, node)?
                                 .encode(&mut out[4..])
                                 .map_err(|_| Cause::Invalid)?;
@@ -104,9 +111,9 @@ impl<R: Rpc> Filesystem<R>
             }
             Operation::Open =>
             {
+                let mut out = buffer(16)?;
                 self.find(args.volume, args.node).await?;
                 let layout = self.open(args.volume, args.node, args.token).await?;
-                let mut out = buffer(16)?;
                 out[..8].copy_from_slice(&layout.data.length.to_le_bytes());
                 out[8..].copy_from_slice(&layout.resources.length.to_le_bytes());
                 Ok(out)
@@ -132,6 +139,7 @@ impl<R: Rpc> Filesystem<R>
             }
             Operation::BeginCreate =>
             {
+                let mut out = buffer(4)?;
                 let id = self.begin_create(Create { volume:          args.volume,
                                                     parent:          args.parent,
                                                     token:           args.token,
@@ -141,7 +149,8 @@ impl<R: Rpc> Filesystem<R>
                                                     resource_length: args.auxiliary,
                                                     when:            args.when })
                              .await?;
-                Ok(id.to_le_bytes().to_vec())
+                out.copy_from_slice(&id.to_le_bytes());
+                Ok(out)
             }
             Operation::BeginReplace =>
             {
@@ -170,12 +179,17 @@ impl<R: Rpc> Filesystem<R>
             }
             Operation::FinishWrite =>
             {
-                Ok(self.finish_write(args.volume, args.token).await?.to_le_bytes().to_vec())
+                let mut out = buffer(4)?;
+                out.copy_from_slice(&self.finish_write(args.volume, args.token)
+                                         .await?
+                                         .to_le_bytes());
+                Ok(out)
             }
             Operation::AbortWrite =>
             {
-                Ok(u32::from(self.abort_write(args.volume, args.token).await?).to_le_bytes()
-                                                                              .to_vec())
+                let mut out = buffer(4)?;
+                out.copy_from_slice(&u32::from(self.abort_write(args.volume, args.token).await?).to_le_bytes());
+                Ok(out)
             }
             Operation::Refresh =>
             {
@@ -266,6 +280,10 @@ impl<R: Rpc> Filesystem<R>
                        | Operation::FinishWrite
                        | Operation::AbortWrite)
               && a.token == 0
+           || matches!(op, Operation::Catalog | Operation::Open | Operation::BeginReplace)
+              && a.node < 2
+           || matches!(op, Operation::Scan | Operation::Lookup | Operation::BeginCreate)
+              && a.parent < 2
            || op == Operation::Read && a.length > fs::MAX_TRANSFER as u64
         {
             return Err(Cause::Invalid.into());
@@ -337,7 +355,7 @@ impl<R: Rpc> Filesystem<R>
 
     fn encode_node(&self, volume: u32, id: u32) -> Result<Vec<u8>>
     {
-        let mut out = buffer(1024)?;
+        let mut out = buffer(fs::METADATA_BYTES + 510)?;
         let count = self.project(volume, id)?.encode(&mut out).map_err(|_| Cause::Invalid)?;
         out.truncate(count);
         Ok(out)

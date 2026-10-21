@@ -7,6 +7,7 @@ members = [
     "crates/mac-fork-file",
     "crates/mac-host-protocol",
     "crates/mac-driver",
+    "crates/mac-driver-alloc",
     "crates/mac-device-interface",
     "crates/mac-filesystem-interface",
     "crates/mac-toolbox",

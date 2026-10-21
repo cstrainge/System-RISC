@@ -6,6 +6,7 @@
 extern crate alloc;
 mod rpc;
 pub mod transport;
+pub mod module;
 mod service;
 mod volume;
 pub use rpc::{Cause, Error, Reply, Result, Rpc};

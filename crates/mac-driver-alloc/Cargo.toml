@@ -1,0 +1,8 @@
+[package]
+name = "mac-driver-alloc"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+[dependencies]
+mac-driver = { path = "../mac-driver" }
+mac-abi.workspace = true

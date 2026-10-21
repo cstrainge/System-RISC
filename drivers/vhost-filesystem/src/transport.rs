@@ -3,7 +3,7 @@
 //! must keep this client pinned and drain any live ticket before releasing it.
 use alloc::{sync::Arc, vec::Vec};
 use core::{future::poll_fn,
-           sync::atomic::{AtomicBool, Ordering},
+           sync::atomic::{AtomicU8, Ordering},
            task::{Context, Poll}};
 
 use mac_driver::{Completion, Phase, Provider};
@@ -28,22 +28,29 @@ impl Channel for Provider
     }
 }
 #[derive(Clone, Default)]
-pub struct Cancellation(Arc<AtomicBool>);
+pub struct Cancellation(Arc<AtomicU8>);
 impl Cancellation
 {
     pub fn cancel(&self)
     {
-        self.0.store(true, Ordering::Release)
+        // Cleanup is irrevocable once entered. Repeated CANCEL callbacks must
+        // not cancel the close/unlock requests which acknowledge cancellation.
+        let _ = self.0.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
     }
 
     pub fn reset(&self)
     {
-        self.0.store(false, Ordering::Release)
+        self.0.store(0, Ordering::Release)
     }
 
     pub fn requested(&self) -> bool
     {
-        self.0.load(Ordering::Acquire)
+        self.0.load(Ordering::Acquire) == 1
+    }
+
+    pub(crate) fn begin_cleanup(&self) -> bool
+    {
+        self.0.swap(2, Ordering::AcqRel) == 1
     }
 }
 struct Flight
@@ -229,6 +236,10 @@ impl<C: Channel> Rpc for DirectoryRpc<C>
     async fn invoke(&mut self, operation: Operation, args: Arguments<'_>) -> Result<Reply>
     {
         self.begin(operation, args)?;
+        // Even a dependency that completes START synchronously gets only one
+        // invocation per upper callback. Yield before dispatch, while the
+        // owned flight is still cancellable without a host side effect.
+        crate::rpc::yield_once().await;
         poll_fn(|cx| self.poll_reply(cx, false)).await
     }
 }

@@ -114,3 +114,27 @@ fn mount_writability_and_unknown_capacity_are_explicit_for_every_filesystem()
     bytes[16] = 0;
     assert_eq!(Mount::decode(&bytes[..n]), Err(Error::Invalid));
 }
+
+#[test]
+fn filesystem_projection_keeps_length_delimited_rust_text_and_rejects_self_parent_cycles()
+{
+    // The filesystem name contract excludes NUL/slash/colon, not every Unicode
+    // control character. Comments are Rust strings, not legacy C strings.
+    let value = Metadata { name: "Line\nBreak",
+                           comment: "before\0after",
+                           ..metadata() };
+    let mut bytes = [0; 1024];
+    let count = value.encode(&mut bytes).unwrap();
+    assert_eq!(Metadata::decode(&bytes[..count]), Ok(value));
+    for invalid in [Metadata { parent: value.id,
+                               ..value },
+                    Metadata { revision: 0,
+                               ..value },
+                    Metadata { child_count: 1,
+                               ..value }]
+    {
+        let mut untouched = [0xa5; 1024];
+        assert_eq!(invalid.encode(&mut untouched), Err(Error::Invalid));
+        assert_eq!(untouched, [0xa5; 1024]);
+    }
+}

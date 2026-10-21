@@ -330,6 +330,7 @@ impl Receiver
 /// ticket; class input contains only session/object arguments and payload. The
 /// transport creates the actual wire header after it receives its live ticket.
 pub const DIRECTORY_CLASS: [u8; 4] = *b"HDIR";
+pub const DIRECTORY_VERSION: u32 = 1;
 pub const ARGUMENT_BYTES: usize = 24;
 pub struct Arguments<'a>
 {

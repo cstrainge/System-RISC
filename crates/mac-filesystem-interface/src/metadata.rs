@@ -29,9 +29,11 @@ impl<'a> Metadata<'a>
         if self.id < 2
            || self.id == 2 && (!self.directory || self.parent != 0)
            || self.id != 2 && self.parent < 2
+           || self.id == self.parent
+           || self.revision == 0
+           || !self.directory && self.child_count != 0
            || self.directory && (self.data_length != 0 || self.resource_length != 0)
            || self.comment.len() > 255
-           || self.comment.contains('\0')
         {
             return Err(Error::Invalid);
         }

@@ -84,6 +84,7 @@ impl Workspace
                         | "native-cdef"
                         | "native-scrollbar-cdef"
                         | "native-mdef")
+               || matches!(*package, "vhost-transport" | "vhost-filesystem")
             {
                 command.arg("--features").arg(format!("{package}/guest"));
             }
@@ -99,7 +100,8 @@ impl Workspace
     {
         self.guest_build(&["native-wdef", "native-cdef", "native-scrollbar-cdef", "native-mdef"])?;
         self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "textedit-exerciser",
-                           "cursor-test", "panic-test", "resedit", "bootrom"])?;
+                           "cursor-test", "panic-test", "resedit", "bootrom", "vhost-transport",
+                           "vhost-filesystem"])?;
         boot::package_rom(self)?;
         let mut reports = Vec::new();
         for (directory, name, binary) in
@@ -109,7 +111,9 @@ impl Workspace
              ("apps/textedit-exerciser", "TextEdit Exerciser", "TextEditExerciser"),
              ("apps/cursor-test", "Cursor Test", "CursorTest"),
              ("apps/panic-test", "Panic Test", "PanicTest"),
-             ("apps/resedit", "ResEdit", "ResEdit")]
+             ("apps/resedit", "ResEdit", "ResEdit"),
+             ("drivers/vhost-transport", "Host Transport", "HostTransport"),
+             ("drivers/vhost-filesystem", "Host Filesystem", "HostFilesystem")]
         {
             let report = package::build(&self.root.join(directory).join("resources.json"),
                                         &self.build

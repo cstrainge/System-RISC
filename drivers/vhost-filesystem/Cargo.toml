@@ -3,13 +3,27 @@ name = "vhost-filesystem"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+[features]
+guest = []
+[[bin]]
+name = "HostFilesystem"
+path = "src/main.rs"
+required-features = ["guest"]
+test = false
+bench = false
 [dependencies]
+spinning_top = "=0.2.5"
 mac-driver = { path = "../../crates/mac-driver" }
+mac-driver-alloc = { path = "../../crates/mac-driver-alloc" }
 mac-abi.workspace = true
 mac-filesystem-interface.workspace = true
 mac-fork-file = { path = "../../crates/mac-fork-file" }
 mac-host-protocol = { path = "../../crates/mac-host-protocol" }
 mac-hfs-b.workspace = true
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+linked_list_allocator = "0.10"
+[build-dependencies]
+mac-build.workspace = true
 [dev-dependencies]
 risc-host = { path = "../../tools/risc-host" }
 risc-forks = { path = "../../tools/risc-forks" }

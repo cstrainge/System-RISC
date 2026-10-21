@@ -2,7 +2,7 @@ use std::{future::Future,
           path::PathBuf,
           pin::pin,
           sync::{Arc,
-                 atomic::{AtomicU64, Ordering}},
+                 atomic::{AtomicBool, AtomicU64, Ordering}},
           task::{Context, Poll, Waker}};
 
 use mac_fork_file::{Fork, Kind};
@@ -46,17 +46,23 @@ fn run<T>(future: impl Future<Output = T>) -> T
 }
 struct Host
 {
-    session:   Session,
-    tickets:   Table<()>,
-    calls:     Vec<Operation>,
-    trace:     Vec<(Operation, u32, u64, usize)>,
-    fail_next: Option<Operation>
+    session:       Session,
+    tickets:       Table<()>,
+    calls:         Vec<Operation>,
+    trace:         Vec<(Operation, u32, u64, usize)>,
+    fail_next:     Option<Operation>,
+    reached_child: Arc<AtomicBool>
 }
 impl Host
 {
     fn new(temp: &Temp, writable: bool) -> Self
     {
-        Self {session:Session::new(Arc::new(vec![Export::open("Share",&temp.0,writable).unwrap()])).unwrap(),tickets:Table::new(ObjectKind::DriverRequests),calls:Vec::new(),trace:Vec::new(),fail_next:None}
+        Self {
+            session: Session::new(Arc::new(vec![Export::open("Share", &temp.0, writable).unwrap()])).unwrap(),
+            tickets: Table::new(ObjectKind::DriverRequests),
+            calls: Vec::new(), trace: Vec::new(), fail_next: None,
+            reached_child: Arc::new(AtomicBool::new(false))
+        }
     }
 }
 impl Rpc for Host
@@ -88,6 +94,10 @@ impl Rpc for Host
         let ticket = self.tickets.insert(()).unwrap();
         let header = arguments.header(operation, ticket).unwrap();
         let (header, body) = self.session.respond(header, arguments.payload);
+        if operation == Operation::ListNext && (body.starts_with(b"d-") || body.starts_with(b"f-"))
+        {
+            self.reached_child.store(true, Ordering::Relaxed);
+        }
         self.tickets.remove(ticket);
         Ok(Reply { header,
                    body })
@@ -654,4 +664,75 @@ fn filesystem_class_rejects_invalid_requests_and_read_only_mutations_without_hos
     assert_eq!(Volume::open(&temp.0).unwrap().root().unwrap().metadata, before);
     assert!(!filesystem.transport().calls.contains(&Operation::BeginWrite));
     serve(&mut filesystem, O::Unmount, args).unwrap();
+}
+
+#[test]
+fn metadata_failures_retry_the_consumed_child_instead_of_skipping_it()
+{
+    for failure in [Operation::OpenRead, Operation::Read, Operation::Close]
+    {
+        let (temp, _, _, _) = seeded();
+        let mut filesystem = Filesystem::new(Host::new(&temp, true));
+        let mut volumes = Table::new(ObjectKind::Volumes);
+        let volume = volumes.insert(()).unwrap();
+        run(filesystem.mount(volume, 0)).unwrap();
+        filesystem.transport().fail_next = Some(failure);
+        assert_eq!(run(filesystem.scan(volume, 2)).unwrap_err().cause,
+                   Cause::Host(mac_host_protocol::status::IO));
+        run(filesystem.cleanup_orphans()).unwrap();
+        run(filesystem.scan(volume, 2)).unwrap();
+        assert_eq!(filesystem.child(volume, 2, 0).unwrap().metadata.name,
+                   "Tools",
+                   "lost child after {failure:?}");
+        assert_eq!(filesystem.transport()
+                             .calls
+                             .iter()
+                             .filter(|&&op| op == Operation::OpenDirectory)
+                             .count(),
+                   1,
+                   "retry reopened an owned directory");
+        assert_eq!(filesystem.transport()
+                             .calls
+                             .iter()
+                             .filter(|&&op| op == Operation::ListBegin)
+                             .count(),
+                   1,
+                   "retry restarted the directory");
+        run(filesystem.unmount(volume)).unwrap();
+    }
+}
+#[test]
+fn abandoned_scan_retains_the_consumed_entry_until_its_metadata_is_published()
+{
+    let (temp, _, _, _) = seeded();
+    let mut filesystem = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    run(filesystem.mount(volume, 0)).unwrap();
+    let observed = filesystem.transport().reached_child.clone();
+    {
+        let mut scan = pin!(filesystem.scan(volume, 2));
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut stopped = false;
+        for _ in 0..1000
+        {
+            assert!(scan.as_mut().poll(&mut cx).is_pending());
+            if observed.load(Ordering::Relaxed)
+            {
+                stopped = true;
+                break;
+            }
+        }
+        assert!(stopped, "test did not reach the split child/metadata boundary");
+    }
+    run(filesystem.cleanup_orphans()).unwrap();
+    run(filesystem.scan(volume, 2)).unwrap();
+    assert_eq!(filesystem.child(volume, 2, 0).unwrap().metadata.name, "Tools");
+    assert_eq!(filesystem.transport()
+                         .calls
+                         .iter()
+                         .filter(|&&op| op == Operation::ListBegin)
+                         .count(),
+               1);
+    run(filesystem.unmount(volume)).unwrap();
 }

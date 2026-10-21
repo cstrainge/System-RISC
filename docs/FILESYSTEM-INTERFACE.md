@@ -104,6 +104,19 @@ The Finder batch transfer layer must roll back its own outputs/reversible moves
 when Escape/Cancel cancels the entire operation. No source deletion precedes
 successful destination copy and verification.
 
+The host filesystem callback engine owns its client/future and START bytes until
+terminal delivery. Each callback performs at most one dependency invocation,
+even when the dependency completes synchronously. A smaller POLL buffer retains
+the completed result. Cancellation drains actual lower acknowledgements before
+closing leases or aborting stages; repeated CANCEL cannot cancel that cleanup.
+An unpublished cancellation reports `OPERATION_CANCELLED` (-17), exposed as
+`Error::Cancelled` by the native SDK. If FinishWrite observed a commit, it returns
+the actual CNID after cleanup rather than claiming that cancellation undid it.
+Reply storage is reserved before publishing/opening objects. Deferred orphan
+leases stay in the provider's ledger and are retried before the next START;
+unrelated cleanup failure cannot erase an already successful operation result.
+Quiescing blocks new work but permits Close, AbortWrite and Unmount to drain it.
+
 ## Verification scope
 
 The host provider has real-host component tests through the class's owned-byte
@@ -112,6 +125,20 @@ and invalid requests before side effects. Additional adapter tests cover bounded
 polling, admission contention, live tickets, cancellation, actual publication
 outcomes and malformed correlation. Strict host/RV64 library checks pass.
 
-The loadable filesystem wrapper, resident dispatch and public-SDK guest mount
-acceptance remain in progress. Passing these component tests is not a mounted
-host directory or StuffIt volume, and is not a hard latency acceptance result.
+Callback-engine tests use real Linux host exports with fresh poisoned buffers on
+every invocation. They cover both-fork round trips, synchronous dependency
+budgets, read-only refusal before I/O, malformed START capacity, foreign/stale
+request tickets, retained replies, quiesce/cleanup, and cancellation before and
+after a real host commit. Resumable scan tests also drop a scan after ListNext
+consumed a child and inject metadata failures: retry must not skip that child.
+
+`cargo xtask build` also builds and packages Host Transport and Host Filesystem
+as release DRVR/DABI files in the selected output's `dist` directory. The safe
+filesystem engine is wrapped by a narrow native entry with a private 1 MiB heap
+and an exact HDIR dependency. The allocation helper is a separate
+`mac-driver-alloc` crate so allocation-free modules do not acquire an allocator
+requirement through Cargo feature unification. These packages are not installed
+in the default disk yet: resident dispatch, launcher export configuration and
+public-SDK guest mount acceptance remain in progress. Passing these component
+tests or building the native packages is not a mounted host directory or StuffIt
+volume, and is not a hard latency acceptance result.
