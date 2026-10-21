@@ -1,0 +1,276 @@
+# Finder selection, performance, and Drag Manager — spec
+
+For the coding agent. Three workstreams, one machine, in this order:
+(1) the selection performance fix, (2) multiple selection, (3) drag and
+drop through a new system Drag Manager with the Finder as first client.
+
+## 1. Why one spec
+
+Selection is a **set of items**. The performance bug exists because the
+Finder treats a selection change as "recompute everything"; the fix
+treats it as "diff the set, repaint the diff." Multiple selection is
+that same set with more than one element. A drag's payload is the set,
+handed to the Drag Manager. Building them separately would mean
+building the set machinery three times. Build it once.
+
+House rules apply throughout: the AGENTS.md performance bar; Chloe's
+MHz budget ("build as if we were on a 68k machine in the MHz range" —
+work per interaction must be proportional to the *change*, never to
+the whole state); every object ID through the shared generation-tagged
+facility; typed errors; RAII owners in the public SDK; canonical tests
+in `crates/mac-toolbox/tests` via the public SDK.
+
+## 2. Part 1 — the performance fix (substrate)
+
+Finding, for reference: `Browser::click` hit-tests by re-enumerating
+the folder (a `Files::entry` trap plus a `text_width` trap per item,
+rebuilding layout from scratch), then calls `redraw_all()` — desktop
+plus every window, each redraw re-enumerating and re-plotting. One
+click ≈ a hundred trap round-trips; the app misses its event-poll
+window and the system shows the watch. (Full audit in the
+infrastructure review log, 2026-10-20; `317d030` already queued a
+task doc, FINDER-SELECTION-PERFORMANCE.md — this spec is its
+authoritative form.)
+
+Rulings (Chloe, 2026-10-20):
+
+1. **Cache item information per folder in the Finder** — entry info,
+   icon, and text dimensions — so hit-testing and repaints work from
+   the cache and text is never re-measured per click or per draw.
+   **Any filesystem change to that folder clears that folder's
+   cache.** Key/validate the cache off the files service's catalog
+   revision machinery (`system/src/toolbox/files/scan.rs`; the
+   `ScanStale` typed error already exists for exactly this).
+2. **Repaint through a mask.** When selection changes, repaint with
+   the mask/clip set to exactly the items involved in the change —
+   the bounds (icon + label) of the items that left the set and the
+   items that entered it. The draw routine itself stays uniform;
+   only the mask changes.
+3. **Early-out on no change.** A click that doesn't change the
+   selection does no enumeration, no repaint, no work.
+
+Acceptance for Part 1:
+
+- Changing selection in a browser window performs **zero** folder
+  enumerations (hit-test and repaint both served from the cache).
+- A selection repaint touches only the masked items' bounds.
+- No watch cursor on selection change, in emulation, with several
+  windows open.
+- The cache survives until its folder changes on disk; an FS write
+  to the folder (create/rename/delete/move within it) is visible on
+  the next draw without a manual refresh.
+
+## 3. Part 2 — multiple selection
+
+### 3.1 Model
+
+- Per-window selection becomes a **set** of items
+  (`Location` = volume + cnid; the desktop keeps its own set).
+  Replace `selected: Option<Location>` and friends; migrate
+  `selection()` / `info_selection()` and all consumers
+  (`open_selection`, menu enablement) to set semantics.
+- There is exactly **one mutation path**: compute the new set, diff
+  against the old, repaint through the mask of the symmetric
+  difference (Part 1, ruling 2). Every gesture below is expressed
+  as a set operation feeding that path.
+
+### 3.2 Gestures (icon view)
+
+- **Click an item**: selection = {item}. Click empty space:
+  selection = {}.
+- **Shift-click an item**: toggle that item in the set (classic
+  Finder icon-view behavior).
+- **Rubber-band (marquee)**: press on empty space and drag. The
+  band selects every item whose bounds **intersect** it. Live
+  feedback on each mouse-move: hit-test is pure rect arithmetic
+  over the cached geometry (zero traps), and the repaint mask is
+  the symmetric difference between the previous and current band
+  sets, plus the old and new band outlines. **Shift-marquee**
+  unions the band set with the existing selection instead of
+  replacing it.
+- **Select All** (Cmd-A): selection = all visible items in the
+  front window.
+- Dragging is Part 3, with one selection rule that belongs here:
+  **pressing an unselected item selects it alone** (set = {item})
+  before the drag begins; pressing a selected item keeps the set.
+
+### 3.3 Acceptance for Part 2
+
+- All gestures mutate selection only through the single diff/mask
+  path (no gesture has its own repaint code).
+- Marquee drag at emulation speed: no enumeration per mouse-move,
+  repaint mask per move is bounded by the items the band edge
+  crossed, no watch.
+- Menu enablement and Open/Get Info act on the set (see DECIDE 3
+  for Get Info).
+
+## 4. Part 3 — the Drag Manager
+
+Drag and drop becomes a **system manager**, not Finder-private code:
+new SDK crate `toolbox/drag` (name indicative) over a resident
+service, following the classic Drag Manager's design (System 7.5;
+API target per the project's founding rule is the most advanced
+classic-series form). The Finder's existing private drag tracking
+(`Browser::drag`, the hover/threshold logic in `track()`) is
+retired in favor of the manager.
+
+### 4.1 Session model and ownership
+
+- A drag is a **session object** created by the sender:
+  `Drag` owner in the SDK (RAII: dropping the owner before tracking
+  cancels the session), its ID issued and validated through the
+  shared generation-tagged facility like every other object.
+- Sender API shape: create a drag → add items (each item is an
+  opaque sender-chosen index) → offer flavors per item → `track()`
+  → outcome (`Dropped` to a receiver / `Cancelled`).
+- `track()` runs the gesture: the manager owns pointer tracking,
+  feedback, and receiver negotiation until drop or cancel, then
+  returns. **The tracking loop must yield/poll so no participant
+  trips the responsiveness watchdog**, and feedback work per
+  mouse-move is bounded (old outline ∪ new outline ∪ changed
+  highlight only).
+
+### 4.2 Flavors and promises (the classic design's best idea)
+
+- Data is offered as **flavors** keyed by `TypeCode`, per item —
+  the drag analogue of clipboard types.
+- Two kinds: **inline** data (small payloads, supplied up front)
+  and **promise** flavors: the sender registers that it *can*
+  produce the data; the manager calls the sender's promise keeper
+  **only if a drop is accepted and the receiver requests that
+  flavor**. Promised data is produced at most once, never
+  speculatively. Dragging must cost an outline and metadata, not
+  a copy.
+- Receivers inspect the offered flavor list (types and item count)
+  *without* pulling data, to decide highlighting; they pull data
+  only inside the drop.
+
+### 4.3 Receivers
+
+- An app registers drag interest **per window** with the manager.
+- During tracking, the manager determines the hot window and
+  notifies the owning app through the event stream — new variants
+  on the decoded `Event` enum (it is `#[non_exhaustive]` for this):
+  drag-entered (with item count + offered flavor types), drag-within
+  (position), drag-left, and the drop itself. The receiver draws
+  its own highlight in response (the manager does not guess what a
+  valid target looks like); the standard folder highlight is a
+  Finder behavior, not a manager feature.
+- A drop delivers the drag session ID to the receiver, which pulls
+  the flavors it wants via manager calls, then acknowledges
+  (consumed / rejected). Rejected or missed drops get the classic
+  **zoom-back** animation.
+
+### 4.4 Feedback
+
+- V1 feedback is the classic **outline** drag image: the outline
+  (or bounding region union) of the dragged items' cached bounds,
+  drawn by the manager. Translucent image dragging (Mac OS 8.5)
+  is a later addition — see §7.
+- All drag feedback obeys the mask discipline from Part 1:
+  damage per move = old feedback ∪ new feedback ∪ any highlight
+  change. No full-window repaints during a drag, ever.
+
+### 4.5 Finder as first client
+
+- **Sender**: Finder icon drags offer one item per selected file,
+  with a **file-reference flavor** (the list of (volume, cnid))
+  plus promise flavors for textual representations (name/path) if
+  a receiver asks. The payload is references, not file bytes —
+  classic Finder drags moved references, and so do these.
+- **Receivers**: folder windows, the desktop, volume icons, and
+  the Trash. Drop semantics:
+  - Same volume: **move**.
+  - Different volume: **copy**.
+  - **Option** held at drop: force copy (even same volume).
+  - **Command** held at drop: force move (even across volumes). On the current
+    native keyboard mapping, the host Ctrl key supplies Command.
+  - Sample modifiers at **drop time**, never latch them at drag start. The user
+    can change their mind while dragging. If both forcing modifiers are held,
+    Command takes precedence; Trash takes precedence over both.
+  - On the Trash: always move to Trash, regardless of modifiers. A read-only
+    source cannot be trashed or forcibly moved; report that error rather than
+    silently copying it or deleting a partial source.
+  - **Escape cancels the entire operation**, not just one item. Before drop,
+    cancel negotiation, zoom back and change no files. During a transfer, stop
+    scheduling new work and roll back the operation's own staged outputs and
+    reversible moves. Preserve original files until copy/verification succeeds;
+    do not treat partial batch completion as successful cancellation. Report
+    rollback or cleanup failures honestly. Power-loss atomicity is a separate
+    filesystem guarantee, not implied by Escape cancellation.
+  - Recursive folder transfers preserve both forks and Macintosh metadata.
+    Same-volume moves retain file identity; copies receive fresh destination
+    identities. Cross-volume moves copy/verify before removing the source.
+    Reject self/descendant destinations and resolve name collisions explicitly;
+    never silently overwrite an unrelated item.
+  - The receiver performs the operation through ordinary Files
+    calls **after** the drop; the manager moves no data itself.
+- TextEdit is the validation second client when its surface is
+  ready (text flavor, promise-kept) — not a Part 3 deliverable.
+
+### 4.6 Legacy surface
+
+The classic Drag Manager trap surface (for legacy apps) is
+**not** part of this spec; it belongs to the compatibility-closure
+work. The native design must not preclude it: classic handlers are
+callbacks, native receivers are events — the manager's core session
+state is shared, and the event surface is the native projection of
+the same negotiation. Note the mapping in the manager's docs.
+
+## 5. Performance rules (apply to all three parts)
+
+- No folder enumeration on any pointer path (click, marquee move,
+  drag move). Enumeration happens on cache fill and FS-change
+  invalidation only.
+- Every repaint in these paths is masked to the diff it represents.
+- Work per mouse-move during marquee or drag is proportional to
+  the geometry that changed, and involves zero traps for hit-testing.
+- Promise data is produced only on an accepted drop, at most once
+  per flavor per item.
+
+## 6. Acceptance battery (beyond the per-part criteria)
+
+- SDK tests in `crates/mac-toolbox/tests` for: flavor offering and
+  promise semantics (keeper not called on cancel, called once on
+  accepted drop), receiver negotiation order, session ownership
+  (dropping the owner cancels; using a stale session ID fails
+  through the facility, typed).
+- QEMU interaction tests where the harness supports them: Finder
+  multi-select + drag a file between folders (move), across volumes
+  (copy), to the Trash; Esc-cancel zooms back and changes nothing.
+- Modifier acceptance: change Option/Command during a live drag and prove
+  only the state at drop determines copy/move; test both directions, both
+  modifiers held, and Trash with each modifier. A forced move from a read-only
+  mount fails without a partial destination or source deletion.
+- Escape acceptance: cancel a multi-item drag before drop and a transfer after
+  partial progress; prove the entire operation is cancelled and original forks,
+  metadata and identities survive, with no leftover staged files. Inject a
+  rollback failure and verify it is reported rather than hidden.
+- Regression: single-click selection behavior and double-click open
+  are unchanged.
+
+## 7. Out of scope / future
+
+- Legacy Drag Manager trap surface (compatibility closure).
+- Translucent drag images; spring-loaded folders (both later
+  classic features; the session model must not preclude them).
+- Inter-application data drags beyond the Finder file-reference
+  flavor and a plain-text flavor.
+- List-view range selection (shift = contiguous range) — that's
+  the list view's rule when a list view exists; icon view toggles.
+
+## 8. DECIDEs for Chloe (defaults the agent proceeds on unless overruled)
+
+1. **Shift-click in icon view toggles the individual item** (not a
+   range) — classic Finder behavior. *Recommended: adopt.*
+2. **Marquee selects items intersecting the band** (not only items
+   fully contained). *Recommended: adopt (classic).* (Chloë: Yes)
+3. **Get Info with a multi-item selection**: one summary window
+   (Mac OS 9's "Multiple Items" behavior) rather than one window
+   per item. *Recommended: adopt.* (Chloë: Yes)
+4. **Native receiver notification via events** (new `Event`
+   variants), not classic-style installed handler callbacks;
+   callbacks are reserved for the legacy layer. *Recommended:
+   adopt.* (Chloë: Yes)
+5. **Drag feedback v1 is outline-only**; translucency later.
+   *Recommended: adopt.* (Chloë: Yes, outline only.)

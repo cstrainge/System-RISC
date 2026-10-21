@@ -75,7 +75,10 @@ The next queued Finder performance task is the
 items/layout against catalog revisions, repaint only the changed items through
 a mask, and early-out on unchanged selection. Acceptance requires no enumeration
 on selection changes, no unrelated repainting and no watch cursor. Keep the
-current storage-driver delivery moving first.
+current storage-driver delivery moving first. Then implement the authoritative
+[Finder selection and Drag Manager spec](FINDER-SELECTION-DRAG.md): cached masked
+selection, multiple selection, system-owned drag tracking, and cancellable file
+move/copy with Option/Command sampled at drop time. Trash always moves.
 
 ### R1 — Service lifetimes and waits
 

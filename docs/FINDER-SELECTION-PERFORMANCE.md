@@ -2,6 +2,9 @@
 
 Queued on 2026-10-20 as the next Finder performance task. Continue the current
 host-directory/StuffIt driver work first; this note does not change that scope.
+The authoritative implementation spec is now
+[FINDER-SELECTION-DRAG.md](FINDER-SELECTION-DRAG.md), including multiple selection,
+the system Drag Manager and the confirmed drop-time modifier/cancellation rules.
 
 ## Reported diagnosis
 
