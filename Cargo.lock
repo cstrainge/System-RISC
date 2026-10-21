@@ -360,6 +360,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-filesystem-interface"
+version = "0.1.0"
+
+[[package]]
 name = "mac-finder"
 version = "0.1.0"
 dependencies = [
@@ -944,6 +948,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vhost-filesystem"
 version = "0.1.0"
 dependencies = [
+ "mac-abi",
+ "mac-driver",
+ "mac-filesystem-interface",
  "mac-fork-file",
  "mac-hfs-b",
  "mac-host-protocol",

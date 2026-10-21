@@ -783,3 +783,12 @@ The current RV64 adapter claims only a declared modern virtio-console device via
 `VDEV`. Four pinned queues implement data RX/TX and multiport control RX/TX. DMA
 mappings remain live until a positively acknowledged reset; failed initialization
 cannot reclaim DMA-visible module memory. The module remains pinned until reboot.
+
+## Native filesystem provider class
+
+The `FSYS` class version 1 carries bounded little-endian owned byte requests and
+catalog/mount replies, independent of resource-fork layouts and physical storage.
+The exact header/metadata fields and allocated operation numbers are documented
+in [FILESYSTEM-INTERFACE.md](docs/FILESYSTEM-INTERFACE.md); their shared checked
+codec lives in `crates/mac-filesystem-interface`. This adds a class contract and
+does not change the generic module entry boundary or the native code envelope.

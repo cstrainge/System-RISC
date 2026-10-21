@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 [dependencies]
+mac-driver = { path = "../../crates/mac-driver" }
+mac-abi.workspace = true
+mac-filesystem-interface.workspace = true
 mac-fork-file = { path = "../../crates/mac-fork-file" }
 mac-host-protocol = { path = "../../crates/mac-host-protocol" }
 mac-hfs-b.workspace = true

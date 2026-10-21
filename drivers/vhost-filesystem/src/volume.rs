@@ -601,6 +601,14 @@ impl<R: Rpc> Filesystem<R>
         mount.nodes.get(id).ok_or_else(|| Cause::NotFound.into())
     }
 
+    pub(crate) fn cached_child_count(&self, volume: u32, parent: u32) -> Result<Option<u32>>
+    {
+        self.info(volume)?;
+        let directory =
+            self.mounts.get(volume).unwrap().directories.get(parent).ok_or(Cause::NotFound)?;
+        Ok(directory.complete.then_some(directory.children.len() as u32))
+    }
+
     pub async fn lookup(&mut self, volume: u32, parent: u32, name: &str) -> Result<&Node>
     {
         let folded = mac_hfs_b::names::comparison(name).map_err(|_| Cause::Invalid)?;

@@ -6,6 +6,7 @@ use mac_host_protocol::{Arguments, Header, Operation};
 pub enum Cause
 {
     Host(i32),
+    Transport(i32),
     Format(mac_fork_file::Error),
     Invalid,
     NotFound,
@@ -13,7 +14,9 @@ pub enum Cause
     Conflict,
     ReadOnly,
     NoMemory,
-    Busy
+    Busy,
+    Unsupported,
+    Cancelled
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Error
@@ -47,6 +50,7 @@ impl core::error::Error for Error
 {
 }
 pub type Result<T> = core::result::Result<T, Error>;
+#[derive(Debug)]
 pub struct Reply
 {
     pub header: Header,

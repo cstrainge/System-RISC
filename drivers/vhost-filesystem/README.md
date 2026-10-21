@@ -26,3 +26,10 @@ ID reservation. This is component coverage. The library is **not yet a loadable
 module or a mounted guest filesystem**; File Manager routing, the native wrapper,
 rename/directory/delete operations and public-SDK VM acceptance remain delivery
 work. Host-directory mounting is not ready for interactive use yet.
+
+The common `FSYS` v1 byte codec and its library-side service dispatch now exist;
+see `docs/FILESYSTEM-INTERFACE.md`. `DirectoryRpc` adapts the checked module
+provider capability into bounded futures with reusable packet buffers. Its ticket
+survives an abandoned future, and draining returns an acknowledged host mutation
+instead of pretending cancellation undid it. These remain component contracts,
+not an installed native module or public File Manager mount.

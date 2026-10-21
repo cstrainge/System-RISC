@@ -522,3 +522,136 @@ fn abandoned_mount_acquisition_is_cleaned_without_a_transport_error()
     run(filesystem.mount(replacement, 0)).unwrap();
     run(filesystem.unmount(replacement)).unwrap();
 }
+
+fn serve(fs: &mut Filesystem<Host>, op: mac_filesystem_interface::Operation,
+         args: mac_filesystem_interface::Arguments<'_>)
+         -> Result<Vec<u8>>
+{
+    let mut bytes = vec![0; mac_filesystem_interface::HEADER_BYTES + args.payload.len()];
+    args.encode(&mut bytes).unwrap();
+    run(fs.execute(op as u32, &bytes))
+}
+#[test]
+fn filesystem_class_exchanges_metadata_and_both_forks_through_owned_byte_requests()
+{
+    use mac_filesystem_interface::{self as fs, Arguments as A, Operation as O};
+    let (temp, cnid, data, resources) = seeded();
+    let mut filesystem = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    let args = A { volume,
+                   ..Default::default() };
+    let bytes = serve(&mut filesystem, O::Mount, args).unwrap();
+    let mounted = fs::Mount::decode(&bytes).unwrap();
+    assert_eq!(mounted.filesystem, *b"HOST");
+    assert_eq!(mounted.filesystem_version, 1);
+    assert_eq!(mounted.capabilities, fs::READ | fs::WRITE);
+    assert_eq!(mounted.capacity, None);
+    assert_eq!(mounted.root.child_count, 1);
+    let bytes = serve(&mut filesystem,
+                      O::Catalog,
+                      A { node: cnid,
+                          ..args }).unwrap();
+    let file = fs::Metadata::decode(&bytes).unwrap();
+    assert_eq!(file.name, "Café");
+    assert_eq!(file.data_length, data.len() as u64);
+    assert_eq!(file.resource_length, resources.len() as u64);
+    let mut files = Table::new(ObjectKind::Files);
+    let token = files.insert(()).unwrap();
+    let open = A { token,
+                   ..args };
+    serve(&mut filesystem,
+          O::Open,
+          A { node: cnid,
+              ..open }).unwrap();
+    assert_eq!(serve(&mut filesystem,
+                     O::Read,
+                     A { length: fs::MAX_TRANSFER as u64,
+                         flags: fs::RESOURCE_FORK,
+                         ..open }).unwrap(),
+               resources);
+    serve(&mut filesystem, O::Close, open).unwrap();
+    files.remove(token);
+    let replacement = files.insert(()).unwrap();
+    assert_ne!(token, replacement);
+    assert_eq!(serve(&mut filesystem,
+                     O::Read,
+                     A { length: 1,
+                         ..open }).unwrap_err()
+                                  .cause,
+               Cause::NotFound);
+    let mut writes = Table::new(ObjectKind::FileWrites);
+    let token = writes.insert(()).unwrap();
+    let write = A { token,
+                    ..args };
+    let id = serve(&mut filesystem,
+                   O::BeginCreate,
+                   A { parent: 2,
+                       length: 3,
+                       auxiliary: 2,
+                       when: 3_875_171_696_123_456,
+                       payload: b"Copied",
+                       ..write }).unwrap();
+    let cnid = u32::from_le_bytes(id.try_into().unwrap());
+    serve(&mut filesystem,
+          O::WriteChunk,
+          A { payload: b"abc",
+              ..write }).unwrap();
+    serve(&mut filesystem,
+          O::WriteChunk,
+          A { flags: fs::RESOURCE_FORK,
+              payload: b"rs",
+              ..write }).unwrap();
+    assert_eq!(serve(&mut filesystem, O::FinishWrite, write).unwrap(), cnid.to_le_bytes());
+    let copied = Volume::open(&temp.0).unwrap().resolve("/Copied").unwrap();
+    assert_eq!(copied.metadata.catalog_id, cnid);
+    let bytes = serve(&mut filesystem,
+                      O::Catalog,
+                      A { node: cnid,
+                          ..args }).unwrap();
+    assert_eq!(fs::Metadata::decode(&bytes).unwrap().resource_length, 2);
+    serve(&mut filesystem, O::Unmount, args).unwrap();
+    Volume::open(&temp.0).unwrap().check().unwrap();
+}
+#[test]
+fn filesystem_class_rejects_invalid_requests_and_read_only_mutations_without_host_side_effects()
+{
+    use mac_filesystem_interface::{Arguments as A, Operation as O};
+    let (temp, _, _, _) = seeded();
+    let mut filesystem = Filesystem::new(Host::new(&temp, false));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    let args = A { volume,
+                   ..Default::default() };
+    serve(&mut filesystem, O::Mount, args).unwrap();
+    let before = filesystem.transport().calls.len();
+    assert_eq!(serve(&mut filesystem,
+                     O::Read,
+                     A { token: 1,
+                         length: 65537,
+                         ..args }).unwrap_err()
+                                  .cause,
+               Cause::Invalid);
+    assert_eq!(serve(&mut filesystem,
+                     O::Catalog,
+                     A { node: 2,
+                         flags: 1,
+                         ..args }).unwrap_err()
+                                  .cause,
+               Cause::Invalid);
+    assert_eq!(filesystem.transport().calls.len(), before, "invalid wire fields reached host I/O");
+    let mut writes = Table::new(ObjectKind::FileWrites);
+    let token = writes.insert(()).unwrap();
+    let before = Volume::open(&temp.0).unwrap().root().unwrap().metadata;
+    assert_eq!(serve(&mut filesystem,
+                     O::BeginCreate,
+                     A { parent: 2,
+                         token,
+                         payload: b"No write",
+                         ..args }).unwrap_err()
+                                  .cause,
+               Cause::ReadOnly);
+    assert_eq!(Volume::open(&temp.0).unwrap().root().unwrap().metadata, before);
+    assert!(!filesystem.transport().calls.contains(&Operation::BeginWrite));
+    serve(&mut filesystem, O::Unmount, args).unwrap();
+}
