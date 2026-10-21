@@ -100,6 +100,22 @@ pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     checkpoint(system, "RETAINED_UPDATE_STAGE desktop-covered\n")?;
     system.close_window(cover)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE desktop-revealed\n")?;
+    let mut mask_bytes = [0; 64];
+    let mask =
+        system.quickdraw().regions().rectangle(Rect::new(120, 15, 180, 65), &mut mask_bytes)?;
+    let update = graphics.masked_update(mask.bytes())?;
+    graphics.reset()?;
+    graphics.colors(0x00ffff, 0)?;
+    graphics.paint_rect(bounds)?; // Deliberately overdraw outside the mask.
+    checkpoint(system, "RETAINED_UPDATE_STAGE mask-pending-cyan\n")?;
+    update.commit()?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE mask-committed-cyan\n")?;
+    let update = graphics.masked_update(mask.bytes())?;
+    graphics.colors(0xff00ff, 0)?;
+    graphics.paint_rect(bounds)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE mask-pending-cancel\n")?;
+    drop(update);
+    checkpoint(system, "RETAINED_UPDATE_STAGE mask-cancelled\n")?;
     // Restore the second real presenter, then commit cursor policy through the
     // same public drawing transaction as its pixels. An inactive editor still
     // owns an editable hover region without adding a blinking insertion point.
@@ -117,6 +133,28 @@ pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     text.draw(editor, window)?;
     system.end_update(window)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE cursor-left\n")?;
+
+    let mask =
+        system.quickdraw().regions().rectangle(Rect::new(110, 80, 150, 95), &mut mask_bytes)?;
+    let update = graphics.masked_update(mask.bytes())?;
+    port.paint_rect(bounds, 0xffffff)?;
+    update.commit()?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE cursor-outside-patch\n")?;
+    let mask =
+        system.quickdraw().regions().rectangle(Rect::new(15, 35, 55, 75), &mut mask_bytes)?;
+    let update = graphics.masked_update(mask.bytes())?;
+    port.paint_rect(bounds, 0xffffff)?;
+    update.commit()?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE cursor-erased-patch\n")?;
+    let update = graphics.masked_update(mask.bytes())?;
+    text.draw(editor, window)?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE cursor-pending-patch\n")?;
+    drop(update);
+    checkpoint(system, "RETAINED_UPDATE_STAGE cursor-cancelled-patch\n")?;
+    let update = graphics.masked_update(mask.bytes())?;
+    text.draw(editor, window)?;
+    update.commit()?;
+    checkpoint(system, "RETAINED_UPDATE_STAGE cursor-restored-patch\n")?;
 
     system.begin_update(window)?;
     port.paint_rect(bounds, 0xffffff)?;
@@ -150,7 +188,7 @@ pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     checkpoint(system, "RETAINED_UPDATE_STAGE scroll-row-pending\n")?;
     system.end_update(window)?;
     checkpoint(system, "RETAINED_UPDATE_STAGE scroll-row-committed\n")?;
-    system.log("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=24\n")?;
+    system.log("RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=33\n")?;
     // Keep the last committed scene available until the owned VM is stopped.
     loop
     {

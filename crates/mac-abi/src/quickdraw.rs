@@ -78,6 +78,9 @@ pub const QD_DESKTOP_BEGIN: u32 = 32;
 pub const QD_DESKTOP_END: u32 = 33;
 pub const QD_DESKTOP_CANCEL: u32 = 34;
 pub const QD_DESKTOP_BOUNDS: u32 = 35;
+pub const QD_WINDOW_BEGIN_MASK: u32 = 36;
+pub const QD_WINDOW_COMMIT_MASK: u32 = 37;
+pub const QD_WINDOW_CANCEL_MASK: u32 = 38;
 
 pub const QD_RESET: u32 = 0;
 pub const QD_MOVE_TO: u32 = 1;

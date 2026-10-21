@@ -4,7 +4,8 @@
 use mac_abi::{textedit::*, *};
 
 use crate::toolbox::{handles::{Kind, Table},
-                     quickdraw::service::Port};
+                     quickdraw::{region::{BooleanOp, Region},
+                                 service::Port}};
 mod layout;
 mod model;
 pub mod clipboard;
@@ -20,9 +21,8 @@ struct Slot
 }
 struct CursorBinding
 {
-    window: WindowId,
-    view:   Rect,
-    port:   Port
+    window:  WindowId,
+    visible: Region
 }
 pub struct Manager
 {
@@ -48,10 +48,15 @@ impl Manager
                        -> Result<(), Status>
     {
         let view = self.inspect(id).ok_or(NOT_FOUND)?.info().view;
+        let mut visible = Region::from_rect(view);
+        if let Some(clip) = &port.state.clip
+        {
+            visible = visible.combine(clip, BooleanOp::Intersection);
+        }
+        let visible = visible.offset(port.origin.h, port.origin.v).map_err(|_| BAD_ARGUMENT)?;
         let slot = self.slots.get_mut(id.0).ok_or(NOT_FOUND)?;
         let binding = Some(CursorBinding { window,
-                                           view,
-                                           port });
+                                           visible });
         if staged
         {
             slot.pending_cursor = binding;
@@ -91,6 +96,40 @@ impl Manager
         }
     }
 
+    /// A masked replacement changes hover policy only inside that same mask.
+    /// In particular, repainting an icon cannot erase an unrelated editor's
+    /// hover region. Geometry is prepared at commit, never during mouse motion.
+    pub fn commit_partial_cursor_update(&mut self, window: WindowId, mask: &Region)
+    {
+        for slot in self.slots.values_mut()
+        {
+            if let Some(binding) = &mut slot.cursor
+               && binding.window == window
+               && binding.visible.overlaps(mask)
+            {
+                binding.visible = binding.visible.combine(mask, BooleanOp::Difference);
+                if binding.visible.is_empty()
+                {
+                    slot.cursor = None;
+                }
+            }
+            if slot.pending_cursor.as_ref().is_some_and(|binding| binding.window == window)
+            {
+                let mut pending = slot.pending_cursor.take().unwrap();
+                pending.visible = pending.visible.combine(mask, BooleanOp::Intersection);
+                if let Some(binding) = &mut slot.cursor
+                   && binding.window == window
+                {
+                    binding.visible = binding.visible.combine(&pending.visible, BooleanOp::Union);
+                }
+                else if !pending.visible.is_empty()
+                {
+                    slot.cursor = Some(pending);
+                }
+            }
+        }
+    }
+
     /// Window disposal discards both visible registrations and abandoned draws.
     pub fn forget_cursor_window(&mut self, window: WindowId)
     {
@@ -122,24 +161,7 @@ impl Manager
                              {
                                  return false;
                              }
-                             let Some(h) = local.h.checked_sub(binding.port.origin.h)
-                             else
-                             {
-                                 return false;
-                             };
-                             let Some(v) = local.v.checked_sub(binding.port.origin.v)
-                             else
-                             {
-                                 return false;
-                             };
-                             let point = Point { h,
-                                                 v };
-                             binding.view.contains(point)
-                             && binding.port
-                                       .state
-                                       .clip
-                                       .as_ref()
-                                       .is_none_or(|clip| clip.contains(point))
+                             binding.visible.contains(local)
                          })
     }
 

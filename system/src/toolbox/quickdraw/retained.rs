@@ -4,7 +4,11 @@ use alloc::{string::String, vec::Vec};
 
 use mac_abi::{BAD_ARGUMENT, DrawCommand, Point, Rect, Status, WindowId};
 
-use super::{Canvas, fonts::FontManager, fonts_service, service};
+use super::{Canvas,
+            fonts::FontManager,
+            fonts_service,
+            region::{BooleanOp, Region},
+            service};
 
 pub enum RenderCommand
 {
@@ -114,7 +118,18 @@ pub struct Content
 {
     pub id:       WindowId,
     pub commands: Vec<RenderCommand>,
-    pub port:     service::Port
+    pub port:     service::Port,
+    fragments:    Vec<Fragment>,
+    patch:        Option<Region>
+}
+struct Fragment
+{
+    clip:     Region,
+    commands: Vec<RenderCommand>
+}
+fn region_bytes(region: &Region) -> usize
+{
+    region.bands().iter().map(|band| 8 + band.spans.len() * 4).sum()
 }
 impl Content
 {
@@ -122,17 +137,114 @@ impl Content
     {
         Self { id,
                commands: Vec::new(),
-               port: service::Port::default() }
+               port: service::Port::default(),
+               fragments: Vec::new(),
+               patch: None }
+    }
+
+    pub fn pending_patch(id: WindowId, port: service::Port, patch: Region) -> Self
+    {
+        Self { port,
+               patch: Some(patch),
+               ..Self::new(id) }
+    }
+
+    pub fn is_patch(&self) -> bool
+    {
+        self.patch.is_some()
+    }
+
+    pub fn iter_commands(&self) -> impl Iterator<Item = &RenderCommand>
+    {
+        self.fragments.iter().flat_map(|f| f.commands.iter()).chain(&self.commands)
+    }
+
+    pub fn iter_commands_mut(&mut self) -> impl Iterator<Item = &mut RenderCommand>
+    {
+        self.fragments.iter_mut().flat_map(|f| f.commands.iter_mut()).chain(&mut self.commands)
+    }
+
+    pub fn retain_commands(&mut self, mut keep: impl FnMut(&RenderCommand) -> bool)
+    {
+        for fragment in &mut self.fragments
+        {
+            fragment.commands.retain(&mut keep);
+        }
+        self.commands.retain(keep);
+    }
+
+    /// Prepare every allocation and budget check before publishing any scene
+    /// change. A later patch subtracts its mask from prior fragments, so repeated
+    /// selection changes replace pixels rather than accumulating a paint history.
+    pub fn commit_patch(&mut self, mut pending: Self, bounds: Rect, used: usize, budget: usize)
+                        -> Result<Region, Status>
+    {
+        let mask = pending.patch.take().ok_or(BAD_ARGUMENT)?;
+        let committed_clip = mask.clone();
+        self.fragments.try_reserve(2).map_err(|_| mac_abi::NO_MEMORY)?;
+        let mut clips = Vec::new();
+        let mut before = 0;
+        for (index, fragment) in self.fragments.iter().enumerate()
+        {
+            if !fragment.clip.overlaps(&mask)
+            {
+                continue;
+            }
+            clips.try_reserve(1).map_err(|_| mac_abi::NO_MEMORY)?;
+            before += region_bytes(&fragment.clip);
+            clips.push((index, fragment.clip.combine(&mask, BooleanOp::Difference)));
+        }
+        let tail = (!self.commands.is_empty()).then(|| {
+                                                  Region::from_rect(bounds).combine(&mask,
+                                                                             BooleanOp::Difference)
+                                              });
+        let after = clips.iter().map(|(_, r)| region_bytes(r)).sum::<usize>()
+                    + tail.as_ref().map_or(0, region_bytes)
+                    + region_bytes(&mask);
+        if used.saturating_add(after.saturating_sub(before)) > budget
+        {
+            return Err(mac_abi::NO_MEMORY);
+        }
+        for (index, clip) in clips
+        {
+            self.fragments[index].clip = clip;
+        }
+        self.fragments.retain(|f| !f.clip.is_empty());
+        if let Some(clip) = tail.filter(|clip| !clip.is_empty())
+        {
+            self.fragments.push(Fragment { clip,
+                                           commands: core::mem::take(&mut self.commands) });
+        }
+        else
+        {
+            self.commands.clear();
+        }
+        self.fragments.push(Fragment { clip:     committed_clip,
+                                       commands: pending.commands });
+        self.port = pending.port;
+        Ok(mask)
     }
 
     pub fn storage(&self) -> usize
     {
-        self.port.storage() + self.commands.iter().map(RenderCommand::storage).sum::<usize>()
+        self.port.storage()
+        + self.iter_commands().map(RenderCommand::storage).sum::<usize>()
+        + self.fragments.iter().map(|f| region_bytes(&f.clip)).sum::<usize>()
+        + self.patch.as_ref().map_or(0, region_bytes)
     }
 
     pub fn paint(&self, canvas: &mut Canvas, fonts: Option<&FontManager>,
                  mut legacy: impl FnMut(&mut Canvas, &DrawCommand))
     {
+        for fragment in &self.fragments
+        {
+            service::with_region_clip(canvas, &fragment.clip, |canvas| {
+                for command in &fragment.commands
+                {
+                    command.paint(canvas, fonts, &mut legacy);
+                }
+            });
+        }
         for command in &self.commands
         {
             command.paint(canvas, fonts, &mut legacy);
@@ -282,6 +394,68 @@ mod tests
         let mut pixels = vec![0x878787; 64 * 48];
         layer.paint(&mut Canvas::new(&mut pixels, 64, 48), None, paint_legacy);
         pixels[30 * 64 + 20]
+    }
+    fn command(bounds: Rect, color: u32) -> RenderCommand
+    {
+        RenderCommand::Legacy(alloc::boxed::Box::new(DrawCommand { kind: PAINT_RECT,
+            bounds,color,text_length:0,text:[0;mac_abi::INLINE_STRING_BYTES] }))
+    }
+    #[test]
+    fn patches_replace_history_preserve_holes_and_skip_unaffected_commands()
+    {
+        let bounds = Rect::new(0, 0, 64, 48);
+        let mut scene = Content::new(WindowId(1));
+        scene.commands.push(command(bounds, 0xff0000));
+        let mask =
+            Region::from_rect(Rect::new(4, 4, 12, 12)).combine(&Region::from_rect(Rect::new(24,
+                                                                                            4,
+                                                                                            32,
+                                                                                            12)),
+                                                               BooleanOp::Union);
+        let mut maximum = 0;
+        for iteration in 0..200
+        {
+            let mut patch =
+                Content::pending_patch(scene.id, service::Port::default(), mask.clone());
+            patch.commands.push(command(bounds, iteration));
+            let used = scene.storage() + patch.storage();
+            scene.commit_patch(patch, bounds, used, 1024 * 1024).unwrap();
+            assert_eq!(scene.fragments.len(), 2, "same mask must replace its earlier patch");
+            let mut pixels = vec![0; 64 * 48];
+            scene.paint(&mut Canvas::new(&mut pixels, 64, 48), None, paint_legacy);
+            for y in 0..48
+            {
+                for x in 0..64
+                {
+                    assert_eq!(pixels[y * 64 + x],
+                               if mask.contains(Point { h: x as i16,
+                                                        v: y as i16 })
+                               {
+                                   iteration
+                               }
+                               else
+                               {
+                                   0xff0000
+                               });
+                }
+            }
+            maximum = maximum.max(scene.storage());
+        }
+        assert!(maximum < 4096, "repeat gestures must not grow retained history");
+        let mut pixels = vec![0; 64 * 48];
+        let mut canvas = Canvas::new(&mut pixels, 64, 48);
+        canvas.set_clip(Rect::new(4, 4, 12, 12));
+        let mut replays = 0;
+        scene.paint(&mut canvas, None, |canvas, c| {
+                 replays += 1;
+                 paint_legacy(canvas, c);
+             });
+        assert_eq!(replays, 1, "a local patch must not replay the old background");
+        let mut rejected = Content::pending_patch(scene.id, service::Port::default(), mask);
+        rejected.commands.push(command(bounds, 0));
+        let before = scene.storage();
+        assert_eq!(scene.commit_patch(rejected, bounds, before, 0), Err(mac_abi::NO_MEMORY));
+        assert_eq!(scene.storage(), before);
     }
     #[test]
     fn desktop_replacements_are_atomic_and_cancellable()

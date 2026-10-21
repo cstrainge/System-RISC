@@ -114,6 +114,47 @@ impl ContentCache
         }
     }
 
+    /// Preserve cached pixels outside a local content change. Fragment budget
+    /// exhaustion drops validity, never correctness or the pixel allocation.
+    pub fn invalidate_rect(&mut self, id: u32, mut damage: Rect)
+    {
+        let Some(entry) = self.entries.iter_mut().find(|e| e.id == id)
+        else
+        {
+            return;
+        };
+        damage.offset(entry.origin.h, entry.origin.v);
+        let mut valid = [Rect::ZERO; MAX_FRAGMENTS];
+        let mut length = 0;
+        for &rect in &entry.valid[..entry.valid_len]
+        {
+            let mut hit = Rect::ZERO;
+            let pieces = if sect_rect(rect, damage, &mut hit)
+            {
+                [Rect::new(rect.left, rect.top, rect.right, hit.top),
+                 Rect::new(rect.left, hit.bottom, rect.right, rect.bottom),
+                 Rect::new(rect.left, hit.top, hit.left, hit.bottom),
+                 Rect::new(hit.right, hit.top, rect.right, hit.bottom)]
+            }
+            else
+            {
+                [rect, Rect::ZERO, Rect::ZERO, Rect::ZERO]
+            };
+            for piece in pieces.into_iter().filter(|r| !r.is_empty())
+            {
+                if length == MAX_FRAGMENTS
+                {
+                    entry.valid_len = 0;
+                    return;
+                }
+                valid[length] = piece;
+                length += 1;
+            }
+        }
+        entry.valid = valid;
+        entry.valid_len = length;
+    }
+
     pub fn retain(&mut self, mut live: impl FnMut(u32) -> bool)
     {
         self.entries.retain(|entry| live(entry.id));
@@ -312,5 +353,32 @@ mod tests
         assert_eq!(replays.get(), 34);
         cache.paint(1, bounds, &mut canvas, paint);
         assert_eq!(replays.get(), 35);
+    }
+
+    #[test]
+    fn local_invalidation_keeps_other_pixels_warm_at_a_nonzero_origin()
+    {
+        let mut cache = ContentCache::default();
+        let mut pixels = vec![0; 64 * 48];
+        let mut canvas = Canvas::new(&mut pixels, 64, 48);
+        canvas.set_origin(11, 13);
+        canvas.set_clip(Rect::new(0, 0, 40, 30));
+        let bounds = Rect::new(11, 13, 51, 43);
+        let paints = Cell::new(0);
+        let paint = |c: &mut Canvas<'_>| {
+            paints.set(paints.get() + 1);
+            c.paint_rect(Rect::new(0, 0, 40, 30), 0x123456);
+        };
+        cache.paint(1, bounds, &mut canvas, paint);
+        cache.invalidate_rect(1, Rect::new(2, 2, 6, 6));
+        canvas.set_clip(Rect::new(20, 10, 30, 20));
+        cache.paint(1, bounds, &mut canvas, paint);
+        assert_eq!(paints.get(), 1, "unrelated content lost its cached pixels");
+        canvas.set_clip(Rect::new(2, 2, 6, 6));
+        cache.paint(1, bounds, &mut canvas, paint);
+        assert_eq!(paints.get(), 2);
+        canvas.set_clip(Rect::new(20, 10, 30, 20));
+        cache.paint(1, bounds, &mut canvas, paint);
+        assert_eq!(paints.get(), 2);
     }
 }

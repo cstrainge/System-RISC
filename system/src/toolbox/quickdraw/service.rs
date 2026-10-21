@@ -252,10 +252,22 @@ pub fn graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Point],
 /// compositor's visibility clip. Text/bitmap services reuse these same port rules.
 pub fn with_clip(canvas: &mut Canvas<'_>, port: &Port, mut paint: impl FnMut(&mut Canvas<'_>))
 {
+    with_clip_parts(canvas, port.origin, port.state.clip.as_ref(), &mut paint);
+}
+
+pub fn with_region_clip(canvas: &mut Canvas<'_>, region: &Region,
+                        mut paint: impl FnMut(&mut Canvas<'_>))
+{
+    with_clip_parts(canvas, Point::default(), Some(region), &mut paint);
+}
+
+fn with_clip_parts(canvas: &mut Canvas<'_>, port_origin: Point, region: Option<&Region>,
+                   paint: &mut impl FnMut(&mut Canvas<'_>))
+{
     let old_origin = canvas.origin();
     let old_clip = canvas.clip();
-    let origin = Point { h: old_origin.h.wrapping_add(port.origin.h),
-                         v: old_origin.v.wrapping_add(port.origin.v) };
+    let origin = Point { h: old_origin.h.wrapping_add(port_origin.h),
+                         v: old_origin.v.wrapping_add(port_origin.v) };
     let mut set = |canvas: &mut Canvas<'_>, rect: Rect| {
         let mut clip = Rect::ZERO;
         super::geometry::sect_rect(old_clip, rect, &mut clip);
@@ -267,12 +279,28 @@ pub fn with_clip(canvas: &mut Canvas<'_>, port: &Port, mut paint: impl FnMut(&mu
             paint(canvas);
         }
     };
-    if let Some(region) = &port.state.clip
+    if let Some(region) = region
     {
         for band in region.bands()
         {
+            if i32::from(band.bottom) + i32::from(origin.v) <= i32::from(old_clip.top)
+            {
+                continue;
+            }
+            if i32::from(band.top) + i32::from(origin.v) >= i32::from(old_clip.bottom)
+            {
+                break;
+            }
             for span in &band.spans
             {
+                if i32::from(span.right) + i32::from(origin.h) <= i32::from(old_clip.left)
+                {
+                    continue;
+                }
+                if i32::from(span.left) + i32::from(origin.h) >= i32::from(old_clip.right)
+                {
+                    break;
+                }
                 let r = Rect::new(span.left.saturating_add(origin.h),
                                   band.top.saturating_add(origin.v),
                                   span.right.saturating_add(origin.h),

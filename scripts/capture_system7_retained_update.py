@@ -45,7 +45,10 @@ def capture(output):
                       'committed-pattern', 'appended-black', 'pattern-occluded',
                       'pattern-revealed', 'desktop-cyan', 'desktop-pending',
                       'desktop-cancelled', 'desktop-magenta', 'desktop-covered',
-                      'desktop-revealed', 'cursor-left', 'cursor-pending-right',
+                      'desktop-revealed', 'mask-pending-cyan', 'mask-committed-cyan',
+                      'mask-pending-cancel', 'mask-cancelled', 'cursor-left',
+                      'cursor-outside-patch', 'cursor-erased-patch', 'cursor-pending-patch',
+                      'cursor-cancelled-patch', 'cursor-restored-patch', 'cursor-pending-right',
                       'cursor-right', 'cursor-omitted', 'scroll-rows-red',
                       'scroll-row-pending', 'scroll-row-committed']:
             wait('RETAINED_UPDATE_STAGE ' + stage + '\n')
@@ -65,11 +68,11 @@ def capture(output):
                     driver.move(16, 444)
                 frame = stage + '.ppm'
                 vm.qmp('screendump', {'filename': str(output / frame)}, endpoint)
-                stages.append({'stage': stage, 'frame': frame})
+                stages.append({'stage': stage, 'frame': frame, 'state': driver.state()})
             vm.qmp('input-send-event', {'events': [
                 {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'spc'},
                                          'down': down}} for down in [True, False]]}, endpoint)
-        wait('RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=24\n')
+        wait('RETAINED_UPDATE_USERSPACE_PASS separate_threads=2 stages=33\n')
         report = {'transport': 'private blessed disk -> live System -> two native SDK app threads',
                   'assertion_owner': 'mac-toolbox/tests/retained_update{,_cases}.rs',
                   'termination': 'guest-outcome',

@@ -237,6 +237,18 @@ Window and retained drawing titles accept768 UTF8 bytes, enough for all255
 MacRoman characters after conversion. Legacy Pascal/MacRoman conversion remains
 at the trap boundary; native application interfaces expose Rust strings.
 
+Graphics operations36/37/38 begin, commit and cancel an atomic masked window
+update. BEGIN_MASK accepts an encoded QuickDraw region in window-local
+coordinates, intersects it with the content bounds and rejects an empty mask.
+The normal window generation/owner checks apply. Draws and port state remain
+private until commit; dropping the SDK `MaskedUpdate` cancels them. Nested
+updates are rejected. Commit replaces retained drawing and TextEdit hover policy
+only inside the mask, preserving the rest of the scene and pending exposure
+damage. Repeated masks replace prior fragments rather than accumulating drawing
+history. Exact damaged spans invalidate the pixel cache; menus and unrelated
+window content retain their cached pixels. Normal BeginUpdate/EndUpdate still
+replace a complete scene.
+
 FILE requests and metadata are defined in mac-abi/src/files.rs. File IDs are
 opaque mounted-volume IDs plus persistent catalog IDs; volume and open handles include
 a generation. Reads copy into caller storage, and both forks have independent

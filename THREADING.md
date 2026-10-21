@@ -32,7 +32,11 @@ app graphical launch, focus, hide/restore, quit and relaunch tests.
 Window BeginUpdate now stages commands and port state until EndUpdate. Another
 application can poll/present while that update is preempted and still sees the
 previous complete scene. Application activation raises the window plane and
-selects its final window or desktop in one transition. Idle polling avoids
+selects its final window or desktop in one transition. Masked window updates use
+the same private staging, with RAII cancellation and commit restricted to an
+exact local region. Drawing fragments, cache damage and TextEdit cursor regions
+all obey that mask; an icon update cannot erase an unrelated editor's hover
+policy. Preparation and budget validation precede publication. Idle polling avoids
 unnecessary foreground-state swaps; event queues are boxed so real swaps exchange
 ownership without copying the arrays. Native apps use `wait_event(mask, ticks)`;
 nonblocking NextEvent and legacy interfaces retain their existing behavior. A

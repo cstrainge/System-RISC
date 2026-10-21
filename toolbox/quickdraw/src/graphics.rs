@@ -136,6 +136,17 @@ pub struct GraphicsPort<'a>
 }
 impl<'a> GraphicsPort<'a>
 {
+    /// Stage a replacement for precisely this local-coordinate region. Drawing
+    /// outside it cannot change the committed scene. Drop cancels the update.
+    pub fn masked_update(self, region: &[u8]) -> Result<MaskedUpdate<'a>>
+    {
+        self.request(GraphicsCommand { operation: QD_WINDOW_BEGIN_MASK,
+                                       region,
+                                       ..Default::default() })?;
+        Ok(MaskedUpdate { port:   self,
+                          active: true })
+    }
+
     pub const fn new(client: Client<'a>, window: WindowId) -> Self
     {
         Self { client,
@@ -318,6 +329,36 @@ impl<'a> GraphicsPort<'a>
         self.client.font_draw(self.window.0, font, baseline, text, color)
     }
 }
+
+#[must_use = "commit publishes this update; Drop cancels it"]
+pub struct MaskedUpdate<'a>
+{
+    port:   GraphicsPort<'a>,
+    active: bool
+}
+impl MaskedUpdate<'_>
+{
+    pub fn commit(mut self) -> Result<()>
+    {
+        self.port.request(GraphicsCommand { operation: QD_WINDOW_COMMIT_MASK,
+                                             ..Default::default() })?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for MaskedUpdate<'_>
+{
+    fn drop(&mut self)
+    {
+        if self.active
+        {
+            let _ = self.port.request(GraphicsCommand { operation: QD_WINDOW_CANCEL_MASK,
+                                                        ..Default::default() });
+        }
+    }
+}
+
 impl<'a> crate::QuickDraw<'a>
 {
     pub fn graphics(self, window: WindowId) -> GraphicsPort<'a>
@@ -325,6 +366,7 @@ impl<'a> crate::QuickDraw<'a>
         GraphicsPort::new(self.client, window)
     }
 }
+
 impl crate::SurfacePort<'_>
 {
     pub fn draw_shape(&mut self, state: &mut PortState, shape: Shape<'_>, verb: Verb)

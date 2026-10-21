@@ -722,6 +722,22 @@ impl WindowManager
         }
     }
 
+    /// A scene patch must not consume or expand an unrelated exposure region.
+    pub fn begin_partial_update(&mut self, id: WindowId) -> bool
+    {
+        let Some(window) = self.window_mut(id)
+        else
+        {
+            return false;
+        };
+        if window.updating
+        {
+            return false;
+        }
+        window.updating = true;
+        true
+    }
+
     pub fn find_window(&self, point: Point) -> Hit
     {
         if point.v >= 0 && point.v < 25

@@ -129,8 +129,16 @@ impl Desktop
 
     fn content_changed_rect(&mut self, id: u32, rect: Rect)
     {
-        use super::quickdraw::{geometry::sect_rect,
-                               region::{BooleanOp, Region}};
+        if self.pending_content.iter().any(|content| content.id.0 == id)
+        {
+            return;
+        }
+        self.content_changed_region(id, super::quickdraw::region::Region::from_rect(rect));
+    }
+
+    fn content_changed_region(&mut self, id: u32, region: super::quickdraw::region::Region)
+    {
+        use super::quickdraw::region::{BooleanOp, Region};
         if self.pending_content.iter().any(|content| content.id.0 == id)
         {
             return;
@@ -140,13 +148,31 @@ impl Desktop
         {
             return;
         };
-        let mut bounds = Rect::ZERO;
-        if !sect_rect(rect, window.local_bounds(), &mut bounds)
+        let bounds = region.bounds();
+        let local = window.local_bounds();
+        let region = if bounds.left >= local.left
+                        && bounds.top >= local.top
+                        && bounds.right <= local.right
+                        && bounds.bottom <= local.bottom
+        {
+            region
+        }
+        else
+        {
+            region.combine(&Region::from_rect(local), BooleanOp::Intersection)
+        };
+        if region.is_empty()
         {
             return;
         }
-        self.content_cache.invalidate(id);
-        let region = Region::from_rect(bounds);
+        for band in region.bands()
+        {
+            for span in &band.spans
+            {
+                self.content_cache
+                    .invalidate_rect(id, Rect::new(span.left, band.top, span.right, band.bottom));
+            }
+        }
         if let Some((_, previous)) =
             self.content_damage.iter_mut().find(|(window, _)| window.0 == id)
         {
@@ -305,6 +331,7 @@ impl Desktop
         }
         let id = WindowId(request.id);
         let active_before = self.windows.active_window();
+        let mut patch_damage = None;
         match operation
         {
             NEW_WINDOW =>
@@ -359,9 +386,7 @@ impl Desktop
                             .collect();
                     self.windows.restore_group(&foreground, &mut self.events, when);
                 }
-                self.content.push(Content { id,
-                                            commands: Vec::new(),
-                                            port: service::Port::default() });
+                self.content.push(Content::new(id));
                 self.last_action = "NEW";
             }
             CLOSE_WINDOW =>
@@ -492,9 +517,8 @@ impl Desktop
                 {
                     return NO_MEMORY;
                 }
-                let pending = Content { id,
-                                        commands: Vec::new(),
-                                        port: content.port.clone() };
+                let mut pending = Content::new(id);
+                pending.port = content.port.clone();
                 // First cut repaints each complete rectangular content port.
                 let local = window.local_bounds();
                 self.windows.invalidate(id, local);
@@ -515,14 +539,39 @@ impl Desktop
                 {
                     return BAD_ARGUMENT;
                 };
+                let used = self.retained_bytes();
+                let bounds = self.windows.window(id).unwrap().local_bounds();
                 let Some(content) = self.content.iter_mut().find(|content| content.id == id)
                 else
                 {
                     return NOT_FOUND;
                 };
-                *content = self.pending_content.swap_remove(index);
-                self.textedit.commit_cursor_update(id);
-                self.content_cache.invalidate(id.0);
+                let pending = self.pending_content.swap_remove(index);
+                if pending.is_patch()
+                {
+                    match content.commit_patch(pending, bounds, used, MAX_RETAINED_BYTES)
+                    {
+                        Ok(mask) => patch_damage = Some(mask),
+                        Err(status) =>
+                        {
+                            self.textedit.begin_cursor_update(id);
+                            self.windows.end_update(id);
+                            return status;
+                        }
+                    }
+                }
+                else
+                {
+                    *content = pending;
+                }
+                if let Some(mask) = &patch_damage
+                {
+                    self.textedit.commit_partial_cursor_update(id, mask);
+                }
+                else
+                {
+                    self.textedit.commit_cursor_update(id);
+                }
                 self.windows.end_update(id);
             }
             _ => return NOT_SUPPORTED
@@ -531,7 +580,14 @@ impl Desktop
         self.window_owners.retain(|(id, _)| self.windows.window(*id).is_some());
         if operation == END_UPDATE
         {
-            self.content_changed(id.0);
+            if let Some(mask) = patch_damage
+            {
+                self.content_changed_region(id.0, mask);
+            }
+            else
+            {
+                self.content_changed(id.0);
+            }
         }
         else if !matches!(operation, BEGIN_UPDATE | INVALIDATE_WINDOW | SET_CLOSE_DEFERRED)
                   && (operation != SELECT_WINDOW || self.windows.active_window() != active_before)
@@ -615,7 +671,7 @@ impl Desktop
                                .chain(self.pending_content.iter_mut())
                                .filter(|content| content.id.0 == window)
             {
-                content.commands.retain(|command| {
+                content.retain_commands(|command| {
                     if let RenderCommand::ScrollBox(drawing) = command
                        && drawing.id == call.id
                     {
@@ -638,7 +694,7 @@ impl Desktop
             let size = drawing.storage();
             let id = drawing.id;
             let content = self.content_mut(window)?;
-            let previous = content.commands.iter_mut().find(|command| {
+            let previous = content.iter_commands_mut().find(|command| {
                 matches!(command, RenderCommand::ScrollBox(old) if old.id == id)
             });
             if let Some(command) = previous
@@ -716,15 +772,15 @@ impl Desktop
                                .chain(self.pending_content.iter_mut())
                                .filter(|c| c.id.0 == window)
             {
-                content.commands.retain(|command| {
-                                    if let RenderCommand::Control(d) = command
-                                       && d.id == call.id
-                                    {
-                                        removed.push(d.bounds());
-                                        return false;
-                                    }
-                                    true
-                                });
+                content.retain_commands(|command| {
+                           if let RenderCommand::Control(d) = command
+                              && d.id == call.id
+                           {
+                               removed.push(d.bounds());
+                               return false;
+                           }
+                           true
+                       });
             }
             for bounds in removed
             {
@@ -741,8 +797,7 @@ impl Desktop
             let used = self.retained_bytes();
             let size = drawing.storage();
             let content = self.content_mut(window)?;
-            let old = content.commands
-                             .iter_mut()
+            let old = content.iter_commands_mut()
                              .find(|c| matches!(c, RenderCommand::Control(d) if d.id == call.id));
             let old_bounds = if let Some(command) = old
             {
@@ -861,12 +916,89 @@ impl Desktop
         OK
     }
 
+    fn masked_update(&mut self, call: &mac_abi::quickdraw::GraphicsCall, bytes: &[u8])
+                     -> Result<(), Status>
+    {
+        use mac_abi::quickdraw::*;
+
+        use super::quickdraw::region::{BooleanOp, Region};
+        let id = WindowId(call.window);
+        // Use the ordinary owner/generation gate, including stale window IDs.
+        self.content_mut(call.window)?;
+        if call.operation == QD_WINDOW_BEGIN_MASK
+        {
+            let window = self.windows.window(id).ok_or(NOT_FOUND)?;
+            if window.updating
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let mask =
+                Region::from_be_bytes(bytes).map_err(|_| BAD_ARGUMENT)?
+                                            .combine(&Region::from_rect(window.local_bounds()),
+                                                     BooleanOp::Intersection);
+            if mask.is_empty()
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            self.pending_content.try_reserve(1).map_err(|_| NO_MEMORY)?;
+            let content = self.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
+            let pending = Content::pending_patch(id, content.port.clone(), mask);
+            if self.retained_bytes().saturating_add(pending.storage()) > MAX_RETAINED_BYTES
+            {
+                return Err(NO_MEMORY);
+            }
+            if !self.windows.begin_partial_update(id)
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            self.pending_content.push(pending);
+            self.textedit.begin_cursor_update(id);
+        }
+        else
+        {
+            let index = self.pending_content
+                            .iter()
+                            .position(|c| c.id == id && c.is_patch())
+                            .ok_or(BAD_ARGUMENT)?;
+            if call.operation == QD_WINDOW_CANCEL_MASK
+            {
+                self.pending_content.swap_remove(index);
+                self.textedit.begin_cursor_update(id);
+                self.windows.end_update(id);
+            }
+            else
+            {
+                let mut request = mac_abi::WindowRequest { id:             id.0,
+                                                           bounds:         Rect::ZERO,
+                                                           title:          [0; WINDOW_TITLE_BYTES],
+                                                           title_length:   0,
+                                                           procedure:      0,
+                                                           minimum_width:  0,
+                                                           minimum_height: 0,
+                                                           reserved:       0 };
+                let status = self.window(END_UPDATE, &mut request);
+                if status != OK
+                {
+                    return Err(status);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn graphics(&mut self, call: &mut mac_abi::quickdraw::GraphicsCall, points: &[Point],
                     region: &[u8])
                     -> Result<(), Status>
     {
         use mac_abi::quickdraw::{DESKTOP_TARGET, QD_DESKTOP_BEGIN, QD_DESKTOP_BOUNDS,
                                  QD_DESKTOP_CANCEL, QD_DESKTOP_END, QD_GET_STATE};
+        if matches!(call.operation,
+                    mac_abi::quickdraw::QD_WINDOW_BEGIN_MASK
+                    | mac_abi::quickdraw::QD_WINDOW_COMMIT_MASK
+                    | mac_abi::quickdraw::QD_WINDOW_CANCEL_MASK)
+        {
+            return self.masked_update(call, region);
+        }
         if matches!(call.operation,
                     QD_DESKTOP_BEGIN | QD_DESKTOP_END | QD_DESKTOP_CANCEL | QD_DESKTOP_BOUNDS)
         {
@@ -1366,7 +1498,7 @@ impl Desktop
                         else if hit.part == WindowPart::Content && active
                         {
                             let local = self.windows.window(id).unwrap().global_to_local(point);
-                            let button = self.content.iter().find(|c| c.id == id).and_then(|c| c.commands.iter().filter_map(|command| match command { RenderCommand::Legacy(c)=>Some(c),_=>None }).find(|command| command.kind == DRAW_BUTTON && command.bounds.contains(local)));
+                            let button = self.content.iter().find(|c| c.id == id).and_then(|c| c.iter_commands().filter_map(|command| match command { RenderCommand::Legacy(c)=>Some(c),_=>None }).find(|command| command.kind == DRAW_BUTTON && command.bounds.contains(local)));
                             if let Some(command) = button
                             {
                                 let mut state = control(command);
@@ -1656,7 +1788,7 @@ impl Desktop
                                               .iter()
                                               .find(|content| content.id.0 == id)
                                               .is_some_and(|content| {
-                                                  content.commands.iter().any(|command| {
+                                                  content.iter_commands().any(|command| {
                                                   matches!(command, RenderCommand::ScrollBox(_))
                                               })
                                               })
@@ -1697,7 +1829,7 @@ impl Desktop
                             // Managed scroll boxes already retain their viewport rasters.
                             // A second whole-window raster wastes heap and copies every frame.
                             let has_viewports = content.is_some_and(|content| {
-                                content.commands.iter().any(|command| {
+                                content.iter_commands().any(|command| {
                                     matches!(command, RenderCommand::ScrollBox(_))
                                 })
                             });

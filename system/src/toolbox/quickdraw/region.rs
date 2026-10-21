@@ -193,6 +193,50 @@ impl Region
         result
     }
 
+    /// Allocation-free overlap test over normalized, ordered bands/spans.
+    pub fn overlaps(&self, other: &Self) -> bool
+    {
+        let (mut a, mut b) = (0, 0);
+        while let (Some(left), Some(right)) = (self.bands.get(a), other.bands.get(b))
+        {
+            if left.bottom <= right.top
+            {
+                a += 1;
+                continue;
+            }
+            if right.bottom <= left.top
+            {
+                b += 1;
+                continue;
+            }
+            let (mut x, mut y) = (0, 0);
+            while let (Some(l), Some(r)) = (left.spans.get(x), right.spans.get(y))
+            {
+                if l.right <= r.left
+                {
+                    x += 1;
+                }
+                else if r.right <= l.left
+                {
+                    y += 1;
+                }
+                else
+                {
+                    return true;
+                }
+            }
+            if left.bottom <= right.bottom
+            {
+                a += 1;
+            }
+            else
+            {
+                b += 1;
+            }
+        }
+        false
+    }
+
     pub fn offset(&self, dh: i16, dv: i16) -> Result<Self, RegionError>
     {
         let mut result = self.clone();
