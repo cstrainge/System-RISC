@@ -107,6 +107,15 @@ pub struct Completed
     pub result:                 Result<Vec<u8>, Failure>,
     pub cancellation_requested: bool
 }
+/// Result ownership and scheduler wakeup are distinct. A resident service may
+/// own a mutation's result while an application thread merely waits for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompletionNotice
+{
+    pub owner:  Owner,
+    pub waiter: Option<u64>,
+    pub job:    u32
+}
 enum State
 {
     Ready(Work),
@@ -116,6 +125,7 @@ enum State
 struct Record
 {
     owner:     Owner,
+    waiter:    Option<u64>,
     state:     State,
     cancel:    bool,
     discard:   bool,
@@ -214,6 +224,14 @@ impl Queue
         let mut work = Some(work);
         let result = self.records.insert_with(|_| {
                                      Record { owner,
+                                              waiter: if let Owner::Thread(thread) = owner
+                                              {
+                                                  Some(thread)
+                                              }
+                                              else
+                                              {
+                                                  None
+                                              },
                                               state: State::Ready(work.take().unwrap()),
                                               cancel: false,
                                               discard: false,
@@ -250,6 +268,57 @@ impl Queue
         Ok(!matches!(self.owned(owner, id)?.state, State::Finished(_)))
     }
 
+    /// Resident-only attachment: authority remains with owner; a waiter cannot
+    /// take/cancel/discard the result or replace another thread's attachment.
+    pub fn attach_waiter(&mut self, owner: Owner, id: u32, thread: u64) -> Result<(), Status>
+    {
+        if thread <= 1
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let record = self.owned(owner, id)?;
+        match owner
+        {
+            Owner::Kernel => (),
+            Owner::Thread(own) if own == thread => (),
+            _ => return Err(ACCESS_DENIED)
+        }
+        if record.waiter.is_some_and(|old| old != thread)
+        {
+            return Err(SERVICE_BUSY);
+        }
+        record.waiter = Some(thread);
+        Ok(())
+    }
+
+    /// The scheduler supplies the actual generation-tagged OS thread ID.
+    pub fn pending_waiter(&self, thread: u64, id: u32) -> Result<bool, Status>
+    {
+        let record = self.records.get(id).ok_or(NOT_FOUND)?;
+        if record.waiter != Some(thread)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(!matches!(record.state, State::Finished(_)))
+    }
+
+    pub fn detach_waiter(&mut self, thread: u64, id: u32) -> Result<(), Status>
+    {
+        let record = self.records.get_mut(id).ok_or(NOT_FOUND)?;
+        if record.waiter != Some(thread)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        record.waiter = None;
+        Ok(())
+    }
+
+    pub fn completed_waiter(&mut self, owner: Owner, id: u32) -> Result<Option<u64>, Status>
+    {
+        let record = self.owned(owner, id)?;
+        Ok(if matches!(record.state, State::Finished(_)) { record.waiter } else { None })
+    }
+
     pub fn next_dispatch(&mut self) -> Option<Dispatch>
     {
         while let Some(id) = self.ready.pop_front()
@@ -279,7 +348,7 @@ impl Queue
 
     /// A rejected/foreign completion returns its owned dispatch to the caller;
     /// a still-live broker ticket and its buffers must never be silently dropped.
-    pub fn finish(&mut self, mut dispatch: Dispatch) -> Result<Option<(Owner, u32)>, Dispatch>
+    pub fn finish(&mut self, mut dispatch: Dispatch) -> Result<Option<CompletionNotice>, Dispatch>
     {
         let Some(record) =
             self.records
@@ -338,7 +407,9 @@ impl Queue
         }
         record.state = State::Finished(Completed { result,
                                                    cancellation_requested: record.cancel });
-        Ok(Some((record.owner, dispatch.id)))
+        Ok(Some(CompletionNotice { owner:  record.owner,
+                                   waiter: record.waiter,
+                                   job:    dispatch.id }))
     }
 
     fn remove(&mut self, id: u32)
@@ -398,6 +469,18 @@ impl Queue
 
     pub fn discard_owner(&mut self, owner: Owner)
     {
+        // A dead waiter cannot cancel a resident-owned mutation or consume its
+        // result. Detach its exact thread generation before retiring app jobs.
+        if let Owner::Thread(thread) = owner
+        {
+            for record in self.records.values_mut()
+            {
+                if record.waiter == Some(thread)
+                {
+                    record.waiter = None;
+                }
+            }
+        }
         let mut ids = [0; MAX_JOBS];
         let mut count = 0;
         for (id, record) in self.records.iter()

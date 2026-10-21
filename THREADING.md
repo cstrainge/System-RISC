@@ -319,6 +319,16 @@ thread discards delivery and starts cancellation drainage; buffers and broker
 requests stay owned until acknowledged, independent of the reclaimed app stack.
 An `OwnedJob` provides the same abandonment behavior on a resident adapter's Drop.
 
+Resident-owned work may attach a separate waiting OS thread. A waiter has no
+authority to consume/cancel that result, cannot replace another thread's
+attachment, and is checked by exact thread/job generations at park and wake.
+Thread exit detaches that waiter without discarding a kernel-owned completion.
+This lets File Manager retain publication/cleanup state after an app exits.
+`OwnedJob::cancel` requests cancellation while preserving actual acknowledged
+results; dropping the owning job still abandons delivery and drains cancellation.
+Completion-before-attachment and completion-before-park both remain observable
+as ready, and cancellation completed before dispatch wakes an attached waiter.
+
 This supplies the integration boundary for filesystem drivers; it does not by
 itself establish live host filesystem behavior. Public mount/read/write tests must
 exercise parking, cancellation/disconnect, other-app progress and single delivery

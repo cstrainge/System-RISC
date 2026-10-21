@@ -15,7 +15,7 @@ impl<F: FnMut(Call<'_>) -> Outcome> Broker for Script<F>
         (self.0)(call)
     }
 }
-fn step(queue: &mut Queue, action: impl FnMut(Call<'_>) -> Outcome) -> Option<(Owner, u32)>
+fn step(queue: &mut Queue, action: impl FnMut(Call<'_>) -> Outcome) -> Option<CompletionNotice>
 {
     let mut dispatch = queue.next_dispatch().unwrap();
     dispatch.invoke(&mut Script(action));
@@ -39,7 +39,9 @@ fn completion_owns_result_and_retires_generation_with_separate_owner_checks()
                    call.output[..2].copy_from_slice(b"ok");
                    Outcome::Complete(2)
                }),
-               Some((OWNER, first)));
+               Some(CompletionNotice { owner:  OWNER,
+                                       waiter: Some(42),
+                                       job:    first }));
     assert_eq!(q.take(OWNER, first).unwrap().unwrap().result.unwrap(), b"ok");
     let next = q.submit(OWNER, work(8)).unwrap();
     assert_eq!(first & 0xffff, next & 0xffff);
@@ -51,6 +53,90 @@ fn completion_owns_result_and_retires_generation_with_separate_owner_checks()
     assert_eq!(q.take(OWNER, foreign).unwrap_err(), NOT_FOUND);
     q.discard(OWNER, next).unwrap();
     other.discard(OWNER, foreign).unwrap();
+}
+
+#[test]
+fn resident_result_survives_waiter_exit_and_delivers_an_acknowledged_mutation()
+{
+    let mut q = Queue::new();
+    let id = q.submit(Owner::Kernel, work(8)).unwrap();
+    q.attach_waiter(Owner::Kernel, id, 42).unwrap();
+    assert!(q.pending_waiter(42, id).unwrap());
+    assert_eq!(q.pending_waiter(43, id), Err(ACCESS_DENIED));
+    assert_eq!(q.attach_waiter(Owner::Thread(42), id, 42), Err(ACCESS_DENIED));
+    assert_eq!(q.attach_waiter(Owner::Kernel, id, 43), Err(SERVICE_BUSY));
+    step(&mut q, |call| {
+        *call.ticket = 91;
+        Outcome::Pending
+    });
+    q.discard_owner(Owner::Thread(42));
+    assert_eq!(q.pending_waiter(42, id), Err(ACCESS_DENIED));
+    assert!(q.pending(Owner::Kernel, id).unwrap());
+    let notice = step(&mut q, |call| {
+                     assert_eq!(call.owner, Owner::Kernel);
+                     assert_eq!(call.phase, Phase::Poll); // Waiter exit did not cancel I/O.
+                     *call.ticket = 0;
+                     call.output[..4].copy_from_slice(b"done");
+                     Outcome::Complete(4)
+                 }).unwrap();
+    assert_eq!(notice,
+               CompletionNotice { owner:  Owner::Kernel,
+                                  waiter: None,
+                                  job:    id });
+    assert_eq!(q.take(Owner::Thread(42), id).unwrap_err(), ACCESS_DENIED);
+    assert_eq!(q.take(Owner::Kernel, id).unwrap().unwrap().result.unwrap(), b"done");
+}
+
+#[test]
+fn completion_before_wait_attachment_and_before_park_never_loses_readiness()
+{
+    let mut q = Queue::new();
+    let id = q.submit(Owner::Kernel, work(8)).unwrap();
+    step(&mut q, |_| Outcome::Complete(0));
+    q.attach_waiter(Owner::Kernel, id, 42).unwrap();
+    assert!(!q.pending_waiter(42, id).unwrap());
+    assert_eq!(q.completed_waiter(Owner::Kernel, id).unwrap(), Some(42));
+    q.take(Owner::Kernel, id).unwrap().unwrap();
+    assert_eq!(q.pending_waiter(42, id), Err(NOT_FOUND));
+    let next = q.submit(Owner::Kernel, work(8)).unwrap();
+    assert_eq!(id & 0xffff, next & 0xffff);
+    assert_ne!(id, next);
+    q.attach_waiter(Owner::Kernel, next, 43).unwrap();
+    assert_eq!(q.pending_waiter(42, next), Err(ACCESS_DENIED));
+    assert_eq!(q.detach_waiter(42, next), Err(ACCESS_DENIED));
+    q.cancel(Owner::Kernel, next).unwrap();
+    assert_eq!(q.completed_waiter(Owner::Kernel, next).unwrap(), Some(43));
+    assert!(!q.pending_waiter(43, next).unwrap());
+    q.take(Owner::Kernel, next).unwrap().unwrap();
+}
+
+#[test]
+fn waiter_detach_and_explicit_cancel_preserve_resident_ownership_and_actual_ack()
+{
+    let mut q = Queue::new();
+    let id = q.submit(Owner::Kernel, work(8)).unwrap();
+    assert_eq!(q.attach_waiter(Owner::Kernel, id, 1), Err(BAD_ARGUMENT));
+    q.attach_waiter(Owner::Kernel, id, 42).unwrap();
+    q.detach_waiter(42, id).unwrap();
+    q.attach_waiter(Owner::Kernel, id, 43).unwrap();
+    step(&mut q, |call| {
+        *call.ticket = 92;
+        Outcome::Pending
+    });
+    q.cancel(Owner::Kernel, id).unwrap();
+    let notice = step(&mut q, |call| {
+                     assert_eq!(call.phase, Phase::Cancel);
+                     *call.ticket = 0;
+                     call.output[..4].copy_from_slice(b"done");
+                     Outcome::Complete(4)
+                 }).unwrap();
+    assert_eq!(notice.waiter, Some(43));
+    let result = q.take(Owner::Kernel, id).unwrap().unwrap();
+    assert!(result.cancellation_requested);
+    assert_eq!(result.result.unwrap(), b"done");
+    let module = q.submit(Owner::Module(7), work(8)).unwrap();
+    assert_eq!(q.attach_waiter(Owner::Module(7), module, 43), Err(ACCESS_DENIED));
+    q.discard(Owner::Module(7), module).unwrap();
 }
 #[test]
 fn cancel_before_dispatch_never_contacts_provider_and_repeated_cancel_is_no_change()
@@ -156,7 +242,9 @@ fn pending_jobs_are_fair_and_keep_borrowed_input_out_of_polls()
                    assert_eq!(call.phase, Phase::Start);
                    Outcome::Complete(0)
                }),
-               Some((OWNER, second)));
+               Some(CompletionNotice { owner:  OWNER,
+                                       waiter: Some(42),
+                                       job:    second }));
     assert_eq!(step(&mut q, |call| {
                    assert_eq!(call.phase, Phase::Poll);
                    assert_eq!(*call.ticket, 12);
@@ -164,7 +252,9 @@ fn pending_jobs_are_fair_and_keep_borrowed_input_out_of_polls()
                    *call.ticket = 0;
                    Outcome::Complete(0)
                }),
-               Some((OWNER, first)));
+               Some(CompletionNotice { owner:  OWNER,
+                                       waiter: Some(42),
+                                       job:    first }));
     q.take(OWNER, first).unwrap();
     q.take(OWNER, second).unwrap();
 }

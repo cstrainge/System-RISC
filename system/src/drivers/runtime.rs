@@ -628,7 +628,7 @@ fn take_job(owner: super::jobs::Owner, id: u32) -> Result<Option<super::jobs::Co
 
 pub(crate) fn job_pending(thread: u64, id: u32) -> Result<bool, Status>
 {
-    JOBS.lock().pending(super::jobs::Owner::Thread(thread), id)
+    JOBS.lock().pending_waiter(thread, id)
 }
 
 pub(crate) fn discard_thread_jobs(thread: u64)
@@ -660,7 +660,9 @@ pub(crate) fn pump_jobs()
         JOBS_READY.store(queue.has_ready(), Release);
         completed
     };
-    if let Some((super::jobs::Owner::Thread(thread), job)) = completed
+    if let Some(super::jobs::CompletionNotice { waiter: Some(thread),
+                                                job,
+                                                .. }) = completed
     {
         crate::machine::scheduler::wake_io(thread, job);
     }
@@ -708,11 +710,39 @@ impl OwnedJob
         {
             return Err(NOT_FOUND);
         }
-        if self.owner != super::jobs::Owner::Thread(crate::context::current_thread().0)
+        let thread = crate::context::current_thread();
+        if thread == crate::context::BOOT_THREAD || thread.0 == 0
         {
             return Err(WRONG_THREAD);
         }
-        defer_current_job(self.id)
+        JOBS.lock().attach_waiter(self.owner, self.id, thread.0)?;
+        let result = defer_current_job(self.id);
+        if result.is_err()
+        {
+            let _ = JOBS.lock().detach_waiter(thread.0, self.id);
+        }
+        result
+    }
+
+    /// Request cancellation while retaining the actual result for the service
+    /// that owns it. Dropping a job instead abandons result delivery.
+    pub fn cancel(&self) -> Result<(), Status>
+    {
+        if self.id == 0
+        {
+            return Err(NOT_FOUND);
+        }
+        let waiter = {
+            let mut queue = JOBS.lock();
+            queue.cancel(self.owner, self.id)?;
+            JOBS_READY.store(queue.has_ready(), core::sync::atomic::Ordering::Release);
+            queue.completed_waiter(self.owner, self.id)?
+        };
+        if let Some(thread) = waiter
+        {
+            crate::machine::scheduler::wake_io(thread, self.id);
+        }
+        Ok(())
     }
 }
 impl Drop for OwnedJob
@@ -760,6 +790,11 @@ pub fn submit_background_job(class: ClassId, version: u32, operation: u32, input
 pub(crate) fn abandon_deferred_job(thread: u64, id: u32)
 {
     let mut queue = JOBS.lock();
-    let _ = queue.discard(super::jobs::Owner::Thread(thread), id);
+    // A kernel-owned operation still has to observe publication and clean its
+    // leases if the outer trap cannot park. Abandon only this wake attachment.
+    if queue.discard(super::jobs::Owner::Thread(thread), id).is_err()
+    {
+        let _ = queue.detach_waiter(thread, id);
+    }
     JOBS_READY.store(queue.has_ready(), core::sync::atomic::Ordering::Release);
 }
