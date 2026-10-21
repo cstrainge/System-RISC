@@ -107,7 +107,8 @@ impl Drop for Fixture
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
-type Entries = BTreeMap<mac_toolbox::Cnid, (mac_toolbox::files::CatalogInfo, u64, u64)>;
+type Entries =
+    BTreeMap<mac_toolbox::Cnid, (mac_toolbox::files::CatalogInfo, Option<u64>, Option<u64>)>;
 fn collect(system: &System<'_>, parent: mac_toolbox::Cnid) -> (Entries, usize, usize)
 {
     let mut cursor = DirectoryCursor::default();

@@ -213,15 +213,12 @@ impl Info<'_>
             return Ok(result);
         }
         let mut disk = Text::<40>::default();
-        if self.allocated == 0
+        match self.allocated
         {
-            disk.write_str(text(system, 12, &mut bytes)?).map_err(|_| Error::NoMemory)?;
-        }
-        else
-        {
-            disk.write_str(crate::browser::disk_size_text(self.allocated).as_str())
-                .map_err(|_| Error::NoMemory)?;
-        }
+            Some(0) => disk.write_str(text(system, 12, &mut bytes)?),
+            Some(allocated) => disk.write_str(crate::browser::disk_size_text(allocated).as_str()),
+            None => disk.write_str(text(system, 10, &mut bytes)?)
+        }.map_err(|_| Error::NoMemory)?;
         let used = format::grouped(self.logical);
         let count = format::grouped(self.job.as_ref().map_or(0, |job| job.items));
         let source =

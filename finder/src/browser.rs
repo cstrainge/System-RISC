@@ -265,11 +265,12 @@ fn folder_entry(system: &System<'_>, location: Location, mut index: u32)
             Err(Error::NotFound) => continue,
             Err(error) => return Err(error)
         };
-        if index < trash.child_count
+        let child_count = trash.child_count.ok_or(Error::BadAbi)?;
+        if index < child_count
         {
             return system.files().entry(volume.id, trash.id, index);
         }
-        index -= trash.child_count;
+        index -= child_count;
     }
     Err(Error::NotFound)
 }
@@ -1064,7 +1065,10 @@ impl Browser
             let volume = system.files().volume_at(index)?;
             match system.files().trash_directory(volume.id, false)
             {
-                Ok(trash) => count = count.saturating_add(trash.child_count),
+                Ok(trash) =>
+                {
+                    count = count.saturating_add(trash.child_count.ok_or(Error::BadAbi)?)
+                }
                 Err(Error::NotFound) =>
                 {}
                 Err(e) => return Err(e)
@@ -1188,7 +1192,7 @@ impl Browser
                     Err(Error::NotFound) => continue,
                     Err(e) => return Err(e)
                 };
-                if trash.child_count > 0
+                if trash.child_count.ok_or(Error::BadAbi)? > 0
                 {
                     removed += system.files().empty_trash(volume.id)?;
                 }

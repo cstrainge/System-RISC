@@ -212,7 +212,8 @@ impl<'a> Files<'a>
     }
 
     /// Exact bytes allocated to each fork, including preallocation. Directories
-    /// return zero; this does not recursively total their descendants.
+    /// return Some(0); this does not recursively total their descendants. A
+    /// provider that cannot measure physical allocation returns None.
     pub fn allocation_info(self, volume: VolumeId, cnid: Cnid) -> Result<AllocationInfo>
     {
         let call = self.call(FileCall { operation: ALLOCATION_INFO,
@@ -220,8 +221,10 @@ impl<'a> Files<'a>
                                         cnid: cnid.0,
                                         ..Default::default() },
                              "")?;
-        Ok(AllocationInfo { data_bytes:     call.position,
-                            resource_bytes: call.length })
+        Ok(AllocationInfo { data_bytes:
+                                (call.position != ALLOCATION_UNKNOWN).then_some(call.position),
+                            resource_bytes:
+                                (call.length != ALLOCATION_UNKNOWN).then_some(call.length) })
     }
 
     /// Rename one catalog item without changing its identity or fork contents.
@@ -530,12 +533,27 @@ pub struct TrashUsage
     pub allocated_bytes: u64
 }
 
-/// Exact HFS physical fork lengths, distinct from CatalogInfo logical lengths.
+/// Physical fork allocation, distinct from logical lengths. None means the
+/// mounted provider cannot report it; it never means a zero-byte allocation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AllocationInfo
 {
-    pub data_bytes:     u64,
-    pub resource_bytes: u64
+    pub data_bytes:     Option<u64>,
+    pub resource_bytes: Option<u64>
+}
+impl AllocationInfo
+{
+    pub fn total_bytes(self) -> Result<Option<u64>>
+    {
+        match (self.data_bytes, self.resource_bytes)
+        {
+            (Some(data), Some(resource)) =>
+            {
+                data.checked_add(resource).map(Some).ok_or(Error::BadArgument)
+            }
+            _ => Ok(None)
+        }
+    }
 }
 
 /// A staged copy-on-write ordinary data file. Drop aborts an unfinished write.

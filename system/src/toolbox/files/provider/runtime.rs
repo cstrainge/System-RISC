@@ -28,7 +28,8 @@ struct Key
     cnid:      u32,
     handle:    u32,
     fork:      u32,
-    capacity:  usize
+    capacity:  usize,
+    cursor:    DirectoryScanCursor
 }
 enum Step
 {
@@ -36,6 +37,12 @@ enum Step
     Mount(u32),
     Unmount(u32),
     File(forks::Action),
+    Scan(DirectoryScanCursor),
+    Allocation
+    {
+        volume: u32,
+        node:   u32
+    },
     Lookup
     {
         volume: u32,
@@ -97,6 +104,8 @@ enum Reply
     Mounted(VolumeInfo),
     Entry(CatalogInfo),
     Opened(u32, u64),
+    Scan(FileScanCall),
+    Allocation(u64, u64),
     Path(Vec<u8>),
     Read
     {
@@ -205,11 +214,43 @@ fn advance(mut flight: Flight) -> Progress
     match flight.step
     {
         Step::File(_) => forks::advance(flight, result, never_sent),
+        Step::Scan(cursor) =>
+        {
+            let result = result.and_then(|bytes| super::scan::reply(cursor, &bytes));
+            Progress::Done(files(|manager| manager.end_provider_read(cursor.volume)).and(result).map(Reply::Scan))
+        }
+        Step::Allocation { volume,
+                           node } =>
+        {
+            let result = result.and_then(|bytes| super::catalog(volume, &bytes, Some(node), None))
+                               .map(|entry| {
+                                   if entry.is_directory()
+                                   {
+                                       Reply::Allocation(0, 0)
+                                   }
+                                   else
+                                   {
+                                       Reply::Allocation(ALLOCATION_UNKNOWN, ALLOCATION_UNKNOWN)
+                                   }
+                               });
+            Progress::Done(files(|manager| manager.end_provider_read(volume)).and(result))
+        }
         Step::Lookup { .. } | Step::Path { .. } => paths::advance(flight, result),
         Step::Catalog { volume,
                         node } =>
         {
-            let result = result.and_then(|bytes| super::catalog(volume, &bytes, Some(node), None));
+            let result = result.and_then(|bytes| super::catalog(volume, &bytes, Some(node), None))
+                               .and_then(|entry| {
+                                   if entry.is_directory()
+                                      && entry.child_count == fs::CHILD_COUNT_UNKNOWN
+                                   {
+                                       Err(BAD_ABI)
+                                   }
+                                   else
+                                   {
+                                       Ok(entry)
+                                   }
+                               });
             finish_read(volume, result)
         }
         Step::Parent { volume,
@@ -223,6 +264,10 @@ fn advance(mut flight: Flight) -> Progress
                     let parent = if entry.id == ROOT_ID { ROOT_ID } else { entry.parent };
                     if parent == entry.id
                     {
+                        if entry.child_count == fs::CHILD_COUNT_UNKNOWN
+                        {
+                            return finish_read(volume, Err(BAD_ABI));
+                        }
                         return finish_read(volume, Ok(entry));
                     }
                     flight.step = Step::Catalog { volume,
@@ -322,6 +367,13 @@ fn reply(call: &mut FileCall, output: &mut [u8], result: Result<Reply, Status>) 
 {
     match result
     {
+        Ok(Reply::Allocation(data, resource)) =>
+        {
+            call.position = data;
+            call.length = resource;
+            OK
+        }
+        Ok(Reply::Scan(_)) => BAD_ABI,
         Ok(Reply::Path(bytes)) =>
         {
             call.length = bytes.len() as u64;
@@ -390,6 +442,97 @@ fn waiting(flight: Flight) -> Status
     flights.push(flight); // capacity was reserved before any mount side effect
     result.err().unwrap_or(SERVICE_BUSY)
 }
+fn claim(owner: u64, thread: u64, key: Key, name: &str) -> Result<Option<Flight>, Status>
+{
+    let mut flights = FLIGHTS.lock();
+    if let Some(at) = flights.iter().position(|flight| flight.thread == thread)
+    {
+        if flights[at].key != key
+           || flights[at].owner != owner
+           || flights[at].abandoned
+           || flights[at].input != name
+        {
+            flights[at].abandoned = true;
+            let _ = flights[at].job.cancel();
+            REAP.store(true, Ordering::Release);
+            return Err(BAD_ABI);
+        }
+        return Ok(Some(flights.swap_remove(at)));
+    }
+    if flights.len() == MAX_FLIGHTS
+    {
+        return Err(NO_MEMORY);
+    }
+    if flights.capacity() < MAX_FLIGHTS
+    {
+        let additional = MAX_FLIGHTS - flights.len();
+        flights.try_reserve_exact(additional).map_err(|_| NO_MEMORY)?;
+    }
+    Ok(None)
+}
+pub(crate) fn request_scan(owner: u64, call: &mut FileScanCall) -> Status
+{
+    let thread = crate::context::current_thread().0;
+    if thread <= 1
+    {
+        return WRONG_THREAD;
+    }
+    let key = Key { operation: SCAN_DIRECTORY,
+                    volume:    call.volume,
+                    cnid:      call.directory,
+                    index:     0,
+                    handle:    0,
+                    fork:      0,
+                    capacity:  0,
+                    cursor:    call.cursor };
+    match claim(owner, thread, key, "")
+    {
+        Ok(Some(flight)) =>
+        {
+            return match advance(flight)
+            {
+                Progress::Done(Ok(Reply::Scan(reply))) =>
+                {
+                    *call = reply;
+                    OK
+                }
+                Progress::Done(Err(error)) => error,
+                Progress::Done(_) => BAD_ABI,
+                Progress::Pending(flight) => waiting(flight)
+            };
+        }
+        Ok(None) => (),
+        Err(error) => return error
+    }
+    let (provider, cursor) = match files(|manager| manager.begin_provider_scan(call))
+    {
+        Ok(prepared) => prepared,
+        Err(error) => return error
+    };
+    let job = match submit_args(provider,
+                                Operation::Scan,
+                                Arguments { volume: cursor.volume,
+                                            parent: cursor.directory,
+                                            offset: u64::from(cursor.index),
+                                            ..Default::default() })
+    {
+        Ok(job) => job,
+        Err(error) =>
+        {
+            let _ = files(|manager| manager.end_provider_read(cursor.volume));
+            return error;
+        }
+    };
+    waiting(Flight { thread,
+                     owner,
+                     key,
+                     provider,
+                     step: Step::Scan(cursor),
+                     job,
+                     abandoned: false,
+                     input: String::new(),
+                     path: None })
+}
 
 pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut [u8]) -> Status
 {
@@ -404,41 +547,21 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
                     cnid:      call.cnid,
                     handle:    call.handle,
                     fork:      call.fork,
-                    capacity:  output.len() };
-    let mut flights = FLIGHTS.lock();
-    if let Some(at) = flights.iter().position(|f| f.thread == thread)
+                    capacity:  output.len(),
+                    cursor:    DirectoryScanCursor::default() };
+    match claim(owner, thread, key, name)
     {
-        if flights[at].key != key
-           || flights[at].owner != owner
-           || flights[at].abandoned
-           || flights[at].input != name
+        Ok(Some(flight)) =>
         {
-            flights[at].abandoned = true;
-            let _ = flights[at].job.cancel();
-            REAP.store(true, Ordering::Release);
-            return BAD_ABI;
+            return match advance(flight)
+            {
+                Progress::Done(result) => reply(call, output, result),
+                Progress::Pending(flight) => waiting(flight)
+            };
         }
-        let flight = flights.swap_remove(at);
-        drop(flights);
-        return match advance(flight)
-        {
-            Progress::Done(result) => reply(call, output, result),
-            Progress::Pending(flight) => waiting(flight)
-        };
+        Ok(None) => (),
+        Err(error) => return error
     }
-    if flights.len() == MAX_FLIGHTS
-    {
-        return NO_MEMORY;
-    }
-    if flights.capacity() < MAX_FLIGHTS
-    {
-        let additional = MAX_FLIGHTS - flights.len();
-        if flights.try_reserve_exact(additional).is_err()
-        {
-            return NO_MEMORY;
-        }
-    }
-    drop(flights);
     if matches!(call.operation, LOOKUP | PATH)
     {
         return paths::start(owner, thread, key, call, name);
@@ -447,7 +570,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
     {
         return forks::start(owner, thread, key, call, output);
     }
-    if matches!(call.operation, CATALOG | PARENT | DIRECTORY_ENTRY)
+    if matches!(call.operation, CATALOG | PARENT | DIRECTORY_ENTRY | ALLOCATION_INFO)
     {
         let provider = match files(|manager| manager.begin_provider_read(call.volume))
         {
@@ -476,13 +599,22 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
              }
              else
              {
-                 Step::Catalog { volume,
-                                 node }
+                 if call.operation == ALLOCATION_INFO
+                 {
+                     Step::Allocation { volume,
+                                        node }
+                 }
+                 else
+                 {
+                     Step::Catalog { volume,
+                                     node }
+                 }
              },
              Operation::Catalog,
              Arguments { volume,
                          node,
-                         flags: if call.operation == CATALOG || node == ROOT_ID
+                         flags: if call.operation == CATALOG
+                                   || call.operation == PARENT && node == ROOT_ID
                          {
                              fs::INCLUDE_CHILD_COUNT
                          }

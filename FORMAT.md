@@ -810,3 +810,12 @@ the volume for unmount. Mounted identities are issued by resident File Manager,
 remain hidden until validated publication, and retire only after acknowledgement
 or cancellation known not to have reached the provider. The public SDK names are
 `host_export_count`, `mount_host_export` and `unmount`.
+Native allocation-info and directory-scan outputs reserve `u64::MAX` for an
+unknown physical fork allocation. The Rust SDK exposes Option<u64>; known zero
+remains Some(0). HFS/HFS-B block-address limits exclude this reserved value.
+Native catalog child counts similarly reserve u32::MAX for an unknown count,
+exposed as Option<u32> in the SDK, including unscanned provider folders.
+Provider directory cursors bind the volume generation, catalog revision and
+directory; unused cursor fields are zero. Index advances only for returned
+entries. Pending returns control to userspace, and Done is terminal for that
+snapshot. Invalid scope/revision/progress is rejected, not silently restarted.

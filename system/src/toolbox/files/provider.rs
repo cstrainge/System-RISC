@@ -7,6 +7,7 @@ use mac_filesystem_interface as fs;
 use super::*;
 mod forks;
 mod path;
+mod scan;
 pub(super) use forks::Open;
 #[cfg(target_arch = "riscv64")]
 pub(super) mod runtime;
@@ -17,7 +18,8 @@ pub(super) struct Mounted
     pub source:   u64,
     pub info:     Option<VolumeInfo>,
     pub phase:    Phase,
-    reads:        usize
+    reads:        usize,
+    revision:     u64
 }
 
 /// Decode before exposing any provider bytes to an application. In addition to
@@ -106,7 +108,8 @@ impl Manager
                                                        source,
                                                        info: None,
                                                        phase: Phase::Mounting,
-                                                       reads: 0 }))
+                                                       reads: 0,
+                                                       revision: 0 }))
             .map_err(|_| NO_MEMORY)
     }
 
@@ -120,6 +123,7 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         let root = descriptor.root;
+        let revision = super::scan::next_revision()?;
         let (total_bytes, free_bytes) = descriptor.capacity.unwrap_or((0, 0));
         let mut info = VolumeInfo { id,
                                     disk: u32::MAX,
@@ -137,6 +141,7 @@ impl Manager
         info.name_length = utf8_name(root.name.as_bytes(), &mut info.name);
         mounted.info = Some(info);
         mounted.phase = Phase::Live;
+        mounted.revision = revision;
         Ok(info)
     }
 
@@ -286,6 +291,75 @@ mod tests
         bytes[..8].copy_from_slice(&data.to_le_bytes());
         bytes[8..].copy_from_slice(&resource.to_le_bytes());
         bytes
+    }
+    #[test]
+    fn provider_scan_cursors_validate_binding_revision_and_bounded_progress()
+    {
+        let mut manager = Manager::default();
+        let volume = manager.reserve_provider_mount(77, 0).unwrap();
+        manager.publish_provider_mount(volume, &descriptor()).unwrap();
+        let mut call = FileScanCall { operation: SCAN_DIRECTORY,
+                                      volume,
+                                      directory: ROOT_ID,
+                                      ..Default::default() };
+        let (_, cursor) = manager.begin_provider_scan(&call).unwrap();
+        assert_eq!(call.cursor,
+                   DirectoryScanCursor::default(),
+                   "caller input must remain replayable while parked");
+        assert!(cursor.revision != 0);
+        assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+        let reply = scan::reply(cursor, &fs::SCAN_PENDING.to_le_bytes()).unwrap();
+        assert_eq!((reply.step, reply.cursor.index), (SCAN_PENDING, 0));
+        manager.end_provider_read(volume).unwrap();
+        call.cursor = reply.cursor;
+        for field in 0..7
+        {
+            let mut bad = call;
+            match field
+            {
+                0 => bad.cursor.volume ^= 0x1000_0000,
+                1 => bad.cursor.directory += 1,
+                2 => bad.cursor.node = 1,
+                3 => bad.cursor.previous = 1,
+                4 => bad.cursor.traversed = 1,
+                5 => bad.cursor.reserved = 1,
+                _ => bad.cursor.state = 2
+            }
+            assert_eq!(manager.begin_provider_scan(&bad), Err(BAD_ARGUMENT));
+        }
+        let mut bad = call;
+        bad.cursor.revision += 1;
+        assert_eq!(manager.begin_provider_scan(&bad), Err(SCAN_STALE));
+        let bytes = descriptor();
+        let mut metadata = fs::Mount::decode(&bytes).unwrap().root;
+        metadata.id = 16;
+        metadata.parent = ROOT_ID;
+        metadata.directory = false;
+        let mut bytes = alloc::vec![0;1024];
+        bytes[..4].copy_from_slice(&fs::SCAN_ENTRY.to_le_bytes());
+        let count = metadata.encode(&mut bytes[4..]).unwrap();
+        bytes.truncate(4 + count);
+        let entry = scan::reply(cursor, &bytes).unwrap();
+        assert_eq!((entry.step, entry.cursor.index), (SCAN_ENTRY, 1));
+        assert_eq!((entry.data_allocated, entry.resource_allocated),
+                   (ALLOCATION_UNKNOWN, ALLOCATION_UNKNOWN));
+        let done = scan::reply(entry.cursor, &fs::SCAN_DONE.to_le_bytes()).unwrap();
+        assert_eq!((done.step, done.cursor.state), (SCAN_DONE, 1));
+        assert!(matches!(scan::reply(done.cursor, &bytes), Err(SCAN_STALE)));
+        assert!(matches!(scan::reply(done.cursor, &fs::SCAN_PENDING.to_le_bytes()),
+                         Err(SCAN_STALE)));
+        let mut overflow = cursor;
+        overflow.index = u32::MAX;
+        assert!(matches!(scan::reply(overflow, &bytes), Err(BAD_ABI)));
+        let mut wrong = cursor;
+        wrong.directory = 17;
+        assert!(matches!(scan::reply(wrong, &bytes), Err(BAD_ABI)));
+        manager.begin_provider_unmount(volume).unwrap();
+        manager.retire_provider_mount(volume).unwrap();
+        let next = manager.reserve_provider_mount(77, 0).unwrap();
+        manager.publish_provider_mount(next, &descriptor()).unwrap();
+        call.volume = next;
+        assert_eq!(manager.begin_provider_scan(&call), Err(BAD_ARGUMENT));
     }
     #[test]
     fn provider_fork_marks_validate_owner_busy_state_lengths_and_acknowledged_reuse()

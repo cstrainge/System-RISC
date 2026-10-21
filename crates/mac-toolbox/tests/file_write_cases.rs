@@ -125,7 +125,7 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
                 "catalog lock and stationery persisted across real boot")?;
         let allocation = files.allocation_info(volume.id, sample.id)?;
         require(files.trash_usage(volume.id)?.allocated_bytes
-                == allocation.data_bytes + allocation.resource_bytes,
+                == allocation.total_bytes()?.ok_or(Error::BadAbi)?,
                 "persisted exact physical fork allocation")?;
         payload(system, volume.id, (sample.id).0)?;
         files.set_locked_at(volume.id, sample.id, false, WHEN)?;
@@ -173,8 +173,8 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
             "comment does not alter target modification date")?;
     system.log("FILE_COMMENTS_COMMITTED\n")?;
     let allocation = files.allocation_info(volume.id, sample.id)?;
-    require(allocation.data_bytes >= sample.data_length
-            && allocation.resource_bytes >= sample.resource_length,
+    require(allocation.data_bytes.is_some_and(|bytes| bytes >= sample.data_length)
+            && allocation.resource_bytes.is_some_and(|bytes| bytes >= sample.resource_length),
             "exact physical lengths include both logical forks")?;
     require(folder.created_at() == WHEN && folder.modified_at() == WHEN, "new folder timestamp")?;
     let child = files.new_folder_at(volume.id, folder.id, "Café", WHEN)?;
@@ -182,7 +182,7 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
     files.move_to_trash_at(volume.id, sample.id, WHEN)?;
     files.set_locked_at(volume.id, sample.id, true, WHEN)?;
     require(files.trash_usage(volume.id)?.allocated_bytes
-            == allocation.data_bytes + allocation.resource_bytes,
+            == allocation.total_bytes()?.ok_or(Error::BadAbi)?,
             "physical allocation matches independently summed Trash bytes")?;
     system.log("FILE_INFO_EDITS_COMMITTED\n")?;
     require(files.trash_usage(volume.id)?.items == 2,

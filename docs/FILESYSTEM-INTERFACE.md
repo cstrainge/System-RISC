@@ -199,8 +199,26 @@ child counts; only a final directory lookup requests its exact count. Real-host
 component tests assert no enumeration for metadata-only queries and reject
 unknown flags before host I/O.
 
-Incremental public cursor scans, Resource Manager inspection
-and application loading from provider forks remain to be connected. This does
+Incremental public directory cursors also run through real provider callbacks.
+Each call owns one bounded Scan request; Pending releases its read lease and
+returns to userspace rather than internally enumerating the whole folder. Cursor
+volume generation, resident catalog revision, directory and unused fields are
+validated, and only Entry advances its index. Done cannot resume as Entry/Pending
+without a stale-snapshot error. Native assertions enumerate the fresh host root,
+verify terminal Done and reject a cursor reused with a replacement mount.
+Resident tests additionally cover forged fields, revision mismatch, overflow and
+reply binding. Providers' stale-directory errors propagate as ScanStale; external
+refresh/watch integration still needs its separate gate.
+
+The Rust facade exposes unknown child counts and physical fork allocations as
+options. Known empty directories/zero allocation remain Some(0). A provider file
+does not fabricate a physical size from logical fork lengths. Finder propagates
+unknown allocation through folder totals and renders n/a using existing resources.
+Block-backed exact-allocation behavior is unchanged and its SDK tests use known
+values explicitly.
+
+Resource Manager inspection and application loading from provider forks remain
+to be connected. This does
 not yet make external directories usable in Finder.
 
 Verification builds now share `<selected build>/host` for workspace host tests,
@@ -215,7 +233,7 @@ filesystem engine is wrapped by a narrow native entry with a private 1 MiB heap
 and an exact HDIR dependency. The allocation helper is a separate
 `mac-driver-alloc` crate so allocation-free modules do not acquire an allocator
 requirement through Cargo feature unification. These packages are not installed
-in the default disk yet: provider cursor/resource-inspection/application-loading
+in the default disk yet: provider resource-inspection/application-loading
 dispatch, write-back, normal
 launcher export configuration and complete public-SDK filesystem acceptance
 remain in progress. Private guest mounting works; that is not yet a usable host

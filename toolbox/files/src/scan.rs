@@ -20,16 +20,17 @@ pub enum ScanStep
     Entry
     {
         catalog:            CatalogInfo,
-        data_allocated:     u64,
-        resource_allocated: u64
+        data_allocated:     Option<u64>,
+        resource_allocated: Option<u64>
     },
     Pending,
     Done
 }
 impl Files<'_>
 {
-    /// Inspect at most eight catalog records from at most one leaf. Pending is
-    /// ordinary progress: return to the event loop before advancing again.
+    /// Advance one bounded backend step: at most eight records from one HFS/HFS-B
+    /// leaf, or one provider scan step. Pending is ordinary progress: return to
+    /// the event loop before advancing again. Allocation values may be unknown.
     /// SCAN_STALE means a mutation invalidated this enumeration; discard all
     /// accumulated totals and restart with a fresh cursor.
     pub fn scan_directory(self, volume: VolumeId, directory: Cnid, cursor: &mut DirectoryCursor)
@@ -46,8 +47,8 @@ impl Files<'_>
             SCAN_ENTRY =>
             {
                 ScanStep::Entry { catalog:            call.entry.try_into()?,
-                                  data_allocated:     call.data_allocated,
-                                  resource_allocated: call.resource_allocated }
+                                  data_allocated:     (call.data_allocated != mac_abi::files::ALLOCATION_UNKNOWN).then_some(call.data_allocated),
+                                  resource_allocated: (call.resource_allocated != mac_abi::files::ALLOCATION_UNKNOWN).then_some(call.resource_allocated) }
             }
             SCAN_PENDING => ScanStep::Pending,
             SCAN_DONE => ScanStep::Done,

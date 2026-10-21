@@ -42,7 +42,7 @@ struct Info<'a>
     status:         Option<Error>,
     metadata_error: Option<Error>,
     changed:        bool,
-    allocated:      u64,
+    allocated:      Option<u64>,
     logical:        u64,
     job:            Option<totals::Job>,
     kind:           Text<256>,
@@ -206,9 +206,7 @@ impl<'a> Info<'a>
                                   status: None,
                                   metadata_error: metadata_status,
                                   changed: false,
-                                  allocated: allocation.data_bytes
-                                                       .checked_add(allocation.resource_bytes)
-                                                       .ok_or(Error::BadArgument)?,
+                                  allocated: allocation.total_bytes()?,
                                   logical: entry.data_length
                                                 .checked_add(entry.resource_length)
                                                 .ok_or(Error::BadArgument)?,
@@ -603,7 +601,7 @@ impl<'a> Controller<'a>
                                          info.identity.folder,
                                          items,
                                          logical,
-                                         allocated);
+                                         allocated.unwrap_or(u64::MAX));
                         system.log(log.as_str())?;
                     }
                 }

@@ -29,7 +29,11 @@ through actual completion; unmount rejects a live read lease. Mount itself never
 enumerates the host root. Both fork types now support owned open/read/seek/tell/
 close and Drop through native guest SDK checks. Provider lookup/path output also
 pass native SDK checks with owned request bytes, bounded/cycle-checked ancestry
-and metadata-only intermediate queries. Provider cursor, resource
+and metadata-only intermediate queries. Incremental provider cursors also pass
+native SDK checks; each call returns one bounded step, pins its mount only until
+completion, and checks generation/revision/scope. Physical allocation and child
+counts use explicit options in the Rust facade when the provider cannot report
+them. Resource
 inspection/application loading and write dispatch are still in progress; see
 [the filesystem class contract](../../../../docs/FILESYSTEM-INTERFACE.md).
 

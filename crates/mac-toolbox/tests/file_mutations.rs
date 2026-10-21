@@ -123,7 +123,7 @@ fn folders_trash_putaway_and_recursive_empty_persist_across_remounts()
                    assert_eq!(files.catalog(system.files().volume_at(0).unwrap().id, source.id)
                                    .unwrap()
                                    .child_count,
-                              2);
+                              Some(2));
                    let moved = files.move_to_trash_at(system.files().volume_at(0).unwrap().id,
                                                       sample.id,
                                                       WHEN)
@@ -183,7 +183,7 @@ fn folders_trash_putaway_and_recursive_empty_persist_across_remounts()
                assert_eq!(files.trash_directory(system.files().volume_at(0).unwrap().id, false)
                                .unwrap()
                                .child_count,
-                          0);
+                          Some(0));
                assert!(files.lookup(system.files().volume_at(0).unwrap().id, ROOT_ID, "Other")
                             .unwrap()
                             .is_directory());
@@ -722,11 +722,13 @@ fn get_info_metadata_edits_preserve_identity_forks_and_survive_remount()
                    let allocation = files.allocation_info(system.files().volume_at(0).unwrap().id,
                                                           original.id)
                                          .unwrap();
-                   assert_eq!((allocation.data_bytes, allocation.resource_bytes), (2048, 1024));
+                   assert_eq!((allocation.data_bytes, allocation.resource_bytes),
+                              (Some(2048), Some(1024)));
                    assert_eq!(files.allocation_info(system.files().volume_at(0).unwrap().id,
                                                     source.id)
                                    .unwrap(),
-                              Default::default());
+                              mac_toolbox::files::AllocationInfo { data_bytes:     Some(0),
+                                                                   resource_bytes: Some(0) });
                    let data = fork_bytes(system, (original.id).0, Fork::Data);
                    let resources = fork_bytes(system, (original.id).0, Fork::Resource);
                    // Case-only changes keep their own identity, rather than colliding.
@@ -1710,7 +1712,7 @@ fn native_data_save_is_atomic_owned_and_preserves_resource_forks()
                                 .catalog(system.files().volume_at(0).unwrap().id, source)
                                 .unwrap()
                                 .child_count,
-                          3);
+                          Some(3));
                assert!(system.files()
                              .volume(system.files().volume_at(0).unwrap().id)
                              .unwrap()

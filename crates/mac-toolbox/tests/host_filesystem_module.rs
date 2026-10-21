@@ -34,8 +34,8 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
     {
         assert!(!serial.contains(failure), "{serial}");
     }
-    let report = serde_json::json!({"status":"passed", "public_file_apis":"host export count; mount; volume metadata; catalog; direct-child enumeration; parent; nested folders and Unicode names; relative/absolute/dot/parent/Unicode path lookup and bounded path output; both-fork open/read/seek/tell/close; EOF and independent marks; Drop; busy unmount; stale/foreign file and volume IDs; read-only mutation rejection; repeated mount; invalid source cleanup; unmount; real second-app exit with two forgotten provider forks followed by acknowledged cleanup/unmount",
-        "not_covered":"provider incremental cursor APIs, resource inspection and application loading from provider forks, write-back, exit during pending I/O, disconnect and responsiveness", "capture":capture});
+    let report = serde_json::json!({"status":"passed", "public_file_apis":"host export count; mount; volume metadata; catalog; direct-child and incremental cursor enumeration; unknown child count and allocation as Rust options; parent; nested folders and Unicode names; relative/absolute/dot/parent/Unicode path lookup and bounded path output; both-fork open/read/seek/tell/close; EOF and independent marks; Drop; busy unmount; stale/foreign file and volume IDs; cursor binding after remount; read-only mutation rejection; repeated mount; invalid source cleanup; unmount; real second-app exit with two forgotten provider forks followed by acknowledged cleanup/unmount",
+        "not_covered":"resource inspection and application loading from provider forks, write-back, external-change refresh/watch integration, exit during pending I/O, disconnect and responsiveness", "capture":capture});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     fs::write(root.join("results/system7/host-filesystem-mount-checks.json"),
               serde_json::to_vec_pretty(&report).unwrap()).unwrap();

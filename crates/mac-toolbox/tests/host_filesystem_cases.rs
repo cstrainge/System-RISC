@@ -20,15 +20,17 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             == Filesystem::Driver { kind:    (*b"HOST").into(),
                                     version: 1 })?;
     require(files.volume_count()? == before + 1)?;
+    system.log("HOST_FS_STAGE cursor-scan\n")?;
+    let mut prior_scan = check_scan(system, writable.id)?;
     system.log("HOST_FS_STAGE catalog\n")?;
     let root = files.catalog(writable.id, mac_toolbox::files::ROOT_ID)?;
-    require(root.is_directory() && root.name() == "Native Host" && root.child_count == 2)?;
+    require(root.is_directory() && root.name() == "Native Host" && root.child_count == Some(2))?;
     require(files.parent(writable.id, root.id)? == root)?;
     let first = files.child(writable.id, root.id, 0)?;
     let second = files.child(writable.id, root.id, 1)?;
     require(first.id != second.id && first.parent == root.id && second.parent == root.id)?;
     let (folder, file) = if first.is_directory() { (first, second) } else { (second, first) };
-    require(folder.is_directory() && folder.name() == "Tools")?;
+    require(folder.is_directory() && folder.name() == "Tools" && folder.child_count.is_none())?;
     require(!file.is_directory()
             && file.name() == "Café"
             && file.data_length == 23
@@ -38,7 +40,9 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     require(files.child(writable.id, root.id, 2) == Err(Error::NotFound))?;
     require(files.child(writable.id, file.id, 0) == Err(Error::BadArgument))?;
     let exact_folder = files.catalog(writable.id, folder.id)?;
-    require(exact_folder.child_count == 2)?;
+    require(files.allocation_info(writable.id, file.id)?.total_bytes()?.is_none())?;
+    require(files.allocation_info(writable.id, folder.id)?.total_bytes()? == Some(0))?;
+    require(exact_folder.child_count == Some(2))?;
     let a = files.child(writable.id, folder.id, 0)?;
     let b = files.child(writable.id, folder.id, 1)?;
     let (nested, forks) = if a.name() == "Child" { (a, b) } else { (b, a) };
@@ -81,7 +85,7 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             && read_only.read_only
             && read_only.capacity.is_none())?;
     require(files.volume_count()? == before + 2)?;
-    require(files.catalog(read_only.id, mac_toolbox::files::ROOT_ID)?.child_count == 0)?;
+    require(files.catalog(read_only.id, mac_toolbox::files::ROOT_ID)?.child_count == Some(0))?;
     require(files.child(read_only.id, mac_toolbox::files::ROOT_ID, 0) == Err(Error::NotFound))?;
     require(files.new_folder(read_only.id, mac_toolbox::files::ROOT_ID, "Forbidden")
             == Err(Error::ReadOnly))?;
@@ -99,6 +103,8 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     require(files.volume(writable.id) == Err(Error::NotFound))?;
     require(files.catalog(writable.id, root.id) == Err(Error::NotFound))?;
     let replacement = files.mount_host_export(0)?;
+    require(files.scan_directory(replacement.id, mac_toolbox::files::ROOT_ID, &mut prior_scan)
+            == Err(Error::BadArgument))?;
     require(replacement.id != writable.id && replacement.id.0 & 0xffff == writable.id.0 & 0xffff)?;
     require(files.volume(writable.id) == Err(Error::NotFound))?;
     require(files.child(writable.id, root.id, 0) == Err(Error::NotFound))?;
@@ -108,6 +114,51 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     files.unmount(read_only.id)?;
     require(files.volume_count()? == before)?;
     Ok(())
+}
+
+fn check_scan(system: &System<'_>, volume: VolumeId)
+              -> Result<mac_toolbox::files::DirectoryCursor, Error>
+{
+    use mac_toolbox::files::{DirectoryCursor, ROOT_ID, ScanStep};
+    let mut cursor = DirectoryCursor::default();
+    let mut count = 0;
+    for _ in 0..128
+    {
+        match system.files().scan_directory(volume, ROOT_ID, &mut cursor)?
+        {
+            ScanStep::Entry { catalog,
+                              data_allocated,
+                              resource_allocated } =>
+            {
+                require(catalog.parent == ROOT_ID && catalog.volume == volume)?;
+                if catalog.is_directory()
+                {
+                    require(catalog.name() == "Tools"
+                            && data_allocated == Some(0)
+                            && resource_allocated == Some(0))?;
+                }
+                else
+                {
+                    require(catalog.name() == "Café"
+                            && data_allocated.is_none()
+                            && resource_allocated.is_none())?;
+                }
+                count += 1;
+            }
+            ScanStep::Pending =>
+            {
+                system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?;
+            }
+            ScanStep::Done =>
+            {
+                require(count == 2)?;
+                require(matches!(system.files().scan_directory(volume, ROOT_ID, &mut cursor)?,
+                                 ScanStep::Done))?;
+                return Ok(cursor);
+            }
+        }
+    }
+    Err(Error::ServiceBusy)
 }
 
 fn expect_path(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid, expected: &str)

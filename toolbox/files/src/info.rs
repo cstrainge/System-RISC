@@ -29,7 +29,8 @@ pub struct CatalogInfo
     pub file_type:       TypeCode,
     pub creator:         TypeCode,
     pub flags:           CatalogFlags,
-    pub child_count:     u32,
+    /// Unknown for an unscanned provider directory; files have Some(0).
+    pub child_count:     Option<u32>,
     pub created:         Timestamp,
     pub modified:        Timestamp,
     pub backup:          Option<Timestamp>,
@@ -49,7 +50,7 @@ impl Default for CatalogInfo
                file_type:       TypeCode::ZERO,
                creator:         TypeCode::ZERO,
                flags:           CatalogFlags::NONE,
-               child_count:     0,
+               child_count:     Some(0),
                created:         Timestamp::from_mac_microseconds(0),
                modified:        Timestamp::from_mac_microseconds(0),
                backup:          None,
@@ -77,7 +78,8 @@ impl TryFrom<wire::CatalogInfo> for CatalogInfo
                   file_type:       TypeCode::new(info.file_type),
                   creator:         TypeCode::new(info.creator),
                   flags:           CatalogFlags::from_bits_retain(info.flags),
-                  child_count:     info.child_count,
+                  child_count:
+                      (info.child_count != wire::CHILD_COUNT_UNKNOWN).then_some(info.child_count),
                   created:         info.created_at(),
                   modified:        info.modified_at(),
                   backup:          (info.backup_present != 0).then(|| info.backed_up_at()),

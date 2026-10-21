@@ -149,7 +149,7 @@ fn finder_menus_and_trash_are_resource_based_and_persist_across_disk_boots()
                                                                                      .id,
                                                                                false)
                                                               .unwrap();
-                                            assert_eq!(trash.child_count, 0);
+                                            assert_eq!(trash.child_count, Some(0));
                                             assert_eq!(system.files().lookup(system.files()
                                                                                    .volume_at(0)
                                                                                    .unwrap()

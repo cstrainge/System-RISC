@@ -34,6 +34,10 @@ pub const UNMOUNT_VOLUME: u32 = 28;
 pub const SCAN_ENTRY: u32 = 0;
 pub const SCAN_PENDING: u32 = 1;
 pub const SCAN_DONE: u32 = 2;
+/// Unknown physical fork allocation, projected as Option in the Rust SDK.
+/// Mounted HFS/HFS-B block-address bounds cannot produce this reserved value.
+pub const ALLOCATION_UNKNOWN: u64 = u64::MAX;
+pub const CHILD_COUNT_UNKNOWN: u32 = u32::MAX;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DirectoryScanCursor

@@ -17,7 +17,7 @@ pub(super) struct Job
     pub complete:  bool,
     pub error:     Option<Error>,
     pub logical:   u64,
-    pub allocated: u64,
+    pub allocated: Option<u64>,
     pub items:     u64
 }
 impl Job
@@ -34,7 +34,7 @@ impl Job
                complete: false,
                error: None,
                logical: 0,
-               allocated: 0,
+               allocated: Some(0),
                items: 0 }
     }
 
@@ -59,10 +59,16 @@ impl Job
                                        .checked_add(catalog.data_length)
                                        .and_then(|n| n.checked_add(catalog.resource_length))
                                        .ok_or(Error::BadArgument)?;
-                    self.allocated = self.allocated
-                                         .checked_add(data_allocated)
-                                         .and_then(|n| n.checked_add(resource_allocated))
-                                         .ok_or(Error::BadArgument)?;
+                    self.allocated = match (self.allocated, data_allocated, resource_allocated)
+                    {
+                        (Some(total), Some(data), Some(resource)) =>
+                        {
+                            Some(total.checked_add(data)
+                                      .and_then(|n| n.checked_add(resource))
+                                      .ok_or(Error::BadArgument)?)
+                        }
+                        _ => None
+                    };
                     if catalog.is_directory()
                     {
                         // Corrupt cycles/deep hierarchies fail explicitly, never

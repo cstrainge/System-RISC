@@ -5,6 +5,10 @@ use mac_abi::{files::FileCall, *};
 #[cfg(target_arch = "riscv64")]
 pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -> Option<i64>
 {
+    if size == size_of::<files::FileScanCall>()
+    {
+        return Some(unsafe { dispatch_scan_async(owner, pointer, size) });
+    }
     if pointer.is_null()
        || size != size_of::<FileCall>()
        || !(pointer as usize).is_multiple_of(align_of::<FileCall>())
@@ -17,6 +21,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
                            | files::PARENT
                            | files::DIRECTORY_ENTRY
                            | files::LOOKUP
+                           | files::ALLOCATION_INFO
                            | files::PATH);
     let opening = call.operation == files::OPEN;
     let fork_io = matches!(call.operation, files::READ | files::CLOSE);
@@ -109,6 +114,31 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
         }
     }
     Some(super::provider::runtime::request(owner, call, name, output) as i64)
+}
+#[cfg(target_arch = "riscv64")]
+unsafe fn dispatch_scan_async(owner: u64, pointer: *mut (), size: usize) -> i64
+{
+    if pointer.is_null()
+       || size != size_of::<files::FileScanCall>()
+       || !(pointer as usize).is_multiple_of(align_of::<files::FileScanCall>())
+    {
+        return BAD_ARGUMENT as i64;
+    }
+    let call = unsafe { &mut *pointer.cast::<files::FileScanCall>() };
+    let routed = crate::kernel::with_files(|manager| {
+        match manager.read_provider(call.volume)
+        {
+            Ok(Some(_)) => None,
+            Ok(None) => Some(manager.scan_request(call).map_or_else(|status| status, |()| OK)),
+            Err(error) => Some(error)
+        }
+    });
+    match routed
+    {
+        Ok(Some(status)) => status as i64,
+        Ok(None) => super::provider::runtime::request_scan(owner, call) as i64,
+        Err(error) => error.status() as i64
+    }
 }
 /// # Safety
 /// Request and nested buffers must be live exclusive borrows for their sizes.

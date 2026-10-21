@@ -83,8 +83,11 @@ stale fork IDs pass through the public SDK in the guest. Deferred resident exit
 cleanup retains marks until Close acknowledgement; a real second-app guest test
 forgets two forks, exits and successfully unmounts after cleanup. Public path
 lookup/output pass Unicode, relative/dot/parent, root and bounded-output checks;
-metadata-only ancestry does not enumerate unused directory children. This is
-partial P17: provider cursor and resource
+metadata-only ancestry does not enumerate unused directory children.
+Public incremental cursor scans now pass in the guest, including remount binding;
+unknown child counts/allocation use Rust options, with Finder preserving unknown
+folder allocation. Resident tests cover cursor revision/field/progress checks.
+This is partial P17: resource
 inspection/application-loading dispatch, native write-back,
 normal launcher exports, disconnect/pending-I/O-exit/performance acceptance and P16 remain
 to be completed. See [the exact filesystem contract and coverage](FILESYSTEM-INTERFACE.md).
