@@ -3,6 +3,8 @@
 use std::{fs, path::PathBuf, process::Command};
 
 use serde_json::Value;
+#[path = "support/process_trace.rs"]
+mod process_trace;
 
 #[test]
 #[ignore = "requires cargo xtask image and original System 7 TextEdit captures"]
@@ -28,8 +30,7 @@ fn resident_textedit_matches_original_text_selection_clipping_caret_and_scroll()
     assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=7"));
     assert!(!serial.contains("TEXTEDIT_PROBE_FAIL"), "{serial}");
     let finder_serial = fs::read_to_string(output.join("finder-vm/serial.log")).unwrap();
-    assert!(finder_serial.contains("PROCESS_LAUNCHED app=2 thread=3 name=TextEdit Exerciser"),
-            "standalone TextEdit launch missing: {finder_serial}");
+    process_trace::launched(&finder_serial, "TextEdit Exerciser");
     assert!(!finder_serial.contains("FINDER_ERROR"), "{finder_serial}");
     let steps = report["finder_steps"].as_array().unwrap();
     for (name, expected) in [("type-hello", "length=5 selection=5..5"),

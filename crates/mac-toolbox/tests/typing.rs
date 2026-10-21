@@ -3,6 +3,8 @@
 use std::{fs, path::PathBuf, process::Command};
 
 use serde_json::Value;
+#[path = "support/process_trace.rs"]
+mod process_trace;
 #[test]
 #[ignore = "requires cargo xtask image and QEMU; two private disk boots"]
 fn finder_typing_avoids_disk_work_and_preserves_navigation_selection()
@@ -69,9 +71,10 @@ fn finder_typing_avoids_disk_work_and_preserves_navigation_selection()
             "{profile}");
     let finder = fs::read_to_string(output.join("finder-vm/serial.log")).unwrap();
     assert!(!finder.contains("FINDER_ACTION_FAILED"), "{finder}");
-    assert!(finder.contains("PROCESS_LAUNCHED app=2 thread=3 name=TextEdit Exerciser"));
+    let (app, _) = process_trace::launched(&finder, "TextEdit Exerciser");
     assert!(finder.contains("TEXTEDIT_EXERCISER_READY"));
-    assert!(finder.contains("PROCESS_EXIT app=2\n"), "Ctrl+W must close the editor application");
+    assert!(finder.contains(&format!("PROCESS_EXIT app={app}\n")),
+            "Ctrl+W must close the editor application");
     assert!(!finder.lines().filter_map(|line| line.split("dropped=").nth(1)).any(|n| {
                                                                                 n.parse::<u64>()
                                                                                  .unwrap()

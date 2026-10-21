@@ -5,6 +5,8 @@ use std::{fs,
           process::Command};
 
 use serde_json::Value;
+#[path = "support/process_trace.rs"]
+mod process_trace;
 
 fn frame(path: &Path) -> Vec<u8>
 {
@@ -227,9 +229,11 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     assert!(prefix("textedit-quit").contains("PROCESS_EXIT app=3\n"));
     assert!(prefix("quickdraw-quit").contains("PROCESS_EXIT app=2\n"));
     assert_eq!(prefix("textedit-relaunched").matches("TEXTEDIT_EXERCISER_READY\n").count(), 2);
-    assert!(prefix("textedit-relaunched-input").contains("PROCESS_LAUNCHED app=4 thread=5 \
-                                                          name=TextEdit Exerciser\n"),
-            "relaunch must create a fresh OS thread and application identity");
+    let original = process_trace::launched(&prefix("textedit-quit"), "TextEdit Exerciser");
+    let relaunched =
+        process_trace::launched(&prefix("textedit-relaunched-input"), "TextEdit Exerciser");
+    assert!(original.0 != relaunched.0 && original.1 != relaunched.1,
+            "relaunch must create fresh application and thread identities");
     assert!(prefix("textedit-relaunched-input").contains("FINDER_TEXTEDIT_STATE length=1 \
                                                           selection=1..1\n"));
     assert!(prefix("finder-responsive-after-exit").contains("name=Documents\n"),
