@@ -11,17 +11,6 @@ pub(super) fn word(bytes: &[u8], at: usize) -> Result<u16, Status>
                                .try_into()
                                .map_err(|_| BAD_ARGUMENT)?))
 }
-pub(super) fn long(bytes: &[u8], at: usize) -> Result<u32, Status>
-{
-    Ok(u32::from_be_bytes(bytes.get(at..at + 4)
-                               .ok_or(BAD_ARGUMENT)?
-                               .try_into()
-                               .map_err(|_| BAD_ARGUMENT)?))
-}
-pub(super) fn bounded(start: u64, size: u64, total: u64) -> Result<(), Status>
-{
-    if start.checked_add(size).is_none_or(|end| end > total) { Err(BAD_ARGUMENT) } else { Ok(()) }
-}
 /// Only the map and selected small resource are allocated. This path is for
 /// metadata, never for loading RV64 code or the application's whole resource fork.
 pub(crate) fn read_value(length: u64, key: ResourceKey,

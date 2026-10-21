@@ -186,11 +186,13 @@ impl Mounted
 }
 struct OpenFile
 {
-    owner:    u64,
-    id:       u32,
-    volume:   u32,
-    fork:     FileFork,
-    position: u64
+    owner:          u64,
+    id:             u32,
+    volume:         u32,
+    fork:           FileFork,
+    position:       u64,
+    #[cfg_attr(not(any(target_arch = "riscv64", feature = "test-support")), allow(dead_code))]
+    resource_index: Option<mac_formats::resource::index::Index>
 }
 enum FileFork
 {
@@ -520,7 +522,8 @@ impl Manager
                                             id,
                                             volume,
                                             fork: FileFork::Block(fork),
-                                            position: 0 })
+                                            position: 0,
+                                            resource_index: None })
                          .map_err(|_| NO_MEMORY)?;
         Ok((handle, length))
     }

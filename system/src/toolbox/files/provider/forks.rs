@@ -108,6 +108,7 @@ impl Manager
                                             volume,
                                             id: node,
                                             position: 0,
+                                            resource_index: None,
                                             fork: FileFork::Provider(Open { kind,
                                                                             length: 0,
                                                                             phase: Phase::Opening,

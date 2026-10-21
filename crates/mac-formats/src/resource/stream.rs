@@ -22,6 +22,7 @@ impl Default for Budget
                resources:     8192 }
     }
 }
+#[derive(Clone, Copy, Debug)]
 pub(super) struct Header
 {
     pub data:        u64,

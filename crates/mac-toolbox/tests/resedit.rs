@@ -185,6 +185,37 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
     }).unwrap();
     assert_eq!(activity.writes, 0);
     assert_eq!(before, fs::read(&disk).unwrap());
+    // Repeated metadata/error queries on the same owned fork must require no
+    // storage reads once the map and selected length have been checked.
+    let probe = |repetitions| {
+        mac_system::testing::with_file_disk(&disk, true, Default::default(), |services| {
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            let files = system.files();
+            let volume = files.volume_at(0).unwrap().id;
+            let catalog = files.lookup(volume, mac_toolbox::files::ROOT_ID, "Sample").unwrap();
+            let resources = system.resources().open_file(volume, catalog.id).unwrap();
+            let key = ResourceKey { kind: (*b"CODE").into(),
+                                    id:   i16::MIN };
+            let expected = resources.get(key).unwrap();
+            for _ in 0..repetitions
+            {
+                assert_eq!(resources.type_count().unwrap(), type_count);
+                assert_eq!(resources.count(key.kind).unwrap(), 2);
+                let actual = resources.get(key).unwrap();
+                assert_eq!((actual.info, actual.has_name), (expected.info, expected.has_name));
+                assert!(resources.get(ResourceKey { id: i16::MAX,
+                                                    ..key })
+                                 .is_err());
+                assert!(resources.read(key, expected.info.length + 1, &mut [0; 1]).is_err());
+            }
+        }).unwrap()
+          .1
+    };
+    let once = probe(0);
+    let repeated = probe(200);
+    assert_eq!(repeated.reads, once.reads,
+               "cached resource metadata must not reread its map/prefix");
+    assert_eq!((repeated.writes, repeated.flushes), (0, 0));
 }
 
 fn pixels(path: &std::path::Path) -> Vec<u8>

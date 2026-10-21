@@ -276,6 +276,16 @@ values explicitly.
 Resource Manager inspection and application loading from provider forks remain
 to be connected. This does not yet make external directories usable in Finder.
 
+Their checked-map prerequisite is now shared: `mac-formats::resource::index`
+uses the same header/reference validator as the borrowed and streaming resource
+decoders. Each owner-checked open fork retains its own bounded index and lazily
+checked length words. Repeated type/count/get/named metadata queries perform no
+map/prefix I/O after warm-up; failures retain the cache. Closing the generation-
+tagged mark drops it, so slot reuse cannot inherit another file's index. Raw
+MacRoman names and resource attributes remain lossless, including absent versus
+empty names. The public ResEdit test measures equal disk reads for baseline and
+200 repeated metadata/error-query sequences and still verifies JSON round-trip.
+
 The public `DataWriter` now routes provider-backed saves through owned resident
 jobs. Begin/append use the existing fallible 4 MiB bounded staging buffer. Commit
 validates the actual parent and exact expected replacement ID, then issues

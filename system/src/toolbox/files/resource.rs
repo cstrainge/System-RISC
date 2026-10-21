@@ -42,6 +42,25 @@ fn read_icon(length: u64, id: i16, resident: crate::toolbox::resources::manager:
 #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
 impl Manager
 {
+    pub(crate) fn take_resource_index(
+        &mut self, owner: u64, handle: u32)
+        -> Result<Option<mac_formats::resource::index::Index>, Status>
+    {
+        let file = self.slot(owner, handle)?;
+        file.fork.length()?;
+        Ok(file.resource_index.take())
+    }
+
+    pub(crate) fn restore_resource_index(&mut self, owner: u64, handle: u32,
+                                         index: mac_formats::resource::index::Index)
+                                         -> Result<(), Status>
+    {
+        let file = self.slot(owner, handle)?;
+        file.fork.length()?;
+        file.resource_index = Some(index);
+        Ok(())
+    }
+
     /// Startup reads use the same mounted filesystem service as later launches.
     /// ROM supplies block I/O, never an opaque whole-fork copying callback.
     pub(crate) fn startup_resources(&mut self, name: &str)
