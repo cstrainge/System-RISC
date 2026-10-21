@@ -1,0 +1,41 @@
+# StuffIt Filesystem
+
+Native `DRVR` + `DABI` package installed in `System Folder/Drivers`. It offers
+FSYS v2 with `SOURCE_FILE` and consumes resident FORK v1 capabilities. System
+owns mounted-volume/open/source/request IDs and application access checks.
+The driver stores only those supplied tokens and immutable archive catalog IDs.
+
+`mac-sit` owns classic version-1 headers, CRCs and stored/RLE90/LZW/Huffman
+expansion. See [format evidence and limits](../../docs/STUFFIT-CLASSIC.md).
+The driver adds NFC names and cached Unicode folding using the same pinned
+name machinery as HFS-B. Ambiguous sibling names fail mounting rather than
+silently hiding an entry. Native path-invalid names fail explicitly.
+
+Catalog/lookup/scan use the mount-time cache without reading fork payloads.
+Metadata preserves file type/creator/flags and both fork lengths. Top-level
+folder timestamps use the archive; unspecified nested-folder fields inherit
+source-file timestamps. The mounted root uses the actual archive name/dates
+supplied by System, rather than guessing a path from a source capability.
+
+Reads retain a bounded decoder per open mark, reuse it for sequential/forward
+reads, and restart when seeking backwards or switching forks. A callback does
+one source operation or one bounded decode step, with no guard held across the
+lower call. Requests own all pending input/output; short reads and cancellation
+remain owned until acknowledgement. End-of-fork reads verify length and CRC
+before returning, including a final read that exactly fills the caller buffer.
+Earlier partial reads are provisional until that verification; copy-out must
+abort publication if a later read fails.
+
+The admitted module has a fixed 1 MiB heap, 16 mounts and 16 open marks; catalog
+limits are 4,096 nodes / 64 levels, subject to that heap budget. Every allocation
+uses a fallible path. Budget exhaustion returns `NoMemory`, without publishing
+a partial mount. No operation buffers a whole fork.
+
+Volumes advertise read-only and reject every mutation. Refresh/watch targets
+remain valid for immutable volumes. Catalogs can show encrypted/unsupported
+entries; opening them returns `NotSupported`, never empty data.
+
+Host module tests exercise fresh callback buffers, deliberately short deferred
+reads, seek/EOF, both forks, corruption, read-only mutations, cancellation and
+invalid-ticket handling. Native public-SDK acceptance lives in
+`crates/mac-toolbox/tests/stuffit.rs`; its capture transport uses private media.

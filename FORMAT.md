@@ -588,6 +588,9 @@ selects this class using a generation-checked mounted volume and persistent file
 CNID. A source belongs to the admitted provider module incarnation and identifies
 the original `(volume generation, CNID, fork)`; repeated mounting reuses the live
 mount, while copied files have distinct identities. No host path is supplied.
+File-backed Mount also carries the source file's current FSYS Metadata as its
+payload (not a host path). This supplies its actual UTF-8 name and timestamps
+for the mounted root. Host-export Mount continues to have no payload.
 
 The driver declares the kernel-only `FORK` service, version 1. All fields are
 little endian. Both operations have an exact 24-byte START argument:

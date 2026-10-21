@@ -91,7 +91,8 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                       (applications, "Applications", "Panic Test"),
                                       (applications, "Applications", "ResEdit"),
                                       (drivers, "System Folder/Drivers", "Host Transport"),
-                                      (drivers, "System Folder/Drivers", "Host Filesystem")]
+                                      (drivers, "System Folder/Drivers", "Host Filesystem"),
+                                      (drivers, "System Folder/Drivers", "StuffIt Filesystem")]
     {
         let bytes = fs::read(workspace.build.join("dist").join(format!("{name}.bin")))?;
         let original = macbinary::decode(&bytes)?;

@@ -42,7 +42,7 @@ Operation is the broker operation number. Unused arguments must be zero:
 | Operation | Inputs | Reply |
 | --- | --- | --- |
 | Exports (1) | none | u32 export count |
-| Mount (2) | resident volume token; auxiliary = source/export selector | Mount descriptor |
+| Mount (2) | resident volume token; auxiliary = source/export selector; SOURCE_FILE requires source Metadata payload, host export has none | Mount descriptor |
 | Unmount (3) | volume | empty; busy if open forks/transactions |
 | Catalog (4) | volume, CNID in node; optional INCLUDE_CHILD_COUNT flag | Metadata |
 | Scan (5) | volume, parent CNID, child index in offset | u32 pending=0/entry=1/done=2, then Metadata for entry |
@@ -56,6 +56,12 @@ Operation is the broker operation number. Unused arguments must be zero:
 | FinishWrite (13) | volume, write token | WriteReceipt containing actual published Metadata and Mount |
 | AbortWrite (14) | volume, write token | AbortReceipt: u32 publication-observed boolean; WriteReceipt follows only when true |
 | Refresh (15) | volume | empty; existing read leases remain bound to their original source |
+
+Archive reads can return provisional prefixes before the fork's checksum is
+available. The read reaching its declared logical end must validate length/CRC
+before success, even when that read exactly fills the requested buffer. A
+copy-out consumer must abort its destination transaction if any read fails;
+it must not publish a partially verified fork.
 
 Rename/Move/MakeDirectory/Remove/SetMetadata (16–20) are allocated operation codes;
 the host provider currently rejects them as unsupported. Their payload contracts

@@ -26,7 +26,7 @@ def prepare(output):
                         '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin', binary,
                         '--target-dir', str(target)], cwd=vm.ROOT, check=True)
         subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
-                        '--bin', 'package', '--target-dir', str(target), '--',
+                        '--bin', 'package', '--target-dir', str(vm.build_dir() / 'host'), '--',
                         str(target / 'riscv64imac-unknown-none-elf/release' / binary),
                         str(output / 'packages')], cwd=vm.ROOT, check=True)
 
@@ -51,7 +51,7 @@ def capture(output, cases):
             if name != 'host-device-absent':
                 # Malformed/synthetic module cases need an isolated discovery
                 # set. The host-device case exercises the image's installation.
-                for driver in ['Host Transport', 'Host Filesystem']:
+                for driver in ['Host Transport', 'Host Filesystem', 'StuffIt Filesystem']:
                     image.remove('/System Folder/Drivers/' + driver)
             for file in case['files']:
                 image.import_macbinary(Path(file['source']), file['directory'])

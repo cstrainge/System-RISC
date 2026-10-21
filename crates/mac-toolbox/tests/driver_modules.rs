@@ -157,8 +157,8 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
         {"source":output.join("no-device.bin"),"directory":"/System Folder/Drivers"},
         {"source":alternate_path,"directory":"/System Folder/Drivers"},
         {"source":client,"directory":"/System Folder/Drivers"}]}));
-    // Use the unmodified installation: the regular image must contain both
-    // drivers, and boot must succeed without the optional host channel.
+    // Use the unmodified installation: host drivers skip absent hardware while
+    // the file-backed StuffIt provider initializes without a host channel.
     cases.push(json!({"name":"host-device-absent","files":[]}));
     let case_path = output.join("cases.json");
     fs::write(&case_path, serde_json::to_vec_pretty(&cases).unwrap()).unwrap();
@@ -197,7 +197,10 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
             assert!(serial.contains("MODULE_SKIPPED name=Host Filesystem \
                                      reason=dependency-device-absent"),
                     "{serial}");
-            assert!(!serial.contains("MODULE_ENTER") && !serial.contains("MODULE_REJECTED"),
+            assert!(serial.contains("MODULE_PUBLISHED name=StuffIt Filesystem"), "{serial}");
+            assert!(!serial.contains("MODULE_ENTER name=Host Transport")
+                    && !serial.contains("MODULE_ENTER name=Host Filesystem")
+                    && !serial.contains("MODULE_REJECTED"),
                     "{serial}");
         }
         else if matches!(name, "no-device" | "no-device-reversed" | "unknown-bus")

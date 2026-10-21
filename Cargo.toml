@@ -48,6 +48,7 @@ mac-module = { path = "crates/mac-module" }
 mac-device-interface = { path = "crates/mac-device-interface" }
 mac-filesystem-interface = { path = "crates/mac-filesystem-interface" }
 mac-file-source-interface = { path = "crates/mac-file-source-interface" }
+mac-sit = { path = "crates/mac-sit" }
 mac-object-table = { path = "crates/mac-object-table" }
 mac-traps = { path = "crates/mac-traps" }
 mac-abi = { path = "crates/mac-abi" }

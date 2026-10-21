@@ -87,6 +87,11 @@ impl Driver for Filesystem
         let sources = STATE.lock().sources.ok_or(Error(-1))?;
         if op == Operation::Mount
         {
+            let source_info = Metadata::decode(args.payload).map_err(|_| Error(-2))?;
+            if source_info.directory || source_info.data_length != 131089
+            {
+                return Err(Error(-2));
+            }
             let source = u32::try_from(args.auxiliary).map_err(|_| Error(-2))?;
             let length = sources.info(source)?.length;
             if length != 131089

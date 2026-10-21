@@ -32,6 +32,18 @@ pub(super) fn start_file(owner: u64, thread: u64, key: Key, call: &mut FileCall,
             return error;
         }
     }
+    let description = match files(|manager| manager.describe_block_source(call.volume, call.cnid))
+    {
+        Ok(bytes) => bytes,
+        Err(error) =>
+        {
+            if fresh
+            {
+                let _ = backing::release(provider, source);
+            }
+            return error;
+        }
+    };
     let volume = match files(|manager| manager.reserve_provider_mount(provider, identity))
     {
         Ok(volume) => volume,
@@ -44,7 +56,12 @@ pub(super) fn start_file(owner: u64, thread: u64, key: Key, call: &mut FileCall,
             return error;
         }
     };
-    let job = match submit(provider, Operation::Mount, volume, u64::from(source))
+    let job = match submit_args(provider,
+                                Operation::Mount,
+                                Arguments { volume,
+                                            auxiliary: u64::from(source),
+                                            payload: &description,
+                                            ..Default::default() })
     {
         Ok(job) => job,
         Err(error) =>

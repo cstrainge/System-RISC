@@ -1,0 +1,11 @@
+{
+  "identity": "7731a000000000000000000000000012",
+  "heap_bytes": 1048576,
+  "stack_bytes": 65536,
+  "interfaces": [
+    { "class": "FSYS", "version": 2, "request_schema": 1, "reply_schema": 1,
+      "max_request": 65600, "max_reply": 65536, "serialized": true,
+      "capabilities": 2 }
+  ],
+  "services": [ { "class": "FORK", "version": 1 } ]
+}
