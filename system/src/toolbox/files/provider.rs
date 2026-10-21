@@ -21,12 +21,13 @@ pub(crate) enum Source
 }
 pub(super) struct Mounted
 {
-    pub provider: u32,
-    pub source:   Source,
-    pub info:     Option<VolumeInfo>,
-    pub phase:    Phase,
-    reads:        usize,
-    revision:     u64
+    pub provider:                           u32,
+    pub source:                             Source,
+    pub info:                               Option<VolumeInfo>,
+    pub phase:                              Phase,
+    reads:                                  usize,
+    pub(in crate::toolbox::files) revision: u64,
+    pub(in crate::toolbox::files) changes:  bool
 }
 
 /// Decode before exposing any provider bytes to an application. In addition to
@@ -146,7 +147,8 @@ impl Manager
                                                        info: None,
                                                        phase: Phase::Mounting,
                                                        reads: 0,
-                                                       revision: 0 }))
+                                                       revision: 0,
+                                                       changes: false }))
             .map_err(|_| NO_MEMORY)
     }
 
@@ -162,6 +164,7 @@ impl Manager
         let revision = super::scan::next_revision()?;
         let info = volume_info(id, descriptor);
         mounted.info = Some(info);
+        mounted.changes = descriptor.capabilities & fs::CHANGES != 0;
         mounted.phase = Phase::Live;
         mounted.revision = revision;
         Ok(info)

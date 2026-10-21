@@ -28,6 +28,7 @@ static JOB_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DMA_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static FILE_SOURCE_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
 static HOST_NODE_GENERATIONS: [AtomicU16; 1024] = [const { AtomicU16::new(0) }; 1024];
+static FILE_WATCH_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
 
 struct Slot<T>
 {
@@ -66,7 +67,8 @@ pub enum Kind
     DriverJobs,
     Threads,
     FileSources,
-    HostNodes
+    HostNodes,
+    FileWatches
 }
 impl Kind
 {
@@ -74,6 +76,7 @@ impl Kind
     {
         match self
         {
+            Self::FileWatches => 64,
             Self::HostNodes => 1024,
             Self::FileSources => 16,
             Self::Threads => 8,
@@ -103,6 +106,7 @@ impl Kind
     {
         match self
         {
+            Self::FileWatches => Self::HostNodes.first_slot() + Self::HostNodes.capacity() as u32,
             Self::HostNodes => Self::FileSources.first_slot() + Self::FileSources.capacity() as u32,
             Self::FileSources => Self::Threads.first_slot() + Self::Threads.capacity() as u32,
             Self::Threads => Self::DriverJobs.first_slot() + Self::DriverJobs.capacity() as u32,
@@ -160,6 +164,7 @@ impl Kind
     {
         match self
         {
+            Self::FileWatches => FILE_WATCH_GENERATIONS.get(index),
             Self::HostNodes => HOST_NODE_GENERATIONS.get(index),
             Self::FileSources => FILE_SOURCE_GENERATIONS.get(index),
             Self::Threads => THREAD_GENERATIONS.get(index),
@@ -190,6 +195,7 @@ impl Kind
             | Self::ScrollBoxes
             | Self::Controls => u16::MAX,
             Self::Threads
+            | Self::FileWatches
             | Self::HostNodes
             | Self::FileSources
             | Self::DriverJobs

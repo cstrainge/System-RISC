@@ -930,3 +930,26 @@ Provider directory cursors bind the volume generation, catalog revision and
 directory; unused cursor fields are zero. Index advances only for returned
 entries. Pending returns control to userspace, and Done is terminal for that
 snapshot. Invalid scope/revision/progress is rejected, not silently restarted.
+
+### Directory change notifications
+
+Native FileCall operations 31/32/33 register, poll, and dispose a watch. Register
+supplies volume/cnid and returns a generation-tagged handle; poll/dispose supply
+only that handle. Poll returns index 0/1 for a coalesced change and position for
+the new catalog revision. Unused inputs are zero. Poll consumes a change once,
+performs no storage I/O, and enforces the same owner checks as disposal. A pending
+probe retains its disposed mark and volume lease until terminal acknowledgement.
+
+FSYS mount capability `CHANGES=4` advertises external monitoring independently of
+`WRITE=2`. Operation 21 CheckDirectory supplies volume/node with no flags/payload;
+its 33-byte reply is a changed byte (0/1) followed by 32 opaque revision bytes.
+The provider invalidates only that directory's cached descendants when its
+revision changes. It performs no enumeration in a cached-directory probe.
+Immutable backends accept resident watches without physical probes.
+
+The Linux companion mixes a bounded inotify generation into directory Stat
+revisions, covering child content/metadata edits as well as name changes.
+Each nonblocking read processes at most 4 KiB of notifications; overflow also
+changes the revision. The monitor attaches to a pinned directory capability and
+is independent of guest write permissions. Access/open/read notifications do not
+invalidate the catalog. This notification backend currently requires Linux.

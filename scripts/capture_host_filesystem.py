@@ -115,8 +115,13 @@ def capture(output, sdk=False):
             if sdk:
                 termination = 'timeout'
                 deadline = time.monotonic() + 30
+                watch_changes = set()
                 while time.monotonic() < deadline:
                     text = (output / 'vm/serial.log').read_text(errors='replace')
+                    for marker, directory in [('RW', export), ('RO', readonly)]:
+                        if f'HOST_FS_WATCH_READY_{marker}\n' in text and marker not in watch_changes:
+                            (directory / 'Runtime Host File.txt').write_bytes(b'live')
+                            watch_changes.add(marker)
                     if 'HOST_FILESYSTEM_PASS' in text or 'HOST_FILESYSTEM_FAIL' in text:
                         termination = 'guest-outcome'
                         break

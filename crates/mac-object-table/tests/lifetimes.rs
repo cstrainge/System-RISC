@@ -40,7 +40,8 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
                  Kind::DriverJobs,
                  Kind::DriverDma,
                  Kind::FileSources,
-                 Kind::HostNodes];
+                 Kind::HostNodes,
+                 Kind::FileWatches];
     let mut tables: Vec<_> = kinds.into_iter().map(Table::new).collect();
     let ids: Vec<_> = tables.iter_mut().map(|t| t.insert(1).unwrap()).collect();
     for (row, table) in tables.iter().enumerate()

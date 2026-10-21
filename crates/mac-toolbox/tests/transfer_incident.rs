@@ -40,6 +40,7 @@ fn ordinary_host_entries_boot_browse_and_allow_finder_folder_creation()
     assert!(serial.contains("FINDER_FOLDER_OPEN ") && serial.contains("name=Transfer"), "{serial}");
     assert!(serial.contains("FINDER_NEW_FOLDER "), "{serial}");
     assert!(!serial.contains("FINDER_ACTION_FAILED"), "{serial}");
+    assert!(serial.contains("FINDER_FOLDER_CHANGED "), "{serial}");
     let export = output.join("export");
     assert_eq!(fs::read(export.join("Notes.txt")).unwrap(), b"Ordinary host file\n");
     assert!(export.join("Test").is_dir());

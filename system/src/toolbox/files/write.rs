@@ -178,6 +178,7 @@ impl Manager
                         mounted.info.free_bytes = volume.free_bytes;
                         mounted.info.modified = volume.modified;
                         call.entry = metadata(pending.volume, &entry);
+                        self.notify_directory(pending.volume, pending.parent)?;
                         Ok(())
                     }
                     Err(error) =>

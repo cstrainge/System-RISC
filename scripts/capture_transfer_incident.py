@@ -61,6 +61,13 @@ def capture(output, corrupt=False):
             driver.wait_state(lambda s: s['windows'] == '2')
             time.sleep(.15)
             vm.qmp('screendump', {'filename': str(output / 'plain-entries.ppm')}, endpoint)
+            # Let the watch establish its initial revision, then change the
+            # directory through the host, without sending any guest input.
+            time.sleep(.8)
+            previous = driver.log().count('FINDER_FOLDER_CHANGED ')
+            (export / 'Arrived.txt').write_bytes(b'Arrived while Finder was running\n')
+            driver.wait('FINDER_FOLDER_CHANGED ', previous)
+            vm.qmp('screendump', {'filename': str(output / 'refreshed.ppm')}, endpoint)
             driver.key('n', ('ctrl',))
             driver.wait('FINDER_NEW_FOLDER ')
             time.sleep(.15)

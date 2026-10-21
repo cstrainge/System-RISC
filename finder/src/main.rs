@@ -13,6 +13,7 @@ mod ui;
 mod clipboard;
 mod menus;
 mod browser;
+mod watches;
 mod icon_view;
 mod get_info;
 
@@ -83,6 +84,7 @@ fn open_about(system: &System<'_>, id: &mut WindowId) -> Result<(), Error>
 fn finder(system: &System<'_>) -> Result<(), Error>
 {
     let mut browser = browser::Browser::default();
+    let mut watches = watches::Controller::default();
     let mut info = get_info::Controller::default();
     let _menus = menus::install(system)?;
     let mut alerts = ui::Alerts::default();
@@ -134,6 +136,14 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             continue;
         }
         browser.prune(system)?;
+        if matches!(event, Event::Idle { .. })
+        {
+            let _ = try_action(system, &mut alerts, watches.poll(system, &mut browser))?;
+            if alerts.window() != WindowId(0)
+            {
+                continue;
+            }
+        }
         let _ = try_action(system, &mut alerts, clipboard.refresh(system))?;
         if alerts.window() != WindowId(0)
         {

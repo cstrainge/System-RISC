@@ -269,3 +269,52 @@ impl<R: Rpc> Filesystem<R>
         Ok(mount.nodes.get(directory.by_name[at]).unwrap())
     }
 }
+
+impl<R: Rpc> Filesystem<R>
+{
+    /// Probe only the requested directory. Existing open snapshots retain their
+    /// own leases; removed catalog capabilities become acknowledged orphans.
+    pub async fn check_directory(&mut self, volume: u32, parent: u32) -> Result<(bool, [u8; 32])>
+    {
+        self.owner = volume;
+        if self.writes.entries.iter().any(|(_, p)| p.volume == volume)
+        {
+            return Err(Cause::Busy.into());
+        }
+        let mount = self.mounts.get(volume).ok_or(Cause::NotFound)?;
+        let directory = mount.directories.get(parent).ok_or(Cause::NotFound)?;
+        let (handle, previous) = (directory.handle, directory.revision);
+        let actual = self.directory_revision(handle).await?;
+        let changed = previous.is_some_and(|revision| revision != actual);
+        let mount = self.mounts.get_mut(volume).unwrap();
+        if changed
+        {
+            // Reserve before changing ownership. Descendant count is bounded by
+            // MAX_NODES and this traversal performs no transport operations.
+            let mut removed = Vec::new();
+            removed.try_reserve_exact(mount.nodes.entries.len()).map_err(|_| Cause::NoMemory)?;
+            for &id in &mount.directories.get(parent).unwrap().children
+            {
+                removed.push(id);
+            }
+            let mut at = 0;
+            while let Some(&id) = removed.get(at)
+            {
+                if let Some(directory) = mount.directories.get(id)
+                {
+                    removed.extend_from_slice(&directory.children);
+                }
+                at += 1;
+            }
+            for id in removed
+            {
+                mount.nodes.remove(id);
+                mount.directories.remove(id);
+            }
+            *mount.directories.get_mut(parent).unwrap() = Directory::new(handle);
+            self.needs_cleanup = true;
+        }
+        mount.directories.get_mut(parent).unwrap().revision = Some(actual);
+        Ok((changed, actual))
+    }
+}

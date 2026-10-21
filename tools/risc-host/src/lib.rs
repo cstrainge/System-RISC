@@ -12,6 +12,7 @@ use mac_host_protocol::{self as wire, Header, Operation as Op, status};
 use mac_object_table::{Kind, Table};
 use sha2::{Digest, Sha256};
 mod nodes;
+mod changes;
 
 pub type Result<T> = core::result::Result<T, Failure>;
 #[derive(Debug)]
@@ -198,15 +199,29 @@ fn qualify_writes(root: &Dir) -> Result<()>
 #[derive(Clone)]
 struct Directory
 {
-    root:   Arc<Dir>,
-    export: usize,
-    owner:  u32
+    root:    Arc<Dir>,
+    export:  usize,
+    owner:   u32,
+    changes: Arc<changes::Changes>
 }
 impl Directory
 {
+    fn new(root: Arc<Dir>, export: usize, owner: u32) -> Result<Self>
+    {
+        let changes = Arc::new(changes::Changes::new(&root)?);
+        Ok(Self { root,
+                  export,
+                  owner,
+                  changes })
+    }
+
     fn revision(&self) -> Result<[u8; 32]>
     {
-        fingerprint(&self.root.open(".")?.into_std().metadata()?)
+        let generation = self.changes.generation()?;
+        let mut digest = Sha256::new();
+        digest.update(fingerprint(&self.root.open(".")?.into_std().metadata()?)?);
+        digest.update(generation.to_le_bytes());
+        Ok(digest.finalize().into())
     }
 }
 struct Enumeration
@@ -432,9 +447,7 @@ impl Session
                 }
                 let index = usize::try_from(req.offset).map_err(|_| Failure(status::NOT_FOUND))?;
                 let export = self.exports.get(index).ok_or(Failure(status::NOT_FOUND))?;
-                let directory = Directory { root:   export.root.clone(),
-                                            export: index,
-                                            owner:  self.id };
+                let directory = Directory::new(export.root.clone(), index, self.id)?;
                 let name = export.name.as_bytes().to_vec();
                 reply.value = if export.writable { wire::ALL_CAPABILITIES } else { wire::READ };
                 reply.object = self.directories.insert(DirectoryObject::Open(directory))?;
@@ -448,8 +461,9 @@ impl Session
                 {
                     return Err(Failure(status::INVALID));
                 }
-                let child = Directory { root: Arc::new(parent.root.open_dir(name)?),
-                                        ..parent };
+                let child = Directory::new(Arc::new(parent.root.open_dir(name)?),
+                                           parent.export,
+                                           parent.owner)?;
                 reply.object = self.directories.insert(DirectoryObject::Open(child))?;
             }
             Op::ListBegin =>
@@ -803,7 +817,8 @@ impl Session
                 return Err(Failure(status::CONFLICT));
             }
             let current = parent.root.open_dir(name)?;
-            if fingerprint(&current.open(".")?.into_std().metadata()?)? != directory.revision()?
+            if fingerprint(&current.open(".")?.into_std().metadata()?)?
+               != fingerprint(&directory.root.open(".")?.into_std().metadata()?)?
             {
                 return Err(Failure(status::CONFLICT));
             }
@@ -946,10 +961,9 @@ impl Session
             directory
         };
         let root = Arc::new(directory);
-        let capability = self.directories
-                             .insert(DirectoryObject::Open(Directory { root: root.clone(),
-                                                                       export,
-                                                                       owner }))?;
+        let capability =
+            self.directories
+                .insert(DirectoryObject::Open(Directory::new(root.clone(), export, owner)?))?;
         let result = (|| {
             sync(&root)?;
             let transaction = self.transaction(id)?;

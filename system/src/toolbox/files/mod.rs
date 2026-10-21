@@ -5,6 +5,7 @@ mod resource;
 use alloc::{string::String, vec::Vec};
 
 mod scan;
+mod watch;
 mod cache;
 mod provider;
 pub(crate) mod types;
@@ -224,6 +225,7 @@ pub struct Manager
     volumes:              Table<Mounted>,
     handles:              Table<OpenFile>,
     writes:               Table<write::Pending>,
+    watches:              Table<watch::Watch>,
     pub rejected_volumes: u32
 }
 impl Default for Manager
@@ -233,6 +235,7 @@ impl Default for Manager
         Self { volumes:          Table::new(Kind::Volumes),
                handles:          Table::new(Kind::Files),
                writes:           Table::new(Kind::FileWrites),
+               watches:          Table::new(Kind::FileWatches),
                rejected_volumes: 0 }
     }
 }
@@ -565,12 +568,26 @@ impl Manager
                 protected.push(pending.expected_cnid);
             }
         }
+        let changes_catalog = scan::writes_catalog(call.operation, call.index);
+        let old_parent = if changes_catalog
+        {
+            match call.operation
+            {
+                NEW_FOLDER => Some(if call.cnid == 0 { ROOT_ID } else { call.cnid }),
+                TRASH_DIRECTORY => Some(ROOT_ID),
+                EMPTY_TRASH => None,
+                _ => Some(self.entry(call.volume, call.cnid)?.parent)
+            }
+        }
+        else
+        {
+            None
+        };
         let mounted = self.mounted(call.volume)?;
         if mounted.poisoned
         {
             return Err(ROLLBACK_FAILED);
         }
-        let changes_catalog = scan::writes_catalog(call.operation, call.index);
         if changes_catalog
         {
             mounted.catalog_revision = scan::next_revision()?;
@@ -637,6 +654,21 @@ impl Manager
                 {
                     call.entry = metadata(call.volume, &entry);
                 }
+                if changes_catalog
+                {
+                    if let Some(parent) = old_parent
+                    {
+                        self.notify_directory(call.volume, parent)?;
+                    }
+                    if call.entry.id != 0 && Some(call.entry.parent) != old_parent
+                    {
+                        self.notify_directory(call.volume, call.entry.parent)?;
+                    }
+                    if call.operation == EMPTY_TRASH
+                    {
+                        self.notify_directory(call.volume, 0)?;
+                    }
+                }
                 Ok(())
             }
             Err(error) =>
@@ -676,6 +708,7 @@ impl Manager
     /// marks. Slot generations survive cleanup so old IDs cannot alias reuse.
     pub fn close_all(&mut self, owner: u64) -> usize
     {
+        self.close_watches(owner);
         let mut count = 0;
         loop
         {
@@ -725,6 +758,10 @@ impl Manager
                          -> Result<(), Status>
     {
         call.transferred = 0;
+        if matches!(call.operation, WATCH_DIRECTORY | POLL_WATCH | DISPOSE_WATCH)
+        {
+            return self.watch_request(owner, call);
+        }
         if matches!(call.operation,
                     NEW_FOLDER
                     | TRASH_DIRECTORY

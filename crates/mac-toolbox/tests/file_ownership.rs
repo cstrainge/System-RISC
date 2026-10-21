@@ -205,3 +205,57 @@ fn separate_apps_have_independent_marks_and_foreign_sdk_values_are_rejected()
         assert_eq!(close_owner(22), 0);
     });
 }
+
+#[test]
+fn directory_watches_are_owned_coalesced_scoped_and_reject_disposed_reused_ids()
+{
+    struct Temporary(PathBuf);
+    impl Drop for Temporary
+    {
+        fn drop(&mut self)
+        {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let path =
+        Temporary(std::env::temp_dir().join(format!("watch-ownership-{}.hfs", std::process::id())));
+    fs::write(&path.0, disk()).unwrap();
+    mac_system::testing::with_file_disk(&path.0, false, Default::default(), |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let files = system.files();
+        let volume = files.volume_at(0).unwrap().id;
+        let folder = files.lookup(volume, mac_toolbox::Cnid(ROOT_ID), "Folder").unwrap();
+        let root = files.watch_directory(volume, mac_toolbox::Cnid(ROOT_ID)).unwrap();
+        let child = files.watch_directory(volume, folder.id).unwrap();
+        assert_eq!(root.poll().unwrap(), None);
+        assert_eq!(child.poll().unwrap(), None);
+        let id = root.id();
+        for operation in [POLL_WATCH, DISPOSE_WATCH]
+        {
+            let mut call = FileCall { operation,
+                                      handle: id,
+                                      ..Default::default() };
+            assert_eq!(with_owner(700, || system.client().file(&mut call, "", &mut [])),
+                       Err(Error::AccessDenied));
+        }
+        files.new_folder(volume, mac_toolbox::Cnid(ROOT_ID), "First").unwrap();
+        files.new_folder(volume, mac_toolbox::Cnid(ROOT_ID), "Second").unwrap();
+        assert!(root.poll().unwrap().is_some());
+        assert_eq!(root.poll().unwrap(), None, "changes coalesce and are consumed once");
+        assert_eq!(child.poll().unwrap(), None, "unrelated folder must remain clean");
+        root.close().unwrap();
+        let replacement = files.watch_directory(volume, mac_toolbox::Cnid(ROOT_ID)).unwrap();
+        assert_eq!(id & 0xffff, replacement.id() & 0xffff, "force slot reuse");
+        assert_ne!(id, replacement.id());
+        for operation in [POLL_WATCH, DISPOSE_WATCH]
+        {
+            let mut call = FileCall { operation,
+                                      handle: id,
+                                      ..Default::default() };
+            assert_eq!(system.client().file(&mut call, "", &mut []), Err(Error::NotFound));
+        }
+        assert_eq!(replacement.poll().unwrap(), None);
+        drop(child);
+        drop(replacement);
+    }).unwrap();
+}

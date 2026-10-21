@@ -37,6 +37,7 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
                           3)?;
     writer.write_all(b"abc")?;
     core::mem::forget(writer);
+    core::mem::forget(files.watch_directory(volume, ROOT_ID)?);
     core::mem::forget(data);
     core::mem::forget(resources);
     system.log("HOST_FS_EXIT_WORKER_READY\n")?;

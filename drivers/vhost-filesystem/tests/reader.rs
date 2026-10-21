@@ -962,7 +962,7 @@ fn filesystem_class_exchanges_metadata_and_both_forks_through_owned_byte_request
     let mounted = fs::Mount::decode(&bytes).unwrap();
     assert_eq!(mounted.filesystem, *b"HOST");
     assert_eq!(mounted.filesystem_version, 1);
-    assert_eq!(mounted.capabilities, fs::READ | fs::WRITE);
+    assert_eq!(mounted.capabilities, fs::READ | fs::WRITE | fs::CHANGES);
     assert_eq!(mounted.capacity, None);
     assert_eq!(mounted.root.child_count, fs::CHILD_COUNT_UNKNOWN);
     assert!(!filesystem.transport().calls.iter().any(|op| {
@@ -1201,5 +1201,45 @@ fn directory_creation_publishes_metadata_atomically_and_supports_nested_writes()
     let parent = run(fs.lookup(volume, 2, "Host Folder")).unwrap().metadata.catalog_id;
     let folder = run(fs.lookup(volume, parent, "Café")).unwrap().metadata.catalog_id;
     assert_eq!(run(fs.lookup(volume, folder, "Child")).unwrap().metadata.kind, Kind::File);
+    run(fs.unmount(volume)).unwrap();
+}
+
+#[test]
+fn directory_change_probe_is_metadata_only_scoped_and_preserves_open_snapshots()
+{
+    let (temp, cnid, data, _) = seeded();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut ids = Table::new(ObjectKind::Volumes);
+    let volume = ids.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let folder = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
+    run(fs.scan(volume, folder)).unwrap();
+    let mut files = Table::new(ObjectKind::Files);
+    let mark = files.insert(()).unwrap();
+    run(fs.open(volume, cnid, mark)).unwrap();
+    fs.transport().calls.clear();
+    assert!(!run(fs.check_directory(volume, folder)).unwrap().0);
+    assert_eq!(fs.transport().calls, [Operation::Stat]);
+    let physical = mac_fork_file::host_name(Kind::Directory,
+                                            fs.cached_node(volume, folder)
+                                              .unwrap()
+                                              .metadata
+                                              .identity).unwrap();
+    std::fs::write(temp.0.join(core::str::from_utf8(&physical).unwrap()).join("Arrived.txt"),
+                   b"arrival").unwrap();
+    fs.transport().calls.clear();
+    assert!(run(fs.check_directory(volume, folder)).unwrap().0);
+    assert_eq!(fs.transport().calls, [Operation::Stat], "probe must never enumerate");
+    assert!(fs.cached_node(volume, 2).is_ok(), "unrelated parent cache must survive");
+    assert_eq!(run(fs.read(volume, mark, Fork::Data, 0, 32)).unwrap(), &data[..32]);
+    assert_eq!(run(fs.lookup(volume, folder, "Arrived.txt")).unwrap().layout.data.length, 7);
+    assert!(!run(fs.check_directory(volume, folder)).unwrap().0);
+    // Editing a child's data leaves the directory mtime unchanged. The host's
+    // notification generation must still invalidate the cached metadata.
+    std::fs::write(temp.0.join(core::str::from_utf8(&physical).unwrap()).join("Arrived.txt"),
+                   b"updated").unwrap();
+    assert!(run(fs.check_directory(volume, folder)).unwrap().0);
+    assert_eq!(run(fs.lookup(volume, folder, "Arrived.txt")).unwrap().layout.data.length, 7);
+    run(fs.close_file(volume, mark)).unwrap();
     run(fs.unmount(volume)).unwrap();
 }

@@ -46,7 +46,8 @@ pub const SOURCE_FILE: u64 = 2;
 /// the provider's source type or filename. Unsupported mutations must fail.
 pub const READ: u32 = 1;
 pub const WRITE: u32 = 2;
-pub const ALL_CAPABILITIES: u32 = READ | WRITE;
+pub const CHANGES: u32 = 4;
+pub const ALL_CAPABILITIES: u32 = READ | WRITE | CHANGES;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error
 {
@@ -59,26 +60,30 @@ pub enum Error
 #[repr(u32)]
 pub enum Operation
 {
-    Exports       = 1,
-    Mount         = 2,
-    Unmount       = 3,
-    Catalog       = 4,
-    Scan          = 5,
-    Lookup        = 6,
-    Open          = 7,
-    Read          = 8,
-    Close         = 9,
-    BeginCreate   = 10,
-    BeginReplace  = 11,
-    WriteChunk    = 12,
-    FinishWrite   = 13,
-    AbortWrite    = 14,
-    Refresh       = 15,
-    Rename        = 16,
-    Move          = 17,
-    MakeDirectory = 18,
-    Remove        = 19,
-    SetMetadata   = 20
+    Exports        = 1,
+    Mount          = 2,
+    Unmount        = 3,
+    Catalog        = 4,
+    Scan           = 5,
+    Lookup         = 6,
+    Open           = 7,
+    Read           = 8,
+    Close          = 9,
+    BeginCreate    = 10,
+    BeginReplace   = 11,
+    WriteChunk     = 12,
+    FinishWrite    = 13,
+    AbortWrite     = 14,
+    Refresh        = 15,
+    Rename         = 16,
+    Move           = 17,
+    MakeDirectory  = 18,
+    Remove         = 19,
+    SetMetadata    = 20,
+    /// Metadata-only directory probe; reply is one changed byte (0/1), then
+    /// 32 opaque revision bytes. Reset only this folder's cached descendants
+    /// on change; never enumerate as part of the probe.
+    CheckDirectory = 21
 }
 impl TryFrom<u32> for Operation
 {
@@ -108,6 +113,7 @@ impl TryFrom<u32> for Operation
             18 => Self::MakeDirectory,
             19 => Self::Remove,
             20 => Self::SetMetadata,
+            21 => Self::CheckDirectory,
             _ => return Err(Error::Invalid)
         })
     }

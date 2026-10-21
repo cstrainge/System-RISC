@@ -4,8 +4,10 @@
 use mac_abi::files::*;
 use mac_traps::types::{FileHandle, FileWriteHandle};
 mod scan;
+mod watch;
 pub use mac_abi::{dates::Timestamp, files::COMMENT_MAX_BYTES};
 pub use mac_traps::{Cnid, TypeCode, VolumeId};
+pub use watch::DirectoryWatch;
 mod info;
 pub use info::{CatalogFlags, CatalogInfo, EntryKind, FinderFlags, VolumeAttributes,
                VolumeCapacity, VolumeInfo, VolumeSource};

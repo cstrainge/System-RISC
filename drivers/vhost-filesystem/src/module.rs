@@ -235,6 +235,7 @@ fn reply_capacity(op: Operation, a: Arguments<'_>) -> mac_driver::Result<usize>
         }
         Operation::Open => 16,
         Operation::Exports => 4,
+        Operation::CheckDirectory => 33,
         _ => 0
     })
 }

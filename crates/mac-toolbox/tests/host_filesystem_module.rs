@@ -109,6 +109,7 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert_eq!(capture["termination"], "guest-outcome", "{serial}");
     assert!(serial.contains("HOST_FILESYSTEM_PASS"), "{serial}");
+    assert_eq!(serial.matches("HOST_FS_WATCH_PASS\n").count(), 2, "{serial}");
     assert!(serial.contains("HOST_FS_EXIT_WORKER_READY"), "{serial}");
     assert!(serial.contains("PROCESS_LAUNCHED app=") && serial.contains("name=Host Exit Worker"),
             "{serial}");
@@ -121,7 +122,8 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
         "public_writes":"DataWriter Unicode creation, multi-batch data/readback, zero-length files, duplicate/wrong-ID refusal, partial staging and Drop, existing-reader contention, replacement preserving the resource fork and Finder metadata, stale/foreign write IDs, catalog cursor invalidation; legacy Pascal-name creation/append/commit/readback through the same resident services; real second-app exit with forgotten RAM-only writer staging",
         "resource_inspection":"every resource type, entry, metadata/name/attributes and payload of a host-mounted ResEdit matches its block-backed startup copy through the public SDK; payload reads cross the 64 KiB class boundary; independent positioned inspection preserves fork position; empty/malformed forks, EOF, invalid offsets, warmed metadata, busy unmount, closed/stale/foreign resource-fork IDs and slot reuse; original Pascal resource trap reaches the same provider service",
         "plain_entries":"raw host files with empty resource forks, raw directories, independent extension classification, directory creation inside a raw host directory and nested file publication, case-collision refusal, read-only directory-creation rejection",
-        "not_covered":"application loading from provider forks, metadata/rename/move/delete mutations, replacing raw host data, full two-fork copying, external-change refresh/watch integration, exit during pending I/O, disconnect and sustained-I/O responsiveness", "capture":capture});
+        "watches":"coalesced nonblocking directory watches; actual host-created arrivals on writable and read-only exports; readback after automatic cache invalidation; owner exit with a forgotten watch; local ownership and forced-slot-reuse checks in file_ownership",
+        "not_covered":"application loading from provider forks, metadata/rename/move/delete mutations, replacing raw host data, full two-fork copying, classic notification trap compatibility, file-specific watches, exit during arbitrary pending I/O, disconnect and sustained-I/O responsiveness", "capture":capture});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     fs::write(root.join("results/system7/host-filesystem-mount-checks.json"),
               serde_json::to_vec_pretty(&report).unwrap()).unwrap();

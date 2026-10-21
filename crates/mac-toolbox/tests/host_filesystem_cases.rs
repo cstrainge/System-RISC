@@ -775,5 +775,30 @@ fn check_plain(system: &System<'_>, volume: VolumeId, writable: bool) -> Result<
     {
         require(files.new_folder(volume, folder.id, "Refused") == Err(Error::ReadOnly))?;
     }
+    let watch = files.watch_directory(volume, ROOT_ID)?;
+    // Establish a resident background baseline before the host fixture changes.
+    for _ in 0..40
+    {
+        system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?;
+    }
+    require(watch.poll()?.is_none())?;
+    system.log(if writable { "HOST_FS_WATCH_READY_RW\n" } else { "HOST_FS_WATCH_READY_RO\n" })?;
+    let mut changed = false;
+    for _ in 0..240
+    {
+        system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?;
+        if watch.poll()?.is_some()
+        {
+            changed = true;
+            break;
+        }
+    }
+    require(changed)?;
+    let arrived = files.lookup(volume, ROOT_ID, "Runtime Host File.txt")?;
+    let mut data = files.open(volume, arrived.id, Fork::Data)?;
+    require(data.read(&mut bytes)? == 4 && &bytes[..4] == b"live")?;
+    data.close()?;
+    watch.close()?;
+    system.log("HOST_FS_WATCH_PASS\n")?;
     Ok(())
 }

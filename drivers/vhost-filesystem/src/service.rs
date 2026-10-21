@@ -216,6 +216,15 @@ impl<R: Rpc> Filesystem<R>
                 self.refresh(args.volume).await?;
                 Ok(Vec::new())
             }
+            Operation::CheckDirectory =>
+            {
+                self.find(args.volume, args.node).await?;
+                let (changed, revision) = self.check_directory(args.volume, args.node).await?;
+                let mut out = buffer(33)?;
+                out[0] = u8::from(changed);
+                out[1..].copy_from_slice(&revision);
+                Ok(out)
+            }
             _ => Err(Cause::Unsupported.into())
         }
     }
@@ -237,6 +246,7 @@ impl<R: Rpc> Filesystem<R>
                             ..volume }
             }
             Operation::Unmount | Operation::Refresh => volume,
+            Operation::CheckDirectory => node,
             Operation::Catalog =>
             {
                 Arguments { flags: a.flags,
@@ -405,7 +415,9 @@ impl<R: Rpc> Filesystem<R>
     fn mount_descriptor(&self, volume: u32) -> Result<fs::Mount<'_>>
     {
         let info = self.info(volume)?;
-        Ok(fs::Mount { capabilities:       fs::READ | if info.read_only { 0 } else { fs::WRITE },
+        Ok(fs::Mount { capabilities:       fs::READ
+                                           | fs::CHANGES
+                                           | if info.read_only { 0 } else { fs::WRITE },
                        filesystem:         *b"HOST",
                        filesystem_version: mac_fork_file::VERSION,
                        capacity:           None,

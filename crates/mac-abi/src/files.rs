@@ -36,6 +36,12 @@ pub const MOUNT_FILE: u32 = 29;
 /// Dispatch a loaded driver's association. index=0 means unhandled; index=1
 /// returns its mounted volume. Applications don't select a driver by name.
 pub const OPEN_ITEM: u32 = 30;
+/// Nonblocking directory watch service. Registration uses volume/cnid; polling
+/// and disposal use handle. Poll returns a coalesced change in index and a
+/// monotonic catalog revision in position. No caller buffer survives a call.
+pub const WATCH_DIRECTORY: u32 = 31;
+pub const POLL_WATCH: u32 = 32;
+pub const DISPOSE_WATCH: u32 = 33;
 pub const SCAN_ENTRY: u32 = 0;
 pub const SCAN_PENDING: u32 = 1;
 pub const SCAN_DONE: u32 = 2;

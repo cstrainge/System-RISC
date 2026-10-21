@@ -403,6 +403,30 @@ entries permanently and exercises folder creation and child-file readback.
 `transfer_incident` runs the real Finder against raw fixtures and a corrupt native
 container: desktop boot, browsing, managed New Folder, specific error text/status,
 managed alert dismissal and arrow-cursor liveness beyond the stall threshold.
-Automatic host-change watches, raw-file replacement, and the offline fork tool's
-mixed-directory editing still need separate completion; these are not implied by
-successful raw reads and native-container writes.
+Raw-file replacement and the offline fork tool's mixed-directory editing still
+need separate completion; these are not implied by successful raw reads and
+native-container writes.
+
+### Directory watches
+
+`Files::watch_directory` returns an owned `DirectoryWatch`; Drop/close unregisters
+it. `poll` consumes coalesced revisions without performing I/O. Resident background
+jobs probe externally changing folders at most four times per second, retaining
+owned results and volume leases across contention, disposal and application exit.
+An unacknowledged job failure quarantines and pins its state. The shared object
+table provides ownership-independent stale/foreign-ID validation.
+
+Block-backed mutations notify the changed parent folders. Host providers advertise
+external changes independently of write access: read-only exports also report host
+edits. Linux inotify covers child data/metadata edits without per-item polling;
+directory checks perform a bounded Stat, not a catalog enumeration. A changed
+folder invalidates its cached descendants while independent folders and open
+read snapshots remain intact. Immutable StuffIt watches are valid no-ops.
+Finder registers its open folders, polls on idle, and redraws only the folder
+whose watch changed. Failure views retry only after a change.
+
+Canonical SDK checks cover watch ownership, coalescing, independent folders,
+disposed IDs after forced slot reuse, and real guest arrivals on writable and
+read-only host exports. Real Finder capture covers automatic host arrival without
+guest input. Classic notification trap compatibility, file-specific watches and
+hard latency bounds under sustained storage traffic remain future gates.

@@ -174,7 +174,8 @@ fn submit(provider: u32, op: Operation, volume: u32, source: u64) -> Result<Owne
                             auxiliary: source,
                             ..Default::default() })
 }
-fn submit_args(provider: u32, op: Operation, args: Arguments<'_>) -> Result<OwnedJob, Status>
+pub(in crate::toolbox::files) fn submit_args(provider: u32, op: Operation, args: Arguments<'_>)
+                                             -> Result<OwnedJob, Status>
 {
     let mut bytes = Vec::new();
     let length = fs::HEADER_BYTES + args.payload.len();
@@ -193,6 +194,7 @@ fn submit_args(provider: u32, op: Operation, args: Arguments<'_>) -> Result<Owne
         Operation::FinishWrite => fs::MAX_WRITE_RECEIPT_BYTES,
         Operation::AbortWrite => fs::MAX_ABORT_RECEIPT_BYTES,
         Operation::Open => 16,
+        Operation::CheckDirectory => 33,
         Operation::Read => usize::try_from(args.length).map_err(|_| BAD_ARGUMENT)?,
         _ => 0
     };
@@ -855,6 +857,7 @@ pub(crate) fn abandon_thread(thread: u64)
 }
 pub(crate) fn pump()
 {
+    super::super::watch::pump();
     forks::pump_cleanup();
     writes::pump_cleanup();
     if !REAP.load(Ordering::Acquire)

@@ -293,6 +293,29 @@ fn folder_entry(system: &System<'_>, location: Location, mut index: u32)
 }
 impl Browser
 {
+    pub fn folder_locations(&self) -> impl Iterator<Item = (WindowId, Location)> + '_
+    {
+        self.windows
+            .iter()
+            .flatten()
+            .filter(|w| w.location.volume != VolumeId::NONE)
+            .map(|w| (w.window, w.location))
+    }
+
+    pub fn folder_changed(&mut self, system: &System<'_>, window: WindowId) -> Result<(), Error>
+    {
+        let Some(slot) = self.windows.iter().position(|w| w.is_some_and(|w| w.window == window))
+        else
+        {
+            return Ok(());
+        };
+        self.failures[slot].set(None);
+        self.draw(system, window)?;
+        let mut line = Text::<100>::default();
+        let _ = writeln!(&mut line, "FINDER_FOLDER_CHANGED window={}", window);
+        system.log(line.as_str())
+    }
+
     fn open_entry(&mut self, system: &System<'_>, entry: &CatalogInfo) -> Result<(), Error>
     {
         if entry.is_directory()
