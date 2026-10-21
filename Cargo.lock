@@ -436,6 +436,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-sit"
+version = "0.1.0"
+dependencies = [
+ "mac-text",
+]
+
+[[package]]
 name = "mac-system"
 version = "0.1.0"
 dependencies = [

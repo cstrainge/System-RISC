@@ -11,6 +11,7 @@ members = [
     "crates/mac-device-interface",
     "crates/mac-filesystem-interface",
     "crates/mac-file-source-interface",
+    "crates/mac-sit",
     "crates/mac-toolbox",
     "crates/mac-traps",
     "crates/mac-formats",
