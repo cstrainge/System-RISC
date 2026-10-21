@@ -189,8 +189,14 @@ retired in favor of the manager.
     can change their mind while dragging. If both forcing modifiers are held,
     Command takes precedence; Trash takes precedence over both.
   - On the Trash: always move to Trash, regardless of modifiers. A read-only
-    source cannot be trashed or forcibly moved; report that error rather than
+    source on **any read-only mounted filesystem** cannot be trashed or moved;
+    enforce this through the File Manager's filesystem capabilities, not an
+    archive-type special case. Report that error rather than
     silently copying it or deleting a partial source.
+    A read-only **destination** rejects both incoming copies and moves. Finder
+    must reject/highlight it as invalid during negotiation; the File Manager
+    revalidates writability at execution before staging or changing any source.
+    This applies to every mounted filesystem, not just `.sit` archives.
   - **Escape cancels the entire operation**, not just one item. Before drop,
     cancel negotiation, zoom back and change no files. During a transfer, stop
     scheduling new work and roll back the operation's own staged outputs and
@@ -205,10 +211,29 @@ retired in favor of the manager.
     never silently overwrite an unrelated item.
   - The receiver performs the operation through ordinary Files
     calls **after** the drop; the manager moves no data itself.
+
+### 4.6 Finder transfer window
+
+- File/folder copies and cross-volume moves show a resource-based Finder copy
+  window using the classic **managed progress-bar control** and **managed static
+  text controls**, with a managed Cancel button. If a control is missing, add
+  its CDEF and resident/public Control Manager support; no Finder-local imitation.
+- Show the operation, current item and meaningful completed/total progress.
+  Discover totals with bounded background work; do not block input or invent a
+  completion percentage while the total is unknown. Include both forks in byte
+  accounting, handle zero-length files and directories, and check overflow.
+- Cancel and Escape request cancellation of the entire transfer batch under
+  §4.5, including its own cleanup/rollback. The window stays responsive while
+  work drains and reports failures honestly; a cancellation request alone is not
+  proof the operation has been undone.
+- Repaint only the changed progress fill and changed text bounds, early-out on
+  identical values, and coalesce progress to visible changes. No folder scans,
+  full-window repaints or event storm per copied chunk. Close after successful
+  completion/cancellation and release all managed controls/windows through RAII.
 - TextEdit is the validation second client when its surface is
   ready (text flavor, promise-kept) — not a Part 3 deliverable.
 
-### 4.6 Legacy surface
+### 4.7 Legacy surface
 
 The classic Drag Manager trap surface (for legacy apps) is
 **not** part of this spec; it belongs to the compatibility-closure
@@ -242,6 +267,14 @@ the same negotiation. Note the mapping in the manager's docs.
   only the state at drop determines copy/move; test both directions, both
   modifiers held, and Trash with each modifier. A forced move from a read-only
   mount fails without a partial destination or source deletion.
+- Read-only destinations reject incoming copy and move with every modifier;
+  test both drag negotiation and direct Files calls, including a mount becoming
+  read-only between negotiation and execution. All source/destination contents
+  and metadata remain untouched on rejection.
+- Transfer-window acceptance uses real managed controls/CDEFs: large and empty
+  files, recursive folders and both forks; progress agrees with copied bytes,
+  unrelated pixels remain unchanged, input/cursor remain responsive, and both
+  Cancel and Escape stop the whole batch rather than one item.
 - Escape acceptance: cancel a multi-item drag before drop and a transfer after
   partial progress; prove the entire operation is cancelled and original forks,
   metadata and identities survive, with no leftover staged files. Inject a
