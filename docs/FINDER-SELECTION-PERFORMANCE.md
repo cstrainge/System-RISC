@@ -25,6 +25,9 @@ fix; the diagnosis above is the user's report, not a newly measured result.
    `system/src/toolbox/files/scan.rs`. A filesystem change invalidates the affected
    folder's cache. Honor `ScanStale` and rebuild a consistent snapshot before
    publishing replacement cache data. Moving an item affects both folders.
+   Use resident [file notifications](FILE-NOTIFICATIONS.md) for open-folder
+   invalidation, including changes made by other apps or outside the guest.
+   Read-only mounts accept subscriptions even when their watches remain quiet.
 2. Repaint through a mask. On a selection change, set the clip/mask to exactly
    the icon-plus-label bounds of the deselected and newly selected items. Keep
    one uniform drawing routine; vary its mask rather than duplicating a selection

@@ -47,6 +47,9 @@ Rulings (Chloe, 2026-10-20):
    cache.** Key/validate the cache off the files service's catalog
    revision machinery (`system/src/toolbox/files/scan.rs`; the
    `ScanStale` typed error already exists for exactly this).
+   Subscribe to [resident file notifications](FILE-NOTIFICATIONS.md) while the
+   folder is open, including background windows; coalesce changes rather than
+   polling or enumerating on clicks. Read-only mounts permit quiet watches.
 2. **Repaint through a mask.** When selection changes, repaint with
    the mask/clip set to exactly the items involved in the change —
    the bounds (icon + label) of the items that left the set and the

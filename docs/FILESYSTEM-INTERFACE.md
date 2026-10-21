@@ -93,6 +93,10 @@ host path, or keyboard modifiers; never silently turn a rejected move into copy.
 Cleanup/close/abort must remain possible for a transaction whose mount becomes
 unavailable or read-only.
 
+Read-only status does not prevent [file/directory watch registration](FILE-NOTIFICATIONS.md).
+Providers without content-change reporting may keep valid subscriptions quiet;
+resident lifecycle notifications and object/owner validation still apply.
+
 Cancellation is a request, not a claim that an acknowledged mutation was undone.
 HDIR ticket state and request buffers survive abandoned future polls; draining
 preserves actual host replies, including committed writes and acquired leases.
