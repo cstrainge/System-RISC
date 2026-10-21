@@ -134,6 +134,45 @@ impl<D: WritableBlockDevice> Volume<'_, D>
         Ok(entry)
     }
 
+    /// Move an existing identity without rebuilding it or copying fork data.
+    /// Report a no-op so the resident service can keep scans and watches quiet.
+    pub fn move_into(&mut self, id: u32, parent: u32, when: u64, protected: &[u32])
+                     -> MutationResult<(CatalogEntry, bool)>
+    {
+        let before =
+            self.entry(id).map_err(|_| MutationError::Io)?.ok_or(MutationError::NotFound)?;
+        let changed = before.parent != parent;
+        let entry = match &mut self.backend
+        {
+            Backend::Hfs(v) => v.move_into(id, parent, legacy_time(when)?, protected)?.into(),
+            Backend::HfsB(v) =>
+            {
+                native_protection(v, id, protected)?;
+                if before.flags & 1 != 0
+                   || u16::from_be_bytes(before.finder_info[8..10].try_into().unwrap()) & 0x1000
+                      != 0
+                {
+                    return Err(MutationError::Protected);
+                }
+                if changed
+                {
+                    v.rename(id,
+                             parent,
+                             core::str::from_utf8(&before.name).map_err(|_| MutationError::Io)?,
+                             Timestamp(when))
+                     .map_err(mutation_error)?
+                     .into()
+                }
+                else
+                {
+                    before
+                }
+            }
+        };
+        self.refresh();
+        Ok((entry, changed))
+    }
+
     /// Return the unchanged entry without a write when placement already matches.
     /// The bool reports an actual metadata change to notification publishers.
     pub fn set_icon_location(&mut self, id: u32, location: Option<(i16, i16)>, when: u64)

@@ -99,6 +99,32 @@ impl<'a> Files<'a>
         self.rename_at(volume, cnid, name, self.client.now()?)
     }
 
+    /// Move an existing file or folder within a volume, preserving its identity,
+    /// name, dates, icon placement, other Finder metadata and both forks.
+    /// Cross-volume transfers create a distinct destination identity instead.
+    pub fn move_into(self, volume: VolumeId, cnid: Cnid, parent: Cnid) -> Result<CatalogInfo>
+    {
+        self.move_into_at(volume, cnid, parent, self.client.now()?)
+    }
+
+    pub fn move_into_at(self, volume: VolumeId, cnid: Cnid, parent: Cnid, when: Timestamp)
+                        -> Result<CatalogInfo>
+    {
+        if cnid.0 <= ROOT_ID.0 || parent.0 < ROOT_ID.0
+        {
+            return Err(Error::BadArgument);
+        }
+        self.call(FileCall { operation: MOVE_INTO,
+                             volume: volume.0,
+                             cnid: cnid.0,
+                             index: parent.0,
+                             position: when.mac_microseconds().ok_or(Error::BadArgument)?,
+                             ..Default::default() },
+                  "")?
+            .entry
+            .try_into()
+    }
+
     /// Use the System clock. Use `set_locked_at` when preserving an explicit date.
     pub fn set_locked(self, volume: VolumeId, cnid: Cnid, locked: bool) -> Result<CatalogInfo>
     {

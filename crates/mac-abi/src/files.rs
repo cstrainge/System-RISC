@@ -46,6 +46,9 @@ pub const DISPOSE_WATCH: u32 = 33;
 /// in its low/high 16 bits. position is the catalog-change timestamp, not an
 /// object date. (-1,-1) is reserved for an unplaced item.
 pub const SET_ICON_LOCATION: u32 = 34;
+/// Move within a mounted volume. cnid is the object, index its new parent.
+/// Preserve identity, object dates, Finder information and both forks.
+pub const MOVE_INTO: u32 = 35;
 pub const SCAN_ENTRY: u32 = 0;
 pub const SCAN_PENDING: u32 = 1;
 pub const SCAN_DONE: u32 = 2;

@@ -103,15 +103,17 @@ folder/metadata/rename/move/delete and full two-fork copy operations, refresh/wa
 normal launcher exports, disconnect/pending-I/O-exit/performance acceptance and P16 remain
 to be completed. See [the exact filesystem contract and coverage](FILESYSTEM-INTERFACE.md).
 
-The next queued Finder performance task is the
-[browser selection-change stall](FINDER-SELECTION-PERFORMANCE.md): cache folder
-items/layout against catalog revisions, repaint only the changed items through
-a mask, and early-out on unchanged selection. Acceptance requires no enumeration
-on selection changes, no unrelated repainting and no watch cursor. Keep the
-current storage-driver delivery moving first. Then implement the authoritative
-[Finder selection and Drag Manager spec](FINDER-SELECTION-DRAG.md): cached masked
-selection, multiple selection, system-owned drag tracking, and cancellable file
-move/copy with Option/Command sampled at drop time. Trash always moves.
+Finder's [selection performance foundation](FINDER-SELECTION-PERFORMANCE.md)
+now caches folder/desktop metadata and wrapped labels, applies selection diffs
+through exact masks and early-outs on unchanged selection. Native guest gates
+cover multiple selection, marquee cancellation, bounded overlays and filesystem
+revision refresh. Persistent icon placement is attached to catalog identities;
+same-volume File Manager moves preserve it along with dates, comments and both
+forks. The remaining [Finder selection and Drag Manager work](FINDER-SELECTION-DRAG.md)
+is resident drag tracking/negotiation and cancellable batch copy/move with
+Option/Command sampled at drop time, managed progress controls and provider
+metadata/move support. Trash always moves. Keep these remaining items distinct
+from the completed cache and selection substrate.
 
 ### R1 — Service lifetimes and waits
 

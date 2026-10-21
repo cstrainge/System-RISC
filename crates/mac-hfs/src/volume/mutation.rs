@@ -972,6 +972,31 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         Ok(entry)
     }
 
+    /// Move the catalog key and its thread, preserving file identity, dates,
+    /// forks and every Finder byte (including the saved icon position).
+    pub fn move_into(&mut self, id: u32, parent: u32, when: u32, protected: &[u32])
+                     -> MutationResult<CatalogEntry>
+    {
+        self.writable()?;
+        let mut cat = self.mutation_catalog()?;
+        self.protection(&cat, id, protected)?;
+        let entry = &cat.entries[cat.index(id)?];
+        if entry.flags & 1 != 0 || word(&entry.finder_info, 8)? & 0x1000 != 0
+        {
+            return Err(MutationError::Protected);
+        }
+        let old_parent = entry.parent;
+        if old_parent == parent
+        {
+            return Ok(entry.clone());
+        }
+        let put_away = long(&entry.finder_info, 28)?;
+        cat.move_entry(id, parent, put_away)?;
+        let entry = cat.entries[cat.index(id)?].clone();
+        self.finish_mutation(cat, when, &[old_parent, parent], &[], None)?;
+        Ok(entry)
+    }
+
     /// Replace Finder information without changing file dates, forks or CNID.
     /// Placement is permitted for locked/open files; it changes no fork bytes.
     pub fn set_finder_info(&mut self, id: u32, info: [u8; 32], when: u32)

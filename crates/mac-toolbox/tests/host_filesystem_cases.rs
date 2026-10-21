@@ -201,6 +201,9 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     require(files.child(read_only.id, mac_toolbox::files::ROOT_ID, 3) == Err(Error::NotFound))?;
     system.log("HOST_FS_STAGE resource-inspection\n")?;
     check_resources(system, read_only.id)?;
+    let read_only_item = files.child(read_only.id, mac_toolbox::files::ROOT_ID, 0)?;
+    require(files.move_into(read_only.id, read_only_item.id, mac_toolbox::files::ROOT_ID)
+            == Err(Error::ReadOnly))?;
     require(files.new_folder(read_only.id, mac_toolbox::files::ROOT_ID, "Forbidden")
             == Err(Error::ReadOnly))?;
     require(files.set_icon_location(read_only.id,

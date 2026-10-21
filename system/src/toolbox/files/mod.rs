@@ -558,6 +558,10 @@ impl Manager
         {
             return Err(BAD_ARGUMENT);
         }
+        if call.operation == MOVE_INTO && (call.cnid <= ROOT_ID || call.index < ROOT_ID)
+        {
+            return Err(BAD_ARGUMENT);
+        }
         let name = name.as_bytes();
         let mut protected = Vec::new();
         if call.operation != SET_ICON_LOCATION
@@ -598,7 +602,7 @@ impl Manager
         {
             return Err(ROLLBACK_FAILED);
         }
-        if call.operation == SET_ICON_LOCATION && mounted.info.read_only != 0
+        if matches!(call.operation, SET_ICON_LOCATION | MOVE_INTO) && mounted.info.read_only != 0
         {
             return Err(READ_ONLY);
         }
@@ -631,6 +635,18 @@ impl Manager
             }),
             SET_COMMENT => volume.set_comment(call.cnid, name, when, &protected).map(|()| None),
             RENAME => volume.rename(call.cnid, name, when, &protected).map(Some),
+            MOVE_INTO =>
+            {
+                volume.move_into(call.cnid, call.index, when, &protected).map(|(entry, changed)|
+                {
+                    if !changed
+                    {
+                        changes_catalog = false;
+                        mounted.catalog_revision = previous_revision;
+                    }
+                    Some(entry)
+                })
+            }
             SET_ICON_LOCATION =>
             {
                 let location = (call.fork == 1)
@@ -802,6 +818,7 @@ impl Manager
                     | SET_LOCKED
                     | SET_STATIONERY
                     | SET_ICON_LOCATION
+                    | MOVE_INTO
                     | COMMENT
                     | SET_COMMENT)
         {

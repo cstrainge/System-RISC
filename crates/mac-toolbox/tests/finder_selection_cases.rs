@@ -513,7 +513,30 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
                == Some(saved),
             "rename detached placement from file identity")?;
     checkpoint(system, "placement-reopened-renamed")?;
-    system.log("FINDER_SELECTION_USERSPACE_PASS stages=27 outline_steps=4000\n")?;
+    let destination = system.files().new_folder(volume, files::ROOT_ID, "Placement Destination")?;
+    let before = system.files().catalog(volume, placed_file.id)?;
+    let moved = system.files().move_into(volume, placed_file.id, destination.id)?;
+    require(system,
+            moved.id == before.id
+            && moved.finder_info == before.finder_info
+            && moved.created == before.created
+            && moved.modified == before.modified
+            && moved.parent == destination.id,
+            "folder move changed identity, placement or dates")?;
+    browser.folder_changed(system, reopened)?;
+    fill(system, &mut browser)?;
+    require(system, geometry(reopened).is_none(), "moved file left a stale source icon")?;
+    system.close_window(reopened)?;
+    browser.prune(system)?;
+    let destination_window = browser.open(system,
+                                          Location { volume,
+                                                     folder: destination.id })?;
+    fill(system, &mut browser)?;
+    require(system,
+            geometry(destination_window) == Some(Rect::new(96, 68, 128, 100)),
+            "folder move detached saved placement from its file")?;
+    checkpoint(system, "placement-moved")?;
+    system.log("FINDER_SELECTION_USERSPACE_PASS stages=28 outline_steps=4000\n")?;
     loop
     {
         system.wait_event(EventMask::from_bits_retain(0), 30)?;

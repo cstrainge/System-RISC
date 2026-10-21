@@ -11,6 +11,8 @@ use mac_toolbox::{System, Timestamp,
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 const WHEN: Timestamp = Timestamp::from_unix_seconds(1_792_326_896);
 mod file_write_cases;
+#[path = "support/file_moves.rs"]
+mod file_moves;
 struct Fixture
 {
     root: PathBuf,
@@ -2138,4 +2140,66 @@ fn classic_hfs_positions_preserve_dates_and_forks_through_native_and_legacy_gate
     let extracted = mac_formats::macbinary::decode(&fs::read(payload).unwrap()).unwrap();
     assert_eq!(extracted.data, (0..1700).map(|n| (n * 17) as u8).collect::<Vec<_>>());
     assert_eq!(extracted.resources, (0..900).map(|n| (n * 31) as u8).collect::<Vec<_>>());
+}
+
+#[test]
+fn classic_moves_preserve_identity_placement_forks_and_comments_across_remounts()
+{
+    let fixture = Fixture::new();
+    let ((parent, entry, data, resources), _) =
+        fixture.run(false, DiskFaults::default(), |system| {
+                   let volume = system.files().volume_at(0).unwrap().id;
+                   let sample = system.files().lookup(volume, ROOT_ID, "Source/Sample").unwrap();
+                   file_moves::exercise(system, volume, sample.id, WHEN)
+               });
+    fixture.run(true, DiskFaults::default(), |system| {
+               let volume = system.files().volume_at(0).unwrap().id;
+               file_moves::persisted(system, volume, &entry, &data, &resources);
+               assert_eq!(system.files().move_into_at(volume, entry.id, ROOT_ID, WHEN),
+                          Err(mac_toolbox::Error::ReadOnly));
+           });
+    let (_, activity) = fixture.run(false, DiskFaults::default(), |system| {
+                                   let volume = system.files().volume_at(0).unwrap().id;
+                                   let watch =
+                                       system.files().watch_directory(volume, parent).unwrap();
+                                   assert_eq!(system.files()
+                                                    .move_into_at(volume, entry.id, parent, WHEN)
+                                                    .unwrap()
+                                                    .id,
+                                              entry.id);
+                                   assert_eq!(watch.poll().unwrap(), None);
+                               });
+    assert_eq!(activity.writes, 0);
+    fixture.verify_hfs(":Container:Destination:Sample");
+}
+
+#[test]
+fn classic_move_write_and_flush_faults_restore_catalog_threads_and_forks()
+{
+    let fixture = Fixture::new();
+    let ((file, parent), _) = fixture.run(false, DiskFaults::default(), |system| {
+                                         let files = system.files();
+                                         let volume = files.volume_at(0).unwrap().id;
+                                         (files.lookup(volume, ROOT_ID, "Source/Sample").unwrap(),
+                                          files.lookup(volume, ROOT_ID, "Other").unwrap().id)
+                                     });
+    let before = fs::read(&fixture.disk).unwrap();
+    for fault in [DiskFaults { write_at: Some(3),
+                               partial_write: true,
+                               ..Default::default() },
+                  DiskFaults { flush_at: Some(1),
+                               ..Default::default() }]
+    {
+        fixture.run(false, fault, |system| {
+                   let volume = system.files().volume_at(0).unwrap().id;
+                   assert_eq!(system.files().move_into_at(volume, file.id, parent, WHEN),
+                              Err(mac_toolbox::Error::Io));
+               });
+        assert_eq!(fs::read(&fixture.disk).unwrap(), before, "move rollback: {fault:?}");
+        fixture.run(true, DiskFaults::default(), |system| {
+                   let volume = system.files().volume_at(0).unwrap().id;
+                   assert_eq!(system.files().catalog(volume, file.id).unwrap(), file);
+               });
+    }
+    fixture.verify_hfs(":Source:Sample");
 }

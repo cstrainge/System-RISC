@@ -82,10 +82,21 @@ asynchronous deactivate edge from a previous folder does not erase a desktop
 double-click. Explicit mount discovery refreshes reconcile selected volume IDs.
 Desktop error subjects come from the same cache, including wrapped captions.
 
-The expanded guest gate checks 25 stages and 4,000 outline moves across windows
+The expanded guest gate checks 28 stages and 4,000 outline moves across windows
 and desktop, with zero enumeration/measurement calls on those pointer paths.
 It also verifies volume double-clicks across the asynchronous deactivate edge.
 Native mounted-provider browsing/New Folder and rapid close regression checks,
 application launching/switching, and cold-boot Get Info persistence passed.
-Resident Drag Manager, persistent drop placement and batch copy/move/progress
-remain the following parts of the authoritative spec.
+The File Manager now persists icon positions in each object's Finder metadata,
+preserving dates, forks and unrelated bytes. Same-volume moves retain the CNID,
+complete Finder metadata and comments; the native guest gate closes/reopens and
+renames a placed file, moves it into another folder, and checks that Finder drops
+the source icon and renders the destination at its saved position. Shared SDK
+acceptance on HFS and HFS-B also covers folder/child identities, remounts,
+collisions, cycles, no-op scans/watches, open-file protection and rollback after
+partial write/flush faults. Legacy replies share the same services and only
+project their returned names to Str31. Read-only providers reject mutations.
+
+Writable provider metadata/moves, resident Drag Manager, drop coordinate/group
+placement and batch copy/move/progress remain parts of the authoritative spec.
+The storage API is not a claim that the complete drag UI is implemented.

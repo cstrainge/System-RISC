@@ -10,6 +10,8 @@ use mac_toolbox::{System, Timestamp,
                   files::{DataFileSpec, Filesystem, Fork, ROOT_ID, SeekFrom}};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+#[path = "support/file_moves.rs"]
+mod file_moves;
 const WHEN: Timestamp = Timestamp::from_mac_microseconds(4_600_000_000_123_456);
 struct Fixture
 {
@@ -727,4 +729,97 @@ fn placement_write_and_flush_failures_restore_the_original_metadata()
                    assert_eq!(entry.resource_length, 81 * 64 * 1024);
                });
     }
+}
+
+#[test]
+fn native_moves_preserve_identity_placement_forks_and_comments_across_remounts()
+{
+    let fixture = Fixture::new();
+    let ((parent, entry, data, resources), _) =
+        fixture.run(false, DiskFaults::default(), |system, volume| {
+                   file_moves::exercise(system, volume, fixture.file, WHEN)
+               });
+    fixture.run(true, DiskFaults::default(), |system, volume| {
+               file_moves::persisted(system, volume, &entry, &data, &resources);
+               assert_eq!(system.files().move_into_at(volume, fixture.file, ROOT_ID, WHEN),
+                          Err(mac_toolbox::Error::ReadOnly));
+           });
+    let (_, activity) =
+        fixture.run(false, DiskFaults::default(), |system, volume| {
+                   let watch = system.files().watch_directory(volume, parent).unwrap();
+                   let mut cursor = mac_toolbox::files::DirectoryCursor::default();
+                   system.files().scan_directory(volume, parent, &mut cursor).unwrap();
+                   assert_eq!(system.files()
+                                    .move_into_at(volume, fixture.file, parent, WHEN)
+                                    .unwrap()
+                                    .id,
+                              fixture.file);
+                   system.files().scan_directory(volume, parent, &mut cursor).unwrap();
+                   assert_eq!(watch.poll().unwrap(), None);
+               });
+    assert_eq!(activity.writes, 0, "same-parent move must not write");
+}
+
+#[test]
+fn native_move_write_and_flush_faults_leave_the_source_in_place()
+{
+    let fixture = Fixture::new();
+    let (parent, _) =
+        fixture.run(false, DiskFaults::default(), |system, volume| {
+                   system.files().new_folder_at(volume, ROOT_ID, "Target", WHEN).unwrap().id
+               });
+    let before = fs::read(&fixture.disk).unwrap();
+    for fault in [DiskFaults { write_at: Some(3),
+                               partial_write: true,
+                               ..Default::default() },
+                  DiskFaults { flush_at: Some(1),
+                               ..Default::default() }]
+    {
+        fixture.run(false, fault, |system, volume| {
+                   assert_eq!(system.files().move_into_at(volume, fixture.file, parent, WHEN),
+                              Err(mac_toolbox::Error::Io));
+               });
+        assert_eq!(fs::read(&fixture.disk).unwrap(), before, "move rollback: {fault:?}");
+        fixture.run(true, DiskFaults::default(), |system, volume| {
+                   assert_eq!(system.files().catalog(volume, fixture.file).unwrap().parent,
+                              ROOT_ID);
+               });
+    }
+}
+
+#[test]
+fn legacy_native_move_projects_only_the_reply_name()
+{
+    let fixture = Fixture::new();
+    let name = "A saved position on a file with a long native name.txt";
+    with_file_disk(&fixture.disk, false, DiskFaults::default(), |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let files = system.files();
+        let volume = files.volume_at(0).unwrap().id;
+        files.rename_at(volume, fixture.file, name, WHEN).unwrap();
+        let target = files.new_folder_at(volume, ROOT_ID, "Target", WHEN).unwrap();
+        let before = files.set_icon_location_at(volume,
+                                                fixture.file,
+                                                Some(mac_toolbox::Point { h: 91,
+                                                                          v: 56 }),
+                                                WHEN)
+                          .unwrap();
+        let mut call = mac_abi::files::FileCall { operation: mac_abi::files::MOVE_INTO,
+                                                  volume: volume.0,
+                                                  cnid: fixture.file.0,
+                                                  index: target.id.0,
+                                                  position: WHEN.mac_microseconds().unwrap(),
+                                                  ..Default::default() };
+        assert_eq!(legacy(services.trap, mac_abi::traps::PSTRING_FILE, &mut call), 0);
+        assert_eq!(call.entry.id, fixture.file.0);
+        assert_eq!(call.entry.parent, target.id.0);
+        assert_eq!(call.entry.name_length, 32);
+        assert_eq!(call.entry.name[0], 31);
+        assert_eq!(&call.entry.name[1..32], &name.as_bytes()[..31]);
+        let native = files.catalog(volume, fixture.file).unwrap();
+        assert_eq!(native.name(), name);
+        assert_eq!(native.finder_info, before.finder_info);
+        assert_eq!((native.created, native.modified, native.backup),
+                   (before.created, before.modified, before.backup));
+    }).unwrap();
 }

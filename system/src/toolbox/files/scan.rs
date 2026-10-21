@@ -100,6 +100,7 @@ pub(super) fn writes_catalog(operation: u32, index: u32) -> bool
              | SET_LOCKED
              | SET_STATIONERY
              | SET_ICON_LOCATION
+             | MOVE_INTO
              | SET_COMMENT)
     || (operation == TRASH_DIRECTORY && index != 0)
 }

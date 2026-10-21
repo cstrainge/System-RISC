@@ -287,6 +287,15 @@ the name to Str31; native replies retain full UTF-8 names. Finder reads this sam
 catalog metadata after close/reopen and rename, rather than keeping a path-keyed
 position map.
 
+Operation35 `MOVE_INTO` changes the existing `cnid`'s parent to `index` in the
+same mounted volume. `position` is the checked catalog-change timestamp. The
+name, CNID, file dates, both forks and complete Finder metadata (including icon
+placement) are preserved. Self/descendant moves, name collisions and protected
+objects are rejected before publication. Both source and destination directory
+watches are notified only after success; the same parent is a no-op. Cross-volume
+copy/move has distinct identity and transaction requirements and is not encoded
+as this operation. Legacy Pascal replies project the result name to Str31.
+
 References pair opaque mounted-volume IDs with persistent catalog IDs; volume
 and open handles include a generation. Reads copy into caller storage, and both forks have independent
 marks. Native slash paths are distinct from classic colon paths. CONTROL requests

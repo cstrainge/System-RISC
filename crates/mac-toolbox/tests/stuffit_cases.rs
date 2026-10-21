@@ -132,6 +132,7 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     let pattern = files.lookup(volume, ROOT_ID, "Top/Sub/Pattern")?;
     require(pattern.data_length == 8192 && pattern.resource_length == 0)?;
     require(files.rename(volume, pattern.id, "Renamed") == Err(Error::ReadOnly))?;
+    require(files.move_into(volume, pattern.id, ROOT_ID) == Err(Error::ReadOnly))?;
     require(files.set_icon_location(volume,
                                     pattern.id,
                                     Some(mac_toolbox::Point { h: 12,

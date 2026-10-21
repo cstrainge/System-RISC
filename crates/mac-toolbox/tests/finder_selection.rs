@@ -26,10 +26,10 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
     {
         assert!(!serial.contains(error), "{serial}");
     }
-    assert!(serial.contains("FINDER_SELECTION_USERSPACE_PASS stages=27 outline_steps=4000\n"),
+    assert!(serial.contains("FINDER_SELECTION_USERSPACE_PASS stages=28 outline_steps=4000\n"),
             "{serial}");
     let stages = report["stages"].as_array().unwrap();
-    assert_eq!(stages.len(), 27);
+    assert_eq!(stages.len(), 28);
     assert!(serial.contains("FINDER_INFO_MULTIPLE_TOTALS selected=10 logical=0 \
                              allocated=Some(0) error=None"),
             "{serial}");
