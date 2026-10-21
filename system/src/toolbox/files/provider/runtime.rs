@@ -19,13 +19,30 @@ struct Key
 {
     operation: u32,
     volume:    u32,
-    index:     u32
+    index:     u32,
+    cnid:      u32
 }
 enum Step
 {
     Count,
     Mount(u32),
     Unmount(u32),
+    Catalog
+    {
+        volume: u32,
+        node:   u32
+    },
+    Parent
+    {
+        volume: u32,
+        node:   u32
+    },
+    Child
+    {
+        volume: u32,
+        parent: u32,
+        index:  u32
+    },
     Cleanup
     {
         volume: u32,
@@ -55,6 +72,7 @@ enum Reply
 {
     Count(u32),
     Mounted(VolumeInfo),
+    Entry(CatalogInfo),
     Unmounted
 }
 
@@ -64,17 +82,25 @@ fn files<T>(call: impl FnOnce(&mut super::Manager) -> Result<T, Status>) -> Resu
 }
 fn submit(provider: u32, op: Operation, volume: u32, source: u64) -> Result<OwnedJob, Status>
 {
+    submit_args(provider,
+                op,
+                Arguments { volume,
+                            auxiliary: source,
+                            ..Default::default() })
+}
+fn submit_args(provider: u32, op: Operation, args: Arguments<'_>) -> Result<OwnedJob, Status>
+{
     let mut bytes = Vec::new();
-    bytes.try_reserve_exact(fs::HEADER_BYTES).map_err(|_| NO_MEMORY)?;
-    bytes.resize(fs::HEADER_BYTES, 0);
-    Arguments { volume,
-                auxiliary: source,
-                ..Default::default() }.encode(&mut bytes)
-                                      .map_err(|_| BAD_ARGUMENT)?;
+    let length = fs::HEADER_BYTES + args.payload.len();
+    bytes.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
+    bytes.resize(length, 0);
+    args.encode(&mut bytes).map_err(|_| BAD_ARGUMENT)?;
     let size = match op
     {
         Operation::Exports => 4,
         Operation::Mount => fs::MOUNT_BYTES + fs::METADATA_BYTES + 510,
+        Operation::Catalog => fs::METADATA_BYTES + 510,
+        Operation::Scan => 4 + fs::METADATA_BYTES + 510,
         _ => 0
     };
     crate::drivers::submit_background_to(provider,
@@ -114,6 +140,23 @@ fn retire(volume: u32) -> Result<Reply, Status>
 {
     files(|manager| manager.retire_provider_mount(volume)).map(|()| Reply::Unmounted)
 }
+fn finish_read(volume: u32, result: Result<CatalogInfo, Status>) -> Progress
+{
+    let released = files(|manager| manager.end_provider_read(volume));
+    Progress::Done(released.and(result).map(Reply::Entry))
+}
+fn continue_read(mut flight: Flight, operation: Operation, args: Arguments<'_>) -> Progress
+{
+    match submit_args(flight.provider, operation, args)
+    {
+        Ok(job) =>
+        {
+            flight.job = job;
+            Progress::Pending(flight)
+        }
+        Err(error) => finish_read(args.volume, Err(error))
+    }
+}
 fn advance(mut flight: Flight) -> Progress
 {
     let (result, never_sent) = match flight.job.poll()
@@ -128,6 +171,56 @@ fn advance(mut flight: Flight) -> Progress
     };
     match flight.step
     {
+        Step::Catalog { volume,
+                        node } =>
+        {
+            let result = result.and_then(|bytes| super::catalog(volume, &bytes, Some(node), None));
+            finish_read(volume, result)
+        }
+        Step::Parent { volume,
+                       node } =>
+        {
+            let result = result.and_then(|bytes| super::catalog(volume, &bytes, Some(node), None));
+            match result
+            {
+                Ok(entry) if !flight.abandoned =>
+                {
+                    let parent = if entry.id == ROOT_ID { ROOT_ID } else { entry.parent };
+                    if parent == entry.id
+                    {
+                        return finish_read(volume, Ok(entry));
+                    }
+                    flight.step = Step::Catalog { volume,
+                                                  node: parent };
+                    continue_read(flight,
+                                  Operation::Catalog,
+                                  Arguments { volume,
+                                              node: parent,
+                                              ..Default::default() })
+                }
+                other => finish_read(volume, other)
+            }
+        }
+        Step::Child { volume,
+                      parent,
+                      index } =>
+        {
+            match result.and_then(|bytes| super::scan_entry(volume, parent, &bytes))
+            {
+                Ok(None) if !flight.abandoned =>
+                {
+                    continue_read(flight,
+                                  Operation::Scan,
+                                  Arguments { volume,
+                                              parent,
+                                              offset: u64::from(index),
+                                              ..Default::default() })
+                }
+                Ok(None) => finish_read(volume, Err(OPERATION_CANCELLED)),
+                Ok(Some(entry)) => finish_read(volume, Ok(entry)),
+                Err(error) => finish_read(volume, Err(error))
+            }
+        }
         Step::Count =>
         {
             let result = result.and_then(|bytes| {
@@ -205,6 +298,11 @@ fn reply(call: &mut FileCall, result: Result<Reply, Status>) -> Status
             OK
         }
         Ok(Reply::Unmounted) => OK,
+        Ok(Reply::Entry(entry)) =>
+        {
+            call.entry = entry;
+            OK
+        }
         Err(status) => status
     }
 }
@@ -234,7 +332,8 @@ pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
     }
     let key = Key { operation: call.operation,
                     volume:    call.volume,
-                    index:     call.index };
+                    index:     call.index,
+                    cnid:      call.cnid };
     let mut flights = FLIGHTS.lock();
     if let Some(at) = flights.iter().position(|f| f.thread == thread)
     {
@@ -263,6 +362,60 @@ pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
         }
     }
     drop(flights);
+    if matches!(call.operation, CATALOG | PARENT | DIRECTORY_ENTRY)
+    {
+        let provider = match files(|manager| manager.begin_provider_read(call.volume))
+        {
+            Ok(provider) => provider,
+            Err(error) => return error
+        };
+        let volume = call.volume;
+        let node = if call.cnid == 0 { ROOT_ID } else { call.cnid };
+        let (step, operation, args) = if call.operation == DIRECTORY_ENTRY
+        {
+            (Step::Child { volume,
+                           parent: node,
+                           index: call.index },
+             Operation::Scan,
+             Arguments { volume,
+                         parent: node,
+                         offset: u64::from(call.index),
+                         ..Default::default() })
+        }
+        else
+        {
+            (if call.operation == PARENT
+             {
+                 Step::Parent { volume,
+                                node }
+             }
+             else
+             {
+                 Step::Catalog { volume,
+                                 node }
+             },
+             Operation::Catalog,
+             Arguments { volume,
+                         node,
+                         ..Default::default() })
+        };
+        let job = match submit_args(provider, operation, args)
+        {
+            Ok(job) => job,
+            Err(error) =>
+            {
+                let _ = files(|manager| manager.end_provider_read(volume));
+                return error;
+            }
+        };
+        return waiting(Flight { thread,
+                                owner,
+                                key,
+                                provider,
+                                step,
+                                job,
+                                abandoned: false });
+    }
     let provider = if call.operation == UNMOUNT_VOLUME
     {
         match files(|manager| manager.begin_provider_unmount(call.volume))

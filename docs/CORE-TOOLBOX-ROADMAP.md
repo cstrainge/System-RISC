@@ -75,7 +75,10 @@ the Linux companion in a private guest. Public Toolbox host-export count,
 mount, duplicate-mount reuse, volume metadata and unmount now run through owned
 resident jobs with native thread park/replay. Guest assertions cover writable
 and read-only sources, invalid-source cleanup and stale/foreign volume IDs after
-slot reuse. This is partial P17: provider catalog/fork dispatch, native write-back,
+slot reuse. Catalog, direct-child enumeration and parent queries also pass native
+SDK checks for nested folders, Unicode names and read-only roots. Read leases
+prevent unmount/reuse during pending catalog I/O; mounting no longer enumerates
+the root. This is partial P17: provider cursor/path/fork dispatch, native write-back,
 normal launcher exports, disconnect/exit/performance acceptance and P16 remain
 to be completed. See [the exact filesystem contract and coverage](FILESYSTEM-INTERFACE.md).
 

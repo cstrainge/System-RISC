@@ -159,7 +159,19 @@ and data-write admission fail as ReadOnly. The public snapshot carries
 `Option<VolumeCapacity>`, `VolumeSource` and provider FourCC/whole version;
 Finder omits unavailable capacity figures and Get Info describes virtual volumes
 without fabricating a block-device number. This gate does not yet establish
-provider catalog/fork APIs, write-back, app-exit/disconnect or responsiveness.
+fork APIs, write-back, app-exit/disconnect or responsiveness.
+
+Catalog, direct-child enumeration and parent queries also run through the public
+SDK in that guest case, including nested folders, Unicode names, end-of-directory
+and non-directory errors, empty read-only roots, and stale mount rejection after
+slot reuse. Resident read leases pin the mounted generation until the actual
+provider result is consumed, including cancellation/exit cleanup; unmount cannot
+race a pending read. Decoded metadata is bound to the requested node or parent.
+Mount reads only the root record, with an explicitly unknown child count, rather
+than enumerating the export. Catalog requests obtain exact directory counts;
+direct-child requests advance bounded provider scans and park between steps.
+Incremental public cursor scans, full path lookup and fork operations remain to
+be connected. This does not yet make external directories usable in Finder.
 
 Verification builds now share `<selected build>/host` for workspace host tests,
 examples, formatter tools and rustdoc. Native images/binaries and fixture targets
@@ -173,7 +185,7 @@ filesystem engine is wrapped by a narrow native entry with a private 1 MiB heap
 and an exact HDIR dependency. The allocation helper is a separate
 `mac-driver-alloc` crate so allocation-free modules do not acquire an allocator
 requirement through Cargo feature unification. These packages are not installed
-in the default disk yet: provider catalog/fork dispatch, write-back, normal
+in the default disk yet: provider cursor/path/fork dispatch, write-back, normal
 launcher export configuration and complete public-SDK filesystem acceptance
 remain in progress. Private guest mounting works; that is not yet a usable host
 directory in Finder or a mounted StuffIt volume, and is not a hard latency

@@ -12,12 +12,16 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
         return None;
     }
     let call = unsafe { &mut *pointer.cast::<FileCall>() };
+    let catalog = matches!(call.operation, files::CATALOG | files::PARENT | files::DIRECTORY_ENTRY);
     if !matches!(call.operation,
                  files::HOST_EXPORT_COUNT | files::MOUNT_HOST_EXPORT | files::UNMOUNT_VOLUME)
+       && !catalog
     {
         return None;
     }
-    if call.cnid != 0
+    if (!catalog && call.cnid != 0)
+       || (catalog && call.cnid == 1)
+       || (catalog && call.operation != files::DIRECTORY_ENTRY && call.index != 0)
        || call.handle != 0
        || call.fork != 0
        || call.whence != 0
@@ -34,6 +38,29 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
         return Some(BAD_ARGUMENT as i64);
     }
     call.transferred = 0;
+    if catalog
+    {
+        // Complete local reads in the same handoff used for routing. Introducing
+        // providers must not add a second Files guard/stack switch to disk reads.
+        let routed = crate::kernel::with_files(|manager| {
+            match manager.read_provider(call.volume)
+            {
+                Ok(Some(_)) => None,
+                Ok(None) =>
+                {
+                    Some(manager.request_owned(owner, call, "", &mut [])
+                                .map_or_else(|status| status, |()| OK))
+                }
+                Err(error) => Some(error)
+            }
+        });
+        match routed
+        {
+            Ok(Some(status)) => return Some(status as i64),
+            Ok(None) => (),
+            Err(error) => return Some(error.status() as i64)
+        }
+    }
     Some(super::provider::runtime::request(owner, call) as i64)
 }
 /// # Safety

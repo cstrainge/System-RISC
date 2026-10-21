@@ -557,7 +557,12 @@ fn filesystem_class_exchanges_metadata_and_both_forks_through_owned_byte_request
     assert_eq!(mounted.filesystem_version, 1);
     assert_eq!(mounted.capabilities, fs::READ | fs::WRITE);
     assert_eq!(mounted.capacity, None);
-    assert_eq!(mounted.root.child_count, 1);
+    assert_eq!(mounted.root.child_count, fs::CHILD_COUNT_UNKNOWN);
+    assert!(!filesystem.transport().calls.iter().any(|op| {
+                                                    matches!(op,
+                                                             Operation::ListBegin
+                                                             | Operation::ListNext)
+                                                }));
     let bytes = serve(&mut filesystem,
                       O::Catalog,
                       A { node: cnid,

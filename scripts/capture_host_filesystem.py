@@ -62,6 +62,14 @@ def capture(output, sdk=False):
         export = output / 'export'
         host = vm.build_dir() / 'host/debug'
         subprocess.run([str(host / 'risc-forks'), 'init', str(export), 'Native Host'], check=True)
+        if sdk:
+            source = output / 'Café'
+            source.write_bytes(b'Native catalog fixture\n')
+            subprocess.run([str(host / 'risc-forks'), 'import', str(export), str(source)], check=True)
+            subprocess.run([str(host / 'risc-forks'), 'mkdir', str(export), '/', 'Tools'], check=True)
+            child = output / 'Child'
+            child.write_bytes(b'Nested fixture\n')
+            subprocess.run([str(host / 'risc-forks'), 'import', str(export), str(child), '/Tools'], check=True)
         companion_args = [str(host / 'risc-host'), '--export', f'Test={export}']
         if sdk:
             readonly = output / 'readonly-export'

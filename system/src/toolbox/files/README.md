@@ -23,8 +23,11 @@ explicitly. Non-HFS devices and malformed volumes are skipped and counted in
 `rejected_volumes`. This count includes rejected devices/partition maps, not just
 partitions. Provider mounts can be unmounted after acknowledgement; block-device
 hotplug/unmount remains outside the current slice. Host export mount/count/
-unmount now has private public-SDK guest acceptance. Provider catalog/fork and
-write dispatch is still in progress; see [the filesystem class contract](../../../../docs/FILESYSTEM-INTERFACE.md).
+unmount, catalog, direct-child enumeration and parent queries now have private
+public-SDK guest acceptance. Pending provider reads pin their mounted generation
+through actual completion; unmount rejects a live read lease. Mount itself never
+enumerates the host root. Provider cursor/path/fork and write dispatch is still
+in progress; see [the filesystem class contract](../../../../docs/FILESYSTEM-INTERFACE.md).
 
 Provider requests own their input/results, select the exact generation-checked
 interface incarnation, and park the caller outside the synchronous firmware I/O

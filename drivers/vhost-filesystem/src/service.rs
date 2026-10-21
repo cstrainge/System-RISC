@@ -27,27 +27,21 @@ impl<R: Rpc> Filesystem<R>
                 let mut out = buffer(fs::MOUNT_BYTES + fs::METADATA_BYTES + 510)?;
                 let export = u32::try_from(args.auxiliary).map_err(|_| Cause::Invalid)?;
                 let info = self.mount(args.volume, export).await?;
-                let result: Result<Vec<u8>> =
-                    async {
-                        self.scan(args.volume, 2).await?;
-                        let root = self.project(args.volume, 2)?;
-                        let descriptor = fs::Mount { capabilities: fs::READ
-                                                                   | if info.read_only
-                                                                   {
-                                                                       0
-                                                                   }
-                                                                   else
-                                                                   {
-                                                                       fs::WRITE
-                                                                   },
-                                                     filesystem: *b"HOST",
-                                                     filesystem_version: mac_fork_file::VERSION,
-                                                     capacity: None,
-                                                     root };
-                        let count = descriptor.encode(&mut out).map_err(|_| Cause::Invalid)?;
-                        out.truncate(count);
-                        Ok(out)
-                    }.await;
+                let result: Result<Vec<u8>> = (|| {
+                    // Mount only reads the root record. Enumerate lazily
+                    // when a caller actually requests catalog children.
+                    let root = self.project(args.volume, 2)?;
+                    let descriptor =
+                        fs::Mount { capabilities: fs::READ
+                                                  | if info.read_only { 0 } else { fs::WRITE },
+                                    filesystem: *b"HOST",
+                                    filesystem_version: mac_fork_file::VERSION,
+                                    capacity: None,
+                                    root };
+                    let count = descriptor.encode(&mut out).map_err(|_| Cause::Invalid)?;
+                    out.truncate(count);
+                    Ok(out)
+                })();
                 if result.is_err()
                    && let Err(cleanup) = self.unmount(args.volume).await
                 {
@@ -87,6 +81,12 @@ impl<R: Rpc> Filesystem<R>
             }
             Operation::Scan =>
             {
+                self.find(args.volume, args.parent).await?;
+                if self.cached_node(args.volume, args.parent)?.metadata.kind
+                   == mac_fork_file::Kind::File
+                {
+                    return Err(Cause::Invalid.into());
+                }
                 let mut out = buffer(4 + fs::METADATA_BYTES + 510)?;
                 let index = usize::try_from(args.offset).map_err(|_| Cause::Invalid)?;
                 if self.child(args.volume, args.parent, index).is_err()

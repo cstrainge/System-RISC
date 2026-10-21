@@ -30,8 +30,8 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
     {
         assert!(!serial.contains(failure), "{serial}");
     }
-    let report = serde_json::json!({"status":"passed", "public_file_apis":"host export count; mount; metadata; read-only mutation rejection; repeated mount; invalid source cleanup; unmount; stale/foreign generation rejection",
-        "not_covered":"provider catalog/fork I/O, write-back, app-exit/disconnect and responsiveness", "capture":capture});
+    let report = serde_json::json!({"status":"passed", "public_file_apis":"host export count; mount; volume metadata; catalog; direct-child enumeration; parent; nested folders and Unicode names; read-only mutation rejection; repeated mount; invalid source cleanup; unmount; stale/foreign generation rejection",
+        "not_covered":"provider incremental cursor/path/fork I/O, write-back, app-exit/disconnect and responsiveness", "capture":capture});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     fs::write(root.join("results/system7/host-filesystem-mount-checks.json"),
               serde_json::to_vec_pretty(&report).unwrap()).unwrap();
