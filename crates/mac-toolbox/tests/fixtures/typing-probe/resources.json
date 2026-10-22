@@ -4,7 +4,7 @@
   "file_type": "FNDR",
   "creator": "MACS",
   "role": "application",
-  "abi_version": 7,
+  "abi_version": 8,
   "load_base": "0x81000000",
   "load_limit": "0x82000000",
   "description": "Actual native TextEdit app typing performance through public SDK",

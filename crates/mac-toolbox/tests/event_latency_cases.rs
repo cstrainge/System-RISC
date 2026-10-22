@@ -126,7 +126,8 @@ pub fn run(system: &System<'_>) -> Result<()>
                   .kind
             == EventKind::Null,
             "wait delivered queued event more than once")?;
-    let posted_null = Event { kind:      EventKind::Null,
+    let posted_null = Event { payload:   0,
+                              kind:      EventKind::Null,
                               message:   0x6e756c6c,
                               when:      9,
                               where_:    mac_toolbox::Point { h: 13,

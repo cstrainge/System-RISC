@@ -163,7 +163,8 @@ fn native(system: &System<'_>) -> Result<(), Failure>
     let events = system.events();
     events.flush(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT),
                  mac_toolbox::events::EventMask::from_bits_retain(0))?;
-    let event = Event { kind:      EventKind::Application1,
+    let event = Event { payload:   0,
+                        kind:      EventKind::Application1,
                         message:   0xfeed_beef,
                         when:      u32::MAX - 2,
                         where_:    Point { h: -17,

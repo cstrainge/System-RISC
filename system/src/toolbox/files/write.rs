@@ -26,7 +26,7 @@ impl Pending
         self.provider.as_ref().is_some_and(|state| state.orphaned())
     }
 }
-fn status(error: MutationError) -> Status
+pub(super) fn status(error: MutationError) -> Status
 {
     match error
     {

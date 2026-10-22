@@ -5,6 +5,22 @@ use crate::{Client, Result, status};
 
 impl Client<'_>
 {
+    pub fn move_icons(self, call: &mut mac_abi::files::IconMoveCall,
+                      entries: &[mac_abi::files::IconMove])
+                      -> Result<()>
+    {
+        if entries.len() > 1024
+        {
+            return Err(crate::Error::NoMemory);
+        }
+        call.entries = entries.as_ptr();
+        call.count = entries.len() as u32;
+        let result = status(self.invoke(FILE, call));
+        call.entries = core::ptr::null();
+        call.count = 0;
+        result
+    }
+
     pub fn file(self, call: &mut FileCall, name: &str, output: &mut [u8]) -> Result<()>
     {
         call.name = name.as_ptr();

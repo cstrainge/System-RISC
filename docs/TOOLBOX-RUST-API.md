@@ -89,3 +89,11 @@ their recorded pixel differences. Event/cursor regression gates pass, but the
 existing latency report does not enforce its 1 ms target or measure complete
 host-input-to-present latency. Private evidence is in results/system7 outside
 this repository, including toolbox-api-full-check.log and toolchain-checks.json.
+
+## Async/await contract
+
+Native applications must have easy async/await support in the base SDK. Futures
+are runtime independent; a built-in event-driven executor must work with std
+applications, with optional Tokio integration over the same completion source.
+UI thread affinity remains resident-validated. Drag promises are the initial
+slice, not a complete executor/std port. See [the delivery contract](ASYNC-SDK.md).

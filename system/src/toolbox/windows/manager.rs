@@ -470,6 +470,7 @@ impl WindowManager
                                        message: id.0,
                                        when,
                                        where_: events.mouse,
+                                       payload: 0,
                                        modifiers: (events.modifiers & !ACTIVE_FLAG)
                                                   | if active { ACTIVE_FLAG } else { 0 } });
         }
@@ -691,6 +692,7 @@ impl WindowManager
                      message: id.0,
                      when,
                      where_: events.mouse,
+                     payload: 0,
                      modifiers: events.modifiers })
     }
 
@@ -706,6 +708,7 @@ impl WindowManager
                      message: id.0,
                      when,
                      where_: events.mouse,
+                     payload: 0,
                      modifiers: events.modifiers })
     }
 

@@ -123,6 +123,7 @@ dependencies = [
  "toolbox-controls",
  "toolbox-crashes",
  "toolbox-dialogs",
+ "toolbox-drag",
  "toolbox-events",
  "toolbox-files",
  "toolbox-memory",
@@ -285,12 +286,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "toolbox-drag"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
+ "spinning_top",
+]
+
+[[package]]
 name = "toolbox-events"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-text",
  "mac-traps",
+ "toolbox-drag",
 ]
 
 [[package]]

@@ -123,8 +123,13 @@ impl Key
 }
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Event
+pub enum Event<'a>
 {
+    /// Borrowed metadata or drop capabilities from the resident Drag Manager.
+    Drag
+    {
+        offer: toolbox_drag::DragEvent<'a>, input: Input
+    },
     /// No queued event, including a pointer-motion wake. Retains physical input
     /// for drag/caret work without another trap. Poll and wait agree on this.
     Idle
@@ -169,7 +174,7 @@ pub enum Event
         kind: raw::EventKind, message: u32, input: Input
     }
 }
-impl Default for Event
+impl Default for Event<'_>
 {
     fn default() -> Self
     {
@@ -177,7 +182,7 @@ impl Default for Event
                      tag:   0 }
     }
 }
-impl From<raw::Event> for Event
+impl<'a> From<raw::Event> for Event<'a>
 {
     fn from(event: raw::Event) -> Self
     {
@@ -244,12 +249,14 @@ impl From<raw::Event> for Event
         }
     }
 }
-impl Event
+impl Event<'_>
 {
     pub const fn input(self) -> Input
     {
         match self
         {
+            Self::Drag { input,
+                         .. } => input,
             Self::Idle { input,
                          .. }
             | Self::MouseDown { input,
@@ -294,8 +301,14 @@ impl Event
     pub fn into_record(self) -> raw::Event
     {
         let input = self.input();
+        if let Self::Drag { offer,
+                            .. } = self
+        {
+            return offer.into_record(input.when, input.modifiers.bits());
+        }
         let (kind, message) = match self
         {
+            Self::Drag { .. } => unreachable!(),
             Self::Idle { tag,
                          .. } => (raw::EventKind::Null, tag),
             Self::MouseDown { window,
@@ -321,7 +334,8 @@ impl Event
                                               message:   window.0,
                                               where_:    input.at,
                                               when:      input.when,
-                                              modifiers: input.modifiers.bits() };
+                                              modifiers: input.modifiers.bits(),
+                                              payload:   0 };
                 record.modifiers = (record.modifiers & !raw::ACTIVE_FLAG) | u16::from(active);
                 return record;
             }
@@ -344,10 +358,11 @@ impl Event
                      message,
                      when: input.when,
                      where_: input.at,
-                     modifiers: input.modifiers.bits() }
+                     modifiers: input.modifiers.bits(),
+                     payload: 0 }
     }
 }
-impl Event
+impl Event<'_>
 {
     pub const fn window(self) -> Option<WindowId>
     {
@@ -357,6 +372,8 @@ impl Event
                               .. }
             | Self::MouseUp { window,
                             .. } => window,
+            Self::Drag { offer,
+                         .. } => offer.window(),
             Self::Update { window,
                            .. }
             | Self::Activate { window,
@@ -367,10 +384,27 @@ impl Event
         }
     }
 }
-impl From<Event> for raw::Event
+impl From<Event<'_>> for raw::Event
 {
-    fn from(event: Event) -> Self
+    fn from(event: Event<'_>) -> Self
     {
         event.into_record()
+    }
+}
+
+impl<'a> Event<'a>
+{
+    pub(crate) fn decode(client: mac_traps::Client<'a>, record: raw::Event) -> Self
+    {
+        if record.kind == raw::EventKind::OsEvent
+           && let Some(offer) = toolbox_drag::DragEvent::decode(client, record)
+        {
+            return Self::Drag { offer,
+                                input: Input { at:        record.where_,
+                                               when:      record.when,
+                                               modifiers:
+                                                   Modifiers::from_bits_retain(record.modifiers) } };
+        }
+        Self::from(record)
     }
 }

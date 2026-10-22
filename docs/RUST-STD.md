@@ -257,3 +257,26 @@ Measure image/RAM growth, idle wakeups, syscall and lock durations, and Cursor
 Test/input/present responsiveness under worker, filesystem and network load.
 No std adapter should poll queues, redraw windows or spin in a blocked call when
 a readiness wake or no-change early-out suffices.
+
+## Async SDK and runtime integration
+
+The native SDK must support ordinary async application entry points and
+awaitable services. Its built-in event-driven executor is std-compatible, with
+allocation and owned futures in the normal configuration. Optional Tokio support
+uses the same completion notifications; it does not replace resident services or
+become a kernel dependency. Include event/operation readiness, lost-wake-free
+registration, parking, timers, cancellation and UI thread affinity in the std
+platform work. See [ASYNC-SDK.md](ASYNC-SDK.md) for acceptance and actual status.
+
+P8 starts at the minimum platform/Toolbox foundation, not after complete Toolbox
+coverage. Full std is the normal userspace destination, not an optional parallel
+application tier. Keep current no_std apps as bring-up gates only; do not let
+allocator-free APIs or temporary event-pump plumbing become permanent application
+requirements. Broader Toolbox managers and networking can develop alongside std.
+
+Priority clarification, 2026-10-21: generic IPC and networking are optional later
+work, not prerequisites for the first std/async applications. Prioritize
+allocation/startup, files, clocks, OS threads/TLS/synchronization, event wakeups and
+System-owned panic reporting. Compile the standard library's surface while
+reporting unavailable facilities honestly; do not invent working sockets or
+require a generic IPC subsystem merely to deliver resident completions.

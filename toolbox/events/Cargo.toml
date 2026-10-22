@@ -9,3 +9,4 @@ publish.workspace = true
 mac-abi.workspace = true
 mac-traps.workspace = true
 mac-text = { path = "../../crates/mac-text" }
+toolbox-drag = { path = "../drag" }

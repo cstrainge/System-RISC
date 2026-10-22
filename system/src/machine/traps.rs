@@ -301,6 +301,13 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             crate::kernel::with_desktop(|runtime| runtime.event_service(call))
                 .unwrap_or_else(|error| error.status()) as i64
         }
+        DRAG =>
+        unsafe {
+            toolbox::drag::native::dispatch(pointer, size, |call, input, output| {
+                crate::kernel::with_desktop(|runtime| runtime.drag_request(call, input, output))
+                    .map_err(|error| error.status())?
+            })
+        },
         SCRAP =>
         {
             crate::kernel::with_scrap(|manager| unsafe {

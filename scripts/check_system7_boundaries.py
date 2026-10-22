@@ -107,8 +107,13 @@ def check(args):
     # This wire-text codec contains no service state or resident implementation.
     assert not normal_dependencies(by_name['mac-text']), 'wire text codec must remain independent'
     for name in [p['name'] for p in packages.values() if p['name'].startswith('toolbox-')]:
-        assert all(dep in ('mac-abi', 'mac-traps', 'mac-text') or dep.startswith('toolbox-')
-                   for dep in normal_dependencies(by_name[name])), (name, 'client depends on backend')
+        # The drag SDK's bounded app-local Waker registry needs synchronization,
+        # not a resident service implementation. Events decodes its readiness
+        # notifications. Keep these pure helper dependencies explicitly scoped.
+        dependencies = normal_dependencies(by_name[name])
+        helpers = {'spinning_top', 'lock_api', 'scopeguard'} if name == 'toolbox-drag' or 'toolbox-drag' in dependencies else set()
+        assert all(dep in ('mac-abi', 'mac-traps', 'mac-text') or dep in helpers or dep.startswith('toolbox-')
+                   for dep in dependencies), (name, 'client depends on backend')
     assert not any(dep.startswith('toolbox-') for dep in normal_dependencies(by_name['mac-system'])), \
         'System must implement managers internally, without depending on public client bindings'
 

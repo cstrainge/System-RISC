@@ -41,6 +41,7 @@ skrifa = { version = "0.48.0", default-features = false, features = ["libm"] }
 mac-build.workspace = true
 
 [dev-dependencies]
+unicode-segmentation = "=1.13.3"
 mac-build.workspace = true
 mac-toolbox.workspace = true
 toolbox-controls = { path = "../toolbox/controls" }

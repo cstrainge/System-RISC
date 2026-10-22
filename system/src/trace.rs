@@ -6,7 +6,7 @@ mod enabled
 {
     use spinning_top::Spinlock;
     const APPS: usize = 16;
-    const SERVICES: usize = 32;
+    const SERVICES: usize = 64;
     const RECORDS: usize = 8192;
     #[repr(C)]
     struct Trace
@@ -45,7 +45,8 @@ mod enabled
     pub fn service(app: u64, number: u32, depth: usize, elapsed: u64)
     {
         let mut data = TRACE.lock();
-        let row = &mut data.services[app.min((APPS - 1) as u64) as usize][(number & 31) as usize];
+        let row = &mut data.services[app.min((APPS - 1) as u64) as usize]
+            [number as usize & (SERVICES - 1)];
         let index = if depth == 1 { 0 } else { 2 };
         row[index] += 1;
         row[index + 1] += elapsed;

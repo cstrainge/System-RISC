@@ -362,3 +362,12 @@ itself establish live host filesystem behavior. Public mount/read/write tests mu
 exercise parking, cancellation/disconnect, other-app progress and single delivery
 of mutations before the host mount milestone is complete. SMP, general worker
 threads and unresponsive-provider timeout recovery remain separate work.
+
+## Native async/await runtimes
+
+The [base SDK async contract](docs/ASYNC-SDK.md) supports a std-compatible,
+event-driven executor and optional Tokio over the same resident completion
+notifications. Futures never retain manager guards across await. UI task polling
+stays on the owning OS thread; Send/Sync object mobility does not waive
+WrongThread checks. Worker-safe I/O can later use native worker threads.
+Cancellation must distinguish confirmed cleanup from a racing committed mutation.

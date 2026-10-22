@@ -3,6 +3,7 @@ use crate::*;
 
 /// System-owned Standard File dialogs; native range beyond every classic 16-bit trap.
 pub const SCROLL_BOX: u32 = 0x10021;
+pub const DRAG: u32 = 0x10022;
 pub const PSTRING_SCROLL_BOX: u32 = SCROLL_BOX | PSTRING_BIT;
 pub const STANDARD_FILE: u32 = 0x10020;
 pub const PSTRING_STANDARD_FILE: u32 = STANDARD_FILE | PSTRING_BIT;

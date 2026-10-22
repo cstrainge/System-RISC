@@ -204,6 +204,10 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
                                     size: usize)
                                     -> i64
 {
+    if size == size_of::<files::IconMoveCall>()
+    {
+        return unsafe { dispatch_icon_moves(manager, pointer, size) };
+    }
     if size == size_of::<mac_abi::files::DataWriteCall>()
     {
         return unsafe { super::write::dispatch(manager, owner, pointer, size) };
@@ -255,4 +259,33 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
         unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
     };
     manager.request_owned(owner, call, name, output).map_or_else(|e| e, |()| OK) as i64
+}
+
+/// # Safety
+/// The request and its declared array are live, aligned caller borrows.
+unsafe fn dispatch_icon_moves(manager: &mut super::Manager, pointer: *mut (), size: usize) -> i64
+{
+    if pointer.is_null()
+       || size != size_of::<files::IconMoveCall>()
+       || !(pointer as usize).is_multiple_of(align_of::<files::IconMoveCall>())
+    {
+        return BAD_ARGUMENT as i64;
+    }
+    let call = unsafe { &mut *pointer.cast::<files::IconMoveCall>() };
+    if call.count > 1024
+       || call.count != 0
+          && (call.entries.is_null()
+              || !(call.entries as usize).is_multiple_of(align_of::<files::IconMove>()))
+    {
+        return BAD_ARGUMENT as i64;
+    }
+    let rows = if call.count == 0
+    {
+        &[]
+    }
+    else
+    {
+        unsafe { core::slice::from_raw_parts(call.entries, call.count as usize) }
+    };
+    manager.move_icons(call, rows).err().unwrap_or(OK) as i64
 }

@@ -823,3 +823,14 @@ fn legacy_native_move_projects_only_the_reply_name()
                    (before.created, before.modified, before.backup));
     }).unwrap();
 }
+
+#[path = "support/icon_moves.rs"]
+mod icon_moves;
+#[test]
+fn atomic_icon_groups_validate_every_item_before_publishing_moves_and_positions()
+{
+    let fixture = Fixture::new();
+    fixture.run(false, DiskFaults::default(), |system, volume| {
+               icon_moves::exercise(system, volume, fixture.file, WHEN)
+           });
+}

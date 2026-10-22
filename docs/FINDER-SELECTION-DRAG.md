@@ -333,7 +333,10 @@ the same negotiation. Note the mapping in the manager's docs.
 
 ## 7. Out of scope / future
 
-- Legacy Drag Manager trap surface (compatibility closure).
+- Full execution of original 68k callbacks remains part of compatibility closure.
+  User ruling 2026-10-21: the Drag Toolbox must retain the original API contract.
+  Implement and test original selector/data marshalling against the shared store;
+  do not design a native-only core or claim complete legacy execution prematurely.
 - Translucent drag images; spring-loaded folders (both later
   classic features; the session model must not preclude them).
 - Inter-application data drags beyond the Finder file-reference
@@ -356,3 +359,11 @@ the same negotiation. Note the mapping in the manager's docs.
    adopt.* (Chloë: Yes)
 5. **Drag feedback v1 is outline-only**; translucency later.
    *Recommended: adopt.* (Chloë: Yes, outline only.)
+
+## Rust async refinement, 2026-10-21
+
+The Rust API ergonomics spec's synchronous `take.text()` sketch is refined by
+explicit user approval: promised-data takes are awaitable, with SDK event
+servicing so a same-app source can produce the flavor without deadlocking.
+Inline data remains immediately ready. This feeds the [base async SDK](ASYNC-SDK.md):
+std-compatible event executor, runtime-independent futures, optional Tokio.

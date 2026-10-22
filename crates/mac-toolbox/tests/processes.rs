@@ -28,7 +28,7 @@ fn independent_applications_use_timer_preemption_and_private_toolbox_state()
     let command = report["launch"].as_array().unwrap();
     assert!(command.windows(2).any(|args| args[0] == "-smp" && args[1] == "1"),
             "preemption must be demonstrated on one hart");
-    for marker in ["TRAPS_READY: resident ecall dispatcher ABI=7",
+    for marker in ["TRAPS_READY: resident ecall dispatcher ABI=8",
                    "PROCESS_INVALID_LAUNCH_PASS",
                    "PROCESS_PASCAL_PASS cases=5",
                    "PROCESS_PREEMPTION_PASS",

@@ -10,6 +10,7 @@ pub use mac_traps::types::InlineText;
 pub use mac_traps::{Client, Cnid, Error, MenuId, ProcessId, Result as ToolboxResult, ThreadId,
                     TypeCode, VolumeId,
                     types::{ResourceKey, ResourceScope}};
+pub use toolbox_drag as drag;
 pub use toolbox_events::{Event, EventMask, Modifiers};
 pub mod panic;
 pub use toolbox_controls as controls;
@@ -45,6 +46,11 @@ impl<'a> System<'a>
     pub fn client(&self) -> Client<'a>
     {
         self.client
+    }
+
+    pub fn drags(&self) -> drag::Drags<'a>
+    {
+        drag::Drags::new(self.client)
     }
 
     pub fn processes(&self) -> processes::Processes<'a>
@@ -176,13 +182,13 @@ impl<'a> System<'a>
         self.quickdraw().port(id).command(kind, bounds, color, text)
     }
 
-    pub fn next_event(&self, mask: EventMask) -> core::result::Result<Event, Error>
+    pub fn next_event(&self, mask: EventMask) -> core::result::Result<Event<'a>, Error>
     {
         self.events().next(mask)
     }
 
     pub fn wait_event(&self, mask: EventMask, timeout_ticks: u32)
-                      -> core::result::Result<Event, Error>
+                      -> core::result::Result<Event<'a>, Error>
     {
         self.events().wait_event(mask, timeout_ticks)
     }

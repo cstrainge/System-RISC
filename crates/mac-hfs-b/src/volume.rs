@@ -7,6 +7,7 @@ use crate::{copy,
             tree::{self, Node, Page, Store},
             *};
 mod writes;
+mod moves;
 pub use writes::DataSave;
 mod check;
 pub use check::CheckReport;

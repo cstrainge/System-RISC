@@ -151,7 +151,7 @@ unsafe extern "C" fn(*const SystemServices) -> i32
 ```
 
 An application validates the table before calling the loader-supplied trap gate.
-ABI 7's `SystemServices` is 24 bytes on RV64:
+ABI 8's `SystemServices` is 24 bytes on RV64:
 
 | Offset | Size | Field |
 | --- | --- | --- |
@@ -467,7 +467,29 @@ object before accessing its semantic menu number; stale and foreign handles fail
 FIND resolves a current semantic menu number explicitly, and DISPOSE requires a
 live handle. CLEAR retains generation history. Native owners use these handles;
 classic semantic menu operations continue to use their original resource IDs.
-All native applications, System and definition resources rebuild at ABI 7.
+All native applications, System and definition resources rebuild at ABI 8.
+
+## Native drag transport (ABI 8)
+
+Native Event records add a u64 manager payload; the original big-endian
+16-byte EventRecord codec still excludes it. Drag notifications put the complete
+generation-tagged session ID in its low 32 bits and the complete WindowId in its
+high 32 bits. These IDs must never be truncated into the message field. Message
+high byte selects enter/within/leave/drop/promise/data-ready/finished; tracking
+low bits carry item count and a precomputed intersection of offered types.
+These messages are native service events, not the original Drag Manager callback
+ABI. Rebuild System and every application/definition together at ABI 8.
+
+Native `fref` flavor payloads are exactly 24 bytes: little-endian u32 volume at
+0, CNID at 4, source parent CNID at 8; little-endian i16 origin h/v at 12/14;
+big-endian QuickDraw Rect at 16. Bulk item publication concatenates those records
+in one bounded request. The parent binds a drop to the captured source snapshot,
+so concurrent moves fail validation instead of moving an item from an unexpected
+folder. This is distinct from the original `hfs ` HFSFlavor/FSSpec contract.
+
+Native TEXT is UTF-8. The classic boundary converts counted MacRoman TEXT,
+including classic byte sizes and partial-read/set offsets, through the same
+resident data. See [the compatibility inventory](docs/DRAG-MANAGER.md).
 
 ## Native kernel module contracts (DABI/EABI, schema 1)
 

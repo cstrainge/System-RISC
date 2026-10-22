@@ -25,6 +25,7 @@ pub const MAX_VOLUMES: usize = crate::toolbox::handles::Kind::Volumes.capacity()
 pub const MAX_OPEN_FILES: usize = crate::toolbox::handles::Kind::Files.capacity();
 use crate::toolbox::handles::{Kind, Table};
 mod write;
+mod moves;
 const MAX_PATH: usize = 4096;
 
 /// Capabilities borrowed from firmware. Only construction crosses the unsafe ABI.

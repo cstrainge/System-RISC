@@ -86,6 +86,7 @@ fn open_about(system: &System<'_>, id: &mut WindowId) -> Result<(), Error>
 fn finder(system: &System<'_>) -> Result<(), Error>
 {
     let mut browser = browser::Browser::default();
+    let mut dragging = browser::dragging::Controller::default();
     let mut watches = watches::Controller::default();
     let mut info = get_info::Controller::default();
     let _menus = menus::install(system)?;
@@ -159,6 +160,21 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         if matches!(event,Event::Other{kind:events::classic::EventKind::OsEvent,message,..} if message & 0xff00_0000==0x0200_0000)
         {
             browser.prune(system)?;
+        }
+        if let Event::Drag { .. } = event
+        {
+            let _ = try_action(system, &mut alerts, dragging.event(system, &mut browser, event))?;
+            if matches!(event,
+                        Event::Drag { offer:
+                                          drag::DragEvent::Ended { outcome:
+                                                                       drag::DragOutcome::Moved
+                                                                       | drag::DragOutcome::Copied },
+                                      .. })
+            {
+                let _ = try_action(system, &mut alerts, watches.poll(system, &mut browser))?;
+                update_menus(system, &browser, &info)?;
+            }
+            continue;
         }
         if browser.marquee_tracking()
            && matches!(event, Event::Idle { .. } | Event::MouseUp { .. } | Event::KeyDown { .. })
@@ -391,6 +407,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                    || browser.contains(event.window().unwrap_or_default()) =>
             {
                 let _ = try_action(system, &mut alerts, browser.click(system, event))?;
+                let _ = try_action(system, &mut alerts, dragging.begin(system, &mut browser))?;
             }
             _ =>
             {}

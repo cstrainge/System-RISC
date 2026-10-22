@@ -303,6 +303,19 @@ device/extension boundaries and acceptance criteria.
 
 ### P8 — Rust standard library
 
+P8 begins when the minimum platform/Toolbox foundation is present; completion
+of the entire Toolbox is not a prerequisite. Generic IPC and networking may follow later; they do not gate the first std
+applications. Full std is the default native
+application destination, with no_std retained for kernel/low-level modules and
+transitional bring-up gates.
+
+Native SDK async/await is a base application requirement. Deliver a std-compatible
+event-driven executor, runtime-independent futures and optional Tokio integration
+over the same completion source. See [ASYNC-SDK.md](ASYNC-SDK.md) for sequence,
+thread-affinity rules and acceptance. Drag promises are the first slice; guest
+std/Tokio availability is not implied by that slice.
+
+
 Status: backlog; existing no_std apps, resident services and one-hart app/event
 wait scheduling provide foundations, not a std port. Inventory compiler/target
 selection and all std platform backends, pin a maintained sysroot patch/build,

@@ -158,7 +158,7 @@ fn physical_input_uses_real_ecalls_and_keeps_raw_events_during_menu_dispatch()
         previous = uptime;
     }
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
-    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=7"));
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=8"));
     let acceptance = serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","acceptance":"public Event Manager ECALL physical state, raw queue and resource menu composition","capture":capture})).unwrap();
     fs::write(output.join("rust-acceptance.json"), &acceptance).unwrap();
     fs::write(root.join("results/system7/event-manager-checks.json"), &acceptance).unwrap();

@@ -1272,5 +1272,10 @@ fn native_host_renames_preserve_identity_forks_and_nested_writes_across_remount(
     assert_eq!(run(fs.read(volume, open, Fork::Resource, 0, resources.len())).unwrap(), resources);
     run(fs.close_file(volume, open)).unwrap();
     run(fs.unmount(volume)).unwrap();
-    assert_eq!(Volume::open(&temp.0).unwrap().resolve("/Renamed Tools/New name").unwrap().metadata.catalog_id, file);
+    assert_eq!(Volume::open(&temp.0).unwrap()
+                                    .resolve("/Renamed Tools/New name")
+                                    .unwrap()
+                                    .metadata
+                                    .catalog_id,
+               file);
 }

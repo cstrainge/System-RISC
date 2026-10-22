@@ -38,7 +38,8 @@ impl super::Desktop
                 {
                     return;
                 }
-                Event { kind: if down { EventKind::MouseDown } else { EventKind::MouseUp },
+                Event { payload: 0,
+                        kind: if down { EventKind::MouseDown } else { EventKind::MouseUp },
                         message: window,
                         when,
                         where_: point,
@@ -55,7 +56,8 @@ impl super::Desktop
                 {
                     return;
                 }
-                Event { kind: if !down
+                Event { payload: 0,
+                        kind: if !down
                         {
                             EventKind::KeyUp
                         }
@@ -217,7 +219,8 @@ impl super::Desktop
         {}
         if let Some(active) = self.windows.active_window()
         {
-            self.events.post_system(Event { kind:      EventKind::Activate,
+            self.events.post_system(Event { payload:   0,
+                                            kind:      EventKind::Activate,
                                             message:   active.0,
                                             when:      Self::when(),
                                             where_:    self.events.mouse,

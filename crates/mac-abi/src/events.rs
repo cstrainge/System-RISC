@@ -44,7 +44,9 @@ pub struct Event
     pub message:   u32,
     pub when:      u32,
     pub where_:    Point,
-    pub modifiers: u16
+    pub modifiers: u16,
+    /// Native manager payload. The classic 16-byte EventRecord codec omits it.
+    pub payload:   u64
 }
 impl Event
 {

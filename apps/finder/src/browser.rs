@@ -2,6 +2,8 @@
 use core::{cell::Cell, fmt::Write};
 #[path = "desktop.rs"]
 pub(crate) mod desktop;
+#[path = "dragging.rs"]
+pub(crate) mod dragging;
 
 use mac_toolbox::{System,
                   files::{CatalogInfo, ROOT_ID, VolumeInfo},
@@ -30,10 +32,10 @@ struct FolderWindow
     scroll:         i16,
     scroll_h:       i16,
     scrollbars:     [controls::ControlId; 2],
-    pending_clicks: [Option<Event>; 8]
+    pending_clicks: [Option<mac_toolbox::events::classic::Event>; 8]
 }
 #[derive(Clone, Copy)]
-struct IconDrag
+struct IconPress
 {
     entry:    Location,
     anchor:   Point,
@@ -56,7 +58,7 @@ pub struct Browser
     desktop:          desktop::State,
     desktop_active:   bool,
     last_click:       Option<(WindowId, VolumeId, Cnid, u32)>,
-    drag:             Option<IconDrag>,
+    press:            Option<IconPress>,
     marquee:          Option<Marquee>,
     trash_hover:      bool,
     pub startup:      VolumeId,
@@ -515,7 +517,7 @@ impl Browser
                 self.draw(system, window.window)?;
                 let pending =
                     core::mem::take(&mut self.windows[slot].as_mut().unwrap().pending_clicks);
-                for event in pending.into_iter().flatten()
+                for event in pending.into_iter().flatten().map(Event::from)
                 {
                     if matches!(event, Event::MouseDown { .. })
                     {
@@ -1080,7 +1082,7 @@ impl Browser
 
     pub fn click(&mut self, system: &System<'_>, event: Event) -> Result<(), Error>
     {
-        self.drag = None;
+        self.press = None;
         self.marquee = None;
         let mut target: Option<(WindowId, VolumeId, Cnid)> = None;
         if event.window().is_none()
@@ -1139,7 +1141,7 @@ impl Browser
                 let pending = &mut self.windows[slot].as_mut().unwrap().pending_clicks;
                 let next =
                     pending.iter_mut().find(|click| click.is_none()).ok_or(Error::NoMemory)?;
-                *next = Some(event);
+                *next = Some(event.into_record());
                 return Ok(());
             }
             let mut hit = None;
@@ -1177,7 +1179,7 @@ impl Browser
                 {
                     next = Selection::singleton(index);
                 }
-                self.drag = next.contains(index).then_some(IconDrag { entry:  item.location(),
+                self.press = next.contains(index).then_some(IconPress { entry:  item.location(),
                                             anchor: event.input().at,
                                             collapse:(!shift && window.selected.contains(index) && window.selected.len()>1).then_some((slot,index)) });
             }
@@ -1217,7 +1219,7 @@ impl Browser
         if double
         {
             let (_, volume, folder) = target.unwrap();
-            self.drag = None;
+            self.press = None;
             if volume == VolumeId::NONE
             {
                 self.open(system, Location::default())?;
@@ -1305,7 +1307,7 @@ impl Browser
                                  .iter_mut()
                                  .find(|event| event.is_none())
                                  .ok_or(Error::NoMemory)?;
-                *next = Some(event);
+                *next = Some(event.into_record());
                 return Ok(());
             }
             if matches!(event, Event::KeyDown { .. })
@@ -1319,28 +1321,13 @@ impl Browser
         {
             return self.track_marquee(system, event);
         }
-        if let Some(drag) = self.drag
+        if let Some(press) = self.press
+           && matches!(event, Event::MouseUp { .. })
         {
-            let moved = (i32::from(event.input().at.h) - i32::from(drag.anchor.h)).abs() > 4
-                        || (i32::from(event.input().at.v) - i32::from(drag.anchor.v)).abs() > 4;
-            let hover = moved && icon_view::TRASH_BOUNDS.contains(event.input().at);
-            if self.trash_hover != hover
+            self.press = None;
+            if let Some((slot, index)) = press.collapse
             {
-                self.trash_hover = hover;
-                self.redraw_trash_icon(system)?;
-            }
-            if matches!(event, Event::MouseUp { .. })
-            {
-                self.drag = None;
-                self.trash_hover = false;
-                if hover
-                {
-                    self.move_entry_to_trash(system, drag.entry)?;
-                }
-                else if !moved && let Some((slot, index)) = drag.collapse
-                {
-                    self.change_selection(system, slot, Selection::singleton(index), &[])?;
-                }
+                self.change_selection(system, slot, Selection::singleton(index), &[])?;
             }
         }
         Ok(())
@@ -1733,7 +1720,7 @@ impl Browser
     {
         self.refresh_trash(system)?;
         self.last_click = None;
-        self.drag = None;
+        self.press = None;
         self.marquee = None;
         self.trash_hover = false;
         for slot in 0..self.windows.len()

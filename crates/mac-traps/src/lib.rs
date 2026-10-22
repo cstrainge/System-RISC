@@ -23,8 +23,57 @@ pub struct Client<'a>
 {
     services: &'a SystemServices
 }
+impl core::fmt::Debug for Client<'_>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        f.write_str("Client")
+    }
+}
+impl PartialEq for Client<'_>
+{
+    fn eq(&self, other: &Self) -> bool
+    {
+        core::ptr::eq(self.services, other.services)
+    }
+}
+impl Eq for Client<'_>
+{
+}
 impl<'a> Client<'a>
 {
+    /// Explicit original A-line transport for translated 68k applications/tests.
+    /// The checked System adapter reads only this guest-memory slice.
+    pub fn classic(self, instruction: u16, registers: &mut ClassicRegisters, guest_base: u32,
+                   memory: &mut [u8])
+                   -> Result<()>
+    {
+        let mut call = ClassicCall { instruction,
+                                     reserved: 0,
+                                     guest_base,
+                                     memory: memory.as_mut_ptr(),
+                                     memory_length: memory.len(),
+                                     registers: *registers };
+        let result = self.invoke(CLASSIC, &mut call);
+        *registers = call.registers;
+        status(result)
+    }
+
+    /// Lend binary flavor storage for this call only. Managers retain owned data.
+    pub fn drag(self, call: &mut drag::Call, input: &[u8], output: &mut [u8]) -> Result<()>
+    {
+        call.input = input.as_ptr();
+        call.length = input.len();
+        call.output = output.as_mut_ptr();
+        call.capacity = output.len();
+        let result = self.invoke(DRAG, call);
+        call.input = core::ptr::null();
+        call.output = core::ptr::null_mut();
+        call.length = 0;
+        call.capacity = 0;
+        status(result)
+    }
+
     /// Borrow UTF-8 and output storage for one resident panic-report request.
     pub fn crash(self, call: &mut crashes::CrashCall, input: &str, output: &mut [u8])
                  -> Result<()>

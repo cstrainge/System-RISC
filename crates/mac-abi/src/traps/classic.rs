@@ -270,3 +270,6 @@ pub const FM_SWAP_FONT: u16 = 0xa901;
 pub const FONT_METRICS: u16 = 0xa835;
 pub const SET_F_SCALE_DISABLE: u16 = 0xa834;
 pub const SET_FRACT_ENABLE: u16 = 0xa814;
+
+/// Original System 7 Drag Manager selector dispatcher.
+pub const DRAG_DISPATCH: u16 = 0xabed;

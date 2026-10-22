@@ -1,4 +1,5 @@
 //! Actual Finder source over observed public SDK calls forwarded to real System.
+#![cfg(target_arch = "riscv64")]
 use core::{fmt::Write,
            sync::atomic::{AtomicU64, Ordering}};
 
@@ -410,7 +411,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     })?;
     action(system, &mut browser, "desktop-band-cancel", 0, false, |browser| {
         browser.track(system,
-                      Event::from(abi::events::Event { kind:      abi::events::EventKind::KeyDown,
+                      Event::from(abi::events::Event { payload:   0,
+                                                       kind:      abi::events::EventKind::KeyDown,
                                                        message:   0x351b,
                                                        when:      6203,
                                                        where_:    band_end,

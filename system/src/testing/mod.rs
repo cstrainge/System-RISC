@@ -4,12 +4,15 @@
 pub mod shared;
 pub mod menus;
 pub mod scrap;
+pub mod drag;
 use core::cell::RefCell;
 
 use mac_abi::{traps::*, *};
 
 struct Session
 {
+    drag:          crate::toolbox::drag::Manager,
+    drag_notices:  std::vec::Vec<crate::toolbox::drag::Notice>,
     standard_file: crate::toolbox::standard_file::Manager,
     scroll_boxes:  crate::toolbox::controls::scrollbox::Manager,
     controls:      crate::toolbox::controls::objects::Manager,
@@ -47,7 +50,9 @@ impl Default for Session
                                                              data: data.to_vec() });
         }
         let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources);
-        Self { controls: Default::default(),
+        Self { drag: Default::default(),
+               drag_notices: std::vec::Vec::new(),
+               controls: Default::default(),
                scroll_boxes: Default::default(),
                standard_file: Default::default(),
                crashes: Default::default(),
@@ -146,6 +151,20 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                 Ok(()) => OK as i64,
                 Err(_) => IO_ERROR as i64
             }
+        }
+        DRAG => unsafe { crate::toolbox::drag::native::dispatch(pointer,size, |call,input,output| {
+            SESSION.with(|slot| { let mut s=slot.borrow_mut(); let s=s.as_mut().unwrap();
+                drag::request(s,call,input,output)
+            })
+        }) },
+        CLASSIC => {
+            let call = match unsafe { request::<ClassicCall>(pointer,size) } { Ok(c)=>c, Err(s)=>return s as i64 };
+            if call.memory.is_null() || call.memory_length > 128*1024*1024
+                || u64::from(call.guest_base) + call.memory_length as u64 > u64::from(u32::MAX)+1 { return BAD_ARGUMENT as i64; }
+            let memory=unsafe { core::slice::from_raw_parts_mut(call.memory,call.memory_length) };
+            SESSION.with(|slot| { let mut s=slot.borrow_mut(); let s=s.as_mut().unwrap();
+                crate::toolbox::classic::dispatch(call.instruction,&mut call.registers,call.guest_base,memory,&mut drag::Services(s)) as i64
+            })
         }
         STANDARD_FILE => {
             let call = unsafe { request::<mac_abi::standard_file::StandardFileCall>(pointer,size) };
@@ -266,6 +285,10 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                            {
                                Ok(call) =>
                                {
+                                   if call.mask & (1 << EventKind::OsEvent as u16) != 0
+                                      && let Some(index) = session.drag_notices.iter().position(|n| n.owner == files::current_owner()) {
+                                        call.event = session.drag_notices.remove(index).event; return OK as i64;
+                                   }
                                    call.event = session.events
                                                        .next_matching(call.mask)
                                                        .unwrap_or_else(|| {

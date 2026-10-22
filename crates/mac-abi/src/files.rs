@@ -49,6 +49,29 @@ pub const SET_ICON_LOCATION: u32 = 34;
 /// Move within a mounted volume. cnid is the object, index its new parent.
 /// Preserve identity, object dates, Finder information and both forks.
 pub const MOVE_INTO: u32 = 35;
+pub const MOVE_ICONS: u32 = 36;
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct IconMove
+{
+    pub cnid:            u32,
+    pub expected_parent: u32,
+    pub parent:          u32,
+    /// 0 keeps placement, 1 sets point, 2 clears placement.
+    pub placement:       u32,
+    pub point:           crate::Point
+}
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct IconMoveCall
+{
+    pub operation: u32,
+    pub volume:    u32,
+    pub count:     u32,
+    pub changed:   u32,
+    pub when:      u64,
+    pub entries:   *const IconMove
+}
 pub const SCAN_ENTRY: u32 = 0;
 pub const SCAN_PENDING: u32 = 1;
 pub const SCAN_DONE: u32 = 2;

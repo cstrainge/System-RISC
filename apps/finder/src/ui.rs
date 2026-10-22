@@ -54,7 +54,7 @@ pub struct Alerts<'a>
 {
     alert:   Option<dialogs::Alert<'a>>,
     empty:   bool,
-    context: Option<Event>
+    context: Option<Event<'a>>
 }
 impl<'a> Alerts<'a>
 {
@@ -133,7 +133,7 @@ impl<'a> Alerts<'a>
         Ok(())
     }
 
-    pub fn set_context(&mut self, event: Event)
+    pub fn set_context(&mut self, event: Event<'a>)
     {
         if self.alert.is_none()
         {

@@ -51,6 +51,30 @@ pub(super) fn native_protection<D: BlockDevice>(v: &mut mac_hfs_b::Volume<'_, D>
 }
 impl<D: WritableBlockDevice> Volume<'_, D>
 {
+    pub fn move_entries(&mut self, entries: &[(u32, u32, [u8; 32], bool)], when: u64,
+                        protected: &[u32])
+                        -> MutationResult<bool>
+    {
+        let changed = match &mut self.backend
+        {
+            Backend::Hfs(v) => v.move_entries(entries, legacy_time(when)?, protected)?,
+            Backend::HfsB(v) =>
+            {
+                for &(id, parent, _, _) in entries
+                {
+                    let entry = v.entry(id).map_err(mutation_error)?;
+                    if entry.parent != parent
+                    {
+                        native_protection(v, id, protected)?;
+                    }
+                }
+                v.move_entries(entries, Timestamp(when)).map_err(mutation_error)?
+            }
+        };
+        self.refresh();
+        Ok(changed)
+    }
+
     pub fn save_data(&mut self, spec: DataSave<'_>, data: &[u8], protected: &[u32])
                      -> MutationResult<CatalogEntry>
     {

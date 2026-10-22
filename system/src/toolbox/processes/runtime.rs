@@ -41,6 +41,18 @@ impl Saved
 }
 impl Desktop
 {
+    pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
+    {
+        if notice.owner == self.owner
+        {
+            self.events.post_drag(notice.event);
+        }
+        else if let Some(local) = self.locals.iter_mut().find(|s| s.id == notice.owner)
+        {
+            local.events.post_drag(notice.event);
+        }
+    }
+
     pub(super) fn forget_cursor_window(&mut self, window: WindowId)
     {
         self.textedit.forget_cursor_window(window);
@@ -63,6 +75,7 @@ impl Desktop
     /// or posting synthetic events. The timer presents through the cursor overlay.
     pub(super) fn tick_cursor(&mut self) -> bool
     {
+        self.drag_tick();
         let now = Self::when();
         let changed = if self.owner == self.foreground
         {
@@ -559,6 +572,9 @@ impl Desktop
                 self.window_owners.retain(|(_, id)| *id != caller);
                 let previous = self.processes.previous(caller);
                 self.enter(previous);
+                let feedback = self.drag.feedback();
+                self.drag.close_owner(caller, Self::when());
+                self.drag_effects(feedback);
                 self.locals.retain(|s| s.id != caller);
                 self.processes.remove(caller);
                 self.invalidate_finder_icons();

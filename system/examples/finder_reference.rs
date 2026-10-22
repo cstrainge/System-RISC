@@ -12,7 +12,7 @@ use mac_toolbox::Error;
 // This original-reference renderer only exercises System resource icons.
 #[allow(dead_code)]
 mod icon_view;
-use icon_view::{Drawing, Layout, State};
+use icon_view::{Caption, Drawing, Layout, State};
 struct Draw<'a, 'b>
 {
     canvas:    &'a mut Canvas<'b>,
@@ -103,22 +103,29 @@ fn main()
         {
             let selected = args[1].contains("selected") && (!two || index == 1);
             let open = args[1].contains("open") && (!two || index == 1);
-            icon_view::draw_item(&mut draw,
-                                 24000,
-                                 icon_view::volume_bounds(index),
-                                 if index == 0 { "REA Fixtures" } else { "Second Volume" },
-                                 State { active: true,
-                                         selected,
-                                         open,
-                                         desktop: true }).unwrap();
+            let name = if index == 0 { "REA Fixtures" } else { "Second Volume" };
+            let caption =
+                Caption::measure_with_limit(name, 60, |text| draw.text_width(text)).unwrap();
+            icon_view::draw_item_measured(&mut draw,
+                                          24000,
+                                          icon_view::volume_bounds(index),
+                                          name,
+                                          caption,
+                                          State { active: true,
+                                                  selected,
+                                                  open,
+                                                  desktop: true }).unwrap();
         }
-        icon_view::draw_item(&mut draw,
-                             -3993,
-                             icon_view::TRASH_BOUNDS,
-                             "Trash",
-                             State { active: true,
-                                     desktop: true,
-                                     ..Default::default() }).unwrap();
+        let caption =
+            Caption::measure_with_limit("Trash", 60, |text| draw.text_width(text)).unwrap();
+        icon_view::draw_item_measured(&mut draw,
+                                      -3993,
+                                      icon_view::TRASH_BOUNDS,
+                                      "Trash",
+                                      caption,
+                                      State { active: true,
+                                              desktop: true,
+                                              ..Default::default() }).unwrap();
     }
     else
     {
@@ -133,15 +140,20 @@ fn main()
         };
         for (index, name) in names.into_iter().enumerate()
         {
-            let width = draw.text_width(name).unwrap();
-            let bounds = layout.place(width);
+            let caption = Caption::measure(name, |text| draw.text_width(text)).unwrap();
+            let bounds = layout.place(caption);
             let state = State { active:   true,
                                 selected: index == 0 && args[1].contains("selected"),
                                 open:     index == 0 && args[1].contains("open"),
                                 desktop:  false };
-            icon_view::draw_item(&mut draw, -3999, bounds, name, state).unwrap();
+            icon_view::draw_item_measured(&mut draw, -3999, bounds, name, caption, state).unwrap();
             println!("item={} width={} rect={},{},{},{}",
-                     name, width, bounds.left, bounds.top, bounds.right, bounds.bottom);
+                     name,
+                     caption.width(),
+                     bounds.left,
+                     bounds.top,
+                     bounds.right,
+                     bounds.bottom);
         }
     }
     let mut output = BufWriter::new(fs::File::create(&args[2]).unwrap());

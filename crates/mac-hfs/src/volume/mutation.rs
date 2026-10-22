@@ -997,6 +997,68 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         Ok(entry)
     }
 
+    /// Stage the whole icon group in one catalog transaction.
+    pub fn move_entries(&mut self, entries: &[(u32, u32, [u8; 32], bool)], when: u32,
+                        protected: &[u32])
+                        -> MutationResult<bool>
+    {
+        self.writable()?;
+        if entries.len() > 1024
+        {
+            return Err(MutationError::NoMemory);
+        }
+        let mut cat = self.mutation_catalog()?;
+        let mut touched = Vec::new();
+        reserve(&mut touched, entries.len() * 2)?;
+        let mut changed = false;
+        let mut ids = Vec::new();
+        ids.try_reserve_exact(entries.len()).map_err(|_| MutationError::NoMemory)?;
+        ids.extend(entries.iter().map(|e| e.0));
+        ids.sort_unstable();
+        if ids.windows(2).any(|p| p[0] == p[1])
+        {
+            return Err(MutationError::Invalid);
+        }
+        for &(id, parent, info, _trash) in entries
+        {
+            if id <= 2 || parent < 2
+            {
+                return Err(MutationError::Invalid);
+            }
+            let entry = &cat.entries[cat.index(id)?];
+            if entry.parent != parent
+            {
+                self.protection(&cat, id, protected)?;
+                if entry.flags & 1 != 0 || word(&entry.finder_info, 8)? & 0x1000 != 0
+                {
+                    return Err(MutationError::Protected);
+                }
+                let old_parent = entry.parent;
+                let put_away = long(&entry.finder_info, 28)?;
+                cat.move_entry(id, parent, put_away)?;
+                touched.extend_from_slice(&[old_parent, parent]);
+            }
+            else if entry.finder_info == info
+            {
+                continue;
+            }
+            let (record, start) = cat.record_index(id)?;
+            let index = cat.index(id)?;
+            let directory = cat.entries[index].directory;
+            let first = start + if directory { 22 } else { 4 };
+            let last = start + if directory { 38 } else { 56 };
+            cat.tree.records[record][first..first + 16].copy_from_slice(&info[..16]);
+            cat.tree.records[record][last..last + 16].copy_from_slice(&info[16..]);
+            cat.entries[index].finder_info = info;
+            changed = true;
+        }
+        if changed
+        {
+            self.finish_mutation(cat, when, &touched, &[], None)?;
+        }
+        Ok(changed)
+    }
+
     /// Replace Finder information without changing file dates, forks or CNID.
     /// Placement is permitted for locked/open files; it changes no fork bytes.
     pub fn set_finder_info(&mut self, id: u32, info: [u8; 32], when: u32)

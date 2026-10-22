@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 use super::{Canvas, Rect, geometry::sect_rect, region::Region};
 use crate::toolbox::windows::WindowManager;
-const PIXELS: usize = 2 * (640 + 480);
+const PIXELS: usize = 4 * (640 + 480);
 #[derive(Clone, Copy)]
 struct Saved
 {
@@ -15,7 +15,8 @@ pub struct OutlineUnder
     pixels: [u32; PIXELS],
     pieces: [Saved; PIXELS],
     length: usize,
-    used:   usize
+    used:   usize,
+    solid:  bool
 }
 impl Default for OutlineUnder
 {
@@ -25,11 +26,24 @@ impl Default for OutlineUnder
                pieces: [Saved { bounds: Rect::ZERO,
                                offset: 0 }; PIXELS],
                length: 0,
-               used:   0 }
+               used:   0,
+               solid:  false }
     }
 }
 impl OutlineUnder
 {
+    /// Drag feedback crosses window planes and remains below the cursor.
+    pub fn paint_screen(&mut self, canvas: &mut Canvas<'_>, outline: Rect, damage: &Region)
+    {
+        self.length = 0;
+        self.used = 0;
+        self.solid = false;
+        self.paint_piece(canvas,
+                         outline,
+                         Rect::new(0, 21, canvas.width as i16, canvas.height as i16),
+                         damage);
+    }
+
     /// Exactly one active target owns tracking feedback. Desktop feedback is
     /// below every window; window feedback is clipped by higher structures.
     pub fn paint(&mut self, canvas: &mut Canvas<'_>, windows: &WindowManager,
@@ -37,6 +51,7 @@ impl OutlineUnder
     {
         self.length = 0;
         self.used = 0;
+        self.solid = false;
         if let Some(window) = windows.active_window().and_then(|id| windows.window(id))
         {
             let Some(mut outline) = window.outline_rect()
@@ -56,6 +71,31 @@ impl OutlineUnder
                                           |visible| {
                                               self.paint_piece(canvas, outline, visible, damage)
                                           });
+        }
+    }
+
+    pub fn paint_highlight(&mut self, canvas: &mut Canvas<'_>, windows: &WindowManager,
+                           window: u32, rect: Rect, damage: &Region)
+    {
+        self.length = 0;
+        self.used = 0;
+        self.solid = true;
+        let screen = Rect::new(0, 21, canvas.width as i16, canvas.height as i16);
+        let mut paint = |visible| {
+            for inset in [0, 1]
+            {
+                let mut bounds = rect;
+                bounds.inset(inset, inset);
+                self.paint_piece(canvas, bounds, visible, damage);
+            }
+        };
+        if window == 0
+        {
+            windows.for_each_desktop_rect(screen, &mut paint);
+        }
+        else
+        {
+            windows.for_each_visible_rect(crate::toolbox::windows::WindowId(window), &mut paint);
         }
     }
 
@@ -110,7 +150,14 @@ impl OutlineUnder
                                                                           [at..at + count]);
             self.used += count;
         }
-        canvas.fill_rect(rect, [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55], 0, 0xffffff);
+        if self.solid
+        {
+            canvas.fill_rect(rect, [0xff; 8], 0x2222aa, 0x2222aa);
+        }
+        else
+        {
+            canvas.fill_rect(rect, [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55], 0, 0xffffff);
+        }
     }
 
     pub fn restore(&mut self, canvas: &mut Canvas<'_>)
@@ -127,6 +174,7 @@ impl OutlineUnder
         }
         self.length = 0;
         self.used = 0;
+        self.solid = false;
     }
 }
 

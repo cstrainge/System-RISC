@@ -134,7 +134,7 @@ fn editable_info_windows_persist_through_real_filesystem_commits_and_cold_boot()
         {
             assert!(!serial.contains(failure), "unexpected{failure}:\n{serial}");
         }
-        assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=7"));
+        assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=8"));
     }
     let observations = report["observations"].as_array().unwrap();
     for observation in observations

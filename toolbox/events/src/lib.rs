@@ -30,24 +30,26 @@ impl<'a> Events<'a>
         self.client.monotonic_nanoseconds()
     }
 
-    pub fn next(self, mask: EventMask) -> Result<Event>
+    pub fn next(self, mask: EventMask) -> Result<Event<'a>>
     {
-        self.client.next_event(mask.bits()).map(Event::from)
+        self.client.next_event(mask.bits()).map(|event| Event::decode(self.client, event))
     }
 
     /// Sleep this OS thread until a matching event is ready or the maximum
     /// number of 60-Hz uptime ticks elapses. Zero polls without sleeping.
     /// Physical pointer motion may also return a null event for drag tracking.
     /// Other application threads remain runnable while this thread waits.
-    pub fn wait_event(self, mask: EventMask, timeout_ticks: u32) -> Result<Event>
+    pub fn wait_event(self, mask: EventMask, timeout_ticks: u32) -> Result<Event<'a>>
     {
-        self.client.wait_event(mask.bits(), timeout_ticks).map(Event::from)
+        self.client
+            .wait_event(mask.bits(), timeout_ticks)
+            .map(|event| Event::decode(self.client, event))
     }
 
     /// Post to the native application queue consumed by `next`.
     /// This queue retains 128 events and drops its oldest event on overflow.
     /// It is a native service, separate from the classic OS-level queue.
-    pub fn post(self, event: Event) -> Result<()>
+    pub fn post(self, event: Event<'_>) -> Result<()>
     {
         self.call(EventCall { operation: NATIVE_POST,
                               event: event.into_record(),
@@ -56,9 +58,13 @@ impl<'a> Events<'a>
     }
 
     /// Inspect the native queue without removing its first matching event.
-    pub fn peek(self, mask: EventMask) -> Result<Option<Event>>
+    pub fn peek(self, mask: EventMask) -> Result<Option<Event<'a>>>
     {
-        self.selected(NATIVE_PEEK, mask.bits()).map(|event| event.map(Event::from))
+        self.selected(NATIVE_PEEK, mask.bits()).map(|event| {
+                                                   event.map(|event| {
+                                                            Event::decode(self.client, event)
+                                                        })
+                                               })
     }
 
     /// Remove matching native queued events before the first stop-mask event.
@@ -207,4 +213,37 @@ pub struct EventRead
 {
     pub available: bool,
     pub event:     classic::Event
+}
+
+impl<'a> Events<'a>
+{
+    /// Await a drag-data future while dispatching this application's ordinary
+    /// events. A source owner handles DataRequested by service_promises(); the
+    /// receive side wakes on DataReady rather than spinning/polling every tick.
+    pub fn resolve_drag<T>(self,
+                           future: impl core::future::Future<Output = toolbox_drag::Result<T>>,
+                           mut dispatch: impl FnMut(Event<'a>) -> Result<()>)
+                           -> toolbox_drag::Result<T>
+    {
+        use core::{pin::pin,
+                   task::{Context, Poll, Waker}};
+        let mut future = pin!(future);
+        let mut context = Context::from_waker(Waker::noop());
+        let mut ready = true;
+        loop
+        {
+            if ready && let Poll::Ready(result) = future.as_mut().poll(&mut context)
+            {
+                return result;
+            }
+            let event =
+                self.wait_event(EventMask::ALL, 120).map_err(toolbox_drag::DragError::from)?;
+            // This compatibility pump serves drag-data futures. Ordinary input
+            // and timeout nulls are dispatch work, never data readiness.
+            ready = matches!(event, Event::Drag { offer: toolbox_drag::DragEvent::DataReady
+                | toolbox_drag::DragEvent::Ended { .. }
+                | toolbox_drag::DragEvent::Tracking(toolbox_drag::TrackingOffer { phase: toolbox_drag::TrackPhase::Left, .. }), .. });
+            dispatch(event).map_err(toolbox_drag::DragError::from)?;
+        }
+    }
 }

@@ -1,8 +1,10 @@
 //! Safe File Manager clients. Storage and HFS mutation engines live in System.
 #![no_std]
 #![forbid(unsafe_code)]
+mod moves;
 use mac_abi::files::*;
 use mac_traps::types::{FileHandle, FileWriteHandle};
+pub use moves::{IconMove, Placement};
 mod scan;
 mod watch;
 pub use mac_abi::{dates::Timestamp, files::COMMENT_MAX_BYTES};

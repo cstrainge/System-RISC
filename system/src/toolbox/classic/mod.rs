@@ -4,10 +4,16 @@
 #![forbid(unsafe_code)]
 use mac_abi::{traps::{ClassicRegisters, classic::*},
               *};
+mod drag;
 type Result<T> = core::result::Result<T, Status>;
 
 pub trait Services
 {
+    fn drag(&mut self, _call: &mut mac_abi::drag::Call, _input: &[u8], _output: &mut [u8])
+            -> Result<()>
+    {
+        Err(NOT_SUPPORTED)
+    }
     fn event(&mut self, _mask: u16, _remove: bool) -> Result<Event>
     {
         Err(NOT_SUPPORTED)
@@ -123,6 +129,7 @@ fn execute(instruction: u16, registers: &mut ClassicRegisters, memory: &mut Memo
     let at = |offset: u32| sp.checked_add(offset).ok_or(BAD_ARGUMENT);
     let arguments = match instruction
     {
+        DRAG_DISPATCH => drag::execute(registers, memory, services)?,
         SET_RECT =>
         {
             let destination = memory.long(at(8)?)?;
@@ -460,7 +467,8 @@ mod tests
     {
         fn event(&mut self, _: u16, _: bool) -> Result<Event>
         {
-            Ok(Event { kind:      EventKind::KeyDown,
+            Ok(Event { payload:   0,
+                       kind:      EventKind::KeyDown,
                        message:   0x00410061,
                        when:      9,
                        where_:    Point { h: 3,

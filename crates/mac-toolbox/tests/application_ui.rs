@@ -90,7 +90,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     {
         assert!(!serial.contains(failure), "unexpected {failure}:\n{serial}");
     }
-    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=7"));
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=8"));
     let snapshots = report["snapshots"].as_array().unwrap();
     let observation = |name: &str| snapshots.iter().find(|value| value["name"] == name).unwrap();
     let image = |name: &str| frame(&output.join(observation(name)["frame"].as_str().unwrap()));

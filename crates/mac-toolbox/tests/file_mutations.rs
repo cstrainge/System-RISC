@@ -2203,3 +2203,16 @@ fn classic_move_write_and_flush_faults_restore_catalog_threads_and_forks()
     }
     fixture.verify_hfs(":Source:Sample");
 }
+
+#[path = "support/icon_moves.rs"]
+mod icon_moves;
+#[test]
+fn atomic_icon_groups_validate_every_item_before_publishing_moves_and_positions()
+{
+    let fixture = Fixture::new();
+    fixture.run(false, DiskFaults::default(), |system| {
+               let volume = system.files().volume_at(0).unwrap().id;
+               let file = system.files().lookup(volume, ROOT_ID, "Source/Sample").unwrap().id;
+               icon_moves::exercise(system, volume, file, WHEN);
+           });
+}

@@ -25,6 +25,8 @@ mod standard_file_runtime;
 mod dialog_runtime;
 #[path = "events/runtime.rs"]
 mod event_runtime;
+#[path = "drag/runtime.rs"]
+mod drag_runtime;
 #[path = "textedit/runtime.rs"]
 mod textedit_runtime;
 #[path = "processes/runtime.rs"]
@@ -32,52 +34,54 @@ mod local;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
-    standard_file:   super::standard_file::Manager,
-    scroll_boxes:    super::controls::scrollbox::Manager,
-    controls:        super::controls::objects::Manager,
-    crash:           super::crashes::Manager,
-    dialogs:         super::dialogs::DialogState,
-    desktop:         DesktopLayer,
-    menus:           super::menus::Manager,
-    cursors:         super::quickdraw::cursors::Cursors,
-    busy_cursor:     super::quickdraw::cursors::Cursors,
-    responsiveness:  super::quickdraw::responsiveness::Responsiveness,
-    text_cursor:     mac_abi::quickdraw::MonoCursor,
-    worlds:          super::quickdraw::worlds::Worlds,
-    classic_font:    mac_abi::quickdraw::FontSelection,
-    legacy:          crate::context::LegacyGlobals,
-    pub windows:     WindowManager,
-    first_window:    WindowId,
-    events:          Box<EventManager>,
-    textedit:        super::textedit::Manager,
-    definitions:     Definitions,
-    content:         Vec<Content>,
-    pending_content: Vec<Content>,
-    content_cache:   super::quickdraw::content_cache::ContentCache,
-    menu_cache:      super::quickdraw::menu_cache::MenuBarCache,
-    decoders:        [Decoder; 2],
-    pub revision:    u32,
-    pub updates:     u32,
-    last_key:        u8,
-    last_action:     &'static str,
-    redraw:          bool,
-    content_damage:  Vec<(WindowId, super::quickdraw::region::Region)>,
-    outline_damage:  Vec<Rect>,
-    outline_under:   Box<super::quickdraw::outline_overlay::OutlineUnder>,
-    cursor_dirty:    bool,
-    cursor_bounds:   Rect,
-    activity:        u64,
-    last_observed:   (u64, u32, u64),
-    presentations:   u64,
-    compositions:    u64,
-    cdef:            DefinitionEntry,
-    mdef:            DefinitionEntry,
-    owner:           u64,
-    foreground:      u64,
-    locals:          Vec<local::Saved>,
-    window_owners:   Vec<(WindowId, u64)>,
-    processes:       super::processes::Manager,
-    app_menu:        super::processes::menu::ApplicationMenu
+    drag:                 super::drag::Manager,
+    standard_file:        super::standard_file::Manager,
+    scroll_boxes:         super::controls::scrollbox::Manager,
+    controls:             super::controls::objects::Manager,
+    crash:                super::crashes::Manager,
+    dialogs:              super::dialogs::DialogState,
+    desktop:              DesktopLayer,
+    menus:                super::menus::Manager,
+    cursors:              super::quickdraw::cursors::Cursors,
+    busy_cursor:          super::quickdraw::cursors::Cursors,
+    responsiveness:       super::quickdraw::responsiveness::Responsiveness,
+    text_cursor:          mac_abi::quickdraw::MonoCursor,
+    worlds:               super::quickdraw::worlds::Worlds,
+    classic_font:         mac_abi::quickdraw::FontSelection,
+    legacy:               crate::context::LegacyGlobals,
+    pub windows:          WindowManager,
+    first_window:         WindowId,
+    events:               Box<EventManager>,
+    textedit:             super::textedit::Manager,
+    definitions:          Definitions,
+    content:              Vec<Content>,
+    pending_content:      Vec<Content>,
+    content_cache:        super::quickdraw::content_cache::ContentCache,
+    menu_cache:           super::quickdraw::menu_cache::MenuBarCache,
+    decoders:             [Decoder; 2],
+    pub revision:         u32,
+    pub updates:          u32,
+    last_key:             u8,
+    last_action:          &'static str,
+    redraw:               bool,
+    content_damage:       Vec<(WindowId, super::quickdraw::region::Region)>,
+    outline_damage:       Vec<Rect>,
+    outline_under:        Box<super::quickdraw::outline_overlay::OutlineUnder>,
+    drag_highlight_under: Box<super::quickdraw::outline_overlay::OutlineUnder>,
+    cursor_dirty:         bool,
+    cursor_bounds:        Rect,
+    activity:             u64,
+    last_observed:        (u64, u32, u64),
+    presentations:        u64,
+    compositions:         u64,
+    cdef:                 DefinitionEntry,
+    mdef:                 DefinitionEntry,
+    owner:                u64,
+    foreground:           u64,
+    locals:               Vec<local::Saved>,
+    window_owners:        Vec<(WindowId, u64)>,
+    processes:            super::processes::Manager,
+    app_menu:             super::processes::menu::ApplicationMenu
 }
 
 impl Desktop
@@ -279,6 +283,7 @@ impl Desktop
                   legacy:Default::default(),
                   windows: WindowManager::with_gate(crate::machine::traps::gateway),
                   events: Box::new(EventManager::new()),
+                  drag: Default::default(),
                   textedit: Default::default(),
                   definitions,
                   content: Vec::new(),
@@ -293,7 +298,7 @@ impl Desktop
                   redraw: true,
                   content_damage: Vec::new(),
                   outline_damage:Vec::new(),
-                  outline_under:Box::default(),
+                  outline_under:Box::default(), drag_highlight_under:Box::default(),
                   cursor_dirty: true,
                   cursor_bounds: Rect::ZERO,
                   activity: 0,
@@ -338,7 +343,8 @@ impl Desktop
 
     fn menu_selection(&mut self, selection: mac_abi::menus::Selection, when: u32)
     {
-        self.events.post_system(Event { kind: EventKind::MenuCommand,
+        self.events.post_system(Event { payload: 0,
+                                        kind: EventKind::MenuCommand,
                                         message: ((selection.menu_id as u16 as u32) << 16)
                                                  | u32::from(selection.item),
                                         when,
@@ -418,6 +424,16 @@ impl Desktop
                 {
                     return BAD_ARGUMENT;
                 };
+                if let Err(status) =
+                    self.drag.ensure_receiver(self.owner,
+                                              crate::context::current_thread_context().identity()
+                                                                                      .thread
+                                                                                      .0,
+                                              id.0)
+                {
+                    self.windows.dispose_window(id, &mut self.events, when);
+                    return status;
+                }
                 request.id = id.0;
                 if self.first_window.0 == 0
                 {
@@ -447,6 +463,9 @@ impl Desktop
                 {
                     return NOT_FOUND;
                 }
+                let before = self.drag.feedback();
+                self.drag.forget_window(id.0, when);
+                self.drag_effects(before);
                 self.scroll_boxes.remove_window(id.0);
                 self.controls.remove_window(id.0);
                 self.content.retain(|content| content.id != id);
@@ -1572,6 +1591,10 @@ impl Desktop
             self.dialog_input(input, when);
             return;
         }
+        if self.drag_input(input, when)
+        {
+            return;
+        }
         match input
         {
             Input::Move(point) =>
@@ -1660,7 +1683,8 @@ impl Desktop
                                 let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 1, reserved: 0, param: (((local.v as u16 as u32) << 16) | local.h as u16 as u32) as i64, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: core::ptr::null_mut() };
                                 if super::resources::definitions::invoke(self.cdef, &mut call) > 0
                                 {
-                                    self.events.post_system(Event { kind: EventKind::OsEvent,
+                                    self.events.post_system(Event { payload: 0,
+                                                                    kind: EventKind::OsEvent,
                                                                     message: 0x01000000 | id.0,
                                                                     when,
                                                                     where_: point,
@@ -1668,7 +1692,8 @@ impl Desktop
                                                                                    .modifiers });
                                 }
                             }
-                            self.events.post_system(Event { kind: EventKind::MouseDown,
+                            self.events.post_system(Event { payload: 0,
+                                                            kind: EventKind::MouseDown,
                                                             message: id.0,
                                                             when,
                                                             where_: point,
@@ -1682,7 +1707,8 @@ impl Desktop
                     }
                     else
                     {
-                        self.events.post_system(Event { kind: EventKind::MouseDown,
+                        self.events.post_system(Event { payload: 0,
+                                                        kind: EventKind::MouseDown,
                                                         message: 0,
                                                         when,
                                                         where_: point,
@@ -1711,7 +1737,8 @@ impl Desktop
                     {
                         self.action(action, when);
                     }
-                    self.events.post_system(Event { kind: EventKind::MouseUp,
+                    self.events.post_system(Event { payload: 0,
+                                                    kind: EventKind::MouseUp,
                                                     message: 0,
                                                     when,
                                                     where_: point,
@@ -1742,7 +1769,8 @@ impl Desktop
                     {
                         self.last_key = character;
                     }
-                    self.events.post_system(Event { kind: if !down
+                    self.events.post_system(Event { payload: 0,
+                                                    kind: if !down
                                                     {
                                                         EventKind::KeyUp
                                                     }
@@ -2112,13 +2140,14 @@ impl Desktop
     /// scene. It remains available when every app thread is CPU bound.
     fn present_cursor_overlay(&mut self)
     {
-        if !self.cursor_dirty
+        if !self.cursor_dirty && self.outline_damage.is_empty()
         {
             return;
         }
         let caller = self.owner;
         self.enter(self.foreground);
-        self.compose_cursor(false, Vec::new());
+        let damage = core::mem::take(&mut self.outline_damage);
+        self.compose_cursor(false, damage);
         self.publish_observation();
         self.enter(caller);
     }
@@ -2137,10 +2166,14 @@ impl Desktop
                                                                                     .outline()
                                                                             })
                                                                             .flatten();
+        let drag_outline = self.drag.feedback();
+        let drag_highlight = self.drag.highlight();
         let outline_visible = !self.menus.is_tracking()
                               && !self.app_menu.is_tracking()
                               && !self.windows.is_tracking()
-                              && (desktop_outline.is_some()
+                              && (drag_highlight.is_some()
+                                  || drag_outline.is_some()
+                                  || desktop_outline.is_some()
                                   || self.windows
                                          .active_window()
                                          .and_then(|id| self.windows.window(id))
@@ -2156,7 +2189,19 @@ impl Desktop
             {
                 Region::from_rectangles(damaged.iter().copied().chain([self.cursor_bounds, bounds]))
             };
-            self.outline_under.paint(&mut canvas, &self.windows, desktop_outline, &damage);
+            if let Some((window, rect)) = drag_highlight
+            {
+                self.drag_highlight_under
+                    .paint_highlight(&mut canvas, &self.windows, window, rect, &damage);
+            }
+            if let Some(outline) = drag_outline
+            {
+                self.outline_under.paint_screen(&mut canvas, outline, &damage);
+            }
+            else
+            {
+                self.outline_under.paint(&mut canvas, &self.windows, desktop_outline, &damage);
+            }
         }
         let under = super::quickdraw::overlay::CursorUnder::capture(&canvas, bounds);
         cursor.draw_auto(&mut canvas, self.events.mouse, text_cursor);
@@ -2173,6 +2218,7 @@ impl Desktop
         if outline_visible
         {
             self.outline_under.restore(&mut canvas);
+            self.drag_highlight_under.restore(&mut canvas);
         }
         if self.outline_damage.is_empty() && self.outline_damage.capacity() < damaged.capacity()
         {
@@ -2265,6 +2311,12 @@ fn background(canvas: &mut Canvas)
 
 impl super::classic::Services for Desktop
 {
+    fn drag(&mut self, call: &mut mac_abi::drag::Call, input: &[u8], output: &mut [u8])
+            -> Result<(), Status>
+    {
+        self.drag_request(call, input, output)
+    }
+
     fn event(&mut self, mask: u16, remove: bool) -> Result<Event, Status>
     {
         Ok(self.next_with_remove(mask, remove))

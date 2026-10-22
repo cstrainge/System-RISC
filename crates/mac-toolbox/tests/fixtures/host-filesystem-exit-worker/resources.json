@@ -4,7 +4,7 @@
   "file_type": "APPL",
   "creator": "HFST",
   "role": "application",
-  "abi_version": 7,
+  "abi_version": 8,
   "load_base": "0x85000000",
   "load_limit": "0x85800000",
   "description": "Public SDK provider fork cleanup on actual application exit",

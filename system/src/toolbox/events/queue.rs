@@ -43,6 +43,26 @@ impl EventManager
         self.push(event, false);
     }
 
+    /// Coalesce adjacent within notifications, preserving all enter/leave/drop
+    /// ordering. Physical motion must not flood a receiver's bounded queue.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn post_drag(&mut self, event: Event)
+    {
+        if event.message & 0xff00_0000 == mac_abi::drag::WITHIN_EVENT && self.len != 0
+        {
+            let last = &mut self.queue[self.len - 1];
+            if last.kind == event.kind
+               && last.message == event.message
+               && last.payload == event.payload
+               && !self.routed[self.len - 1]
+            {
+                *last = event;
+                return;
+            }
+        }
+        self.post(event);
+    }
+
     /// Only trusted Window Manager/input paths may request owner routing. Public
     /// application-posted events remain in their own queue, even when their
     /// opaque message happens to equal another application's WindowId.
@@ -315,7 +335,8 @@ mod tests
     fn masks_preserve_unrequested_events_and_wire_layout()
     {
         let mut manager = EventManager::new();
-        manager.post(Event { kind:      EventKind::MouseDown,
+        manager.post(Event { payload:   0,
+                             kind:      EventKind::MouseDown,
                              message:   0x12345678,
                              when:      7,
                              where_:    Point { h: -2,
