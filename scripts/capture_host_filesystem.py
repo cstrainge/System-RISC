@@ -56,7 +56,6 @@ def capture(output, sdk=False):
         if sdk:
             image.remove('/System Folder/Finder')
             image.import_macbinary(output / 'packages/Finder.bin', '/System Folder')
-            image.import_macbinary(output / 'packages/Host Exit Worker.bin', '/Applications')
         else:
             image.import_macbinary(output / 'packages/Host Filesystem Probe.bin', '/System Folder/Extensions')
         subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
@@ -98,6 +97,17 @@ def capture(output, sdk=False):
             forks.write_bytes(header + data + bytes(-len(data) % 128)
                               + resources + bytes(-len(resources) % 128))
             subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(export), str(forks), '/Tools'], check=True)
+            subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(export),
+                            str(output / 'packages/Host Exit Worker.bin'), '/Tools'], check=True)
+            header = bytearray(128)
+            header[1] = 6
+            header[2:8] = b'Broken'
+            header[65:73] = b'APPLHFST'
+            malformed = b'invalid resource fork'
+            header[87:91] = len(malformed).to_bytes(4, 'big')
+            broken = output / 'Broken.bin'
+            broken.write_bytes(header + malformed + bytes(-len(malformed) % 128))
+            subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(export), str(broken), '/Tools'], check=True)
             # Reproduce host provenance, without the guest/offline importer.
             (export / 'Host Folder').mkdir()
             (export / 'Host Folder/Child.txt').write_bytes(b'host child\n')
@@ -110,6 +120,8 @@ def capture(output, sdk=False):
             subprocess.run([str(host / 'risc-forks'), 'init', str(readonly), 'Read Only Host'], check=True)
             subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(readonly),
                             str(base / 'ResEdit.bin')], check=True)
+            subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(readonly),
+                            str(output / 'packages/Host Exit Worker.bin')], check=True)
             (readonly / 'Host Folder').mkdir()
             (readonly / 'Host File.txt').write_bytes(b'host data\n')
             (readonly / 'Snapshot.txt').write_bytes(b'before')
@@ -132,6 +144,7 @@ def capture(output, sdk=False):
                 deadline = time.monotonic() + 30
                 watch_changes = set()
                 snapshot_changes = set()
+                application_releases = set()
                 while time.monotonic() < deadline:
                     text = (output / 'vm/serial.log').read_text(errors='replace')
                     for marker, directory in [('RW', export), ('RO', readonly)]:
@@ -144,6 +157,11 @@ def capture(output, sdk=False):
                                 {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'spc'}, 'down': down}}
                                 for down in [True, False]]}, endpoint)
                             snapshot_changes.add(marker)
+                        if f'HOST_FS_EXTERNAL_APPLICATION_RELEASE_{marker}\n' in text and marker not in application_releases:
+                            vm.qmp('input-send-event', {'events': [
+                                {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'spc'}, 'down': down}}
+                                for down in [True, False]]}, endpoint)
+                            application_releases.add(marker)
                         if f'HOST_FS_WATCH_READY_{marker}\n' in text and marker not in watch_changes:
                             (directory / 'Runtime Host File.txt').write_bytes(b'live')
                             watch_changes.add(marker)

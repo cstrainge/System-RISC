@@ -2,6 +2,8 @@
 //! No file contents or catalog listings are fabricated or cached in applications.
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
 mod resource;
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod application;
 use alloc::{string::String, vec::Vec};
 
 mod scan;

@@ -16,6 +16,8 @@ mod mounts;
 mod startup;
 pub(crate) use startup::mount_startup_exports;
 mod resources;
+mod application;
+pub(crate) use application::{pending as application_pending, request as request_application};
 mod writes;
 pub(in crate::toolbox::files::provider) use forks::request_fork_cleanup;
 pub(crate) use resources::request as request_resource;
@@ -36,7 +38,8 @@ enum Record
     File,
     Scan,
     Write,
-    Resource
+    Resource,
+    Application
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key
@@ -67,6 +70,7 @@ enum Step
     File(forks::Action),
     Write(writes::State),
     Resource(Box<resources::State>),
+    Application(Box<application::State>),
     Scan(DirectoryScanCursor),
     Allocation
     {
@@ -133,6 +137,7 @@ impl Flight
         // cleanup. A dead waiter cannot cancel that close and recycle its mark.
         if !matches!(self.step,
                      Step::Release { .. } | Step::Source(mounts::Acquire::Cleanup { .. }))
+           && !matches!(&self.step, Step::Application(state) if state.closing())
         {
             let _ = self.job.cancel();
         }
@@ -164,7 +169,8 @@ enum Reply
         length:   u64
     },
     Unmounted,
-    NoHandler
+    NoHandler,
+    Application(Box<super::super::application::Loaded>)
 }
 
 fn files<T>(call: impl FnOnce(&mut super::Manager) -> Result<T, Status>) -> Result<T, Status>
@@ -314,6 +320,7 @@ fn advance(mut flight: Flight) -> Progress
         }
         Step::Write(_) => writes::advance(flight, result, never_sent),
         Step::Resource(_) => resources::advance(flight, result),
+        Step::Application(_) => application::advance(flight, result, never_sent),
         Step::Scan(cursor) =>
         {
             let result = result.and_then(|bytes| super::scan::reply(cursor, &bytes));
@@ -489,7 +496,7 @@ fn reply(call: &mut FileCall, output: &mut [u8], result: Result<Reply, Status>) 
             call.length = resource;
             OK
         }
-        Ok(Reply::Scan(_) | Reply::Resource(_)) => BAD_ABI,
+        Ok(Reply::Scan(_) | Reply::Resource(_) | Reply::Application(_)) => BAD_ABI,
         Ok(Reply::Bytes(bytes)) =>
         {
             call.length = bytes.len() as u64;

@@ -27,8 +27,9 @@ its required contracts remain missing.
 
 ## Current findings
 
-- Native application loading still calls the block-only resource reader while
-  holding desktop state. It must use owned provider I/O outside resident guards.
+- Native application loading now collects resources through owned provider I/O
+  outside desktop state, with public native/Pascal and actual Finder gates below.
+  Associated-document dispatch and application document drops remain open.
 - Existing archive acceptance uses an imported classic-v1 container. The actual
   raw host file transfer/aldussuperpaint3.5.sit has a StuffIt-5 banner, and the
   live desktop reported Io (-9). Add actual-format/raw-host coverage; the v1
@@ -236,3 +237,39 @@ private optimized public-SDK gate over writable/read-only exports, including
 source-change rejection, useful error text, watch refresh and retry; optimized
 installation, boundary checks and generated docs/api. Old internal protocol
 versions are rejected with an explicit rebuild message; no dual decoder remains.
+
+
+## External application loading
+
+The Process Manager routes launches before acquiring desktop state. File Manager
+owns provider catalog/open/read/close work across scheduler waits, retaining a
+private generation-tagged fork mark through acknowledged close. Cancellation and
+caller exit drain the operation; failed close quarantines its mark and reports
+failed cleanup. Replays resume their owned operation even if the mount becomes
+unavailable, rather than abandoning a pending read behind an availability check.
+Desktop activation/spawn begins only after resources are owned and storage closes.
+
+A shared safe resource loader reads checked map/payload ranges in at most 64 KiB
+steps, with the existing map/count/4 MiB payload budgets. Block-backed launches
+use the same decoder. It preserves resource names/attributes, skips fork padding,
+and never retains a second complete fork buffer. Malformed fork data reports the
+public damaged/malformed-data error rather than treating it as a bad caller pointer.
+Existing running instances activate without rereading their application.
+
+Public SDK acceptance launches the same native application from writable and
+read-only host exports, verifies its own resource chain and process/file identity,
+activates it again without a duplicate process, and checks exit cleanup/unmount.
+The read-only launch first enters through the legacy Pascal conversion trap.
+A damaged external application rejects without a process or retained fork lease;
+a valid application launches immediately afterward. The actual Finder double-click
+gate opens QuickDraw Test from a host volume, quits it and relaunches from its
+source folder. Separate existing native/classic process and graphical application
+switching gates pass. Host format tests cover multi-chunk payloads/maps, empty
+resources, malformed ranges, budgets and incomplete delivery. Optimized image,
+workspace/boundary checks and generated API documentation pass.
+
+This closes the provider-backed native application loading slice, not target 1 as
+a whole: associated documents and the full mutation/transfer/application-drop
+contracts remain required. The immutable image-cache budget and supported RV64
+relocations remain the existing platform limits; arbitrary live code replacement
+and general legacy executable translation are not established by these tests.

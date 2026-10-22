@@ -281,9 +281,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         PROCESS =>
         {
             let call = read_request!(mac_abi::processes::ProcessCall);
-            crate::kernel::with_desktop(|desktop| desktop.process(call)).unwrap_or_else(|e| {
-                                                                            e.status()
-                                                                        }) as i64
+            toolbox::processes::request(call) as i64
         }
         FILE =>
         {

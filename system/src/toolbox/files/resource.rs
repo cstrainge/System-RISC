@@ -2,6 +2,18 @@
 use super::*;
 use crate::toolbox::quickdraw::{icons, icons_service};
 
+pub(super) fn application_format_status(error: mac_formats::Error) -> Status
+{
+    if error.0.contains("budget") || error.0.contains("allocation")
+    {
+        NO_MEMORY
+    }
+    else
+    {
+        CORRUPT_DATA
+    }
+}
+
 #[cfg(target_arch = "riscv64")]
 pub(crate) struct ProviderInspection
 {
@@ -191,21 +203,21 @@ impl Manager
     fn load_resources(volume: &mut Volume<'_, Device>, mut fork: Fork)
                       -> Result<Vec<mac_formats::resource::Resource>, Status>
     {
-        crate::toolbox::resources::file::read_selected(fork.length,
-                                                       |_| true,
-                                                       4 * 1024 * 1024,
-                                                       |offset, output| {
-                                                           let n = io(volume.read(&mut fork,
-                                                                                  offset, output))?;
-                                                           if n == output.len()
-                                                           {
-                                                               Ok(())
-                                                           }
-                                                           else
-                                                           {
-                                                               Err(IO_ERROR)
-                                                           }
-                                                       })
+        use mac_formats::resource::{loader::Loader, stream::Budget};
+        let mut loader =
+            Loader::new(fork.length, Budget::default()).map_err(application_format_status)?;
+        while let Some((offset, count)) = loader.request()
+        {
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(count).map_err(|_| NO_MEMORY)?;
+            bytes.resize(count, 0);
+            if io(volume.read(&mut fork, offset, &mut bytes))? != count
+            {
+                return Err(IO_ERROR);
+            }
+            loader.received(&bytes).map_err(application_format_status)?;
+        }
+        loader.finish().map_err(application_format_status)
     }
 
     pub(crate) fn application_resources(

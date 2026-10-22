@@ -8,6 +8,36 @@ fn require(value: bool) -> Result<(), Error>
 pub fn check(system: &System<'_>) -> Result<(), Error>
 {
     let files = system.files();
+    let own = system.processes().current()?;
+    let own_volume = files.volume(own.volume)?;
+    require(!own_volume.startup && own.name() == "Host Exit Worker")?;
+    let mut text = [0; 64];
+    require(system.resources().application().string(2000, &mut text)?
+            == "external-application-resource")?;
+    system.log(if own_volume.read_only
+               {
+                   "HOST_FS_EXTERNAL_APPLICATION_READY_RO\n"
+               }
+               else
+               {
+                   "HOST_FS_EXTERNAL_APPLICATION_READY_RW\n"
+               })?;
+    let mut released = false;
+    for _ in 0..300
+    {
+        if matches!(system.events().wait_event(mac_toolbox::EventMask::KEY_DOWN, 1)?,
+                    mac_toolbox::Event::KeyDown { .. })
+        {
+            released = true;
+            break;
+        }
+    }
+    require(released)?;
+    if own_volume.read_only
+    {
+        system.log("HOST_FS_EXTERNAL_APPLICATION_EXIT_RO\n")?;
+        return Ok(());
+    }
     let mut mounted = None;
     for index in 0..files.volume_count()?
     {

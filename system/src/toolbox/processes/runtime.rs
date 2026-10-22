@@ -477,6 +477,59 @@ impl Desktop
         }
     }
 
+    pub(crate) fn activate_existing_application(&mut self, call: &mut ProcessCall)
+                                                -> Result<bool, Status>
+    {
+        let existing = self.processes
+                           .iter()
+                           .find(|p| p.info.volume == call.volume && p.info.cnid == call.cnid)
+                           .map(|p| p.info.id);
+        if let Some(id) = existing
+        {
+            self.activate_process(id)?;
+            call.info = self.processes.snapshot(id)?;
+            return Ok(true);
+        }
+        if self.processes.len() >= 8
+        {
+            return Err(NO_MEMORY);
+        }
+        Ok(false)
+    }
+
+    pub(crate) fn launch_application(&mut self, call: &mut ProcessCall,
+                                     loaded: crate::toolbox::files::application::Loaded)
+                                     -> Result<(), Status>
+    {
+        // Another caller may have launched this file while its fork was read.
+        if self.activate_existing_application(call)?
+        {
+            return Ok(());
+        }
+        let crate::toolbox::files::application::Loaded { catalog,
+                                                         resources } = loaded;
+        let image = crate::kernel::cache_image(call.volume, call.cnid, catalog.creator,
+                                               catalog.file_type, resources)?;
+        let entry = crate::kernel::reload_image(image)?;
+        let id = self.processes.add(catalog.name(), call.volume, call.cnid, image)?;
+        let thread = match crate::machine::scheduler::spawn(id, image, entry)
+        {
+            Ok(t) => t,
+            Err(e) =>
+            {
+                self.processes.remove(id);
+                return Err(e);
+            }
+        };
+        self.locals.push(Saved::new(id, self.mdef));
+        self.processes.get_mut(id)?.info.thread = thread;
+        self.activate_process(id)?;
+        call.info = self.processes.snapshot(id)?;
+        self.notify_finder_file_state(call.volume, call.cnid, true);
+        serial!("PROCESS_LAUNCHED app={} thread={} name={}", id, thread, catalog.name());
+        Ok(())
+    }
+
     pub fn process(&mut self, call: &mut ProcessCall) -> Status
     {
         let caller = crate::context::current_thread_context().identity().app.0;
@@ -503,45 +556,9 @@ impl Desktop
                 let id = self.processes.iter().nth(call.index as usize).ok_or(NOT_FOUND)?.info.id;
                 call.info = self.processes.snapshot(id)?;
             }
-            LAUNCH =>
-            {
-                let existing =
-                    self.processes
-                        .iter()
-                        .find(|p| p.info.volume == call.volume && p.info.cnid == call.cnid)
-                        .map(|p| p.info.id);
-                if let Some(id) = existing
-                {
-                    self.activate_process(id)?;
-                    call.info = self.processes.snapshot(id)?;
-                    return Ok(());
-                }
-                if self.processes.len() >= 8
-                {
-                    return Err(NO_MEMORY);
-                }
-                let (catalog, resources) =
-                    crate::toolbox::processes::read_application(call.volume, call.cnid)?;
-                let image = crate::kernel::cache_image(call.volume, call.cnid, catalog.creator,
-                                                       catalog.file_type, resources)?;
-                let entry = crate::kernel::reload_image(image)?;
-                let id = self.processes.add(catalog.name(), call.volume, call.cnid, image)?;
-                let thread = match crate::machine::scheduler::spawn(id, image, entry)
-                {
-                    Ok(t) => t,
-                    Err(e) =>
-                    {
-                        self.processes.remove(id);
-                        return Err(e);
-                    }
-                };
-                self.locals.push(Saved::new(id, self.mdef));
-                self.processes.get_mut(id)?.info.thread = thread;
-                self.activate_process(id)?;
-                call.info = self.processes.snapshot(id)?;
-                self.notify_finder_file_state(call.volume, call.cnid, true);
-                serial!("PROCESS_LAUNCHED app={} thread={} name={}", id, thread, catalog.name());
-            }
+            // Storage must pass through processes::request before acquiring
+            // this desktop guard, including requests from the classic adapter.
+            LAUNCH => return Err(BAD_ABI),
             ACTIVATE => self.activate_process(call.id)?,
             HIDE => self.hide_process(call.id)?,
             HIDE_OTHERS => self.application_action(Action::HideOthers),

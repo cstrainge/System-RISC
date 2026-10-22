@@ -5,7 +5,7 @@
 use mac_toolbox::{System, SystemServices};
 #[path = "../../../host_filesystem_cases.rs"]
 mod cases;
-#[path="../../diagnostics.rs"]
+#[path = "../../diagnostics.rs"]
 mod diagnostics;
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
@@ -18,7 +18,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> i32
     };
     let _ = system.log("DESKTOP_READY: public host filesystem fixture\n");
     let gate = unsafe { (*services).trap };
-    match cases::check(&system).and_then(|()| cases::check_legacy_writer(&system, gate))
+    match cases::check(&system, gate).and_then(|()| cases::check_legacy_writer(&system, gate))
     {
         Ok(()) =>
         {
@@ -27,7 +27,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> i32
         }
         Err(error) =>
         {
-            diagnostics::error(&system,"HOST_FILESYSTEM_ERROR",error);
+            diagnostics::error(&system, "HOST_FILESYSTEM_ERROR", error);
             let _ = system.log("HOST_FILESYSTEM_FAIL\n");
             error.status()
         }

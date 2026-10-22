@@ -1,3 +1,5 @@
+//! Native guest assertions included by the host-filesystem application fixture.
+#![cfg(target_arch = "riscv64")]
 //! Canonical native mount assertions, compiled into the private userspace app.
 use mac_toolbox::{Error, System, VolumeId, files::Filesystem};
 fn require(value: bool) -> Result<(), Error>
@@ -85,7 +87,7 @@ fn check_legacy_resources(system: &System<'_>, gate: mac_toolbox::abi::TrapGate)
     system.client().file(&mut close, "", &mut [])?;
     files.unmount(volume)
 }
-pub fn check(system: &System<'_>) -> Result<(), Error>
+pub fn check(system: &System<'_>, gate: mac_toolbox::abi::TrapGate) -> Result<(), Error>
 {
     let files = system.files();
     // System, not this fixture or Finder, mounts device exports before starting
@@ -167,10 +169,9 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     let exact_folder = files.catalog(writable.id, folder.id)?;
     require(files.allocation_info(writable.id, file.id)?.total_bytes()?.is_none())?;
     require(files.allocation_info(writable.id, folder.id)?.total_bytes()? == Some(0))?;
-    require(exact_folder.child_count == Some(2))?;
-    let a = files.child(writable.id, folder.id, 0)?;
-    let b = files.child(writable.id, folder.id, 1)?;
-    let (nested, forks) = if a.name() == "Child" { (a, b) } else { (b, a) };
+    require(exact_folder.child_count == Some(4))?;
+    let nested = files.lookup(writable.id, folder.id, "Child")?;
+    let forks = files.lookup(writable.id, folder.id, "Forks")?;
     require(nested.name() == "Child" && nested.parent == folder.id && nested.data_length == 15)?;
     require(files.parent(writable.id, nested.id)? == exact_folder)?;
     system.log("HOST_FS_STAGE paths\n")?;
@@ -213,8 +214,8 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             && read_only.read_only
             && read_only.capacity.is_none())?;
     require(files.volume_count()? == before + 2)?;
-    require(files.catalog(read_only.id, mac_toolbox::files::ROOT_ID)?.child_count == Some(4))?;
-    require(files.child(read_only.id, mac_toolbox::files::ROOT_ID, 4) == Err(Error::NotFound))?;
+    require(files.catalog(read_only.id, mac_toolbox::files::ROOT_ID)?.child_count == Some(5))?;
+    require(files.child(read_only.id, mac_toolbox::files::ROOT_ID, 5) == Err(Error::NotFound))?;
     system.log("HOST_FS_STAGE resource-inspection\n")?;
     check_resources(system, read_only.id)?;
     let read_only_item = files.child(read_only.id, mac_toolbox::files::ROOT_ID, 0)?;
@@ -246,7 +247,8 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     require(files.scan_directory(writable.id, mac_toolbox::files::ROOT_ID, &mut prior_scan)
             == Err(Error::ScanStale))?;
     system.log("HOST_FS_STAGE unmount-and-reuse\n")?;
-    check_exit_cleanup(system, writable.id)?;
+    check_external_application(system, read_only.id, "Host Exit Worker", false, gate)?;
+    check_exit_cleanup(system, writable.id, gate)?;
     require(files.volume(writable.id) == Err(Error::NotFound))?;
     require(files.catalog(writable.id, root.id) == Err(Error::NotFound))?;
     require(expect_comment(system, writable.id, file.id, "") == Err(Error::NotFound))?;
@@ -730,36 +732,78 @@ fn check_forks(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid)
     Ok(())
 }
 
-fn check_exit_cleanup(system: &System<'_>, volume: VolumeId) -> Result<(), Error>
+fn check_external_application(system: &System<'_>, volume: VolumeId, path: &str, writable: bool,
+                              gate: mac_toolbox::abi::TrapGate)
+                              -> Result<(), Error>
 {
     let files = system.files();
-    let mut startup = None;
-    for index in 0..files.volume_count()?
-    {
-        let info = files.volume_at(index)?;
-        if info.startup
-        {
-            startup = Some(info.id);
-            break;
-        }
-    }
-    let startup = startup.ok_or(Error::NotFound)?;
-    let worker =
-        files.lookup(startup, mac_toolbox::files::ROOT_ID, "/Applications/Host Exit Worker")?;
     let processes = system.processes();
-    let launched = processes.launch(startup, worker.id)?;
+    let own = processes.current()?;
+    if writable
+    {
+        let broken = files.lookup(volume, mac_toolbox::files::ROOT_ID, "Tools/Broken")?;
+        let error = processes.launch(volume, broken.id).err().ok_or(Error::BadAbi)?;
+        require(error == Error::CorruptData)?;
+        crate::diagnostics::error(system, "HOST_FS_EXTERNAL_APPLICATION_REJECTED", error);
+        require(!processes.is_running(volume, broken.id)? && processes.count()? == 1)?;
+    }
+    let worker = files.lookup(volume, mac_toolbox::files::ROOT_ID, path)?;
+    if !writable
+    {
+        let mut call =
+            mac_toolbox::abi::processes::ProcessCall { operation:
+                                                           mac_toolbox::abi::processes::LAUNCH,
+                                                       volume: volume.0,
+                                                       cnid: worker.id.0,
+                                                       ..Default::default() };
+        // SAFETY: live exclusive request; this conversion call contains no app
+        // pointers and reaches the same owned resident loader as the native API.
+        let status = unsafe {
+            gate(mac_toolbox::abi::traps::PSTRING_PROCESS,
+                 core::ptr::from_mut(&mut call).cast(),
+                 core::mem::size_of_val(&call))
+        };
+        if status != 0
+        {
+            return Err(Error::from_status(status as i32));
+        }
+        require(call.info.name[0] == 16 && &call.info.name[1..17] == b"Host Exit Worker")?;
+        system.log("HOST_FS_EXTERNAL_APPLICATION_PASCAL_PASS\n")?;
+    }
+    let launched = processes.launch(volume, worker.id)?;
     require(launched.cnid == worker.id
-            && launched.volume == startup
+            && launched.volume == volume
             && launched.thread.0 >> 16 != 0)?;
+    // Existing-instance activation must neither reread the fork nor spawn twice.
+    let repeated = processes.launch(volume, worker.id)?;
+    require(repeated.id == launched.id && processes.count()? == 2)?;
+    system.log(if writable
+               {
+                   "HOST_FS_EXTERNAL_APPLICATION_RELEASE_RW\n"
+               }
+               else
+               {
+                   "HOST_FS_EXTERNAL_APPLICATION_RELEASE_RO\n"
+               })?;
     for _ in 0..300
     {
-        if !processes.is_running(startup, worker.id)?
+        if !processes.is_running(volume, worker.id)?
         {
             break;
         }
         system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?;
     }
-    require(!processes.is_running(startup, worker.id)?)?;
+    require(!processes.is_running(volume, worker.id)? && processes.count()? == 1)?;
+    processes.activate(own.id)?;
+    system.log("HOST_FS_EXTERNAL_APPLICATION_PASS\n")?;
+    Ok(())
+}
+
+fn check_exit_cleanup(system: &System<'_>, volume: VolumeId, gate: mac_toolbox::abi::TrapGate)
+                      -> Result<(), Error>
+{
+    let files = system.files();
+    check_external_application(system, volume, "Tools/Host Exit Worker", true, gate)?;
     for _ in 0..300
     {
         match files.unmount(volume)

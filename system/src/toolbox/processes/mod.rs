@@ -108,15 +108,29 @@ impl Manager
         Ok(info)
     }
 }
-/// Read a resource fork through the filesystem service on its actual I/O thread.
-pub fn read_application(
-    volume: u32, cnid: u32)
-    -> Result<(mac_abi::files::CatalogInfo, alloc::vec::Vec<mac_formats::resource::Resource>),
-              Status>
+/// Dispatch native and classic process requests without holding desktop state
+/// across storage reads, provider callbacks or scheduler waits.
+pub(crate) fn request(call: &mut ProcessCall) -> Status
 {
-    crate::kernel::with_files(|files| files.application_resources(volume, cnid)).map_err(|e| {
-                                                                                    e.status()
-                                                                                })?
+    let result = (|| {
+        if call.operation != LAUNCH
+        {
+            return crate::kernel::with_desktop(|d| d.process(call)).map_err(|e| e.status());
+        }
+        if !crate::toolbox::files::application::pending()
+           && crate::kernel::with_desktop(|d| d.activate_existing_application(call))
+                .map_err(|e| e.status())??
+        {
+            return Ok(OK);
+        }
+        let owner = crate::context::current_thread_context().identity().app.0;
+        let loaded = crate::toolbox::files::application::read(owner, call.volume, call.cnid)?;
+        crate::kernel::with_desktop(|d| d.launch_application(call, *loaded)).map_err(|e| {
+                                                                                e.status()
+                                                                            })?
+                                                                            .map(|()| OK)
+    })();
+    result.unwrap_or_else(|error| error)
 }
 
 impl Default for Manager

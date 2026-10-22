@@ -6,6 +6,7 @@ use alloc::{collections::{BTreeMap, BTreeSet},
 use crate::{Error, Result};
 pub mod stream;
 pub mod index;
+pub mod loader;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resource

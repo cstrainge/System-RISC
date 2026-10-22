@@ -25,8 +25,9 @@ def running(pid):
         return False
 
 
-def capture(output, windows=False, default_transfer=False):
+def capture(output, windows=False, default_transfer=False, application=False):
     output.mkdir(parents=True, exist_ok=False)
+    (output / 'pid').write_text(str(os.getpid()))
     before = hashlib.sha256((vm.DIST / 'system7.qcow2').read_bytes()).hexdigest()
     subprocess.run(['cargo', 'build', '--locked', '-p', 'risc-forks',
                     '--target-dir', str(host_dir())], cwd=vm.ROOT / 'System7', check=True)
@@ -35,9 +36,13 @@ def capture(output, windows=False, default_transfer=False):
     for directory, name in ([] if default_transfer else [('writable', 'Desktop Host'), ('readonly', 'Desktop Read Only')]):
         folder = output / directory
         subprocess.run([str(tool), 'init', str(folder), name], check=True)
-        source = output / 'Example.txt'
-        source.write_text('Shared through the normal launcher.\n')
-        subprocess.run([str(tool), 'import', str(folder), str(source)], check=True)
+        if application:
+            subprocess.run([str(tool), 'import-macbinary', str(folder),
+                            str(vm.DIST / 'QuickDraw Test.bin')], check=True)
+        else:
+            source = output / 'Example.txt'
+            source.write_text('Shared through the normal launcher.\n')
+            subprocess.run([str(tool), 'import', str(folder), str(source)], check=True)
         exports.append(str(folder))
     state = output / 'vm'
     endpoint = None
@@ -75,6 +80,18 @@ def capture(output, windows=False, default_transfer=False):
         driver.wait_state(lambda state: state['windows'] == '2')
         time.sleep(.1)
         vm.qmp('screendump', {'filename': str(output / 'host-folder.ppm')}, endpoint)
+        if application:
+            driver.click(56, 106, double=True)
+            driver.wait('QUICKDRAW_TEST_READY\n')
+            driver.wait_state(lambda state: state['windows'] == '3')
+            vm.qmp('screendump', {'filename': str(output / 'external-application.ppm')}, endpoint)
+            # Quit the actual application, then immediately use its source folder.
+            driver.key('q', ('ctrl',))
+            driver.wait('PROCESS_EXIT app=' + str(driver.app_id('QuickDraw Test')) + '\n')
+            driver.wait_state(lambda state: state['windows'] == '2')
+            driver.click(56, 106, double=True)
+            driver.wait('QUICKDRAW_TEST_READY\n', 1)
+            vm.qmp('screendump', {'filename': str(output / 'external-relaunched.ppm')}, endpoint)
         vm.qmp('quit', endpoint=endpoint)
         endpoint = None
         deadline = time.monotonic() + 10
@@ -110,5 +127,6 @@ if __name__ == '__main__':
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--windows', action='store_true')
     parser.add_argument('--default-transfer', action='store_true')
+    parser.add_argument('--application', action='store_true')
     args = parser.parse_args()
-    capture(args.output.resolve(), args.windows, args.default_transfer)
+    capture(args.output.resolve(), args.windows, args.default_transfer, args.application)

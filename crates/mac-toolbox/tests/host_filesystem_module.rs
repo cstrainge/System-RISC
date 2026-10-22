@@ -3,6 +3,42 @@
 #![cfg(not(target_arch = "riscv64"))]
 use std::{fs, path::PathBuf, process::Command};
 #[test]
+#[ignore = "requires optimized private image, QEMU and real host exports"]
+fn finder_double_click_launches_and_relaunches_an_external_application()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let output =
+        root.join("results/system7").join(format!("external-app-ui-{}", std::process::id()));
+    let result = Command::new("python3").arg(root.join("System7/scripts/capture_host_desktop.py"))
+                                        .arg("--output")
+                                        .arg(&output)
+                                        .arg("--application")
+                                        .output()
+                                        .unwrap();
+    assert!(result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr));
+    let capture: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(capture["original_before"], capture["original_after"]);
+    assert_eq!(capture["guest_running_after_quit"], false);
+    assert_eq!(capture["companion_running_after_quit"], false);
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    assert_eq!(serial.matches("name=QuickDraw Test\n").count(), 2, "{serial}");
+    assert_eq!(serial.matches("QUICKDRAW_TEST_READY\n").count(), 2, "{serial}");
+    for failure in ["FINDER_ERROR", "SYSTEM_TRAP:", "SYSTEM_PANIC:", "SYSTEM_ALLOCATION_FAILED:",
+                    "QUICKDRAW_TEST_ERROR", "PROCESS_ACTION_FAILED"]
+    {
+        assert!(!serial.contains(failure), "{serial}");
+    }
+    for frame in ["external-application.ppm", "external-relaunched.ppm"]
+    {
+        assert!(fs::metadata(output.join(frame)).unwrap().len() > 640 * 480 * 3);
+    }
+}
+
+#[test]
 #[ignore = "requires fresh private image, QEMU and the default Transfer export"]
 fn default_transfer_is_initialized_and_mounted_in_the_private_profile()
 {
@@ -117,6 +153,17 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
                2,
                "{serial}");
     assert!(serial.contains("HOST_FS_EXIT_WORKER_READY"), "{serial}");
+    assert_eq!(serial.matches("HOST_FS_EXTERNAL_APPLICATION_PASS\n").count(), 2, "{serial}");
+    for marker in ["HOST_FS_EXTERNAL_APPLICATION_READY_RW",
+                   "HOST_FS_EXTERNAL_APPLICATION_READY_RO",
+                   "HOST_FS_EXTERNAL_APPLICATION_EXIT_RO",
+                   "HOST_FS_EXTERNAL_APPLICATION_PASCAL_PASS",
+                   "HOST_FS_EXTERNAL_APPLICATION_REJECTED status=-18 error=CorruptData \
+                    detail=file or catalog data is damaged or malformed"]
+    {
+        assert!(serial.contains(marker), "{marker}: {serial}");
+    }
+
     assert!(serial.contains("PROCESS_LAUNCHED app=") && serial.contains("name=Host Exit Worker"),
             "{serial}");
     for failure in ["HOST_FILESYSTEM_FAIL", "HOST_FS_EXIT_WORKER_FAIL", "MODULE_REJECTED",
@@ -129,7 +176,8 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
         "resource_inspection":"every resource type, entry, metadata/name/attributes and payload of a host-mounted ResEdit matches its block-backed startup copy through the public SDK; payload reads cross the 64 KiB class boundary; independent positioned inspection preserves fork position; empty/malformed forks, EOF, invalid offsets, warmed metadata, busy unmount, closed/stale/foreign resource-fork IDs and slot reuse; original Pascal resource trap reaches the same provider service",
         "plain_entries":"raw host files with empty resource forks, raw directories, independent extension classification, directory creation inside a raw host directory and nested file publication, case-collision refusal, read-only directory-creation rejection",
         "watches":"coalesced nonblocking directory watches; actual host-created arrivals on writable and read-only exports; readback after automatic cache invalidation; owner exit with a forgotten watch; local ownership and forced-slot-reuse checks in file_ownership",
-        "not_covered":"application loading from provider forks, metadata/rename/move/delete mutations, replacing raw host data, full two-fork copying, classic notification trap compatibility, file-specific watches, exit during arbitrary pending I/O, disconnect and sustained-I/O responsiveness", "capture":capture});
+        "external_applications":"writable and read-only provider native launches, private application resources, same-file activation without a duplicate process, damaged fork rejection with useful text, immediate valid launch after failure and acknowledged cleanup on exit",
+        "not_covered":"metadata/rename/move/delete mutations, replacing raw host data, full two-fork copying, classic notification trap compatibility, file-specific watches, exit during arbitrary pending I/O, disconnect and sustained-I/O responsiveness", "capture":capture});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     fs::write(root.join("results/system7/host-filesystem-mount-checks.json"),
               serde_json::to_vec_pretty(&report).unwrap()).unwrap();
