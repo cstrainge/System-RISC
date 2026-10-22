@@ -23,6 +23,7 @@ static HOST_TRANSACTION_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0
 static HOST_SESSION_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
 
 static DEVICE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
+static PROCESS_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static THREAD_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static JOB_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DMA_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
@@ -72,7 +73,8 @@ pub enum Kind
     HostNodes,
     FileWatches,
     Drags,
-    DragReceivers
+    DragReceivers,
+    Processes
 }
 impl Kind
 {
@@ -80,6 +82,7 @@ impl Kind
     {
         match self
         {
+            Self::Processes => 8,
             Self::Drags => 32,
             Self::DragReceivers => 64,
             Self::FileWatches => 64,
@@ -112,6 +115,10 @@ impl Kind
     {
         match self
         {
+            Self::Processes =>
+            {
+                Self::DragReceivers.first_slot() + Self::DragReceivers.capacity() as u32
+            }
             Self::Drags => Self::FileWatches.first_slot() + Self::FileWatches.capacity() as u32,
             Self::DragReceivers => Self::Drags.first_slot() + Self::Drags.capacity() as u32,
             Self::FileWatches => Self::HostNodes.first_slot() + Self::HostNodes.capacity() as u32,
@@ -172,6 +179,7 @@ impl Kind
     {
         match self
         {
+            Self::Processes => PROCESS_GENERATIONS.get(index),
             Self::Drags => DRAG_GENERATIONS.get(index),
             Self::DragReceivers => DRAG_RECEIVER_GENERATIONS.get(index),
             Self::FileWatches => FILE_WATCH_GENERATIONS.get(index),
@@ -204,7 +212,8 @@ impl Kind
             | Self::StandardFiles
             | Self::ScrollBoxes
             | Self::Controls => u16::MAX,
-            Self::Threads
+            Self::Processes
+            | Self::Threads
             | Self::Drags
             | Self::DragReceivers
             | Self::FileWatches

@@ -244,9 +244,7 @@ pub(crate) fn resources() -> Option<crate::toolbox::resources::manager::Manager<
         override_image
     };
     Some(crate::toolbox::resources::manager::Manager::new(&files.system,
-                                                          image(index).map_or(&files.application
-                                                                                  [..],
-                                                                              |i| &i.resources),
+                                                          &image(index)?.resources,
                                                           fonts()?.resources()))
 }
 
@@ -271,7 +269,7 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     let finder_entry = crate::loader::application(&finder)?;
     let (base, limit) = crate::loader::reservation(&finder)?;
     IMAGES[0].call_once(|| {
-                 AppImage { resources: finder.clone(),
+                 AppImage { resources: finder,
                             volume: 0,
                             cnid: 0,
                             creator: *b"MACS",
@@ -291,10 +289,7 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     // readers never spin or take a mutable catalog guard.
     FONTS.call_once(|| fonts);
     boot_screen.completed(1);
-    let files = RESOURCE_FILES.call_once(|| {
-                                  crate::toolbox::resources::manager::Files { system,
-                                                                              application: finder }
-                              });
+    let files = RESOURCE_FILES.call_once(|| crate::toolbox::resources::manager::Files { system });
     boot_screen.completed(2);
     crate::toolbox::files::types::initialize().map_err(|status| {
                                                   serial!("FILE_TYPES_ERROR status={}", status);
@@ -320,9 +315,9 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     boot_screen.completed(5);
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", &SERVICES as *const SystemServices as usize);
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
-    let thread=crate::machine::scheduler::spawn(1,0,finder_entry).map_err(|_|mac_formats::Error("Finder thread creation failed"))?;
+    let thread=crate::machine::scheduler::spawn(crate::context::finder_app().0,0,finder_entry).map_err(|_|mac_formats::Error("Finder thread creation failed"))?;
     boot_screen.completed(6);
-    with_desktop(|desktop| desktop.started(1, thread)).map_err(|_| {
+    with_desktop(|desktop| desktop.started(crate::context::finder_app().0, thread)).map_err(|_| {
                                                           mac_formats::Error("Finder context \
                                                                               initialization \
                                                                               failed")

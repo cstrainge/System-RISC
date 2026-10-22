@@ -86,6 +86,7 @@ struct Browser<'a>
     volume:         VolumeId,
     directory:      Cnid,
     status:         u32,
+    rendered_size:  (i16, i16),
     export_number:  u32
 }
 impl<'a> Browser<'a>
@@ -120,6 +121,7 @@ impl<'a> Browser<'a>
                   volume,
                   directory,
                   status: 9,
+                  rendered_size: (0, 0),
                   export_number: 0 })
     }
 
@@ -169,10 +171,31 @@ impl<'a> Browser<'a>
         label(system, window, 10, height - 10, self.status)?;
         port.reset()?;
         system.windows().end_update(window)?;
+        self.rendered_size = (width, height);
         let elapsed = system.events().monotonic_nanoseconds()?.saturating_sub(started);
         let mut timing = Text::<128>::new();
         let _ = writeln!(timing, "RESEDIT_RENDER pane=all ns={elapsed}");
         system.log(timing.as_str())?;
+        system.log("RESEDIT_DRAW_READY\n")
+    }
+
+    /// Export status is independent of the resource panes. A cancelled dialog
+    /// changes no document pixels; a completed save only damages this footer.
+    fn draw_status(&self, system: &System<'a>, window: WindowId) -> ToolboxResult<()>
+    {
+        let bounds = system.windows().info(window)?.bounds;
+        let (width, height) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
+        let footer = Rect::new(4, height - 26, width - 18, height - 3);
+        let port = system.quickdraw().graphics(window);
+        let update = port.masked_rectangles(&[footer])?;
+        port.reset()?;
+        port.colors(0xffffff, 0xffffff)?;
+        port.paint_rect(footer)?;
+        port.colors(0, 0xffffff)?;
+        label(system, window, 10, height - 10, self.status)?;
+        port.reset()?;
+        update.commit()?;
+        system.log("RESEDIT_RENDER pane=status\n")?;
         system.log("RESEDIT_DRAW_READY\n")
     }
 
@@ -612,18 +635,32 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
     {
         let (event, position) =
             system.events().wait_positioned(mac_toolbox::events::EventMask::ALL, 30)?.into_parts();
-        if system.windows().info(window).is_err_and(|error| error == Error::NotFound)
+        let info = match system.windows().info(window)
         {
-            return Ok(());
-        }
+            Ok(info) => info,
+            Err(Error::NotFound) => return Ok(()),
+            Err(error) => return Err(error)
+        };
         let command = system.menus().selection(&event)?.map(|s| s.command.to_be_bytes());
         if command.is_some_and(|value| value == *b"quit" || value == *b"clos")
         {
             owner.close()?;
             return Ok(());
         }
-        let mut redraw =
+        let exposed =
             matches!(event, Event::Update { .. }) && event.window().unwrap_or_default() == window;
+        let geometry = matches!(event, Event::WindowGeometryChanged { .. })
+                       && event.window().unwrap_or_default() == window;
+        let mut redraw = (exposed || geometry)
+                         && browser.rendered_size
+                            != (info.bounds.right - info.bounds.left,
+                                info.bounds.bottom - info.bounds.top);
+        // Resident retained drawing restores exposure. Only a new document,
+        // changed view or new content size requires rebuilding its controls.
+        if exposed && !redraw
+        {
+            system.windows().validate(window)?;
+        }
         if command == Some(*b"open")
         {
             if open_dialog(system, &mut browser, window).is_err()
@@ -634,6 +671,7 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
         }
         if command == Some(*b"save") || command == Some(*b"svas") || command == Some(*b"expr")
         {
+            let previous_status = browser.status;
             if let Err(error) = save(system, &mut browser, command == Some(*b"svas"))
             {
                 let mut log = Text::<128>::new();
@@ -641,15 +679,22 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
                 system.log(log.as_str())?;
                 browser.status = 13;
             }
-            redraw = true;
+            if browser.status != previous_status
+            {
+                browser.draw_status(system, window)?;
+            }
         }
         if command == Some(*b"host")
         {
+            let previous_status = browser.status;
             if export(system, &mut browser, window).is_err()
             {
                 browser.status = 13;
             }
-            redraw = true;
+            if browser.status != previous_status
+            {
+                browser.draw_status(system, window)?;
+            }
         }
         if matches!(event, Event::KeyDown { .. })
            && !event.input().modifiers.contains(mac_toolbox::events::Modifiers::COMMAND)

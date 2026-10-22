@@ -22,6 +22,9 @@ def sha(path):
 
 
 def private_disk(output, fixture_name='conformance'):
+    # Own the whole capture before its disk exists. The VM's pid is too late:
+    # other fixtures may still be compiling while this prepared disk is live.
+    (output / 'pid').write_text(str(os.getpid()))
     fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture_name
     target = vm.build_dir() / 'fixtures' / fixture_name
     manifest = fixture / 'Cargo.toml'

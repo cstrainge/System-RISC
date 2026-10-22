@@ -99,7 +99,7 @@ impl super::super::runtime::Desktop
                            });
             }
         }
-        if call.operation == CREATE && caller == 1
+        if call.operation == CREATE && caller == crate::context::finder_app().0
         {
             self.drag.ensure_receiver(caller,
                                        crate::context::current_thread_context().identity()

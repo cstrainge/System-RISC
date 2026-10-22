@@ -28,22 +28,29 @@ SERVICES = ['log', 'window', 'draw', 'next_event', 'definition', 'classic', 'geo
 def decode(path):
     values = struct.unpack('<' + 'Q' * (path.stat().st_size // 8), path.read_bytes())
     magic, version, seq, capacity, apps, services = values[:6]
-    if magic != 0x5253435954524143 or version != 1:
+    if magic != 0x5253435954524143 or version != 2:
         raise ValueError('unrecognized resident trace format')
-    offset = 6
+    identities = values[6:6 + apps]
+    offset = 6 + apps
     stats = {}
-    for app in range(apps):
-        stats[str(app)] = {}
+    for slot in range(apps):
+        app = identities[slot]
+        target = {}
+        if slot == 0 or app:
+            stats[str(app)] = target
         for service in range(services):
             count, ticks, nested, nested_ticks = values[offset:offset + 4]
             offset += 4
             if count or nested:
                 name = SERVICES[service] if service < len(SERVICES) else str(service)
-                stats[str(app)][name] = [count, ticks, nested, nested_ticks]
+                target[name] = [count, ticks, nested, nested_ticks]
     counters = {}
-    for app in range(apps):
-        counters[str(app)] = {KINDS.get(i, str(i)): value
+    for slot in range(apps):
+        app = identities[slot]
+        target = {KINDS.get(i, str(i)): value
                               for i, value in enumerate(values[offset:offset + 16]) if value}
+        if slot == 0 or app:
+            counters[str(app)] = target
         offset += 16
     records = []
     for _ in range(capacity):
@@ -61,13 +68,13 @@ def delta(before, after):
     for app in after['services']:
         services[app] = {}
         for name, row in after['services'][app].items():
-            old = before['services'][app].get(name, [0] * 4)
+            old = before['services'].get(app, {}).get(name, [0] * 4)
             diff = [a - b for a, b in zip(row, old)]
             if any(diff):
                 services[app][name] = diff
-        counters[app] = {name: value - before['counters'][app].get(name, 0)
+        counters[app] = {name: value - before['counters'].get(app, {}).get(name, 0)
                          for name, value in after['counters'][app].items()
-                         if value != before['counters'][app].get(name, 0)}
+                         if value != before['counters'].get(app, {}).get(name, 0)}
     records = [row for row in after['records'] if row[0] >= before['seq']]
     return {'counters': counters, 'services': services, 'records': records,
             'overwritten': max(0, after['seq'] - before['seq'] - after['capacity']),
@@ -85,7 +92,7 @@ def capture(output, windows=False):
     driver = Driver(endpoint, output / 'vm/serial.log')
     stages = []
     try:
-        match = re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=1', driver.log())
+        match = re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=2', driver.log())
         if not match:
             raise RuntimeError('build with SYSTEM7_EVENT_TRACE=1 cargo xtask image first')
         address, size = map(int, match.groups())
@@ -162,6 +169,10 @@ def capture(output, windows=False):
                 time.sleep(.002)
             raise TimeoutError('typing batch completion\n' + delta[-3000:])
 
+        # Desktop-ready precedes the asynchronous first folder snapshot and its
+        # saved-placement publication/watch delivery. Record that startup work
+        # separately before measuring an idle Finder.
+        stage('startup-completion', lambda: driver.wait_folder_ready('System RISC'), 1)
         stage('idle-finder', lambda: None, 1)
         stage('open-folder', lambda: (driver.click(40, 95, double=True),
                                       driver.wait(' name=Applications\n')))
@@ -183,13 +194,13 @@ def capture(output, windows=False):
                                       driver.move(365, 90), driver.button(False)))
         stage('grow-editor', lambda: (driver.move(608, 412), driver.button(True),
                                       driver.move(625, 432), driver.button(False)))
-        stage('switch-finder', lambda: activate(0, 1))
-        stage('same-app-finder', lambda: activate(0, 1))
+        stage('switch-finder', lambda: activate(0, driver.app_id('Finder')))
+        stage('same-app-finder', lambda: activate(0, driver.app_id('Finder')))
         stage('launch-quickdraw', lambda: (driver.application('QuickDraw Test'),
                                            driver.wait('QUICKDRAW_TEST_READY\n')))
         stage('idle-three-apps', lambda: None, 1)
-        stage('same-app-quickdraw', lambda: activate(1, 3))
-        stage('switch-editor', lambda: activate(2, 2))
+        stage('same-app-quickdraw', lambda: activate(1, driver.app_id('QuickDraw Test')))
+        stage('switch-editor', lambda: activate(2, driver.app_id('TextEdit Exerciser')))
         stage('typing-with-backgrounds', burst, .15)
         stage('menu-cancel', lambda: (driver.move(28, 10), driver.button(True),
                                       driver.move(350, 450), driver.button(False)))
@@ -197,9 +208,9 @@ def capture(output, windows=False):
         stage('show-all', lambda: driver.menu(618, 60, popup_x=580))
         stage('show-all-again', lambda: driver.menu(618, 60, popup_x=580))
         stage('quit-editor', lambda: (driver.menu(28, 60, popup_x=65),
-                                      driver.wait('PROCESS_EXIT app=2\n')))
+                                      driver.wait(f"PROCESS_EXIT app={driver.app_id('TextEdit Exerciser')}\n")))
         stage('quit-quickdraw', lambda: (driver.menu(28, 60, popup_x=65),
-                                         driver.wait('PROCESS_EXIT app=3\n')))
+                                         driver.wait(f"PROCESS_EXIT app={driver.app_id('QuickDraw Test')}\n")))
         stage('relaunch-editor', lambda: (driver.application('TextEdit Exerciser'),
                                           driver.wait('TEXTEDIT_EXERCISER_READY\n', 1)))
         stage('relaunch-input', lambda: key('z'))

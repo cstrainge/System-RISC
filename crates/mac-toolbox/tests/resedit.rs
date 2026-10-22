@@ -1,6 +1,8 @@
 //! ResEdit's real document/export code through public SDK and resident services.
 #![cfg(not(target_arch = "riscv64"))]
 extern crate alloc;
+#[path = "support/process_trace.rs"]
+mod process_trace;
 use std::{fs, path::PathBuf, process::Command};
 
 use mac_formats::{macbinary::{self, MacFile},
@@ -232,12 +234,21 @@ fn crop(bytes: &[u8], left: usize, top: usize, size: usize) -> Vec<u8>
                      })
                      .collect()
 }
+struct CapturedDisk(PathBuf);
+impl Drop for CapturedDisk
+{
+    fn drop(&mut self)
+    {
+        let _ = fs::remove_file(&self.0);
+    }
+}
 #[test]
 #[ignore = "requires cargo xtask image and an independent graphical QEMU guest"]
 fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_losslessly()
 {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
     let output = root.join(format!("results/system7/resedit-ui-{}", std::process::id()));
+    let disk = CapturedDisk(output.join("saved.raw"));
     let capture = Command::new("python3").arg(root.join("System7/scripts/capture_resedit.py"))
                                          .arg("--output")
                                          .arg(&output)
@@ -277,7 +288,8 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                                             }).unwrap();
     assert!(serial.contains(&format!("RESEDIT_OPEN volume={volume} ")));
     assert!(serial.contains("QD_DEMO_READY page=2 transfer\n"));
-    assert!(serial.contains("PROCESS_EXIT app=3\n"));
+    assert!(serial.contains(&format!("PROCESS_EXIT app={}\n",
+                                     process_trace::launched(&serial, "ResEdit").0)));
     assert_eq!(fs::read(output.join("native-resources.json")).unwrap(),
                fs::read(output.join("resources.json")).unwrap(),
                "native Save must preserve the lossless archive exactly");
@@ -373,7 +385,22 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
     assert_eq!(original.name, rebuilt.name);
     assert_eq!(original.file_type, rebuilt.file_type);
     assert_eq!(original.creator, rebuilt.creator);
-    assert_eq!(original.flags, rebuilt.flags);
+    let (source, source_activity) =
+        mac_system::testing::with_file_disk(&disk.0, true, Default::default(), |services| {
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            let volume = system.files().volume_at(0).unwrap().id;
+            system.files()
+                  .lookup(volume, mac_toolbox::Cnid(2), "Applications/QuickDraw Test")
+                  .unwrap()
+        }).unwrap();
+    assert_eq!(source_activity.writes, 0);
+    // Finder legitimately initializes icon placement on first open. Compare
+    // metadata with the exported live file, not its earlier build package.
+    assert_eq!(source.finder_flags().bits(), rebuilt.flags);
+    let exported: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("resources.json")).unwrap()).unwrap();
+    assert_eq!(exported["created"].as_u64(), source.created.mac_microseconds());
+    assert_eq!(exported["modified"].as_u64(), source.modified.mac_microseconds());
     mac_build::package::inspect(&fs::read(output.join("rebuilt/QuickDraw Test.bin")).unwrap()).unwrap();
     let frames = report["frames"].as_array().unwrap();
     // The System-owned Open list shows each application's actual small icon;
@@ -480,6 +507,24 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                 "{package} hex preview must use Monaco 9, including fixed-pitch columns");
     }
     let observation = |name: &str| frames.iter().find(|row| row["name"] == name).unwrap();
+    for (before_name, after_name) in
+        [("exported", "saved-again"), ("saved-again", "save-as-cancelled")]
+    {
+        let before = observation(before_name);
+        let after = observation(after_name);
+        let start = before["log"].as_str().unwrap().len();
+        let changes = &after["log"].as_str().unwrap()[start..];
+        assert!(!changes.contains("RESEDIT_RENDER pane=all"),
+                "{after_name}: unchanged resource panes were rebuilt: {changes}");
+        let old_pixels = pixels(&output.join(before["frame"].as_str().unwrap()));
+        let new_pixels = pixels(&output.join(after["frame"].as_str().unwrap()));
+        for y in 48..425
+        {
+            assert_eq!(&old_pixels[(y * 640 + 13) * 3..(y * 640 + 612) * 3],
+                       &new_pixels[(y * 640 + 13) * 3..(y * 640 + 612) * 3],
+                       "{after_name}: save/status changed a resource pane at y={y}");
+        }
+    }
     // Radio state/animation must be actual CDEF0 output, including press and
     // cancellation. The standard CDEF itself has original-System pixel tests.
     mac_system::testing::with_resource_forks(&system_fork, &resource::encode(&[]).unwrap(), |services| {

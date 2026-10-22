@@ -51,3 +51,22 @@ pub fn current_name(system: &System<'_>, gate: TrapGate) -> Result<usize, Failur
     system.log("PROCESS_PASCAL_PASS cases=5\n")?;
     Ok(5)
 }
+
+/// Conversion traps do not bypass resident lifetime validation.
+pub fn rejected_id(system: &System<'_>, gate: TrapGate, id: mac_toolbox::ProcessId)
+                   -> Result<(), Failure>
+{
+    let before = system.processes().current()?;
+    let mut call = ProcessCall { operation: mac_abi::processes::ACTIVATE,
+                                 id: id.0,
+                                 ..Default::default() };
+    call.info.name.fill(0xa5);
+    require(invoke(gate, &mut call, core::mem::size_of::<ProcessCall>())
+            == mac_abi::NOT_FOUND as i64,
+            "legacy stale or foreign process ID was accepted")?;
+    require(call.info.name.iter().all(|b| *b == 0xa5),
+            "rejected legacy activation changed output")?;
+    let after = system.processes().current()?;
+    require(after.id == before.id && after.foreground == before.foreground,
+            "rejected legacy activation changed identity or focus")
+}

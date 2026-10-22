@@ -80,7 +80,7 @@ def capture(output, windows=False):
         wait('EVENT_LATENCY_USERSPACE_PASS\n')
         current = text()
         physical_timing = []
-        trace = re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=1', current)
+        trace = re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=2', current)
         if trace:
             from capture_system7_event_trace import decode
             address, length = map(int, trace.groups())

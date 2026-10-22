@@ -8,7 +8,15 @@ pub struct ThreadId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LegacyContextId(pub u64);
 pub const BOOT_THREAD: ThreadId = ThreadId(1);
-pub const FINDER_APP: AppId = AppId(1);
+static FINDER_APP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub fn finder_app() -> AppId
+{
+    AppId(FINDER_APP.load(core::sync::atomic::Ordering::Acquire))
+}
+pub(crate) fn set_finder_app(app: u64)
+{
+    FINDER_APP.store(app, core::sync::atomic::Ordering::Release);
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutionContext
 {

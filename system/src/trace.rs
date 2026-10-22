@@ -12,27 +12,49 @@ mod enabled
     struct Trace
     {
         header:   [u64; 6],
+        apps:     [u64; APPS],
         services: [[[u64; 4]; SERVICES]; APPS],
         counters: [[u64; 16]; APPS],
         records:  [[u64; 8]; RECORDS]
     }
-    static TRACE: Spinlock<Trace> = Spinlock::new(Trace { header:   [0x5253435954524143, 1, 0,
+    static TRACE: Spinlock<Trace> = Spinlock::new(Trace { header:   [0x5253435954524143, 2, 0,
                                                                      RECORDS as u64, APPS as u64,
                                                                      SERVICES as u64],
+                                                          apps:     [0; APPS],
                                                           services: [[[0; 4]; SERVICES]; APPS],
                                                           counters: [[0; 16]; APPS],
                                                           records:  [[0; 8]; RECORDS] });
     pub fn initialize()
     {
         let data = TRACE.lock();
-        serial!("EVENT_TRACE address={} bytes={} version=1",
+        serial!("EVENT_TRACE address={} bytes={} version=2",
                 core::ptr::from_ref(&*data) as usize,
                 core::mem::size_of::<Trace>());
+    }
+    // Diagnostics are opt-in. Assign a bounded row once per observed identity;
+    // retain full generation-tagged IDs in both the map and the event ring.
+    // If the map fills, ring records remain exact; no unrelated IDs are merged.
+    fn slot(data: &mut Trace, app: u64) -> Option<usize>
+    {
+        if app == 0
+        {
+            return Some(0);
+        }
+        if let Some(index) = data.apps.iter().position(|id| *id == app)
+        {
+            return Some(index);
+        }
+        let index = data.apps.iter().enumerate().skip(1).find(|(_, id)| **id == 0)?.0;
+        data.apps[index] = app;
+        Some(index)
     }
     pub fn record(code: u64, app: u64, a: u64, b: u64, c: u64, d: u64)
     {
         let mut data = TRACE.lock();
-        data.counters[app.min((APPS - 1) as u64) as usize][code as usize] += 1;
+        if let Some(index) = slot(&mut data, app)
+        {
+            data.counters[index][code as usize] += 1;
+        }
         if matches!(code, super::NULL | super::POLL | super::PRESENT)
         {
             return;
@@ -45,8 +67,12 @@ mod enabled
     pub fn service(app: u64, number: u32, depth: usize, elapsed: u64)
     {
         let mut data = TRACE.lock();
-        let row = &mut data.services[app.min((APPS - 1) as u64) as usize]
-            [number as usize & (SERVICES - 1)];
+        let Some(slot) = slot(&mut data, app)
+        else
+        {
+            return;
+        };
+        let row = &mut data.services[slot][number as usize & (SERVICES - 1)];
         let index = if depth == 1 { 0 } else { 2 };
         row[index] += 1;
         row[index + 1] += elapsed;

@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 import time
 
+from capture_system7_applications_ui import Driver
 import capture_system7_conformance as packaging
 import system7_vm as vm
 
@@ -21,6 +22,7 @@ def capture(output, windows_headless=False):
     options = {'frontend': 'native-headless', 'qmp_port': 4457} if windows_headless else {}
     process, endpoint = vm.launch(output / 'profile-vm', **options)
     serial = output / 'profile-vm/serial.log'
+    driver = Driver(endpoint, serial)
 
     def wait(marker):
         deadline = time.monotonic() + 30
@@ -135,7 +137,7 @@ def capture(output, windows_headless=False):
             step(name, lambda k=key, m=modifiers: chord(k, m))
         vm.qmp('screendump', {'filename': str(output / 'finder.ppm')}, endpoint)
         chord('w', ['ctrl'])
-        wait('PROCESS_EXIT app=2\n')
+        wait(f"PROCESS_EXIT app={driver.app_id('TextEdit Exerciser')}\n")
         report = {'original_before': before,
                   'original_after': {name: packaging.sha(original / name) for name in before},
                   'fixture_elf_sha256': packaging.sha(binary),

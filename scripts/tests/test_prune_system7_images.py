@@ -84,6 +84,19 @@ class ImageCleanupTests(unittest.TestCase):
         self.assertTrue(all(path.exists() for path in keep))
         self.assertFalse(old.exists())
 
+    def test_prepared_fixture_survives_before_a_vm_pid_exists(self):
+        owner = self.write('results/system7/preparing/pid', str(os.getpid()).encode())
+        disk = self.write('results/system7/preparing/dist/conformance.raw')
+        rom = self.write('results/system7/preparing/dist/bootrom.bin')
+        report = self.prune()
+        self.assertTrue(disk.exists())
+        self.assertTrue(rom.exists())
+        self.assertIn('results/system7/preparing', report['protected_live_captures'])
+        owner.unlink()
+        self.prune()
+        self.assertFalse(disk.exists())
+        self.assertFalse(rom.exists())
+
     def test_active_top_level_builder_is_protected_until_it_releases_output(self):
         owner = self.write('build/system7/pid', str(os.getpid()).encode())
         active = self.write('build/system7/image-work/system7.hfsb')

@@ -84,6 +84,9 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     assert_eq!(report["original_before"], report["original_after"], "base OS artifacts changed");
     assert_eq!(report["owned_vm_exited"], true);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    let quickdraw_id = process_trace::launched(&serial, "QuickDraw Test").0;
+    let first_editor_log = serial.split("PROCESS_EXIT app=").next().unwrap();
+    let editor_id = process_trace::launched(first_editor_log, "TextEdit Exerciser").0;
     for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:", "SYSTEM_ALLOCATION_FAILED:", "FINDER_ERROR:",
                     "TEXTEDIT_EXERCISER_ERROR", "QUICKDRAW_TEST_ERROR", "PROCESS_ACTION_FAILED",
                     "APPLICATION_MENU_FAILED"]
@@ -189,7 +192,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     assert_eq!(editor_state("background-editor-before-click"),
                "FINDER_TEXTEDIT_STATE length=3 selection=0..0");
     assert!(between("background-editor-before-click", "first-background-content-click")
-            .contains("PROCESS_ACTIVE app=3\n"),
+            .contains(&format!("PROCESS_ACTIVE app={editor_id}\n")),
             "first background content click must activate the editor application");
     assert_eq!(editor_state("first-background-content-click"),
                "FINDER_TEXTEDIT_STATE length=3 selection=1..1",
@@ -202,7 +205,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     assert_eq!(editor_state("editor-caret-restored"),
                "FINDER_TEXTEDIT_STATE length=3 selection=3..3");
     assert!(!between("editor-caret-restored", "background-command-drag-released")
-             .contains("PROCESS_ACTIVE app=2\n"),
+             .contains(&format!("PROCESS_ACTIVE app={quickdraw_id}\n")),
              "Command-drag activated a background application");
     for stage in ["background-command-drag-held", "background-command-drag-released",
                   "background-ordinary-drag-held"]
@@ -218,10 +221,10 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
             == region(&image("background-command-drag-released"), 60, 68, 600, 84),
             "Command-drag must move the inactive title without changing its appearance");
     assert!(!between("background-command-drag-released", "background-ordinary-drag-held")
-             .contains("PROCESS_ACTIVE app=2\n"),
+             .contains(&format!("PROCESS_ACTIVE app={quickdraw_id}\n")),
              "ordinary DragWindow activated its background application before release");
     assert!(between("background-ordinary-drag-held", "background-ordinary-drag-released")
-            .contains("PROCESS_ACTIVE app=2\n"),
+            .contains(&format!("PROCESS_ACTIVE app={quickdraw_id}\n")),
             "ordinary DragWindow must activate its application after accepted release");
     assert_eq!(front("background-ordinary-drag-released"), front("quickdraw-page-two"));
     assert!(region(&image("background-ordinary-drag-released"), 0, 0, 145, 20)
@@ -230,8 +233,8 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     assert!(prefix("quickdraw-resumed").contains("QD_DEMO_READY page=3 regions\n"));
     assert!(prefix("textedit-resumed").contains("FINDER_TEXTEDIT_STATE length=5 selection=5..5\n"),
             "application switching lost editor contents/selection or keyboard routing");
-    assert!(prefix("textedit-quit").contains("PROCESS_EXIT app=3\n"));
-    assert!(prefix("quickdraw-quit").contains("PROCESS_EXIT app=2\n"));
+    assert!(prefix("textedit-quit").contains(&format!("PROCESS_EXIT app={editor_id}\n")));
+    assert!(prefix("quickdraw-quit").contains(&format!("PROCESS_EXIT app={quickdraw_id}\n")));
     assert_eq!(prefix("textedit-relaunched").matches("TEXTEDIT_EXERCISER_READY\n").count(), 2);
     let original = process_trace::launched(&prefix("textedit-quit"), "TextEdit Exerciser");
     let relaunched =

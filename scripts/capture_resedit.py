@@ -13,15 +13,17 @@ from capture_system7_applications_ui import Driver
 from extract_standard_wdef_assets import resources
 from export_resedit_json import exports
 import system7_vm as vm
+from system7_diagnostics import capture_failure, heap_usage
 from capture_system7_event_trace import decode, delta
 
 
 def capture(output):
     output=Path(output).resolve();output.mkdir(parents=True,exist_ok=False)
+    (output/'pid').write_text(str(os.getpid()))
     baseline=hashlib.sha256((vm.DIST/'system7.qcow2').read_bytes()).hexdigest()
     process,endpoint=vm.launch(output/'vm',writable=True)
     driver=Driver(endpoint,output/'vm/serial.log');frames=[];damage_samples=[]
-    trace=re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=1',driver.log())
+    trace=re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=2',driver.log())
     def snapshot(label):
         if not trace:return None
         address,size=map(int,trace.groups());path=output/(label+'.bin')
@@ -36,7 +38,9 @@ def capture(output):
         if move_cursor:driver.move(16,444)
         time.sleep(.05)
         path=output/(name+'.ppm');vm.qmp('screendump',{'filename':str(path)},endpoint)
-        frames.append({'name':name,'frame':path.name,'log':driver.log()})
+        frames.append({'name':name,'frame':path.name,'log':driver.log(),
+                       'heap':heap_usage(driver.endpoint,vm.DIST)})
+        (output/'frames.json').write_text(json.dumps(frames,indent=2)+'\n')
     def pick(name):
         for char in name.lower():driver.key('spc' if char==' ' else char)
         driver.key('ret')
@@ -103,7 +107,7 @@ def capture(output):
     try:
         driver.click(40,95,double=True);driver.wait(' name=Applications\n')
         driver.application('QuickDraw Test');driver.wait('QUICKDRAW_TEST_READY\n')
-        driver.menu(618,93,popup_x=580);driver.wait('PROCESS_ACTIVE app=1\n')
+        driver.menu(618,93,popup_x=580);driver.wait(f"PROCESS_ACTIVE app={driver.app_id('Finder')}\n")
         frame('finder-icons')
         driver.application('ResEdit');driver.wait('RESEDIT_READY\n');frame('picker')
         open_dialog();frame('system-open')
@@ -114,7 +118,8 @@ def capture(output):
         driver.key('ret');driver.wait('RESEDIT_SAVED ');frame('exported')
         n=driver.log().count('RESEDIT_SAVED ');driver.key('s',('ctrl',));driver.wait('RESEDIT_SAVED ',n);frame('saved-again')
         # Save As shares StandardPutFile; cancel must leave the existing JSON.
-        n=driver.log().count('STANDARD_FILE_BEGIN ');driver.menu(42,75);driver.wait('STANDARD_FILE_BEGIN ',n);frame('system-save-as');driver.key('esc')
+        n=driver.log().count('STANDARD_FILE_BEGIN ');driver.menu(42,75);driver.wait('STANDARD_FILE_BEGIN ',n);frame('system-save-as')
+        done=driver.log().count('STANDARD_FILE_DONE ');driver.key('esc');driver.wait('STANDARD_FILE_DONE ',done);frame('save-as-cancelled')
         # Save As to the same name requires a System-owned replacement confirmation.
         n=driver.log().count('STANDARD_FILE_BEGIN ');driver.menu(42,75);driver.wait('STANDARD_FILE_BEGIN ',n);driver.key('ret');frame('system-replace');driver.key('ret')
         driver.wait('RESEDIT_SAVED ',driver.log().count('RESEDIT_SAVED ')-1)
@@ -140,10 +145,16 @@ def capture(output):
         resize((618,450),(602,438),'resized')
         resize((602,438),(618,450),'resize-restored')
         # The running app is still usable after its file was inspected/exported.
-        driver.menu(618,111,popup_x=580);driver.wait('PROCESS_ACTIVE app=2\n')
+        active=f"PROCESS_ACTIVE app={driver.app_id('QuickDraw Test')}\n";previous=driver.log().count(active)
+        driver.menu(618,111,popup_x=580);driver.wait(active,previous)
         driver.key('2');driver.wait('QD_DEMO_READY page=2 transfer\n');frame('running-app-still-usable')
-        driver.menu(618,129,popup_x=580);driver.wait('PROCESS_ACTIVE app=3\n')
-        driver.key('q',('ctrl',));driver.wait('PROCESS_EXIT app=3\n');frame('resedit-closed')
+        active=f"PROCESS_ACTIVE app={driver.app_id('ResEdit')}\n";previous=driver.log().count(active)
+        driver.menu(618,129,popup_x=580);driver.wait(active,previous)
+        driver.key('q',('ctrl',));driver.wait(f"PROCESS_EXIT app={driver.app_id('ResEdit')}\n");frame('resedit-closed')
+    except Exception:
+        if process.poll() is None:
+            capture_failure(output,driver,vm.DIST)
+        raise
     finally:
         if process.poll() is None:vm.qmp('quit',endpoint=endpoint)
         process.wait(timeout=10)
@@ -153,7 +164,9 @@ def capture(output):
     fs = NativeImage(raw)
     fs.extract('/Applications/QuickDraw Test.json', output / 'native-resources.json')
     fs.extract('/Applications/exports/QuickDraw Test.json', output / 'native-subfolder-resources.json')
-    for path in [raw,output/'vm/system7.qcow2',output/'vm/bootrom.bin']:path.unlink(missing_ok=True)
+    # Rust reads the captured source catalog through the public SDK and owns
+    # disposal of this offline evidence disk, including assertion failures.
+    for path in [output/'vm/system7.qcow2',output/'vm/bootrom.bin']:path.unlink(missing_ok=True)
     report={'frames':frames,'damage_samples':damage_samples,'token':token,'base_before':baseline,'base_after':hashlib.sha256((vm.DIST/'system7.qcow2').read_bytes()).hexdigest(),'assertion_owner':'mac-toolbox/tests/resedit.rs'}
     (output/'capture.json').write_text(json.dumps(report,indent=2)+'\n')
 

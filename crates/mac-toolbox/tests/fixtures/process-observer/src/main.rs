@@ -64,8 +64,12 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
         Err(e) => return e.status()
     };
     // SAFETY: the same loader-validated table supplies the raw legacy conversion gate.
-    let outcome = process_pascal_cases::current_name(&system, unsafe { (*services).trap })
-        .and_then(|_| process_cases::observer(&system));
+    let gate = unsafe { (*services).trap };
+    let outcome = process_pascal_cases::current_name(&system, gate).and_then(|_| {
+                      process_cases::observer(&system, |id| {
+                          process_pascal_cases::rejected_id(&system, gate, id)
+                      })
+                  });
     match outcome
     {
         Ok(()) => 0,

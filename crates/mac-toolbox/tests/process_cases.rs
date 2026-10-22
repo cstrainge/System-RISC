@@ -50,6 +50,7 @@ fn synthetic_private(system: &System<'_>, foreign_window: WindowId, tag: u32) ->
     for kind in [EventKind::Activate, EventKind::MouseDown]
     {
         let posted = Event { kind,
+                             payload: 0,
                              message: foreign_window.0,
                              when: tag,
                              where_: mac_toolbox::Point { h: 7,
@@ -239,7 +240,8 @@ fn parse_window(text: &str, prefix: &str) -> Option<WindowId>
     }
     if suffix.is_empty() { None } else { Some(WindowId(value)) }
 }
-pub fn observer(system: &System<'_>) -> Result<()>
+pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) -> Result<()>)
+                -> Result<()>
 {
     system.log("DESKTOP_READY: public Process Manager acceptance\n")?;
     let processes = system.processes();
@@ -255,6 +257,15 @@ pub fn observer(system: &System<'_>) -> Result<()>
     let own_window =
         system.windows()
               .create(WindowSpec::new(Rect::new(30, 60, 320, 170), "Process Observer"))?;
+    for foreign in [mac_toolbox::ProcessId(u64::from(own_window.0)),
+                    mac_toolbox::ProcessId(me.id.0 | (1u64 << 40))]
+    {
+        require(processes.activate(foreign)
+                         .err()
+                         .is_some_and(|e| e.status() == mac_toolbox::abi::NOT_FOUND),
+                "foreign process ID was not rejected")?;
+        reject_legacy(foreign)?;
+    }
     let own_front =
         system.windows().create(WindowSpec::new(Rect::new(45, 80, 335, 190), "Observer Front"))?;
     let volume = system.files().volume_at(0)?.id;
@@ -280,7 +291,7 @@ pub fn observer(system: &System<'_>) -> Result<()>
     system.log("PROCESS_PREEMPTION_PASS\n")?;
     let worker =
         system.files().lookup(volume, mac_toolbox::Cnid(2), "Applications/ProcessWorker")?;
-    let mut prior = None;
+    let mut prior: Option<(ProcessId, mac_toolbox::ThreadId)> = None;
     for round in 0..2
     {
         system.scrap().clear()?;
@@ -296,6 +307,17 @@ pub fn observer(system: &System<'_>) -> Result<()>
                 "worker is not an independent OS thread")?;
         if let Some((id, thread)) = prior
         {
+            require(child.id.0 & 0xffff == id.0 & 0xffff,
+                    "relaunch did not force process slot reuse")?;
+            let stale = processes.activate(id).expect_err("stale process aliased reused slot");
+            reject_legacy(id)?;
+            let mut detail = crate::LogBuffer::new();
+            use core::fmt::Write;
+            let _ = write!(detail, "{stale}");
+            require(detail.text().contains("not found"), "stale process error lost its cause")?;
+            require(stale.status() == mac_toolbox::abi::NOT_FOUND,
+                    "stale process must report not found")?;
+            require(processes.current()?.id == me.id, "stale activation changed caller identity")?;
             require(child.id != id && child.thread != thread,
                     "relaunch reused a terminated identity")?;
         }
@@ -458,9 +480,12 @@ pub fn observer(system: &System<'_>) -> Result<()>
         require(processes.count()? == 1 && processes.current()?.foreground == true,
                 "worker exit/focus cleanup")?;
         require(processes.activate(child.id).is_err(), "terminated AppId remained activatable")?;
+        reject_legacy(child.id)?;
         memory(&handle, b"observer-owned memory")?;
         prior = Some((child.id, child.thread));
     }
+    system.log("PROCESS_GENERATIONS_PASS native=passed legacy=passed foreign=passed \
+                reused=passed\n")?;
     copies(system, volume, worker.id, own_window)?;
     handle.dispose()?;
     system.windows().close(own_front)?;

@@ -1,6 +1,5 @@
 //! Application metadata and activation policy, independent of CPU scheduling.
 #![forbid(unsafe_code)]
-use alloc::vec::Vec;
 
 use mac_abi::{processes::*, *};
 pub mod menu;
@@ -12,51 +11,61 @@ pub struct Process
 }
 pub struct Manager
 {
-    pub entries: Vec<Process>,
-    next:        u64,
-    stamp:       u64
+    entries: crate::toolbox::handles::Table<Process>,
+    stamp:   u64
 }
 impl Manager
 {
     pub fn new() -> Self
     {
-        Self { entries: Vec::new(),
-               next:    1,
+        Self { entries:
+                   crate::toolbox::handles::Table::new(crate::toolbox::handles::Kind::Processes),
                stamp:   0 }
+    }
+
+    pub fn len(&self) -> usize
+    {
+        self.entries.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Process>
+    {
+        self.entries.iter().map(|(_, process)| process)
+    }
+
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Process>
+    {
+        self.entries.values_mut()
     }
 
     pub fn add(&mut self, name: &str, volume: u32, cnid: u32, image: usize) -> Result<u64, Status>
     {
-        if self.entries.len() == 8 || self.next > u32::MAX as u64
-        {
-            return Err(NO_MEMORY);
-        }
-        let id = self.next;
-        self.next += 1;
-        let mut info = ProcessInfo { id,
-                                     volume,
+        let mut info = ProcessInfo { volume,
                                      cnid,
                                      ..Default::default() };
-        if name.len() > info.name.len()
+        if name.is_empty() || name.len() > info.name.len()
         {
             return Err(BAD_ARGUMENT);
         }
         info.name[..name.len()].copy_from_slice(name.as_bytes());
         info.name_length = name.len() as u32;
-        self.entries.push(Process { info,
-                                    image,
-                                    stamp: 0 });
-        Ok(id)
+        let id = self.entries
+                     .insert(Process { info,
+                                       image,
+                                       stamp: 0 })
+                     .map_err(|_| NO_MEMORY)?;
+        self.entries.get_mut(id).ok_or(NOT_FOUND)?.info.id = u64::from(id);
+        Ok(u64::from(id))
     }
 
     pub fn get(&self, id: u64) -> Result<&Process, Status>
     {
-        self.entries.iter().find(|p| p.info.id == id).ok_or(NOT_FOUND)
+        self.entries.get(u32::try_from(id).map_err(|_| NOT_FOUND)?).ok_or(NOT_FOUND)
     }
 
     pub fn get_mut(&mut self, id: u64) -> Result<&mut Process, Status>
     {
-        self.entries.iter_mut().find(|p| p.info.id == id).ok_or(NOT_FOUND)
+        self.entries.get_mut(u32::try_from(id).map_err(|_| NOT_FOUND)?).ok_or(NOT_FOUND)
     }
 
     pub fn activate(&mut self, id: u64) -> Result<(), Status>
@@ -64,7 +73,7 @@ impl Manager
         self.get(id)?;
         self.stamp += 1;
         let stamp = self.stamp;
-        for p in &mut self.entries
+        for p in self.values_mut()
         {
             p.info.foreground = u32::from(p.info.id == id);
             if p.info.id == id
@@ -78,16 +87,18 @@ impl Manager
 
     pub fn previous(&self, excluding: u64) -> u64
     {
-        self.entries
-            .iter()
+        self.iter()
             .filter(|p| p.info.id != excluding && p.info.hidden == 0)
             .max_by_key(|p| p.stamp)
-            .map_or(1, |p| p.info.id)
+            .map_or(crate::context::finder_app().0, |p| p.info.id)
     }
 
     pub fn remove(&mut self, id: u64)
     {
-        self.entries.retain(|p| p.info.id != id);
+        if let Ok(id) = u32::try_from(id)
+        {
+            self.entries.remove(id);
+        }
     }
 
     pub fn snapshot(&self, id: u64) -> Result<ProcessInfo, Status>

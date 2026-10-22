@@ -365,6 +365,22 @@ threads and unresponsive-provider timeout recovery remain separate work.
 
 ## Native async/await runtimes
 
+Application identities use the shared `Processes` generation-tagged namespace,
+separate from scheduled thread IDs. Retiring an application removes its table
+entry; reusing its slot cannot accept an old ProcessId or another manager's ID.
+Finder's boot identity is issued by that same table and published explicitly;
+desktop access, drag registration, crash policy and lifecycle notifications do
+not assume that Finder is application 1. Native and Pascal conversion traps use
+these same resident lookups; this does not add a 68k Process Manager adapter.
+
+Opt-in event tracing uses private snapshot format 2. Its six-word header is
+followed by 16 full application identities, then the existing service counters,
+event counters and ring records. Counter rows are assigned to observed identities,
+never indexed by a truncated/clamped ProcessId. A full identity map stops admitting
+additional counter rows; exact event identities remain in the bounded ring.
+Capture tools decode only the current format and discover launched IDs from
+complete resident registration/launch records.
+
 The [base SDK async contract](docs/ASYNC-SDK.md) supports a std-compatible,
 event-driven executor and optional Tokio over the same resident completion
 notifications. Futures never retain manager guards across await. UI task polling

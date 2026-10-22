@@ -192,7 +192,7 @@ impl Manager
             SCROLL => self.scroll(call.delta),
             DISMISS =>
             {
-                if self.info.app == 1
+                if self.info.app != 0 && self.info.app == crate::context::finder_app().0
                 {
                     return Err(ACCESS_DENIED);
                 }

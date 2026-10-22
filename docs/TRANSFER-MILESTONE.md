@@ -178,3 +178,38 @@ and stale-window checks, optimized private Finder selection/scrolling, actual
 SuperPaint navigation and native zoom/restore captures, workspace/boundary checks,
 rebuilt release installation and regenerated API docs. The six full workflow
 completion boxes remain open.
+
+## Application-loader identity prerequisite
+
+Process Manager now stores applications in the shared generation-tagged facility.
+Finder receives a real process identity at boot, replacing literal application-1
+assumptions in desktop access, drag registration, lifecycle notifications and crash
+policy. Reusing a retired process slot rejects its former ID; foreign manager IDs
+and values with extra upper bits also fail. The native SDK and Pascal conversion
+boundary share the resident validation. This is a prerequisite for provider-backed
+loading, not completion of external application/document launching.
+
+Private trace format 2 records full process identities in a bounded counter map;
+captures discover actual registered/launched IDs. Fixture preparation records its
+live owner before building child applications so media pruning cannot remove a
+prepared disk before QEMU starts.
+
+Finder's immutable resources now have one owner in the image cache. Bootstrap
+formerly cloned the entire fork into a second unused resource-file field; removing
+that duplicate saves 584,856 bytes in the private three-application capture, with
+the same 8 MiB System heap. Resource lookups require the actual cached image.
+
+ResEdit retains its resource panes across unchanged exposure/application switches.
+Only a document/view or content-size change rebuilds them. Save/export updates
+only a changed status footer through an owned masked transaction; a cancelled
+Save As changes no document pixels. The full graphical workflow verifies all
+viewers, both save paths, cancellation, new folders, resize, switching and lossless
+JSON rebuild. Flags/dates are compared against the captured live catalog through
+the public SDK, including Finder's legitimately initialized icon metadata.
+
+Validation: shared-facility lifetime/namespace tests, crash-service host tests,
+media-cleanup tests, native/Pascal process reuse and ownership, real application
+menus/relaunch, graphical panic recovery, event tracing, Finder drag recovery,
+SuperPaint navigation and the complete ResEdit workflow. Optimized installation,
+workspace/boundary checks and generated docs/api pass. The six external-volume
+completion targets above remain open.

@@ -1,5 +1,7 @@
 //! Production classic SIT DRVR acceptance through the public Toolbox facade.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/process_trace.rs"]
+mod process_trace;
 use std::{fs, path::PathBuf, process::Command};
 #[test]
 #[ignore = "requires the private image and QEMU"]
@@ -156,10 +158,12 @@ fn assert_no_update_storm(output: &std::path::Path)
     // Tracing is opt-in; assert bounded work whenever the image includes it.
     if let Ok(bytes) = fs::read(output.join("complete-trace.json"))
     {
+        let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+        let finder = process_trace::finder(&serial).to_string();
         let trace: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(trace["counters"]["1"]["update"].as_u64().unwrap_or(0) < 100,
+        assert!(trace["counters"][&finder]["update"].as_u64().unwrap_or(0) < 100,
                 "folder refresh repeatedly returned unacknowledged Update events: {trace}");
-        assert!(trace["services"]["1"]["menu"][0].as_u64().unwrap_or(0) < 1000,
+        assert!(trace["services"][&finder]["menu"][0].as_u64().unwrap_or(0) < 1000,
                 "folder refresh flooded per-event menu work: {trace}");
     }
 }

@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import select
 import re
 from pathlib import Path
@@ -21,7 +22,7 @@ def digest(path):
 
 
 def trace_snapshot(output, endpoint, serial, prefix):
-    marker = re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=1',
+    marker = re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=2',
                        serial.read_text(errors='replace'))
     if not marker:
         return
@@ -39,6 +40,7 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
     if archive is not None and not finder:
         raise ValueError('--archive requires --finder')
     output.mkdir(parents=True, exist_ok=False)
+    (output / 'pid').write_text(str(os.getpid()))
     target = vm.build_dir() / 'fixtures/modules'
     for fixture, binary in ([] if finder else [('stuffit-app', 'Finder')]):
         manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'

@@ -170,15 +170,11 @@ impl Desktop
 
     pub fn started(&mut self, id: u64, thread: u64)
     {
-        if self.processes.entries.is_empty()
-        {
-            let _ = self.processes.add("Finder", 0, 0, 0);
-            let _ = self.processes.activate(1);
-        }
         if let Ok(p) = self.processes.get_mut(id)
         {
             p.info.thread = thread;
         }
+        serial!("PROCESS_REGISTERED app={} name=Finder", id);
         self.refresh_app_menu();
     }
 
@@ -331,11 +327,12 @@ impl Desktop
                             payload: u64::from(volume) | (u64::from(cnid) << 32),
                             when: Self::when(),
                             ..Default::default() };
-        if self.owner == 1
+        if self.owner == crate::context::finder_app().0
         {
             self.events.post(event);
         }
-        else if let Some(local) = self.locals.iter_mut().find(|local| local.id == 1)
+        else if let Some(local) =
+            self.locals.iter_mut().find(|local| local.id == crate::context::finder_app().0)
         {
             local.events.post(event);
         }
@@ -345,7 +342,6 @@ impl Desktop
     {
         self.menu_cache.invalidate();
         let entries: Vec<_> = self.processes
-                                  .entries
                                   .iter()
                                   .map(|p| {
                                       Entry { id:     p.info.id as u32,
@@ -417,7 +413,7 @@ impl Desktop
         {
             return Ok(());
         }
-        if !self.processes.entries.iter().any(|p| p.info.id != id && p.info.hidden == 0)
+        if !self.processes.iter().any(|p| p.info.id != id && p.info.hidden == 0)
         {
             return Err(ACCESS_DENIED);
         }
@@ -447,7 +443,6 @@ impl Desktop
             Action::HideOthers =>
             {
                 let ids: Vec<_> = self.processes
-                                      .entries
                                       .iter()
                                       .filter(|p| p.info.id != self.foreground)
                                       .map(|p| p.info.id)
@@ -460,8 +455,8 @@ impl Desktop
             }
             Action::ShowAll =>
             {
-                let changed = self.processes.entries.iter().any(|p| p.info.hidden != 0);
-                for p in &mut self.processes.entries
+                let changed = self.processes.iter().any(|p| p.info.hidden != 0);
+                for p in self.processes.values_mut()
                 {
                     p.info.hidden = 0;
                 }
@@ -497,32 +492,31 @@ impl Desktop
             {
                 call.index =
                     u32::from(self.processes
-                                  .entries
                                   .iter()
                                   .any(|p| {
                                       p.info.volume == call.volume && p.info.cnid == call.cnid
                                   }))
             }
-            COUNT => call.index = self.processes.entries.len() as u32,
+            COUNT => call.index = self.processes.len() as u32,
             INDEX =>
             {
-                let id = self.processes.entries.get(call.index as usize).ok_or(NOT_FOUND)?.info.id;
+                let id = self.processes.iter().nth(call.index as usize).ok_or(NOT_FOUND)?.info.id;
                 call.info = self.processes.snapshot(id)?;
             }
             LAUNCH =>
             {
-                if let Some(id) =
+                let existing =
                     self.processes
-                        .entries
                         .iter()
                         .find(|p| p.info.volume == call.volume && p.info.cnid == call.cnid)
-                        .map(|p| p.info.id)
+                        .map(|p| p.info.id);
+                if let Some(id) = existing
                 {
                     self.activate_process(id)?;
                     call.info = self.processes.snapshot(id)?;
                     return Ok(());
                 }
-                if self.processes.entries.len() >= 8
+                if self.processes.len() >= 8
                 {
                     return Err(NO_MEMORY);
                 }
@@ -554,7 +548,7 @@ impl Desktop
             SHOW_ALL => self.application_action(Action::ShowAll),
             EXIT =>
             {
-                if caller == 1
+                if caller == crate::context::finder_app().0
                 {
                     return Err(ACCESS_DENIED);
                 }

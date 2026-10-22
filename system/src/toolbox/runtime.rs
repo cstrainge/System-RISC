@@ -96,7 +96,7 @@ impl Desktop
     {
         if id == mac_abi::quickdraw::DESKTOP_TARGET
         {
-            if self.owner != 1
+            if self.owner != crate::context::finder_app().0
             {
                 return Err(ACCESS_DENIED);
             }
@@ -266,6 +266,10 @@ impl Desktop
         })?;
         serial!("UI_OBSERVER address={} bytes=128 version=1",
                 super::quickdraw::observer::address());
+        let mut processes = super::processes::Manager::new();
+        let finder = processes.add("Finder", 0, 0, 0)?;
+        processes.activate(finder)?;
+        crate::context::set_finder_app(finder);
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
                   standard_file: Default::default(),
@@ -305,8 +309,8 @@ impl Desktop
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
                   presentations: 0,
                   compositions: 0,
-                  cdef,mdef,owner:1,foreground:1,locals:alloc::vec![local::Saved::new(1,mdef)],window_owners:Vec::new(),
-                  processes:super::processes::Manager::new(),
+                  cdef,mdef,owner:finder,foreground:finder,locals:alloc::vec![local::Saved::new(finder,mdef)],window_owners:Vec::new(),
+                  processes,
                   app_menu:super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,crate::kernel::resources().ok_or(NOT_SUPPORTED)?)? })
     }
 
@@ -490,12 +494,13 @@ impl Desktop
             }
             SELECT_DESKTOP =>
             {
-                if self.owner != 1
+                if self.owner != crate::context::finder_app().0
                 {
                     return ACCESS_DENIED;
                 }
-                if self.foreground != 1
-                   && let Err(status) = self.activate_process_window(1, None)
+                if self.foreground != crate::context::finder_app().0
+                   && let Err(status) =
+                       self.activate_process_window(crate::context::finder_app().0, None)
                 {
                     return status;
                 }
@@ -1019,7 +1024,7 @@ impl Desktop
         let desktop = call.window == DESKTOP_TARGET;
         if desktop
         {
-            if self.owner != 1
+            if self.owner != crate::context::finder_app().0
             {
                 return Err(ACCESS_DENIED);
             }
@@ -1148,7 +1153,7 @@ impl Desktop
             let desktop = call.window == DESKTOP_TARGET;
             if desktop
             {
-                if self.owner != 1
+                if self.owner != crate::context::finder_app().0
                 {
                     return Err(ACCESS_DENIED);
                 }
@@ -1186,7 +1191,7 @@ impl Desktop
         if matches!(call.operation,
                     QD_DESKTOP_BEGIN | QD_DESKTOP_END | QD_DESKTOP_CANCEL | QD_DESKTOP_BOUNDS)
         {
-            if self.owner != 1 && call.operation != QD_DESKTOP_BOUNDS
+            if self.owner != crate::context::finder_app().0 && call.operation != QD_DESKTOP_BOUNDS
             {
                 return Err(ACCESS_DENIED);
             }
@@ -1663,7 +1668,9 @@ impl Desktop
                     }
                     let hit = self.windows.find_window(point);
                     let active_before = self.windows.active_window();
-                    let owner = hit.window.and_then(|id| self.window_owner(id)).unwrap_or(1);
+                    let owner = hit.window
+                                   .and_then(|id| self.window_owner(id))
+                                   .unwrap_or(crate::context::finder_app().0);
                     if owner != self.foreground && hit.part != WindowPart::Drag
                     {
                         let _ = self.activate_process_window(owner, hit.window);
@@ -2006,7 +2013,9 @@ impl Desktop
             background(&mut canvas);
             let cdef = self.cdef;
             let fonts = crate::kernel::fonts();
-            let desktop_visible = self.processes.get(1).is_ok_and(|p| p.info.hidden == 0);
+            let desktop_visible = self.processes
+                                      .get(crate::context::finder_app().0)
+                                      .is_ok_and(|p| p.info.hidden == 0);
             self.content_cache.begin_frame();
             self.content_cache.retain(|id| {
                                   if id == mac_abi::quickdraw::DESKTOP_TARGET
@@ -2032,7 +2041,7 @@ impl Desktop
                                          self.desktop.bounds(),
                                          &mut canvas,
                                          |canvas| {
-                                             crate::kernel::with_resource_owner(1, || {
+                                             crate::kernel::with_resource_owner(crate::context::finder_app().0, || {
                                                  self.desktop.paint(canvas,
                                                                     fonts,
                                                                     |canvas, command| {
@@ -2107,7 +2116,9 @@ impl Desktop
             {
                 if id.0 == mac_abi::quickdraw::DESKTOP_TARGET
                 {
-                    if self.processes.get(1).is_ok_and(|p| p.info.hidden == 0)
+                    if self.processes
+                           .get(crate::context::finder_app().0)
+                           .is_ok_and(|p| p.info.hidden == 0)
                     {
                         self.windows.for_each_desktop_rect(self.desktop.bounds(), |visible| {
                             for band in region.bands() { for span in &band.spans {
@@ -2116,7 +2127,7 @@ impl Desktop
                                 canvas.reset_port(); canvas.set_clip(clip);
                                 background(&mut canvas);
                                 cache.paint(id.0, self.desktop.bounds(), &mut canvas, |canvas| {
-                                    crate::kernel::with_resource_owner(1, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef)));
+                                    crate::kernel::with_resource_owner(crate::context::finder_app().0, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef)));
                                 });
                                 damaged.push(clip);
                             }}
@@ -2202,11 +2213,9 @@ impl Desktop
         let bounds = cursor.bounds(self.events.mouse, text_cursor);
         let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
         let desktop_outline =
-            (self.foreground == 1 && self.windows.active_window().is_none()).then(|| {
-                                                                                self.desktop
-                                                                                    .outline()
-                                                                            })
-                                                                            .flatten();
+            (self.foreground == crate::context::finder_app().0
+             && self.windows.active_window().is_none()).then(|| self.desktop.outline())
+                                                       .flatten();
         let drag_outline = self.drag.feedback();
         let drag_highlight = self.drag.highlight();
         let outline_visible = !self.menus.is_tracking()

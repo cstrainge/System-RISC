@@ -13,6 +13,7 @@ import struct
 import subprocess
 from pathlib import Path
 import time
+import re
 
 import capture_system7_conformance as packaging
 import system7_vm as vm
@@ -38,6 +39,12 @@ class Driver:
 
     def log(self):
         return self.serial.read_text(errors='replace')
+
+    def app_id(self, name):
+        matches = re.findall(r'PROCESS_(?:REGISTERED|LAUNCHED) app=(\d+)(?: thread=\d+)? name=' + re.escape(name) + r'\n', self.log())
+        if not matches:
+            raise RuntimeError('No registered application: ' + name)
+        return int(matches[-1])
 
     def state(self):
         return observer.read(self.endpoint, self.serial)
@@ -176,6 +183,7 @@ def icon_disk(output):
 def capture(output, remap_icon=False, windows=False):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
+    (output / 'pid').write_text(str(os.getpid()))
     original = vm.DIST
     before = {name: packaging.sha(original / name)
               for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
@@ -235,7 +243,7 @@ def capture(output, remap_icon=False, windows=False):
         driver.key('2')
         driver.wait('QD_DEMO_READY page=2 transfer\n')
         frame('quickdraw-page-two')
-        activate(0, 1)
+        activate(0, driver.app_id('Finder'))
         frame('finder-restored')
         clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
         driver.click(320, 200)
@@ -272,11 +280,11 @@ def capture(output, remap_icon=False, windows=False):
         driver.move(380, 100)
         driver.button(False)
         editor_key('home', ('ctrl',))
-        activate(1, 2)
+        activate(1, driver.app_id('QuickDraw Test'))
         frame('background-editor-before-click')
-        activate_count = driver.log().count('PROCESS_ACTIVE app=3\n')
+        activate_count = driver.log().count(f"PROCESS_ACTIVE app={driver.app_id('TextEdit Exerciser')}\n")
         driver.click(610, 120)
-        driver.wait('PROCESS_ACTIVE app=3\n', activate_count)
+        driver.wait(f"PROCESS_ACTIVE app={driver.app_id('TextEdit Exerciser')}\n", activate_count)
         editor_key('right')
         # Arrow probes expose the actual click result through the editor's
         # ordinary state report. The app emits no special testing-only service.
@@ -300,23 +308,23 @@ def capture(output, remap_icon=False, windows=False):
         driver.button(True)
         driver.move(310, 86)
         frame('background-ordinary-drag-held', park=False)
-        activate_count = driver.log().count('PROCESS_ACTIVE app=2\n')
+        activate_count = driver.log().count(f"PROCESS_ACTIVE app={driver.app_id('QuickDraw Test')}\n")
         driver.button(False)
-        driver.wait('PROCESS_ACTIVE app=2\n', activate_count)
+        driver.wait(f"PROCESS_ACTIVE app={driver.app_id('QuickDraw Test')}\n", activate_count)
         frame('background-ordinary-drag-released')
         driver.key('3')
         driver.wait('QD_DEMO_READY page=3 regions\n')
         frame('quickdraw-resumed')
-        activate(2, 3)
+        activate(2, driver.app_id('TextEdit Exerciser'))
         driver.key('ret')
         driver.key('d')
         driver.wait('FINDER_TEXTEDIT_STATE length=5 selection=5..5\n')
         frame('textedit-resumed')
         driver.menu(28, 60, popup_x=65)  # TextEdit's own File > Quit.
-        driver.wait('PROCESS_EXIT app=3\n')
+        driver.wait(f"PROCESS_EXIT app={driver.app_id('TextEdit Exerciser')}\n")
         frame('textedit-quit')
         driver.menu(28, 60, popup_x=65)  # QuickDraw's own File > Quit.
-        driver.wait('PROCESS_EXIT app=2\n')
+        driver.wait(f"PROCESS_EXIT app={driver.app_id('QuickDraw Test')}\n")
         frame('quickdraw-quit')
         clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
         driver.click(320, 200)
@@ -332,7 +340,7 @@ def capture(output, remap_icon=False, windows=False):
         driver.wait('FINDER_TEXTEDIT_STATE length=1 selection=1..1\n', previous)
         frame('textedit-relaunched-input')
         driver.menu(28, 60, popup_x=65)
-        driver.wait('PROCESS_EXIT app=4\n')
+        driver.wait(f"PROCESS_EXIT app={driver.app_id('TextEdit Exerciser')}\n")
         driver.click(200, 36)  # Bring Finder's startup-volume window forward.
         driver.click(104, 95, double=True)
         driver.wait('name=Documents\n')

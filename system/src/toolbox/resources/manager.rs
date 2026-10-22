@@ -6,8 +6,7 @@ use mac_abi::{resources::*, *};
 use mac_formats::{resource::Resource, text};
 pub struct Files
 {
-    pub system:      Vec<Resource>,
-    pub application: Vec<Resource>
+    pub system: Vec<Resource>
 }
 #[derive(Clone, Copy)]
 pub struct Manager<'a>

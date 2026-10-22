@@ -1,5 +1,7 @@
 //! Real physical Finder drags and persisted placement through the public SDK.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/process_trace.rs"]
+mod process_trace;
 use std::{collections::BTreeMap,
           fs,
           path::{Path, PathBuf},
@@ -99,9 +101,11 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
         assert_eq!(report["tracking_before"][key], report["tracking_after"][key],
                    "tracking changed {key}");
     }
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    let finder = process_trace::finder(&serial).to_string();
     for service in ["file", "font"]
     {
-        assert!(report["tracking_trace"]["services"]["1"][service].is_null(),
+        assert!(report["tracking_trace"]["services"][&finder][service].is_null(),
                 "pointer motion called {service}: {}",
                 report["tracking_trace"]);
     }

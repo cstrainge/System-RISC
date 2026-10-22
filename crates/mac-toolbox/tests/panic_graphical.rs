@@ -5,6 +5,8 @@ use std::{fs,
           process::Command};
 
 use serde_json::Value;
+#[path = "support/process_trace.rs"]
+mod process_trace;
 
 fn frame(path: &Path) -> Vec<u8>
 {
@@ -56,16 +58,24 @@ fn application_panics_show_complete_diagnostics_and_leave_the_desktop_usable()
     }
     for expected in ["PANIC_TEST_TRIGGER kind=short\n", "PANIC_TEST_TRIGGER kind=long\n",
                      "value=42", "formatted diagnostic", "café λ", "apps/panic-test/src/main.rs",
-                     "END_OF_LONG_PANIC", "CRASH_REPORT_COPIED app=3 ",
-                     "CRASH_REPORT_DISMISSED app=2\n", "CRASH_REPORT_DISMISSED app=3\n",
-                     "PROCESS_EXIT app=2\n", "PROCESS_EXIT app=3\n", "PROCESS_EXIT app=4\n"]
+                     "END_OF_LONG_PANIC"]
     {
         assert!(serial.contains(expected), "missing {expected:?}; {}", output.display());
     }
     let reports = capture["reports"].as_array().unwrap();
     assert_eq!(reports.len(), 2);
-    assert_eq!(reports[0]["app"], 2);
-    assert_eq!(reports[1]["app"], 3);
+    let short_app = reports[0]["app"].as_u64().unwrap();
+    let long_app = reports[1]["app"].as_u64().unwrap();
+    assert_ne!(short_app, long_app);
+    assert_eq!(short_app & 0xffff, long_app & 0xffff, "must reuse the same process slot");
+    assert!(serial.contains(&format!("CRASH_REPORT_COPIED app={long_app} ")));
+    for id in [short_app, long_app]
+    {
+        assert!(serial.contains(&format!("CRASH_REPORT_DISMISSED app={id}\n")));
+        assert!(serial.contains(&format!("PROCESS_EXIT app={id}\n")));
+    }
+    let editor = process_trace::launched(&serial, "TextEdit Exerciser").0;
+    assert!(serial.contains(&format!("PROCESS_EXIT app={editor}\n")));
     for report in reports
     {
         assert_eq!(report["flags"], 0, "report was truncated or formatting failed");

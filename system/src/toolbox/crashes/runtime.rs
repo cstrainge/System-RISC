@@ -193,7 +193,7 @@ impl super::Desktop
             0 | 1 => info.first_line != 0,
             2 | 3 => info.first_line.saturating_add(info.page_lines) < info.line_count,
             4 => info.report_bytes.saturating_add(8) <= mac_abi::scrap::MAX_BYTES,
-            5 => self.owner != 1,
+            5 => self.owner != crate::context::finder_app().0,
             _ => false
         }
     }
@@ -242,7 +242,8 @@ impl super::Desktop
                                      info.app,
                                      label(13)?,
                                      info.thread))?;
-            let description = if self.owner == 1 { label(8)? } else { label(11)? };
+            let description =
+                if self.owner == crate::context::finder_app().0 { label(8)? } else { label(11)? };
             self.crash_text(window, MONACO, 14, 72, &description)?;
             let mut warnings = String::new();
             warnings.try_reserve(256).map_err(|_| NO_MEMORY)?;
@@ -334,8 +335,14 @@ impl super::Desktop
             self.crash_text(window, MONACO, 14, 360, &coverage)?;
             for (index, bounds) in BUTTONS.iter().enumerate()
             {
-                let title =
-                    if index == 5 && self.owner == 1 { label(7)? } else { label(LABELS[index])? };
+                let title = if index == 5 && self.owner == crate::context::finder_app().0
+                {
+                    label(7)?
+                }
+                else
+                {
+                    label(LABELS[index])?
+                };
                 let mut standard = definitions::ControlDefinitionState::new(*bounds, &title);
                 standard.enabled = u32::from(self.crash_button_enabled(index));
                 standard.highlighted =

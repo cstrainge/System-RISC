@@ -45,7 +45,7 @@ def capture(output):
         stages.append({'name': name, 'state': driver.state()})
 
     def trace(name):
-        match = re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=1', driver.log())
+        match = re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=2', driver.log())
         if not match:
             raise RuntimeError('build the private image with SYSTEM7_EVENT_TRACE=1')
         path = output / (name + '.bin')

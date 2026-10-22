@@ -51,8 +51,8 @@ def capture(output):
         wait('hidden-recovered');frame('hidden-recovered')
         begin('switch-ready');driver.wait('QD_DEMO_READY page=1 shapes\n');time.sleep(.2);frame('switch-base')
         begin('switch-spin');time.sleep(.7);frame('switch-busy')
-        previous=driver.log().count('PROCESS_ACTIVE app=2\n')
-        driver.menu(618,111,popup_x=580);driver.wait('PROCESS_ACTIVE app=2\n',previous)
+        previous=driver.log().count(f"PROCESS_ACTIVE app={driver.app_id('QuickDraw Test')}\n")
+        driver.menu(618,111,popup_x=580);driver.wait(f"PROCESS_ACTIVE app={driver.app_id('QuickDraw Test')}\n",previous)
         driver.move(16,444);time.sleep(.8);frame('other-app',(16,444))
         driver.wait('BUSY_CURSOR_USERSPACE_PASS\n');frame('background-recovered',(16,444))
         report={'frames':frames,'original_before':before,'original_after':{name:packaging.sha(original/name) for name in before},'fixture_sha256':packaging.sha(binary)}

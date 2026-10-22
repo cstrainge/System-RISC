@@ -118,7 +118,7 @@ def capture(output, windows=False):
                     f'selection={long["bytes"]}..{long["bytes"]}\n')
         frame('report-pasted-into-textedit')
         driver.key('q', ('ctrl',))
-        driver.wait('PROCESS_EXIT app=4\n')
+        driver.wait(f"PROCESS_EXIT app={driver.app_id('TextEdit Exerciser')}\n")
         frame('finder-still-responsive')
     finally:
         try:
