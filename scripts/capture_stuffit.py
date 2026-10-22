@@ -89,6 +89,9 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
                 subprocess.run([str(host / 'risc-forks'), 'import', str(folder), str(source)], check=True)
             if not finder:
                 shutil.copyfile(vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/arsenic-v5.sit', folder / 'Arsenic.sit')
+                for variant in ['shared-v2', 'separate-v5', 'bad-crc-v5']:
+                    shutil.copyfile(vm.ROOT / f'System7/crates/mac-sit/tests/fixtures/method13-{variant}.sit',
+                                    folder / f'Method13-{variant}.sit')
                 if reference is not None:
                     shutil.copyfile(reference, folder / 'Reference.sit')
             exports.append(folder)

@@ -201,6 +201,9 @@ fn expand(fork: Fork, packed: &[u8], input_chunk: usize, output_chunk: usize) ->
         }
     }
 }
+
+#[path = "tests_method13.rs"]
+mod method13;
 fn stream(method: u8, packed: &[u8], expected: &[u8]) -> Fork
 {
     Fork { offset:        0,

@@ -517,3 +517,91 @@ fn cancelling_arsenic_cpu_work_discards_provisional_state_and_allows_immediate_r
     assert!(h.lower.0.lock().unwrap().flight.is_none());
     assert_eq!(h.read(volume, token, 0, 34380, 4).unwrap(), [252, 253, 254, 255]);
 }
+
+#[test]
+fn method13_deferred_reads_seek_and_recover_from_bad_fork_checksums()
+{
+    for (bytes, version, bad) in [(include_bytes!("../../../crates/mac-sit/tests/fixtures/\
+                                                   method13-book4-v2.sit").as_slice(),
+                                   2,
+                                   false),
+                                  (include_bytes!("../../../crates/mac-sit/tests/fixtures/\
+                                                   method13-shared-v5.sit").as_slice(),
+                                   5,
+                                   false),
+                                  (include_bytes!("../../../crates/mac-sit/tests/fixtures/\
+                                                   method13-bad-crc-v5.sit").as_slice(),
+                                   5,
+                                   true)]
+    {
+        let mut h = Harness::new(bytes);
+        let volume = h.mount_version(version);
+        let token = h.open(volume, 16);
+        if bad
+        {
+            for _ in 0..2
+            {
+                assert_eq!(h.read(volume, token, 0, 0, 2153),
+                           Err(Error(mac_abi::archive::ArchiveError::ForkChecksum.status())));
+            }
+        }
+        else
+        {
+            assert_eq!(h.read(volume, token, 0, 0, 3).unwrap(), [0; 3]);
+            assert_eq!(h.read(volume, token, 0, 2149, 4).unwrap(), b"XXX!");
+            assert_eq!(h.read(volume, token, 0, 7, 23).unwrap(), (4..27).collect::<Vec<u8>>());
+        }
+        let resource = h.read(volume, token, 1, 0, 416).unwrap();
+        for (at, byte) in resource[..414].iter().enumerate()
+        {
+            assert_eq!(*byte, b"Resource fork\r"[at % 14]);
+        }
+        assert_eq!(&resource[414..], &[0, 0x90]);
+        h.execute(Operation::Close,
+                  Arguments { volume,
+                              token,
+                              ..Default::default() })
+         .unwrap();
+        h.execute(Operation::Unmount,
+                  Arguments { volume,
+                              ..Default::default() })
+         .unwrap();
+        assert!(h.lower.0.lock().unwrap().flight.is_none());
+        assert_eq!(h.service.quiesce(), Ok(()));
+    }
+}
+
+#[test]
+fn cancelling_method13_input_releases_the_lower_request_before_retry()
+{
+    let mut h = Harness::new(include_bytes!("../../../crates/mac-sit/tests/fixtures/\
+                                             method13-window-v5.sit"));
+    let volume = h.mount_version(5);
+    let token = h.open(volume, 16);
+    let ticket = h.requests.insert(()).unwrap();
+    let input = Harness::bytes(Arguments { volume,
+                                           token,
+                                           offset: 99000,
+                                           length: 969,
+                                           ..Default::default() });
+    for step in 0..100
+    {
+        assert_eq!(h.step(ticket,
+                          Operation::Read,
+                          if step == 0 { Phase::Start } else { Phase::Poll },
+                          if step == 0 { &input } else { &[] },
+                          &mut [0; 969]),
+                   Ok(Completion::Pending));
+        if h.lower.0.lock().unwrap().flight.is_some()
+        {
+            break;
+        }
+    }
+    assert!(h.lower.0.lock().unwrap().flight.is_some());
+    assert_eq!(h.finish(ticket, Operation::Read, Phase::Cancel, &[]),
+               Err(Error(mac_abi::OPERATION_CANCELLED)));
+    h.requests.remove(ticket).unwrap();
+    assert!(h.lower.0.lock().unwrap().flight.is_none());
+    assert_eq!(h.read(volume, token, 0, 99965, 4).unwrap(),
+               (99965..99969).map(|i| i as u8).collect::<Vec<_>>());
+}

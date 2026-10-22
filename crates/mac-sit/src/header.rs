@@ -133,6 +133,7 @@ pub enum Method
     Rle,
     Lzw,
     Huffman,
+    LzHuffman,
     Arsenic
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +162,7 @@ impl Fork
             1 => Ok(Method::Rle),
             2 => Ok(Method::Lzw),
             3 => Ok(Method::Huffman),
+            13 => Ok(Method::LzHuffman),
             15 => Ok(Method::Arsenic),
             other => Err(Error::UnsupportedMethod(other))
         }

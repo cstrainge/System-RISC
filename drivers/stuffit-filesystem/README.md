@@ -19,7 +19,7 @@ acknowledged Close. Nested archives served by this same serialized provider are
 currently NotSupported; a separate reentrant-instance contract is needed first.
 
 `mac-sit` owns classic revisions 1/2 and StuffIt 5 headers, CRCs and
-stored/RLE90/LZW/Huffman/Arsenic expansion. Filesystem/version information reflects
+stored/RLE90/LZW/Huffman/LZ-Huffman (13)/Arsenic expansion. Filesystem/version information reflects
 the archive container version (1, 2 or 5), independently of the FSYS contract. See [format evidence and limits](../../docs/STUFFIT-CLASSIC.md).
 The driver adds NFC names and cached Unicode folding using the same pinned
 name machinery as HFS-B. Ambiguous sibling names fail mounting rather than
@@ -62,3 +62,11 @@ stored/RLE90/LZW/Huffman/Arsenic. The actual SuperPaint archive opens through
 Finder, and public SDK reads verify all nine forks from both host export modes.
 Remaining methods, same-provider nested archive mounting and full transfer
 transactions are still required. The driver is unfinished until those gates pass.
+
+Method-13 acceptance additionally covers all five standard codebooks, shared and
+separate dynamic tables, an independent writer, full 64 KiB history wrapping and
+maximum-distance references. Public-SDK checks verify both forks through the
+installed driver, malformed-data/checksum messages, unaffected-fork recovery and
+immediate source release. Both writable/read-only host sources and real Finder
+opens are exercised. Ten driver callback tests cover the current codec set,
+including cancellation while waiting for method-13 source bytes.

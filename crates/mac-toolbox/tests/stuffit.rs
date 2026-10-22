@@ -27,6 +27,13 @@ fn classic_archives_mount_read_forks_copy_out_and_reject_corruption_and_stale_id
     assert!(serial.contains("STUFFIT_CLASSIC2_USERSPACE_PASS"), "{serial}");
     assert_eq!(serial.matches("STUFFIT_V5_USERSPACE_PASS bad_crc=false").count(), 4, "{serial}");
     assert_eq!(serial.matches("STUFFIT_V5_USERSPACE_PASS bad_crc=true").count(), 1, "{serial}");
+    assert_eq!(serial.matches("STUFFIT_METHOD13_USERSPACE_PASS bad_crc=false").count(),
+               20,
+               "{serial}");
+    assert_eq!(serial.matches("STUFFIT_METHOD13_USERSPACE_PASS bad_crc=true").count(),
+               3,
+               "{serial}");
+    assert!(serial.contains("STUFFIT_METHOD13_MALFORMED_USERSPACE_PASS"), "{serial}");
     for failure in
         ["STUFFIT_FAIL", "MODULE_REJECTED", "SYSTEM_PANIC:", "SYSTEM_TRAP:", "DISK_REQUEST_FAILED"]
     {
@@ -202,6 +209,22 @@ fn stuffit5_raw_host_archive_opens_through_real_finder()
     finder_archive(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mac-sit/tests/fixtures/\
                                                                     arsenic-v5.sit"),
                    "v5-finder");
+}
+#[test]
+#[ignore = "requires current private image, QEMU and real Finder"]
+fn method13_classic_raw_host_archive_opens_through_real_finder()
+{
+    finder_archive(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mac-sit/tests/fixtures/\
+                                                                    method13-book4-v2.sit"),
+                   "method13-classic-finder");
+}
+#[test]
+#[ignore = "requires current private image, QEMU and real Finder"]
+fn method13_stuffit5_raw_host_archive_opens_through_real_finder()
+{
+    finder_archive(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mac-sit/tests/fixtures/\
+                                                                    method13-independent-v5.sit"),
+                   "method13-v5-finder");
 }
 #[test]
 #[ignore = "requires current private image, QEMU and the user-supplied SuperPaint reference archive"]

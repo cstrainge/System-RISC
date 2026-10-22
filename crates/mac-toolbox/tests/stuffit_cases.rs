@@ -321,6 +321,205 @@ fn versions(system: &System<'_>, startup: VolumeId) -> Result<(), Error>
     }
     system.log("STUFFIT_CLASSIC2_USERSPACE_PASS\n")
 }
+fn method13_byte(at: usize, resource: bool, window: bool) -> u8
+{
+    if resource
+    {
+        if at < 414
+        {
+            b"Resource fork\r"[at % 14]
+        }
+        else if at == 414
+        {
+            0
+        }
+        else
+        {
+            0x90
+        }
+    }
+    else if window
+    {
+        at as u8
+    }
+    else
+    {
+        match at
+        {
+            0..=2 => 0,
+            3..=2050 => (at - 3) as u8,
+            2051 => 0x90,
+            2052..=2151 => b'X',
+            _ => b'!'
+        }
+    }
+}
+fn check_method13(system: &System<'_>, source: VolumeId, archive: Cnid, version: u32, bad: bool,
+                  window: bool)
+                  -> Result<(), Error>
+{
+    let files = system.files();
+    let mount = files.mount_file(source, archive)?;
+    require(mount.read_only
+            && mount.filesystem
+               == Filesystem::Driver { kind: (*b"SIT ").into(),
+                                       version })?;
+    let entry = files.child(mount.id, ROOT_ID, 0)?;
+    let expected = if window { 99969 } else { 2153 };
+    require(entry.name() == "Method13"
+            && entry.data_length == expected
+            && entry.resource_length == 416)?;
+    let mut buffer = [0; 4096];
+    let mut file = files.open(mount.id, entry.id, Fork::Data)?;
+    if bad
+    {
+        for _ in 0..2
+        {
+            file.seek(SeekFrom::Start(0))?;
+            explained(system,
+                      file.read(&mut buffer).err().ok_or(Error::BadAbi)?,
+                      ArchiveError::ForkChecksum,
+                      "extracted bytes failed verification")?;
+        }
+    }
+    else
+    {
+        let mut total = 0;
+        loop
+        {
+            let limit = if window { buffer.len() } else { 257 };
+            let count = file.read(&mut buffer[..limit])?;
+            if count == 0
+            {
+                break;
+            }
+            for (i, byte) in buffer[..count].iter().enumerate()
+            {
+                require(*byte == method13_byte(total + i, false, window))?;
+            }
+            total += count;
+        }
+        require(total as u64 == expected)?;
+        file.seek(SeekFrom::Start(7))?;
+        require(file.read(&mut buffer[..23])? == 23)?;
+        for (i, byte) in buffer[..23].iter().enumerate()
+        {
+            require(*byte == method13_byte(i + 7, false, window))?;
+        }
+    }
+    file.close()?;
+    // A failed data fork must leave the other fork readable immediately.
+    let mut file = files.open(mount.id, entry.id, Fork::Resource)?;
+    require(file.read(&mut buffer)? == 416)?;
+    for (i, byte) in buffer[..416].iter().enumerate()
+    {
+        require(*byte == method13_byte(i, true, false))?;
+    }
+    file.close()?;
+    files.unmount(mount.id)?;
+    system.log(if bad
+               {
+                   "STUFFIT_METHOD13_USERSPACE_PASS bad_crc=true\n"
+               }
+               else
+               {
+                   "STUFFIT_METHOD13_USERSPACE_PASS bad_crc=false\n"
+               })
+}
+fn method13(system: &System<'_>, volume: VolumeId) -> Result<(), Error>
+{
+    let variants: &[(&str, &[u8], u32)] =
+        &[("M13 book1 v2.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-book1-v2.sit"),
+           2),
+          ("M13 book2 v2.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-book2-v2.sit"),
+           2),
+          ("M13 book3 v2.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-book3-v2.sit"),
+           2),
+          ("M13 book4 v2.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-book4-v2.sit"),
+           2),
+          ("M13 book5 v2.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-book5-v2.sit"),
+           2),
+          ("M13 book1 v5.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-book1-v5.sit"),
+           5),
+          ("M13 book2 v5.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-book2-v5.sit"),
+           5),
+          ("M13 book3 v5.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-book3-v5.sit"),
+           5),
+          ("M13 book4 v5.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-book4-v5.sit"),
+           5),
+          ("M13 book5 v5.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-book5-v5.sit"),
+           5),
+          ("M13 shared v2.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-shared-v2.sit"),
+           2),
+          ("M13 shared v5.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-shared-v5.sit"),
+           5),
+          ("M13 separate v2.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-separate-v2.sit"),
+           2),
+          ("M13 separate v5.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-separate-v5.sit"),
+           5),
+          ("M13 window.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-window-v5.sit"),
+           5),
+          ("M13 independent.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-independent-v5.sit"),
+           5),
+          ("M13 bad CRC.sit",
+           include_bytes!("../../mac-sit/tests/fixtures/method13-bad-crc-v5.sit"),
+           5)];
+    for &(name, bytes, version) in variants
+    {
+        let file = create(system, volume, name, bytes)?;
+        check_method13(system,
+                       volume,
+                       file.id,
+                       version,
+                       name == "M13 bad CRC.sit",
+                       name == "M13 window.sit")?;
+        // Acknowledged teardown must immediately release the source lease.
+        system.files().rename(volume, file.id, "M13 released.sit")?;
+        system.files().move_to_trash(volume, file.id)?;
+        system.files().empty_trash(volume)?;
+    }
+    // Damage a payload codebook selector without changing catalog lengths or
+    // CRCs. Header admission must succeed, with a useful read error afterwards.
+    const VALID: &[u8] = include_bytes!("../../mac-sit/tests/fixtures/method13-book4-v2.sit");
+    let mut broken = [0; VALID.len()];
+    broken.copy_from_slice(VALID);
+    let resource_packed =
+        u32::from_be_bytes(VALID[114..118].try_into().map_err(|_| Error::BadAbi)?);
+    broken[134 + resource_packed as usize] = 0xf0;
+    let archive = create(system, volume, "M13 malformed.sit", &broken)?;
+    let files = system.files();
+    let mount = files.mount_file(volume, archive.id)?;
+    let item = files.child(mount.id, ROOT_ID, 0)?;
+    let mut file = files.open(mount.id, item.id, Fork::Data)?;
+    explained(system,
+              file.read(&mut [0; 4096]).err().ok_or(Error::BadAbi)?,
+              ArchiveError::Malformed,
+              "invalid lengths, hierarchy or compressed data")?;
+    file.close()?;
+    let mut file = files.open(mount.id, item.id, Fork::Resource)?;
+    let mut bytes = [0; 416];
+    require(file.read(&mut bytes)? == bytes.len() && bytes[414..] == [0, 0x90])?;
+    file.close()?;
+    files.unmount(mount.id)?;
+    files.rename(volume, archive.id, "M13 malformed released.sit")?;
+    system.log("STUFFIT_METHOD13_MALFORMED_USERSPACE_PASS\n")
+}
 pub fn check(system: &System<'_>) -> Result<(), Error>
 {
     retained_updates(system)?;
@@ -432,6 +631,8 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     data.close()?;
     system.log("STUFFIT_STAGE versions\n")?;
     versions(system, startup)?;
+    system.log("STUFFIT_STAGE method13\n")?;
+    method13(system, startup)?;
     system.log("STUFFIT_STAGE corruption\n")?;
     let mut corrupt = [0; FORKS.len()];
     corrupt.copy_from_slice(FORKS);
@@ -533,6 +734,18 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
         }
         let archive5 = files.lookup(host.id, ROOT_ID, "Arsenic.sit")?;
         check_v5(system, host.id, archive5.id, false)?;
+        for (variant, version, bad) in
+            [("shared-v2", 2, false), ("separate-v5", 5, false), ("bad-crc-v5", 5, true)]
+        {
+            let name = match variant
+            {
+                "shared-v2" => "Method13-shared-v2.sit",
+                "separate-v5" => "Method13-separate-v5.sit",
+                _ => "Method13-bad-crc-v5.sit"
+            };
+            let archive = files.lookup(host.id, ROOT_ID, name)?;
+            check_method13(system, host.id, archive.id, version, bad, false)?;
+        }
         let archive = files.lookup(host.id, ROOT_ID, "Examples.sit")?;
         system.log("STUFFIT_STAGE transfer-open-source\n")?;
         let mut public = files.open(host.id, archive.id, Fork::Data)?;

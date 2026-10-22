@@ -35,7 +35,8 @@ Corrections established against that documentation and writer output:
   and collision policy belong to the filesystem provider. Dates are checked
   conversions from u32 seconds to u64 microseconds, with the shared 1904 epoch.
 
-The current decoder methods are stored, RLE90, LZW, Huffman and Arsenic (15). Method 1 repeats
+The current decoder methods are stored, RLE90, LZW, Huffman, LZ-Huffman (13)
+and Arsenic (15). Method 1 repeats
 the previous byte using escape `0x90` (zero escapes a literal marker; counts
 2..255 add count-1 repetitions). It is not PackBits. Method 2 is headerless
 block-mode compress with 14-bit maximum codes, little-endian groups of eight,
@@ -63,6 +64,18 @@ and emits at most 4 KiB, allowing a provider to yield between chunks. LZW owns
 a fixed 16,384-entry dictionary and bounded reverse stack; Huffman owns at most
 511 tree nodes and 256 pending branches. No method allocates by fork length.
 Input chunk boundaries are independent of code and tree boundaries.
+
+Method 13 retains a zero-initialized 64 KiB LZ history and three bounded Huffman
+trees. It handles all five standard codebooks, dynamically supplied shared or
+separate literal/length tables, all meta-length repeat/delta operators, little-
+endian bit fields and overlapping matches. Bit/tree/match state survives arbitrary
+chunk boundaries. Canonical code construction rejects oversubscription, invalid
+lengths and overflowing table runs. Tables are built once per fork; forward reads
+reuse the decoder, and no allocation scales with the complete fork length.
+The maximum distance is 65,536 and maximum match length is 32,832. Logical length
+is authoritative; optional end-code/byte padding is drained without expansion.
+CRC16 verifies the complete logical output. Constants retain Apache-2.0 provenance
+in THIRD-PARTY.md; the synchronous reference std::io implementation is not included.
 
 Arsenic uses resumable arithmetic decoding, MTF, inverse BWT and RLE, including
 randomized and multiple blocks. Its final CRC-32/ISO-HDLC replaces the unused
@@ -128,7 +141,19 @@ writable/read-only raw-host sources, Finder normal/error recovery, driver remova
 and actual SuperPaint opening plus verification of all nine forks from both
 host-export modes. These prove the named slice, not the remaining driver contract.
 
-Remaining compression methods (including method 13), nested mounts backed by
+Remaining compression methods, nested mounts backed by
 the same provider, complete transfer transactions and original Macintosh
 producer/runtime comparisons remain explicit completion gates. Graceful errors
 for these cases do not close those gates.
+
+The method-13 slice adds host coverage for all five books and both dynamic-table
+forms in revision-2/5 containers, an independent-writer archive, one-byte input/
+output, full-window wrapping, maximum distance/length, truncation, bad selectors,
+oversubscribed tables, length/run overflow and CRC poisoning. Driver callback
+tests verify deferred reads, seek, cancellation acknowledgement and retry. Native
+public-SDK acceptance reads both forks of 17 project-owned variants, checks
+malformed data and CRC error explanations, immediately reads the unaffected fork,
+and tears down/reuses sources. Writable/read-only host exports exercise revision-2
+and version-5 variants plus corruption. Real Finder gates open raw host method-13
+archives in both containers. Original Macintosh producer/runtime comparisons
+remain a separate gate; fixture provenance is recorded beside the archives.

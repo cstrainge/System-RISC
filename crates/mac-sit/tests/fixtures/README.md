@@ -70,3 +70,34 @@ Plain-data SHA256:
 Resource SHA256:
 `d0617102bb9a198c19fb75ddd77eb8bb1e7c09948ce99398ec781360e39ebf09`.
 The expected ISO CRC32 values are 0xae216433 and 0xd9ee79cb respectively.
+
+## Method 13 vectors
+
+Regenerate the small project-owned method-13 archives with:
+
+```sh
+python3 generate_method13.py --reference /path/to/stuffit-0.4.0/src/lib.rs
+```
+
+The Python token encoder exercises all five standard codebooks, shared and
+separate dynamic tables, every meta-length operator, overlapping matches, and
+the zero-initialized history before the first literal. Both classic revision-2
+and StuffIt-5 containers hold each variant. All normal variants expand to:
+
+- Data: three zero bytes, eight cycles 0..255, byte 0x90, 100 X bytes, then `!`
+  (2,153 bytes).
+- Resource: the first 414 bytes of repeated ASCII `Resource fork` plus CR,
+  followed by 0x00 and 0x90 (416 bytes).
+
+`method13-independent-v5.sit` uses the unmodified method-13 compressor from the
+published MIT/Apache-2.0 stuffit 0.4.0 source; the generator pins its SHA256 and
+compiles it privately. It compresses the same project-owned contents with its
+own match finding. The standard codebooks retain sit-algos Apache-2.0 provenance
+in THIRD-PARTY.md. These are synthetic format vectors, not original Macintosh
+producer observations.
+
+`method13-window-v5.sit` expands to 99,969 cyclic bytes 0..255 and the normal
+resource fork. It exercises the complete 64 KiB history wrap, distance 65,536,
+length boundaries 64/65/1,088 and maximum match length 32,832.
+`method13-bad-crc-v5.sit` changes only the declared data checksum; its resource
+fork and catalog checksums remain valid, allowing recovery to be tested.

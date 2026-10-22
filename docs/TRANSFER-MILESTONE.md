@@ -120,7 +120,25 @@ CRC validation through the public SDK on writable and read-only host exports.
 The original source archive and regular visible VM were left untouched.
 Project-owned synthetic fixtures retain reproducible independent-writer provenance.
 
-Remaining: method 13 and other compression methods, same-provider nested mounts,
+Remaining: other compression methods, same-provider nested mounts,
 provider mutation/copy contracts, external native app/document launch, transfer
 UI/application targets, and the recovery requirements above. This does not close
 any of the six full-workflow completion boxes.
+
+## Method-13 slice
+
+The shared safe/no_std decoder supports all five standard LZ-Huffman codebooks
+and dynamic shared/separate tables with bounded, resumable parsing and a fixed
+64 KiB history. It validates meta operators, canonical trees, lengths and CRCs;
+no complete fork is buffered. Decoder/request moves remain below 512 bytes.
+Project-owned vectors include an independent writer and maximum history/distance
+cases. Bad checksum or malformed payload state is discarded without poisoning
+the volume or its other fork; cancelled lower reads are acknowledged before retry.
+
+Validation: 20 parser/codec tests, ten driver callback tests, an optimized private
+image and three private guest gates (public SDK plus real Finder opens of raw
+classic-revision-2 and StuffIt-5 host archives). SDK coverage includes 17 fixture
+variants on the startup volume, valid/corrupt host sources in both export modes,
+informative errors, immediate retry and source release. Remaining codec, nested
+mount, mutation, transfer, document/application delivery and panic recovery gates
+above remain open; this slice does not close the complete driver contract.

@@ -4,6 +4,7 @@ use crate::{Crc16, Error, Fork, Method, Result};
 mod lzw;
 mod huffman;
 mod arsenic;
+mod lz_huffman;
 
 /// Bound both input consumption and output production in one scheduling slice.
 pub const MAX_STEP: usize = 4096;
@@ -72,6 +73,7 @@ enum Codec
     Rle(Rle),
     Lzw(lzw::Lzw),
     Huffman(huffman::Huffman),
+    LzHuffman(lz_huffman::LzHuffman),
     Arsenic(arsenic::Arsenic)
 }
 
@@ -105,6 +107,7 @@ impl Decoder
             Method::Rle => Codec::Rle(Rle::default()),
             Method::Lzw => Codec::Lzw(lzw::Lzw::new()?),
             Method::Huffman => Codec::Huffman(huffman::Huffman::new()?),
+            Method::LzHuffman => Codec::LzHuffman(lz_huffman::LzHuffman::new()?),
             Method::Arsenic => Codec::Arsenic(arsenic::Arsenic::new(fork.length)?)
         };
         Ok(Self { codec,
@@ -159,6 +162,7 @@ impl Decoder
                 Codec::Rle(codec) => codec.next(&mut input)?,
                 Codec::Lzw(codec) => codec.next(&mut input)?,
                 Codec::Huffman(codec) => codec.next(&mut input, self.remaining == 0)?,
+                Codec::LzHuffman(codec) => codec.next(&mut input, self.remaining == 0)?,
                 Codec::Arsenic(codec) => codec.next(&mut input)?
             };
             match symbol
