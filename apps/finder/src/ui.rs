@@ -65,7 +65,7 @@ impl<'a> Alerts<'a>
 
     pub fn error(&mut self, system: &System<'a>, status: Error) -> Result<(), Error>
     {
-        let op = match self.context
+        let op = match self.context.as_ref()
         {
             Some(Event::Update { .. }) => 1,
             Some(Event::MouseDown { .. }) => 2,
@@ -89,6 +89,7 @@ impl<'a> Alerts<'a>
             Some(Event::KeyDown { .. }) =>
             {
                 match self.context
+                          .as_ref()
                           .unwrap()
                           .key()
                           .map_or('\0', |k| k.character().to_ascii_lowercase())
@@ -104,8 +105,8 @@ impl<'a> Alerts<'a>
             _ => 8
         };
         let mut subject = crate::browser::Text::<256>::default();
-        let window = self.context.and_then(|e| e.window()).unwrap_or(WindowId(0));
-        if let Some(event) = self.context.filter(|e| e.window().is_none())
+        let window = self.context.as_ref().and_then(|e| e.window()).unwrap_or(WindowId(0));
+        if let Some(event) = self.context.as_ref().filter(|e| e.window().is_none())
            && let Some(index) = crate::browser::desktop::hit(event.input().at)
            && let Some(item) = crate::browser::desktop::item(index)
         {
@@ -133,11 +134,11 @@ impl<'a> Alerts<'a>
         Ok(())
     }
 
-    pub fn set_context(&mut self, event: Event<'a>)
+    pub fn set_context(&mut self, event: &Event<'a>)
     {
         if self.alert.is_none()
         {
-            self.context = Some(event);
+            self.context = Some(Event::from(event.as_record()));
         }
     }
 
@@ -202,7 +203,7 @@ impl<'a> Alerts<'a>
     }
 
     /// A true result authorizes the pending Empty Trash action, exactly once.
-    pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Error>
+    pub fn event(&mut self, system: &System<'_>, event: &Event) -> Result<bool, Error>
     {
         let Some(alert) = &mut self.alert
         else

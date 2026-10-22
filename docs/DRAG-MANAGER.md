@@ -1,8 +1,8 @@
 # Drag Manager implementation and compatibility
 
 System owns one generation-checked drag manager for native and original trap
-callers. The SDK exposes a sole RAII source owner, borrowed tracking metadata,
-drop-only take-once data and typed terminal outcomes. Original counted-byte data
+callers. The SDK exposes a sole RAII source owner, owned tracking responses,
+owned drop-only take-once data and typed terminal outcomes. Original counted-byte data
 reads remain repeatable; they are not native takes. Source/receiver thread and
 owner checks are separate from handle generation checks. Definitions and feedback
 never execute application callbacks in another application's context.
@@ -13,6 +13,17 @@ never execute application callbacks in another application's context.
 the original Pascal A-line gate: lazy same-app producers, take-once, duplicate
 pending takes, cancellation wakes, source ownership, WrongThread, stale-reference
 slot reuse, one-based original enumeration and partial repeatable flavor reads.
+The decoded event and its tracking/drop capabilities are intentionally neither
+`Copy` nor `Clone`. Ignoring a tracking response rejects that position; ignoring
+a drop or abandoning its receive future rejects the drop, including before its
+first poll. Cleanup validates receiver ownership but can run on another app
+thread without granting data access there. Queue peeks return non-owning
+`EventSnapshot` metadata and never obtain/release a protocol capability. Finder
+additionally scopes its source owner to dispatch success, so a failed file
+operation disposes it before opening an alert. Modal UI cannot consume lifecycle
+cleanup. Native physical acceptance repeats two failing copy drops with alerts,
+then performs successful single/group drags and Escape in the same Finder run.
+
 Native `TEXT` is UTF-8. Original `TEXT` sizes, reads and set offsets use MacRoman;
 conversion is counted bytes, without a Pascal-string length limit. Unrepresentable
 native text fails classic access without returning UTF-8 as MacRoman. A rejected

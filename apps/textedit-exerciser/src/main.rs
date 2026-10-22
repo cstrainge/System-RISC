@@ -37,7 +37,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
             menus::update(system, &editor)?;
             continue;
         }
-        if batch::is_keyboard(event)
+        if batch::is_keyboard(&event)
         {
             batch::keyboard(system, &mut editor, event)?;
             if editor.window == WindowId(0)
@@ -46,7 +46,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
             }
             continue;
         }
-        editor.event(system, event)?;
+        editor.event(system, &event)?;
         if editor.window == WindowId(0)
         {
             return Ok(());

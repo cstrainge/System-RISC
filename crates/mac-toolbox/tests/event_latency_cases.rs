@@ -114,7 +114,7 @@ pub fn run(system: &System<'_>) -> Result<()>
             == EventKind::Null,
             "wait consumed a mask-excluded event")?;
     require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(APP1))
-                  .map(|event| event.map(mac_toolbox::Event::into_record))?
+                  .map(|event| event.map(mac_toolbox::events::EventSnapshot::into_record))?
             == Some(posted),
             "excluded event disappeared")?;
     require(events.wait_event(mac_toolbox::events::EventMask::from_bits_retain(APP1), 60)
@@ -144,7 +144,7 @@ pub fn run(system: &System<'_>) -> Result<()>
     require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(1
                                                                          << EventKind::Null
                                                                             as u16))
-                  .map(|event| event.map(mac_toolbox::Event::into_record))?
+                  .map(|event| event.map(mac_toolbox::events::EventSnapshot::into_record))?
                   .is_none(),
             "queued null record was delivered more than once")?;
     system.log("EVENT_LATENCY_POSTED_NULL_PASS\n")?;

@@ -5,7 +5,7 @@ use mac_toolbox::*;
 
 use crate::{Text, editor, menus};
 
-pub fn is_keyboard(kind: Event) -> bool
+pub fn is_keyboard(kind: &Event) -> bool
 {
     matches!(kind, Event::KeyDown { .. } | Event::KeyUp { .. })
 }
@@ -13,7 +13,7 @@ pub fn is_keyboard(kind: Event) -> bool
 pub fn keyboard(system: &System<'_>, editor: &mut editor::Editor, first: Event)
                 -> Result<(), Error>
 {
-    let mut pending = [Event::default(); 128];
+    let mut pending: [Event; 128] = core::array::from_fn(|_| Event::default());
     pending[0] = first;
     let mut count = 1;
     // Consume input before applying edits: layout work for one key must not
@@ -25,7 +25,7 @@ pub fn keyboard(system: &System<'_>, editor: &mut editor::Editor, first: Event)
         // Event Manager. Leave them queued for the normal main-loop dispatch.
         match system.events().peek(mac_toolbox::events::EventMask::ALL)?
         {
-            Some(next) if is_keyboard(next) =>
+            Some(next) if next.is_keyboard() =>
             {
                 pending[count] = system.next_event(mac_toolbox::events::EventMask::ALL)?;
                 count += 1;
@@ -35,7 +35,7 @@ pub fn keyboard(system: &System<'_>, editor: &mut editor::Editor, first: Event)
     }
     editor.defer_drawing();
     let mut keys = 0;
-    for event in pending[..count].iter().copied()
+    for event in pending[..count].iter()
     {
         // Releases only update the OS key map; they require no editor query,
         // menu query or repaint. Mutation order otherwise remains unchanged.

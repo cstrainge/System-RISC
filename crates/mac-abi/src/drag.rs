@@ -26,6 +26,8 @@ pub const CLASSIC_FLAVOR: u32 = 20;
 pub const CLASSIC_READ: u32 = 21;
 pub const ITEM_BOUNDS: u32 = 22;
 pub const FILE_ITEMS: u32 = 24;
+/// RAII rejection only; validates receiver ownership but permits cleanup on any thread.
+pub const ABANDON: u32 = 25;
 pub const CLASSIC_COUNT: u32 = 23;
 pub const DRAFT: u32 = 6;
 pub const COPY: u32 = 1;

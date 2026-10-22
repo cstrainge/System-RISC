@@ -334,7 +334,7 @@ impl Viewer
     }
 
     /// Read-only document input. Loaded CDEF1 owns all scrollbar hit/drag math.
-    pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Error>
+    pub fn event(&mut self, system: &System<'_>, event: &Event) -> Result<bool, Error>
     {
         if self.window == WindowId(0)
         {

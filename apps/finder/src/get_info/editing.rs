@@ -57,7 +57,7 @@ impl Info<'_>
         Ok(true)
     }
 
-    pub(super) fn key(&mut self, system: &System<'_>, event: Event) -> Result<(), Error>
+    pub(super) fn key(&mut self, system: &System<'_>, event: &Event) -> Result<(), Error>
     {
         let character = event.key().map_or('\0', |key| key.character());
         let code = event.key().map_or(0, |key| key.code());
@@ -200,7 +200,7 @@ impl Info<'_>
         Ok(true)
     }
 
-    pub(super) fn click(&mut self, system: &System<'_>, event: Event) -> Result<(), Error>
+    pub(super) fn click(&mut self, system: &System<'_>, event: &Event) -> Result<(), Error>
     {
         let window = system.window(self.window)?;
         let point = Point { h: event.input().at.h - window.bounds.left,

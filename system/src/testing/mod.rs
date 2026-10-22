@@ -301,7 +301,17 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        }
                        match unsafe { request::<events::EventCall>(pointer, size) }
                        {
-                           Ok(call) => session.events.service(call, ticks as u32, ticks) as i64,
+                           Ok(call) => {
+                               if call.operation == events::NATIVE_PEEK
+                                  && call.mask & (1 << EventKind::OsEvent as u16) != 0
+                                  && let Some(notice) = session.drag_notices.iter().find(|n| n.owner == files::current_owner())
+                               {
+                                   call.event = notice.event;
+                                   call.present = 1;
+                                   return OK as i64;
+                               }
+                               session.events.service(call, ticks as u32, ticks) as i64
+                           },
                            Err(status) => status as i64
                        }
                    })

@@ -380,7 +380,7 @@ impl Browser
         self.change_desktop_selection(system, selected, selected)
     }
 
-    pub(super) fn click_desktop(&mut self, system: &System<'_>, event: Event)
+    pub(super) fn click_desktop(&mut self, system: &System<'_>, event: &Event)
                                 -> Result<Option<(WindowId, VolumeId, Cnid)>, Error>
     {
         let was_active = self.desktop_active;
@@ -429,7 +429,7 @@ impl Browser
         Ok(target)
     }
 
-    pub(super) fn track_desktop(&mut self, system: &System<'_>, event: Event)
+    pub(super) fn track_desktop(&mut self, system: &System<'_>, event: &Event)
                                 -> Result<bool, Error>
     {
         if let Some((index, anchor)) = self.desktop.pressed

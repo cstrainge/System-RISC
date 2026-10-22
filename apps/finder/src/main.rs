@@ -103,10 +103,10 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     {
         let _ = try_action(system, &mut alerts, browser.advance_cache(system))?;
         let event = system.next_event(mac_toolbox::events::EventMask::ALL)?;
-        alerts.set_context(event);
+        alerts.set_context(&event);
         if matches!(event, Event::Activate { .. })
         {
-            browser.activate(event);
+            browser.activate(&event);
         }
         if matches!(event, Event::Update { .. })
            && browser.contains(event.window().unwrap_or_default())
@@ -129,19 +129,46 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     {
         let event = system.wait_event(mac_toolbox::events::EventMask::ALL,
                                       if info.pending() || browser.pending() { 0 } else { 30 })?;
-        alerts.set_context(event);
+        alerts.set_context(&event);
         if matches!(event, Event::Activate { .. })
         {
-            browser.activate(event);
+            browser.activate(&event);
             let _ = try_action(system, &mut alerts, browser.sync_desktop_activation(system))?;
             if matches!(event,Event::Activate{window,active:true,..} if browser.contains(window))
             {
                 let _ = try_action(system, &mut alerts, browser.refresh_running(system))?;
             }
         }
+        if let Event::Drag { .. } = event
+        {
+            let completed = matches!(&event,
+                Event::Drag { offer: drag::DragEvent::Ended {
+                    outcome: drag::DragOutcome::Moved | drag::DragOutcome::Copied }, .. });
+            if alerts.window() != WindowId(0)
+               && matches!(&event,
+                           Event::Drag { offer: drag::DragEvent::Tracking(_)
+                                                | drag::DragEvent::Dropped(_),
+                                         .. })
+            {
+                // Dropping an ignored offer/payload rejects it through the SDK.
+                dragging.cancel(&mut browser);
+                drop(event);
+            }
+            else
+            {
+                let _ =
+                    try_action(system, &mut alerts, dragging.event(system, &mut browser, event))?;
+            }
+            if completed
+            {
+                let _ = try_action(system, &mut alerts, watches.poll(system, &mut browser))?;
+                update_menus(system, &browser, &info)?;
+            }
+            continue;
+        }
         if alerts.window() != WindowId(0)
         {
-            let confirm = alerts.event(system, event)?;
+            let confirm = alerts.event(system, &event)?;
             if alerts.window() == WindowId(0)
             {
                 if clipboard.window != WindowId(0)
@@ -161,25 +188,10 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         {
             browser.prune(system)?;
         }
-        if let Event::Drag { .. } = event
-        {
-            let _ = try_action(system, &mut alerts, dragging.event(system, &mut browser, event))?;
-            if matches!(event,
-                        Event::Drag { offer:
-                                          drag::DragEvent::Ended { outcome:
-                                                                       drag::DragOutcome::Moved
-                                                                       | drag::DragOutcome::Copied },
-                                      .. })
-            {
-                let _ = try_action(system, &mut alerts, watches.poll(system, &mut browser))?;
-                update_menus(system, &browser, &info)?;
-            }
-            continue;
-        }
         if browser.marquee_tracking()
            && matches!(event, Event::Idle { .. } | Event::MouseUp { .. } | Event::KeyDown { .. })
         {
-            let _ = try_action(system, &mut alerts, browser.track(system, event))?;
+            let _ = try_action(system, &mut alerts, browser.track(system, &event))?;
             if !browser.marquee_tracking()
             {
                 update_menus(system, &browser, &info)?;
@@ -207,7 +219,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             continue;
         }
         let info_handled =
-            try_action(system, &mut alerts, info.event(system, event))?.unwrap_or(false);
+            try_action(system, &mut alerts, info.event(system, &event))?.unwrap_or(false);
         if info.take_changed()
         {
             // Native writes have already published exact parent notifications.
@@ -235,9 +247,9 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         {
             continue;
         }
-        if try_action(system, &mut alerts, clipboard.event(system, event))?.unwrap_or(false)
+        if try_action(system, &mut alerts, clipboard.event(system, &event))?.unwrap_or(false)
         {
-            menus::update_after_event(system, &browser, event)?;
+            menus::update_after_event(system, &browser, &event)?;
             if !matches!(event, Event::Idle { .. })
             {
                 info.update_menus(system)?;
@@ -248,7 +260,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         {
             continue;
         }
-        let _ = try_action(system, &mut alerts, browser.track(system, event))?;
+        let _ = try_action(system, &mut alerts, browser.track(system, &event))?;
         if alerts.window() != WindowId(0)
         {
             continue;
@@ -306,7 +318,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             }
             Event::Activate { .. } =>
             {
-                browser.activate(event);
+                browser.activate(&event);
                 // Window Manager paints activation chrome and queues damage for
                 // affected content. Redraw each window when its Update arrives,
                 // rather than rebuilding every folder on both Activate edges.
@@ -406,7 +418,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 if event.window().is_none()
                    || browser.contains(event.window().unwrap_or_default()) =>
             {
-                let _ = try_action(system, &mut alerts, browser.click(system, event))?;
+                let _ = try_action(system, &mut alerts, browser.click(system, &event))?;
                 let _ = try_action(system, &mut alerts, dragging.begin(system, &mut browser))?;
             }
             _ =>

@@ -109,7 +109,7 @@ impl<'a> Menus<'a>
                              .. } if input.modifiers.contains(Modifiers::COMMAND) =>
             {
                 MenuCall { operation: KEY,
-                           value: u32::from(event.into_record().character()),
+                           value: u32::from(event.as_record().character()),
                            ..Default::default() }
             }
             _ => return Ok(None)

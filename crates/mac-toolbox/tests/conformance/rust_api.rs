@@ -44,13 +44,15 @@ pub fn events_and_errors(system: &System<'_>) -> Result<(), Failure>
                                 tag: 0x6e75_6c6c }];
     for event in posted
     {
-        events.post(event)?;
-        require(events.peek(EventMask::ALL)? == Some(event), "typed peek retains event payload")?;
+        events.post(Event::from(event.as_record()))?;
+        require(events.peek(EventMask::ALL)?.map(mac_toolbox::events::EventSnapshot::into_record)
+                == Some(event.as_record()),
+                "typed peek retains event payload")?;
         require(events.next(EventMask::ALL)? == event, "typed poll decodes event payload")?;
         require(events.peek(EventMask::ALL)?.is_none(), "typed poll consumes once")?;
         if system.capabilities() & mac_toolbox::CAP_EVENT_WAIT != 0
         {
-            events.post(event)?;
+            events.post(Event::from(event.as_record()))?;
             require(events.wait_event(EventMask::ALL, 0)? == event, "typed wait agrees with poll")?;
         }
     }

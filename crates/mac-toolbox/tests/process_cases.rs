@@ -57,17 +57,17 @@ fn synthetic_private(system: &System<'_>, foreign_window: WindowId, tag: u32) ->
                              modifiers: 0x5a00 };
         events.post(posted.into())?;
         require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(mask))
-                      .map(|event| event.map(mac_toolbox::Event::into_record))?
+                      .map(|event| event.map(mac_toolbox::events::EventSnapshot::into_record))?
                 == Some(posted),
                 "caller-posted foreign-window event escaped private queue")?;
         require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(mask))
-                      .map(|event| event.map(mac_toolbox::Event::into_record))?
+                      .map(|event| event.map(mac_toolbox::events::EventSnapshot::into_record))?
                 == Some(posted),
                 "private synthetic event peek consumed or changed payload")?;
         events.flush(mac_toolbox::events::EventMask::from_bits_retain(mask),
                      mac_toolbox::events::EventMask::from_bits_retain(0))?;
         require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(mask))
-                      .map(|event| event.map(mac_toolbox::Event::into_record))?
+                      .map(|event| event.map(mac_toolbox::events::EventSnapshot::into_record))?
                       .is_none(),
                 "private synthetic event flush did not remove it")?;
     }

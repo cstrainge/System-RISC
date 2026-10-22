@@ -36,7 +36,7 @@ fn catalog(path: &Path) -> BTreeMap<String, CatalogInfo>
 }
 #[test]
 #[ignore = "requires current event-trace private image and Linux QEMU"]
-fn same_folder_single_and_group_drags_persist_and_escape_does_not_move_items()
+fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
 {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
     let output = root.join("results/system7").join(format!("finder-drag-{}", std::process::id()));
@@ -105,7 +105,10 @@ fn same_folder_single_and_group_drags_persist_and_escape_does_not_move_items()
     let serial = fs::read_to_string(output.join("boot-1.log")).unwrap();
     assert_eq!(serial.matches("FINDER_DRAG_MOVE_COMMITTED\n").count(), 2, "{serial}");
     assert_eq!(serial.matches("FINDER_DRAG_ENDED moved\n").count(), 2, "{serial}");
-    for failure in ["FINDER_ACTION_FAILED", "SYSTEM_PANIC:", "SYSTEM_TRAP:"]
+    assert_eq!(serial.matches("FINDER_ACTION_FAILED status=-4").count(), 2, "{serial}");
+    assert_eq!(serial.matches("FINDER_DRAG_ENDED rejected\n").count(), 2, "{serial}");
+    assert_eq!(serial.matches("FINDER_ALERT_DISMISSED\n").count(), 2, "{serial}");
+    for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:"]
     {
         assert!(!serial.contains(failure), "{serial}");
     }

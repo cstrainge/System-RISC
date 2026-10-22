@@ -122,7 +122,7 @@ impl Key
     }
 }
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Event<'a>
 {
     /// Borrowed metadata or drop capabilities from the resident Drag Manager.
@@ -251,12 +251,12 @@ impl<'a> From<raw::Event> for Event<'a>
 }
 impl Event<'_>
 {
-    pub const fn input(self) -> Input
+    pub const fn input(&self) -> Input
     {
         match self
         {
             Self::Drag { input,
-                         .. } => input,
+                         .. } => *input,
             Self::Idle { input,
                          .. }
             | Self::MouseDown { input,
@@ -276,41 +276,41 @@ impl Event<'_>
             | Self::CloseRequested { input,
                                    .. }
             | Self::Other { input,
-                          .. } => input
+                          .. } => *input
         }
     }
 
-    pub const fn key(self) -> Option<Key>
+    pub const fn key(&self) -> Option<Key>
     {
         match self
         {
             Self::KeyDown { key,
                             .. }
             | Self::KeyUp { key,
-                          .. } => Some(key),
+                          .. } => Some(*key),
             _ => None
         }
     }
 
-    pub const fn is_idle(self) -> bool
+    pub const fn is_idle(&self) -> bool
     {
         matches!(self, Self::Idle { .. })
     }
 
     /// Explicit transport conversion, for classic callbacks and diagnostics.
-    pub fn into_record(self) -> raw::Event
+    pub fn as_record(&self) -> raw::Event
     {
         let input = self.input();
         if let Self::Drag { offer,
                             .. } = self
         {
-            return offer.into_record(input.when, input.modifiers.bits());
+            return offer.as_record(input.when, input.modifiers.bits());
         }
         let (kind, message) = match self
         {
             Self::Drag { .. } => unreachable!(),
             Self::Idle { tag,
-                         .. } => (raw::EventKind::Null, tag),
+                         .. } => (raw::EventKind::Null, *tag),
             Self::MouseDown { window,
                               .. } => (raw::EventKind::MouseDown, window.map_or(0, |id| id.0)),
             Self::MouseUp { window,
@@ -319,7 +319,7 @@ impl Event<'_>
                             repeat,
                             .. } =>
             {
-                (if repeat { raw::EventKind::AutoKey } else { raw::EventKind::KeyDown },
+                (if *repeat { raw::EventKind::AutoKey } else { raw::EventKind::KeyDown },
                  key.message)
             }
             Self::KeyUp { key,
@@ -336,14 +336,14 @@ impl Event<'_>
                                               when:      input.when,
                                               modifiers: input.modifiers.bits(),
                                               payload:   0 };
-                record.modifiers = (record.modifiers & !raw::ACTIVE_FLAG) | u16::from(active);
+                record.modifiers = (record.modifiers & !raw::ACTIVE_FLAG) | u16::from(*active);
                 return record;
             }
             Self::MenuCommand { menu,
                                 item,
                                 .. } =>
             {
-                (raw::EventKind::MenuCommand, ((menu.0 as u16 as u32) << 16) | item as u32)
+                (raw::EventKind::MenuCommand, ((menu.0 as u16 as u32) << 16) | *item as u32)
             }
             Self::CloseRequested { window,
                                    .. } =>
@@ -352,7 +352,7 @@ impl Event<'_>
             }
             Self::Other { kind,
                           message,
-                          .. } => (kind, message)
+                          .. } => (*kind, *message)
         };
         raw::Event { kind,
                      message,
@@ -364,14 +364,14 @@ impl Event<'_>
 }
 impl Event<'_>
 {
-    pub const fn window(self) -> Option<WindowId>
+    pub const fn window(&self) -> Option<WindowId>
     {
         match self
         {
             Self::MouseDown { window,
                               .. }
             | Self::MouseUp { window,
-                            .. } => window,
+                            .. } => *window,
             Self::Drag { offer,
                          .. } => offer.window(),
             Self::Update { window,
@@ -379,9 +379,18 @@ impl Event<'_>
             | Self::Activate { window,
                              .. }
             | Self::CloseRequested { window,
-                                   .. } => Some(window),
+                                   .. } => Some(*window),
             _ => None
         }
+    }
+}
+impl Event<'_>
+{
+    /// Consume an event as a diagnostic record. An unhandled owned drop is
+    /// rejected on consumption; wire records never transfer its capability.
+    pub fn into_record(self) -> raw::Event
+    {
+        self.as_record()
     }
 }
 impl From<Event<'_>> for raw::Event
@@ -406,5 +415,44 @@ impl<'a> Event<'a>
                                                    Modifiers::from_bits_retain(record.modifiers) } };
         }
         Self::from(record)
+    }
+}
+
+/// Non-owning queue inspection. A snapshot carries no drag completion capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventSnapshot(raw::Event);
+impl From<raw::Event> for EventSnapshot
+{
+    fn from(record: raw::Event) -> Self
+    {
+        Self(record)
+    }
+}
+impl EventSnapshot
+{
+    pub const fn into_record(self) -> raw::Event
+    {
+        self.0
+    }
+
+    pub const fn is_keyboard(self) -> bool
+    {
+        matches!(self.0.kind,
+                 raw::EventKind::KeyDown | raw::EventKind::KeyUp | raw::EventKind::AutoKey)
+    }
+
+    pub fn input(self) -> Input
+    {
+        Event::from(self.0).input()
+    }
+
+    pub fn window(self) -> Option<WindowId>
+    {
+        Event::from(self.0).window()
+    }
+
+    pub fn key(self) -> Option<Key>
+    {
+        Event::from(self.0).key()
     }
 }

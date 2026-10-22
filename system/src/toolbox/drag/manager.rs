@@ -521,7 +521,7 @@ impl Manager
                    -> Result<(), Status>
     {
         call.transferred = 0;
-        if !matches!(call.operation, CREATE | DISPOSE)
+        if !matches!(call.operation, CREATE | DISPOSE | ABANDON)
         {
             let session = self.readable(call.id, owner)?;
             let expected = if session.owner == owner
@@ -899,6 +899,29 @@ impl Manager
                 if let Some(receiver) = session.receiver.and_then(|r| self.receivers.get(r))
                 {
                     self.notice(receiver.owner, DATA_READY_EVENT, receiver.window, call.id, when);
+                }
+            }
+            ABANDON =>
+            {
+                // Cleanup carries no data-access or acceptance capability. It is
+                // safe when a Send future is destroyed on another app thread.
+                self.receiver(call.id, call.receiver, owner)?;
+                let session = self.sessions.get(call.id).unwrap();
+                if call.index == DROPPING && session.phase == DROPPING
+                {
+                    self.return_to_source(call.id, REJECTED, IO_ERROR, when);
+                }
+                else if call.index == TRACKING
+                          && session.phase == TRACKING
+                          && call.point == session.point
+                {
+                    let released = session.released;
+                    self.sessions.get_mut(call.id).unwrap().accepted = false;
+                    self.set_highlight(None);
+                    if released
+                    {
+                        self.drop_at_receiver(call.id, when);
+                    }
                 }
             }
             ACKNOWLEDGE =>

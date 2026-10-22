@@ -25,7 +25,7 @@ pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 6], Error>
 }
 /// Idle scrollbar tracking changes neither selection nor file command policy.
 /// Consumed clipboard events still pass through this shared policy guard.
-pub fn update_after_event(system: &System<'_>, browser: &Browser, event: Event)
+pub fn update_after_event(system: &System<'_>, browser: &Browser, event: &Event)
                           -> Result<(), Error>
 {
     if matches!(event, Event::Idle { .. })

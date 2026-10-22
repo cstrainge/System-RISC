@@ -133,35 +133,43 @@ impl Flavors<'_>
         Ok(false)
     }
 }
-/// Tracking carries only metadata and a response capability: no take methods.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Tracking owns a response guard, never a data-taking capability.
+///
+/// ```compile_fail
+/// fn copyable<T: Copy>() {}
+/// copyable::<toolbox_drag::TrackingOffer<'static>>();
+/// ```
+/// An ignored or failed response rejects this position automatically.
+#[must_use = "an ignored tracking offer rejects its position"]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TrackingOffer<'a>
 {
     route:     Route<'a>,
     window:    Option<WindowId>,
     at:        Point,
     summary:   (usize, u32),
-    pub phase: TrackPhase
+    pub phase: TrackPhase,
+    responded: bool
 }
 impl<'a> TrackingOffer<'a>
 {
-    pub const fn flavors(self) -> Flavors<'a>
+    pub const fn flavors(&self) -> Flavors<'a>
     {
         Flavors { route:   self.route,
                   summary: Some(self.summary) }
     }
 
-    pub const fn window(self) -> Option<WindowId>
+    pub const fn window(&self) -> Option<WindowId>
     {
         self.window
     }
 
-    pub const fn position(self) -> Point
+    pub const fn position(&self) -> Point
     {
         self.at
     }
 
-    pub fn respond(self, response: Response) -> Result<()>
+    pub fn respond(mut self, response: Response) -> Result<()>
     {
         let (flags, volume, parent, bounds) = match response
         {
@@ -179,49 +187,72 @@ impl<'a> TrackingOffer<'a>
                 }
             }
         };
-        self.route
-            .call(wire::Call { operation: wire::ACCEPT,
-                               point: self.at,
-                               window: self.window.map_or(0, |w| w.0),
-                               flags,
-                               volume,
-                               parent,
-                               bounds,
-                               ..Default::default() },
-                  &[],
-                  &mut [])
-            .map(|_| ())
+        self.route.call(wire::Call { operation: wire::ACCEPT,
+                                      point: self.at,
+                                      window: self.window.map_or(0, |w| w.0),
+                                      flags,
+                                      volume,
+                                      parent,
+                                      bounds,
+                                      ..Default::default() },
+                         &[],
+                         &mut [])?;
+        self.responded = true;
+        Ok(())
     }
 }
-/// A borrowed drop capability. Resident validation enforces take-once even if
-/// an application copies this view, duplicates an event or polls a future again.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+impl Drop for TrackingOffer<'_>
+{
+    fn drop(&mut self)
+    {
+        if !self.responded && self.phase != TrackPhase::Left
+        {
+            let _ = self.route.call(wire::Call { operation: wire::ABANDON,
+                                                 index: wire::TRACKING,
+                                                 point: self.at,
+                                                 window: self.window.map_or(0, |w| w.0),
+                                                 ..Default::default() },
+                                    &[],
+                                    &mut []);
+        }
+    }
+}
+/// Sole receiver owner. Leaving scope without completing rejects the drop.
+///
+/// ```compile_fail
+/// fn copyable<T: Copy>() {}
+/// copyable::<toolbox_drag::DropPayload<'static>>();
+/// ```
+/// Metadata and take futures borrow its capability; completion consumes it.
+#[must_use = "dropping an unhandled payload rejects the drop"]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DropPayload<'a>
 {
     route:      Route<'a>,
     window:     Option<WindowId>,
     at:         Point,
-    pub action: DropAction
+    pub action: DropAction,
+    completed:  bool
 }
 impl<'a> DropPayload<'a>
 {
-    pub const fn flavors(self) -> Flavors<'a>
+    pub const fn flavors(&self) -> Flavors<'a>
     {
         Flavors { route:   self.route,
                   summary: None }
     }
 
-    pub const fn window(self) -> Option<WindowId>
+    pub const fn window(&self) -> Option<WindowId>
     {
         self.window
     }
 
-    pub const fn position(self) -> Point
+    pub const fn position(&self) -> Point
     {
         self.at
     }
 
-    pub fn origin(self) -> Result<Point>
+    pub fn origin(&self) -> Result<Point>
     {
         self.route
             .call(wire::Call { operation: wire::INFO,
@@ -231,10 +262,11 @@ impl<'a> DropPayload<'a>
             .map(|c| c.point)
     }
 
-    pub fn custom<'b>(self, item: Item, flavor: FlavorType, output: &'b mut [u8])
+    pub fn custom<'b>(&self, item: Item, flavor: FlavorType, output: &'b mut [u8])
                       -> TakeFuture<'a, 'b>
     {
-        TakeFuture { drop: self,
+        TakeFuture { route: self.route,
+                     window: self.window,
                      item,
                      flavor,
                      output,
@@ -243,13 +275,13 @@ impl<'a> DropPayload<'a>
                      registered: false }
     }
 
-    pub async fn text<'b>(self, item: Item, output: &'b mut [u8]) -> Result<&'b str>
+    pub async fn text<'b>(&self, item: Item, output: &'b mut [u8]) -> Result<&'b str>
     {
         let n = self.custom(item, TEXT, output).await?;
         core::str::from_utf8(&output[..n]).map_err(|_| DragError::Unknown(mac_abi::BAD_ABI))
     }
 
-    pub async fn file(self, item: Item) -> Result<FileItem>
+    pub async fn file(&self, item: Item) -> Result<FileItem>
     {
         let mut bytes = [0; wire::FILE_ITEM_BYTES];
         let n = self.custom(item, FILE_REFERENCE, &mut bytes).await?;
@@ -258,53 +290,55 @@ impl<'a> DropPayload<'a>
 
     /// Complete receive work once. Rejection and dropped futures undo resident
     /// feedback; storage clients still own rollback of their staged outputs.
-    pub async fn receive(self, work: impl Future<Output = Result<()>>) -> Result<()>
+    pub fn receive(mut self, work: impl Future<Output = Result<()>>)
+                   -> impl Future<Output = Result<()>>
     {
-        let mut guard = Completion { payload: self,
-                                     done:    false };
-        let result = work.await;
-        self.acknowledge(result)?;
-        guard.done = true;
-        result
+        // Ownership enters the future at construction, before its first poll.
+        async move {
+            let result = work.await;
+            self.acknowledge(result)?;
+            result
+        }
     }
 
-    fn acknowledge(self, result: Result<()>) -> Result<()>
+    fn acknowledge(&mut self, result: Result<()>) -> Result<()>
     {
-        self.route
-            .call(wire::Call { operation: wire::ACKNOWLEDGE,
-                               window: self.window.map_or(0, |w| w.0),
-                               flags: u32::from(result.is_ok()),
-                               error: result.err().map_or(0, |e| {
-                                                      match e
-                                                      {
-                                                          DragError::Unknown(s) => s,
-                                                          _ => mac_abi::IO_ERROR
-                                                      }
-                                                  }),
-                               ..Default::default() },
-                  &[],
-                  &mut [])
-            .map(|_| ())
+        self.route.call(wire::Call { operation: wire::ACKNOWLEDGE,
+                                      window: self.window.map_or(0, |w| w.0),
+                                      flags: u32::from(result.is_ok()),
+                                      error: result.err().map_or(0, |e| {
+                                                             match e
+                                                             {
+                                                                 DragError::Unknown(s) => s,
+                                                                 _ => mac_abi::IO_ERROR
+                                                             }
+                                                         }),
+                                      ..Default::default() },
+                         &[],
+                         &mut [])?;
+        self.completed = true;
+        Ok(())
     }
 }
-struct Completion<'a>
-{
-    payload: DropPayload<'a>,
-    done:    bool
-}
-impl Drop for Completion<'_>
+impl Drop for DropPayload<'_>
 {
     fn drop(&mut self)
     {
-        if !self.done
+        if !self.completed
         {
-            let _ = self.payload.acknowledge(Err(DragError::Unknown(mac_abi::IO_ERROR)));
+            let _ = self.route.call(wire::Call { operation: wire::ABANDON,
+                                                 index: wire::DROPPING,
+                                                 window: self.window.map_or(0, |w| w.0),
+                                                 ..Default::default() },
+                                    &[],
+                                    &mut []);
         }
     }
 }
 pub struct TakeFuture<'a, 'b>
 {
-    drop:       DropPayload<'a>,
+    route:      Route<'a>,
+    window:     Option<WindowId>,
     item:       Item,
     flavor:     FlavorType,
     output:     &'b mut [u8],
@@ -325,17 +359,17 @@ impl Future for TakeFuture<'_, '_>
         }
         let mut call = wire::Call { operation: wire::READ,
                                     flags: u32::from(this.requested),
-                                    id: this.drop.route.id,
-                                    window: this.drop.window.map_or(0, |w| w.0),
+                                    id: this.route.id,
+                                    window: this.window.map_or(0, |w| w.0),
                                     item: this.item.0,
                                     kind: this.flavor.0,
                                     ..Default::default() };
-        match this.drop.route.client.drag(&mut call, &[], this.output)
+        match this.route.client.drag(&mut call, &[], this.output)
         {
             Err(ToolboxError::ServiceBusy) =>
             {
                 this.requested = true;
-                match super::wake::register(this.drop.route.id,
+                match super::wake::register(this.route.id,
                                             this.item.0,
                                             this.flavor,
                                             context.waker())
@@ -356,7 +390,7 @@ impl Future for TakeFuture<'_, '_>
             {
                 if this.registered
                 {
-                    super::wake::remove(this.drop.route.id, this.item.0, this.flavor);
+                    super::wake::remove(this.route.id, this.item.0, this.flavor);
                     this.registered = false;
                 }
                 this.done = true;
@@ -371,7 +405,7 @@ impl Future for TakeFuture<'_, '_>
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum DragEvent<'a>
 {
     Tracking(TrackingOffer<'a>),
@@ -399,6 +433,7 @@ impl<'a> DragEvent<'a>
                  wire::ENTERED_EVENT | wire::WITHIN_EVENT | wire::LEFT_EVENT =>
                  {
                      Self::Tracking(TrackingOffer { route,
+                                                    responded: false,
                                                     window,
                                                     at,
                                                     summary: ((event.message & 0xfff) as usize,
@@ -413,6 +448,7 @@ impl<'a> DragEvent<'a>
                  wire::DROP_EVENT =>
                  {
                      Self::Dropped(DropPayload { route,
+                                                 completed: false,
                                                  window,
                                                  at,
                                                  action: if event.message & 0x00ff_ffff
@@ -445,7 +481,7 @@ impl<'a> DragEvent<'a>
              })
     }
 
-    pub const fn window(self) -> Option<WindowId>
+    pub const fn window(&self) -> Option<WindowId>
     {
         match self
         {
@@ -460,7 +496,7 @@ impl DragEvent<'_>
 {
     /// Explicit event transport conversion; ordinary clients use the enum.
     #[doc(hidden)]
-    pub fn into_record(self, when: u32, modifiers: u16) -> mac_abi::Event
+    pub fn as_record(&self, when: u32, modifiers: u16) -> mac_abi::Event
     {
         let (message, id, window, at) = match self
         {
@@ -522,7 +558,7 @@ impl Drop for TakeFuture<'_, '_>
     {
         if self.registered
         {
-            super::wake::remove(self.drop.route.id, self.item.0, self.flavor);
+            super::wake::remove(self.route.id, self.item.0, self.flavor);
         }
     }
 }

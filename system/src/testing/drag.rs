@@ -29,7 +29,10 @@ pub(super) fn request(s: &mut Session, call: &mut mac_abi::drag::Call, input: &[
                       -> Result<(), Status>
 {
     if matches!(call.operation,
-                mac_abi::drag::ACCEPT | mac_abi::drag::READ | mac_abi::drag::ACKNOWLEDGE)
+                mac_abi::drag::ACCEPT
+                | mac_abi::drag::READ
+                | mac_abi::drag::ACKNOWLEDGE
+                | mac_abi::drag::ABANDON)
        && call.receiver == 0
     {
         call.receiver = s.drag.receiver_at(call.window).ok_or(NOT_FOUND)?;

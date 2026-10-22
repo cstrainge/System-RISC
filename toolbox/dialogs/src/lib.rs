@@ -35,11 +35,11 @@ impl<'a> Dialogs<'a>
     }
 
     /// Return a hit item on release, or the default/cancel item on Return/Escape.
-    pub fn handle_event(self, window: WindowId, event: Event) -> Result<Option<u16>>
+    pub fn handle_event(self, window: WindowId, event: &Event) -> Result<Option<u16>>
     {
         let mut call = DialogCall { operation: HANDLE_EVENT,
                                     window: window.0,
-                                    event: event.into_record(),
+                                    event: event.as_record(),
                                     ..Default::default() };
         self.client.dialog(&mut call)?;
         Ok((call.item != 0).then_some(call.item))
@@ -120,7 +120,7 @@ impl AlertRef<'_>
         self.dialogs.draw(self.window)
     }
 
-    pub fn handle_event(self, event: Event) -> Result<Option<u16>>
+    pub fn handle_event(self, event: &Event) -> Result<Option<u16>>
     {
         self.dialogs.handle_event(self.window, event)
     }

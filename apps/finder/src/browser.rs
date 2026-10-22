@@ -521,11 +521,11 @@ impl Browser
                 {
                     if matches!(event, Event::MouseDown { .. })
                     {
-                        self.click(system, event)?;
+                        self.click(system, &event)?;
                     }
                     else
                     {
-                        self.track(system, event)?;
+                        self.track(system, &event)?;
                     }
                 }
                 if cache::edit(slot, |folder| core::mem::take(&mut folder.notify_changed))
@@ -1080,7 +1080,7 @@ impl Browser
         result
     }
 
-    pub fn click(&mut self, system: &System<'_>, event: Event) -> Result<(), Error>
+    pub fn click(&mut self, system: &System<'_>, event: &Event) -> Result<(), Error>
     {
         self.press = None;
         self.marquee = None;
@@ -1141,7 +1141,7 @@ impl Browser
                 let pending = &mut self.windows[slot].as_mut().unwrap().pending_clicks;
                 let next =
                     pending.iter_mut().find(|click| click.is_none()).ok_or(Error::NoMemory)?;
-                *next = Some(event.into_record());
+                *next = Some(event.as_record());
                 return Ok(());
             }
             let mut hit = None;
@@ -1231,11 +1231,11 @@ impl Browser
         system.log("FINDER_CLICK_HANDLED\n")
     }
 
-    pub fn activate(&mut self, event: Event)
+    pub fn activate(&mut self, event: &Event)
     {
         if let Event::Activate { window,
                                  active,
-                                 .. } = event
+                                 .. } = *event
         {
             // A desktop press deactivates the former folder asynchronously.
             // That unrelated edge must not erase the new desktop click pair.
@@ -1292,7 +1292,7 @@ impl Browser
         Ok(())
     }
 
-    pub fn track(&mut self, system: &System<'_>, event: Event) -> Result<(), Error>
+    pub fn track(&mut self, system: &System<'_>, event: &Event) -> Result<(), Error>
     {
         if self.track_desktop(system, event)?
         {
@@ -1307,7 +1307,7 @@ impl Browser
                                  .iter_mut()
                                  .find(|event| event.is_none())
                                  .ok_or(Error::NoMemory)?;
-                *next = Some(event.into_record());
+                *next = Some(event.as_record());
                 return Ok(());
             }
             if matches!(event, Event::KeyDown { .. })
@@ -1333,7 +1333,7 @@ impl Browser
         Ok(())
     }
 
-    fn track_marquee(&mut self, system: &System<'_>, event: Event) -> Result<(), Error>
+    fn track_marquee(&mut self, system: &System<'_>, event: &Event) -> Result<(), Error>
     {
         let marquee = self.marquee.unwrap();
         let Some(window) = self.windows[marquee.slot]

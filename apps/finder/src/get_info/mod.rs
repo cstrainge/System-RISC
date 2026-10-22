@@ -474,7 +474,7 @@ impl<'a> Controller<'a>
         Ok(())
     }
 
-    pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Error>
+    pub fn event(&mut self, system: &System<'_>, event: &Event) -> Result<bool, Error>
     {
         if let Some(summary) = self.summary.as_mut()
         {
@@ -518,7 +518,7 @@ impl<'a> Controller<'a>
            && let Some(slot) =
                self.windows
                    .iter()
-                   .position(|row| row.as_ref().is_some_and(|info| info.window == window))
+                   .position(|row| row.as_ref().is_some_and(|info| info.window == *window))
         {
             self.close(system, slot)?;
             return Ok(true);
@@ -586,14 +586,14 @@ impl<'a> Controller<'a>
         }
         if matches!(event, Event::KeyDown { .. } | Event::KeyUp { .. })
         {
-            let mut batch = [Event::default(); 128];
-            batch[0] = event;
+            let mut batch: [Event; 128] = core::array::from_fn(|_| Event::default());
+            batch[0] = Event::from(event.as_record());
             let mut count = 1;
             while count < batch.len()
             {
                 match system.events().peek(mac_toolbox::events::EventMask::ALL)?
                 {
-                    Some(Event::KeyDown { .. } | Event::KeyUp { .. }) =>
+                    Some(next) if next.is_keyboard() =>
                     {
                         batch[count] = system.next_event(mac_toolbox::events::EventMask::ALL)?;
                         count += 1;
@@ -602,7 +602,7 @@ impl<'a> Controller<'a>
                 }
             }
             let info = self.windows[slot].as_mut().ok_or(Error::NotFound)?;
-            for event in batch[..count].iter().copied()
+            for event in batch[..count].iter()
             {
                 if !matches!(event, Event::KeyUp { .. })
                 {

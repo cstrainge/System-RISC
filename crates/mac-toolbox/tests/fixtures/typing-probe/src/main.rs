@@ -2,12 +2,10 @@
 #![no_std]
 #![no_main]
 #![allow(dead_code)]
-use mac_toolbox::events::classic::Event;
 use core::{fmt::Write,
            sync::atomic::{AtomicPtr, AtomicUsize, Ordering}};
 
-use mac_toolbox::*;
-use mac_toolbox::abi::EventKind;
+use mac_toolbox::{abi::EventKind, events::classic::Event, *};
 #[path = "../../../../../../apps/textedit-exerciser/src/editor.rs"]
 mod editor;
 #[path = "../../../../../../apps/textedit-exerciser/src/batch.rs"]
@@ -134,7 +132,9 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
         let _ = api.layout(MenuId(129))?;
         let item = api.item(MenuId(129), 3)?;
         api.set_item_enabled(MenuId(129), 3, item.enabled)?;
-        let _ = system.events().next(mac_toolbox::events::EventMask::from_bits_retain(0)).map(mac_toolbox::Event::into_record)?;
+        let _ = system.events()
+                      .next(mac_toolbox::events::EventMask::from_bits_retain(0))
+                      .map(mac_toolbox::Event::into_record)?;
     }
     let elapsed = system.events().uptime_ticks()? - start;
     let mut line = Text::<128>::default();
@@ -146,11 +146,14 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     Ok(())
 }
 
-fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor) -> Result<(), mac_toolbox::Error>
+fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor)
+                  -> Result<(), mac_toolbox::Error>
 {
     let id = textedit::EditorId(EDITOR.load(Ordering::Relaxed) as u32);
     let before = system.textedit().info(id)?;
-    system.events().flush(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT), mac_toolbox::events::EventMask::from_bits_retain(0))?;
+    system.events()
+          .flush(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT),
+                 mac_toolbox::events::EventMask::from_bits_retain(0))?;
     FILES.store(0, Ordering::Relaxed);
     MENUS.store(0, Ordering::Relaxed);
     UPDATES.store(0, Ordering::Relaxed);
@@ -160,12 +163,10 @@ fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor) -> Result<()
     {
         for kind in [EventKind::KeyDown, EventKind::KeyUp]
         {
-            system.events()
-                  .post(Event { kind,
-                                message: u32::from(character),
-                                when,
-                                ..Default::default() }.into())
-                  ?;
+            system.events().post(Event { kind,
+                                          message: u32::from(character),
+                                          when,
+                                          ..Default::default() }.into())?;
         }
     }
     let boundary = Event { kind: EventKind::Application1,
@@ -195,7 +196,7 @@ fn keyboard_batch(system: &System<'_>, editor: &mut editor::Editor) -> Result<()
        || key_calls != 20
        || menu_calls != 5
        || files != 0
-       || system.events().peek(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(|event| event.map(mac_toolbox::Event::into_record))? != Some(boundary)
+       || system.events().peek(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(|event| event.map(mac_toolbox::events::EventSnapshot::into_record))? != Some(boundary)
        || system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)? != boundary
        || system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)? != tail
     {

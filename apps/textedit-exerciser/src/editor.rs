@@ -258,7 +258,7 @@ impl<'a> Editor<'a>
         Ok(true)
     }
 
-    pub fn event(&mut self, system: &System<'_>, event: Event) -> Result<bool, Error>
+    pub fn event(&mut self, system: &System<'_>, event: &Event) -> Result<bool, Error>
     {
         self.ticks = event.input().when;
         self.prune(system)?;

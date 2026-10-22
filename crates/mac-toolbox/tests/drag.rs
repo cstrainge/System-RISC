@@ -71,13 +71,15 @@ fn inline_data_is_drop_only_take_once_and_move_is_an_outcome()
              .unwrap();
         let drop = dropped(&system);
         assert_eq!(drop.action, DropAction::Move);
-        let mut bytes = [0; 64];
-        let mut take = pin!(drop.text(item, &mut bytes));
-        assert_eq!(poll(take.as_mut()), Poll::Ready(Ok("Hello é")));
-        let mut second = [0; 64];
-        let mut take = pin!(drop.text(item, &mut second));
-        assert_eq!(poll(take.as_mut()),
-                   Poll::Ready(Err(DragError::FlavorUnavailable { flavor: TEXT })));
+        {
+            let mut bytes = [0; 64];
+            let mut take = pin!(drop.text(item, &mut bytes));
+            assert_eq!(poll(take.as_mut()), Poll::Ready(Ok("Hello é")));
+            let mut second = [0; 64];
+            let mut take = pin!(drop.text(item, &mut second));
+            assert_eq!(poll(take.as_mut()),
+                       Poll::Ready(Err(DragError::FlavorUnavailable { flavor: TEXT })));
+        }
         let mut complete = pin!(drop.receive(async { Ok(()) }));
         assert_eq!(poll(complete.as_mut()), Poll::Ready(Ok(())));
         assert_eq!(ended(&system), DragOutcome::Moved);
@@ -155,7 +157,13 @@ fn classic_text_sizes_and_offsets_use_macroman_while_native_takes_utf8()
         let offer = entered(&system);
         // Original callbacks carry this same reference; transport extraction is
         // confined to the classic A-line conformance fixture.
-        let id = DragEvent::Tracking(offer).into_record(0, 0).payload as u32;
+        let event = DragEvent::Tracking(offer);
+        let id = event.as_record(0, 0).payload as u32;
+        let DragEvent::Tracking(offer) = event
+        else
+        {
+            unreachable!()
+        };
         let item = offer.flavors().item(0).unwrap();
         let mut memory = [0u8; 512];
         put(&mut memory, 0, 100);
@@ -182,9 +190,11 @@ fn classic_text_sizes_and_offsets_use_macroman_while_native_takes_utf8()
                                          highlight: Rect::ZERO })
              .unwrap();
         let payload = dropped(&system);
-        let mut bytes = [0; 32];
-        let mut take = pin!(payload.text(item, &mut bytes));
-        assert_eq!(poll(take.as_mut()), Poll::Ready(Ok("Cafè / ﬁ")));
+        {
+            let mut bytes = [0; 32];
+            let mut take = pin!(payload.text(item, &mut bytes));
+            assert_eq!(poll(take.as_mut()), Poll::Ready(Ok("Cafè / ﬁ")));
+        }
         let mut complete = pin!(payload.receive(async { Ok(()) }));
         assert_eq!(poll(complete.as_mut()), Poll::Ready(Ok(())));
         assert_eq!(ended(&system), DragOutcome::Moved);
@@ -224,10 +234,12 @@ fn every_classic_text_byte_is_decoded_for_a_native_receiver()
                                          highlight: Rect::ZERO })
              .unwrap();
         let payload = dropped(&system);
-        let mut out = [0; 1024];
-        let mut take = pin!(payload.text(item, &mut out));
-        let expected = mac_formats::text::decode(&bytes);
-        assert_eq!(poll(take.as_mut()), Poll::Ready(Ok(expected.as_str())));
+        {
+            let mut out = [0; 1024];
+            let mut take = pin!(payload.text(item, &mut out));
+            let expected = mac_formats::text::decode(&bytes);
+            assert_eq!(poll(take.as_mut()), Poll::Ready(Ok(expected.as_str())));
+        }
         let mut complete = pin!(payload.receive(async { Ok(()) }));
         assert_eq!(poll(complete.as_mut()), Poll::Ready(Ok(())));
         assert_eq!(ended(&system), DragOutcome::Moved);
@@ -324,7 +336,13 @@ fn invalid_native_text_is_rejected_and_unrepresentable_classic_text_is_not_utf8(
         builder.flavor(Flavor::text("🦀")).unwrap();
         let _source = builder.begin().unwrap();
         let offer = entered(&system);
-        let id = DragEvent::Tracking(offer).into_record(0, 0).payload as u32;
+        let event = DragEvent::Tracking(offer);
+        let id = event.as_record(0, 0).payload as u32;
+        let DragEvent::Tracking(_offer) = event
+        else
+        {
+            unreachable!()
+        };
         let mut memory = [0xa5u8; 512];
         put(&mut memory, 0, 0);
         put(&mut memory, 4, 100);
@@ -363,14 +381,16 @@ fn same_app_promise_runs_once_only_after_drop_requests_it()
              .unwrap();
         let drop = dropped(&system);
         assert_eq!(count.load(Ordering::SeqCst), 0);
-        let mut output = [0; 16];
-        let mut take = pin!(drop.text(item, &mut output));
-        assert!(poll(take.as_mut()).is_pending());
-        assert_eq!(count.load(Ordering::SeqCst), 0);
-        assert!(session.service_promises().unwrap());
-        assert_eq!(poll(take.as_mut()), Poll::Ready(Ok("lazy")));
-        assert_eq!(count.load(Ordering::SeqCst), 1);
-        assert!(!session.service_promises().unwrap());
+        {
+            let mut output = [0; 16];
+            let mut take = pin!(drop.text(item, &mut output));
+            assert!(poll(take.as_mut()).is_pending());
+            assert_eq!(count.load(Ordering::SeqCst), 0);
+            assert!(session.service_promises().unwrap());
+            assert_eq!(poll(take.as_mut()), Poll::Ready(Ok("lazy")));
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            assert!(!session.service_promises().unwrap());
+        }
         let mut complete = pin!(drop.receive(async { Ok(()) }));
         assert_eq!(poll(complete.as_mut()), Poll::Ready(Ok(())));
         assert_eq!(ended(&system), DragOutcome::Moved);
@@ -403,14 +423,16 @@ fn a_rejected_promise_payload_completes_with_a_typed_error()
                                          highlight: Rect::ZERO })
              .unwrap();
         let payload = dropped(&system);
-        let mut bytes = [0; 32];
-        let mut take = pin!(payload.text(item, &mut bytes));
-        assert!(poll(take.as_mut()).is_pending());
-        assert!(source.service_promises().unwrap());
-        assert_eq!(poll(take.as_mut()),
-                   Poll::Ready(Err(DragError::PromiseFailed { flavor: TEXT,
-                                                              source: Error::BadArgument })));
-        assert!(!source.service_promises().unwrap());
+        {
+            let mut bytes = [0; 32];
+            let mut take = pin!(payload.text(item, &mut bytes));
+            assert!(poll(take.as_mut()).is_pending());
+            assert!(source.service_promises().unwrap());
+            assert_eq!(poll(take.as_mut()),
+                       Poll::Ready(Err(DragError::PromiseFailed { flavor: TEXT,
+                                                                  source: Error::BadArgument })));
+            assert!(!source.service_promises().unwrap());
+        }
     });
 }
 #[test]
@@ -529,4 +551,91 @@ fn original_pascal_items_offsets_repeat_reads_and_stale_drag_references()
         put(&mut memory, 0, replacement);
         assert_eq!(classic(&system, 6, &mut memory, 4), 0);
     });
+}
+
+#[test]
+fn ignored_tracking_after_release_rejects_and_peek_never_owns_the_protocol()
+{
+    testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        input::receiver(1, 1, WINDOW);
+        let mut builder = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+        builder.empty_item(Rect::ZERO).unwrap();
+        let source = builder.begin().unwrap();
+        input::motion(DROP, 0, WINDOW, 1);
+        input::release(DROP, 0, WINDOW, 2);
+        let before = input::feedback();
+        for _ in 0..3
+        {
+            let snapshot = system.events().peek(EventMask::ALL).unwrap().unwrap();
+            assert_eq!(snapshot.into_record().message & 0xff00_0000, abi::drag::ENTERED_EVENT);
+            assert_eq!(input::feedback(), before);
+        }
+        // No handler, response call, or receive future is necessary for cleanup.
+        drop(system.next_event(EventMask::ALL).unwrap());
+        for tick in 1..9
+        {
+            input::tick(tick);
+        }
+        assert_eq!(ended(&system), DragOutcome::Rejected);
+        assert!(system.next_event(EventMask::ALL).unwrap().is_idle());
+        drop(source);
+        let mut next = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+        next.empty_item(Rect::ZERO).unwrap();
+        let next = next.begin().unwrap();
+        next.cancel().unwrap();
+        assert_eq!(ended(&system), DragOutcome::Cancelled);
+    });
+}
+
+#[test]
+fn owned_drops_and_receive_futures_reject_on_every_abandonment_path()
+{
+    for scenario in 0..5
+    {
+        testing::with_services(|services| {
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            input::receiver(1, 1, WINDOW);
+            let mut builder =
+                system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            builder.empty_item(Rect::ZERO).unwrap();
+            let source = builder.begin().unwrap();
+            entered(&system).respond(Response::Accept { target:    Target::Content,
+                                                        highlight: Rect::ZERO })
+                            .unwrap();
+            let payload = dropped(&system);
+            match scenario
+            {
+                0 => drop(payload),
+                1 => drop(payload.receive(async { Ok(()) })), // never polled
+                2 =>
+                {
+                    let mut future = pin!(payload.receive(core::future::pending()));
+                    assert!(poll(future.as_mut()).is_pending());
+                }
+                3 =>
+                {
+                    let mut future = pin!(payload.receive(async {
+                                                     Err(DragError::Unknown(abi::NOT_SUPPORTED))
+                                                 }));
+                    assert_eq!(poll(future.as_mut()),
+                               Poll::Ready(Err(DragError::Unknown(abi::NOT_SUPPORTED))));
+                }
+                4 => input::with_thread(99, || drop(payload)),
+                _ => unreachable!()
+            }
+            for tick in 1..9
+            {
+                input::tick(tick);
+            }
+            assert_eq!(ended(&system), DragOutcome::Rejected, "scenario {scenario}");
+            assert!(system.next_event(EventMask::ALL).unwrap().is_idle());
+            drop(source);
+            let mut next = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            next.empty_item(Rect::ZERO).unwrap();
+            let next = next.begin().unwrap();
+            next.cancel().unwrap();
+            assert_eq!(ended(&system), DragOutcome::Cancelled);
+        });
+    }
 }

@@ -19,6 +19,25 @@ pub struct Controller<'a>
     session: Option<drag::DragSession<'a>>,
     target:  Option<Destination>
 }
+/// Failure cleanup is scoped to dispatch, not a later terminal notification.
+struct DispatchGuard<'s, 'a>
+{
+    controller: &'s mut Controller<'a>,
+    browser:    &'s mut Browser,
+    keep:       bool
+}
+impl Drop for DispatchGuard<'_, '_>
+{
+    fn drop(&mut self)
+    {
+        if !self.keep
+        {
+            drop(self.controller.session.take());
+            self.controller.target = None;
+            self.browser.press = None;
+        }
+    }
+}
 fn status(error: drag::DragError) -> Error
 {
     match error
@@ -31,6 +50,13 @@ fn status(error: drag::DragError) -> Error
 }
 impl<'a> Controller<'a>
 {
+    pub fn cancel(&mut self, browser: &mut Browser)
+    {
+        drop(self.session.take());
+        self.target = None;
+        browser.press = None;
+    }
+
     pub fn begin(&mut self, system: &System<'a>, browser: &mut Browser) -> Result<(), Error>
     {
         if self.session.is_some()
@@ -108,6 +134,17 @@ impl<'a> Controller<'a>
     pub fn event(&mut self, system: &System<'a>, browser: &mut Browser, event: Event<'a>)
                  -> Result<bool, Error>
     {
+        let mut guard = DispatchGuard { controller: self,
+                                        browser,
+                                        keep: false };
+        let result = guard.controller.dispatch(system, guard.browser, event);
+        guard.keep = result.is_ok();
+        result
+    }
+
+    fn dispatch(&mut self, system: &System<'a>, browser: &mut Browser, event: Event<'a>)
+                -> Result<bool, Error>
+    {
         let Event::Drag { offer,
                           .. } = event
         else
@@ -125,7 +162,7 @@ impl<'a> Controller<'a>
                 }
                 let target = if offer.flavors().all_file_items()
                 {
-                    browser.drag_destination(offer)
+                    browser.drag_destination(&offer)
                 }
                 else
                 {
@@ -151,7 +188,6 @@ impl<'a> Controller<'a>
                     Err(error) =>
                     {
                         self.target = None;
-                        let _ = offer.respond(Response::Reject);
                         if status(error) != Error::ReadOnly
                         {
                             return Err(status(error));
@@ -164,7 +200,7 @@ impl<'a> Controller<'a>
                 let result =
                     self.target
                         .ok_or(Error::BadArgument)
-                        .and_then(|target| browser.receive_drag(system, drop, target));
+                        .and_then(|target| browser.receive_drag(system, &drop, target));
                 system.events()
                       .resolve_drag(drop.receive(async { result.map_err(drag::DragError::from) }),
                                     |_| Ok(()))
@@ -210,7 +246,7 @@ impl<'a> Controller<'a>
 }
 impl Browser
 {
-    fn drag_destination(&self, offer: TrackingOffer<'_>) -> Option<Destination>
+    fn drag_destination(&self, offer: &TrackingOffer<'_>) -> Option<Destination>
     {
         let at = offer.position();
         if let Some(window) = offer.window()
@@ -294,7 +330,8 @@ impl Browser
         }
     }
 
-    fn receive_drag(&mut self, system: &System<'_>, drop: DropPayload<'_>, mut target: Destination)
+    fn receive_drag(&mut self, system: &System<'_>, drop: &DropPayload<'_>,
+                    mut target: Destination)
                     -> Result<(), Error>
     {
         if drop.action != DropAction::Move

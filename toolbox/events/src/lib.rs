@@ -4,7 +4,7 @@
 use mac_abi::events::*;
 pub use mac_abi::{Point, events::KeyMap};
 mod decoded;
-pub use decoded::{Event, EventMask, Input, Key, Modifiers};
+pub use decoded::{Event, EventMask, EventSnapshot, Input, Key, Modifiers};
 /// Original EventRecord and low-level queue vocabulary.
 pub mod classic
 {
@@ -51,6 +51,19 @@ impl<'a> Events<'a>
     /// It is a native service, separate from the classic OS-level queue.
     pub fn post(self, event: Event<'_>) -> Result<()>
     {
+        let record = event.as_record();
+        if record.kind == classic::EventKind::OsEvent
+           && matches!(record.message & 0xff00_0000,
+                       mac_abi::drag::ENTERED_EVENT
+                       | mac_abi::drag::WITHIN_EVENT
+                       | mac_abi::drag::LEFT_EVENT
+                       | mac_abi::drag::DROP_EVENT
+                       | mac_abi::drag::PROMISE_EVENT
+                       | mac_abi::drag::DATA_READY_EVENT
+                       | mac_abi::drag::FINISHED_EVENT)
+        {
+            return Err(mac_traps::Error::BadArgument);
+        }
         self.call(EventCall { operation: NATIVE_POST,
                               event: event.into_record(),
                               ..Default::default() })
@@ -58,13 +71,9 @@ impl<'a> Events<'a>
     }
 
     /// Inspect the native queue without removing its first matching event.
-    pub fn peek(self, mask: EventMask) -> Result<Option<Event<'a>>>
+    pub fn peek(self, mask: EventMask) -> Result<Option<EventSnapshot>>
     {
-        self.selected(NATIVE_PEEK, mask.bits()).map(|event| {
-                                                   event.map(|event| {
-                                                            Event::decode(self.client, event)
-                                                        })
-                                               })
+        self.selected(NATIVE_PEEK, mask.bits()).map(|event| event.map(EventSnapshot::from))
     }
 
     /// Remove matching native queued events before the first stop-mask event.
