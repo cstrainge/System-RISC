@@ -144,7 +144,15 @@ fn real_userspace_window_tracking_commits_on_release_and_cancels_cleanly()
                                    "zoom reentry failed to restore pressed pixels");
     baseline.assert_same(&frame("close-cancelled"), "close cancellation changed pixels");
     baseline.assert_same(&frame("zoom-cancelled"), "zoom cancellation changed pixels");
-    bounds("zoom-committed", "1,44,638,457");
+    let zoomed: Vec<i16> =
+        get("zoom-committed")["state"]["first"].as_str()
+                                               .unwrap()
+                                               .split(',')
+                                               .map(|value| value.parse().unwrap())
+                                               .collect();
+    assert!(zoomed[0] >= 4 && zoomed[1] >= 44 && zoomed[2] <= 636 && zoomed[3] <= 458);
+    assert!(zoomed[2] - zoomed[0] < 632 || zoomed[3] - zoomed[1] < 414,
+            "Finder standard state ignored its small cached catalog: {zoomed:?}");
     bounds("zoom-restored", "8,46,412,234");
     baseline.assert_same(&frame("zoom-restored"), "zoom roundtrip changed pixels");
     for (name, bounds, front) in [("background-baseline", "8,46,412,234", &background_id),

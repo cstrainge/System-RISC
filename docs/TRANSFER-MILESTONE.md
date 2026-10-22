@@ -142,3 +142,39 @@ variants on the startup volume, valid/corrupt host sources in both export modes,
 informative errors, immediate retry and source release. Remaining codec, nested
 mount, mutation, transfer, document/application delivery and panic recovery gates
 above remain open; this slice does not close the complete driver contract.
+
+## Finder geometry regressions included in the acceptance matrix
+
+- SuperPaint's top folder carries kHasBeenInited with point (-30208,-10238).
+  Coordinates placing the whole icon outside the usable canvas, or collapsing
+  its rectangle at i16 saturation, are treated as unplaced in the Finder cache.
+  Original archive metadata is retained; read-only mounts use a session placement.
+- Folder extents include the complete icon and wrapped caption on all four sides.
+  Scroll ranges cover those extents plus the current viewport. They contract after
+  scrolling without changing the view origin; once everything fits the bars are
+  inactive. One pixel of label overflow still enables the corresponding bar.
+- Scrolling uses a masked viewport transaction, cached geometry and managed CDEF
+  tracking. It leaves the information band and unrelated windows alone. No-change
+  scrolling does no drawing; unchanged partial-update bars are not resubmitted.
+- The upper-right zoom box fits cached contents and chrome within the desktop,
+  with resident standard-state tracking/restoration rather than unconditional
+  full-screen sizing. Cancelled tracking preserves both content and user state.
+
+The real SuperPaint gate now opens the visible top-level folder and captures its
+children, rather than accepting only a mounted volume window. Native Finder SDK
+checks cover one-pixel label overflow, both axes, range expansion/contraction,
+no-change work and bounded viewport commits; pure geometry tests include invalid
+archive positions, full signed-range mapping and screen-constrained fitting.
+
+The extended selection stress gate exposed a stack overwrite, rather than heap
+exhaustion: inlining combined the cache publication scratch arrays with the
+selection callback's large frame. Separate non-inlined persistence and snapshot
+callbacks keep those temporary lifetimes in distinct frames. The original
+30-stage / 4,000-outline selection gate and the new scrolling gate pass together
+without increasing the application stack or System heap budgets.
+
+Validation: seven host layout tests, resident zoom tracking, public SDK negative
+and stale-window checks, optimized private Finder selection/scrolling, actual
+SuperPaint navigation and native zoom/restore captures, workspace/boundary checks,
+rebuilt release installation and regenerated API docs. The six full workflow
+completion boxes remain open.

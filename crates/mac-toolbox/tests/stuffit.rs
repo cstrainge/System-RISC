@@ -165,7 +165,7 @@ fn assert_no_update_storm(output: &std::path::Path)
 }
 
 
-fn finder_archive(source: &std::path::Path, label: &str)
+fn finder_archive(source: &std::path::Path, label: &str, browse: bool)
 {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
     assert!(source.is_file(),
@@ -173,14 +173,18 @@ fn finder_archive(source: &std::path::Path, label: &str)
             source.display());
     let output =
         root.join("results/system7").join(format!("native-stuffit-{label}-{}", std::process::id()));
-    let result = Command::new("python3").arg(root.join("System7/scripts/capture_stuffit.py"))
-                                        .arg("--output")
-                                        .arg(&output)
-                                        .arg("--finder")
-                                        .arg("--archive")
-                                        .arg(source)
-                                        .output()
-                                        .unwrap();
+    let mut command = Command::new("python3");
+    command.arg(root.join("System7/scripts/capture_stuffit.py"))
+           .arg("--output")
+           .arg(&output)
+           .arg("--finder")
+           .arg("--archive")
+           .arg(source);
+    if browse
+    {
+        command.arg("--browse-reference");
+    }
+    let result = command.output().unwrap();
     assert!(result.status.success(),
             "{}\n{}",
             String::from_utf8_lossy(&result.stdout),
@@ -201,6 +205,15 @@ fn finder_archive(source: &std::path::Path, label: &str)
         assert!(!serial.contains(failure), "{serial}");
     }
     assert_no_update_storm(&output);
+    if browse
+    {
+        assert!(serial.lines().any(|line| {
+                                  line.starts_with("FINDER_FOLDER_OPEN ")
+                                  && line.ends_with("name=Aldus SuperPaint 3.5")
+                              }),
+                "{serial}");
+        assert!(fs::metadata(output.join("archive-contents.ppm")).unwrap().len() > 640 * 480);
+    }
 }
 #[test]
 #[ignore = "requires current private image, QEMU and real Finder"]
@@ -208,7 +221,8 @@ fn stuffit5_raw_host_archive_opens_through_real_finder()
 {
     finder_archive(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mac-sit/tests/fixtures/\
                                                                     arsenic-v5.sit"),
-                   "v5-finder");
+                   "v5-finder",
+                   false);
 }
 #[test]
 #[ignore = "requires current private image, QEMU and real Finder"]
@@ -216,7 +230,8 @@ fn method13_classic_raw_host_archive_opens_through_real_finder()
 {
     finder_archive(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mac-sit/tests/fixtures/\
                                                                     method13-book4-v2.sit"),
-                   "method13-classic-finder");
+                   "method13-classic-finder",
+                   false);
 }
 #[test]
 #[ignore = "requires current private image, QEMU and real Finder"]
@@ -224,7 +239,8 @@ fn method13_stuffit5_raw_host_archive_opens_through_real_finder()
 {
     finder_archive(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mac-sit/tests/fixtures/\
                                                                     method13-independent-v5.sit"),
-                   "method13-v5-finder");
+                   "method13-v5-finder",
+                   false);
 }
 #[test]
 #[ignore = "requires current private image, QEMU and the user-supplied SuperPaint reference archive"]
@@ -236,7 +252,7 @@ fn user_supplied_stuffit5_reference_opens_through_real_finder()
                                                      .unwrap_or(root.join("System7/transfer/\
                                                                            aldussuperpaint3.5.\
                                                                            sit"));
-    finder_archive(&source, "reference-finder");
+    finder_archive(&source, "reference-finder", true);
 }
 
 #[test]

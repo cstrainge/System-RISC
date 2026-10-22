@@ -12,6 +12,30 @@ static FILES: AtomicU64 = AtomicU64::new(0);
 static WIDTHS: AtomicU64 = AtomicU64::new(0);
 static DRAWS: AtomicU64 = AtomicU64::new(0);
 static COMMITS: AtomicU64 = AtomicU64::new(0);
+static SCROLL_WINDOW: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static BARS: spinning_top::Spinlock<[abi::controls::ScrollbarState; 2]> =
+    spinning_top::Spinlock::new([abi::controls::ScrollbarState { bounds:      Rect::ZERO,
+                                                                value:       0,
+                                                                maximum:     0,
+                                                                active:      0,
+                                                                highlighted: 0,
+                                                                reserved:    0 };
+                                 2]);
+/// # Safety
+/// A successful synchronous public SDK call still owns this request buffer.
+pub unsafe fn observed(number: u32, pointer: *mut (), size: usize)
+{
+    if number == abi::traps::CONTROL && size == core::mem::size_of::<abi::controls::ControlCall>()
+    {
+        let call = unsafe { &*pointer.cast::<abi::controls::ControlCall>() };
+        if call.window == SCROLL_WINDOW.load(Ordering::Relaxed) && !call.scrollbar.bounds.is_empty()
+        {
+            let bounds = call.scrollbar.bounds;
+            let horizontal = bounds.right - bounds.left > bounds.bottom - bounds.top;
+            BARS.lock()[usize::from(horizontal)] = call.scrollbar;
+        }
+    }
+}
 /// # Safety
 /// Caller passes the public SDK's live, synchronously borrowed request.
 pub unsafe fn observe(number: u32, pointer: *mut (), size: usize)
@@ -213,6 +237,134 @@ fn fill(system: &System<'_>, browser: &mut Browser) -> Result<(), Error>
     }
     Err(Error::BadArgument)
 }
+
+fn verify_scrolling(system: &System<'_>) -> Result<(), Error>
+{
+    // Earlier checkpoints are already captured. Dispose their actual windows
+    // before reusing the Finder's bounded app-private snapshot slots.
+    for slot in 0..8
+    {
+        let id = crate::cache::with(slot, |folder| folder.window);
+        if id.0 != 0 && system.window(id).is_ok()
+        {
+            system.close_window(id)?;
+        }
+    }
+    let volume = system.files().volume_at(0)?.id;
+    let folder = system.files().new_folder(volume, files::ROOT_ID, "Scroll Lab")?;
+    let name = "A long filename with wrapped text.txt";
+    let file = system.files()
+                     .create_data(files::DataFileSpec { volume,
+                                                        parent: folder.id,
+                                                        name,
+                                                        replacing: None,
+                                                        file_type: (*b"TEXT").into(),
+                                                        creator: (*b"TEST").into() },
+                                  0)?
+                     .finish()?;
+    let caption = crate::icon_view::Caption::measure(name, |text| {
+        system.quickdraw().fonts().text_width(quickdraw::fonts::FontSelection { family: 3,
+                                                                                size:   9,
+                                                                                face:   0 },
+                                              text)
+    })?;
+    // The full wrapped label ends exactly one pixel past the initial viewport.
+    let location = Point { h: 0,
+                           v: 174 - 28 - 32 - caption.height() };
+    system.files().set_icon_location(volume, file.id, Some(location))?;
+    let mut browser = Browser::default();
+    browser.initialize(system)?;
+    fill(system, &mut browser)?;
+    let id = browser.open(system,
+                          Location { volume,
+                                     folder: folder.id })?;
+    fill(system, &mut browser)?;
+    SCROLL_WINDOW.store(id.0, Ordering::Relaxed);
+    browser.draw(system, id)?;
+    require(system,
+            BARS.lock()[0].maximum == 1,
+            "one-pixel label overflow did not enable scrollbar")?;
+    let full = FULL_UPDATES.load(Ordering::Relaxed);
+    let files = FILES.load(Ordering::Relaxed);
+    let widths = WIDTHS.load(Ordering::Relaxed);
+    let commits = COMMITS.load(Ordering::Relaxed);
+    browser.scroll(system, 1)?;
+    let vertical = BARS.lock()[0];
+    require(system,
+            vertical.maximum == 0 && vertical.value == 0,
+            "scrollbar retained empty travel after all content fit")?;
+    require(system,
+            FULL_UPDATES.load(Ordering::Relaxed) == full
+            && FILES.load(Ordering::Relaxed) == files
+            && WIDTHS.load(Ordering::Relaxed) == widths
+            && COMMITS.load(Ordering::Relaxed) == commits + 1,
+            "scrolling recomputed metadata/text or repainted outside its masked viewport")?;
+    let draws = DRAWS.load(Ordering::Relaxed);
+    browser.scroll(system, 52)?;
+    browser.scroll(system, -52)?;
+    require(system,
+            DRAWS.load(Ordering::Relaxed) == draws
+            && COMMITS.load(Ordering::Relaxed) == commits + 1,
+            "no-change scrolling redrew content or controls")?;
+    let horizontal = BARS.lock()[1];
+    require(system,
+            horizontal.maximum > 0,
+            "left-clipped label did not enable horizontal scrolling")?;
+    let frame = system.window(id)?.bounds;
+    let at = Point { h: frame.left + horizontal.bounds.left + 7,
+                     v: frame.top + horizontal.bounds.top + 7 };
+    let event = Event::MouseDown { window: Some(id),
+                                   input:  input(at, 42, false) };
+    pointer_click(system, &mut browser, &event)?;
+    let after = BARS.lock()[1];
+    let mut probe = Text::<180>::default();
+    let _ = writeln!(&mut probe,
+                     "FINDER_SCROLL_CONTROL at={},{} before={},{},{} after={},{},{}",
+                     at.h,
+                     at.v,
+                     horizontal.value,
+                     horizontal.maximum,
+                     horizontal.active,
+                     after.value,
+                     after.maximum,
+                     after.active);
+    system.log(probe.as_str())?;
+    require(system,
+            BARS.lock()[1].maximum == 0,
+            "managed horizontal arrow did not reveal the full caption and reset its range")?;
+    require(system,
+            FULL_UPDATES.load(Ordering::Relaxed) == full
+            && FILES.load(Ordering::Relaxed) == files
+            && WIDTHS.load(Ordering::Relaxed) == widths
+            && COMMITS.load(Ordering::Relaxed) == commits + 2,
+            "horizontal control tracking repainted/re-enumerated beyond the icon viewport")?;
+    let other = system.files()
+                      .create_data(files::DataFileSpec { volume,
+                                                         parent: folder.id,
+                                                         name: "Distant item",
+                                                         replacing: None,
+                                                         file_type: (*b"TEXT").into(),
+                                                         creator: (*b"TEST").into() },
+                                   0)?
+                      .finish()?;
+    system.files().set_icon_location(volume,
+                                      other.id,
+                                      Some(Point { h: 0,
+                                                   v: 500 }))?;
+    browser.folder_changed(system, id)?;
+    fill(system, &mut browser)?;
+    require(system,
+            BARS.lock()[0].maximum > 300,
+            "new distant item did not expand the scroll range")?;
+    system.files().move_to_trash(volume, other.id)?;
+    browser.folder_changed(system, id)?;
+    fill(system, &mut browser)?;
+    require(system,
+            BARS.lock()[0].maximum == 0,
+            "removing distant item did not contract the scroll range")?;
+    SCROLL_WINDOW.store(0, Ordering::Relaxed);
+    system.log("FINDER_SCROLL_USERSPACE_PASS label_overflow=1 bounded=true reset=true\n")
+}
 fn action(system: &System<'_>, browser: &mut Browser, label: &str, count: usize, noop: bool,
           run: impl FnOnce(&mut Browser) -> Result<(), Error>)
           -> Result<(), Error>
@@ -245,6 +397,16 @@ fn action(system: &System<'_>, browser: &mut Browser, label: &str, count: usize,
 }
 pub fn run(system: &System<'_>) -> Result<(), Error>
 {
+    let startup = system.files().volume_at(0)?.id;
+    if system.files().lookup(startup, files::ROOT_ID, "Scroll only").is_ok()
+    {
+        system.log("DESKTOP_READY: Finder scroll fixture\n")?;
+        verify_scrolling(system)?;
+        loop
+        {
+            system.wait_event(EventMask::from_bits_retain(0), 30)?;
+        }
+    }
     verify_positions(system)?;
     let code = system.resources().application().get(ResourceKey { kind: TypeCode::new(*b"RV64"),
                                                                    id:   0 })?;

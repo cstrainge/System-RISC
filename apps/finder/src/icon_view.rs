@@ -8,6 +8,89 @@ pub const INFO_HEIGHT: i16 = 20;
 pub const SCROLLBAR: i16 = 15;
 pub const TRASH_BOUNDS: Rect = Rect::new(576, 420, 608, 452);
 
+/// Saved cells whose entire icon is above/left of the usable canvas cannot be
+/// recovered by the classic view. Archives sometimes contain stale desktop
+/// coordinates with kHasBeenInited set; preserve metadata but lay those out anew.
+pub fn saved_icon_bounds(entry: &mac_toolbox::files::CatalogInfo) -> Option<Rect>
+{
+    let saved = entry.saved_icon_location()?;
+    let left = saved.h.saturating_add(16);
+    let top = saved.v.saturating_add(28);
+    let bounds = Rect::new(left, top, left.saturating_add(32), top.saturating_add(32));
+    (!bounds.is_empty() && bounds.right > 0 && bounds.bottom > INFO_HEIGHT).then_some(bounds)
+}
+
+/// Range over content plus the current viewport. Re-evaluating after scrolling
+/// removes empty travel once the contents fit, without changing the view origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollRange
+{
+    pub minimum: i16,
+    pub maximum: i16
+}
+impl ScrollRange
+{
+    pub fn new(first: i16, last: i16, viewport_first: i16, viewport_last: i16, origin: i16)
+               -> Self
+    {
+        let minimum = (i32::from(first) - i32::from(viewport_first)).min(i32::from(origin));
+        let maximum = (i32::from(last) - i32::from(viewport_last)).max(i32::from(origin));
+        Self { minimum: minimum.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+               maximum: maximum.clamp(i16::MIN as i32, i16::MAX as i32) as i16 }
+    }
+
+    pub fn steps(self) -> i16
+    {
+        (i32::from(self.maximum) - i32::from(self.minimum)).min(i16::MAX as i32) as i16
+    }
+
+    pub fn value(self, origin: i16) -> i16
+    {
+        let span = i32::from(self.maximum) - i32::from(self.minimum);
+        if span == 0
+        {
+            return 0;
+        }
+        (((i64::from(origin.clamp(self.minimum, self.maximum)) - i64::from(self.minimum))
+          * i64::from(self.steps())
+          + i64::from(span) / 2)
+         / i64::from(span)) as i16
+    }
+
+    pub fn origin(self, value: i16) -> i16
+    {
+        let steps = i64::from(self.steps());
+        if steps == 0
+        {
+            return self.minimum;
+        }
+        (i64::from(self.minimum)
+         + (i64::from(value.clamp(0, self.steps()))
+            * (i64::from(self.maximum) - i64::from(self.minimum))
+            + steps / 2)
+           / steps) as i16
+    }
+}
+
+/// Fit the complete cached icon/label extent and chrome into the usable screen.
+/// The returned origin changes only when the user actually enters standard state.
+pub fn fitted_window(extent: Rect, current: Rect) -> (Rect, Point)
+{
+    let area = Rect::new(4, 44, 636, 457);
+    let width = (i32::from(extent.right) - i32::from(extent.left) + 16 + i32::from(SCROLLBAR))
+        .clamp(180, i32::from(area.right - area.left)) as i16;
+    let height = (i32::from(extent.bottom) - i32::from(extent.top)
+                  + 16
+                  + i32::from(INFO_HEIGHT + SCROLLBAR)).clamp(100,
+                                                              i32::from(area.bottom - area.top))
+                 as i16;
+    let left = current.left.clamp(area.left, area.right - width);
+    let top = current.top.clamp(area.top, area.bottom - height);
+    (Rect::new(left, top, left + width, top + height),
+     Point { h: extent.left.saturating_sub(8),
+             v: extent.top.saturating_sub(INFO_HEIGHT + 8) })
+}
+
 pub fn volume_bounds(index: u32) -> Rect
 {
     let column = (index / 7) as i16;

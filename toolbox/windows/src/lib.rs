@@ -14,7 +14,8 @@ pub struct WindowInfo
     pub bounds:    Rect,
     pub title:     InlineText<WINDOW_TITLE_BYTES>,
     pub procedure: i16,
-    pub minimum:   (i16, i16)
+    pub minimum:   (i16, i16),
+    pub zoomed:    bool
 }
 impl WindowInfo
 {
@@ -33,7 +34,8 @@ impl TryFrom<WindowRequest> for WindowInfo
                   bounds:    request.bounds,
                   title:     InlineText::from_reply(request.title, request.title_length)?,
                   procedure: request.procedure,
-                  minimum:   (request.minimum_width, request.minimum_height) })
+                  minimum:   (request.minimum_width, request.minimum_height),
+                  zoomed:    request.reserved != 0 })
     }
 }
 
@@ -192,6 +194,17 @@ impl<'a> Windows<'a>
         r.reserved = i16::from(clip.is_none());
         self.client.window(SET_GROW_ICON_CLIP, r).map(|_| ())
     }
+
+    /// Set this window's content-fitting standard zoom state. System owns zoom
+    /// button tracking, cancellation and restoration of the user's rectangle.
+    /// Updating the proposal does not resize, invalidate or repaint the window.
+    pub fn set_standard_bounds(self, id: WindowId, bounds: Option<Rect>) -> Result<()>
+    {
+        let mut r = request(id);
+        r.bounds = bounds.unwrap_or(Rect::ZERO);
+        r.reserved = i16::from(bounds.is_none());
+        self.client.window(SET_STANDARD_BOUNDS, r).map(|_| ())
+    }
 }
 
 /// Owns one resident window. Copying its event identity does not copy ownership.
@@ -245,6 +258,11 @@ impl Window<'_>
     pub fn set_close_deferred(&self, deferred: bool) -> Result<()>
     {
         self.windows().set_close_deferred(self.id, deferred)
+    }
+
+    pub fn set_standard_bounds(&self, bounds: Option<Rect>) -> Result<()>
+    {
+        self.windows().set_standard_bounds(self.id, bounds)
     }
 
     /// Close immediately, retaining ownership on failure. An already closed

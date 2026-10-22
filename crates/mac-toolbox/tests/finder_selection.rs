@@ -3,6 +3,37 @@
 use std::{fs, path::PathBuf, process::Command};
 #[test]
 #[ignore = "requires current private image and Linux QEMU"]
+fn scrollbars_follow_complete_labels_reset_and_repaint_only_the_viewport()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let output = root.join(format!("results/system7/finder-scroll-{}", std::process::id()));
+    let capture = Command::new("python3").arg(root.join("System7/scripts/\
+                                                         capture_system7_finder_selection.py"))
+                                         .arg("--output")
+                                         .arg(&output)
+                                         .arg("--scroll-only")
+                                         .output()
+                                         .unwrap();
+    assert!(capture.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&capture.stdout),
+            String::from_utf8_lossy(&capture.stderr));
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(report["original_before"], report["original_after"]);
+    assert_eq!(report["owned_vm_exited"], true);
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    assert!(serial.contains("FINDER_SCROLL_USERSPACE_PASS label_overflow=1 bounded=true \
+                             reset=true\n"),
+            "{serial}");
+    for failure in
+        ["FINDER_SELECTION_FAIL", "SYSTEM_ALLOCATION_FAILED", "SYSTEM_PANIC:", "SYSTEM_TRAP:"]
+    {
+        assert!(!serial.contains(failure), "{serial}");
+    }
+}
+#[test]
+#[ignore = "requires current private image and Linux QEMU"]
 fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
 {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();

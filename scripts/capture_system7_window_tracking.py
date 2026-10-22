@@ -152,7 +152,8 @@ def capture(output, probe=False, menus=False):
             move(398,35); snapshot('zoom-reentered')
             move(20,440); button(False); move(16,444); snapshot('zoom-cancelled')
             move(398,35); button(True); button(False); move(16,444); snapshot('zoom-committed')
-            move(624,35); button(True); button(False); move(16,444); snapshot('zoom-restored')
+            zoomed = [int(value) for value in state()['first'].split(',')]
+            move(zoomed[2]-14,zoomed[1]-9); button(True); button(False); move(16,444); snapshot('zoom-restored')
             key_transition('a',True); key_transition('a',False); snapshot('background-baseline')
             key_transition('ctrl',True)
             move(150,33); button(True); move(210,66); snapshot('command-drag-held')

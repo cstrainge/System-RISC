@@ -32,6 +32,7 @@ struct FolderWindow
     scroll:         i16,
     scroll_h:       i16,
     scrollbars:     [controls::ControlId; 2],
+    zoom_restore:   Option<(Rect, Point)>,
     pending_clicks: [Option<(mac_toolbox::events::classic::Event, PointerPosition)>; 8]
 }
 #[derive(Clone, Copy)]
@@ -269,15 +270,13 @@ fn grow_icon_clip(width: i16, height: i16) -> Rect
 pub(crate) fn entry_rect(layout: &mut Layout, entry: &CatalogInfo, caption: Caption) -> Rect
 {
     let automatic = layout.place(caption);
-    if let Some(saved) = entry.saved_icon_location()
+    if let Some(bounds) = icon_view::saved_icon_bounds(entry)
     {
         // Ordinary catalog items store the cell origin. The 32px icon sits
         // 16px across and 28px down from it (including the information band).
         // Volume-root desktop positions use a different convention.
         // Negative cell origins are valid; only (-1,-1) is unplaced here.
-        let left = saved.h.saturating_add(16);
-        let top = saved.v.saturating_add(28);
-        Rect::new(left, top, left.saturating_add(32), top.saturating_add(32))
+        bounds
     }
     else
     {
@@ -553,6 +552,31 @@ impl Browser
                     Ok::<_, Error>(folder.restored)
                 })?;
                 self.windows[slot].as_mut().unwrap().selected = restored;
+                let mut layout = Text::<200>::default();
+                cache::with(slot, |folder| {
+                    if folder.count != 0
+                    {
+                        let first = folder.items[0].icon_bounds;
+                        let frame = folder.frame;
+                        let _ = writeln!(&mut layout,
+                                         "FINDER_FOLDER_LAYOUT window={} first={},{},{},{} \
+                                          frame={},{},{},{} count={}",
+                                         window.window,
+                                         first.left,
+                                         first.top,
+                                         first.right,
+                                         first.bottom,
+                                         frame.left,
+                                         frame.top,
+                                         frame.right,
+                                         frame.bottom,
+                                         folder.count);
+                    }
+                });
+                if !layout.as_str().is_empty()
+                {
+                    system.log(layout.as_str())?;
+                }
                 self.persist_new_positions(system, slot)?;
                 self.repaint_snapshot(system, slot)?;
                 let pending =
@@ -591,6 +615,10 @@ impl Browser
         Ok(())
     }
 
+    // Keep scan, position-batch and repaint scratch in separate call frames.
+    // Combining their CAPACITY-sized arrays can overflow a 256 KiB app stack
+    // once resident trap/definition frames are included.
+    #[inline(never)]
     fn persist_new_positions(&mut self, system: &System<'_>, slot: usize) -> Result<(), Error>
     {
         let mut rows = [files::IconMove::default(); CAPACITY];
@@ -657,6 +685,7 @@ impl Browser
         Ok(())
     }
 
+    #[inline(never)]
     fn repaint_snapshot(&mut self, system: &System<'_>, slot: usize) -> Result<(), Error>
     {
         let window = self.windows[slot].unwrap();
@@ -711,17 +740,17 @@ impl Browser
             return self.draw(system, window.window);
         };
         self.change_selection(system, slot, window.selected, &damage[..count])?;
-        self.refresh_chrome(system, slot, header, bars)?;
+        self.refresh_chrome(system, slot, header, bars, false)?;
         cache::edit(slot, |folder| folder.refreshing = false);
         system.log("FINDER_FOLDER_PATCHED\n")
     }
 
-    fn refresh_chrome(&self, system: &System<'_>, slot: usize, header: bool, bars: bool)
+    fn refresh_chrome(&self, system: &System<'_>, slot: usize, header: bool, bars: bool,
+                      full: bool)
                       -> Result<(), Error>
     {
         let window = self.windows[slot].unwrap();
-        let (frame, volume, count, extent) =
-            cache::with(slot, |f| (f.frame, f.volume, f.count, f.extent));
+        let (frame, volume, count) = cache::with(slot, |f| (f.frame, f.volume, f.count));
         let width = frame.right - frame.left;
         let height = frame.bottom - frame.top;
         if header
@@ -740,30 +769,30 @@ impl Browser
         }
         if bars
         {
+            self.configure_zoom(system, slot)?;
             let active = !self.desktop_active && self.front == window.window;
-            for (index, bounds, value, maximum, step, page) in [(0,
-                                                                 vertical_scrollbar(width, height),
-                                                                 window.scroll,
-                                                                 (extent.v - height + 15).max(0),
-                                                                 52,
-                                                                 (height - 35).max(1)),
-                                                                (1,
-                                                                 horizontal_scrollbar(width,
-                                                                                      height),
-                                                                 window.scroll_h,
-                                                                 (extent.h - width + 15).max(0),
-                                                                 64,
-                                                                 (width - 15).max(1))]
+            let ranges = self.scroll_ranges(slot);
+            for (index, bounds, origin, step, page) in
+                [(0, vertical_scrollbar(width, height), window.scroll, 52, (height - 35).max(1)),
+                 (1, horizontal_scrollbar(width, height), window.scroll_h, 64, (width - 15).max(1))]
             {
-                system.controls()
-                      .control(window.scrollbars[index])
-                      .update_scrollbar(controls::ScrollbarState { bounds,
-                                                                   value: value.min(maximum),
-                                                                   maximum,
-                                                                   active: u32::from(active),
-                                                                   ..Default::default() },
-                                        step,
-                                        page)?;
+                let range = ranges[index];
+                let control = system.controls().control(window.scrollbars[index]);
+                let configured =
+                    control.configure_scrollbar(controls::ScrollbarState { bounds,
+                                                                           value:
+                                                                               range.value(origin),
+                                                                           maximum:
+                                                                               range.steps(),
+                                                                           active:
+                                                                               u32::from(active),
+                                                                           ..Default::default() },
+                                                step,
+                                                page)?;
+                if full && !configured.changed
+                {
+                    control.draw()?;
+                }
             }
         }
         Ok(())
@@ -1091,7 +1120,7 @@ impl Browser
                                   graphics };
             draw.fill(Rect::new(0, 0, width, height), 0xffffff)?;
             let active = !self.desktop_active && self.front == id;
-            let (count, extent) = cache::with(slot, |folder| (folder.count, folder.extent));
+            let count = cache::with(slot, |folder| folder.count);
             self.draw_items(system, slot, active, None)?;
             graphics.clip_rect(Rect::new(0, 0, width, height))?;
             info_band(system,
@@ -1099,29 +1128,7 @@ impl Browser
                       width,
                       count as u32,
                       if window.location == Location::default() { None } else { Some(&volume) })?;
-            for (index, bounds, value, maximum, step, page) in [(0,
-                                                                 vertical_scrollbar(width, height),
-                                                                 window.scroll,
-                                                                 (extent.v - height + 15).max(0),
-                                                                 52,
-                                                                 (height - 35).max(1)),
-                                                                (1,
-                                                                 horizontal_scrollbar(width,
-                                                                                      height),
-                                                                 window.scroll_h,
-                                                                 (extent.h - width + 15).max(0),
-                                                                 64,
-                                                                 (width - 15).max(1))]
-            {
-                let control = system.controls().control(window.scrollbars[index]);
-                control.update_scrollbar(controls::ScrollbarState { bounds,
-                                                                    value: value.min(maximum),
-                                                                    maximum,
-                                                                    active: u32::from(active),
-                                                                    ..Default::default() },
-                                         step,
-                                         page)?;
-            }
+            self.refresh_chrome(system, slot, false, true, true)?;
             Ok(())
         })();
         system.end_update(id)?;
@@ -1334,29 +1341,31 @@ impl Browser
             if p.h >= bounds.right - bounds.left - icon_view::SCROLLBAR
                || p.v >= bounds.bottom - bounds.top - icon_view::SCROLLBAR
             {
+                let ranges = self.scroll_ranges(slot);
                 for (index, id) in window.scrollbars.into_iter().enumerate()
                 {
-                    if system.controls().control(id).track_at(position.in_window(window.window)?,
-                                                               |action| {
-                                                                   if let Some(folder) =
-                                                                       self.windows[slot].as_mut()
-                                                                   {
-                                                                       if index == 1
-                                                                       {
-                                                                           folder.scroll_h =
-                                                                               action.scrollbar
-                                                                                     .value;
-                                                                       }
-                                                                       else
-                                                                       {
-                                                                           folder.scroll =
-                                                                               action.scrollbar
-                                                                                     .value;
-                                                                       }
-                                                                   }
-                                                                   self.draw(system, window.window)
-                                                               })?
+                    let tracked =
+                        system.controls()
+                              .control(id)
+                              .track_at(position.in_window(window.window)?, |action| {
+                                  let mut origin = Point { h: self.windows[slot].unwrap().scroll_h,
+                                                           v: self.windows[slot].unwrap().scroll };
+                                  if index == 1
+                                  {
+                                      origin.h = ranges[index].origin(action.scrollbar.value);
+                                  }
+                                  else
+                                  {
+                                      origin.v = ranges[index].origin(action.scrollbar.value);
+                                  }
+                                  self.scroll_to(system, slot, origin)
+                              })?;
+                    if tracked
                     {
+                        // Tracking uses a stable range. Recompute only after it
+                        // releases capture, so fitting content collapses the bar
+                        // without cancelling an in-flight control gesture.
+                        self.refresh_chrome(system, slot, false, true, false)?;
                         break;
                     }
                 }
@@ -1502,13 +1511,35 @@ impl Browser
         {
             return Ok(());
         };
-        let bounds = match system.window(window)
+        let info = match system.window(window)
         {
-            Ok(info) => info.bounds,
+            Ok(info) => info,
             Err(Error::NotFound) => return Ok(()), // Closed before the notification was serviced.
             Err(error) => return Err(error)
         };
-        cache::edit(slot, |folder| folder.frame = bounds);
+        let (old_frame, extent) = cache::with(slot, |folder| (folder.frame, folder.extent));
+        let window = self.windows[slot].as_mut().unwrap();
+        if info.zoomed && window.zoom_restore.is_none()
+        {
+            window.zoom_restore = Some((old_frame,
+                                        Point { h: window.scroll_h,
+                                                v: window.scroll }));
+            let (_, origin) = icon_view::fitted_window(extent, old_frame);
+            window.scroll_h = origin.h;
+            window.scroll = origin.v;
+        }
+        else if !info.zoomed
+                  && let Some((bounds, origin)) = window.zoom_restore.take()
+        {
+            // A manual resize becomes a new user state. Only the actual zoom
+            // restoration restores the original scroll origin as well.
+            if bounds == info.bounds
+            {
+                window.scroll_h = origin.h;
+                window.scroll = origin.v;
+            }
+        }
+        cache::edit(slot, |folder| folder.frame = info.bounds);
         Ok(())
     }
 
@@ -1730,17 +1761,65 @@ impl Browser
         Ok(())
     }
 
-    fn limits(&self, system: &System<'_>, window: FolderWindow, bounds: Rect)
-              -> Result<(i16, i16), Error>
+    fn scroll_ranges(&self, slot: usize) -> [icon_view::ScrollRange; 2]
     {
-        let slot = self.windows
-                       .iter()
-                       .position(|entry| entry.is_some_and(|entry| entry.window == window.window))
-                       .ok_or(Error::NotFound)?;
-        let extent = cache::with(slot, |folder| folder.extent);
-        let _ = system;
-        Ok(((extent.h - (bounds.right - bounds.left - 15)).max(0),
-            (extent.v - (bounds.bottom - bounds.top - 15)).max(0)))
+        let window = self.windows[slot].unwrap();
+        cache::with(slot, |folder| {
+            let frame = folder.frame;
+            let extent = folder.extent;
+            if folder.count == 0
+            {
+                return [icon_view::ScrollRange { minimum: window.scroll,
+                                                 maximum: window.scroll },
+                        icon_view::ScrollRange { minimum: window.scroll_h,
+                                                 maximum: window.scroll_h }];
+            }
+            [icon_view::ScrollRange::new(extent.top,
+                                         extent.bottom,
+                                         icon_view::INFO_HEIGHT,
+                                         frame.bottom - frame.top - icon_view::SCROLLBAR,
+                                         window.scroll),
+             icon_view::ScrollRange::new(extent.left,
+                                         extent.right,
+                                         0,
+                                         frame.right - frame.left - icon_view::SCROLLBAR,
+                                         window.scroll_h)]
+        })
+    }
+
+    fn configure_zoom(&self, system: &System<'_>, slot: usize) -> Result<(), Error>
+    {
+        let window = self.windows[slot].ok_or(Error::NotFound)?;
+        let bounds =
+            cache::with(slot, |folder| icon_view::fitted_window(folder.extent, folder.frame).0);
+        system.windows().set_standard_bounds(window.window, Some(bounds))
+    }
+
+    fn scroll_to(&mut self, system: &System<'_>, slot: usize, origin: Point) -> Result<(), Error>
+    {
+        let window = self.windows[slot].ok_or(Error::NotFound)?;
+        if window.scroll_h == origin.h && window.scroll == origin.v
+        {
+            return Ok(());
+        }
+        let frame = cache::with(slot, |folder| folder.frame);
+        let viewport = Rect::new(0,
+                                 icon_view::INFO_HEIGHT,
+                                 frame.right - frame.left - icon_view::SCROLLBAR,
+                                 frame.bottom - frame.top - icon_view::SCROLLBAR);
+        let update = system.quickdraw().graphics(window.window).masked_rectangles(&[viewport])?;
+        self.windows[slot].as_mut().unwrap().scroll_h = origin.h;
+        self.windows[slot].as_mut().unwrap().scroll = origin.v;
+        let result = self.draw_items(system,
+                                     slot,
+                                     !self.desktop_active && self.front == window.window,
+                                     Some(&[viewport]))
+                         .and_then(|_| update.commit());
+        if result.is_err()
+        {
+            self.windows[slot] = Some(window);
+        }
+        result
     }
 
     pub fn scroll(&mut self, system: &System<'_>, delta: i16) -> Result<(), Error>
@@ -1750,10 +1829,17 @@ impl Browser
                self.windows.iter().position(|w| w.is_some_and(|w| w.window == front.id))
         {
             let window = self.windows[slot].unwrap();
-            let (_, maximum) = self.limits(system, window, front.bounds)?;
-            self.windows[slot].as_mut().unwrap().scroll =
-                window.scroll.saturating_add(delta).clamp(0, maximum);
-            self.draw(system, window.window)?;
+            let range = self.scroll_ranges(slot)[0];
+            let origin = Point { h: window.scroll_h,
+                                 v: window.scroll
+                                          .saturating_add(delta)
+                                          .clamp(range.minimum, range.maximum) };
+            if origin.h == window.scroll_h && origin.v == window.scroll
+            {
+                return Ok(());
+            }
+            self.scroll_to(system, slot, origin)?;
+            self.refresh_chrome(system, slot, false, true, false)?;
         }
         Ok(())
     }

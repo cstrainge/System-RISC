@@ -4,7 +4,7 @@
 #[cfg(test)]
 use alloc::vec;
 
-use mac_abi::{DefinitionCall, DefinitionEntry, Header, Surface};
+use mac_abi::{BAD_ARGUMENT, DefinitionCall, DefinitionEntry, Header, NOT_FOUND, Status, Surface};
 
 use super::definition::{self, WindowDefinitionState};
 use crate::toolbox::{events::*,
@@ -58,6 +58,7 @@ pub struct Window
     entry:               DefinitionEntry,
     gate:                mac_abi::TrapGate,
     user_bounds:         Option<Rect>,
+    standard_bounds:     Option<Rect>,
     grow_icon_clip:      Option<Rect>,
     content_outline:     Option<Rect>,
     close_deferred:      bool,
@@ -67,6 +68,11 @@ pub struct Window
 }
 impl Window
 {
+    pub fn zoomed(&self) -> bool
+    {
+        self.state.zoomed != 0
+    }
+
     pub fn title(&self) -> &str
     {
         core::str::from_utf8(&self.state.title[..self.state.title_length as usize]).unwrap_or("WINDOW")
@@ -411,6 +417,7 @@ impl WindowManager
                                   entry,
                                   gate: self.gate,
                                   user_bounds: None,
+                                  standard_bounds: None,
                                   grow_icon_clip: None,
                                   content_outline: None,
                                   close_deferred: false,
@@ -911,10 +918,14 @@ impl WindowManager
                     {
                         w.user_bounds = Some(w.bounds);
                         let structure = w.structure();
-                        w.bounds = Rect::new(w.bounds.left - structure.left,
-                                             25 + w.bounds.top - structure.top,
-                                             640 - (structure.right - w.bounds.right),
-                                             459 - (structure.bottom - w.bounds.bottom));
+                        w.bounds =
+                            w.standard_bounds.unwrap_or_else(|| {
+                                                 Rect::new(w.bounds.left - structure.left,
+                                                           25 + w.bounds.top - structure.top,
+                                                           640 - (structure.right - w.bounds.right),
+                                                           459
+                                                           - (structure.bottom - w.bounds.bottom))
+                                             });
                         w.state.zoomed = 1;
                     }
                     w.calculate();
@@ -1134,6 +1145,40 @@ impl WindowManager
         };
         window.close_deferred = deferred;
         true
+    }
+
+    pub fn set_standard_bounds(&mut self, id: WindowId, bounds: Option<Rect>)
+                               -> Result<(), Status>
+    {
+        let window = self.window_mut(id).ok_or(NOT_FOUND)?;
+        if window.standard_bounds == bounds
+        {
+            return Ok(());
+        }
+        if let Some(bounds) = bounds
+        {
+            if i32::from(bounds.right) - i32::from(bounds.left) < i32::from(window.min_width)
+               || i32::from(bounds.bottom) - i32::from(bounds.top) < i32::from(window.min_height)
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let mut proposed = *window;
+            proposed.bounds = bounds;
+            if !proposed.calculate()
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let structure = proposed.structure();
+            if structure.left < 0
+               || structure.top < 25
+               || structure.right > 640
+               || structure.bottom > 459
+            {
+                return Err(BAD_ARGUMENT);
+            }
+        }
+        window.standard_bounds = bounds;
+        Ok(())
     }
 
     pub fn set_grow_icon_clip(&mut self, id: WindowId, clip: Option<Rect>) -> bool
@@ -1655,10 +1700,14 @@ mod tests
                  &mut events,
                  1);
         assert_eq!(wm.window(id).unwrap().bounds, original);
+        let standard = Rect::new(40, 80, 240, 210);
+        assert_eq!(wm.set_standard_bounds(id, Some(Rect::ZERO)), Err(BAD_ARGUMENT));
+        wm.set_standard_bounds(id, Some(standard)).unwrap();
+        assert_eq!(wm.window(id).unwrap().bounds, original, "proposal must not resize or paint");
         wm.start_tracking(wm.find_window(p), p);
         assert_eq!(wm.track(p, true, &mut events, 2), Some(Action::Resize(id)));
         let zoomed = wm.window(id).unwrap().bounds;
-        assert_ne!(zoomed, original);
+        assert_eq!(zoomed, standard);
         let p = Point { h: zoomed.right - 14,
                         v: zoomed.top - 9 };
         assert_eq!(wm.find_window(p).part, WindowPart::ZoomIn);

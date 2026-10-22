@@ -122,6 +122,13 @@ fn retained_updates(system: &System<'_>) -> Result<(), Error>
         system.windows()
               .create_owned(WindowSpec::new(Rect::new(50, 50, 250, 180), "Retained updates"))?;
     let id = window.id();
+    system.windows().set_standard_bounds(id, Some(Rect::new(80, 80, 300, 220)))?;
+    require(system.window(id)?.bounds == Rect::new(50, 50, 250, 180)
+            && !system.window(id)?.zoomed)?;
+    require(system.windows().set_standard_bounds(id, Some(Rect::ZERO)) == Err(Error::BadArgument))?;
+    require(system.windows().set_standard_bounds(id, Some(Rect::new(-100, 10, 300, 220)))
+            == Err(Error::BadArgument))?;
+    system.windows().set_standard_bounds(id, None)?;
     system.windows().begin_update(id)?;
     require(system.windows().validate(id) == Err(Error::ServiceBusy))?;
     system.windows().end_update(id)?;
@@ -139,6 +146,8 @@ fn retained_updates(system: &System<'_>) -> Result<(), Error>
               .create_owned(WindowSpec::new(Rect::new(50, 50, 250, 180), "Replacement updates"))?;
     require(next.id() != id && (next.id().0 & 0xffff) == (id.0 & 0xffff))?;
     require(system.windows().validate(id) == Err(Error::NotFound))?;
+    require(system.windows().set_standard_bounds(id, Some(Rect::new(80, 80, 300, 220)))
+            == Err(Error::NotFound))?;
     require(system.events().peek_positioned(EventMask::UPDATE)?.is_some())?;
     system.log("RETAINED_UPDATE_USERSPACE_PASS\n")
 }

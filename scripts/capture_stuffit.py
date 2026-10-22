@@ -35,7 +35,7 @@ def trace_snapshot(output, endpoint, serial, prefix):
     (output / (prefix + '-trace.json')).write_text(json.dumps(decode(path), indent=2))
 
 
-def capture(output, without_driver=False, finder=False, finder_error=False, archive=None, reference=None):
+def capture(output, without_driver=False, finder=False, finder_error=False, archive=None, reference=None, browse_reference=False):
     if archive is not None and not finder:
         raise ValueError('--archive requires --finder')
     output.mkdir(parents=True, exist_ok=False)
@@ -131,8 +131,25 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
                 driver.click(120, 106, double=True)
             driver.wait(' name=B.sit\n' if finder_error else ' name=Examples.sit\n')
             driver.wait_state(lambda s: s['windows'] == '3')
+            driver.wait_folder_ready('B.sit' if finder_error else 'Examples.sit')
             time.sleep(.15)
             vm.qmp('screendump', {'filename': str(output / 'archive-volume.ppm')}, endpoint)
+            if browse_reference:
+                opened = [line for line in driver.log().splitlines()
+                          if line.startswith('FINDER_FOLDER_OPEN ') and line.endswith(' name=Examples.sit')][-1]
+                identity = opened.split(' window=', 1)[1].split(' ', 1)[0]
+                driver.wait('FINDER_FOLDER_LAYOUT window='+identity+' ')
+                layout = [line for line in driver.log().splitlines()
+                          if line.startswith('FINDER_FOLDER_LAYOUT window='+identity+' ')][-1]
+                fields = dict(field.split('=',1) for field in layout.split()[1:])
+                first = [int(value) for value in fields['first'].split(',')]
+                frame = [int(value) for value in fields['frame'].split(',')]
+                driver.click(frame[0]+(first[0]+first[2])//2,
+                             frame[1]+(first[1]+first[3])//2, double=True)
+                driver.wait_folder_ready('Aldus SuperPaint 3.5')
+                driver.wait_state(lambda s: s['windows'] == '4')
+                time.sleep(.15)
+                vm.qmp('screendump', {'filename': str(output / 'archive-contents.ppm')}, endpoint)
             termination = 'finder-opened-archive'
         deadline = time.monotonic() + 60
         while not finder and time.monotonic() < deadline:
@@ -183,6 +200,7 @@ if __name__ == '__main__':
     parser.add_argument('--finder-error', action='store_true')
     parser.add_argument('--archive', type=Path, help='Raw archive for a real Finder open')
     parser.add_argument('--reference', type=Path, help='SuperPaint reference for native fork verification')
+    parser.add_argument('--browse-reference', action='store_true', help='open the visible SuperPaint folder in real Finder')
     args = parser.parse_args()
     capture(args.output.resolve(), args.without_driver, args.finder or args.finder_error,
-            args.finder_error, args.archive, args.reference)
+            args.finder_error, args.archive, args.reference, args.browse_reference)

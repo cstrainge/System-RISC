@@ -1104,3 +1104,20 @@ remain observable. `Windows::validate` exposes this to Rust applications.
 Finder uses it while rebuilding an unpublished folder snapshot: otherwise an
 unacknowledged synthetic Update can starve idle scan work indefinitely. The
 completed refresh still publishes only its actual changed item bounds.
+
+## Application-defined standard window bounds
+
+Native WINDOW operation 12 (`SET_STANDARD_BOUNDS`) sets an owned window's standard
+zoom rectangle. `reserved=0` applies `bounds`; `reserved=1` clears the proposal
+and restores the System's default desktop zoom. Other reserved values, rectangles
+smaller than the window minimum, or structures outside the usable desktop return
+BAD_ARGUMENT. A stale/foreign identity follows normal generation/owner validation.
+The proposal performs no resize, invalidation, event generation or repaint;
+identical proposals are no-ops. System owns button tracking/cancellation, saves
+the user's bounds on entering standard state, and restores them on the next click.
+GET_WINDOW returns current zoom state as 0/1 in `reserved`. The SDK exposes
+`WindowInfo::zoomed` and `Windows::set_standard_bounds` / the owned-window method.
+
+Finder derives its proposal from the complete cached icon-and-caption extent,
+chrome and minimum size, constrained to the usable screen. Zoom restoration also
+restores its user scroll origin. Manual resizing establishes a new user state.

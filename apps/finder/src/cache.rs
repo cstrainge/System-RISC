@@ -2,7 +2,7 @@
 //! never cross Toolbox calls, allocation or event waits. Large storage is in BSS,
 //! not the application thread's stack.
 #![forbid(unsafe_code)]
-use mac_toolbox::{Error, Point, Rect, WindowId,
+use mac_toolbox::{Error, Rect, WindowId,
                   files::{CatalogInfo, DirectoryCursor, VolumeInfo}};
 use spinning_top::Spinlock;
 
@@ -122,7 +122,7 @@ pub struct Metadata
     pub ready:           bool,
     pub volume:          Option<VolumeInfo>,
     pub width:           i16,
-    pub extent:          Point,
+    pub extent:          Rect,
     pub index:           BoundsIndex<CAPACITY, { CAPACITY * 2 }>,
     pub previous:        [Option<Location>; CAPACITY],
     pub previous_count:  usize,
@@ -148,8 +148,7 @@ impl Metadata
                ready:           false,
                volume:          None,
                width:           0,
-               extent:          Point { h: 0,
-                                        v: 0 },
+               extent:          Rect::ZERO,
                index:           BoundsIndex::EMPTY,
                previous:        [None; CAPACITY],
                previous_count:  0,
@@ -173,7 +172,7 @@ impl Metadata
         self.ready = false;
         self.volume = None;
         self.width = 0;
-        self.extent = Point::default();
+        self.extent = Rect::ZERO;
         self.restored = crate::selection::Selection::EMPTY;
         self.next = 0;
         self.trash = None;
@@ -219,12 +218,9 @@ impl Folder<'_>
         for index in 0..metadata.count
         {
             let item = &mut self.items[index];
-            if let Some(saved) = item.entry.saved_icon_location()
+            if let Some(saved) = crate::icon_view::saved_icon_bounds(&item.entry)
             {
-                let left = saved.h.saturating_add(16);
-                let top = saved.v.saturating_add(28);
-                item.icon_bounds =
-                    Rect::new(left, top, left.saturating_add(32), top.saturating_add(32));
+                item.icon_bounds = saved;
             }
             if !item.icon_bounds.is_empty()
             {
@@ -276,11 +272,16 @@ impl Folder<'_>
                 break;
             }
         }
-        metadata.extent = Point::default();
+        metadata.extent = self.items
+                              .first()
+                              .filter(|_| metadata.count != 0)
+                              .map_or(Rect::ZERO, |item| item.bounds);
         for item in &self.items[..metadata.count]
         {
-            metadata.extent.h = metadata.extent.h.max(item.bounds.right);
-            metadata.extent.v = metadata.extent.v.max(item.bounds.bottom);
+            metadata.extent.left = metadata.extent.left.min(item.bounds.left);
+            metadata.extent.top = metadata.extent.top.min(item.bounds.top);
+            metadata.extent.right = metadata.extent.right.max(item.bounds.right);
+            metadata.extent.bottom = metadata.extent.bottom.max(item.bounds.bottom);
         }
         metadata.index.rebuild(metadata.count, |index| self.items[index].bounds);
         metadata.width = width;
@@ -309,7 +310,7 @@ pub struct Snapshot
     pub count:    usize,
     pub selected: crate::selection::Selection,
     pub capacity: Option<mac_toolbox::files::VolumeCapacity>,
-    pub extent:   Point,
+    pub extent:   Rect,
     pub items:    [Item; CAPACITY],
     order:        [u16; CAPACITY]
 }
@@ -331,8 +332,7 @@ static SNAPSHOT: Spinlock<Snapshot> =
                              count:    0,
                              selected: crate::selection::Selection::EMPTY,
                              capacity: None,
-                             extent:   Point { h: 0,
-                                               v: 0 },
+                             extent:   Rect::ZERO,
                              items:    [Item::EMPTY; CAPACITY],
                              order:    [0; CAPACITY] });
 pub fn start_refresh(slot: usize)

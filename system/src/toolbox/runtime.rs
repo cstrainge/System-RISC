@@ -520,10 +520,24 @@ impl Desktop
                 request.minimum_width = window.min_width;
                 request.minimum_height = window.min_height;
                 request.procedure = window.procedure();
+                request.reserved = i16::from(window.zoomed());
                 return OK;
             }
             INVALIDATE_WINDOW => self.windows.invalidate(id, request.bounds),
-            VALIDATE_WINDOW => return self.windows.validate(id).map_or_else(|error| error, |()| OK),
+            VALIDATE_WINDOW =>
+            {
+                return self.windows.validate(id).map_or_else(|error| error, |()| OK);
+            }
+            SET_STANDARD_BOUNDS =>
+            {
+                let bounds = match request.reserved
+                {
+                    0 => Some(request.bounds),
+                    1 => None,
+                    _ => return BAD_ARGUMENT
+                };
+                return self.windows.set_standard_bounds(id, bounds).map_or_else(|e| e, |()| OK);
+            }
             SET_WINDOW_TITLE =>
             {
                 let Some(bytes) = request.title.get(..request.title_length as usize)

@@ -31,6 +31,7 @@ fn rejected_window(system: &System<'_>, id: WindowId, gate: mac_abi::TrapGate)
                    windows.set_title(id, "stale"),
                    windows.invalidate(id, Rect::new(0, 0, 10, 10)),
                    windows.validate(id),
+                   windows.set_standard_bounds(id, Some(Rect::new(80, 80, 300, 220))),
                    windows.set_close_deferred(id, true),
                    windows.end_update(id)]
     {
