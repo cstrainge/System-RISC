@@ -1336,45 +1336,102 @@ impl WindowManager
 
     fn visible_fragments(&self, bounds: Rect, covers: &[WindowId], mut visit: impl FnMut(Rect))
     {
-        const CAPACITY: usize = MAX_WINDOWS * MAX_WINDOWS * 4;
-        let mut pieces = [Rect::ZERO; CAPACITY];
-        pieces[0] = bounds;
-        let mut count = 1;
-        for front in covers
+        // A window definition supplies at most two structure rectangles. Sweep
+        // their clipped Y edges and merge X coverage within each band. Scratch
+        // is linear in the window limit, not a 32 KiB quadratic fragment array
+        // on the caller's application stack. The uncovered case visits once.
+        if bounds.is_empty()
         {
-            if self.window(*front).is_none_or(|window| window.hidden)
+            return;
+        }
+        let mut rectangles = [Rect::ZERO; MAX_WINDOWS * 2];
+        let mut count = 0;
+        for id in covers
+        {
+            if let Some(window) = self.window(*id).filter(|window| !window.hidden)
             {
-                continue;
-            }
-            for cover in self.window(*front).unwrap().structure_pieces()
-            {
-                let before = count;
-                for i in (0..before).rev()
+                for cover in window.structure_pieces()
                 {
-                    let old = pieces[i];
-                    let mut cut = Rect::ZERO;
-                    if !sect_rect(old, *cover, &mut cut)
+                    let mut clipped = Rect::ZERO;
+                    if sect_rect(bounds, *cover, &mut clipped)
                     {
-                        continue;
-                    }
-                    count -= 1;
-                    pieces[i] = pieces[count];
-                    for fragment in [Rect::new(old.left, old.top, old.right, cut.top),
-                                     Rect::new(old.left, cut.bottom, old.right, old.bottom),
-                                     Rect::new(old.left, cut.top, cut.left, cut.bottom),
-                                     Rect::new(cut.right, cut.top, old.right, cut.bottom)]
-                    {
-                        if !fragment.is_empty()
-                        {
-                            pieces[count] = fragment;
-                            count += 1;
-                        }
+                        rectangles[count] = clipped;
+                        count += 1;
                     }
                 }
             }
         }
-
-        for rect in &pieces[..count]
+        if count == 0
+        {
+            visit(bounds);
+            return;
+        }
+        let rectangles = &rectangles[..count];
+        let mut edges = [0i16; MAX_WINDOWS * 4 + 2];
+        edges[0] = bounds.top;
+        edges[1] = bounds.bottom;
+        for (index, rect) in rectangles.iter().enumerate()
+        {
+            edges[2 + index * 2] = rect.top;
+            edges[3 + index * 2] = rect.bottom;
+        }
+        let edges = &mut edges[..2 + count * 2];
+        edges.sort_unstable();
+        let mut intervals = [(0i16, 0i16); MAX_WINDOWS * 2];
+        let mut previous = [Rect::ZERO; MAX_WINDOWS * 2 + 1];
+        let mut previous_count = 0;
+        for band in edges.windows(2).filter(|band| band[0] != band[1])
+        {
+            let mut covered = 0;
+            for rect in rectangles
+            {
+                if rect.top <= band[0] && rect.bottom >= band[1]
+                {
+                    intervals[covered] = (rect.left, rect.right);
+                    covered += 1;
+                }
+            }
+            intervals[..covered].sort_unstable();
+            let mut gaps = [Rect::ZERO; MAX_WINDOWS * 2 + 1];
+            let mut gap_count = 0;
+            let mut left = bounds.left;
+            for &(start, end) in &intervals[..covered]
+            {
+                if start > left
+                {
+                    gaps[gap_count] = Rect::new(left, band[0], start, band[1]);
+                    gap_count += 1;
+                }
+                left = left.max(end);
+            }
+            if left < bounds.right
+            {
+                gaps[gap_count] = Rect::new(left, band[0], bounds.right, band[1]);
+                gap_count += 1;
+            }
+            if gap_count == previous_count
+               && gaps[..gap_count].iter().zip(&previous[..previous_count]).all(|(a, b)| {
+                                                                               a.left == b.left
+                                                                               && a.right == b.right
+                                                                               && a.top == b.bottom
+                                                                           })
+            {
+                for rect in &mut previous[..previous_count]
+                {
+                    rect.bottom = band[1];
+                }
+            }
+            else
+            {
+                for rect in &previous[..previous_count]
+                {
+                    visit(*rect);
+                }
+                previous[..gap_count].copy_from_slice(&gaps[..gap_count]);
+                previous_count = gap_count;
+            }
+        }
+        for rect in &previous[..previous_count]
         {
             visit(*rect);
         }
@@ -1425,6 +1482,60 @@ mod tests
             }
         }
     }
+    #[test]
+    fn visible_fragments_handle_the_window_limit_without_overlap()
+    {
+        let mut wm = WindowManager::new();
+        let mut events = EventManager::new();
+        for i in 0..MAX_WINDOWS
+        {
+            let x = 16 + (i * 37 % 320) as i16;
+            let y = 60 + (i * 23 % 180) as i16;
+            let id = wm.new_window(Rect::new(x, y, x + 160, y + 110),
+                                   "Cover",
+                                   0,
+                                   (100, 60),
+                                   &mut events,
+                                   0)
+                       .unwrap();
+            wm.set_hidden(id, i % 5 == 0);
+        }
+        let bounds = Rect::new(0, 21, 640, 480);
+        let mut pixels = vec![0u8; 640 * 480];
+        wm.for_each_desktop_rect(bounds, |rect| {
+              assert!(!rect.is_empty());
+              for y in rect.top..rect.bottom
+              {
+                  for x in rect.left..rect.right
+                  {
+                      pixels[y as usize * 640 + x as usize] += 1;
+                  }
+              }
+          });
+        for y in 0..480
+        {
+            for x in 0..640
+            {
+                let point = Point { h: x as i16,
+                                    v: y as i16 };
+                let exposed = bounds.contains(point)
+                              && !wm.back_to_front().any(|window| {
+                                                        window.structure_pieces()
+                                                              .iter()
+                                                              .any(|rect| rect.contains(point))
+                                                    });
+                assert_eq!(pixels[y * 640 + x], u8::from(exposed), "({x},{y})");
+            }
+        }
+        let mut empty = 0;
+        wm.for_each_desktop_rect(Rect::ZERO, |_| empty += 1);
+        assert_eq!(empty, 0);
+        let wm = WindowManager::new();
+        let mut fragments = alloc::vec::Vec::new();
+        wm.for_each_desktop_rect(bounds, |rect| fragments.push(rect));
+        assert_eq!(fragments, [bounds], "uncovered content is visited exactly once");
+    }
+
     #[test]
     fn perimeter_tracking_matches_full_screen_union_reference()
     {

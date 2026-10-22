@@ -99,11 +99,11 @@ impl Manager
                 let mut left = self.menus[index].state.title_bounds.left;
                 for menu in &self.menus[index + 1..]
                 {
-                    let mut state = *menu.state;
+                    let mut state = Box::try_new(*menu.state).map_err(|_| NO_MEMORY)?;
                     state.title_bounds.left = left;
                     self.measure(&mut state)?;
                     left = state.title_bounds.right;
-                    replacements.push(Box::new(state));
+                    replacements.push(state);
                 }
                 self.objects.remove(call.handle).ok_or(NOT_FOUND)?;
                 self.menus.remove(index);
@@ -134,15 +134,16 @@ impl Manager
                 let menu = resources.get(call.scope,
                                          ResourceKey { kind: *b"MENU",
                                                        id:   call.menu_id });
-                let mut state = match menu
+                let mut state = new_state()?;
+                match menu
                 {
-                    Ok((_, r)) => parse_menu(&r.data)?,
+                    Ok((_, r)) => parse_menu(&r.data, &mut state)?,
                     Err(NOT_FOUND) =>
                     {
                         let r = resources.get(call.scope,
                                               ResourceKey { kind: *b"fmnu",
                                                             id:   call.menu_id })?;
-                        parse_fmnu(&r.1.data)?
+                        parse_fmnu(&r.1.data, &mut state)?
                     }
                     Err(e) => return Err(e)
                 };
@@ -172,7 +173,7 @@ impl Manager
                 call.handle = handle;
                 call.menu_id = state.menu_id;
                 self.menus.push(Menu { handle,
-                                       state: Box::new(state) });
+                                       state });
                 Ok(true)
             }
             CLEAR =>
@@ -403,7 +404,14 @@ fn item_text(item: &mut MenuItemState, raw: &[u8]) -> Result<(), Status>
     }
     Ok(())
 }
-fn parse_menu(bytes: &[u8]) -> Result<MenuDefinitionState, Status>
+// Keep the large ABI object off nested application/definition stack frames.
+// Allocate before parsing and fill it in place; allocation failure is a status.
+#[inline(never)]
+fn new_state() -> Result<Box<MenuDefinitionState>, Status>
+{
+    Box::try_new(MenuDefinitionState::default()).map_err(|_| NO_MEMORY)
+}
+fn parse_menu(bytes: &[u8], state: &mut MenuDefinitionState) -> Result<(), Status>
 {
     if bytes.len() < 13
     {
@@ -413,9 +421,7 @@ fn parse_menu(bytes: &[u8]) -> Result<MenuDefinitionState, Status>
     {
         return Err(NOT_SUPPORTED);
     }
-    let mut state = MenuDefinitionState { menu_id: i16::from_be_bytes(bytes[..2].try_into()
-                                                                                .unwrap()),
-                                          ..Default::default() };
+    state.menu_id = i16::from_be_bytes(bytes[..2].try_into().unwrap());
     state.minimum_width = i16::from_be_bytes(bytes[2..4].try_into().unwrap()).max(0);
     let bits = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
     state.enabled = bits & 1;
@@ -444,9 +450,9 @@ fn parse_menu(bytes: &[u8]) -> Result<MenuDefinitionState, Status>
         item_text(item, raw)?;
         state.item_count += 1;
     }
-    Ok(state)
+    Ok(())
 }
-fn parse_fmnu(bytes: &[u8]) -> Result<MenuDefinitionState, Status>
+fn parse_fmnu(bytes: &[u8], state: &mut MenuDefinitionState) -> Result<(), Status>
 {
     if bytes.len() < 13 || bytes[..2] != [0, 1]
     {
@@ -458,8 +464,7 @@ fn parse_fmnu(bytes: &[u8]) -> Result<MenuDefinitionState, Status>
         return Err(NOT_SUPPORTED);
     }
     let id = i32::from_be_bytes(bytes[4..8].try_into().unwrap());
-    let mut state = MenuDefinitionState { menu_id: i16::try_from(id).map_err(|_| BAD_ARGUMENT)?,
-                                          ..Default::default() };
+    state.menu_id = i16::try_from(id).map_err(|_| BAD_ARGUMENT)?;
     let mut at = 12;
     copy_text(&mut state.title, &mut state.title_length, pstr(bytes, &mut at)?)?;
     at = (at + 1) & !1;
@@ -476,5 +481,5 @@ fn parse_fmnu(bytes: &[u8]) -> Result<MenuDefinitionState, Status>
         at = (at + 1) & !1;
         state.item_count += 1;
     }
-    Ok(state)
+    Ok(())
 }
