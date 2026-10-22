@@ -122,7 +122,11 @@ impl core::fmt::Display for Error
     {
         match self
         {
-            Self::BadAbi => f.write_str("incompatible System ABI"),
+            Self::BadAbi =>
+            {
+                f.write_str("incompatible service contract; rebuild the System, drivers and host \
+                             tools together")
+            }
             Self::BadArgument => f.write_str("invalid argument"),
             Self::InvalidName => f.write_str("name cannot be represented on this host volume"),
             Self::NotFound => f.write_str("not found"),

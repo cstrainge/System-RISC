@@ -341,6 +341,7 @@ impl<R: Rpc> Filesystem<R>
                 let node = Node { parent,
                                   host_name: physical,
                                   plain: false,
+                                  source: None,
                                   metadata,
                                   layout,
                                   key };
@@ -422,6 +423,7 @@ impl<R: Rpc> Filesystem<R>
                 let node = Node { parent: cached.parent,
                                   host_name: cached.host_name,
                                   plain: false,
+                                  source: None,
                                   metadata,
                                   layout,
                                   key: cached.key };
@@ -601,8 +603,9 @@ impl<R: Rpc> Filesystem<R>
             {
                 return Err(Cause::Stale.into());
             }
-            self.mounts.get_mut(volume).unwrap().nodes.get_mut(parent).unwrap().metadata =
-                observed.metadata;
+            let cached = self.mounts.get_mut(volume).unwrap().nodes.get_mut(parent).unwrap();
+            cached.metadata = observed.metadata;
+            cached.source = observed.source;
             self.writes.get_mut(token).unwrap().parent_updated = true;
             return Ok(());
         }

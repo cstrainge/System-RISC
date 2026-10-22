@@ -7,10 +7,10 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 pub const HEADER_BYTES: usize = 48;
 pub const MAX_PAYLOAD: usize = 64 * 1024;
-pub const MAGIC: [u8; 8] = *b"RSHOST01";
+pub const MAGIC: [u8; 8] = *b"RSHOST02";
 pub const LOCK_SHARED: u32 = 0;
 pub const LOCK_EXCLUSIVE: u32 = 1;
 pub const READ: u32 = 1;
@@ -18,14 +18,38 @@ pub const WRITE: u32 = 2;
 pub const DURABLE: u32 = 4;
 pub const ATOMIC_PUBLISH: u32 = 8;
 pub const ALL_CAPABILITIES: u32 = READ | WRITE | DURABLE | ATOMIC_PUBLISH;
-pub const DESCRIPTION_BYTES: usize = 16;
-/// Describe returns a session-scoped catalog identity, kind and data length in
-/// the header; these checked timestamps use the System-wide 1904 us epoch.
+pub const DESCRIPTION_BYTES: usize = 88;
+/// Opaque host-object incarnation. This is persistent backing identity, not a
+/// capability or a catalog ID. The provider owns any guest name/metadata mapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ObjectIdentity([u8; 32]);
+impl ObjectIdentity
+{
+    pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, Error>
+    {
+        if bytes == [0; 32]
+        {
+            return Err(Error::Header);
+        }
+        Ok(Self(bytes))
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32]
+    {
+        &self.0
+    }
+}
+/// Describe returns a generation-checked session object in the header, plus an
+/// optional persistent incarnation and current revision. Dates use 1904 us.
+/// None is explicit: a filesystem without birth/incarnation support must never
+/// substitute a path, mtime, or recycled inode as persistent identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Description
 {
     pub created:  u64,
-    pub modified: u64
+    pub modified: u64,
+    pub identity: Option<ObjectIdentity>,
+    pub revision: [u8; 32]
 }
 impl Description
 {
@@ -33,15 +57,41 @@ impl Description
     {
         let mut bytes = [0; DESCRIPTION_BYTES];
         bytes[..8].copy_from_slice(&self.created.to_le_bytes());
-        bytes[8..].copy_from_slice(&self.modified.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.modified.to_le_bytes());
+        if let Some(identity) = self.identity
+        {
+            bytes[16..20].copy_from_slice(&1u32.to_le_bytes());
+            bytes[24..56].copy_from_slice(identity.as_bytes());
+        }
+        bytes[56..].copy_from_slice(&self.revision);
         bytes
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Error>
     {
         let bytes: &[u8; DESCRIPTION_BYTES] = bytes.try_into().map_err(|_| Error::Length)?;
-        Ok(Self { created:  u64::from_le_bytes(bytes[..8].try_into().unwrap()),
-                  modified: u64::from_le_bytes(bytes[8..].try_into().unwrap()) })
+        let present = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
+        if present > 1 || bytes[20..24] != [0; 4]
+        {
+            return Err(Error::Header);
+        }
+        let identity: [u8; 32] = bytes[24..56].try_into().unwrap();
+        let identity = if present == 1
+        {
+            Some(ObjectIdentity::from_bytes(identity)?)
+        }
+        else
+        {
+            if identity != [0; 32]
+            {
+                return Err(Error::Header);
+            }
+            None
+        };
+        Ok(Self { created: u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                  modified: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+                  identity,
+                  revision: bytes[56..].try_into().unwrap() })
     }
 }
 
@@ -134,6 +184,27 @@ pub enum Error
     Length,
     Component
 }
+impl core::fmt::Display for Error
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        f.write_str(match self
+                    {
+                        Self::Version =>
+                        {
+                            "host bridge protocol changed; rebuild the host companion and System \
+                             image together"
+                        }
+                        Self::Header => "malformed host bridge header or object description",
+                        Self::Operation => "unknown host bridge operation",
+                        Self::Length => "truncated or oversized host bridge message",
+                        Self::Component => "invalid host path component"
+                    })
+    }
+}
+impl core::error::Error for Error
+{
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header
@@ -211,11 +282,14 @@ impl Header
     pub fn decode(bytes: &[u8]) -> Result<Self, Error>
     {
         if bytes.len() != HEADER_BYTES
-           || bytes[..8] != MAGIC
            || bytes[10..12] != (HEADER_BYTES as u16).to_le_bytes()
            || u16::from_le_bytes(bytes[22..24].try_into().unwrap()) > 1
         {
             return Err(Error::Header);
+        }
+        if bytes[..8] != MAGIC
+        {
+            return Err(if &bytes[..6] == b"RSHOST" { Error::Version } else { Error::Header });
         }
         if bytes[8..10] != VERSION.to_le_bytes()
         {
@@ -360,7 +434,7 @@ impl Receiver
 /// ticket; class input contains only session/object arguments and payload. The
 /// transport creates the actual wire header after it receives its live ticket.
 pub const DIRECTORY_CLASS: [u8; 4] = *b"HDIR";
-pub const DIRECTORY_VERSION: u32 = 1;
+pub const DIRECTORY_VERSION: u32 = 2;
 pub const ARGUMENT_BYTES: usize = 24;
 pub struct Arguments<'a>
 {

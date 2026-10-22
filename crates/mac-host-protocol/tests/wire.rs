@@ -1,12 +1,56 @@
 use mac_host_protocol::*;
 #[test]
+fn descriptions_separate_incarnation_revision_and_checked_dates()
+{
+    let identity = ObjectIdentity::from_bytes([0x42; 32]).unwrap();
+    for persistent in [Some(identity), None]
+    {
+        let description = Description { created:  3_875_000_000_123_456,
+                                        modified: u64::MAX,
+                                        identity: persistent,
+                                        revision: [0x71; 32] };
+        let bytes = description.encode();
+        assert_eq!(Description::decode(&bytes), Ok(description));
+        assert_eq!(&bytes[..8], &description.created.to_le_bytes());
+        assert_eq!(&bytes[56..], &description.revision);
+        for size in 0..DESCRIPTION_BYTES
+        {
+            assert_eq!(Description::decode(&bytes[..size]), Err(Error::Length));
+        }
+        let mut extended = bytes.to_vec();
+        extended.push(0);
+        assert_eq!(Description::decode(&extended), Err(Error::Length));
+        for offset in [16, 20]
+        {
+            let mut malformed = bytes;
+            malformed[offset] = 2;
+            assert_eq!(Description::decode(&malformed), Err(Error::Header));
+        }
+    }
+    assert_eq!(ObjectIdentity::from_bytes([0; 32]), Err(Error::Header));
+    let mut bytes = Description { created:  0,
+                                  modified: 0,
+                                  identity: None,
+                                  revision: [0; 32] }.encode();
+    bytes[24] = 1;
+    assert_eq!(Description::decode(&bytes), Err(Error::Header));
+    bytes[24] = 0;
+    bytes[16] = 1;
+    assert_eq!(Description::decode(&bytes), Err(Error::Header));
+    let mut stale = Header::request(Operation::Hello, 1, 0, 0).encode().unwrap();
+    stale[..8].copy_from_slice(b"RSHOST01");
+    stale[8..10].copy_from_slice(&1u16.to_le_bytes());
+    assert_eq!(Header::decode(&stale), Err(Error::Version));
+    assert!(Error::Version.to_string().contains("rebuild"));
+}
+#[test]
 fn fixed_little_endian_layout_and_every_truncation_are_checked()
 {
     let mut header = Header::request(Operation::Read, 0x10001, 0x20002, 0x30003);
     header.offset = 0x1020_3040_5060_7080;
     header.value = 4096;
     let bytes = header.encode().unwrap();
-    assert_eq!(&bytes[..12], b"RSHOST01\x01\x00\x30\x00");
+    assert_eq!(&bytes[..12], b"RSHOST02\x02\x00\x30\x00");
     assert_eq!(&bytes[16..24], b"\x01\x00\x01\x00\x07\x00\x00\x00");
     assert_eq!(&bytes[32..40], b"\x80\x70\x60\x50\x40\x30\x20\x10");
     assert_eq!(Header::decode(&bytes), Ok(header));
@@ -14,7 +58,7 @@ fn fixed_little_endian_layout_and_every_truncation_are_checked()
     {
         assert!(Header::decode(&bytes[..len]).is_err());
     }
-    for (offset, value) in [(0, b'x'), (8, 2), (10, 47), (21, 1), (22, 2), (23, 1)]
+    for (offset, value) in [(0, b'x'), (8, 1), (10, 47), (21, 1), (22, 2), (23, 1)]
     {
         let mut bad = bytes;
         bad[offset] = value;

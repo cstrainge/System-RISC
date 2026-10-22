@@ -5,6 +5,7 @@ Rust owns the acceptance assertions; no live user VM or export is used here.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import select
 import shutil
@@ -39,6 +40,7 @@ def prepare(output, sdk=False):
 
 def capture(output, sdk=False):
     output.mkdir(parents=True, exist_ok=False)
+    (output / 'pid').write_text(str(os.getpid()))
     prepare(output, sdk)
     base = vm.DIST
     before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
@@ -100,6 +102,7 @@ def capture(output, sdk=False):
             (export / 'Host Folder').mkdir()
             (export / 'Host Folder/Child.txt').write_bytes(b'host child\n')
             (export / 'Host File.txt').write_bytes(b'host data\n')
+            (export / 'Snapshot.txt').write_bytes(b'before')
             shutil.copyfile(vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/nested-v1.sit', export / 'Raw.sit')
         companion_args = [str(host / 'risc-host'), '--export', f'Test={export}']
         if sdk:
@@ -109,6 +112,7 @@ def capture(output, sdk=False):
                             str(base / 'ResEdit.bin')], check=True)
             (readonly / 'Host Folder').mkdir()
             (readonly / 'Host File.txt').write_bytes(b'host data\n')
+            (readonly / 'Snapshot.txt').write_bytes(b'before')
             companion_args.extend(['--read-only-export', f'ReadOnly={readonly}'])
         with (output / 'companion.log').open('wb') as log:
             companion = subprocess.Popen(companion_args,
@@ -127,9 +131,19 @@ def capture(output, sdk=False):
                 termination = 'timeout'
                 deadline = time.monotonic() + 30
                 watch_changes = set()
+                snapshot_changes = set()
                 while time.monotonic() < deadline:
                     text = (output / 'vm/serial.log').read_text(errors='replace')
                     for marker, directory in [('RW', export), ('RO', readonly)]:
+                        if f'HOST_FS_SNAPSHOT_READY_{marker}\n' in text and marker not in snapshot_changes:
+                            source = directory / 'Snapshot.txt'
+                            source_stat = source.stat()
+                            source.write_bytes(b'after!')
+                            os.utime(source, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+                            vm.qmp('input-send-event', {'events': [
+                                {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'spc'}, 'down': down}}
+                                for down in [True, False]]}, endpoint)
+                            snapshot_changes.add(marker)
                         if f'HOST_FS_WATCH_READY_{marker}\n' in text and marker not in watch_changes:
                             (directory / 'Runtime Host File.txt').write_bytes(b'live')
                             watch_changes.add(marker)

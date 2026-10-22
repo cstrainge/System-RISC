@@ -900,7 +900,7 @@ the HFS-B tool, preserving both forks, complete Finder information, comments,
 attributes, and unsigned 64-bit microsecond dates. Copying assigns destination
 identities; IDs/revisions are not restored as another live object's identity.
 
-## Host directory wire protocol (RSHOST01, version 1)
+## Host directory wire protocol (RSHOST02, version 2)
 
 `mac-host-protocol` owns the allocation-free codec and incremental reply decoder.
 The VM byte channel carries a 48-byte little-endian header followed by exactly
@@ -910,8 +910,8 @@ matching rebuild; there is no older decoder.
 
 | Offset | Bytes | Meaning |
 | --- | --- | --- |
-| 0 | 8 | `RSHOST01` |
-| 8 | 2 | whole protocol version, 1 |
+| 0 | 8 | `RSHOST02` |
+| 8 | 2 | whole protocol version, 2 |
 | 10 | 2 | header length, 48 |
 | 12 | 4 | payload length, at most 65536 |
 | 16 | 4 | nonzero correlation ticket, echoed unchanged in reply |
@@ -957,7 +957,7 @@ separate fork-container format, never inferred by this transport.
 | 19 Lock | object=lock, value=0 shared or 1 exclusive | empty; nonblocking, Busy on contention |
 | 20 Unlock | object=lock | empty |
 | 21 Stat | object=snapshot/directory | value=1 file or 2 directory, offset=file length, body=32-byte opaque revision |
-| 22 Describe | object=parent, body=component | object=catalog identity, value=1 file or 2 directory, offset=file length, body=created/modified u64 LE Mac-epoch microseconds |
+| 22 Describe | object=parent, body=component | object=catalog identity, value=1 file or 2 directory, offset=file length, body=88-byte description below |
 | 23 PublishDirectory | object=flushed transaction, body=two names: target, metadata-record name | object=new directory capability; containing directory synced; transaction consumed |
 
 Unused request fields must be zero. Rename encodes `u16 first_name_length`, first
@@ -967,6 +967,20 @@ session and export. A pinned host object preserves identity across rename while
 preventing inode reuse from aliasing a deleted object. Host creation dates use
 birth time where supported, otherwise modification time; all epoch conversions
 are checked. Describe grants no read or directory capability.
+
+The description is exactly 88 bytes: created/modified u64 Mac-epoch microseconds
+at 0/8, u32 incarnation-present at 16 (0/1), reserved zero u32 at 20, 32 opaque
+incarnation bytes at 24, and 32 opaque current-revision bytes at 56. Absent
+incarnations require all-zero identity bytes; present identities must be nonzero.
+The qualified Unix profile encodes device, inode, signed Unix birth seconds and
+birth nanoseconds in the incarnation, with four trailing reserved zero bytes.
+Providers treat these bytes as opaque. Missing birth support is explicitly absent,
+never a path/mtime/inode-only substitute for persistent identity. Revisions change
+on writes even when mtime is restored; they are distinct from object incarnation.
+Generation-tagged session IDs still authorize runtime lookups, independently of
+these persistent backing keys. Unsupported old wire/class versions require a
+matching rebuild of System, both drivers and the host companion; no v1 path is
+retained. FSYS v2 and the RSFORK01 storage format are unchanged by this wire change.
 Enumerations stop with Stale if their directory changes.
 Only currently active transaction stages are hidden; leftover crash stages remain
 visible for explicit format validation/recovery. Read-only exports refuse every
@@ -985,12 +999,12 @@ See `tools/risc-host/README.md` for staged-publication, cooperating-lock and
 external-edit limits. This protocol is a directory class, not a block protocol;
 actual block exports require their own class contract.
 
-### Host directory transport class (`HDIR`, version 1)
+### Host directory transport class (`HDIR`, version 2)
 
 The loadable Host Transport driver publishes the serialized, exclusive `HDIR`
 class. This is a byte/directory transport, not a block device and not a Macintosh
 catalog implementation. The separate filesystem provider consumes it. Operations
-use the `RSHOST01` operation numbers above. START input is a 24-byte little-endian
+use the `RSHOST02` operation numbers above. START input is a 24-byte little-endian
 argument record followed by its exact payload:
 
 | Offset | Bytes | Meaning |
@@ -1004,7 +1018,7 @@ argument record followed by its exact payload:
 
 The broker's live request ticket supplies wire correlation; callers cannot choose
 it. POLL/CANCEL have empty inputs. A completed output is the full checked 48-byte
-`RSHOST01` reply header followed by its exact payload. Transport errors and host
+`RSHOST02` reply header followed by its exact payload. Transport errors and host
 operation status are distinct: a completed transport can carry a failed host
 operation. Each callback transfers at most two 4 KiB fragments in each direction,
 plus bounded device control work. Packet buffers belong to the driver, never to

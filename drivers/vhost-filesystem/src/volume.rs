@@ -83,6 +83,12 @@ impl<T> Index<T>
             .map(|at| self.entries.remove(at).1)
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Source
+{
+    identity: Option<wire::ObjectIdentity>,
+    revision: [u8; 32]
+}
 #[derive(Clone, Debug)]
 pub struct Node
 {
@@ -91,7 +97,8 @@ pub struct Node
     pub layout:   Layout,
     key:          String,
     host_name:    Vec<u8>,
-    plain:        bool
+    plain:        bool,
+    source:       Option<Source>
 }
 #[derive(Clone, Debug)]
 pub struct MountInfo
@@ -390,6 +397,7 @@ impl<R: Rpc> Filesystem<R>
                     Ok(Node { parent: 0,
                               host_name: physical,
                               plain: false,
+                              source: None,
                               metadata,
                               layout,
                               key })
@@ -518,6 +526,7 @@ impl<R: Rpc> Filesystem<R>
             self.open_record(parent, &name).await?
         };
         if opened.metadata != self.cached_node(volume, node)?.metadata
+           || opened.source != self.cached_node(volume, node)?.source
         {
             return self.cleanup(handle, Err(Cause::Stale.into())).await;
         }

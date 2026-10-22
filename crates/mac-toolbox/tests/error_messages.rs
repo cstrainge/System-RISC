@@ -2,6 +2,18 @@
 use mac_toolbox::{Error, files::ArchiveError};
 
 #[test]
+fn mismatched_internal_contracts_explain_the_rebuild_action()
+{
+    let error = Error::from_status(mac_toolbox::abi::BAD_ABI);
+    assert_eq!(error, Error::BadAbi);
+    let message = error.to_string();
+    for required in ["incompatible", "rebuild", "System", "drivers", "host tools"]
+    {
+        assert!(message.contains(required), "{message}");
+    }
+}
+
+#[test]
 fn archive_causes_and_payloads_survive_the_public_error_boundary()
 {
     for (cause, explanation) in

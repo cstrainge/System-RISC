@@ -2,22 +2,85 @@
 //! an open object pin, so inode reuse cannot alias a deleted session object.
 #![forbid(unsafe_code)]
 use super::*;
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct Key
+{
+    export:   usize,
+    device:   u64,
+    inode:    u64,
+    identity: Option<wire::ObjectIdentity>
+}
+impl Key
+{
+    fn new(export: usize, metadata: &Metadata, identity: Option<wire::ObjectIdentity>)
+           -> Result<Self>
+    {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Ok(Self { export,
+                      device: metadata.dev(),
+                      inode: metadata.ino(),
+                      identity })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (export, metadata, identity);
+            Err(Failure(status::UNSUPPORTED))
+        }
+    }
+}
 pub(super) struct Node
 {
-    pin:    File,
-    export: usize
+    pin: File,
+    key: Key
 }
-fn same_object(a: &Metadata, b: &Metadata) -> Result<bool>
+/// Exact source incarnation on supported Unix filesystems. Birth time is kept
+/// at nanosecond resolution, independent of the editable guest creation date.
+/// A live pin still supplies the stronger within-session no-reuse guarantee.
+fn object_identity(metadata: &Metadata) -> Result<Option<wire::ObjectIdentity>>
 {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        Ok(a.dev() == b.dev() && a.ino() == b.ino())
+        let Ok(birth) = metadata.created()
+        else
+        {
+            return Ok(None);
+        };
+        let (seconds, nanos) = match birth.duration_since(std::time::UNIX_EPOCH)
+        {
+            Ok(d) =>
+            {
+                (i64::try_from(d.as_secs()).map_err(|_| Failure(status::INVALID))?,
+                 d.subsec_nanos())
+            }
+            Err(error) =>
+            {
+                let d = error.duration();
+                let seconds = i64::try_from(d.as_secs()).map_err(|_| Failure(status::INVALID))?;
+                if d.subsec_nanos() == 0
+                {
+                    (-seconds, 0)
+                }
+                else
+                {
+                    (-seconds.checked_add(1).ok_or(Failure(status::INVALID))?,
+                     1_000_000_000 - d.subsec_nanos())
+                }
+            }
+        };
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(&metadata.dev().to_le_bytes());
+        bytes[8..16].copy_from_slice(&metadata.ino().to_le_bytes());
+        bytes[16..24].copy_from_slice(&seconds.to_le_bytes());
+        bytes[24..28].copy_from_slice(&nanos.to_le_bytes());
+        Ok(Some(wire::ObjectIdentity::from_bytes(bytes)?))
     }
     #[cfg(not(unix))]
     {
-        let _ = (a, b);
-        Err(Failure(status::UNSUPPORTED))
+        let _ = metadata;
+        Ok(None)
     }
 }
 fn date(time: std::time::SystemTime) -> Result<u64>
@@ -63,30 +126,41 @@ impl Session
         {
             return Err(Failure(status::STALE));
         }
-        let mut found = None;
-        for (id, node) in self.nodes.iter()
+        let identity = object_identity(&metadata)?;
+        let key = Key::new(directory.export, &metadata, identity)?;
+        // Index physical keys without statting every previously pinned object.
+        // The shared table remains authoritative; a cache hit validates its pin.
+        let id = match self.node_index.binary_search_by_key(&key, |entry| entry.0)
         {
-            if node.export == directory.export && same_object(&node.pin.metadata()?, &metadata)?
+            Ok(at) =>
             {
-                found = Some(id);
-                break;
+                let id = self.node_index[at].1;
+                let node = self.nodes.get(id).ok_or(Failure(status::STALE))?;
+                let pinned = node.pin.metadata()?;
+                if node.key != key
+                   || Key::new(directory.export, &pinned, object_identity(&pinned)?)? != key
+                {
+                    return Err(Failure(status::STALE));
+                }
+                id
             }
-        }
-        let id = match found
-        {
-            Some(id) => id,
-            None =>
+            Err(at) =>
             {
-                self.nodes.insert(Node { pin,
-                                          export: directory.export })?
+                self.node_index.try_reserve(1).map_err(|_| Failure(status::LIMIT))?;
+                let id = self.nodes.insert(Node { pin,
+                                                   key })?;
+                self.node_index.insert(at, (key, id));
+                id
             }
         };
         reply.object = id;
         reply.value = if metadata.is_dir() { 2 } else { 1 };
         reply.offset = if metadata.is_file() { metadata.len() } else { 0 };
         let modified = metadata.modified()?;
-        Ok(wire::Description { created:  date(metadata.created().unwrap_or(modified))?,
-                               modified: date(modified)? }.encode()
-                                                          .to_vec())
+        Ok(wire::Description { created: date(metadata.created().unwrap_or(modified))?,
+                               modified: date(modified)?,
+                               identity,
+                               revision: fingerprint(&metadata)? }.encode()
+                                                                  .to_vec())
     }
 }

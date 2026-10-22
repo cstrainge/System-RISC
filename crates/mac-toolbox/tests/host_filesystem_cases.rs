@@ -120,11 +120,11 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     let mut prior_scan = check_scan(system, writable.id)?;
     system.log("HOST_FS_STAGE catalog\n")?;
     let root = files.catalog(writable.id, mac_toolbox::files::ROOT_ID)?;
-    require(root.is_directory() && root.name() == "Native Host" && root.child_count == Some(5))?;
+    require(root.is_directory() && root.name() == "Native Host" && root.child_count == Some(6))?;
     require(files.parent(writable.id, root.id)? == root)?;
     let mut folder = None;
     let mut file = None;
-    for index in 0..5
+    for index in 0..6
     {
         let entry = files.child(writable.id, root.id, index)?;
         require(entry.parent == root.id)?;
@@ -162,7 +162,7 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             && comment.transferred == 0
             && comment.length == "Native comment: café 🦀".len() as u64)?;
     require(files.parent(writable.id, file.id)? == root)?;
-    require(files.child(writable.id, root.id, 5) == Err(Error::NotFound))?;
+    require(files.child(writable.id, root.id, 6) == Err(Error::NotFound))?;
     require(files.child(writable.id, file.id, 0) == Err(Error::BadArgument))?;
     let exact_folder = files.catalog(writable.id, folder.id)?;
     require(files.allocation_info(writable.id, file.id)?.total_bytes()?.is_none())?;
@@ -213,8 +213,8 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             && read_only.read_only
             && read_only.capacity.is_none())?;
     require(files.volume_count()? == before + 2)?;
-    require(files.catalog(read_only.id, mac_toolbox::files::ROOT_ID)?.child_count == Some(3))?;
-    require(files.child(read_only.id, mac_toolbox::files::ROOT_ID, 3) == Err(Error::NotFound))?;
+    require(files.catalog(read_only.id, mac_toolbox::files::ROOT_ID)?.child_count == Some(4))?;
+    require(files.child(read_only.id, mac_toolbox::files::ROOT_ID, 4) == Err(Error::NotFound))?;
     system.log("HOST_FS_STAGE resource-inspection\n")?;
     check_resources(system, read_only.id)?;
     let read_only_item = files.child(read_only.id, mac_toolbox::files::ROOT_ID, 0)?;
@@ -579,7 +579,7 @@ fn check_scan(system: &System<'_>, volume: VolumeId)
                 }
                 else
                 {
-                    require(["Café", "Host File.txt", "Raw.sit"].contains(&catalog.name())
+                    require(["Café", "Host File.txt", "Raw.sit", "Snapshot.txt"].contains(&catalog.name())
                             && data_allocated.is_none()
                             && resource_allocated.is_none())?;
                 }
@@ -591,7 +591,7 @@ fn check_scan(system: &System<'_>, volume: VolumeId)
             }
             ScanStep::Done =>
             {
-                require(count == 5)?;
+                require(count == 6)?;
                 require(matches!(system.files().scan_directory(volume, ROOT_ID, &mut cursor)?,
                                  ScanStep::Done))?;
                 return Ok(cursor);
@@ -825,13 +825,45 @@ fn check_plain(system: &System<'_>, volume: VolumeId, writable: bool) -> Result<
     {
         require(files.new_folder(volume, folder.id, "Refused") == Err(Error::ReadOnly))?;
     }
+    let snapshot = files.lookup(volume, ROOT_ID, "Snapshot.txt")?;
+    system.log(if writable
+               {
+                   "HOST_FS_SNAPSHOT_READY_RW\n"
+               }
+               else
+               {
+                   "HOST_FS_SNAPSHOT_READY_RO\n"
+               })?;
+    let mut acknowledged = false;
+    for _ in 0..240
+    {
+        let event = system.events().wait_event(mac_toolbox::EventMask::KEY_DOWN, 1)?;
+        if matches!(event, mac_toolbox::Event::KeyDown { .. })
+        {
+            acknowledged = true;
+            break;
+        }
+    }
+    require(acknowledged)?;
+    let error = files.open(volume, snapshot.id, Fork::Data).err().ok_or(Error::BadAbi)?;
+    require(error == Error::ScanStale)?;
+    crate::diagnostics::error(system, "HOST_FS_SNAPSHOT_STALE", error);
     let watch = files.watch_directory(volume, ROOT_ID)?;
     // Establish a resident background baseline before the host fixture changes.
     for _ in 0..40
     {
         system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?;
     }
+    // Drain the source-change notification and retry after normal catalog
+    // invalidation. No window switch or provider remount is involved.
+    let _ = watch.poll()?;
+    let current = files.lookup(volume, ROOT_ID, "Snapshot.txt")?;
+    require(current.id == snapshot.id)?;
+    let mut data = files.open(volume, current.id, Fork::Data)?;
+    require(data.read(&mut bytes)? == 6 && &bytes[..6] == b"after!")?;
+    data.close()?;
     require(watch.poll()?.is_none())?;
+    system.log("HOST_FS_SNAPSHOT_PASS\n")?;
     system.log(if writable { "HOST_FS_WATCH_READY_RW\n" } else { "HOST_FS_WATCH_READY_RO\n" })?;
     let mut changed = false;
     for _ in 0..240

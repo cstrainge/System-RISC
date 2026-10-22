@@ -213,3 +213,26 @@ menus/relaunch, graphical panic recovery, event tracing, Finder drag recovery,
 SuperPaint navigation and the complete ResEdit workflow. Optimized installation,
 workspace/boundary checks and generated docs/api pass. The six external-volume
 completion targets above remain open.
+
+
+## Host object identity and coherent-open prerequisite
+
+Host wire/HDIR contract 2 describes an opaque object incarnation separately from
+its revision and editable guest dates. The Linux companion qualifies identity
+from device, inode and nanosecond birth time where available; unavailable birth
+information is explicit, not fabricated from a path or modification time. Live
+pins and the shared generation table still protect session object IDs. A sorted
+key index replaces an fstat of every previously pinned object on every Describe.
+
+Plain-file opens compare the pinned read revision against both the subsequent
+Describe and the cached catalog source. A host rewrite with unchanged size and
+restored modification time rejects the stale open; cleanup acknowledges its
+close, and normal watch invalidation permits immediate retry on the same catalog
+ID. Read-only guest exports have the same coherent read behavior. This is not yet
+persistent provider metadata or completion of writable-volume operations.
+
+Validation: shared protocol, Linux companion and both driver component suites;
+private optimized public-SDK gate over writable/read-only exports, including
+source-change rejection, useful error text, watch refresh and retry; optimized
+installation, boundary checks and generated docs/api. Old internal protocol
+versions are rejected with an explicit rebuild message; no dual decoder remains.

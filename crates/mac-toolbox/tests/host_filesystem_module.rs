@@ -110,6 +110,12 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
     assert_eq!(capture["termination"], "guest-outcome", "{serial}");
     assert!(serial.contains("HOST_FILESYSTEM_PASS"), "{serial}");
     assert_eq!(serial.matches("HOST_FS_WATCH_PASS\n").count(), 2, "{serial}");
+    assert_eq!(serial.matches("HOST_FS_SNAPSHOT_PASS\n").count(), 2, "{serial}");
+    assert_eq!(serial.matches("HOST_FS_SNAPSHOT_STALE status=-16 error=ScanStale \
+                               detail=directory scan invalidated by a catalog change")
+                     .count(),
+               2,
+               "{serial}");
     assert!(serial.contains("HOST_FS_EXIT_WORKER_READY"), "{serial}");
     assert!(serial.contains("PROCESS_LAUNCHED app=") && serial.contains("name=Host Exit Worker"),
             "{serial}");

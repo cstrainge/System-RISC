@@ -301,7 +301,8 @@ pub struct Session
     directories:  Table<DirectoryObject>,
     files:        Table<OwnedFile>,
     transactions: Table<Transaction>,
-    nodes:        Table<nodes::Node>
+    nodes:        Table<nodes::Node>,
+    node_index:   Vec<(nodes::Key, u32)>
 }
 impl Session
 {
@@ -320,7 +321,8 @@ impl Session
                   directories: Table::new(Kind::HostDirectories),
                   files: Table::new(Kind::HostFiles),
                   transactions: Table::new(Kind::HostTransactions),
-                  nodes: Table::new(Kind::HostNodes) })
+                  nodes: Table::new(Kind::HostNodes),
+                  node_index: Vec::new() })
     }
 
     fn directory(&self, id: u32) -> Result<Directory>

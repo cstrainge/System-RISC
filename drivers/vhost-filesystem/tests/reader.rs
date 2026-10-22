@@ -46,14 +46,15 @@ fn run<T>(future: impl Future<Output = T>) -> T
 }
 struct Host
 {
-    session:                  Session,
-    tickets:                  Table<()>,
-    calls:                    Vec<Operation>,
-    trace:                    Vec<(Operation, u32, u64, usize)>,
-    commits:                  Vec<Vec<u8>>,
-    fail_next:                Option<Operation>,
-    fail_resource_read_after: Option<usize>,
-    reached_child:            Arc<AtomicBool>
+    session:                   Session,
+    tickets:                   Table<()>,
+    calls:                     Vec<Operation>,
+    trace:                     Vec<(Operation, u32, u64, usize)>,
+    commits:                   Vec<Vec<u8>>,
+    fail_next:                 Option<Operation>,
+    fail_resource_read_after:  Option<usize>,
+    reached_child:             Arc<AtomicBool>,
+    modify_before_description: Option<PathBuf>
 }
 impl Host
 {
@@ -63,7 +64,8 @@ impl Host
             session: Session::new(Arc::new(vec![Export::open("Share", &temp.0, writable).unwrap()])).unwrap(),
             tickets: Table::new(ObjectKind::DriverRequests),
             calls: Vec::new(), trace: Vec::new(), commits: Vec::new(), fail_next: None, fail_resource_read_after: None,
-            reached_child: Arc::new(AtomicBool::new(false))
+            reached_child: Arc::new(AtomicBool::new(false)),
+            modify_before_description: None
         }
     }
 }
@@ -86,6 +88,17 @@ impl Rpc for Host
                 Poll::Pending
             }
         }).await;
+        if operation == Operation::Describe
+           && let Some(path) = self.modify_before_description.take()
+        {
+            let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+            std::fs::write(&path, b"new").unwrap();
+            std::fs::OpenOptions::new().write(true)
+                                       .open(&path)
+                                       .unwrap()
+                                       .set_times(std::fs::FileTimes::new().set_modified(modified))
+                                       .unwrap();
+        }
         self.calls.push(operation);
         self.trace.push((operation, arguments.object, arguments.offset, arguments.payload.len()));
         if operation == Operation::Read
@@ -1278,4 +1291,32 @@ fn native_host_renames_preserve_identity_forks_and_nested_writes_across_remount(
                                     .metadata
                                     .catalog_id,
                file);
+}
+
+#[test]
+fn plain_open_binds_catalog_metadata_to_the_exact_snapshot_revision()
+{
+    let temp = Temp::new();
+    Volume::initialize(&temp.0, "Snapshot").unwrap();
+    let path = temp.0.join("plain");
+    std::fs::write(&path, b"old").unwrap();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let id = run(fs.lookup(volume, 2, "plain")).unwrap().metadata.catalog_id;
+    let mut files = Table::new(ObjectKind::Files);
+    let token = files.insert(()).unwrap();
+    fs.transport().modify_before_description = Some(path);
+    let failure = run(fs.open(volume, id, token)).unwrap_err();
+    assert_eq!(failure.cause, Cause::Stale);
+    assert!(!fs.is_open(volume, id), "failed open retained a live fork");
+    assert_eq!(run(fs.read(volume, token, Fork::Data, 0, 3)).unwrap_err().cause, Cause::NotFound);
+    run(fs.cleanup_orphans()).unwrap();
+    run(fs.refresh(volume)).unwrap();
+    assert_eq!(run(fs.lookup(volume, 2, "plain")).unwrap().metadata.catalog_id, id);
+    run(fs.open(volume, id, token)).unwrap();
+    assert_eq!(run(fs.read(volume, token, Fork::Data, 0, 3)).unwrap(), b"new");
+    run(fs.close_file(volume, token)).unwrap();
+    run(fs.unmount(volume)).unwrap();
 }

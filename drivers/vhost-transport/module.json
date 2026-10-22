@@ -2,7 +2,7 @@
   "identity": "7731a000000000000000000000000010",
   "stack_bytes": 16384,
   "interfaces": [
-    { "class": "HDIR", "version": 1, "request_schema": 1, "reply_schema": 1,
+    { "class": "HDIR", "version": 2, "request_schema": 1, "reply_schema": 1,
       "max_request": 65560, "max_reply": 65584, "exclusive": true, "serialized": true }
   ],
   "services": [ { "class": "VDEV", "version": 1 } ],

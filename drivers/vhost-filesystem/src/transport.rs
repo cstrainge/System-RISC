@@ -172,9 +172,16 @@ impl<C: Channel> DirectoryRpc<C>
                 let result = (|| {
                     let bytes = self.output.get(..count).ok_or(Cause::Invalid)?;
                     let header = Header::decode(bytes.get(..wire::HEADER_BYTES)
-                                                     .ok_or(Cause::Invalid)?).map_err(|_| {
-                                                                                 Cause::Invalid
-                                                                             })?;
+                                                     .ok_or(Cause::Invalid)?).map_err(|error| {
+                                     if error == wire::Error::Version
+                                     {
+                                         Cause::Transport(mac_abi::BAD_ABI)
+                                     }
+                                     else
+                                     {
+                                         Cause::Invalid
+                                     }
+                                 })?;
                     if !header.reply
                        || header.operation != operation
                        || expected_ticket != 0 && header.request != expected_ticket

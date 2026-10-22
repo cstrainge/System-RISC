@@ -7,6 +7,47 @@ use std::{fs,
 use mac_host_protocol::{self as wire, Header, Operation as Op, status};
 use risc_host::{Export, Session};
 #[test]
+#[cfg(target_os = "linux")]
+fn persistent_incarnations_survive_sessions_and_renames_but_not_replacement()
+{
+    let temp = Temp::new();
+    let path = temp.0.join("plain");
+    fs::write(&path, b"original").unwrap();
+    let mut client = Client::new(exports(&temp, true));
+    let (first, body) = client.ok(Op::Describe, client.root, 0, 0, b"plain");
+    let original = wire::Description::decode(&body).unwrap();
+    assert!(original.identity.is_some(),
+            "host filesystem lacks persistent birth/incarnation support");
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    (&file).write_all(b"modified").unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    let (changed, body) = client.ok(Op::Describe, client.root, 0, 0, b"plain");
+    let changed_body = wire::Description::decode(&body).unwrap();
+    assert_eq!(changed.object, first.object);
+    assert_eq!(changed_body.identity, original.identity);
+    assert_eq!(changed_body.modified, original.modified);
+    assert_ne!(changed_body.revision, original.revision, "restored mtime hid a content change");
+    fs::rename(&path, temp.0.join("renamed")).unwrap();
+    let (_, body) = client.ok(Op::Describe, client.root, 0, 0, b"renamed");
+    assert_eq!(wire::Description::decode(&body).unwrap().identity, original.identity);
+    drop(client);
+    let mut reconnected = Client::new(exports(&temp, true));
+    let (next, body) = reconnected.ok(Op::Describe, reconnected.root, 0, 0, b"renamed");
+    assert_ne!(first.object, next.object, "session object generations must remain distinct");
+    assert_eq!(wire::Description::decode(&body).unwrap().identity, original.identity);
+    fs::remove_file(temp.0.join("renamed")).unwrap();
+    fs::write(temp.0.join("renamed"), b"modified").unwrap();
+    let (replaced, body) = reconnected.ok(Op::Describe, reconnected.root, 0, 0, b"renamed");
+    let replaced_body = wire::Description::decode(&body).unwrap();
+    assert_ne!(replaced.object, next.object);
+    assert_ne!(replaced_body.identity, original.identity);
+    assert_eq!(reconnected.call(Op::Describe, reconnected.root, 0, 0, b"missing").0.status,
+               status::NOT_FOUND);
+    assert_eq!(reconnected.ok(Op::Describe, reconnected.root, 0, 0, b"renamed").0.object,
+               replaced.object);
+}
+#[test]
 fn one_session_companion_exits_when_its_vm_disconnects()
 {
     use std::{io::{BufRead, BufReader},

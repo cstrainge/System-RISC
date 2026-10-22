@@ -7,7 +7,16 @@ impl<R: Rpc> Filesystem<R>
                                    -> Result<Node>
     {
         let reply = self.call(Op::Describe, parent, 0, 0, name).await?;
-        let dates = wire::Description::decode(&reply.body).map_err(|_| Cause::Invalid)?;
+        let dates = wire::Description::decode(&reply.body).map_err(|error| {
+                                                              if error == wire::Error::Length
+                                                              {
+                                                                  Cause::Transport(mac_abi::BAD_ABI)
+                                                              }
+                                                              else
+                                                              {
+                                                                  Cause::Invalid
+                                                              }
+                                                          })?;
         if reply.header.object == 0
         {
             return Err(Cause::Invalid.into());
@@ -34,7 +43,9 @@ impl<R: Rpc> Filesystem<R>
                   layout,
                   key,
                   host_name,
-                  plain: true })
+                  plain: true,
+                  source: Some(Source { identity: dates.identity,
+                                        revision: dates.revision }) })
     }
 
     pub(super) async fn open_plain(&mut self, volume: u32, parent: u32, name: &[u8])
@@ -46,6 +57,12 @@ impl<R: Rpc> Filesystem<R>
             self.plain_node(volume, parent, name).await.and_then(|node| {
                                                            if opened.header.offset
                                                               != node.layout.data.length
+                                                              || node.source
+                                                                     .as_ref()
+                                                                     .is_none_or(|source| {
+                                                                         opened.body
+                                                                         != source.revision
+                                                                     })
                                                            {
                                                                return Err(Cause::Stale.into());
                                                            }
@@ -90,7 +107,8 @@ impl<R: Rpc> Filesystem<R>
                           layout,
                           key,
                           host_name: physical,
-                          plain: false })
+                          plain: false,
+                          source: None })
             }.await;
         self.cleanup(handle, result).await
     }
