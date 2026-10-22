@@ -134,10 +134,20 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         {
             browser.activate(&event);
             let _ = try_action(system, &mut alerts, browser.sync_desktop_activation(system))?;
-            if matches!(event,Event::Activate{window,active:true,..} if browser.contains(window))
-            {
-                let _ = try_action(system, &mut alerts, browser.refresh_running(system))?;
-            }
+        }
+        if let Event::ProcessFileChanged { volume,
+                                           id,
+                                           running,
+                                           .. } = event
+        {
+            let _ = try_action(system,
+                               &mut alerts,
+                               browser.application_file_changed(system,
+                                                                browser::Location { volume,
+                                                                                    folder:
+                                                                                        id },
+                                                                running))?;
+            continue;
         }
         if let Event::Drag { .. } = event
         {

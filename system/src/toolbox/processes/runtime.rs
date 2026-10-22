@@ -317,22 +317,21 @@ impl Desktop
         mac_abi::menus::MenuIcon::new(0, -3996)
     }
 
-    /// Lifecycle changes coalesce into the Finder's ordinary window damage.
-    /// No polling, synthetic input or activation-triggered invalidation is needed.
-    fn invalidate_finder_icons(&mut self)
+    /// Lifecycle changes notify file identity; Finder damages only that icon.
+    fn notify_finder_file_state(&mut self, volume: u32, cnid: u32, running: bool)
     {
-        for (id, owner) in &self.window_owners
+        let event = Event { kind: EventKind::OsEvent,
+                            message: FILE_STATE_EVENT | u32::from(running),
+                            payload: u64::from(volume) | (u64::from(cnid) << 32),
+                            when: Self::when(),
+                            ..Default::default() };
+        if self.owner == 1
         {
-            if *owner == 1
-               && let Some(window) = self.windows.window(*id)
-            {
-                let bounds = window.bounds;
-                self.windows.invalidate(*id,
-                                        Rect::new(0,
-                                                  0,
-                                                  bounds.right - bounds.left,
-                                                  bounds.bottom - bounds.top));
-            }
+            self.events.post(event);
+        }
+        else if let Some(local) = self.locals.iter_mut().find(|local| local.id == 1)
+        {
+            local.events.post(event);
         }
     }
 
@@ -540,7 +539,7 @@ impl Desktop
                 self.processes.get_mut(id)?.info.thread = thread;
                 self.activate_process(id)?;
                 call.info = self.processes.snapshot(id)?;
-                self.invalidate_finder_icons();
+                self.notify_finder_file_state(call.volume, call.cnid, true);
                 serial!("PROCESS_LAUNCHED app={} thread={} name={}", id, thread, catalog.name());
             }
             ACTIVATE => self.activate_process(call.id)?,
@@ -553,6 +552,7 @@ impl Desktop
                 {
                     return Err(ACCESS_DENIED);
                 }
+                let file = self.processes.snapshot(caller)?;
                 self.enter(caller);
                 self.standard_file.remove_owner(caller);
                 self.scroll_boxes.remove_owner(caller);
@@ -577,7 +577,7 @@ impl Desktop
                 self.drag_effects(feedback);
                 self.locals.retain(|s| s.id != caller);
                 self.processes.remove(caller);
-                self.invalidate_finder_icons();
+                self.notify_finder_file_state(file.volume, file.cnid, false);
                 if self.foreground == caller
                 {
                     self.activate_process(previous)?;

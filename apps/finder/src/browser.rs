@@ -1263,31 +1263,37 @@ impl Browser
         }
     }
 
-    /// Running marks are process state, independent of catalog cache validity.
-    /// Refresh on application activation, never on a draw or pointer move.
-    pub fn refresh_running(&mut self, system: &System<'_>) -> Result<(), Error>
+    /// Lifecycle events supply identity and state; no catalog or process scans.
+    pub fn application_file_changed(&mut self, system: &System<'_>, location: Location,
+                                    running: bool)
+                                    -> Result<(), Error>
     {
+        let mut changed = false;
         for slot in 0..self.windows.len()
         {
-            if self.windows[slot].is_none() || !cache::with(slot, |folder| folder.ready)
+            if self.windows[slot].is_none()
             {
                 continue;
             }
-            let count = cache::with(slot, |folder| folder.count);
-            for index in 0..count
-            {
-                let item = cache::with(slot, |folder| folder.items[index]);
-                if !matches!(item.icon, Icon::Application { .. })
+            changed |= cache::edit(slot, |folder| {
+                let mut changed = false;
+                let count = folder.count;
+                for item in &mut folder.items[..count]
                 {
-                    continue;
+                    if item.location() == location
+                       && item.running != running
+                       && matches!(item.icon, Icon::Application { .. })
+                    {
+                        item.running = running;
+                        changed = true;
+                    }
                 }
-                let running = system.processes().is_running(item.entry.volume, item.entry.id)?;
-                if running != item.running
-                {
-                    cache::edit(slot, |folder| folder.items[index].running = running);
-                    self.repaint_location(system, item.location())?;
-                }
-            }
+                changed && folder.ready
+            });
+        }
+        if changed
+        {
+            self.repaint_location(system, location)?;
         }
         Ok(())
     }

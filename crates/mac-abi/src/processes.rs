@@ -11,6 +11,9 @@ pub const SHOW_ALL: u32 = 7;
 pub const EXIT: u32 = 8;
 /// Exact mounted-volume/catalog identity, independent of path or creator code.
 pub const IS_RUNNING: u32 = 9;
+/// Native lifecycle notification: payload packs volume low/CNID high; message
+/// low bit reports whether this exact file still has a running instance.
+pub const FILE_STATE_EVENT: u32 = 0x0c00_0000;
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ProcessInfo

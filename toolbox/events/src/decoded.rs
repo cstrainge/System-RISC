@@ -130,6 +130,14 @@ pub enum Event<'a>
     {
         offer: toolbox_drag::DragEvent<'a>, input: Input
     },
+    /// Exact application-file state changed, independent of foreground focus.
+    ProcessFileChanged
+    {
+        volume:  mac_traps::VolumeId,
+        id:      mac_traps::Cnid,
+        running: bool,
+        input:   Input
+    },
     /// No queued event, including a pointer-motion wake. Retains physical input
     /// for drag/caret work without another trap. Poll and wait agree on this.
     Idle
@@ -235,6 +243,14 @@ impl<'a> From<raw::Event> for Event<'a>
                                     item: event.message as u16,
                                     input }
             }
+            raw::EventKind::OsEvent
+                if event.message & 0xff00_0000 == mac_abi::processes::FILE_STATE_EVENT =>
+            {
+                Self::ProcessFileChanged { volume: mac_traps::VolumeId(event.payload as u32),
+                                           id: mac_traps::Cnid((event.payload >> 32) as u32),
+                                           running: event.message & 1 != 0,
+                                           input }
+            }
             raw::EventKind::OsEvent if event.message & 0xff00_0000 == WINDOW_CLOSE_REQUEST =>
             {
                 Self::CloseRequested { window: WindowId(event.message & 0x00ff_ffff),
@@ -256,7 +272,9 @@ impl Event<'_>
         match self
         {
             Self::Drag { input,
-                         .. } => *input,
+                         .. }
+            | Self::ProcessFileChanged { input,
+                                       .. } => *input,
             Self::Idle { input,
                          .. }
             | Self::MouseDown { input,
@@ -309,6 +327,19 @@ impl Event<'_>
         let (kind, message) = match self
         {
             Self::Drag { .. } => unreachable!(),
+            Self::ProcessFileChanged { volume,
+                                       id,
+                                       running,
+                                       .. } =>
+            {
+                return raw::Event { kind:      raw::EventKind::OsEvent,
+                                    message:   mac_abi::processes::FILE_STATE_EVENT
+                                               | u32::from(*running),
+                                    payload:   u64::from(volume.0) | (u64::from(id.0) << 32),
+                                    when:      input.when,
+                                    where_:    input.at,
+                                    modifiers: input.modifiers.bits() };
+            }
             Self::Idle { tag,
                          .. } => (raw::EventKind::Null, *tag),
             Self::MouseDown { window,

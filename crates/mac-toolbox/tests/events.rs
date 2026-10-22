@@ -163,3 +163,28 @@ fn physical_input_uses_real_ecalls_and_keeps_raw_events_during_menu_dispatch()
     fs::write(output.join("rust-acceptance.json"), &acceptance).unwrap();
     fs::write(root.join("results/system7/event-manager-checks.json"), &acceptance).unwrap();
 }
+
+#[test]
+fn application_file_lifecycle_events_preserve_exact_identity_without_window_routing()
+{
+    support::with_system(|system| {
+        for running in [true, false]
+        {
+            let event =
+                mac_toolbox::Event::ProcessFileChanged { volume:
+                                                             mac_toolbox::VolumeId(0x1234_5678),
+                                                         id: mac_toolbox::Cnid(0x8765_4321),
+                                                         running,
+                                                         input: Default::default() };
+            let record = event.as_record();
+            system.events().post(event).unwrap();
+            let received = system.next_event(mac_toolbox::EventMask::ALL).unwrap();
+            assert_eq!(received.as_record(), record);
+            assert_eq!(received.window(), None);
+            assert!(matches!(received, mac_toolbox::Event::ProcessFileChanged {
+                volume: mac_toolbox::VolumeId(0x1234_5678), id: mac_toolbox::Cnid(0x8765_4321),
+                running: state, ..
+            } if state == running));
+        }
+    });
+}

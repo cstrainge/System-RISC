@@ -131,6 +131,10 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     assert_eq!(region(&running, 51, 142, 83, 174),
                icon(&root, "QuickDraw Test", 128, 32),
                "unlaunched copy inherited the running application's mark");
+    // The icon must already be normal before any Finder click or activation.
+    assert_eq!(region(&image("quickdraw-quit"), 168, 90, 200, 122),
+               icon(&root, "QuickDraw Test", 128, 32),
+               "exit notification did not clear the running mark automatically");
     let closed = image("closed-file-icons");
     assert_eq!(region(&closed, 168, 90, 200, 122),
                icon(&root, "QuickDraw Test", 128, 32),

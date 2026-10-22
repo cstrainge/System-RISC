@@ -480,6 +480,13 @@ low bits carry item count and a precomputed intersection of offered types.
 These messages are native service events, not the original Drag Manager callback
 ABI. Rebuild System and every application/definition together at ABI 8.
 
+Application-file lifecycle notifications use native OsEvent message prefix
+`0x0c000000` with bit 0 set while the exact file has a running instance. The
+u64 payload contains mounted volume ID in its low half and CNID in its high
+half. The resident process service sends this on launch/exit, independent of
+activation. Finder updates only matching cached icons; lifecycle changes do not
+invalidate folder windows or re-enumerate catalogs.
+
 Native `fref` flavor payloads are exactly 24 bytes: little-endian u32 volume at
 0, CNID at 4, source parent CNID at 8; little-endian i16 origin h/v at 12/14;
 big-endian QuickDraw Rect at 16. Bulk item publication concatenates those records
