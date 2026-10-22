@@ -34,6 +34,9 @@ struct Session
     detached:         bool,
     action:           u32,
     destination:      u32,
+    allowed_actions:  u32,
+    file_volume:      Option<u32>,
+    mixed_volumes:    bool,
     trash:            bool,
     source_read_only: bool,
     anchor:           Point,
@@ -46,6 +49,7 @@ struct Session
     error:            Status,
     receiver:         Option<u32>,
     accepted:         bool,
+    responded:        bool,
     released:         bool,
     items:            Vec<Item>,
     common:           u32,
@@ -55,6 +59,50 @@ struct Session
     return_start:     Point,
     return_tick:      u32,
     return_step:      u32
+}
+impl Session
+{
+    fn resolved_action(&self) -> u32
+    {
+        if self.trash || self.modifiers & mac_abi::events::CMD_KEY != 0
+        {
+            MOVE
+        }
+        else if self.modifiers & mac_abi::events::OPTION_KEY != 0
+                  || self.source_read_only
+                  || self.mixed_volumes
+                  || self.file_volume.is_some_and(|volume| volume != self.destination)
+        {
+            COPY
+        }
+        else
+        {
+            MOVE
+        }
+    }
+
+    fn action_error(&self) -> Option<Status>
+    {
+        let action = self.resolved_action();
+        if action == MOVE && self.source_read_only
+        {
+            Some(READ_ONLY)
+        }
+        else if action == MOVE
+                  && self.allowed_actions & SAME_VOLUME_MOVE != 0
+                  && (self.mixed_volumes || self.file_volume != Some(self.destination))
+        {
+            Some(NOT_SUPPORTED)
+        }
+        else if self.allowed_actions & if action == COPY { ACCEPT_COPY } else { ACCEPT_MOVE } == 0
+        {
+            Some(NOT_SUPPORTED)
+        }
+        else
+        {
+            None
+        }
+    }
 }
 struct Receiver
 {
@@ -276,7 +324,9 @@ impl Manager
             }
             self.notice(owner, LEFT_EVENT, window, id, when);
         }
-        self.sessions.get_mut(id).unwrap().accepted = false;
+        let session = self.sessions.get_mut(id).unwrap();
+        session.accepted = false;
+        session.responded = false;
     }
 
     fn finish(&mut self, id: u32, when: u32)
@@ -320,26 +370,10 @@ impl Manager
         {
             let (owner, window) = (r.owner, r.window);
             let session = self.sessions.get_mut(id).unwrap();
-            let forced_move = session.modifiers & mac_abi::events::CMD_KEY != 0;
-            let forced_copy = session.modifiers & mac_abi::events::OPTION_KEY != 0;
-            let different_volume = session.items.iter().flat_map(|i| &i.flavors)
-                .any(|f| f.kind == *b"fref" && f.bytes.len() >= 4
-                    && u32::from_le_bytes(f.bytes[..4].try_into().unwrap()) != session.destination);
-            session.action = if session.trash || forced_move
+            session.action = session.resolved_action();
+            if let Some(error) = session.action_error()
             {
-                MOVE
-            }
-            else if forced_copy || different_volume || session.source_read_only
-            {
-                COPY
-            }
-            else
-            {
-                MOVE
-            };
-            if session.action == MOVE && session.source_read_only
-            {
-                self.return_to_source(id, REJECTED, READ_ONLY, when);
+                self.return_to_source(id, REJECTED, error, when);
                 return;
             }
             session.phase = DROPPING;
@@ -369,6 +403,7 @@ impl Manager
         if changed && session.phase == TRACKING
         {
             session.accepted = false;
+            session.responded = false;
         }
         session.point = point;
         session.modifiers = modifiers;
@@ -386,7 +421,15 @@ impl Manager
         {
             return;
         }
-        if session.receiver != hot
+        // Modifier changes withdraw an impossible highlight immediately, before
+        // the app services the new offer. This is constant-time cached policy.
+        let clear_highlight = changed && session.action_error().is_some();
+        let receiver_changed = session.receiver != hot;
+        if clear_highlight
+        {
+            self.set_highlight(None);
+        }
+        if receiver_changed
         {
             self.leave(id, when);
             self.sessions.get_mut(id).unwrap().receiver = hot;
@@ -419,7 +462,7 @@ impl Manager
                 session.outcome = CLICKED;
                 self.finish(id, when);
             }
-            TRACKING if session.accepted || session.receiver.is_none() =>
+            TRACKING if session.responded || session.receiver.is_none() =>
             {
                 self.drop_at_receiver(id, when)
             }
@@ -548,6 +591,9 @@ impl Manager
                                                 detached: false,
                                                 action: MOVE,
                                                 destination: 0,
+                                                allowed_actions: 0,
+                                                file_volume: None,
+                                                mixed_volumes: false,
                                                 trash: false,
                                                 source_read_only: false,
                                                 anchor: call.point,
@@ -560,6 +606,7 @@ impl Manager
                                                 error: OK,
                                                 receiver: None,
                                                 accepted: false,
+                                                responded: false,
                                                 released: false,
                                                 items: Vec::new(),
                                                 common: 0,
@@ -588,6 +635,17 @@ impl Manager
                 session.down_modifiers = call.flags as u16;
                 session.bounds = Some(call.bounds);
                 session.phase = ARMED;
+                // File identity metadata is frozen once. Never inspect the
+                // item/flavor list again on a pointer/modifier path.
+                for flavor in session.items.iter().flat_map(|item| &item.flavors)
+                {
+                    if flavor.kind == *b"fref" && flavor.bytes.len() >= 4
+                    {
+                        let volume = u32::from_le_bytes(flavor.bytes[..4].try_into().unwrap());
+                        session.mixed_volumes |= session.file_volume.is_some_and(|v| v != volume);
+                        session.file_volume = Some(volume);
+                    }
+                }
                 session.common =
                     u32::from(session.items
                                      .iter()
@@ -745,6 +803,13 @@ impl Manager
             ACCEPT =>
             {
                 self.receiver(call.id, call.receiver, owner)?;
+                if call.flags & !(1 | TARGET_TRASH | ACCEPT_COPY | ACCEPT_MOVE | SAME_VOLUME_MOVE)
+                   != 0
+                   || call.flags & 1 != 0 && call.flags & (ACCEPT_COPY | ACCEPT_MOVE) == 0
+                   || call.flags & 1 == 0 && call.flags != 0
+                {
+                    return Err(BAD_ARGUMENT);
+                }
                 if self.sessions.get(call.id).unwrap().phase != TRACKING
                 {
                     return Err(ACCESS_DENIED);
@@ -756,10 +821,20 @@ impl Manager
                 {
                     return Ok(());
                 }
-                session.accepted = call.flags & 1 != 0;
+                session.allowed_actions =
+                    call.flags & (ACCEPT_COPY | ACCEPT_MOVE | SAME_VOLUME_MOVE);
                 session.destination = call.volume;
                 session.trash = call.flags & TARGET_TRASH != 0;
-                session.error = if session.accepted { OK } else { call.error };
+                session.error = if call.flags & 1 != 0
+                {
+                    session.action_error().unwrap_or(OK)
+                }
+                else
+                {
+                    call.error
+                };
+                session.accepted = call.flags & 1 != 0 && session.error == OK;
+                session.responded = true;
                 let released = session.released;
                 let highlight = session.accepted.then_some((call.window, call.bounds));
                 self.set_highlight(highlight.filter(|(_, r)| !r.is_empty()));
@@ -916,7 +991,9 @@ impl Manager
                           && call.point == session.point
                 {
                     let released = session.released;
-                    self.sessions.get_mut(call.id).unwrap().accepted = false;
+                    let session = self.sessions.get_mut(call.id).unwrap();
+                    session.accepted = false;
+                    session.responded = true;
                     self.set_highlight(None);
                     if released
                     {

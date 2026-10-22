@@ -101,6 +101,14 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
             }
             _ =>
             {
+                if name == "Z Conflict"
+                {
+                    assert!(moved.saved_icon_location().is_some());
+                    let mut expected = original;
+                    expected.finder_info = moved.finder_info;
+                    assert_eq!(*moved, expected, "collision fixture changed beyond placement");
+                    continue;
+                }
                 let point = match name.as_str()
                 {
                     "Panic Test" =>
@@ -135,8 +143,9 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
     let serial = fs::read_to_string(output.join("boot-1.log")).unwrap();
     assert_eq!(serial.matches("FINDER_DRAG_MOVE_COMMITTED\n").count(), 2, "{serial}");
     assert_eq!(serial.matches("FINDER_DRAG_ENDED moved\n").count(), 2, "{serial}");
-    assert_eq!(serial.matches("FINDER_ACTION_FAILED status=-4").count(), 2, "{serial}");
-    assert_eq!(serial.matches("FINDER_DRAG_ENDED rejected\n").count(), 2, "{serial}");
+    assert_eq!(serial.matches("FINDER_ACTION_FAILED status=-11").count(), 2, "{serial}");
+    assert_eq!(serial.matches("FINDER_ACTION_FAILED ").count(), 2, "{serial}");
+    assert_eq!(serial.matches("FINDER_DRAG_ENDED rejected\n").count(), 4, "{serial}");
     assert_eq!(serial.matches("FINDER_ALERT_DISMISSED\n").count(), 2, "{serial}");
     for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:"]
     {

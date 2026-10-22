@@ -8,6 +8,8 @@ mod scan;
 mod watch;
 mod cache;
 mod provider;
+#[cfg(feature = "test-support")]
+pub(crate) use provider::Source as TestProviderSource;
 pub(crate) mod types;
 #[cfg(target_arch = "riscv64")]
 mod backing;

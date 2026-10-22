@@ -7,8 +7,8 @@ mod promise;
 mod wake;
 pub use promise::{NoPromises, Promises, WithPromise};
 mod offer;
-pub use offer::{DragEvent, DragOutcome, DropAction, DropPayload, FlavorInfo, Flavors, Item,
-                Response, TakeFuture, Target, TrackPhase, TrackingOffer};
+pub use offer::{DragEvent, DragOutcome, DropAction, DropActions, DropPayload, FlavorInfo, Flavors,
+                Item, Response, TakeFuture, Target, TrackPhase, TrackingOffer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FlavorType([u8; 4]);

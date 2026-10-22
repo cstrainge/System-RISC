@@ -111,48 +111,21 @@ impl super::super::runtime::Desktop
         {
             call.receiver = self.drag.receiver_at(call.window).ok_or(NOT_FOUND)?;
         }
-        // Validate mounted-volume policy once per offer/response, never per motion.
-        let mut source_read_only = false;
-        if call.operation == FILE_ITEMS
+        let source_read_only = if call.operation == FILE_ITEMS
+                                  || call.operation == OFFER && call.kind == *b"fref"
         {
-            if input.is_empty()
-               || input.len() % FILE_ITEM_BYTES != 0
-               || input.len() / FILE_ITEM_BYTES > MAX_ITEMS
-            {
-                return Err(BAD_ARGUMENT);
-            }
-            let mut checked = [0u32; 128];
-            let mut count = 0;
-            for bytes in input.chunks_exact(FILE_ITEM_BYTES)
-            {
-                let volume = u32::from_le_bytes(bytes[..4].try_into().unwrap());
-                if !checked[..count].contains(&volume)
-                {
-                    source_read_only |= drag_volume_read_only(volume)?;
-                    if count == checked.len()
-                    {
-                        return Err(NO_MEMORY);
-                    }
-                    checked[count] = volume;
-                    count += 1;
-                }
-            }
+            crate::kernel::with_files(|files| {
+                crate::toolbox::drag::source_read_only(files, call, input)
+            }).map_err(|e| e.status())??
         }
-        if call.operation == OFFER && call.kind == *b"fref"
+        else
         {
-            if input.len() != FILE_ITEM_BYTES
-            {
-                return Err(BAD_ARGUMENT);
-            }
-            let volume = u32::from_le_bytes(input[..4].try_into().unwrap());
-            source_read_only = drag_volume_read_only(volume)?;
-        }
-        if call.operation == ACCEPT
-           && call.flags & 1 != 0
-           && call.volume != 0
-           && drag_volume_read_only(call.volume)?
+            false
+        };
+        if call.operation == ACCEPT && call.flags & 1 != 0 && call.volume != 0
         {
-            return Err(READ_ONLY);
+            crate::kernel::with_files(|files| crate::toolbox::drag::validate_target(files, call))
+                .map_err(|e| e.status())??;
         }
         if call.operation == BEGIN
         {
@@ -185,15 +158,4 @@ impl super::super::runtime::Desktop
         }
         result
     }
-}
-
-fn drag_volume_read_only(volume: u32) -> Result<bool, Status>
-{
-    crate::kernel::with_files(|files| {
-        let mut request = mac_abi::files::FileCall { operation: mac_abi::files::VOLUME_INFO,
-                                                     volume,
-                                                     ..Default::default() };
-        files.request(&mut request, "", &mut [])?;
-        Ok(request.volume_info.read_only != 0)
-    }).map_err(|e| e.status())?
 }

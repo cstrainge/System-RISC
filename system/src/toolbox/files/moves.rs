@@ -3,6 +3,16 @@
 use super::*;
 impl Manager
 {
+    /// Cheap admission for the atomic operation used by folder-target drags.
+    /// A writable mount alone is not proof that its move path is implemented.
+    /// Provider moves must join this gate when their transactional path lands.
+    pub(crate) fn supports_icon_moves(&self, volume: u32) -> Result<bool, Status>
+    {
+        let mounted = self.volumes.get(volume).ok_or(NOT_FOUND)?;
+        mounted.info().ok_or(NOT_FOUND)?;
+        Ok(matches!(mounted, Mounted::Block(block) if block.info.read_only == 0 && !block.poisoned))
+    }
+
     pub(super) fn move_icons(&mut self, call: &mut IconMoveCall, rows: &[IconMove])
                              -> Result<(), Status>
     {

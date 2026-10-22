@@ -7,6 +7,7 @@ import argparse
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import time
 
@@ -14,11 +15,13 @@ from capture_system7_applications_ui import Driver
 import capture_system7_conformance as packaging
 import capture_system7_event_trace as tracing
 import system7_vm as vm
+from hfs_b_tool import Image as NativeImage
 
 
 def capture(output):
     output.mkdir(parents=True, exist_ok=False)
-    original = packaging.sha(vm.DIST / 'system7.qcow2')
+    base = vm.DIST
+    original = packaging.sha(base / 'system7.qcow2')
     stages = []
     process = endpoint = driver = None
 
@@ -65,23 +68,43 @@ def capture(output):
     try:
         subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                         str(vm.DIST / 'system7.qcow2'), str(output / 'before.raw')], check=True)
+        # A lawful negotiated move can still fail (e.g. a name collision). Keep
+        # that modal cleanup/retry regression separate from unsupported actions,
+        # which must now reject before drop without producing an error dialog.
+        image = NativeImage(output / 'before.raw')
+        image.mkdir('/Applications/Z Conflict')
+        image.import_macbinary(base / 'QuickDraw Test.bin', '/Applications/Z Conflict')
+        private = output / 'dist'
+        private.mkdir()
+        shutil.copyfile(base / 'bootrom.bin', private / 'bootrom.bin')
+        subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2',
+                        str(output / 'before.raw'), str(private / 'system7.qcow2')], check=True)
+        vm.DIST = private
         start()
         driver.click(40, 95, double=True)
         driver.wait_folder_ready('Applications')
         snapshot('opened')
-        # Force an unsupported copy to exercise the same failure path as an
-        # external-provider move. The modal alert must not swallow cleanup.
         for attempt in range(2):
-            failed = driver.log().count('FINDER_ACTION_FAILED status=-4')
             ended = driver.log().count('FINDER_DRAG_ENDED rejected\n')
-            dismissed = driver.log().count('FINDER_ALERT_DISMISSED\n')
             driver.move(184, 106)
             driver.button(True)
             driver.move(212, 146)
             driver.key_state('alt', True)
             driver.button(False)
             driver.key_state('alt', False)
-            driver.wait('FINDER_ACTION_FAILED status=-4', failed)
+            driver.wait('FINDER_DRAG_ENDED rejected\n', ended)
+            snapshot('unsupported-copy-' + str(attempt))
+        # The duplicate already in Z Conflict makes these moves fail only after
+        # legal negotiation. The modal alert must not swallow session cleanup.
+        for attempt in range(2):
+            failed = driver.log().count('FINDER_ACTION_FAILED status=-11')
+            ended = driver.log().count('FINDER_DRAG_ENDED rejected\n')
+            dismissed = driver.log().count('FINDER_ALERT_DISMISSED\n')
+            driver.move(184, 106)
+            driver.button(True)
+            driver.move(56, 158)
+            driver.button(False)
+            driver.wait('FINDER_ACTION_FAILED status=-11', failed)
             driver.wait('FINDER_DRAG_ENDED rejected\n', ended)
             snapshot('failed-drop-' + str(attempt))
             driver.key('ret')
@@ -132,14 +155,16 @@ def capture(output):
         snapshot('rebooted')
         (output / 'boot-2.log').write_text(driver.log())
         (output / 'capture.json').write_text(json.dumps({
-            'original_before': original, 'original_after': packaging.sha(vm.DIST / 'system7.qcow2'),
+            'original_before': original, 'original_after': packaging.sha(base / 'system7.qcow2'),
             'stages': stages, 'tracking_before': before_state, 'tracking_after': after_state,
             'tracking_trace': tracing.delta(before_trace, after_trace),
         }, indent=2) + '\n')
     finally:
         stop()
+        vm.DIST = base
         for name in ['system7.qcow2', 'bootrom.bin']:
             (output / 'vm' / name).unlink(missing_ok=True)
+            (output / 'dist' / name).unlink(missing_ok=True)
 
 
 if __name__ == '__main__':

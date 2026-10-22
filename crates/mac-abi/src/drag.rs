@@ -35,6 +35,11 @@ pub const MOVE: u32 = 2;
 pub const COPIED: u32 = 5;
 pub const MOVED: u32 = 6;
 pub const TARGET_TRASH: u32 = 2;
+/// Receiver intent. At least one action is required on an accepting response.
+pub const ACCEPT_COPY: u32 = 4;
+pub const ACCEPT_MOVE: u32 = 8;
+/// Resident File Manager admission: its atomic catalog move retains a volume.
+pub const SAME_VOLUME_MOVE: u32 = 16;
 pub const FLAVOR_UNAVAILABLE: i32 = -1852;
 pub const PROMISE_FAILED: i32 = -1854;
 pub const MAX_ITEMS: usize = 1024;

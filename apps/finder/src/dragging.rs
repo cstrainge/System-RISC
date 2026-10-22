@@ -1,7 +1,7 @@
 //! Finder supplies cached items and target intent. System owns the gesture,
 //! feedback, negotiation, modifier policy and terminal outcome.
-use mac_toolbox::drag::{self, DragEvent, DragOutcome, DropAction, DropPayload, FileItem, Response,
-                        Target, TrackPhase, TrackingOffer};
+use mac_toolbox::drag::{self, DragEvent, DragOutcome, DropAction, DropActions, DropPayload,
+                        FileItem, Response, Target, TrackPhase, TrackingOffer};
 
 use super::*;
 #[derive(Clone, Copy)]
@@ -180,6 +180,7 @@ impl<'a> Controller<'a>
                                                Target::Folder { volume: target.location.volume,
                                                                 id:     target.location.folder }
                                            },
+                                           actions:   DropActions::Move,
                                            highlight: target.highlight }
                     });
                 match offer.respond(response)
@@ -218,7 +219,10 @@ impl<'a> Controller<'a>
                 {
                     browser.change_selection(system, slot, Selection::singleton(index), &[])?;
                 }
-                if matches!(outcome, DragOutcome::Moved | DragOutcome::Copied)
+                // Any actual drag ends the click sequence. A rejected/cancelled
+                // gesture must not turn its immediate retry into a double-click
+                // that launches the source application instead of dragging it.
+                if !was_click
                 {
                     browser.last_click = None;
                 }

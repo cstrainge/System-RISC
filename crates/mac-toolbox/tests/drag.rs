@@ -45,10 +45,13 @@ fn ended(system: &System<'_>) -> DragOutcome
 {
     for _ in 0..10
     {
-        if let Event::Drag { offer: DragEvent::Ended { outcome },
-                             .. } = system.next_event(EventMask::ALL).unwrap()
+        match system.next_event(EventMask::ALL).unwrap()
         {
-            return outcome;
+            Event::Drag { offer: DragEvent::Ended { outcome },
+                          .. } => return outcome,
+            Event::Drag { offer: DragEvent::Dropped(_),
+                          .. } => panic!("unexpected drop before terminal outcome"),
+            _ => ()
         }
     }
     panic!("missing terminal drag event")
@@ -66,7 +69,8 @@ fn inline_data_is_drop_only_take_once_and_move_is_an_outcome()
         let offer = entered(&system);
         let item = offer.flavors().item(0).unwrap();
         assert!(offer.flavors().has::<Text<'_>>(item).unwrap());
-        offer.respond(Response::Accept { target:    Target::Content,
+        offer.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                         target:    Target::Content,
                                          highlight: Rect::new(20, 40, 60, 90) })
              .unwrap();
         let drop = dropped(&system);
@@ -114,7 +118,8 @@ fn cancellation_wakes_pending_take_and_duplicate_take_cannot_steal_its_waker()
                             .unwrap();
         let offer = entered(&system);
         let item = offer.flavors().item(0).unwrap();
-        offer.respond(Response::Accept { target:    Target::Content,
+        offer.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                         target:    Target::Content,
                                          highlight: Rect::ZERO })
              .unwrap();
         let payload = dropped(&system);
@@ -186,7 +191,8 @@ fn classic_text_sizes_and_offsets_use_macroman_while_native_takes_utf8()
         put(&mut memory, 100, 5);
         assert_eq!(classic(&system, 0x14, &mut memory, 24), 0);
         assert_eq!(&memory[220..225], b"\x8f / \xde");
-        offer.respond(Response::Accept { target:    Target::Content,
+        offer.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                         target:    Target::Content,
                                          highlight: Rect::ZERO })
              .unwrap();
         let payload = dropped(&system);
@@ -230,7 +236,8 @@ fn every_classic_text_byte_is_decoded_for_a_native_receiver()
         system.client().drag(&mut begin, &[], &mut []).unwrap();
         let offer = entered(&system);
         let item = offer.flavors().item(0).unwrap();
-        offer.respond(Response::Accept { target:    Target::Content,
+        offer.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                         target:    Target::Content,
                                          highlight: Rect::ZERO })
              .unwrap();
         let payload = dropped(&system);
@@ -274,14 +281,15 @@ fn modifiers_are_sampled_at_release_and_trash_always_moves()
             };
             let target = if trash
             {
-                Target::Trash { volume: VolumeId(1),
+                Target::Trash { volume: VolumeId::NONE,
                                 id:     files::ROOT_ID }
             }
             else
             {
                 Target::Content
             };
-            offer.respond(Response::Accept { target,
+            offer.respond(Response::Accept { actions: DropActions::CopyOrMove,
+                                             target,
                                              highlight: Rect::ZERO })
                  .unwrap();
             input::release(DROP, after, WINDOW, 2);
@@ -297,7 +305,8 @@ fn modifiers_are_sampled_at_release_and_trash_always_moves()
                           before,
                           WINDOW,
                           3);
-            offer.respond(Response::Accept { target,
+            offer.respond(Response::Accept { actions: DropActions::CopyOrMove,
+                                             target,
                                              highlight: Rect::ZERO })
                  .unwrap();
             let Event::Drag { offer: DragEvent::Dropped(payload),
@@ -376,7 +385,8 @@ fn same_app_promise_runs_once_only_after_drop_requests_it()
         assert!(offer.flavors().has::<Text<'_>>(item).unwrap());
         assert_eq!(count.load(Ordering::SeqCst), 0);
         assert!(!session.service_promises().unwrap());
-        offer.respond(Response::Accept { target:    Target::Content,
+        offer.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                         target:    Target::Content,
                                          highlight: Rect::default() })
              .unwrap();
         let drop = dropped(&system);
@@ -419,7 +429,8 @@ fn a_rejected_promise_payload_completes_with_a_typed_error()
             builder.promise::<InvalidText, _>(|| Ok(InvalidText)).unwrap().begin().unwrap();
         let offer = entered(&system);
         let item = offer.flavors().item(0).unwrap();
-        offer.respond(Response::Accept { target:    Target::Content,
+        offer.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                         target:    Target::Content,
                                          highlight: Rect::ZERO })
              .unwrap();
         let payload = dropped(&system);
@@ -600,7 +611,8 @@ fn owned_drops_and_receive_futures_reject_on_every_abandonment_path()
                 system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
             builder.empty_item(Rect::ZERO).unwrap();
             let source = builder.begin().unwrap();
-            entered(&system).respond(Response::Accept { target:    Target::Content,
+            entered(&system).respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                                        target:    Target::Content,
                                                         highlight: Rect::ZERO })
                             .unwrap();
             let payload = dropped(&system);
@@ -637,5 +649,307 @@ fn owned_drops_and_receive_futures_reject_on_every_abandonment_path()
             next.cancel().unwrap();
             assert_eq!(ended(&system), DragOutcome::Cancelled);
         });
+    }
+}
+
+#[test]
+fn receivers_declare_actions_and_never_coerce_a_forced_action()
+{
+    use abi::events::OPTION_KEY;
+    for (actions, modifiers, expected) in
+        [(DropActions::Move, OPTION_KEY, None),
+         (DropActions::Copy, 0, None),
+         (DropActions::Copy, OPTION_KEY, Some(DropAction::Copy)),
+         (DropActions::Move, 0, Some(DropAction::Move)),
+         (DropActions::CopyOrMove, OPTION_KEY, Some(DropAction::Copy))]
+    {
+        testing::with_services(|services| {
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            input::receiver(1, 1, WINDOW);
+            let mut builder =
+                system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            builder.empty_item(Rect::ZERO).unwrap();
+            builder.flavor(Flavor::text("data")).unwrap();
+            let _source = builder.begin().unwrap();
+            input::motion(DROP, modifiers, WINDOW, 1);
+            let Event::Drag { offer: DragEvent::Tracking(offer),
+                              .. } = system.next_event(EventMask::ALL).unwrap()
+            else
+            {
+                panic!("missing enter")
+            };
+            offer.respond(Response::Accept { target: Target::Content,
+                                             actions,
+                                             highlight: Rect::new(20, 40, 60, 90) })
+                 .unwrap();
+            assert_eq!(input::highlight().is_some(), expected.is_some());
+            input::release(DROP, modifiers, WINDOW, 2);
+            if let Some(expected) = expected
+            {
+                let Event::Drag { offer: DragEvent::Dropped(payload),
+                                  .. } = system.next_event(EventMask::ALL).unwrap()
+                else
+                {
+                    panic!("missing supported drop")
+                };
+                assert_eq!(payload.action, expected);
+                let mut done = pin!(payload.receive(async { Ok(()) }));
+                assert_eq!(poll(done.as_mut()), Poll::Ready(Ok(())));
+                assert_eq!(ended(&system),
+                           if expected == DropAction::Copy
+                           {
+                               DragOutcome::Copied
+                           }
+                           else
+                           {
+                               DragOutcome::Moved
+                           });
+            }
+            else
+            {
+                for tick in 3..12
+                {
+                    input::tick(tick);
+                }
+                assert_eq!(ended(&system), DragOutcome::Rejected);
+            }
+            assert!(input::highlight().is_none());
+        });
+    }
+}
+
+#[test]
+fn modifier_change_withdraws_highlight_before_receiver_runs_and_release_can_restore_it()
+{
+    use abi::events::{CMD_KEY, OPTION_KEY};
+    testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        input::receiver(1, 1, WINDOW);
+        let mut builder = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+        builder.empty_item(Rect::ZERO).unwrap();
+        let _source = builder.begin().unwrap();
+        entered(&system).respond(Response::Accept { target:    Target::Content,
+                                                    actions:   DropActions::Move,
+                                                    highlight: Rect::new(20, 40, 60, 90) })
+                        .unwrap();
+        assert!(input::highlight().is_some());
+        input::motion(DROP, OPTION_KEY, WINDOW, 2);
+        assert!(input::highlight().is_none(),
+                "do not wait for an app to remove impossible feedback");
+        let Event::Drag { offer: DragEvent::Tracking(offer),
+                          .. } = system.next_event(EventMask::ALL).unwrap()
+        else
+        {
+            panic!("missing modifier update")
+        };
+        offer.respond(Response::Accept { target:    Target::Content,
+                                         actions:   DropActions::Move,
+                                         highlight: Rect::new(20, 40, 60, 90) })
+             .unwrap();
+        assert!(input::highlight().is_none());
+        input::release(DROP, CMD_KEY, WINDOW, 3);
+        let Event::Drag { offer: DragEvent::Tracking(offer),
+                          .. } = system.next_event(EventMask::ALL).unwrap()
+        else
+        {
+            panic!("missing release update")
+        };
+        offer.respond(Response::Accept { target:    Target::Content,
+                                         actions:   DropActions::Move,
+                                         highlight: Rect::new(20, 40, 60, 90) })
+             .unwrap();
+        let Event::Drag { offer: DragEvent::Dropped(payload),
+                          .. } = system.next_event(EventMask::ALL).unwrap()
+        else
+        {
+            panic!("missing supported release")
+        };
+        assert_eq!(payload.action, DropAction::Move);
+        let mut done = pin!(payload.receive(async { Ok(()) }));
+        assert_eq!(poll(done.as_mut()), Poll::Ready(Ok(())));
+        assert_eq!(ended(&system), DragOutcome::Moved);
+    });
+}
+
+#[test]
+fn mounted_policy_rejects_unimplemented_moves_and_all_readonly_destination_actions()
+{
+    for (read_only, actions, modifiers, accepted) in
+        [(false, DropActions::Move, 0, false),
+         (true, DropActions::Move, 0, false),
+         (true, DropActions::Copy, abi::events::OPTION_KEY, false),
+         // Copy can be implemented by the receiver through ordinary read/write
+         // services. This tests admission only, not a completed file transfer.
+         (false, DropActions::Copy, abi::events::OPTION_KEY, true)]
+    {
+        testing::with_services(|services| {
+            let volume = input::provider_volume(read_only);
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            input::receiver(1, 1, WINDOW);
+            let mut builder =
+                system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            builder.empty_item(Rect::ZERO).unwrap();
+            let source = builder.begin().unwrap();
+            input::motion(DROP, modifiers, WINDOW, 1);
+            let Event::Drag { offer: DragEvent::Tracking(offer),
+                              .. } = system.next_event(EventMask::ALL).unwrap()
+            else
+            {
+                panic!("missing enter")
+            };
+            offer.respond(Response::Accept { target: Target::Folder { volume,
+                                                                      id: files::ROOT_ID },
+                                             actions,
+                                             highlight: Rect::new(20, 40, 60, 90) })
+                 .unwrap();
+            assert_eq!(input::highlight().is_some(), accepted);
+            input::release(DROP, modifiers, WINDOW, 2);
+            if accepted
+            {
+                let Event::Drag { offer: DragEvent::Dropped(payload),
+                                  .. } = system.next_event(EventMask::ALL).unwrap()
+                else
+                {
+                    panic!("missing supported offer")
+                };
+                drop(payload);
+            }
+            for tick in 3..12
+            {
+                input::tick(tick);
+            }
+            assert_eq!(ended(&system), DragOutcome::Rejected);
+            drop(source);
+            assert!(system.next_event(EventMask::ALL).unwrap().is_idle());
+        });
+    }
+}
+
+#[test]
+fn readonly_source_copies_by_default_and_cannot_be_forced_to_move_or_trashed()
+{
+    for (modifiers, trash, accepted) in [(0, false, true),
+                                         (abi::events::CMD_KEY, false, false),
+                                         (abi::events::OPTION_KEY, true, false)]
+    {
+        testing::with_services(|services| {
+            let volume = input::provider_volume(true);
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            input::receiver(1, 1, WINDOW);
+            let mut builder =
+                system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            builder.item(file_item(volume, Cnid(16), files::ROOT_ID, Point::default(), Rect::ZERO))
+                   .unwrap();
+            let _source = builder.begin().unwrap();
+            input::motion(DROP, modifiers, WINDOW, 1);
+            let Event::Drag { offer: DragEvent::Tracking(offer),
+                              .. } = system.next_event(EventMask::ALL).unwrap()
+            else
+            {
+                panic!("missing enter")
+            };
+            let target = if trash
+            {
+                Target::Trash { volume: VolumeId::NONE,
+                                id:     files::ROOT_ID }
+            }
+            else
+            {
+                Target::Content
+            };
+            offer.respond(Response::Accept { target,
+                                             actions: DropActions::CopyOrMove,
+                                             highlight: Rect::new(20, 40, 60, 90) })
+                 .unwrap();
+            assert_eq!(input::highlight().is_some(), accepted);
+            input::release(DROP, modifiers, WINDOW, 2);
+            if accepted
+            {
+                let Event::Drag { offer: DragEvent::Dropped(payload),
+                                  .. } = system.next_event(EventMask::ALL).unwrap()
+                else
+                {
+                    panic!("missing copy")
+                };
+                assert_eq!(payload.action, DropAction::Copy);
+                drop(payload);
+            }
+            for tick in 3..12
+            {
+                input::tick(tick);
+            }
+            assert_eq!(ended(&system), DragOutcome::Rejected);
+        });
+    }
+}
+
+#[test]
+fn atomic_folder_move_negotiation_checks_volume_scope_without_disk_io()
+{
+    struct Disk(std::path::PathBuf);
+    impl Drop for Disk
+    {
+        fn drop(&mut self)
+        {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let source =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/files/dates-2026.hfs");
+    let disk = Disk(std::env::temp_dir().join(format!("drag-target-{}.hfs", std::process::id())));
+    std::fs::copy(source, &disk.0).unwrap();
+    let (_, baseline) =
+        testing::with_file_disk(&disk.0, false, Default::default(), |_| ()).unwrap();
+    for (foreign_source, accepted) in [(false, true), (true, false)]
+    {
+        let (_, activity) =
+            testing::with_file_disk(&disk.0, false, Default::default(), |services| {
+                let system = unsafe { System::from_raw(services) }.unwrap();
+                let target = system.files().volume_at(0).unwrap().id;
+                let volume = if foreign_source { input::provider_volume(false) } else { target };
+                input::receiver(1, 1, WINDOW);
+                let mut builder =
+                    system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+                builder.item(file_item(volume,
+                                       Cnid(16),
+                                       files::ROOT_ID,
+                                       Point::default(),
+                                       Rect::ZERO))
+                       .unwrap();
+                let _source = builder.begin().unwrap();
+                input::motion(DROP, abi::events::CMD_KEY, WINDOW, 1);
+                let Event::Drag { offer: DragEvent::Tracking(offer),
+                                  .. } = system.next_event(EventMask::ALL).unwrap()
+                else
+                {
+                    panic!("missing enter")
+                };
+                offer.respond(Response::Accept { target:    Target::Folder { volume: target,
+                                                                        id:     files::ROOT_ID },
+                                            actions:   DropActions::Move,
+                                            highlight: Rect::new(20, 40, 60, 90) })
+                .unwrap();
+                assert_eq!(input::highlight().is_some(), accepted);
+                input::release(DROP, abi::events::CMD_KEY, WINDOW, 2);
+                if accepted
+                {
+                    let Event::Drag { offer: DragEvent::Dropped(payload),
+                                      .. } = system.next_event(EventMask::ALL).unwrap()
+                    else
+                    {
+                        panic!("missing admitted move")
+                    };
+                    // Admission only: do not mutate the fixture.
+                    drop(payload);
+                }
+                for tick in 3..12
+                {
+                    input::tick(tick);
+                }
+                assert_eq!(ended(&system), DragOutcome::Rejected);
+            }).unwrap();
+        assert_eq!(activity.reads, baseline.reads, "negotiation did device I/O");
+        assert_eq!(activity.writes, 0);
+        assert_eq!(activity.flushes, 0);
     }
 }

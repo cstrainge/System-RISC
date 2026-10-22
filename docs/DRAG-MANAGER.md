@@ -21,8 +21,27 @@ thread without granting data access there. Queue peeks return non-owning
 `EventSnapshot` metadata and never obtain/release a protocol capability. Finder
 additionally scopes its source owner to dispatch success, so a failed file
 operation disposes it before opening an alert. Modal UI cannot consume lifecycle
-cleanup. Native physical acceptance repeats two failing copy drops with alerts,
-then performs successful single/group drags and Escape in the same Finder run.
+cleanup. Native physical acceptance rejects two unsupported forced copies before
+drop, repeats two lawful moves that fail on a destination name collision with
+alerts, then performs successful single/group drags and Escape in the same run.
+
+Accepting responses declare `DropActions::{Copy, Move, CopyOrMove}`. System
+resolves the action against current modifiers during tracking and again at
+release. A receiver's missing action never silently coerces the user's request.
+Changing to an unsupported modifier removes the highlight before the application
+handles its next offer. Answered rejection is distinct from an outstanding
+response, so mouse-up after rejection completes without waiting forever.
+Finder also ends its double-click sequence after any actual drag, including a
+rejected or cancelled one; an immediate retry cannot launch the dragged app.
+
+Folder/Trash intent also checks the resident File Manager's operation readiness.
+The current atomic catalog move preserves volume identity: forced cross-volume
+moves and provider mounts without that operation reject during negotiation. The
+query reads mount state only; tests assert zero device I/O, and pointer-policy
+decisions use source-volume metadata frozen at begin rather than walking items.
+This prevents a false accepted drop; it does **not** complete the writable host
+provider contract. That provider still owes full metadata/rename/move/remove and
+transactional group support. Read-only mounts still owe the complete read API.
 
 Native `TEXT` is UTF-8. Original `TEXT` sizes, reads and set offsets use MacRoman;
 conversion is counted bytes, without a Pascal-string length limit. Unrepresentable

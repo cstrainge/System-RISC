@@ -498,6 +498,15 @@ Native TEXT is UTF-8. The classic boundary converts counted MacRoman TEXT,
 including classic byte sizes and partial-read/set offsets, through the same
 resident data. See [the compatibility inventory](docs/DRAG-MANAGER.md).
 
+Native ACCEPT flags are acceptance=1, Trash=2, Copy supported=4, Move supported=8.
+An accepting response must name at least one supported action. Folder/Trash
+admission also attaches same-volume-move=16 for the File Manager's current atomic
+catalog operation. Unsupported actions and read-only destinations record a
+rejection, without a highlight or drop delivery. Modifier changes recompute
+eligibility; physical release freezes the final modifiers. Explicitly answered
+rejection is separate from an unanswered offer, so release cannot wait for an
+answer already received. Rebuild all native clients together for this contract.
+
 ## Native kernel module contracts (DABI/EABI, schema 1)
 
 A driver has Finder type `DRVR`, exactly one native `DRVR` entry resource and one

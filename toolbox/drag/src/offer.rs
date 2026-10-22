@@ -9,6 +9,27 @@ pub enum DropAction
     Copy,
     Move
 }
+/// Actions the receiver implements. The manager chooses from current physical
+/// state; a response never coerces a forced copy into a move (or the reverse).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropActions
+{
+    Copy,
+    Move,
+    CopyOrMove
+}
+impl DropActions
+{
+    const fn flags(self) -> u32
+    {
+        match self
+        {
+            Self::Copy => wire::ACCEPT_COPY,
+            Self::Move => wire::ACCEPT_MOVE,
+            Self::CopyOrMove => wire::ACCEPT_COPY | wire::ACCEPT_MOVE
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DragOutcome
 {
@@ -46,6 +67,9 @@ pub enum Response
     Accept
     {
         target:    Target,
+        /// Willingness, not a forced action. The manager also validates mounted
+        /// filesystem support; an unsupported action records a normal rejection.
+        actions:   DropActions,
         highlight: Rect
     }
 }
@@ -175,15 +199,17 @@ impl<'a> TrackingOffer<'a>
         {
             Response::Reject => (0, 0, 0, Rect::default()),
             Response::Accept { target,
+                               actions,
                                highlight } =>
             {
+                let flags = 1 | actions.flags();
                 match target
                 {
                     Target::Folder { volume,
-                                     id } => (1, volume.0, id.0, highlight),
+                                     id } => (flags, volume.0, id.0, highlight),
                     Target::Trash { volume,
-                                    id } => (1 | wire::TARGET_TRASH, volume.0, id.0, highlight),
-                    Target::Content => (1, 0, 0, highlight)
+                                    id } => (flags | wire::TARGET_TRASH, volume.0, id.0, highlight),
+                    Target::Content => (flags, 0, 0, highlight)
                 }
             }
         };
