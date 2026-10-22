@@ -36,7 +36,8 @@ fn run(system: &System<'_>) -> Result<(), Error>
     system.log("QUICKDRAW_TEST_READY\n")?;
     loop
     {
-        let event = system.wait_event(mac_toolbox::events::EventMask::ALL, 30)?;
+        let (event, position) =
+            system.wait_positioned(mac_toolbox::events::EventMask::ALL, 30)?.into_parts();
         if let Some(selection) = system.menus().selection(&event)?
         {
             if [CLOSE, QUIT].contains(&selection.command)
@@ -92,12 +93,10 @@ fn run(system: &System<'_>) -> Result<(), Error>
         }
         if matches!(event, Event::MouseDown { .. }) && event.window().unwrap_or_default() == window
         {
-            let bounds = system.window(window)?.bounds;
-            let local = Point { h: event.input().at.h - bounds.left,
-                                v: event.input().at.v - bounds.top };
+            let local = position.in_window(window)?;
             for (index, id) in selectors.into_iter().enumerate()
             {
-                if system.controls().control(id).track(local, |_| {
+                if system.controls().control(id).track_at(local, |_| {
                                                      page = index as u8;
                                                      redraw = true;
                                                      Ok(())

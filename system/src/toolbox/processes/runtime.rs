@@ -43,13 +43,14 @@ impl Desktop
 {
     pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
     {
+        let position = self.event_position(notice.event, notice.owner);
         if notice.owner == self.owner
         {
-            self.events.post_drag(notice.event);
+            self.events.post_drag(notice.event, position);
         }
         else if let Some(local) = self.locals.iter_mut().find(|s| s.id == notice.owner)
         {
-            local.events.post_drag(notice.event);
+            local.events.post_drag(notice.event, position);
         }
     }
 
@@ -238,7 +239,7 @@ impl Desktop
     pub fn route_events(&mut self)
     {
         let mut retained = Vec::new();
-        while let Some(event) = self.events.next_system()
+        while let Some((event, _)) = self.events.next_system()
         {
             let id = match event.kind
             {
@@ -264,18 +265,19 @@ impl Desktop
                                  event.kind as u64,
                                  event.message as u64,
                                  event.modifiers as u64);
+            let position = self.event_position(event, target);
             if target == self.owner
             {
-                retained.push(event);
+                retained.push((event, position));
             }
             else if let Some(saved) = self.locals.iter_mut().find(|s| s.id == target)
             {
-                saved.events.post(event);
+                saved.events.post_positioned(event, position);
             }
         }
-        for event in retained
+        for (event, position) in retained
         {
-            self.events.post(event);
+            self.events.post_positioned(event, position);
         }
         self.window_owners.retain(|(id, _)| self.windows.window(*id).is_some());
     }

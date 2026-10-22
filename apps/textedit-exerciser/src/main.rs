@@ -25,7 +25,8 @@ fn run(system: &System<'_>) -> Result<(), Error>
     system.log("TEXTEDIT_EXERCISER_READY\n")?;
     loop
     {
-        let event = system.wait_event(mac_toolbox::events::EventMask::ALL, 30)?;
+        let (event, position) =
+            system.wait_positioned(mac_toolbox::events::EventMask::ALL, 30)?.into_parts();
         if let Some(selection) = system.menus().selection(&event)?
         {
             if [u32::from_be_bytes(*b"clos"), u32::from_be_bytes(*b"quit")].contains(&selection.command)
@@ -46,7 +47,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
             }
             continue;
         }
-        editor.event(system, &event)?;
+        editor.event(system, &event, position)?;
         if editor.window == WindowId(0)
         {
             return Ok(());

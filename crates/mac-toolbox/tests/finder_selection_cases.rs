@@ -62,6 +62,121 @@ fn input(at: Point, when: u32, shift: bool) -> Input
             when,
             modifiers: if shift { Modifiers::SHIFT } else { Modifiers::from_bits_retain(0) } }
 }
+fn pointer_click(system: &System<'_>, browser: &mut Browser, event: &Event) -> Result<(), Error>
+{
+    browser.click(system, event, system.events().locate(event)?)
+}
+fn pointer_track(system: &System<'_>, browser: &mut Browser, event: &Event) -> Result<(), Error>
+{
+    browser.track(system, event, system.events().locate(event)?)
+}
+
+fn verify_positions(system: &System<'_>) -> Result<(), Error>
+{
+    let mut window =
+        system.windows()
+              .create_owned(windows::WindowSpec::new(Rect::new(100, 100, 300, 240),
+                                                     "Input coordinates").procedure(4))?;
+    let id = window.id();
+    let event = Event::MouseDown { window: Some(id),
+                                   input:  input(Point { h: 125,
+                                                         v: 135 },
+                                                 88,
+                                                 true) };
+    let record = event.as_record();
+    system.events().post(event)?;
+    let first = system.events().peek_positioned(EventMask::MOUSE_DOWN)?.ok_or(Error::NotFound)?;
+    let again = system.events().peek_positioned(EventMask::MOUSE_DOWN)?.ok_or(Error::NotFound)?;
+    require(system,
+            first.event().into_record() == record && first.position() == again.position(),
+            "coordinate peek changed input")?;
+    let (received, position) = system.next_positioned(EventMask::MOUSE_DOWN)?.into_parts();
+    require(system,
+            received.as_record() == record
+            && position.screen().point() == record.where_
+            && position.in_window(id)?.point()?
+               == (Point { h: 25,
+                           v: 35 }),
+            "incorrect event coordinate spaces")?;
+    let other = system.windows()
+                      .create_owned(windows::WindowSpec::new(Rect::new(150, 150, 350, 290),
+                                                             "Other coordinates").procedure(4))?;
+    let button = system.controls()
+                       .create_standard(other.id(),
+                                        controls::StandardKind::Button,
+                                        controls::StandardState { bounds: Rect::new(10, 10, 80, 30),
+                                                                  enabled: 1,
+                                                                  ..Default::default() })?;
+    require(system,
+            button.control().track_at(position.in_window(id)?, |_| Ok(()))
+            == Err(Error::BadArgument),
+            "control accepted another window's position")?;
+    drop(button);
+    drop(other);
+    let outside = Event::MouseDown { window: Some(id),
+                                     input:  input(Point { h: i16::MIN,
+                                                           v: 0 },
+                                                   89,
+                                                   false) };
+    require(system,
+            system.events().locate(&outside)?.in_window(id)?.point() == Err(Error::BadArgument),
+            "local coordinate overflow wrapped")?;
+    // Leave a click queued while the transport moves the window. Delivery must
+    // preserve the original local position rather than using the new origin.
+    system.events().post(Event::from(record))?;
+    system.log("DESKTOP_READY: positioned event fixture\nEVENT_COORDINATES_MOVE_READY\n")?;
+    loop
+    {
+        if matches!(system.wait_event(EventMask::KEY_DOWN, 30)?, Event::KeyDown { .. })
+        {
+            break;
+        }
+    }
+    let moved = system.window(id)?.bounds;
+    let (_, captured) = system.next_positioned(EventMask::MOUSE_DOWN)?.into_parts();
+    require(system,
+            moved.left == 140
+            && moved.top == 140
+            && captured.in_window(id)?.point()?
+               == (Point { h: 25,
+                           v: 35 }),
+            "queued click used delivery-time geometry")?;
+    require(system,
+            system.events().locate(&Event::from(record))?.in_window(id)?.point()?
+            == (Point { h: -15,
+                        v: -5 }),
+            "synthetic projection did not use current geometry")?;
+    // Original native consumers still read the exact global EventRecord.
+    system.events().post(Event::from(record))?;
+    require(system,
+            system.next_event(EventMask::MOUSE_DOWN)?.as_record() == record,
+            "old native input changed")?;
+    system.events().post(Event::from(record))?;
+    window.close()?;
+    let replacement =
+        system.windows().create_owned(windows::WindowSpec::new(Rect::new(120, 120, 320, 260),
+                                                                "Replacement").procedure(4))?;
+    let (_, stale) = system.next_positioned(EventMask::MOUSE_DOWN)?.into_parts();
+    require(system,
+            replacement.id() != id
+            && stale.window().is_none()
+            && stale.in_window(replacement.id()) == Err(Error::NotFound),
+            "stale event acquired a reused window")?;
+    require(system,
+            matches!(system.events().input_in(id), Err(Error::NotFound)),
+            "disposed coordinate query succeeded")?;
+    let foreign = Event::MouseDown { window: Some(WindowId(u32::MAX)),
+                                     input:  input(Point { h: 125,
+                                                           v: 135 },
+                                                   90,
+                                                   false) };
+    require(system,
+            system.events().locate(&foreign)?.window().is_none(),
+            "foreign coordinate query leaked a window")?;
+    drop(replacement);
+    system.log("EVENT_COORDINATES_USERSPACE_PASS\n")
+}
+
 fn checkpoint(system: &System<'_>, stage: &str) -> Result<(), Error>
 {
     system.log("FINDER_SELECTION_STAGE ")?;
@@ -130,6 +245,7 @@ fn action(system: &System<'_>, browser: &mut Browser, label: &str, count: usize,
 }
 pub fn run(system: &System<'_>) -> Result<(), Error>
 {
+    verify_positions(system)?;
     let code = system.resources().application().get(ResourceKey { kind: TypeCode::new(*b"RV64"),
                                                                    id:   0 })?;
     let stored = code.size();
@@ -196,7 +312,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
                 v: bounds.top + v }
     };
     let click = |browser: &mut Browser, h, v, when, shift| {
-        browser.click(system,
+        pointer_click(system,
+                      browser,
                       &Event::MouseDown { window: Some(lab),
                                           input:  input(point(h, v), when, shift) })
     };
@@ -226,7 +343,7 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
             Event::Idle { input: input(point(h, v), when, false),
                           tag:   0 }
         };
-        browser.track(system, &event)
+        pointer_track(system, browser, &event)
     };
     action(system, &mut browser, "marquee-three", 3, false, |browser| {
         move_band(browser, 182, 76, 501, false)
@@ -284,7 +401,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
         }
         info.event(system,
                    &Event::Idle { input: input(Point::default(), 4000, false),
-                                  tag:   0 })?;
+                                  tag:   0 },
+                   PointerPosition::default())?;
         system.next_event(EventMask::from_bits_retain(0))?;
     }
     require(system, !info.pending(), "multiple info did not finish bounded totals")?;
@@ -352,7 +470,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     for (name, when, noop) in [("wrapped-last-line", 5100, false), ("wrapped-noop", 5200, true)]
     {
         action(system, &mut browser, name, 1, noop, |browser| {
-            browser.click(system,
+            pointer_click(system,
+                          browser,
                           &Event::MouseDown { window: Some(wrapped_window),
                                               input:  input(last_line, when, false) })
         })?;
@@ -362,12 +481,14 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     // rather than disappearing between the watch notification and cache fill.
     browser.folder_changed(system, wrapped_window)?;
     action(system, &mut browser, "wrapped-refresh-press", 0, true, |browser| {
-        browser.click(system,
+        pointer_click(system,
+                      browser,
                       &Event::MouseDown { window: Some(wrapped_window),
                                           input:  input(last_line, 5400, false) })
     })?;
     action(system, &mut browser, "wrapped-refresh-release", 0, true, |browser| {
-        browser.track(system,
+        pointer_track(system,
+                      browser,
                       &Event::MouseUp { window: Some(wrapped_window),
                                         input:  input(last_line, 5401, false) })
     })?;
@@ -375,7 +496,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     require(system, browser.selection_count() == 1, "refresh lost a physical click")?;
     checkpoint(system, "wrapped-refreshed")?;
     let desktop_click = |browser: &mut Browser, at, when, shift| {
-        browser.click(system,
+        pointer_click(system,
+                      browser,
                       &Event::MouseDown { window: None,
                                           input:  input(at, when, shift) })
     };
@@ -406,18 +528,21 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     let band_end = Point { h: 630,
                            v: 474 };
     action(system, &mut browser, "desktop-band-trash", 1, false, |browser| {
-        browser.track(system,
+        pointer_track(system,
+                      browser,
                       &Event::Idle { input: input(band_end, 6201, false),
                                      tag:   0 })
     })?;
     checkpoint(system, "desktop-band-trash")?;
     action(system, &mut browser, "desktop-band-stationary", 1, true, |browser| {
-        browser.track(system,
+        pointer_track(system,
+                      browser,
                       &Event::Idle { input: input(band_end, 6202, false),
                                      tag:   0 })
     })?;
     action(system, &mut browser, "desktop-band-cancel", 0, false, |browser| {
-        browser.track(system,
+        pointer_track(system,
+                      browser,
                       &Event::from(abi::events::Event { payload:   0,
                                                         kind:      abi::events::EventKind::KeyDown,
                                                         message:   0x351b,
@@ -437,7 +562,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     let before = COMMITS.load(Ordering::Relaxed);
     for step in 0..2000
     {
-        browser.track(system,
+        pointer_track(system,
+                      &mut browser,
                       &Event::Idle { input: input(Point { h: 570 + (step % 60) as i16,
                                                           v: 474 },
                                                   6301 + step,
@@ -448,7 +574,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     require(system,
             COMMITS.load(Ordering::Relaxed) == before,
             "desktop outline rebuilt retained drawing")?;
-    browser.track(system,
+    pointer_track(system,
+                  &mut browser,
                   &Event::MouseUp { window: None,
                                     input:  input(band_end, 8401, false) })?;
     require(system, browser.selection_count() == 2, "desktop marquee lost base selection")?;
@@ -457,7 +584,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
         desktop_click(browser, root_point, 8500, false)
     })?;
     action(system, &mut browser, "desktop-selected-release", 1, false, |browser| {
-        browser.track(system,
+        pointer_track(system,
+                      browser,
                       &Event::MouseUp { window: None,
                                         input:  input(root_point, 8501, false) })
     })?;

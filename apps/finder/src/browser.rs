@@ -32,7 +32,7 @@ struct FolderWindow
     scroll:         i16,
     scroll_h:       i16,
     scrollbars:     [controls::ControlId; 2],
-    pending_clicks: [Option<mac_toolbox::events::classic::Event>; 8]
+    pending_clicks: [Option<(mac_toolbox::events::classic::Event, PointerPosition)>; 8]
 }
 #[derive(Clone, Copy)]
 struct IconPress
@@ -557,15 +557,16 @@ impl Browser
                 self.repaint_snapshot(system, slot)?;
                 let pending =
                     core::mem::take(&mut self.windows[slot].as_mut().unwrap().pending_clicks);
-                for event in pending.into_iter().flatten().map(Event::from)
+                for (event, position) in pending.into_iter().flatten()
                 {
+                    let event = Event::from(event);
                     if matches!(event, Event::MouseDown { .. })
                     {
-                        self.click(system, &event)?;
+                        self.click(system, &event, position)?;
                     }
                     else
                     {
-                        self.track(system, &event)?;
+                        self.track(system, &event, position)?;
                     }
                 }
                 if cache::edit(slot, |folder| core::mem::take(&mut folder.notify_changed))
@@ -1301,7 +1302,8 @@ impl Browser
         result
     }
 
-    pub fn click(&mut self, system: &System<'_>, event: &Event) -> Result<(), Error>
+    pub fn click(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
+                 -> Result<(), Error>
     {
         self.press = None;
         self.marquee = None;
@@ -1324,30 +1326,32 @@ impl Browser
             let window = self.windows[slot].unwrap();
             self.front = window.window;
             let bounds = cache::with(slot, |folder| folder.frame);
-            let p = Point { h: event.input().at.h - bounds.left,
-                            v: event.input().at.v - bounds.top };
+            let p = position.in_window(window.window)?.point()?;
             if p.h >= bounds.right - bounds.left - icon_view::SCROLLBAR
                || p.v >= bounds.bottom - bounds.top - icon_view::SCROLLBAR
             {
                 for (index, id) in window.scrollbars.into_iter().enumerate()
                 {
-                    if system.controls().control(id).track(p, |action| {
-                                                         if let Some(folder) =
-                                                             self.windows[slot].as_mut()
-                                                         {
-                                                             if index == 1
-                                                             {
-                                                                 folder.scroll_h =
-                                                                     action.scrollbar.value;
-                                                             }
-                                                             else
-                                                             {
-                                                                 folder.scroll =
-                                                                     action.scrollbar.value;
-                                                             }
-                                                         }
-                                                         self.draw(system, window.window)
-                                                     })?
+                    if system.controls().control(id).track_at(position.in_window(window.window)?,
+                                                               |action| {
+                                                                   if let Some(folder) =
+                                                                       self.windows[slot].as_mut()
+                                                                   {
+                                                                       if index == 1
+                                                                       {
+                                                                           folder.scroll_h =
+                                                                               action.scrollbar
+                                                                                     .value;
+                                                                       }
+                                                                       else
+                                                                       {
+                                                                           folder.scroll =
+                                                                               action.scrollbar
+                                                                                     .value;
+                                                                       }
+                                                                   }
+                                                                   self.draw(system, window.window)
+                                                               })?
                     {
                         break;
                     }
@@ -1362,7 +1366,7 @@ impl Browser
                 let pending = &mut self.windows[slot].as_mut().unwrap().pending_clicks;
                 let next =
                     pending.iter_mut().find(|click| click.is_none()).ok_or(Error::NoMemory)?;
-                *next = Some(event.as_record());
+                *next = Some((event.as_record(), position));
                 return Ok(());
             }
             let mut hit = None;
@@ -1401,7 +1405,7 @@ impl Browser
                     next = Selection::singleton(index);
                 }
                 self.press = next.contains(index).then_some(IconPress { entry:  item.location(),
-                                            anchor: event.input().at,
+                                            anchor: position.screen().point(),
                                             collapse:(!shift && window.selected.contains(index) && window.selected.len()>1).then_some((slot,index)) });
             }
             else
@@ -1539,7 +1543,8 @@ impl Browser
         Ok(())
     }
 
-    pub fn track(&mut self, system: &System<'_>, event: &Event) -> Result<(), Error>
+    pub fn track(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
+                 -> Result<(), Error>
     {
         if self.track_desktop(system, event)?
         {
@@ -1554,7 +1559,7 @@ impl Browser
                                  .iter_mut()
                                  .find(|event| event.is_none())
                                  .ok_or(Error::NoMemory)?;
-                *next = Some(event.as_record());
+                *next = Some((event.as_record(), position));
                 return Ok(());
             }
             if matches!(event, Event::KeyDown { .. })
@@ -1566,7 +1571,7 @@ impl Browser
         }
         if self.marquee.is_some()
         {
-            return self.track_marquee(system, event);
+            return self.track_marquee(system, event, position);
         }
         if let Some(press) = self.press
            && matches!(event, Event::MouseUp { .. })
@@ -1580,7 +1585,8 @@ impl Browser
         Ok(())
     }
 
-    fn track_marquee(&mut self, system: &System<'_>, event: &Event) -> Result<(), Error>
+    fn track_marquee(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
+                     -> Result<(), Error>
     {
         let marquee = self.marquee.unwrap();
         let Some(window) = self.windows[marquee.slot]
@@ -1600,14 +1606,14 @@ impl Browser
             return Ok(());
         }
         let frame = cache::with(marquee.slot, |folder| folder.frame);
-        let point = Point { h: (event.input().at.h - frame.left).clamp(0,
-                                                                       frame.right
-                                                                       - frame.left
-                                                                       - icon_view::SCROLLBAR),
-                            v: (event.input().at.v - frame.top).clamp(icon_view::INFO_HEIGHT,
-                                                                      frame.bottom
-                                                                      - frame.top
-                                                                      - icon_view::SCROLLBAR) };
+        let local = position.in_window(window.window)?;
+        let point =
+            Point { h: local.h()
+                            .clamp(0, i32::from(frame.right - frame.left - icon_view::SCROLLBAR))
+                       as i16,
+                    v: local.v().clamp(i32::from(icon_view::INFO_HEIGHT),
+                                       i32::from(frame.bottom - frame.top - icon_view::SCROLLBAR))
+                       as i16 };
         let band = Rect::new(marquee.anchor.h.min(point.h),
                              marquee.anchor.v.min(point.v),
                              marquee.anchor.h.max(point.h),

@@ -334,7 +334,8 @@ impl Viewer
     }
 
     /// Read-only document input. Loaded CDEF1 owns all scrollbar hit/drag math.
-    pub fn event(&mut self, system: &System<'_>, event: &Event) -> Result<bool, Error>
+    pub fn event(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
+                 -> Result<bool, Error>
     {
         if self.window == WindowId(0)
         {
@@ -349,8 +350,7 @@ impl Viewer
         let window = system.window(self.window)?;
         let width = window.bounds.right - window.bounds.left;
         let height = window.bounds.bottom - window.bounds.top;
-        let point = Point { h: event.input().at.h - window.bounds.left,
-                            v: event.input().at.v - window.bounds.top };
+        let point = position.in_window(window.id)?.point()?;
         let limits = self.limits(width, height);
         if let Some(index) = self.tracking
            && matches!(event, Event::Idle { .. } | Event::MouseUp { .. } | Event::Activate { .. })

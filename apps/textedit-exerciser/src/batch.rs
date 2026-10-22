@@ -41,7 +41,7 @@ pub fn keyboard(system: &System<'_>, editor: &mut editor::Editor, first: Event)
         // menu query or repaint. Mutation order otherwise remains unchanged.
         if !matches!(event, Event::KeyUp { .. })
         {
-            editor.event(system, event)?;
+            editor.event(system, event, PointerPosition::default())?;
             keys += 1;
         }
     }

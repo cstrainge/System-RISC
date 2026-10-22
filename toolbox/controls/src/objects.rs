@@ -207,13 +207,33 @@ impl ControlRef<'_>
 
     /// Track without consuming queued app events. Other apps remain runnable.
     /// The callback runs only for actions, outside the resident manager borrow.
-    pub fn track(self, anchor: Point, mut action: impl FnMut(ControlInfo) -> Result<()>)
+    pub fn track(self, anchor: Point, action: impl FnMut(ControlInfo) -> Result<()>)
                  -> Result<bool>
+    {
+        self.track_in(anchor, 0, action)
+    }
+
+    /// Track a System-captured local point. The resident manager checks that
+    /// its complete WindowId matches this control before changing any state.
+    pub fn track_at(self, anchor: mac_traps::coordinates::WindowPoint,
+                    action: impl FnMut(ControlInfo) -> Result<()>)
+                    -> Result<bool>
+    {
+        self.track_in(anchor.point()?, anchor.window().0, action)
+    }
+
+    fn track_in(self, anchor: Point, window: u32,
+                mut action: impl FnMut(ControlInfo) -> Result<()>)
+                -> Result<bool>
     {
         let mut input = EventCall { operation: INPUT_STATE,
                                     ..Default::default() };
         self.client.event(&mut input)?;
-        let mut state = self.begin_tracking(anchor, input.uptime_ticks)?;
+        let mut state = self.call(ControlCall { operation: BEGIN_TRACKING,
+                                                point: anchor,
+                                                window,
+                                                ticks: input.uptime_ticks,
+                                                ..Default::default() })?;
         let handled = state.handled;
         if !handled
         {

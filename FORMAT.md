@@ -422,6 +422,23 @@ HFS-B writes preserve the complete microsecond value.
 Resource STRING operation10 decodes STR or zero-based STR# to UTF8; only the
 paired Pascal Resource trap returns a Pascal/MacRoman result.
 
+## Native positioned events (additive ABI8 service)
+
+POSITIONED_EVENT0x10023 uses `events::PositionedEventCall` for NEXT=0, WAIT=1,
+PEEK=2, INPUT=3 and LOCATE=4. It returns the original Event plus EventPosition
+(u32 complete window ID, i32 horizontal and vertical content coordinates).
+Window zero means no available owned local position. INPUT can name an explicitly
+owned live window for capture outside its bounds; LOCATE projects a supplied
+record against current geometry. NEXT/WAIT/PEEK preserve positions captured when
+native input is queued, including through owner routing and drag coalescing.
+Disposal/reuse withdraws the old local identity. Differences are calculated in
+32 bits; Rust checks conversion to 16-bit QuickDraw geometry.
+
+WAIT uses the existing scheduler's mask/timeout behavior and a `waited` transport
+flag followed by repoll after resumption. PEEK is non-owning and never constructs
+a drag capability. No ABI version, existing request layout, native Event/Input
+shape, or classic 16-byte EventRecord changes for this additive interface.
+
 ## Monochrome TextEdit (ABI5 independent service)
 
 TEXTEDIT0x1001b borrows a `TextEditCall`, optional UTF8 input and output scratch

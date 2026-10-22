@@ -23,6 +23,21 @@ null-event tag), so pointer-motion wakes and caret work require no extra trap.
 Peek remains Option because queue presence is observable, including posted idle
 records. Original OS queues retain their full records under `events::classic`.
 
+Native UI input uses `next_positioned` / `wait_positioned`, returning an owned
+event and a `PointerPosition` together. `position.in_window(window)?` yields a
+`WindowPoint` tied to that complete window identity; `position.screen()` yields
+a distinct `ScreenPoint`. Neither implicitly converts into the other. Local
+coordinates are relative to window content and can lie outside it during capture;
+conversion to QuickDraw `Point` checks the 16-bit range. Managed controls accept
+`track_at(WindowPoint, ...)` and validate the window in System before tracking.
+Applications no longer subtract a cached screen origin to interpret clicks.
+
+This interface is deliberately additive (user ruling, 2026-10-21): existing
+Event/Input constructors, global-coordinate `next`/`wait_event`, classic traps
+and binary request layouts remain supported. `locate(&event)` is an explicit
+bridge for synthetic/existing events and uses current geometry; normal input
+uses positioned delivery to retain input-time geometry with no extra trap.
+
 Clients and owners are deliberately thread-mobile. Shared resident managers own
 synchronization; service entry derives trusted caller identities. Mobility is
 not an ownership transfer or permission to operate another application's objects.

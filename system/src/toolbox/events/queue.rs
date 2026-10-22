@@ -5,6 +5,7 @@ pub struct EventManager
 {
     queue:         [Event; 128],
     routed:        [bool; 128],
+    positions:     [EventPosition; 128],
     len:           usize,
     os_queue:      [Event; 20],
     os_len:        usize,
@@ -27,6 +28,7 @@ impl EventManager
     {
         Self { queue:     [Event::default(); 128],
                routed:    [false; 128],
+               positions: [EventPosition::default(); 128],
                len:       0,
                os_queue:  [Event::default(); 20],
                os_len:    0,
@@ -46,7 +48,7 @@ impl EventManager
     /// Coalesce adjacent within notifications, preserving all enter/leave/drop
     /// ordering. Physical motion must not flood a receiver's bounded queue.
     #[cfg(target_arch = "riscv64")]
-    pub(crate) fn post_drag(&mut self, event: Event)
+    pub(crate) fn post_drag(&mut self, event: Event, position: EventPosition)
     {
         if event.message & 0xff00_0000 == mac_abi::drag::WITHIN_EVENT && self.len != 0
         {
@@ -57,10 +59,17 @@ impl EventManager
                && !self.routed[self.len - 1]
             {
                 *last = event;
+                self.positions[self.len - 1] = position;
                 return;
             }
         }
-        self.post(event);
+        self.post_positioned(event, position);
+    }
+
+    pub fn post_positioned(&mut self, event: Event, position: EventPosition)
+    {
+        self.push(event, false);
+        self.positions[self.len - 1] = position;
     }
 
     /// Only trusted Window Manager/input paths may request owner routing. Public
@@ -72,10 +81,11 @@ impl EventManager
     }
 
     #[cfg(target_arch = "riscv64")]
-    pub(crate) fn next_system(&mut self) -> Option<Event>
+    pub(crate) fn next_system(&mut self) -> Option<(Event, EventPosition)>
     {
         let index = self.routed[..self.len].iter().position(|routed| *routed)?;
-        Some(self.remove(index))
+        let position = self.positions[index];
+        Some((self.remove(index), position))
     }
 
     fn remove(&mut self, index: usize) -> Event
@@ -83,6 +93,7 @@ impl EventManager
         let event = self.queue[index];
         self.queue.copy_within(index + 1..self.len, index);
         self.routed.copy_within(index + 1..self.len, index);
+        self.positions.copy_within(index + 1..self.len, index);
         self.len -= 1;
         event
     }
@@ -93,10 +104,12 @@ impl EventManager
         {
             self.queue.copy_within(1..self.len, 0);
             self.routed.copy_within(1..self.len, 0);
+            self.positions.copy_within(1..self.len, 0);
             self.len -= 1;
             self.dropped = self.dropped.saturating_add(1);
         }
         self.queue[self.len] = event;
+        self.positions[self.len] = EventPosition::default();
         self.routed[self.len] = routed;
         self.len += 1;
     }
@@ -110,6 +123,18 @@ impl EventManager
     pub fn peek_matching(&self, mask: u16) -> Option<Event>
     {
         self.queue[..self.len].iter().find(|e| e.matches(mask)).copied()
+    }
+
+    pub fn positioned_matching(&mut self, mask: u16, remove: bool)
+                               -> Option<(Event, EventPosition)>
+    {
+        let index = self.queue[..self.len].iter().position(|event| event.matches(mask))?;
+        let result = (self.queue[index], self.positions[index]);
+        if remove
+        {
+            self.remove(index);
+        }
+        Some(result)
     }
 
     /// Remove matching entries strictly before the first stopping entry.
@@ -132,6 +157,15 @@ impl EventManager
             {
                 index += 1;
             }
+        }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn position_last(&mut self, position: EventPosition)
+    {
+        if self.len != 0
+        {
+            self.positions[self.len - 1] = position;
         }
     }
 

@@ -109,6 +109,12 @@ Committed window moves/resizes send the owning application a native
 its cached screen transform on that notification; pointer hit tests remain
 cache-only. Moving retained content does not require an Update or a full folder
 repaint, and cancelled title drags leave the cached transform unchanged.
+Native applications use the additive positioned-event service for input:
+System captures screen and window-content coordinates together at queueing and
+preserves them through routing/coalescing. Local points carry the complete window
+ID and lose their usable local identity after disposal. Idle and captured input
+sampling use current owned-window geometry. Existing native Event/Input records,
+poll/wait calls and the classic global-coordinate EventRecord remain unchanged.
 
 Most manager logic forbids unsafe code. Unsafe operations are concentrated in
 loader/entry adapters, hardware access, raw trap payload handling, resource-entry

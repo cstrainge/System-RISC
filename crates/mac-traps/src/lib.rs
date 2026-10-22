@@ -4,6 +4,7 @@ use mac_abi::{traps::*, *};
 
 mod error;
 pub mod types;
+pub mod coordinates;
 pub use error::Error;
 pub use types::{Cnid, MenuId, ProcessId, ThreadId, TypeCode, VolumeId};
 pub type Result<T> = core::result::Result<T, Error>;
@@ -200,6 +201,19 @@ impl<'a> Client<'a>
                                        ..Default::default() };
         status(self.invoke(WAIT_EVENT, &mut call))?;
         if call.waited != 0 { self.next_event(mask) } else { Ok(call.event) }
+    }
+
+    /// Additive event transport; original event requests keep their layouts.
+    pub fn positioned_event(self, call: &mut events::PositionedEventCall) -> Result<()>
+    {
+        status(self.invoke(POSITIONED_EVENT, call))?;
+        if call.waited != 0
+        {
+            call.operation = events::POSITION_NEXT;
+            call.timeout_ticks = 0;
+            status(self.invoke(POSITIONED_EVENT, call))?;
+        }
+        Ok(())
     }
 
     pub fn event(self, call: &mut events::EventCall) -> Result<()>

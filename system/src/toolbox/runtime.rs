@@ -1864,6 +1864,13 @@ impl Desktop
 
     fn next_with_presence(&mut self, mask: u16, remove: bool) -> (Event, bool)
     {
+        let (event, _, available) = self.next_positioned(mask, remove, false);
+        (event, available)
+    }
+
+    pub(super) fn next_positioned(&mut self, mask: u16, remove: bool, positioned: bool)
+                                  -> (Event, mac_abi::events::EventPosition, bool)
+    {
         self.cursor_dirty |= self.responsiveness.foreground(self.foreground, Self::when());
         self.cursor_dirty |= self.responsiveness.polled(self.owner, Self::when());
         self.poll_inputs();
@@ -1871,16 +1878,9 @@ impl Desktop
         self.route_events();
         let mut synthetic = false;
         let event =
-            (if remove
-            {
-                self.events.next_matching(mask)
-            }
-            else
-            {
-                self.events.peek_matching(mask)
-            }).or_else(|| {
+            self.events.positioned_matching(mask, remove).or_else(|| {
                   synthetic = true;
-                  if mask & (1 << EventKind::Update as u16) != 0
+                  let event = if mask & (1 << EventKind::Update as u16) != 0
                   {
                       if self.dialogs.active()
                       {
@@ -1895,10 +1895,29 @@ impl Desktop
                   else
                   {
                       None
-                  }
+                  };
+                  event.map(|event| (event, if positioned { self.event_position(event, self.owner) } else { Default::default() }))
               });
         let available = event.is_some();
-        let event = event.unwrap_or_else(|| self.events.null_event(when));
+        let (event, mut position) = event.unwrap_or_else(|| {
+                                             let event = self.events.null_event(when);
+                                             (event,
+                                              if positioned
+                                              {
+                                                  self.event_position(event, self.owner)
+                                              }
+                                              else
+                                              {
+                                                  Default::default()
+                                              })
+                                         });
+        // Disposal/reuse never transfers a queued coordinate to another object.
+        if position.window != 0
+           && (!self.owns(WindowId(position.window))
+               || self.windows.window(WindowId(position.window)).is_none())
+        {
+            position = Default::default();
+        }
         // Input delivery must not wait for painting. EndUpdate commits drawing;
         // an idle poll also presents pointer/menu changes and legacy drawing.
         if !available
@@ -1923,7 +1942,7 @@ impl Desktop
         };
         crate::trace::record(code, self.owner, event.kind as u64, event.message as u64,
                              event.when as u64, event.modifiers as u64);
-        (event, available)
+        (event, position, available)
     }
 
     pub fn present(&mut self)

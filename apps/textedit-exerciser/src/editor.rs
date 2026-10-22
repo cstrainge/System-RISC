@@ -258,7 +258,8 @@ impl<'a> Editor<'a>
         Ok(true)
     }
 
-    pub fn event(&mut self, system: &System<'_>, event: &Event) -> Result<bool, Error>
+    pub fn event(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
+                 -> Result<bool, Error>
     {
         self.ticks = event.input().when;
         self.prune(system)?;
@@ -283,19 +284,13 @@ impl<'a> Editor<'a>
             self.tracking = false;
             return Ok(false);
         }
-        let window = self.window;
-        let local = |p: Point| -> Result<Point, Error> {
-            let bounds = system.window(window)?.bounds;
-            Ok(Point { h: p.h - bounds.left,
-                       v: p.v - bounds.top })
-        };
         match event
         {
             Event::MouseDown { .. } if event.window().unwrap_or_default() == self.window =>
             {
                 self.last_mouse = event.input().at;
                 edit.click(self.id(),
-                           local(event.input().at)?,
+                           position.in_window(self.window)?.point()?,
                            event.input()
                                 .modifiers
                                 .contains(mac_toolbox::events::Modifiers::SHIFT))?;
@@ -376,7 +371,7 @@ impl<'a> Editor<'a>
                 let before = edit.info(self.id())?;
                 if self.tracking && event.input().at != self.last_mouse
                 {
-                    edit.click(self.id(), local(event.input().at)?, true)?;
+                    edit.click(self.id(), position.in_window(self.window)?.point()?, true)?;
                     self.last_mouse = event.input().at;
                 }
                 let after = edit.idle(self.id(), event.input().when)?;

@@ -27,6 +27,12 @@ def capture(output):
     stages=[]
     trace_match=re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=1',driver.log())
     try:
+        driver.wait('EVENT_COORDINATES_MOVE_READY\n')
+        driver.move(200, 90)
+        driver.button(True)
+        driver.move(240, 130)
+        driver.button(False)
+        driver.key('spc')
         for stage in STAGES:
             marker='FINDER_SELECTION_STAGE '+stage+'\n'
             deadline=time.monotonic()+(90 if stage in ('outline-stress', 'desktop-outline') else 20)

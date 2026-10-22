@@ -22,7 +22,7 @@ SERVICES = ['log', 'window', 'draw', 'next_event', 'definition', 'classic', 'geo
             'surface', 'quickdraw', 'font', 'region', 'copy_bits', 'world', 'picture',
             'cursor', 'mapping', 'resource', 'icon', 'file', 'control', 'memory',
             'image', 'menu', 'dialog', 'clock', 'scrap', 'events', 'textedit', 'process',
-            'wait_event', 'monotonic_clock', 'crash', 'standard_file', 'scroll_box', 'drag']
+            'wait_event', 'monotonic_clock', 'crash', 'standard_file', 'scroll_box', 'drag', 'positioned_event']
 
 
 def decode(path):

@@ -610,7 +610,8 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
     system.log("RESEDIT_READY\n")?;
     loop
     {
-        let event = system.events().wait_event(mac_toolbox::events::EventMask::ALL, 30)?;
+        let (event, position) =
+            system.events().wait_positioned(mac_toolbox::events::EventMask::ALL, 30)?.into_parts();
         if system.windows().info(window).is_err_and(|error| error == Error::NotFound)
         {
             return Ok(());
@@ -675,8 +676,7 @@ fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
             let bounds = system.windows().info(window)?.bounds;
             let layout = Layout { width:  bounds.right - bounds.left,
                                   height: bounds.bottom - bounds.top };
-            let point = Point { h: event.input().at.h - bounds.left,
-                                v: event.input().at.v - bounds.top };
+            let point = position.in_window(window)?.point()?;
             if Browser::resource_area(layout).contains(point)
             {
                 let changed = if let (Some(file), Some(item)) =

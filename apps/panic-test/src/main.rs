@@ -125,14 +125,15 @@ fn run(system: &System<'_>) -> Result<(), Error>
     system.log("PANIC_TEST_READY\n")?;
     loop
     {
-        let event = system.wait_event(mac_toolbox::events::EventMask::ALL, 30)?;
+        let (event, position) =
+            system.wait_positioned(mac_toolbox::events::EventMask::ALL, 30)?.into_parts();
         if let Some(selection) = system.menus().selection(&event)?
            && command(system, selection.command)?
         {
             owner.close()?;
             return Ok(());
         }
-        let bounds = match system.windows().info(window)
+        let _bounds = match system.windows().info(window)
         {
             Ok(info) => info.bounds,
             Err(Error::NotFound) => return Ok(()),
@@ -146,12 +147,11 @@ fn run(system: &System<'_>) -> Result<(), Error>
             }
             Event::MouseDown { .. } if event.window().unwrap_or_default() == window =>
             {
-                let local = Point { h: event.input().at.h.saturating_sub(bounds.left),
-                                    v: event.input().at.v.saturating_sub(bounds.top) };
+                let local = position.in_window(window)?;
                 for (index, button) in buttons.iter().enumerate()
                 {
                     let mut quit = false;
-                    let handled = button.control().track(local, |_| {
+                    let handled = button.control().track_at(local, |_| {
                                                        quit = command(system,
                                                                       [PANIC_NOW, LONG_PANIC,
                                                                        QUIT][index])?;

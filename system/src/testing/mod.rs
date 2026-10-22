@@ -257,6 +257,40 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                         })
                         }
                     }),
+        POSITIONED_EVENT => SESSION.with(|slot| {
+            let mut session = slot.borrow_mut();
+            let s = session.as_mut().unwrap();
+            let call = match unsafe { request::<events::PositionedEventCall>(pointer, size) } { Ok(call) => call, Err(status) => return status as i64 };
+            let ticks = (s.started.elapsed().as_nanos() * 60 / 1_000_000_000) as u64;
+            call.waited = 0;
+            // This scoped host harness has no Window Manager. It still uses the
+            // real native queue; coordinate/ownership assertions run in RV64.
+            match call.operation {
+                events::POSITION_NEXT | events::POSITION_WAIT | events::POSITION_PEEK => {
+                    let remove = call.operation != events::POSITION_PEEK;
+                    let notice = if call.mask & (1 << EventKind::OsEvent as u16) != 0 {
+                        s.drag_notices.iter().position(|n| n.owner == files::current_owner())
+                    } else { None };
+                    let found = if let Some(index) = notice {
+                        let event = s.drag_notices[index].event;
+                        if remove { s.drag_notices.remove(index); }
+                        Some((event, Default::default()))
+                    } else { s.events.positioned_matching(call.mask, remove) };
+                    if let Some((event, position)) = found { call.event = event; call.position = position; call.present = 1; }
+                    else {
+                        if call.operation == events::POSITION_WAIT && call.timeout_ticks != 0 { return NOT_SUPPORTED as i64; }
+                        call.event = s.events.null_event(ticks as u32); call.position = Default::default(); call.present = 0;
+                    }
+                }
+                events::POSITION_LOCATE => { call.position = Default::default(); call.present = 1; }
+                events::POSITION_INPUT => {
+                    if call.window != 0 { return NOT_FOUND as i64; }
+                    call.event = s.events.null_event(ticks as u32); call.position = Default::default(); call.present = 0;
+                }
+                _ => return BAD_ARGUMENT as i64
+            }
+            OK as i64
+        }),
         EVENTS | NEXT_EVENT | SCRAP =>
         {
             SESSION.with(|slot| {

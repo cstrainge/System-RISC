@@ -164,7 +164,8 @@ fn run(system: &System<'_>) -> Result<(), Error>
     let mut last_mouse = Point::default();
     loop
     {
-        let event = system.wait_event(mac_toolbox::events::EventMask::ALL, 6)?;
+        let (event, position) =
+            system.wait_positioned(mac_toolbox::events::EventMask::ALL, 6)?.into_parts();
         if let Some(selection) = system.menus().selection(&event)?
         {
             if [u32::from_be_bytes(*b"clos"), u32::from_be_bytes(*b"quit")]
@@ -233,8 +234,10 @@ fn run(system: &System<'_>) -> Result<(), Error>
             Err(error) => return Err(error)
         };
         let active = system.windows().front()? == Some(window);
-        let local = Point { h: event.input().at.h.saturating_sub(bounds.left),
-                            v: event.input().at.v.saturating_sub(bounds.top) };
+        let local =
+            position.window().filter(|p| p.window() == window).map(|p| p.point()).transpose()?;
+        let local = local.unwrap_or(Point { h: -1,
+                                            v: -1 });
         let mut redraw =
             matches!(event, Event::Update { .. }) && event.window().unwrap_or_default() == window;
         let mut edited = false;

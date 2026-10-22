@@ -13,6 +13,39 @@ pub const CONTROL_KEY: u16 = 4096;
 /// The complete WindowId is in payload's low 32 bits, not in the message.
 pub const WINDOW_GEOMETRY_CHANGED: u32 = 0x0d00_0000;
 
+/// Additive native event transport. Existing Event/EventCall layouts stay fixed.
+pub const POSITION_NEXT: u32 = 0;
+pub const POSITION_WAIT: u32 = 1;
+pub const POSITION_PEEK: u32 = 2;
+pub const POSITION_INPUT: u32 = 3;
+pub const POSITION_LOCATE: u32 = 4;
+
+/// A resident-captured window content position. Zero window means unavailable.
+/// Wide differences avoid wrapping when a screen point is far outside a window.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EventPosition
+{
+    pub window: u32,
+    pub h:      i32,
+    pub v:      i32
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub struct PositionedEventCall
+{
+    pub operation:     u32,
+    pub mask:          u16,
+    pub timeout_ticks: u32,
+    /// Explicit owned window for physical-input sampling; zero selects front.
+    pub window:        u32,
+    pub event:         Event,
+    pub position:      EventPosition,
+    pub present:       u32,
+    pub waited:        u32
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u16)]
 pub enum EventKind

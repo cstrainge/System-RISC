@@ -9,6 +9,7 @@ pub use mac_abi::{ApplicationEntry, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_
 pub use mac_traps::types::InlineText;
 pub use mac_traps::{Client, Cnid, Error, MenuId, ProcessId, Result as ToolboxResult, ThreadId,
                     TypeCode, VolumeId,
+                    coordinates::{PointerPosition, ScreenPoint, WindowPoint},
                     types::{ResourceKey, ResourceScope}};
 pub use toolbox_drag as drag;
 pub use toolbox_events::{Event, EventMask, Modifiers};
@@ -180,6 +181,17 @@ impl<'a> System<'a>
                 -> core::result::Result<(), Error>
     {
         self.quickdraw().port(id).command(kind, bounds, color, text)
+    }
+
+    pub fn next_positioned(&self, mask: EventMask) -> ToolboxResult<events::PositionedEvent<'a>>
+    {
+        self.events().next_positioned(mask)
+    }
+
+    pub fn wait_positioned(&self, mask: EventMask, timeout_ticks: u32)
+                           -> ToolboxResult<events::PositionedEvent<'a>>
+    {
+        self.events().wait_positioned(mask, timeout_ticks)
     }
 
     pub fn next_event(&self, mask: EventMask) -> core::result::Result<Event<'a>, Error>

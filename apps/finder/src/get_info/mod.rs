@@ -474,7 +474,8 @@ impl<'a> Controller<'a>
         Ok(())
     }
 
-    pub fn event(&mut self, system: &System<'_>, event: &Event) -> Result<bool, Error>
+    pub fn event(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
+                 -> Result<bool, Error>
     {
         if let Some(summary) = self.summary.as_mut()
         {
@@ -581,7 +582,7 @@ impl<'a> Controller<'a>
            && event.window().unwrap_or_default() == front.unwrap_or_default()
         {
             let info = self.windows[slot].as_mut().ok_or(Error::NotFound)?;
-            info.click(system, event)?;
+            info.click(system, event, position)?;
             return Ok(true);
         }
         if matches!(event, Event::KeyDown { .. } | Event::KeyUp { .. })

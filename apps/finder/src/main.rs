@@ -102,7 +102,8 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     loop
     {
         let _ = try_action(system, &mut alerts, browser.advance_cache(system))?;
-        let event = system.next_event(mac_toolbox::events::EventMask::ALL)?;
+        let (event, _position) =
+            system.next_positioned(mac_toolbox::events::EventMask::ALL)?.into_parts();
         alerts.set_context(&event);
         if let Event::WindowGeometryChanged { window,
                                               .. } = event
@@ -133,8 +134,10 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     system.log("DESKTOP_READY: Finder and native Window Manager\n")?;
     loop
     {
-        let event = system.wait_event(mac_toolbox::events::EventMask::ALL,
-                                      if info.pending() || browser.pending() { 0 } else { 30 })?;
+        let (event, position) =
+            system.wait_positioned(mac_toolbox::events::EventMask::ALL,
+                                   if info.pending() || browser.pending() { 0 } else { 30 })?
+                  .into_parts();
         alerts.set_context(&event);
         if let Event::WindowGeometryChanged { window,
                                               .. } = event
@@ -178,8 +181,9 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             }
             else
             {
-                let _ =
-                    try_action(system, &mut alerts, dragging.event(system, &mut browser, event))?;
+                let _ = try_action(system,
+                                   &mut alerts,
+                                   dragging.event(system, &mut browser, event, position))?;
             }
             if completed
             {
@@ -213,7 +217,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         if browser.marquee_tracking()
            && matches!(event, Event::Idle { .. } | Event::MouseUp { .. } | Event::KeyDown { .. })
         {
-            let _ = try_action(system, &mut alerts, browser.track(system, &event))?;
+            let _ = try_action(system, &mut alerts, browser.track(system, &event, position))?;
             if !browser.marquee_tracking()
             {
                 update_menus(system, &browser, &info)?;
@@ -241,7 +245,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             continue;
         }
         let info_handled =
-            try_action(system, &mut alerts, info.event(system, &event))?.unwrap_or(false);
+            try_action(system, &mut alerts, info.event(system, &event, position))?.unwrap_or(false);
         if info.take_changed()
         {
             // Native writes have already published exact parent notifications.
@@ -269,7 +273,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         {
             continue;
         }
-        if try_action(system, &mut alerts, clipboard.event(system, &event))?.unwrap_or(false)
+        if try_action(system, &mut alerts, clipboard.event(system, &event, position))?.unwrap_or(false)
         {
             menus::update_after_event(system, &browser, &event)?;
             if !matches!(event, Event::Idle { .. })
@@ -282,7 +286,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         {
             continue;
         }
-        let _ = try_action(system, &mut alerts, browser.track(system, &event))?;
+        let _ = try_action(system, &mut alerts, browser.track(system, &event, position))?;
         if alerts.window() != WindowId(0)
         {
             continue;
@@ -440,7 +444,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 if event.window().is_none()
                    || browser.contains(event.window().unwrap_or_default()) =>
             {
-                let _ = try_action(system, &mut alerts, browser.click(system, &event))?;
+                let _ = try_action(system, &mut alerts, browser.click(system, &event, position))?;
                 let _ = try_action(system, &mut alerts, dragging.begin(system, &mut browser))?;
             }
             _ =>

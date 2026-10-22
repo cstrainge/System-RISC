@@ -131,18 +131,20 @@ impl<'a> Controller<'a>
         Ok(())
     }
 
-    pub fn event(&mut self, system: &System<'a>, browser: &mut Browser, event: Event<'a>)
+    pub fn event(&mut self, system: &System<'a>, browser: &mut Browser, event: Event<'a>,
+                 position: PointerPosition)
                  -> Result<bool, Error>
     {
         let mut guard = DispatchGuard { controller: self,
                                         browser,
                                         keep: false };
-        let result = guard.controller.dispatch(system, guard.browser, event);
+        let result = guard.controller.dispatch(system, guard.browser, event, position);
         guard.keep = result.is_ok();
         result
     }
 
-    fn dispatch(&mut self, system: &System<'a>, browser: &mut Browser, event: Event<'a>)
+    fn dispatch(&mut self, system: &System<'a>, browser: &mut Browser, event: Event<'a>,
+                position: PointerPosition)
                 -> Result<bool, Error>
     {
         let Event::Drag { offer,
@@ -162,7 +164,7 @@ impl<'a> Controller<'a>
                 }
                 let target = if offer.flavors().all_file_items()
                 {
-                    browser.drag_destination(&offer)
+                    browser.drag_destination(&offer, position)
                 }
                 else
                 {
@@ -201,7 +203,7 @@ impl<'a> Controller<'a>
                 let result =
                     self.target
                         .ok_or(Error::BadArgument)
-                        .and_then(|target| browser.receive_drag(system, &drop, target));
+                        .and_then(|target| browser.receive_drag(system, &drop, target, position));
                 system.events()
                       .resolve_drag(drop.receive(async { result.map_err(drag::DragError::from) }),
                                     |_| Ok(()))
@@ -250,7 +252,8 @@ impl<'a> Controller<'a>
 }
 impl Browser
 {
-    fn drag_destination(&self, offer: &TrackingOffer<'_>) -> Option<Destination>
+    fn drag_destination(&self, offer: &TrackingOffer<'_>, position: PointerPosition)
+                        -> Option<Destination>
     {
         let at = offer.position();
         if let Some(window) = offer.window()
@@ -262,8 +265,7 @@ impl Browser
                 {
                     return None;
                 }
-                let local = Point { h: at.h - folder.frame.left,
-                                    v: at.v - folder.frame.top };
+                let local = position.in_window(window.window).ok()?.point().ok()?;
                 if local.h < 0
                    || local.v < icon_view::INFO_HEIGHT
                    || local.h >= (folder.frame.right - folder.frame.left) - 15
@@ -335,7 +337,7 @@ impl Browser
     }
 
     fn receive_drag(&mut self, system: &System<'_>, drop: &DropPayload<'_>,
-                    mut target: Destination)
+                    mut target: Destination, position: PointerPosition)
                     -> Result<(), Error>
     {
         if drop.action != DropAction::Move
@@ -354,7 +356,13 @@ impl Browser
             return Err(Error::NoMemory);
         }
         let origin = drop.origin().map_err(status)?;
-        let at = drop.position();
+        let at = position.screen().point();
+        if target.frame != Rect::ZERO
+        {
+            let local = position.in_window(drop.window().ok_or(Error::NotFound)?)?.point()?;
+            target.frame =
+                Rect::new(at.h - local.h, at.v - local.v, target.frame.right, target.frame.bottom);
+        }
         let mut rows = [files::IconMove::default(); CAPACITY];
         for (index, row) in rows[..count].iter_mut().enumerate()
         {

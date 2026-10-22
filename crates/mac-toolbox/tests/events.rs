@@ -215,3 +215,39 @@ fn geometry_notifications_preserve_full_window_identity_and_snapshot_input()
         assert!(matches!(received, Event::WindowGeometryChanged { window: id, .. } if id == window));
     });
 }
+
+#[test]
+fn positioned_delivery_is_additive_and_shares_the_existing_native_queue()
+{
+    use mac_toolbox::{Event, EventMask, Point,
+                      events::{Input, Modifiers}};
+    // Freeze the existing RV64-compatible transports; new positions have their
+    // own trap and request, so existing binaries need no ABI or layout change.
+    assert_eq!(mac_toolbox::abi::ABI_VERSION, 8);
+    assert_eq!(core::mem::size_of::<mac_toolbox::abi::Event>(), 32);
+    assert_eq!(core::mem::size_of::<mac_toolbox::abi::traps::NextEventCall>(), 40);
+    assert_eq!(core::mem::size_of::<mac_toolbox::abi::traps::WaitEventCall>(), 48);
+    assert_eq!(core::mem::size_of::<mac_toolbox::abi::events::EventCall>(), 80);
+    support::with_system(|system| {
+        let event = Event::MouseDown { window: None,
+                                       input:  Input { at:        Point { h: 43,
+                                                                          v: 71 },
+                                                       when:      99,
+                                                       modifiers: Modifiers::SHIFT } };
+        let record = event.as_record();
+        system.events().post(event).unwrap();
+        let snapshot = system.events().peek_positioned(EventMask::ALL).unwrap().unwrap();
+        assert_eq!(snapshot.event().into_record(), record);
+        assert_eq!(snapshot.position().screen().point(), record.where_);
+        assert_eq!(snapshot.position().window(), None);
+        assert_eq!(system.next_event(EventMask::ALL).unwrap().as_record(), record);
+        assert!(system.events().peek_positioned(EventMask::ALL).unwrap().is_none());
+        system.events().post(Event::from(record)).unwrap();
+        let (event, position) =
+            system.events().wait_positioned(EventMask::ALL, 0).unwrap().into_parts();
+        assert_eq!(event.as_record(), record);
+        assert_eq!(position.screen().point(), record.where_);
+        assert_eq!(position.window(), None);
+        assert!(system.events().peek(EventMask::ALL).unwrap().is_none());
+    });
+}

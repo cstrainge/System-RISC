@@ -200,11 +200,11 @@ impl Info<'_>
         Ok(true)
     }
 
-    pub(super) fn click(&mut self, system: &System<'_>, event: &Event) -> Result<(), Error>
+    pub(super) fn click(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
+                        -> Result<(), Error>
     {
         let window = system.window(self.window)?;
-        let point = Point { h: event.input().at.h - window.bounds.left,
-                            v: event.input().at.v - window.bounds.top };
+        let point = position.in_window(window.id)?.point()?;
         for (focus, bounds) in
             [(Focus::Name, self.layout.name), (Focus::Comments, self.layout.comments)]
         {

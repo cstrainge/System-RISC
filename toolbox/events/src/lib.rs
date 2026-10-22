@@ -4,7 +4,10 @@
 use mac_abi::events::*;
 pub use mac_abi::{Point, events::KeyMap};
 mod decoded;
+mod positioned;
 pub use decoded::{Event, EventMask, EventSnapshot, Input, Key, Modifiers};
+pub use positioned::{PointerPosition, PositionedEvent, PositionedSnapshot, ScreenPoint,
+                     WindowPoint};
 /// Original EventRecord and low-level queue vocabulary.
 pub mod classic
 {

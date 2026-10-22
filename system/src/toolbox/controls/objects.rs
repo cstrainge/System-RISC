@@ -168,7 +168,11 @@ impl Manager
                               .map_err(|_| NO_MEMORY)?;
             }
         }
-        self.get(call.id, owner)?;
+        let object = self.get(call.id, owner)?;
+        if operation == BEGIN_TRACKING && call.window != 0 && call.window != object.window
+        {
+            return Err(BAD_ARGUMENT);
+        }
         if operation == DISPOSE_OBJECT
         {
             self.objects.remove(call.id);

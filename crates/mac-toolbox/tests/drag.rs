@@ -580,10 +580,13 @@ fn ignored_tracking_after_release_rejects_and_peek_never_owns_the_protocol()
         {
             let snapshot = system.events().peek(EventMask::ALL).unwrap().unwrap();
             assert_eq!(snapshot.into_record().message & 0xff00_0000, abi::drag::ENTERED_EVENT);
+            let positioned = system.events().peek_positioned(EventMask::ALL).unwrap().unwrap();
+            assert_eq!(positioned.event().into_record(), snapshot.into_record());
+            assert_eq!(positioned.position().screen().point(), snapshot.into_record().where_);
             assert_eq!(input::feedback(), before);
         }
         // No handler, response call, or receive future is necessary for cleanup.
-        drop(system.next_event(EventMask::ALL).unwrap());
+        drop(system.next_positioned(EventMask::ALL).unwrap());
         for tick in 1..9
         {
             input::tick(tick);

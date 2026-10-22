@@ -1,11 +1,9 @@
 //! Exercise the actual Finder viewer source through the public SDK.
 #![no_std]
 #![no_main]
-use mac_toolbox::events::classic::Event;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-use mac_toolbox::{System, SystemServices, events::classic::EVERY_EVENT};
-use mac_toolbox::abi::{EventKind, };
+use mac_toolbox::{System, SystemServices, abi::EventKind, events::classic::Event};
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 static FILES: AtomicUsize = AtomicUsize::new(0);
 static MENUS: AtomicUsize = AtomicUsize::new(0);
@@ -55,7 +53,15 @@ unsafe extern "C" fn trace(number: u32, pointer: *mut (), size: usize) -> i64
 
 fn require(value: bool, system: &System<'_>, message: &str) -> Result<(), mac_toolbox::Error>
 {
-    if value { Ok(()) } else { system.log(message)?; Err(mac_toolbox::Error::BadArgument) }
+    if value
+    {
+        Ok(())
+    }
+    else
+    {
+        system.log(message)?;
+        Err(mac_toolbox::Error::BadArgument)
+    }
 }
 #[path = "../../../../../../apps/finder/src/clipboard.rs"]
 mod clipboard;
@@ -78,6 +84,12 @@ mod menus;
 #[path = "../../../../../../apps/finder/src/ui.rs"]
 mod ui;
 
+fn viewer_event(system: &System<'_>, viewer: &mut clipboard::Viewer, event: Event)
+                -> Result<bool, mac_toolbox::Error>
+{
+    let event = mac_toolbox::Event::from(event);
+    viewer.event(system, &event, system.events().locate(&event)?)
+}
 fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
 {
     system.log("CLIPBOARD_PROBE_START\n")?;
@@ -94,15 +106,17 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     let mut moved = false;
     loop
     {
-        let event = system.next_event(mac_toolbox::events::EventMask::ALL).map(mac_toolbox::Event::into_record)?;
+        let event = system.next_event(mac_toolbox::events::EventMask::ALL)
+                          .map(mac_toolbox::Event::into_record)?;
         let before = COMMITS.load(Ordering::Relaxed);
         if event.kind != EventKind::KeyDown
         {
-            let handled = viewer.event(system, event.into())?;
+            let handled = viewer_event(system, &mut viewer, event)?;
             if scroll_mode && event.kind == EventKind::MouseDown && !stationary
             {
                 require(system.events().button()?,
-                        system, "CLIPBOARD_SCROLL_FAIL physical button not held\n")?;
+                        system,
+                        "CLIPBOARD_SCROLL_FAIL physical button not held\n")?;
                 let commits = COMMITS.load(Ordering::Relaxed);
                 let tracks = TRACKS.load(Ordering::Relaxed);
                 let files = FILES.load(Ordering::Relaxed);
@@ -111,20 +125,26 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
                 for _ in 0..100
                 {
                     // Real public event polling supplies the current held point.
-                    let idle = system.next_event(mac_toolbox::events::EventMask::from_bits_retain(0)).map(mac_toolbox::Event::into_record)?;
-                    require(viewer.event(system, idle.into())?, system,
+                    let idle =
+                        system.next_event(mac_toolbox::events::EventMask::from_bits_retain(0))
+                              .map(mac_toolbox::Event::into_record)?;
+                    require(viewer_event(system, &mut viewer, idle)?,
+                            system,
                             "CLIPBOARD_SCROLL_FAIL held idle was not consumed\n")?;
                     // Same shared policy call used by Finder's consumed-event
                     // branch; observe actual SDK IO and menu service traffic.
-                    menus::update_after_event(system, &browser, idle.into())?;
+                    menus::update_after_event(system, &browser, &mac_toolbox::Event::from(idle))?;
                 }
                 require(TRACKS.load(Ordering::Relaxed) - tracks >= 100,
-                        system, "CLIPBOARD_SCROLL_FAIL thumb was not tracking\n")?;
+                        system,
+                        "CLIPBOARD_SCROLL_FAIL thumb was not tracking\n")?;
                 require(COMMITS.load(Ordering::Relaxed) == commits,
-                        system, "CLIPBOARD_SCROLL_FAIL stationary thumb repainted\n")?;
+                        system,
+                        "CLIPBOARD_SCROLL_FAIL stationary thumb repainted\n")?;
                 require(FILES.load(Ordering::Relaxed) == files
                         && MENUS.load(Ordering::Relaxed) == menus,
-                        system, "CLIPBOARD_SCROLL_FAIL idle policy queried services\n")?;
+                        system,
+                        "CLIPBOARD_SCROLL_FAIL idle policy queried services\n")?;
                 system.log("CLIPBOARD_IDLE_POLICY_PASS nulls=100 file_calls=0 menu_calls=0\n")?;
                 stationary = true;
                 system.log("CLIPBOARD_SCROLL_STATIONARY_PASS nulls=100 commits=0\n")?;
@@ -137,7 +157,8 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
             if stationary && event.kind == EventKind::MouseUp
             {
                 require(moved && COMMITS.load(Ordering::Relaxed) == before,
-                        system, "CLIPBOARD_SCROLL_FAIL unchanged release repainted\n")?;
+                        system,
+                        "CLIPBOARD_SCROLL_FAIL unchanged release repainted\n")?;
                 system.log("CLIPBOARD_SCROLL_RELEASE_PASS commits=0\n")?;
                 scroll_mode = false;
             }
@@ -162,19 +183,28 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
                     let mut text = [b'x'; 1200];
                     for (index, byte) in text.iter_mut().enumerate()
                     {
-                        if index % 20 == 19 { *byte = b'\r'; }
+                        if index % 20 == 19
+                        {
+                            *byte = b'\r';
+                        }
                     }
                     system.scrap().clear()?;
-                    system.scrap().put_text(core::str::from_utf8(&text).map_err(|_| mac_toolbox::abi::BAD_ARGUMENT)?)
-                          ?;
+                    system.scrap()
+                          .put_text(core::str::from_utf8(&text).map_err(|_| {
+                                                                   mac_toolbox::Error::BadArgument
+                                                               })?)?;
                     viewer.refresh(system)?;
                     let commits = COMMITS.load(Ordering::Relaxed);
-                    viewer.event(system, Event { kind: EventKind::Activate,
-                                                message: viewer.window.0 + 100,
-                                                modifiers: mac_toolbox::abi::ACTIVE_FLAG,
-                                                ..Default::default() }.into())?;
+                    let other_window = viewer.window.0 + 100;
+                    viewer_event(system,
+                                 &mut viewer,
+                                 Event { kind: EventKind::Activate,
+                                         message: other_window,
+                                         modifiers: mac_toolbox::abi::ACTIVE_FLAG,
+                                         ..Default::default() })?;
                     require(COMMITS.load(Ordering::Relaxed) == commits,
-                            system, "CLIPBOARD_SCROLL_FAIL unrelated activation repainted\n")?;
+                            system,
+                            "CLIPBOARD_SCROLL_FAIL unrelated activation repainted\n")?;
                     system.log("CLIPBOARD_UNRELATED_ACTIVATE_PASS commits=0\n")?;
                     scroll_mode = true;
                     stationary = false;
@@ -202,8 +232,8 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
     SERVICES.store(services.cast_mut(), Ordering::Release);
     // SAFETY: the loader validates this service table for the whole call.
     let original = unsafe { &*services };
-    let profiled = SystemServices { header: original.header,
-                                    trap: trace,
+    let profiled = SystemServices { header:       original.header,
+                                    trap:         trace,
                                     capabilities: original.capabilities };
     let system = match unsafe { System::from_raw(&profiled) }
     {

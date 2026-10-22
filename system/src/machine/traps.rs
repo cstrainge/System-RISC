@@ -62,7 +62,7 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
     let size = frame.registers[9];
     #[cfg(feature = "event-trace")]
     let started = crate::platform::ticks();
-    let result = if number == WAIT_EVENT && depth != 1
+    let result = if matches!(number, WAIT_EVENT | POSITIONED_EVENT) && depth != 1
     {
         WRONG_THREAD as i64
     }
@@ -121,7 +121,9 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
     {
         return super::scheduler::schedule(frame);
     }
-    if number == WAIT_EVENT && result == OK as i64 && super::scheduler::blocked()
+    if matches!(number, WAIT_EVENT | POSITIONED_EVENT)
+       && result == OK as i64
+       && super::scheduler::blocked()
     {
         return super::scheduler::schedule(frame);
     }
@@ -367,6 +369,28 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             crate::kernel::with_desktop(|runtime| {
                 call.event = runtime.next(call.mask);
                 OK
+            }).unwrap_or_else(|error| error.status()) as i64
+        }
+        POSITIONED_EVENT =>
+        {
+            let call = read_request!(events::PositionedEventCall);
+            crate::kernel::with_desktop(|runtime| {
+                let status = runtime.positioned_event(call);
+                if status == OK
+                   && call.operation == events::POSITION_WAIT
+                   && call.present == 0
+                   && call.timeout_ticks != 0
+                {
+                    call.waited = 1;
+                    crate::trace::record(crate::trace::WAIT,
+                                         crate::context::current_thread_context().identity().app.0,
+                                         call.mask as u64,
+                                         call.timeout_ticks as u64,
+                                         0,
+                                         0);
+                    super::scheduler::wait_current(call.mask, call.timeout_ticks);
+                }
+                status
             }).unwrap_or_else(|error| error.status()) as i64
         }
         WAIT_EVENT =>

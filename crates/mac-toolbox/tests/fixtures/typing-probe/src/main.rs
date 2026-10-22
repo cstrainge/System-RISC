@@ -65,6 +65,11 @@ unsafe extern "C" fn trace(number: u32, pointer: *mut (), size: usize) -> i64
     }
     status
 }
+fn editor_event(system: &System<'_>, editor: &mut editor::Editor, event: Event)
+                -> Result<bool, mac_toolbox::Error>
+{
+    editor.event(system, &mac_toolbox::Event::from(event), mac_toolbox::PointerPosition::default())
+}
 fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
 {
     let _menus = menus::install(system)?;
@@ -81,21 +86,23 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     for _ in 0..20
     {
         let start = system.events().uptime_ticks()?;
-        if !editor.event(system,
+        if !editor_event(system,
+                         &mut editor,
                          Event { kind: EventKind::KeyDown,
                                  message: u32::from(b'a'),
                                  when: start as u32,
-                                 ..Default::default() }.into())?
+                                 ..Default::default() })?
         {
             return Err(mac_toolbox::Error::BadArgument);
         }
         let edited = system.events().uptime_ticks()?;
         menus::update(system, &editor)?;
         // Same consumed/released routing as the actual TextEdit application main loop.
-        if editor.event(system,
+        if editor_event(system,
+                        &mut editor,
                         Event { kind: EventKind::KeyUp,
                                 message: u32::from(b'a'),
-                                ..Default::default() }.into())?
+                                ..Default::default() })?
         {
             menus::update(system, &editor)?;
         }
@@ -105,10 +112,11 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
         }
         // Service the first idle iteration after every isolated edit. It must
         // not require a second scene commit merely to show the reset caret.
-        editor.event(system,
+        editor_event(system,
+                     &mut editor,
                      Event { kind: EventKind::Null,
                              when: start as u32,
-                             ..Default::default() }.into())?;
+                             ..Default::default() })?;
         let end = system.events().uptime_ticks()?;
         edit_ticks += edited - start;
         menu_ticks += end - edited;
