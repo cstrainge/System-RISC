@@ -25,6 +25,7 @@ pub enum Error
     Cancelled,
     CorruptData,
     StorageUnavailable,
+    Archive(archive::ArchiveError),
     EventNotEnabled,
     ScrapTypeUnavailable,
     MemoryFull,
@@ -68,7 +69,14 @@ impl Error
             memory::MEM_WZ_ERR => Self::InvalidZone,
             memory::MEM_PUR_ERR => Self::HandleNotPurgeable,
             memory::MEM_LOCKED_ERR => Self::HandleLocked,
-            other => Self::Unknown(other)
+            other =>
+            {
+                match archive::ArchiveError::from_status(other)
+                {
+                    Some(error) => Self::Archive(error),
+                    None => Self::Unknown(other)
+                }
+            }
         }
     }
 
@@ -96,6 +104,7 @@ impl Error
             Self::Cancelled => OPERATION_CANCELLED,
             Self::CorruptData => CORRUPT_DATA,
             Self::StorageUnavailable => STORAGE_UNAVAILABLE,
+            Self::Archive(error) => error.status(),
             Self::EventNotEnabled => events::EVENT_NOT_ENABLED,
             Self::ScrapTypeUnavailable => scrap::NO_TYPE_ERR,
             Self::MemoryFull => memory::MEM_FULL_ERR,
@@ -133,6 +142,7 @@ impl core::fmt::Display for Error
             Self::Cancelled => f.write_str("operation cancelled"),
             Self::CorruptData => f.write_str("file or catalog data is damaged or malformed"),
             Self::StorageUnavailable => f.write_str("backing storage is unavailable"),
+            Self::Archive(error) => core::fmt::Display::fmt(error, f),
             Self::EventNotEnabled => f.write_str("event type is disabled by the OS event mask"),
             Self::ScrapTypeUnavailable => f.write_str("clipboard flavor is unavailable"),
             Self::MemoryFull => f.write_str("Memory Manager allocation failed"),

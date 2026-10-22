@@ -1067,7 +1067,11 @@ impl Browser
         {
             if cache::with(slot, |folder| folder.refresh_pending || folder.refreshing)
             {
-                return Ok(());
+                // Otherwise the same synthetic Update remains pending forever,
+                // starving the idle work that finishes this refresh. Existing
+                // retained pixels stay intact; publication later damages only
+                // the changed items rather than repainting this window now.
+                return system.windows().validate(id);
             }
             system.begin_update(id)?;
             let port = system.quickdraw().graphics(id);

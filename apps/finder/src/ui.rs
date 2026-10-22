@@ -34,6 +34,21 @@ pub fn error_text(system: &System<'_>, status: Error, operation: u32, subject: &
         Error::CorruptData => 24,
         Error::StorageUnavailable => 25,
         Error::InvalidName => 27,
+        Error::Archive(error) =>
+        {
+            match error
+            {
+                files::ArchiveError::Truncated => 28,
+                files::ArchiveError::Signature => 29,
+                files::ArchiveError::HeaderChecksum => 30,
+                files::ArchiveError::ForkChecksum => 31,
+                files::ArchiveError::Malformed => 32,
+                files::ArchiveError::Limit => 33,
+                files::ArchiveError::Encrypted => 34,
+                files::ArchiveError::Version(_) => 35,
+                files::ArchiveError::Method(_) => 36
+            }
+        }
         _ => 26
     };
     let mut a = [0; 256];
@@ -41,7 +56,18 @@ pub fn error_text(system: &System<'_>, status: Error, operation: u32, subject: &
     let operation = system.resources().application().indexed_string(20020, operation, &mut a)?;
     let cause = system.resources().application().indexed_string(20021, index, &mut b)?;
     let mut out = crate::browser::Text::default();
-    write!(&mut out,"{operation}: {subject}\r{cause}\r{status:?} ({})",status.status()).map_err(|_|Error::BadArgument)?;
+    write!(&mut out, "{operation}: {subject}\r").map_err(|_| Error::BadArgument)?;
+    if let Error::Archive(files::ArchiveError::Version(number)
+                          | files::ArchiveError::Method(number)) = status
+    {
+        let (before, after) = cause.split_once("^0").ok_or(Error::BadAbi)?;
+        write!(&mut out, "{before}{number}{after}").map_err(|_| Error::BadArgument)?;
+    }
+    else
+    {
+        out.write_str(cause).map_err(|_| Error::BadArgument)?;
+    }
+    write!(&mut out, "\r{status:?} ({})", status.status()).map_err(|_| Error::BadArgument)?;
     Ok(out)
 }
 pub fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8]) -> Result<&'b str, Error>

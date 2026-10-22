@@ -523,6 +523,7 @@ impl Desktop
                 return OK;
             }
             INVALIDATE_WINDOW => self.windows.invalidate(id, request.bounds),
+            VALIDATE_WINDOW => return self.windows.validate(id).map_or_else(|error| error, |()| OK),
             SET_WINDOW_TITLE =>
             {
                 let Some(bytes) = request.title.get(..request.title_length as usize)

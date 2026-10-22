@@ -60,6 +60,16 @@ if a later read reports corruption. After failure a decoder rejects reuse.
 The caller must report a transport EOF before the declared packed length as
 truncation; a temporary short input chunk alone is not EOF.
 
+## Error identity and recovery
+
+The installed driver preserves archive errors through FSYS and File Manager:
+truncation, signature, header/fork checksum, malformed data, configured limits,
+encryption, unsupported version and unsupported compression method. The SDK's
+`files::ArchiveError` retains the version/method byte and supplies an explanation;
+Finder uses resource strings rather than a generic I/O alert. Source transport
+errors remain transport errors. Failed mounts must release leases so rename and
+another open work immediately. See FORMAT.md for the error status allocation.
+
 ## Verified coverage and remaining work
 
 Host tests cover real writer archives, nested folders, MacRoman names,

@@ -173,6 +173,15 @@ impl<'a> Windows<'a>
         self.client.window(INVALIDATE_WINDOW, r).map(|_| ())
     }
 
+    /// Acknowledge queued update damage without changing retained pixels. Useful
+    /// while preparing an asynchronous replacement snapshot: commit its exact
+    /// changed bounds when ready. Repeated acknowledgement is a no-op; an active
+    /// drawing transaction must be completed before acknowledging damage.
+    pub fn validate(self, id: WindowId) -> Result<()>
+    {
+        self.client.window(VALIDATE_WINDOW, request(id)).map(|_| ())
+    }
+
     /// Clip the WDEF's grow image/separator drawing in local coordinates.
     /// Applications with their own scrollbars can expose just the size box.
     /// None restores unrestricted drawing; an empty rectangle hides it.

@@ -309,8 +309,10 @@ fn corrupted_payload_fails_on_the_last_full_read_and_readonly_mutations_are_reje
     let mut h = Harness::new(&bytes);
     let volume = h.mount();
     let token = h.open(volume, 16);
-    assert_eq!(h.read(volume, token, 1, 0, 2048), Err(Error(mac_abi::IO_ERROR)));
-    assert_eq!(h.read(volume, token, 1, 0, 2048), Err(Error(mac_abi::IO_ERROR)));
+    assert_eq!(h.read(volume, token, 1, 0, 2048),
+               Err(Error(mac_abi::archive::ArchiveError::ForkChecksum.status())));
+    assert_eq!(h.read(volume, token, 1, 0, 2048),
+               Err(Error(mac_abi::archive::ArchiveError::ForkChecksum.status())));
     for op in [Operation::BeginCreate,
                Operation::BeginReplace,
                Operation::WriteChunk,

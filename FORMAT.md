@@ -1019,6 +1019,16 @@ The exact header/metadata fields and allocated operation numbers are documented
 in [FILESYSTEM-INTERFACE.md](docs/FILESYSTEM-INTERFACE.md); their shared checked
 codec lives in `crates/mac-filesystem-interface`. This adds a class contract and
 does not change the generic module entry boundary or the native code envelope.
+Archive failures use the negative status namespace defined in
+`mac-abi::archive::ArchiveError`: -65536 through -65542 identify truncation,
+signature, header CRC, fork CRC, malformed data, configured limits and encryption;
+-65792 minus the external version byte and -66048 minus the compression-method
+byte retain those unsupported-feature parameters. These are terminal error
+identities, not transport failures. Preserve them through job completion and
+File Manager cleanup; no thread-local last-error buffer is involved. The SDK
+returns `Error::Archive`, and Finder formats resource-based explanations with
+the retained byte. Unknown statuses remain lossless.
+
 Catalog/Lookup flag bit 0 requests an exact child count. Metadata-only ancestry
 queries leave unscanned counts unknown instead of enumerating unused children;
 all other flag bits are rejected. Header/metadata schemas remain 1; producers
@@ -1073,3 +1083,16 @@ Each nonblocking read processes at most 4 KiB of notifications; overflow also
 changes the revision. The monitor attaches to a pinned directory capability and
 is independent of guest write permissions. Access/open/read notifications do not
 invalidate the catalog. This notification backend currently requires Linux.
+
+## Retained window update acknowledgement
+
+Native WINDOW operation 11 (`VALIDATE_WINDOW`) acknowledges an owned window's
+currently pending update damage while keeping its retained contents. It performs
+no drawing, allocation, scene invalidation or presentation. An active drawing
+transaction returns SERVICE_BUSY and preserves its damage; a stale/foreign
+identity is rejected through the Window Manager's generation/ownership checks.
+Repeated acknowledgement is a no-op. New invalidations after acknowledgement
+remain observable. `Windows::validate` exposes this to Rust applications.
+Finder uses it while rebuilding an unpublished folder snapshot: otherwise an
+unacknowledged synthetic Update can starve idle scan work indefinitely. The
+completed refresh still publishes only its actual changed item bounds.

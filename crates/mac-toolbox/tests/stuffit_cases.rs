@@ -1,13 +1,44 @@
 //! Real FSYS DRVR and resident FORK broker, exercised solely through Toolbox.
+#![cfg(target_arch = "riscv64")]
 #![forbid(unsafe_code)]
 use mac_toolbox::{Cnid, Error, System, VolumeId,
-                  files::{CatalogInfo, DataFileSpec, Filesystem, Fork, ROOT_ID, SeekFrom},
+                  files::{ArchiveError, CatalogInfo, DataFileSpec, Filesystem, Fork, ROOT_ID,
+                          SeekFrom},
                   quickdraw::{Rect, icons::IconFlags}};
 const NESTED: &[u8] = include_bytes!("../../mac-sit/tests/fixtures/nested-v1.sit");
 const FORKS: &[u8] = include_bytes!("../../mac-sit/tests/fixtures/forks-v1.sit");
 fn require(value: bool) -> Result<(), Error>
 {
     if value { Ok(()) } else { Err(Error::BadAbi) }
+}
+fn explained(system: &System<'_>, actual: Error, cause: ArchiveError, expected: &str)
+             -> Result<(), Error>
+{
+    use core::fmt::Write;
+    require(actual == Error::Archive(cause))?;
+    let mut text = super::Message { bytes:  [0; 128],
+                                    length: 0 };
+    write!(&mut text, "{actual}").map_err(|_| Error::BadAbi)?;
+    let text = core::str::from_utf8(&text.bytes[..text.length]).map_err(|_| Error::BadAbi)?;
+    require(text.contains(expected))?;
+    system.log("STUFFIT_EXPECTED_FAILURE ")?;
+    system.log(text)?;
+    system.log("\n")
+}
+// Re-sign deliberately changed fixture headers so method rejection is tested
+// after catalog validation, rather than being masked by a header CRC failure.
+fn sign_entry(bytes: &mut [u8])
+{
+    let mut crc = 0u16;
+    for byte in &bytes[22..132]
+    {
+        crc ^= u16::from(*byte);
+        for _ in 0..8
+        {
+            crc = (crc >> 1) ^ if crc & 1 != 0 { 0xa001 } else { 0 };
+        }
+    }
+    bytes[132..134].copy_from_slice(&crc.to_be_bytes());
 }
 fn create(system: &System<'_>, volume: VolumeId, name: &str, bytes: &[u8])
           -> Result<CatalogInfo, Error>
@@ -84,8 +115,36 @@ fn icons(system: &System<'_>, present: bool) -> Result<(), Error>
     }
     Ok(())
 }
+fn retained_updates(system: &System<'_>) -> Result<(), Error>
+{
+    use mac_toolbox::{Rect, events::EventMask, windows::WindowSpec};
+    let mut window =
+        system.windows()
+              .create_owned(WindowSpec::new(Rect::new(50, 50, 250, 180), "Retained updates"))?;
+    let id = window.id();
+    system.windows().begin_update(id)?;
+    require(system.windows().validate(id) == Err(Error::ServiceBusy))?;
+    system.windows().end_update(id)?;
+    system.windows().invalidate(id, Rect::new(4, 4, 20, 20))?;
+    require(system.events().peek_positioned(EventMask::UPDATE)?.is_some())?;
+    system.windows().validate(id)?;
+    system.windows().validate(id)?;
+    require(system.events().peek_positioned(EventMask::UPDATE)?.is_none())?;
+    // Validation must not suppress subsequent damage or accept a reused ID.
+    system.windows().invalidate(id, Rect::new(8, 8, 30, 30))?;
+    require(system.events().peek_positioned(EventMask::UPDATE)?.is_some())?;
+    window.close()?;
+    let next =
+        system.windows()
+              .create_owned(WindowSpec::new(Rect::new(50, 50, 250, 180), "Replacement updates"))?;
+    require(next.id() != id && (next.id().0 & 0xffff) == (id.0 & 0xffff))?;
+    require(system.windows().validate(id) == Err(Error::NotFound))?;
+    require(system.events().peek_positioned(EventMask::UPDATE)?.is_some())?;
+    system.log("RETAINED_UPDATE_USERSPACE_PASS\n")
+}
 pub fn check(system: &System<'_>) -> Result<(), Error>
 {
+    retained_updates(system)?;
     let files = system.files();
     let startup = files.volume_at(0)?.id;
     if files.lookup(startup, ROOT_ID, "No StuffIt Driver").is_ok()
@@ -200,11 +259,60 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     let badvol = files.mount_file(startup, bad.id)?.id;
     let baditem = files.child(badvol, ROOT_ID, 0)?;
     let mut badfile = files.open(badvol, baditem.id, Fork::Resource)?;
-    require(badfile.read(&mut bytes) == Err(Error::Io))?;
+    explained(system,
+              badfile.read(&mut bytes).err().ok_or(Error::BadAbi)?,
+              ArchiveError::ForkChecksum,
+              "extracted bytes failed verification")?;
     badfile.close()?;
     files.unmount(badvol)?;
     let bad = create(system, startup, "Not classic.sit", b"not an archive")?;
-    require(matches!(files.mount_file(startup, bad.id), Err(Error::Io)))?;
+    explained(system,
+              files.mount_file(startup, bad.id).err().ok_or(Error::BadAbi)?,
+              ArchiveError::Truncated,
+              "required header or fork bytes are missing")?;
+    // Failed mounts release source leases and pending driver work: replacement
+    // and the next mount must work immediately, without changing windows/apps.
+    files.rename(startup, bad.id, "Rejected.sit")?;
+    let mut unsupported = [0; NESTED.len()];
+    unsupported.copy_from_slice(NESTED);
+    unsupported[14] = 99;
+    let bad = create(system, startup, "Future.sit", &unsupported)?;
+    explained(system,
+              files.mount_file(startup, bad.id).err().ok_or(Error::BadAbi)?,
+              ArchiveError::Version(99),
+              "archive version 99 is not supported")?;
+    files.rename(startup, bad.id, "Future released.sit")?;
+    unsupported[14] = 1;
+    unsupported[132] ^= 1;
+    let bad = create(system, startup, "Header CRC.sit", &unsupported)?;
+    explained(system,
+              files.mount_file(startup, bad.id).err().ok_or(Error::BadAbi)?,
+              ArchiveError::HeaderChecksum,
+              "catalog is damaged")?;
+    files.rename(startup, bad.id, "Header released.sit")?;
+    let mut method = [0; FORKS.len()];
+    method.copy_from_slice(FORKS);
+    for (byte, cause, message) in
+        [(64, ArchiveError::Method(64), "compression method 64 is not supported"),
+         (0x10, ArchiveError::Encrypted, "password-protected extraction is not supported")]
+    {
+        method[22] = byte;
+        sign_entry(&mut method);
+        let bad = create(system,
+                         startup,
+                         if byte == 64 { "Unknown method.sit" } else { "Encrypted.sit" },
+                         &method)?;
+        let mounted = files.mount_file(startup, bad.id)?;
+        let entry = files.child(mounted.id, ROOT_ID, 0)?;
+        explained(system,
+                  files.open(mounted.id, entry.id, Fork::Resource).err().ok_or(Error::BadAbi)?,
+                  cause,
+                  message)?;
+        files.unmount(mounted.id)?;
+        files.rename(startup,
+                     bad.id,
+                     if byte == 64 { "Method released.sit" } else { "Encrypted released.sit" })?;
+    }
     system.log("STUFFIT_STAGE stale\n")?;
     files.unmount(volume)?;
     let new = files.mount_file(startup, archive.id)?.id;

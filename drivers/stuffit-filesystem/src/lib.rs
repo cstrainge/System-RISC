@@ -39,13 +39,21 @@ fn buffer(length: usize) -> Result<Vec<u8>>
 }
 fn format_error(error: mac_sit::Error) -> Error
 {
+    use mac_abi::archive::ArchiveError;
     Error(match error
           {
               mac_sit::Error::Allocation => mac_abi::NO_MEMORY,
-              mac_sit::Error::Encrypted
-              | mac_sit::Error::UnsupportedMethod(_)
-              | mac_sit::Error::UnsupportedVersion(_) => mac_abi::NOT_SUPPORTED,
-              mac_sit::Error::Limit => mac_abi::NO_MEMORY,
-              _ => mac_abi::IO_ERROR
+              mac_sit::Error::Encrypted => ArchiveError::Encrypted.status(),
+              mac_sit::Error::UnsupportedMethod(method) => ArchiveError::Method(method).status(),
+              mac_sit::Error::UnsupportedVersion(version) =>
+              {
+                  ArchiveError::Version(version).status()
+              }
+              mac_sit::Error::Limit => ArchiveError::Limit.status(),
+              mac_sit::Error::Truncated => ArchiveError::Truncated.status(),
+              mac_sit::Error::Signature => ArchiveError::Signature.status(),
+              mac_sit::Error::HeaderChecksum => ArchiveError::HeaderChecksum.status(),
+              mac_sit::Error::ForkChecksum => ArchiveError::ForkChecksum.status(),
+              _ => ArchiveError::Malformed.status()
           })
 }

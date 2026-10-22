@@ -32,6 +32,8 @@ pub const CORRUPT_DATA: Status = -18;
 pub const STORAGE_UNAVAILABLE: Status = -19;
 pub const INVALID_NAME: Status = -20;
 
+pub mod archive;
+
 pub mod crashes;
 pub mod dates;
 pub mod geometry;
@@ -159,6 +161,9 @@ pub const SET_GROW_ICON_CLIP: u32 = 8;
 pub const SET_WINDOW_TITLE: u32 = 9;
 /// Set reserved to0 for automatic close,1 for an application close request.
 pub const SET_CLOSE_DEFERRED: u32 = 10;
+/// Acknowledge existing update damage while retaining the current content.
+/// No drawing, scene change or framebuffer presentation is implied.
+pub const VALIDATE_WINDOW: u32 = 11;
 /// OsEvent message prefix; low24 bits contain the WindowId.
 pub const WINDOW_CLOSE_REQUEST: u32 = 0x03000000;
 /// A classic 31-byte MacRoman catalog name may occupy up to93 UTF8 bytes.

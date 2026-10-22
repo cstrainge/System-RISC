@@ -2363,7 +2363,16 @@
           "File or catalog data is damaged or malformed.",
           "The backing storage or host export is unavailable.",
           "An unrecognized System error occurred. Its identity is shown below.",
-          "This name cannot be used on the host volume. Avoid reserved names, invalid characters and trailing dots or spaces."
+          "This name cannot be used on the host volume. Avoid reserved names, invalid characters and trailing dots or spaces.",
+          "The StuffIt archive is truncated. Required header or fork bytes are missing.",
+          "This file does not have a supported StuffIt archive signature.",
+          "The StuffIt header checksum does not match. The archive catalog is damaged.",
+          "The StuffIt fork checksum does not match. Extracted bytes failed verification.",
+          "The StuffIt archive has invalid lengths, hierarchy or compressed data.",
+          "The StuffIt archive exceeds the driver's catalog, nesting or decoder limits.",
+          "This StuffIt archive is encrypted. Password-protected extraction is not supported.",
+          "StuffIt archive version ^0 is not supported by the installed driver.",
+          "StuffIt compression method ^0 is not supported by the installed driver."
         ]
       }
     },

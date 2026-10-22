@@ -84,6 +84,15 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
 
 Performance bar: the code must not do unnecessary work. Full recomputation is the last resort, not the default: prefer bounded invalidation over full repaints, early-out on no-change, cache what doesn't move, and never do per-event work when per-change work will do. "Input happened" is not "pixels changed." When in doubt, the Cursor Test's responsiveness and the present() trace timings are the benchmarks — the mouse is the profiler.
 
+- Every workflow test includes relevant unhappy paths and asserts informative
+  error messages, not just status codes. Preserve causes through driver, resident
+  service and app boundaries. Ordinary errors must release owned protocol state
+  and leave the UI immediately usable; verify cleanup, retry and cancellation.
+  If rollback itself fails, quarantine the affected resource and report recovery
+  honestly. Contain application panics; Finder failure is recoverable by System
+  cleanup and restart. A resident System panic shows diagnostic details and a
+  Restart button through a minimal panic-safe input/drawing path; it does not
+  attempt to continue running normal services.
 - Use the supplied rustfmt.toml. Run checks appropriate to the change and report
   actual coverage and remaining gaps. A passing subset is not full Toolbox or
   original 68k application compatibility.

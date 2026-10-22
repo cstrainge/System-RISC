@@ -23,6 +23,7 @@ fn classic_archives_mount_read_forks_copy_out_and_reject_corruption_and_stale_id
     assert_eq!(capture["termination"], "guest-outcome");
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert!(serial.contains("STUFFIT_PASS"), "{serial}");
+    assert!(serial.contains("RETAINED_UPDATE_USERSPACE_PASS"), "{serial}");
     for failure in
         ["STUFFIT_FAIL", "MODULE_REJECTED", "SYSTEM_PANIC:", "SYSTEM_TRAP:", "DISK_REQUEST_FAILED"]
     {
@@ -90,10 +91,65 @@ fn finder_double_click_mounts_and_opens_archive_from_host_volume()
                       l.starts_with("FINDER_FOLDER_OPEN ") && l.ends_with("name=Examples.sit")
                   }),
             "{serial}");
-    for failure in ["FINDER_ERROR", "MODULE_REJECTED", "SYSTEM_PANIC:", "SYSTEM_TRAP:"]
+    for failure in
+        ["FINDER_ERROR", "FINDER_ACTION_FAILED", "MODULE_REJECTED", "SYSTEM_PANIC:", "SYSTEM_TRAP:"]
     {
         assert!(!serial.contains(failure), "{serial}");
     }
     assert!(fs::metadata(output.join("archive-icon.ppm")).unwrap().len() > 640 * 480);
     assert!(fs::metadata(output.join("archive-volume.ppm")).unwrap().len() > 640 * 480);
+    assert_no_update_storm(&output);
+}
+
+#[test]
+#[ignore = "requires the private image, QEMU and the real Finder"]
+fn finder_explains_raw_archive_failure_and_can_immediately_open_the_next_file()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let output =
+        root.join("results/system7").join(format!("native-stuffit-error-{}", std::process::id()));
+    let result = Command::new("python3").arg(root.join("System7/scripts/capture_stuffit.py"))
+                                        .arg("--output")
+                                        .arg(&output)
+                                        .arg("--finder-error")
+                                        .output()
+                                        .unwrap();
+    assert!(result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr));
+    let capture: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(capture["original_before"], capture["original_after"]);
+    assert_eq!(capture["termination"], "finder-opened-archive");
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    let alerts: Vec<_> = serial.lines().filter(|l| l.starts_with("FINDER_ALERT_TEXT ")).collect();
+    assert_eq!(alerts.len(), 1, "{serial}");
+    assert!(alerts[0].contains("StuffIt archive version 99 is not supported by the installed \
+                                driver."),
+            "{serial}");
+    assert!(alerts[0].contains("Archive(Version(99))"), "{serial}");
+    assert!(serial.contains("FINDER_ALERT_DISMISSED")
+            && serial.lines()
+                     .any(|l| l.starts_with("FINDER_FOLDER_OPEN ") && l.ends_with("name=B.sit")),
+            "{serial}");
+    assert_eq!(serial.matches("FINDER_ACTION_FAILED").count(), 1, "{serial}");
+    for failure in ["MODULE_REJECTED", "SYSTEM_PANIC:", "SYSTEM_TRAP:"]
+    {
+        assert!(!serial.contains(failure), "{serial}");
+    }
+    assert_no_update_storm(&output);
+}
+
+fn assert_no_update_storm(output: &std::path::Path)
+{
+    // Tracing is opt-in; assert bounded work whenever the image includes it.
+    if let Ok(bytes) = fs::read(output.join("complete-trace.json"))
+    {
+        let trace: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(trace["counters"]["1"]["update"].as_u64().unwrap_or(0) < 100,
+                "folder refresh repeatedly returned unacknowledged Update events: {trace}");
+        assert!(trace["services"]["1"]["menu"][0].as_u64().unwrap_or(0) < 1000,
+                "folder refresh flooded per-event menu work: {trace}");
+    }
 }

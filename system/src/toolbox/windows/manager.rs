@@ -724,6 +724,19 @@ impl WindowManager
         Some(damage)
     }
 
+    /// Retained content already covers exposure. A client replacing its model
+    /// asynchronously may acknowledge that exposure without repainting it.
+    pub fn validate(&mut self, id: WindowId) -> Result<(), mac_abi::Status>
+    {
+        let window = self.window_mut(id).ok_or(mac_abi::NOT_FOUND)?;
+        if window.updating
+        {
+            return Err(mac_abi::SERVICE_BUSY);
+        }
+        window.damage = None;
+        Ok(())
+    }
+
     pub fn end_update(&mut self, id: WindowId)
     {
         if let Some(window) = self.window_mut(id)

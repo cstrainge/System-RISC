@@ -38,6 +38,12 @@ and binary request layouts remain supported. `locate(&event)` is an explicit
 bridge for synthetic/existing events and uses current geometry; normal input
 uses positioned delivery to retain input-time geometry with no extra trap.
 
+`Windows::validate(id)` acknowledges existing update damage without repainting
+retained contents. It is useful during an asynchronous model refresh, whose final
+publication still commits only changed bounds. An active drawing transaction
+returns ServiceBusy, and stale/foreign window checks are unchanged. Do not leave
+Update events unacknowledged while waiting for idle work to finish that refresh.
+
 Clients and owners are deliberately thread-mobile. Shared resident managers own
 synchronization; service entry derives trusted caller identities. Mobility is
 not an ownership transfer or permission to operate another application's objects.
