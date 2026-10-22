@@ -9,6 +9,9 @@ pub const SHIFT_KEY: u16 = 512;
 pub const ALPHA_LOCK: u16 = 1024;
 pub const OPTION_KEY: u16 = 2048;
 pub const CONTROL_KEY: u16 = 4096;
+/// Native Window Manager notification after committed movement/resizing.
+/// The complete WindowId is in payload's low 32 bits, not in the message.
+pub const WINDOW_GEOMETRY_CHANGED: u32 = 0x0d00_0000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u16)]

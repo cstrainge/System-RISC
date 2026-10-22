@@ -104,6 +104,11 @@ implementation in their respective `src/main.rs`. Their only drawing dependency
 is the public QuickDraw client: OS primitives and fonts remain resident. There
 is no standard-WDEF implementation trap in System. Host tests and the reference
 renderer compile the resource's same source file for verification.
+Committed window moves/resizes send the owning application a native
+`WindowGeometryChanged` event carrying the complete window ID. Finder updates
+its cached screen transform on that notification; pointer hit tests remain
+cache-only. Moving retained content does not require an Update or a full folder
+repaint, and cancelled title drags leave the cached transform unchanged.
 
 Most manager logic forbids unsafe code. Unsafe operations are concentrated in
 loader/entry adapters, hardware access, raw trap payload handling, resource-entry

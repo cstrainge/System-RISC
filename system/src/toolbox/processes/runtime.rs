@@ -242,6 +242,10 @@ impl Desktop
         {
             let id = match event.kind
             {
+                EventKind::OsEvent if event.message == mac_abi::events::WINDOW_GEOMETRY_CHANGED =>
+                {
+                    Some(WindowId(event.payload as u32))
+                }
                 EventKind::Activate | EventKind::Update | EventKind::MouseDown
                     if event.message != 0 =>
                 {

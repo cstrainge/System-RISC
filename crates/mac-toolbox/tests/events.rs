@@ -188,3 +188,30 @@ fn application_file_lifecycle_events_preserve_exact_identity_without_window_rout
         }
     });
 }
+
+#[test]
+fn geometry_notifications_preserve_full_window_identity_and_snapshot_input()
+{
+    use mac_toolbox::{Event, EventMask, Point, WindowId,
+                      events::{Input, Modifiers}};
+    support::with_system(|system| {
+        let window = WindowId(0xabcd_1234);
+        let input = Input { at:        Point { h: 213,
+                                               v: 117 },
+                            when:      321,
+                            modifiers: Modifiers::SHIFT };
+        let event = Event::WindowGeometryChanged { window,
+                                                   input };
+        let record = event.as_record();
+        assert_eq!(record.message, mac_toolbox::abi::events::WINDOW_GEOMETRY_CHANGED);
+        assert_eq!(record.payload, u64::from(window.0));
+        system.events().post(event).unwrap();
+        let peek = system.events().peek(EventMask::ALL).unwrap().unwrap();
+        assert_eq!(peek.window(), Some(window));
+        assert_eq!(peek.input(), input);
+        assert_eq!(peek.key(), None);
+        let received = system.next_event(EventMask::ALL).unwrap();
+        assert_eq!(received.as_record(), record);
+        assert!(matches!(received, Event::WindowGeometryChanged { window: id, .. } if id == window));
+    });
+}

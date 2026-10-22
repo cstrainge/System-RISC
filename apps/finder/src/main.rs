@@ -104,6 +104,12 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         let _ = try_action(system, &mut alerts, browser.advance_cache(system))?;
         let event = system.next_event(mac_toolbox::events::EventMask::ALL)?;
         alerts.set_context(&event);
+        if let Event::WindowGeometryChanged { window,
+                                              .. } = event
+        {
+            let _ = try_action(system, &mut alerts, browser.geometry_changed(system, window))?;
+            continue;
+        }
         if matches!(event, Event::Activate { .. })
         {
             browser.activate(&event);
@@ -130,6 +136,12 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         let event = system.wait_event(mac_toolbox::events::EventMask::ALL,
                                       if info.pending() || browser.pending() { 0 } else { 30 })?;
         alerts.set_context(&event);
+        if let Event::WindowGeometryChanged { window,
+                                              .. } = event
+        {
+            let _ = try_action(system, &mut alerts, browser.geometry_changed(system, window))?;
+            continue;
+        }
         if matches!(event, Event::Activate { .. })
         {
             browser.activate(&event);

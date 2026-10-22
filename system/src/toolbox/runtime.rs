@@ -1498,6 +1498,13 @@ impl Desktop
 
     fn action(&mut self, action: Action, when: u32)
     {
+        if let Action::Drag(id) | Action::Resize(id) = action
+        {
+            self.events.post_system(Event { kind: EventKind::OsEvent,
+                                            message: mac_abi::events::WINDOW_GEOMETRY_CHANGED,
+                                            payload: u64::from(id.0),
+                                            ..self.events.null_event(when) });
+        }
         self.last_action = match action
         {
             Action::Drag(id) =>

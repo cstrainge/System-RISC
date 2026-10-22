@@ -1484,6 +1484,26 @@ impl Browser
         }
     }
 
+    /// Movement preserves the local item layout and retained pixels. Update its
+    /// screen transform on the actual geometry change, never on pointer input.
+    pub fn geometry_changed(&mut self, system: &System<'_>, window: WindowId) -> Result<(), Error>
+    {
+        let Some(slot) =
+            self.windows.iter().position(|row| row.is_some_and(|w| w.window == window))
+        else
+        {
+            return Ok(());
+        };
+        let bounds = match system.window(window)
+        {
+            Ok(info) => info.bounds,
+            Err(Error::NotFound) => return Ok(()), // Closed before the notification was serviced.
+            Err(error) => return Err(error)
+        };
+        cache::edit(slot, |folder| folder.frame = bounds);
+        Ok(())
+    }
+
     /// Lifecycle events supply identity and state; no catalog or process scans.
     pub fn application_file_changed(&mut self, system: &System<'_>, location: Location,
                                     running: bool)

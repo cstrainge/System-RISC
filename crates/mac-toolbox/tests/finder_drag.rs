@@ -53,6 +53,47 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
     let report: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
     assert_eq!(report["original_before"], report["original_after"]);
+    for scenario in ["unsupported-copy-0", "unsupported-copy-1", "failed-drop-0", "failed-drop-1"]
+    {
+        for selected in ["panic", "cursor", "quickdraw"]
+        {
+            let frame = fs::read(output.join(format!("{scenario}-{selected}.ppm"))).unwrap();
+            let pixels = frame.strip_prefix(b"P6\n640 480\n255\n").unwrap();
+            for (item, x) in [("panic", 96), ("cursor", 31), ("quickdraw", 146)]
+            {
+                let offset = (122 * 640 + x) * 3;
+                let expected = if item == selected { [0; 3] } else { [255; 3] };
+                assert_eq!(&pixels[offset..offset + 3],
+                           &expected,
+                           "selection did not change after {scenario}: selected {selected}, \
+                            checking {item}");
+            }
+        }
+    }
+    for (scenario, dx, dy) in [("cancelled-group", 0, 0),
+                               ("outside-rejected", 0, 0),
+                               ("moved-window", 40, 40),
+                               ("cancelled-window-drag", 40, 40)]
+    {
+        for selected in ["cursor", "panic", "quickdraw"]
+        {
+            let frame = fs::read(output.join(format!("{scenario}-{selected}.ppm"))).unwrap();
+            let pixels = frame.strip_prefix(b"P6\n640 480\n255\n").unwrap();
+            for (item, x, y) in [("panic", 96, 122), ("cursor", 71, 162), ("quickdraw", 222, 216)]
+            {
+                let offset = ((y + dy) * 640 + x + dx) * 3;
+                let expected = if item == selected { [0; 3] } else { [255; 3] };
+                assert_eq!(&pixels[offset..offset + 3],
+                           &expected,
+                           "selection did not change after {scenario}: selected {selected}, \
+                            checking {item}");
+            }
+        }
+    }
+    assert!(report["moved_window_updates_before"].as_u64().unwrap() > 0,
+            "missing folder update instrumentation");
+    assert_eq!(report["moved_window_updates_before"], report["moved_window_updates_after"],
+               "moving retained window content forced a full folder repaint");
     for key in ["compositions", "menu_paints", "updates", "scene_rev"]
     {
         assert_eq!(report["tracking_before"][key], report["tracking_after"][key],
@@ -145,7 +186,7 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
     assert_eq!(serial.matches("FINDER_DRAG_ENDED moved\n").count(), 2, "{serial}");
     assert_eq!(serial.matches("FINDER_ACTION_FAILED status=-11").count(), 2, "{serial}");
     assert_eq!(serial.matches("FINDER_ACTION_FAILED ").count(), 2, "{serial}");
-    assert_eq!(serial.matches("FINDER_DRAG_ENDED rejected\n").count(), 4, "{serial}");
+    assert_eq!(serial.matches("FINDER_DRAG_ENDED rejected\n").count(), 5, "{serial}");
     assert_eq!(serial.matches("FINDER_ALERT_DISMISSED\n").count(), 2, "{serial}");
     for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:"]
     {

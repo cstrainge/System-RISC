@@ -65,6 +65,21 @@ def capture(output):
         driver.wait('FINDER_DRAG_ENDED moved\n', ended)
         time.sleep(.4)
 
+    def selection_probe(name, moved=False, offset=(0, 0)):
+        # Click different cached items without visiting another window. Rust
+        # checks their rendered selection; input acknowledgement alone is not
+        # evidence that the Finder actually changed the set.
+        points = ([('cursor', (96, 146)), ('panic', (120, 106)),
+                   ('quickdraw', (260, 200))] if moved else
+                  [('panic', (120, 106)), ('cursor', (56, 106)),
+                   ('quickdraw', (184, 106))])
+        for item, point in points:
+            driver.click(point[0] + offset[0], point[1] + offset[1])
+            snapshot(name + '-' + item)
+        # The next gesture presses QuickDraw again. End the deliberate click
+        # pair's classic double-click interval before starting another drag.
+        time.sleep(.55)
+
     try:
         subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                         str(vm.DIST / 'system7.qcow2'), str(output / 'before.raw')], check=True)
@@ -83,6 +98,8 @@ def capture(output):
         start()
         driver.click(40, 95, double=True)
         driver.wait_folder_ready('Applications')
+        applications_window = re.search(
+            r'FINDER_FOLDER_OPEN .* window=(\d+) name=Applications', driver.log())[1]
         snapshot('opened')
         for attempt in range(2):
             ended = driver.log().count('FINDER_DRAG_ENDED rejected\n')
@@ -94,6 +111,7 @@ def capture(output):
             driver.key_state('alt', False)
             driver.wait('FINDER_DRAG_ENDED rejected\n', ended)
             snapshot('unsupported-copy-' + str(attempt))
+            selection_probe('unsupported-copy-' + str(attempt))
         # The duplicate already in Z Conflict makes these moves fail only after
         # legal negotiation. The modal alert must not swallow session cleanup.
         for attempt in range(2):
@@ -107,8 +125,12 @@ def capture(output):
             driver.wait('FINDER_ACTION_FAILED status=-11', failed)
             driver.wait('FINDER_DRAG_ENDED rejected\n', ended)
             snapshot('failed-drop-' + str(attempt))
-            driver.key('ret')
+            if attempt == 0:
+                driver.key('ret')
+            else:
+                driver.click(488, 238)
             driver.wait('FINDER_ALERT_DISMISSED\n', dismissed)
+            selection_probe('failed-drop-' + str(attempt))
         snapshot('recovered')
         driver.move(184, 106)
         driver.button(True)
@@ -145,6 +167,33 @@ def capture(output):
         driver.wait('FINDER_DRAG_ENDED cancelled\n', cancelled)
         driver.button(False)
         snapshot('cancelled')
+        selection_probe('cancelled-group', moved=True)
+        rejected = driver.log().count('FINDER_DRAG_ENDED rejected\n')
+        driver.move(260, 200)
+        driver.button(True)
+        driver.move(500, 350)
+        driver.button(False)
+        driver.wait('FINDER_DRAG_ENDED rejected\n', rejected)
+        selection_probe('outside-rejected', moved=True)
+        # Moving a fully visible front window preserves its content pixels; it
+        # must not require an Update or focus round-trip to repair hit testing.
+        ready_marker = 'FINDER_FOLDER_READY window=' + applications_window + '\n'
+        move_updates_before = driver.log().count(ready_marker)
+        driver.move(240, 52)
+        driver.button(True)
+        driver.move(280, 92)
+        driver.button(False)
+        time.sleep(.2)
+        selection_probe('moved-window', moved=True, offset=(40, 40))
+        move_updates_after = driver.log().count(ready_marker)
+        # Releasing a title drag outside the desktop cancels it. The transform
+        # must remain at the last committed bounds, with selection still live.
+        driver.move(280, 92)
+        driver.button(True)
+        driver.move(280, 10)
+        driver.button(False)
+        time.sleep(.2)
+        selection_probe('cancelled-window-drag', moved=True, offset=(40, 40))
         (output / 'boot-1.log').write_text(driver.log())
         stop()
         subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
@@ -158,6 +207,8 @@ def capture(output):
             'original_before': original, 'original_after': packaging.sha(base / 'system7.qcow2'),
             'stages': stages, 'tracking_before': before_state, 'tracking_after': after_state,
             'tracking_trace': tracing.delta(before_trace, after_trace),
+            'moved_window_updates_before': move_updates_before,
+            'moved_window_updates_after': move_updates_after,
         }, indent=2) + '\n')
     finally:
         stop()

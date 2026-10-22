@@ -138,6 +138,12 @@ pub enum Event<'a>
         running: bool,
         input:   Input
     },
+    /// Committed window bounds changed. Refresh cached coordinates once here;
+    /// movement need not invalidate otherwise unchanged window content.
+    WindowGeometryChanged
+    {
+        window: WindowId, input: Input
+    },
     /// No queued event, including a pointer-motion wake. Retains physical input
     /// for drag/caret work without another trap. Poll and wait agree on this.
     Idle
@@ -243,6 +249,11 @@ impl<'a> From<raw::Event> for Event<'a>
                                     item: event.message as u16,
                                     input }
             }
+            raw::EventKind::OsEvent if event.message == raw::WINDOW_GEOMETRY_CHANGED =>
+            {
+                Self::WindowGeometryChanged { window: WindowId(event.payload as u32),
+                                              input }
+            }
             raw::EventKind::OsEvent
                 if event.message & 0xff00_0000 == mac_abi::processes::FILE_STATE_EVENT =>
             {
@@ -274,7 +285,9 @@ impl Event<'_>
             Self::Drag { input,
                          .. }
             | Self::ProcessFileChanged { input,
-                                       .. } => *input,
+                                       .. }
+            | Self::WindowGeometryChanged { input,
+                                          .. } => *input,
             Self::Idle { input,
                          .. }
             | Self::MouseDown { input,
@@ -327,6 +340,16 @@ impl Event<'_>
         let (kind, message) = match self
         {
             Self::Drag { .. } => unreachable!(),
+            Self::WindowGeometryChanged { window,
+                                          .. } =>
+            {
+                return raw::Event { kind:      raw::EventKind::OsEvent,
+                                    message:   raw::WINDOW_GEOMETRY_CHANGED,
+                                    payload:   u64::from(window.0),
+                                    when:      input.when,
+                                    where_:    input.at,
+                                    modifiers: input.modifiers.bits() };
+            }
             Self::ProcessFileChanged { volume,
                                        id,
                                        running,
@@ -407,6 +430,8 @@ impl Event<'_>
                          .. } => offer.window(),
             Self::Update { window,
                            .. }
+            | Self::WindowGeometryChanged { window,
+                                          .. }
             | Self::Activate { window,
                              .. }
             | Self::CloseRequested { window,
