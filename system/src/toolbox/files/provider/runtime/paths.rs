@@ -34,7 +34,7 @@ fn pending(mut flight: Flight, job: Result<OwnedJob, Status>) -> Progress
 }
 fn finish_path(volume: u32, result: Result<Vec<u8>, Status>) -> Progress
 {
-    Progress::Done(files(|manager| manager.end_provider_read(volume)).and(result).map(Reply::Path))
+    Progress::Done(files(|manager| manager.end_provider_read(volume)).and(result).map(Reply::Bytes))
 }
 pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Progress
 {

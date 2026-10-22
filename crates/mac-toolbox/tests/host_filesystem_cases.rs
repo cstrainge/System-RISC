@@ -145,6 +145,22 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             && file.data_length == 23
             && file.resource_length == 0)?;
     require(files.catalog(writable.id, file.id)? == file)?;
+    system.log("HOST_FS_STAGE comments\n")?;
+    expect_comment(system, writable.id, root.id, "")?;
+    expect_comment(system, writable.id, folder.id, "")?;
+    expect_comment(system, writable.id, file.id, "Native comment: café 🦀")?;
+    require(file.created.mac_microseconds() == Some(3_875_171_696_123_456)
+            && file.modified.mac_microseconds() == Some(3_875_171_696_654_321))?;
+    let mut tiny = [0xa5; 2];
+    let mut comment = mac_toolbox::abi::files::FileCall { operation:
+                                                              mac_toolbox::abi::files::COMMENT,
+                                                          volume: writable.id.0,
+                                                          cnid: file.id.0,
+                                                          ..Default::default() };
+    require(system.client().file(&mut comment, "", &mut tiny) == Err(Error::NoMemory)
+            && tiny == [0xa5; 2]
+            && comment.transferred == 0
+            && comment.length == "Native comment: café 🦀".len() as u64)?;
     require(files.parent(writable.id, file.id)? == root)?;
     require(files.child(writable.id, root.id, 5) == Err(Error::NotFound))?;
     require(files.child(writable.id, file.id, 0) == Err(Error::BadArgument))?;
@@ -202,6 +218,8 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     system.log("HOST_FS_STAGE resource-inspection\n")?;
     check_resources(system, read_only.id)?;
     let read_only_item = files.child(read_only.id, mac_toolbox::files::ROOT_ID, 0)?;
+    expect_comment(system, read_only.id, mac_toolbox::files::ROOT_ID, "")?;
+    expect_comment(system, read_only.id, read_only_item.id, "")?;
     require(files.move_into(read_only.id, read_only_item.id, mac_toolbox::files::ROOT_ID)
             == Err(Error::ReadOnly))?;
     require(files.new_folder(read_only.id, mac_toolbox::files::ROOT_ID, "Forbidden")
@@ -231,12 +249,14 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     check_exit_cleanup(system, writable.id)?;
     require(files.volume(writable.id) == Err(Error::NotFound))?;
     require(files.catalog(writable.id, root.id) == Err(Error::NotFound))?;
+    require(expect_comment(system, writable.id, file.id, "") == Err(Error::NotFound))?;
     let replacement = files.mount_host_export(0)?;
     require(files.lookup(replacement.id, mac_toolbox::files::ROOT_ID, "Exit staging")
             == Err(Error::NotFound))?;
     require(files.scan_directory(replacement.id, mac_toolbox::files::ROOT_ID, &mut prior_scan)
             == Err(Error::BadArgument))?;
     require(replacement.id != writable.id && replacement.id.0 & 0xffff == writable.id.0 & 0xffff)?;
+    require(expect_comment(system, writable.id, file.id, "") == Err(Error::NotFound))?;
     require(files.volume(writable.id) == Err(Error::NotFound))?;
     require(files.child(writable.id, root.id, 0) == Err(Error::NotFound))?;
     require(files.unmount(writable.id) == Err(Error::NotFound))?;
@@ -581,6 +601,26 @@ fn check_scan(system: &System<'_>, volume: VolumeId)
     Err(Error::ServiceBusy)
 }
 
+fn expect_comment(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid, expected: &str)
+                  -> Result<(), Error>
+{
+    struct Match<'a>
+    {
+        remaining: &'a str
+    }
+    impl core::fmt::Write for Match<'_>
+    {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result
+        {
+            self.remaining = self.remaining.strip_prefix(text).ok_or(core::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let mut text = Match { remaining: expected };
+    system.files().comment(volume, node, &mut text)?;
+    require(text.remaining.is_empty())
+}
+
 fn expect_path(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid, expected: &str)
                -> Result<(), Error>
 {
@@ -740,6 +780,7 @@ fn check_plain(system: &System<'_>, volume: VolumeId, writable: bool) -> Result<
     use mac_toolbox::files::{DataFileSpec, Fork, ROOT_ID};
     let files = system.files();
     let file = files.lookup(volume, ROOT_ID, "Host File.txt")?;
+    expect_comment(system, volume, file.id, "")?;
     system.log("HOST_FS_PLAIN raw-file\n")?;
     require(file.data_length == 10
             && file.resource_length == 0
@@ -752,6 +793,7 @@ fn check_plain(system: &System<'_>, volume: VolumeId, writable: bool) -> Result<
     require(fork.read(&mut bytes)? == 0)?;
     fork.close()?;
     let folder = files.lookup(volume, ROOT_ID, "Host Folder")?;
+    expect_comment(system, volume, folder.id, "")?;
     system.log("HOST_FS_PLAIN raw-folder\n")?;
     require(folder.is_directory())?;
     if writable

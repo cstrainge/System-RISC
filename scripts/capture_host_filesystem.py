@@ -65,7 +65,18 @@ def capture(output, sdk=False):
         subprocess.run([str(host / 'risc-forks'), 'init', str(export), 'Native Host'], check=True)
         if sdk:
             source = output / 'Café'
-            source.write_bytes(b'Native catalog fixture\n')
+            source.mkdir()
+            data = b'Native catalog fixture\n'
+            (source / 'data').write_bytes(data)
+            (source / 'resources').write_bytes(b'')
+            (source / 'metadata.json').write_text(json.dumps({
+                'format': 'system-risc-forks', 'version': 1, 'directory': False,
+                'name': 'Café', 'created_mac_microseconds': 3875171696123456,
+                'modified_mac_microseconds': 3875171696654321,
+                'backup_mac_microseconds': None, 'flags': 0, 'finder_info': [0]*32,
+                'comment': 'Native comment: café 🦀',
+                'data_length': len(data), 'resource_length': 0,
+            }))
             subprocess.run([str(host / 'risc-forks'), 'import', str(export), str(source)], check=True)
             subprocess.run([str(host / 'risc-forks'), 'mkdir', str(export), '/', 'Tools'], check=True)
             child = output / 'Child'

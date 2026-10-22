@@ -90,6 +90,11 @@ enum Step
         volume: u32,
         node:   u32
     },
+    Comment
+    {
+        volume: u32,
+        node:   u32
+    },
     Parent
     {
         volume: u32,
@@ -151,7 +156,7 @@ enum Reply
     Scan(FileScanCall),
     Resource(Box<resources::Response>),
     Allocation(u64, u64),
-    Path(Vec<u8>),
+    Bytes(Vec<u8>),
     Read
     {
         bytes:    Vec<u8>,
@@ -331,6 +336,22 @@ fn advance(mut flight: Flight) -> Progress
             Progress::Done(files(|manager| manager.end_provider_read(volume)).and(result))
         }
         Step::Lookup { .. } | Step::Path { .. } => paths::advance(flight, result),
+        Step::Comment { volume,
+                        node } =>
+        {
+            // Comments are already part of the provider's catalog record.
+            // Do not enumerate children merely to read a directory comment.
+            let result =
+                result.and_then(|bytes| {
+                          let metadata = fs::Metadata::decode(&bytes).map_err(|_| BAD_ABI)?;
+                          super::catalog_metadata(volume, metadata, Some(node), None)?;
+                          let mut text = Vec::new();
+                          text.try_reserve_exact(metadata.comment.len()).map_err(|_| NO_MEMORY)?;
+                          text.extend_from_slice(metadata.comment.as_bytes());
+                          Ok(Reply::Bytes(text))
+                      });
+            Progress::Done(files(|manager| manager.end_provider_read(volume)).and(result))
+        }
         Step::Catalog { volume,
                         node } =>
         {
@@ -469,7 +490,7 @@ fn reply(call: &mut FileCall, output: &mut [u8], result: Result<Reply, Status>) 
             OK
         }
         Ok(Reply::Scan(_) | Reply::Resource(_)) => BAD_ABI,
-        Ok(Reply::Path(bytes)) =>
+        Ok(Reply::Bytes(bytes)) =>
         {
             call.length = bytes.len() as u64;
             if output.len() < bytes.len()
@@ -697,7 +718,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
     {
         return mounts::start_file(owner, thread, key, call, output);
     }
-    if matches!(call.operation, CATALOG | PARENT | DIRECTORY_ENTRY | ALLOCATION_INFO)
+    if matches!(call.operation, CATALOG | PARENT | DIRECTORY_ENTRY | ALLOCATION_INFO | COMMENT)
     {
         let provider = match files(|manager| manager.begin_provider_read(call.volume))
         {
@@ -723,6 +744,11 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
              {
                  Step::Parent { volume,
                                 node }
+             }
+             else if call.operation == COMMENT
+             {
+                 Step::Comment { volume,
+                                 node }
              }
              else
              {

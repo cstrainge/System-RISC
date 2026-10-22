@@ -71,6 +71,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
                            | files::DIRECTORY_ENTRY
                            | files::LOOKUP
                            | files::ALLOCATION_INFO
+                           | files::COMMENT
                            | files::PATH);
     let trash_query = call.operation == files::TRASH_DIRECTORY && call.index == 0;
     let opening = call.operation == files::OPEN;
@@ -105,7 +106,8 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
        || (!matches!(call.operation, files::LOOKUP | files::NEW_FOLDER) && call.name_length != 0)
        || call.name_length > 4096
        || (call.name_length != 0 && call.name.is_null())
-       || (!matches!(call.operation, files::READ | files::PATH) && call.capacity != 0)
+       || (!matches!(call.operation, files::READ | files::PATH | files::COMMENT)
+           && call.capacity != 0)
        || call.capacity > 1024 * 1024
        || (call.capacity != 0 && call.output.is_null())
        || call.operation == files::HOST_EXPORT_COUNT && (call.volume != 0 || call.index != 0)

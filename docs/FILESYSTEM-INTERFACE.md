@@ -243,6 +243,15 @@ Finder omits unavailable capacity figures and Get Info describes virtual volumes
 without fabricating a block-device number. This gate does not yet establish
 write-back, exit during pending I/O, disconnect or responsiveness.
 
+The public `Files::comment` read uses Catalog's existing UTF-8 comment field on
+filesystem providers, including mount roots and ordinary host files/folders.
+It binds the reply to the requested node, releases its read lease on success or
+error, and omits `INCLUDE_CHILD_COUNT`: reading a folder comment must not enumerate
+its children. A short output buffer fails without a partial copy. This enables
+Finder's normal Get Info controller on writable and read-only external mounts;
+unknown capacity remains unavailable. Comment/metadata **writes**, renaming and
+other provider mutations still require their separate write contracts.
+
 Catalog, direct-child enumeration and parent queries also run through the public
 SDK in that guest case, including nested folders, Unicode names, end-of-directory
 and non-directory errors, empty read-only roots, and stale mount rejection after
