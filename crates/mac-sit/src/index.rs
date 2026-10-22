@@ -28,20 +28,23 @@ pub enum Contents
     File(FileHeader),
     Folder
     {
-        header:    FolderHeader,
-        top_level: bool
+        header:         FolderHeader,
+        metadata_valid: bool
     }
 }
 /// These are persistent catalog numbers derived from immutable archive order,
 /// not runtime handles. Mounted-volume/open/source IDs belong to System's
 /// generation facility. The mounted-volume generation scopes these numbers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Node
 {
     pub id:          u32,
     pub parent:      u32,
     pub child_count: u32,
-    pub contents:    Contents
+    pub contents:    Contents,
+    pub finder_info: Option<[u8; 32]>,
+    pub attributes:  u16,
+    pub comment:     Vec<u8>
 }
 impl Node
 {
@@ -63,8 +66,8 @@ impl Node
 #[derive(Debug)]
 pub struct Index
 {
-    header: ArchiveHeader,
-    nodes:  Vec<Node>
+    pub(crate) header: ArchiveHeader,
+    pub(crate) nodes:  Vec<Node>
 }
 impl Index
 {
@@ -92,7 +95,7 @@ enum Stage
     Done,
     Failed
 }
-pub struct IndexBuilder
+pub(crate) struct ClassicBuilder
 {
     source_length: u64,
     limits:        Limits,
@@ -103,7 +106,7 @@ pub struct IndexBuilder
     top_level:     u32,
     stage:         Stage
 }
-impl IndexBuilder
+impl ClassicBuilder
 {
     pub fn new(source_length: u64, limits: Limits) -> Result<Self>
     {
@@ -153,13 +156,14 @@ impl IndexBuilder
             Stage::Header =>
             {
                 self.header = Some(ArchiveHeader::decode(bytes, self.source_length)?);
-                self.offset = ARCHIVE_HEADER_BYTES as u64;
+                self.offset = self.header.ok_or(Error::InvalidState)?.first_entry;
                 self.stage = Stage::Entries;
             }
             Stage::Entries =>
             {
                 let header = self.header.ok_or(Error::InvalidState)?;
-                let entry = EntryHeader::decode(bytes, self.offset, header.length)?;
+                let entry =
+                    EntryHeader::decode_for(bytes, self.offset, header.length, header.format)?;
                 self.offset =
                     self.offset.checked_add(ENTRY_HEADER_BYTES as u64).ok_or(Error::Bounds)?;
                 if entry == EntryHeader::EndFolder
@@ -207,7 +211,12 @@ impl IndexBuilder
                         EntryHeader::Folder(header) =>
                         {
                             Contents::Folder { header,
-                                               top_level: self.stack.is_empty() }
+                                               metadata_valid: self.stack.is_empty()
+                                                               || self.header
+                                                                      .is_some_and(|archive| {
+                                                                          archive.format
+                                                                     != ArchiveFormat::Classic(1)
+                                                                      }) }
                         }
                         EntryHeader::EndFolder => return Err(Error::InvalidState)
                     };
@@ -218,7 +227,10 @@ impl IndexBuilder
                     self.nodes.push(Node { id,
                                            parent,
                                            child_count: 0,
-                                           contents });
+                                           contents,
+                                           finder_info: None,
+                                           attributes: 0,
+                                           comment: Vec::new() });
                 }
             }
             Stage::Done | Stage::Failed => return Err(Error::InvalidState)

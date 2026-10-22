@@ -47,3 +47,27 @@ impl Crc16
         crc.value()
     }
 }
+
+const fn crc32_table() -> [u32; 256]
+{
+    let mut table = [0; 256];
+    let mut at = 0;
+    while at < 256
+    {
+        let mut value = at as u32;
+        let mut bit = 0;
+        while bit < 8
+        {
+            value = (value >> 1) ^ if value & 1 != 0 { 0xedb88320 } else { 0 };
+            bit += 1;
+        }
+        table[at] = value;
+        at += 1;
+    }
+    table
+}
+const CRC32_TABLE: [u32; 256] = crc32_table();
+pub(crate) fn update_crc32(crc: u32, byte: u8) -> u32
+{
+    (crc >> 8) ^ CRC32_TABLE[((crc ^ u32::from(byte)) & 255) as usize]
+}

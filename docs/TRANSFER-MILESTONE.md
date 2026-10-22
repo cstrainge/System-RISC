@@ -90,3 +90,37 @@ Validation: seven focused host tests, four isolated optimized QEMU tests, rebuil
 installation, boundary check and generated API docs. This is a diagnostic and
 refresh recovery milestone; the six workflow completion boxes above stay open.
 Finder restart and System Panic/Restart UI remain implementation requirements.
+
+
+## Verified classic-revision-2 / StuffIt-5 and Arsenic slice
+
+2026-10-21: shared no_std/forbid(unsafe_code) mac-sit dispatches classic revisions
+1/2 and StuffIt 5 by header. Version 5 validates both header CRC layers, bounded
+variable headers, parent/child counts and directory sentinels; it preserves both
+forks, supported Finder metadata, comments and timestamps. Mounted Get Info
+reports the container's filesystem version. Driver FASS rules include SIT!,
+SITD, SIT2 and SIT5 and disappear with the package.
+
+The resumable Arsenic decoder handles arithmetic coding, MTF, inverse BWT, RLE,
+randomization, multiple blocks and embedded CRC32. CPU-only work yields without
+requesting more source bytes. Decoder requests remain under 512 bytes; large
+arithmetic state uses fallible owned storage instead of being copied on every
+callback or enlarging simple codecs. Small forks cap workspace by their known RLE bound.
+The actual reference uses 512 KiB blocks; the module's declared/private heap is
+4 MiB, with a matching larger link reservation. Shared generic admission limits
+separate code bytes (2 MiB), runtime reservation (6 MiB), heap (4 MiB) and stack
+(64 KiB), with specific errors and negative tests. Total machine-arena bounds
+still apply independently.
+
+Validation: 16 parser/codec tests; eight driver callback/cancellation tests;
+module contract tests; public error-range and package-budget tests; seven private
+optimized QEMU gates, rebuilt image, boundary/workspace checks and API docs.
+The actual reference archive opens in Finder, and all nine nonempty forks pass
+CRC validation through the public SDK on writable and read-only host exports.
+The original source archive and regular visible VM were left untouched.
+Project-owned synthetic fixtures retain reproducible independent-writer provenance.
+
+Remaining: method 13 and other compression methods, same-provider nested mounts,
+provider mutation/copy contracts, external native app/document launch, transfer
+UI/application targets, and the recovery requirements above. This does not close
+any of the six full-workflow completion boxes.

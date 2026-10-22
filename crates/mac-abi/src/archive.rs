@@ -5,6 +5,7 @@ use crate::Status;
 const BASE: Status = -65_536;
 const VERSION: Status = BASE - 256;
 const METHOD: Status = VERSION - 256;
+const ENTRY_VERSION: Status = METHOD - 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArchiveError
@@ -17,6 +18,7 @@ pub enum ArchiveError
     Limit,
     Encrypted,
     Version(u8),
+    EntryVersion(u8),
     Method(u8)
 }
 impl ArchiveError
@@ -33,6 +35,7 @@ impl ArchiveError
             Self::Limit => BASE - 5,
             Self::Encrypted => BASE - 6,
             Self::Version(version) => VERSION - version as Status,
+            Self::EntryVersion(version) => ENTRY_VERSION - version as Status,
             Self::Method(method) => METHOD - method as Status
         }
     }
@@ -50,6 +53,10 @@ impl ArchiveError
             s if s == BASE - 6 => Some(Self::Encrypted),
             s if s <= VERSION && s >= VERSION - 255 => Some(Self::Version((VERSION - s) as u8)),
             s if s <= METHOD && s >= METHOD - 255 => Some(Self::Method((METHOD - s) as u8)),
+            s if s <= ENTRY_VERSION && s >= ENTRY_VERSION - 255 =>
+            {
+                Some(Self::EntryVersion((ENTRY_VERSION - s) as u8))
+            }
             _ => None
         }
     }
@@ -97,6 +104,12 @@ impl core::fmt::Display for ArchiveError
             {
                 write!(f,
                        "StuffIt archive version {version} is not supported by the installed driver")
+            }
+            Self::EntryVersion(version) =>
+            {
+                write!(f,
+                       "StuffIt entry header version {version} is not supported by the installed \
+                        driver")
             }
             Self::Method(method) =>
             {

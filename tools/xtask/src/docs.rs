@@ -21,7 +21,7 @@ pub(super) fn generate(workspace: &Workspace) -> Result<()>
                href=\"mac_module/index.html\">Native module contracts</a></p><p><a \
                href=\"mac_hfs_b/index.html\">HFS-B filesystem</a></p><p><a \
                href=\"mac_fork_file/index.html\">Host fork containers</a></p><p><a \
-               href=\"mac_sit/index.html\">Classic StuffIt archives</a></p><p>Library \
+               href=\"mac_sit/index.html\">StuffIt archive formats</a></p><p>Library \
                documentation uses the host configuration. Guest-only hardware code and \
                application entry binaries are not included. Regenerate with <code>cargo xtask \
                doc</code>.</p></html>\n")?;

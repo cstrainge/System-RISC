@@ -40,8 +40,9 @@ impl Root
 }
 struct Name
 {
-    text: String,
-    key:  String
+    text:    String,
+    key:     String,
+    comment: String
 }
 pub(super) struct Volume
 {
@@ -71,12 +72,27 @@ impl Volume
         }
         for (i, node) in index.nodes().iter().enumerate()
         {
-            let mut utf8 = [0; 189];
+            let mut utf8 = [0; 765];
             let text = names::normalize(node.name().utf8(&mut utf8).map_err(format_error)?)
                              .map_err(name_error)?;
             let key = names::comparison(&text).map_err(name_error)?;
+            let mut comment = String::new();
+            comment.try_reserve(node.comment
+                                    .len()
+                                    .checked_mul(3)
+                                    .ok_or(Error(mac_abi::NO_MEMORY))?)
+                   .map_err(|_| Error(mac_abi::NO_MEMORY))?;
+            for byte in &node.comment
+            {
+                comment.push(mac_text::character(*byte));
+            }
+            if comment.len() > 255
+            {
+                return Err(Error(mac_abi::archive::ArchiveError::Limit.status()));
+            }
             names.push(Name { text,
-                              key });
+                              key,
+                              comment });
             lookup.push(i);
             let parent = if node.parent == ROOT_ID
             {
@@ -161,7 +177,10 @@ impl Volume
         let node = self.index.get(id).ok_or(Error(mac_abi::NOT_FOUND))?;
         m.parent = node.parent;
         m.child_count = node.child_count;
-        m.name = &self.names[(id - mac_sit::FIRST_ENTRY_ID) as usize].text;
+        let name = &self.names[(id - mac_sit::FIRST_ENTRY_ID) as usize];
+        m.name = &name.text;
+        m.comment = &name.comment;
+        m.attributes = node.attributes;
         match node.contents
         {
             Contents::File(f) =>
@@ -176,8 +195,8 @@ impl Volume
                 m.finder_info[8..10].copy_from_slice(&f.finder_flags.to_be_bytes());
             }
             Contents::Folder { header,
-                               top_level }
-                if top_level =>
+                               metadata_valid }
+                if metadata_valid =>
             {
                 m.created =
                     mac_sit::mac_microseconds(header.created_seconds).map_err(format_error)?;
@@ -188,6 +207,10 @@ impl Volume
             // Nested folder fields are unspecified in 1.5.1. Inherit source
             // timestamps rather than interpreting arbitrary bytes as dates.
             _ => ()
+        }
+        if let Some(info) = node.finder_info
+        {
+            m.finder_info = info;
         }
         Ok(m)
     }
@@ -207,7 +230,7 @@ impl Volume
         let length =
             fs::Mount { capabilities:       fs::READ,
                         filesystem:         *b"SIT ",
-                        filesystem_version: 1,
+                        filesystem_version: self.index.header().format.version(),
                         capacity:           None,
                         root:               self.metadata(ROOT_ID)? }.encode(&mut output)
                                                                      .map_err(|_| {

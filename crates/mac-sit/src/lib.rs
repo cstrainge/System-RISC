@@ -1,12 +1,15 @@
-//! Bounded classic StuffIt 1.5.1 parsing, shared by kernel drivers and tools.
-//! The resumable catalog builder asks for headers only. It never buffers fork
-//! payloads, interprets a folder's subtree hints as forks, or probes SIT5/SITX.
+//! Bounded StuffIt catalogs and resumable fork expansion, shared by native
+//! filesystem drivers and Linux tools. Classic revisions 1/2 and StuffIt 5 are
+//! selected by their headers. Catalog construction never reads fork payloads.
 #![no_std]
 #![forbid(unsafe_code)]
 extern crate alloc;
 mod crc;
 mod header;
 mod index;
+mod builder;
+mod v5;
+pub use builder::IndexBuilder;
 mod decode;
 pub use crc::Crc16;
 pub use decode::{Decoder, MAX_STEP, Progress};
@@ -19,6 +22,7 @@ pub enum Error
     Truncated,
     Signature,
     UnsupportedVersion(u8),
+    UnsupportedEntryVersion(u8),
     HeaderChecksum,
     ForkChecksum,
     Name,

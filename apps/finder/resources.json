@@ -2372,7 +2372,8 @@
           "The StuffIt archive exceeds the driver's catalog, nesting or decoder limits.",
           "This StuffIt archive is encrypted. Password-protected extraction is not supported.",
           "StuffIt archive version ^0 is not supported by the installed driver.",
-          "StuffIt compression method ^0 is not supported by the installed driver."
+          "StuffIt compression method ^0 is not supported by the installed driver.",
+          "StuffIt entry header version ^0 is not supported by the installed driver."
         ]
       }
     },

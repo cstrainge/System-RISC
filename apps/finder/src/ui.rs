@@ -46,7 +46,8 @@ pub fn error_text(system: &System<'_>, status: Error, operation: u32, subject: &
                 files::ArchiveError::Limit => 33,
                 files::ArchiveError::Encrypted => 34,
                 files::ArchiveError::Version(_) => 35,
-                files::ArchiveError::Method(_) => 36
+                files::ArchiveError::Method(_) => 36,
+                files::ArchiveError::EntryVersion(_) => 37
             }
         }
         _ => 26
@@ -58,7 +59,8 @@ pub fn error_text(system: &System<'_>, status: Error, operation: u32, subject: &
     let mut out = crate::browser::Text::default();
     write!(&mut out, "{operation}: {subject}\r").map_err(|_| Error::BadArgument)?;
     if let Error::Archive(files::ArchiveError::Version(number)
-                          | files::ArchiveError::Method(number)) = status
+                          | files::ArchiveError::Method(number)
+                          | files::ArchiveError::EntryVersion(number)) = status
     {
         let (before, after) = cause.split_once("^0").ok_or(Error::BadAbi)?;
         write!(&mut out, "{before}{number}{after}").map_err(|_| Error::BadArgument)?;

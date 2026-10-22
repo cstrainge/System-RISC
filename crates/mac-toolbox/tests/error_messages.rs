@@ -21,7 +21,8 @@ fn archive_causes_and_payloads_survive_the_public_error_boundary()
     for byte in 0..=255
     {
         for (cause, what) in [(ArchiveError::Version(byte), "archive version"),
-                              (ArchiveError::Method(byte), "compression method")]
+                              (ArchiveError::Method(byte), "compression method"),
+                              (ArchiveError::EntryVersion(byte), "entry header version")]
         {
             let error = Error::from_status(cause.status());
             assert_eq!(error, Error::Archive(cause));
@@ -31,7 +32,7 @@ fn archive_causes_and_payloads_survive_the_public_error_boundary()
             assert!(text.contains("installed driver"), "{text}");
         }
     }
-    for other in [i32::MIN, -65_543, -65_791, -66_304, i32::MAX]
+    for other in [i32::MIN, -65_543, -65_791, -66_560, i32::MAX]
     {
         assert_eq!(Error::from_status(other), Error::Unknown(other));
         assert!(Error::from_status(other).to_string().contains(&other.to_string()));

@@ -9,7 +9,7 @@ use linked_list_allocator::LockedHeap;
 use mac_driver::{Client, Completion, Driver, Error, Request, Result, file_sources::FileSources};
 use stuffit_filesystem::service::Service;
 
-const HEAP_BYTES: usize = 1024 * 1024;
+const HEAP_BYTES: usize = 4 * 1024 * 1024;
 #[repr(align(4096))]
 struct HeapStorage([u8; HEAP_BYTES]);
 static mut STORAGE: HeapStorage = HeapStorage([0; HEAP_BYTES]);

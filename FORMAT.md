@@ -686,7 +686,13 @@ requests are withdrawn before quiescing; pending requests prevent finalization
 until completed/cancelled. Module, interface and request identities use the shared
 generation-tagged facility, including rejection of foreign IDs and slot reuse.
 Code/host descriptors remain pinned after failure; hot unloading is not implemented.
-The initial budget checks are admission limits, not an MMU or heap quota.
+The admission profile fixes separate stored-code (2 MiB), runtime reservation
+(6 MiB), declared heap (4 MiB) and callback-stack (64 KiB) limits in mac-module.
+The packager/loader and resident registry use the same constants. In particular,
+a BSS-backed decoder workspace does not count as stored executable bytes.
+Alignment and each exhausted budget have distinct diagnostic errors. The machine
+adapter still admits modules only while their complete reservations fit its
+actual remaining arena. These checks are admission limits, not an MMU or quota.
 
 On the current 128 MiB QEMU virt board, the machine adapter reserves
 `0x87800000..0x87e00000` for modules. This leaves the ROM's live storage scratch
@@ -1023,7 +1029,9 @@ Archive failures use the negative status namespace defined in
 `mac-abi::archive::ArchiveError`: -65536 through -65542 identify truncation,
 signature, header CRC, fork CRC, malformed data, configured limits and encryption;
 -65792 minus the external version byte and -66048 minus the compression-method
-byte retain those unsupported-feature parameters. These are terminal error
+byte retain those unsupported-feature parameters. -66304 minus the entry-header
+version byte identifies an unsupported record layout separately from the archive
+container version. These are terminal error
 identities, not transport failures. Preserve them through job completion and
 File Manager cleanup; no thread-local last-error buffer is involved. The SDK
 returns `Error::Archive`, and Finder formats resource-based explanations with

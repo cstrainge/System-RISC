@@ -35,7 +35,9 @@ def trace_snapshot(output, endpoint, serial, prefix):
     (output / (prefix + '-trace.json')).write_text(json.dumps(decode(path), indent=2))
 
 
-def capture(output, without_driver=False, finder=False, finder_error=False):
+def capture(output, without_driver=False, finder=False, finder_error=False, archive=None, reference=None):
+    if archive is not None and not finder:
+        raise ValueError('--archive requires --finder')
     output.mkdir(parents=True, exist_ok=False)
     target = vm.build_dir() / 'fixtures/modules'
     for fixture, binary in ([] if finder else [('stuffit-app', 'Finder')]):
@@ -74,15 +76,21 @@ def capture(output, without_driver=False, finder=False, finder_error=False):
             folder = output / directory
             subprocess.run([str(host / 'risc-forks'), 'init', str(folder), directory], check=True)
             source = output / 'Examples.sit'
-            shutil.copyfile(vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/nested-v1.sit', source)
+            shutil.copyfile(archive or (vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/nested-v1.sit'), source)
             if finder_error:
                 # Raw host files, rather than only pre-imported fork containers.
                 # The failed open must not poison selection or the next open.
                 damaged = bytearray(source.read_bytes())
                 damaged[14] = 99
                 (folder / 'A.sit').write_bytes(damaged)
+            elif archive is not None:
+                shutil.copyfile(source, folder / 'Examples.sit')
             else:
                 subprocess.run([str(host / 'risc-forks'), 'import', str(folder), str(source)], check=True)
+            if not finder:
+                shutil.copyfile(vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/arsenic-v5.sit', folder / 'Arsenic.sit')
+                if reference is not None:
+                    shutil.copyfile(reference, folder / 'Reference.sit')
             exports.append(folder)
         companion_log = (output / 'host.log').open('w')
         companion = subprocess.Popen([str(host / 'risc-host'), '--export', f'Writable={exports[0]}',
@@ -123,7 +131,7 @@ def capture(output, without_driver=False, finder=False, finder_error=False):
             time.sleep(.15)
             vm.qmp('screendump', {'filename': str(output / 'archive-volume.ppm')}, endpoint)
             termination = 'finder-opened-archive'
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 60
         while not finder and time.monotonic() < deadline:
             text = (output / 'vm/serial.log').read_text(errors='replace')
             if 'STUFFIT_PASS' in text or 'STUFFIT_FAIL' in text:
@@ -135,6 +143,7 @@ def capture(output, without_driver=False, finder=False, finder_error=False):
             time.sleep(.02)
         trace_snapshot(output, endpoint, output / 'vm/serial.log', 'complete')
         (output / 'capture.json').write_text(json.dumps({
+            'reference_included': reference is not None,
             'termination': termination, 'serial': str(output / 'vm/serial.log'),
             'original_before': before, 'original_after': {name: digest(base / name) for name in before}
         }, indent=2) + '\n')
@@ -169,6 +178,8 @@ if __name__ == '__main__':
     parser.add_argument('--without-driver', action='store_true')
     parser.add_argument('--finder', action='store_true')
     parser.add_argument('--finder-error', action='store_true')
+    parser.add_argument('--archive', type=Path, help='Raw archive for a real Finder open')
+    parser.add_argument('--reference', type=Path, help='SuperPaint reference for native fork verification')
     args = parser.parse_args()
     capture(args.output.resolve(), args.without_driver, args.finder or args.finder_error,
-            args.finder_error)
+            args.finder_error, args.archive, args.reference)

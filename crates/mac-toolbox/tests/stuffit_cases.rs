@@ -142,6 +142,185 @@ fn retained_updates(system: &System<'_>) -> Result<(), Error>
     require(system.events().peek_positioned(EventMask::UPDATE)?.is_some())?;
     system.log("RETAINED_UPDATE_USERSPACE_PASS\n")
 }
+fn check_v5(system: &System<'_>, source: VolumeId, archive: Cnid, bad: bool) -> Result<(), Error>
+{
+    use core::fmt::Write;
+    let files = system.files();
+    let mount = files.mount_file(source, archive)?;
+    require(mount.read_only
+            && mount.filesystem
+               == Filesystem::Driver { kind:    (*b"SIT ").into(),
+                                       version: 5 })?;
+    let item = files.child(mount.id, ROOT_ID, 0)?;
+    require(item.name() == "Arsenic"
+            && item.data_length == 34384
+            && item.resource_length == 1038
+            && item.file_type == (*b"TEXT").into())?;
+    let mut comment = super::Message { bytes:  [0; 128],
+                                       length: 0 };
+    files.comment(mount.id, item.id, &mut comment)?;
+    require(&comment.bytes[..comment.length] == b"Project-owned bounded decoder fixture")?;
+    require(files.rename(mount.id, item.id, "Refused") == Err(Error::ReadOnly))?;
+    let mut buffer = [0; 4096];
+    for (fork, length) in [(Fork::Resource, 1038), (Fork::Data, 34384)]
+    {
+        let mut file = files.open(mount.id, item.id, fork)?;
+        let (mut at, mut state) = (0, 0x12345678u32);
+        let mut rejected = false;
+        loop
+        {
+            match file.read(&mut buffer)
+            {
+                Ok(0) => break,
+                Ok(count) =>
+                {
+                    for byte in &buffer[..count]
+                    {
+                        let expected = if matches!(fork, Fork::Resource)
+                        {
+                            if at < 14 { b"Resource fork\r"[at] } else { (at - 14) as u8 }
+                        }
+                        else if at < 32768
+                        {
+                            state ^= state << 13;
+                            state ^= state >> 17;
+                            state ^= state << 5;
+                            state as u8
+                        }
+                        else if at < 33868
+                        {
+                            0x90
+                        }
+                        else if at < 33872
+                        {
+                            b'A'
+                        }
+                        else
+                        {
+                            (at - 33872) as u8
+                        };
+                        require(*byte == expected)?;
+                        at += 1;
+                    }
+                }
+                Err(error) if bad && matches!(fork, Fork::Data) =>
+                {
+                    explained(system,
+                              error,
+                              ArchiveError::ForkChecksum,
+                              "extracted bytes failed verification")?;
+                    rejected = true;
+                    break;
+                }
+                Err(error) => return Err(error)
+            }
+        }
+        require(if bad && matches!(fork, Fork::Data)
+                {
+                    rejected
+                }
+                else
+                {
+                    at == length && !rejected
+                })?;
+        file.close()?;
+    }
+    files.unmount(mount.id)?;
+    let mut message = super::Message { bytes:  [0; 128],
+                                       length: 0 };
+    let _ = writeln!(&mut message, "STUFFIT_V5_USERSPACE_PASS bad_crc={bad}");
+    system.log(core::str::from_utf8(&message.bytes[..message.length]).map_err(|_| Error::BadAbi)?)
+}
+fn reference(system: &System<'_>, source: VolumeId, archive: Cnid) -> Result<(), Error>
+{
+    let files = system.files();
+    let mount = files.mount_file(source, archive)?;
+    require(mount.filesystem
+            == Filesystem::Driver { kind:    (*b"SIT ").into(),
+                                    version: 5 })?;
+    let top = files.child(mount.id, ROOT_ID, 0)?;
+    require(top.name() == "Aldus SuperPaint 3.5" && top.child_count == Some(5))?;
+    let mut buffer = [0; 4096];
+    let mut nonempty = 0;
+    for index in 0..5
+    {
+        let entry = files.child(mount.id, top.id, index)?;
+        require(!entry.is_directory())?;
+        for (fork, expected) in
+            [(Fork::Data, entry.data_length), (Fork::Resource, entry.resource_length)]
+        {
+            let mut file = files.open(mount.id, entry.id, fork)?;
+            let mut total = 0u64;
+            loop
+            {
+                let count = file.read(&mut buffer)?;
+                if count == 0
+                {
+                    break;
+                }
+                total += count as u64;
+            }
+            require(total == expected)?;
+            if total != 0
+            {
+                nonempty += 1;
+            }
+            file.close()?;
+        }
+    }
+    require(nonempty == 9)?;
+    files.unmount(mount.id)?;
+    system.log("STUFFIT_REFERENCE_USERSPACE_PASS forks=9\n")
+}
+fn versions(system: &System<'_>, startup: VolumeId) -> Result<(), Error>
+{
+    let files = system.files();
+    let mut later = [0; NESTED.len()];
+    later.copy_from_slice(NESTED);
+    later[14] = 2;
+    later[16..20].copy_from_slice(&22u32.to_be_bytes());
+    let archive = create(system, startup, "Later classic.sit", &later)?;
+    let mount = files.mount_file(startup, archive.id)?;
+    require(mount.filesystem
+            == Filesystem::Driver { kind:    (*b"SIT ").into(),
+                                    version: 2 })?;
+    let pattern = files.lookup(mount.id, ROOT_ID, "Top/Sub/Pattern")?;
+    let mut file = files.open(mount.id, pattern.id, Fork::Data)?;
+    file.seek(SeekFrom::Start(8187))?;
+    let mut tail = [0; 5];
+    require(file.read(&mut tail)? == 5 && tail == [251, 252, 253, 254, 255])?;
+    file.close()?;
+    files.unmount(mount.id)?;
+    for (name, bytes, bad) in
+        [("Arsenic.sit",
+          include_bytes!("../../mac-sit/tests/fixtures/arsenic-v5.sit").as_slice(),
+          false),
+         ("Randomized.sit",
+          include_bytes!("../../mac-sit/tests/fixtures/arsenic-randomized-v5.sit").as_slice(),
+          false),
+         ("Bad Arsenic.sit",
+          include_bytes!("../../mac-sit/tests/fixtures/arsenic-bad-crc-v5.sit").as_slice(),
+          true)]
+    {
+        let archive = create(system, startup, name, bytes)?;
+        check_v5(system, startup, archive.id, bad)?;
+        files.rename(startup,
+                     archive.id,
+                     if bad
+                     {
+                         "Bad Arsenic released.sit"
+                     }
+                     else if name == "Arsenic.sit"
+                     {
+                         "Arsenic released.sit"
+                     }
+                     else
+                     {
+                         "Randomized released.sit"
+                     })?;
+    }
+    system.log("STUFFIT_CLASSIC2_USERSPACE_PASS\n")
+}
 pub fn check(system: &System<'_>) -> Result<(), Error>
 {
     retained_updates(system)?;
@@ -251,6 +430,8 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     let mut data = files.open(forks, item.id, Fork::Data)?;
     require(data.read(&mut bytes)? == 10 && &bytes[..10] == b"Data fork\r")?;
     data.close()?;
+    system.log("STUFFIT_STAGE versions\n")?;
+    versions(system, startup)?;
     system.log("STUFFIT_STAGE corruption\n")?;
     let mut corrupt = [0; FORKS.len()];
     corrupt.copy_from_slice(FORKS);
@@ -346,6 +527,12 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
     {
         let host = files.volume(id)?;
         system.log("STUFFIT_STAGE transfer-mount\n")?;
+        if let Ok(archive) = files.lookup(host.id, ROOT_ID, "Reference.sit")
+        {
+            reference(system, host.id, archive.id)?;
+        }
+        let archive5 = files.lookup(host.id, ROOT_ID, "Arsenic.sit")?;
+        check_v5(system, host.id, archive5.id, false)?;
         let archive = files.lookup(host.id, ROOT_ID, "Examples.sit")?;
         system.log("STUFFIT_STAGE transfer-open-source\n")?;
         let mut public = files.open(host.id, archive.id, Fork::Data)?;

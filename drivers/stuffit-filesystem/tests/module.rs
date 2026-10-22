@@ -172,6 +172,11 @@ impl Harness
 
     fn mount(&mut self) -> u32
     {
+        self.mount_version(1)
+    }
+
+    fn mount_version(&mut self, version: u32) -> u32
+    {
         let volume = self.volumes.insert(()).unwrap();
         let out = self.execute(Operation::Mount,
                                Arguments { volume,
@@ -181,7 +186,7 @@ impl Harness
                       .unwrap();
         let descriptor = fs::Mount::decode(&out).unwrap();
         assert_eq!(descriptor.filesystem, *b"SIT ");
-        assert_eq!(descriptor.filesystem_version, 1);
+        assert_eq!(descriptor.filesystem_version, version);
         assert_eq!(descriptor.capabilities, fs::READ);
         assert_eq!(descriptor.root.name, "Examples.sit");
         volume
@@ -425,4 +430,90 @@ fn malformed_polls_and_small_buffers_preserve_the_exact_live_operation()
     assert_eq!(h.finish(ticket, Operation::Read, Phase::Cancel, &[]).unwrap(),
                b"Native MacRoman name\r");
     assert_eq!(h.lower.0.lock().unwrap().trace.len(), before);
+}
+
+
+#[test]
+fn stuffit5_reads_both_arsenic_forks_and_reports_verified_crc_failures()
+{
+    let bytes = include_bytes!("../../../crates/mac-sit/tests/fixtures/arsenic-v5.sit");
+    let mut h = Harness::new(bytes);
+    let volume = h.mount_version(5);
+    let metadata = h.execute(Operation::Catalog,
+                             Arguments { volume,
+                                         node: 16,
+                                         ..Default::default() })
+                    .unwrap();
+    let info = Metadata::decode(&metadata).unwrap();
+    assert_eq!(info.name, "Arsenic");
+    assert_eq!(info.comment, "Project-owned bounded decoder fixture");
+    assert_eq!(info.finder_info[..8], *b"TEXTTEST");
+    assert_eq!(info.data_length, 34384);
+    assert_eq!(info.resource_length, 1038);
+    let token = h.open(volume, 16);
+    let resource = h.read(volume, token, 1, 0, 1038).unwrap();
+    assert_eq!(&resource[..14], b"Resource fork\r");
+    assert_eq!(h.read(volume, token, 0, 34380, 4).unwrap(), [252, 253, 254, 255]);
+    assert_eq!(h.read(volume, token, 0, 0, 3).unwrap(), [165, 163, 196]);
+    let mut h = Harness::new(include_bytes!("../../../crates/mac-sit/tests/fixtures/\
+                                             arsenic-bad-crc-v5.sit"));
+    let volume = h.mount_version(5);
+    let token = h.open(volume, 16);
+    assert_eq!(h.read(volume, token, 0, 0, 34384),
+               Err(Error(mac_abi::archive::ArchiveError::ForkChecksum.status())));
+    // Corruption in one fork never poisons the volume, its other fork, or close.
+    assert_eq!(h.read(volume, token, 1, 0, 14).unwrap(), b"Resource fork\r");
+    h.execute(Operation::Close,
+              Arguments { volume,
+                          token,
+                          ..Default::default() })
+     .unwrap();
+    h.execute(Operation::Unmount,
+              Arguments { volume,
+                          ..Default::default() })
+     .unwrap();
+    assert!(h.lower.0.lock().unwrap().flight.is_none());
+}
+#[test]
+fn cancelling_arsenic_cpu_work_discards_provisional_state_and_allows_immediate_retry()
+{
+    let mut h =
+        Harness::new(include_bytes!("../../../crates/mac-sit/tests/fixtures/arsenic-v5.sit"));
+    let volume = h.mount_version(5);
+    let token = h.open(volume, 16);
+    let ticket = h.requests.insert(()).unwrap();
+    let input = Harness::bytes(Arguments { volume,
+                                           token,
+                                           length: 34384,
+                                           ..Default::default() });
+    let mut cpu_steps = 0;
+    for step in 0..10000
+    {
+        let before = h.lower.0.lock().unwrap().trace.len();
+        assert_eq!(h.step(ticket,
+                          Operation::Read,
+                          if step == 0 { Phase::Start } else { Phase::Poll },
+                          if step == 0 { &input } else { &[] },
+                          &mut vec![0; 34384]),
+                   Ok(Completion::Pending));
+        let lower = h.lower.0.lock().unwrap();
+        if step > 0 && lower.flight.is_none() && lower.trace.len() == before
+        {
+            cpu_steps += 1;
+        }
+        else
+        {
+            cpu_steps = 0;
+        }
+        if cpu_steps == 3
+        {
+            break;
+        }
+    }
+    assert_eq!(cpu_steps, 3, "fixture did not reach a decoder-only work slice");
+    assert_eq!(h.finish(ticket, Operation::Read, Phase::Cancel, &[]),
+               Err(Error(mac_abi::OPERATION_CANCELLED)));
+    h.requests.remove(ticket).unwrap();
+    assert!(h.lower.0.lock().unwrap().flight.is_none());
+    assert_eq!(h.read(volume, token, 0, 34380, 4).unwrap(), [252, 253, 254, 255]);
 }

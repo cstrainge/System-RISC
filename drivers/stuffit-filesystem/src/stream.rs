@@ -64,9 +64,13 @@ impl Fetch
                 {
                     return Err(self.forced.unwrap_or(Error(mac_abi::OPERATION_CANCELLED)));
                 }
-                if n == 0 || n > self.bytes.len() - self.filled
+                if n == 0
                 {
-                    return Err(Error(mac_abi::IO_ERROR));
+                    return Err(Error(mac_abi::archive::ArchiveError::Truncated.status()));
+                }
+                if n > self.bytes.len() - self.filled
+                {
+                    return Err(Error(mac_abi::BAD_ABI));
                 }
                 self.filled += n;
                 Ok(self.filled == self.bytes.len())
@@ -179,11 +183,11 @@ impl Stream
         {
             return Ok(true);
         }
-        if progress.consumed == 0 && progress.written == 0
+        if progress.needs_input && progress.consumed == 0 && progress.written == 0
         {
             if self.packed == self.fork.packed_length
             {
-                return Err(Error(mac_abi::IO_ERROR));
+                return Err(Error(mac_abi::archive::ArchiveError::Truncated.status()));
             }
             let count = (self.fork.packed_length - self.packed).min(MAX_STEP as u64) as usize;
             self.fetch = Some(Fetch::new(self.fork.offset + self.packed, count)?);

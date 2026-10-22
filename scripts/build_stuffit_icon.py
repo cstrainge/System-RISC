@@ -96,7 +96,7 @@ def build():
     # A native association record, not a Finder filename convention. Exact
     # file codes win; the extension hint classifies raw/untyped host imports.
     rules = []
-    for code in [b'SIT!', b'SITD']:
+    for code in [b'SIT!', b'SITD', b'SIT2', b'SIT5']:
         rules.append(struct.pack('>4sHhI',code,1,FAMILY,0))
     (DEST.parent / 'file-associations.bin').write_bytes(b'FAS1'+struct.pack('>HH',1,len(rules))+b''.join(rules))
     (DEST/'sources.json').write_text(json.dumps({'author':'System RISC',

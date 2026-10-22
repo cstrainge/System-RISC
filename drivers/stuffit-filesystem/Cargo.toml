@@ -12,6 +12,7 @@ required-features = ["guest"]
 test = false
 bench = false
 [dependencies]
+mac-text = { path = "../../crates/mac-text" }
 mac-driver = { path = "../../crates/mac-driver" }
 mac-sit.workspace = true
 mac-abi.workspace = true

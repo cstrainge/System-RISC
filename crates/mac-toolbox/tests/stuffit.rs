@@ -24,6 +24,9 @@ fn classic_archives_mount_read_forks_copy_out_and_reject_corruption_and_stale_id
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert!(serial.contains("STUFFIT_PASS"), "{serial}");
     assert!(serial.contains("RETAINED_UPDATE_USERSPACE_PASS"), "{serial}");
+    assert!(serial.contains("STUFFIT_CLASSIC2_USERSPACE_PASS"), "{serial}");
+    assert_eq!(serial.matches("STUFFIT_V5_USERSPACE_PASS bad_crc=false").count(), 4, "{serial}");
+    assert_eq!(serial.matches("STUFFIT_V5_USERSPACE_PASS bad_crc=true").count(), 1, "{serial}");
     for failure in
         ["STUFFIT_FAIL", "MODULE_REJECTED", "SYSTEM_PANIC:", "SYSTEM_TRAP:", "DISK_REQUEST_FAILED"]
     {
@@ -151,5 +154,103 @@ fn assert_no_update_storm(output: &std::path::Path)
                 "folder refresh repeatedly returned unacknowledged Update events: {trace}");
         assert!(trace["services"]["1"]["menu"][0].as_u64().unwrap_or(0) < 1000,
                 "folder refresh flooded per-event menu work: {trace}");
+    }
+}
+
+
+fn finder_archive(source: &std::path::Path, label: &str)
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    assert!(source.is_file(),
+            "Provide this reference archive before running the ignored gate: {}",
+            source.display());
+    let output =
+        root.join("results/system7").join(format!("native-stuffit-{label}-{}", std::process::id()));
+    let result = Command::new("python3").arg(root.join("System7/scripts/capture_stuffit.py"))
+                                        .arg("--output")
+                                        .arg(&output)
+                                        .arg("--finder")
+                                        .arg("--archive")
+                                        .arg(source)
+                                        .output()
+                                        .unwrap();
+    assert!(result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr));
+    let capture: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(capture["original_before"], capture["original_after"]);
+    assert_eq!(capture["termination"], "finder-opened-archive");
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    assert!(serial.lines()
+                  .any(|l| {
+                      l.starts_with("FINDER_FOLDER_OPEN ") && l.ends_with("name=Examples.sit")
+                  }),
+            "{serial}");
+    for failure in
+        ["FINDER_ERROR", "FINDER_ACTION_FAILED", "MODULE_REJECTED", "SYSTEM_PANIC:", "SYSTEM_TRAP:"]
+    {
+        assert!(!serial.contains(failure), "{serial}");
+    }
+    assert_no_update_storm(&output);
+}
+#[test]
+#[ignore = "requires current private image, QEMU and real Finder"]
+fn stuffit5_raw_host_archive_opens_through_real_finder()
+{
+    finder_archive(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mac-sit/tests/fixtures/\
+                                                                    arsenic-v5.sit"),
+                   "v5-finder");
+}
+#[test]
+#[ignore = "requires current private image, QEMU and the user-supplied SuperPaint reference archive"]
+fn user_supplied_stuffit5_reference_opens_through_real_finder()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let source =
+        std::env::var_os("SYSTEM7_STUFFIT_REFERENCE").map(PathBuf::from)
+                                                     .unwrap_or(root.join("System7/transfer/\
+                                                                           aldussuperpaint3.5.\
+                                                                           sit"));
+    finder_archive(&source, "reference-finder");
+}
+
+#[test]
+#[ignore = "requires current private image, QEMU and user-supplied SuperPaint reference archive"]
+fn user_supplied_stuffit5_reference_verifies_all_nine_forks_through_public_sdk()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let source =
+        std::env::var_os("SYSTEM7_STUFFIT_REFERENCE").map(PathBuf::from)
+                                                     .unwrap_or(root.join("System7/transfer/\
+                                                                           aldussuperpaint3.5.\
+                                                                           sit"));
+    assert!(source.is_file(),
+            "Provide SuperPaint reference archive at {} or SYSTEM7_STUFFIT_REFERENCE",
+            source.display());
+    let output = root.join("results/system7")
+                     .join(format!("native-stuffit-reference-sdk-{}", std::process::id()));
+    let result = Command::new("python3").arg(root.join("System7/scripts/capture_stuffit.py"))
+                                        .arg("--output")
+                                        .arg(&output)
+                                        .arg("--reference")
+                                        .arg(source)
+                                        .output()
+                                        .unwrap();
+    assert!(result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr));
+    let capture: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(capture["reference_included"], true);
+    assert_eq!(capture["original_before"], capture["original_after"]);
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    assert!(serial.contains("STUFFIT_PASS"), "{serial}");
+    assert_eq!(serial.matches("STUFFIT_REFERENCE_USERSPACE_PASS forks=9").count(), 2, "{serial}");
+    for failure in ["STUFFIT_FAIL", "MODULE_REJECTED", "SYSTEM_PANIC:", "SYSTEM_TRAP:"]
+    {
+        assert!(!serial.contains(failure), "{serial}");
     }
 }

@@ -181,8 +181,8 @@ impl Registry
                  file_type,
                  kernel_abi: mac_abi::ABI_VERSION,
                  target: self.target,
-                 max_heap: 1024 * 1024,
-                 max_stack: 64 * 1024,
+                 max_heap: mac_module::MAX_HEAP_BYTES,
+                 max_stack: mac_module::MAX_STACK_BYTES,
                  services: &self.services,
                  providers: &providers }.validate(contract)?;
         if self.modules.iter().any(|(_, m)| m.identity == contract.identity)

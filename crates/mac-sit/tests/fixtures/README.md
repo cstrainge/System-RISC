@@ -40,3 +40,33 @@ regenerating later changes headers and their CRCs, but not fork payloads.
 The unit tests construct RLE90 and Huffman format vectors separately. Those
 vectors are not represented as output captured from an original Macintosh.
 Original StuffIt 1.5.1 producer/runtime verification remains an integration gate.
+
+
+## StuffIt 5 and Arsenic vectors
+
+`arsenic-v5.sit`, `arsenic-randomized-v5.sit` and `arsenic-bad-crc-v5.sit`
+contain only project-owned test bytes. Regenerate with:
+
+```sh
+python3 generate_sit5.py /path/to/stuffit-0.4.0/src/lib.rs .
+```
+
+The script pins the reference source SHA256 and compiles the independent
+MIT/Apache-2.0 [stuffit 0.4.0 writer](https://crates.io/crates/stuffit/0.4.0) privately.
+It explicitly adds the omitted Arsenic CRC32 trailer, encoded lookahead zeros
+and final lookahead padding; one variant also randomizes the RLE block before
+BWT. The bad-CRC variant changes only the encoded data-fork checksum. These
+are synthetic vectors from an adapted independent writer, not original-Mac
+observations. The header construction is separate from the production parser.
+
+Each archive holds Arsenic with 34,384 data bytes and 1,038 resource bytes. Data:
+32,768 xorshift32 bytes (seed 0x12345678, shifts left13/right17/left5, emit low
+byte), then 1,100 bytes 0x90, four A bytes and two cycles 0..255. Resource:
+ASCII `Resource fork` plus CR, then four cycles 0..255. They exercise repeated
+bytes, MTF zero runs, multiple BWT blocks and a full 32 KiB transform.
+
+Plain-data SHA256:
+`6e7b57c98139fb9ffe61de1e0cfc0f88793572978138142e3d07ef64a8a61353`.
+Resource SHA256:
+`d0617102bb9a198c19fb75ddd77eb8bb1e7c09948ce99398ec781360e39ebf09`.
+The expected ISO CRC32 values are 0xae216433 and 0xd9ee79cb respectively.

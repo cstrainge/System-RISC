@@ -104,7 +104,7 @@ fn sentinels_ignore_unspecified_fields_and_validate_nesting()
     assert_eq!(catalog(&archive(&[entry(0, 0)], 0), Limits::default()).err(), Some(Error::Count));
 }
 #[test]
-fn both_signatures_and_only_the_documented_container_version_are_accepted()
+fn classic_signatures_and_documented_container_revisions_are_validated()
 {
     for at in [0, 10]
     {
@@ -112,7 +112,7 @@ fn both_signatures_and_only_the_documented_container_version_are_accepted()
         bytes[at] ^= 1;
         assert_eq!(ArchiveHeader::decode(&bytes, bytes.len() as u64), Err(Error::Signature));
     }
-    for version in [0, 2, 5, 255]
+    for version in [0, 3, 5, 255]
     {
         let mut bytes = archive(&[], 0);
         bytes[14] = version;
@@ -185,10 +185,17 @@ fn expand(fork: Fork, packed: &[u8], input_chunk: usize, output_chunk: usize) ->
         output.extend_from_slice(&buffer[..progress.written]);
         if progress.complete
         {
-            assert_eq!(at, packed.len());
+            if fork.method() != Ok(Method::Arsenic)
+            {
+                assert_eq!(at, packed.len());
+            }
+            else
+            {
+                assert!(packed.len() - at <= 8, "unexpected arithmetic lookahead padding");
+            }
             return Ok(output);
         }
-        if progress.consumed == 0 && progress.written == 0
+        if progress.needs_input && progress.consumed == 0 && progress.written == 0
         {
             return Err(Error::Truncated);
         }
@@ -200,7 +207,8 @@ fn stream(method: u8, packed: &[u8], expected: &[u8]) -> Fork
            packed_length: packed.len() as u64,
            length:        expected.len() as u64,
            crc:           Crc16::checksum(expected),
-           method_byte:   method }
+           method_byte:   method,
+           format:        ArchiveFormat::Classic(1) }
 }
 #[test]
 fn original_writer_forks_expand_across_every_small_input_and_output_boundary()
@@ -377,4 +385,278 @@ fn malformed_streams_fail_and_cannot_resume_as_success()
     assert_eq!(decoder.step(b"A", &mut [0; 16]), Err(Error::ForkChecksum));
     assert_eq!(decoder.step(&[], &mut [0; 16]), Err(Error::InvalidState));
     assert_eq!(expand(stream(3, &[0; 640], b"A"), &[0; 640], 1, 1), Err(Error::Limit));
+}
+
+#[test]
+fn later_classic_revision_uses_its_catalog_offset_and_encryption_flag()
+{
+    for signature in [b"SIT!", b"SITD", b"SIT2", b"SIT5", b"STi3", b"ST65"]
+    {
+        let mut bytes = archive(&[entry(0, 0)], 1);
+        bytes.splice(22..22, [0u8; 42]);
+        let length = bytes.len() as u32;
+        bytes[..4].copy_from_slice(signature);
+        bytes[6..10].copy_from_slice(&length.to_be_bytes());
+        bytes[14] = 2;
+        bytes[16..20].copy_from_slice(&64u32.to_be_bytes());
+        let (index, read) = catalog(&bytes, Limits::default()).unwrap();
+        assert_eq!(index.header().format, ArchiveFormat::Classic(2));
+        assert_eq!(read, 22 + 112);
+        assert_eq!(index.nodes().len(), 1);
+        let mut bad = bytes.clone();
+        bad[16..20].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(catalog(&bad, Limits::default()).err(), Some(Error::Bounds));
+        bytes[64 + 1] = 0x82;
+        let crc = Crc16::checksum(&bytes[64..64 + 110]);
+        bytes[64 + 110..64 + 112].copy_from_slice(&crc.to_be_bytes());
+        let (index, _) = catalog(&bytes, Limits::default()).unwrap();
+        let Contents::File(header) = index.nodes()[0].contents
+        else
+        {
+            panic!("file expected")
+        };
+        assert_eq!(header.data.method(), Err(Error::Encrypted));
+    }
+}
+fn v5_entry(name: &[u8], directory: bool, parent: u32, data: &[u8], resource: &[u8],
+            comment: &[u8])
+            -> Vec<u8>
+{
+    let mut bytes = alloc::vec![0;48];
+    bytes[..4].fill(0xa5);
+    bytes[4] = 1;
+    bytes[9] = if directory { 0x40 } else { 0x80 };
+    bytes[10..14].copy_from_slice(&3_875_171_696u32.to_be_bytes());
+    bytes[14..18].copy_from_slice(&3_875_171_700u32.to_be_bytes());
+    bytes[26..30].copy_from_slice(&parent.to_be_bytes());
+    bytes[30..32].copy_from_slice(&(name.len() as u16).to_be_bytes());
+    if directory
+    {
+        bytes[46..48].copy_from_slice(&1u16.to_be_bytes());
+    }
+    else
+    {
+        bytes[34..38].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        bytes[38..42].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        bytes[42..44].copy_from_slice(&Crc16::checksum(data).to_be_bytes());
+    }
+    bytes.extend_from_slice(name);
+    bytes.extend_from_slice(&(comment.len() as u16).to_be_bytes());
+    bytes.extend_from_slice(&[0, 0]);
+    bytes.extend_from_slice(comment);
+    let size = bytes.len() as u16;
+    bytes[6..8].copy_from_slice(&size.to_be_bytes());
+    let crc = Crc16::checksum(&bytes);
+    bytes[32..34].copy_from_slice(&crc.to_be_bytes());
+    let mut metadata = [0; 36];
+    if !resource.is_empty()
+    {
+        metadata[1] = 1;
+    }
+    metadata[4..8].copy_from_slice(b"TEXT");
+    metadata[8..12].copy_from_slice(b"TEST");
+    metadata[12..14].copy_from_slice(&0x0100u16.to_be_bytes());
+    bytes.extend_from_slice(&metadata);
+    if !resource.is_empty()
+    {
+        bytes.extend_from_slice(&(resource.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&(resource.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&Crc16::checksum(resource).to_be_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(resource);
+    }
+    bytes.extend_from_slice(data);
+    bytes
+}
+fn v5_archive(name: &[u8]) -> Vec<u8>
+{
+    let mut bytes = alloc::vec![0;114];
+    bytes[..80].copy_from_slice(b"StuffIt (c)1997-2026 Aladdin Systems, Inc., http://www.aladdinsys.com/StuffIt/\r\n");
+    bytes[82] = 5;
+    bytes[83] = 0x10;
+    bytes[92..94].copy_from_slice(&1u16.to_be_bytes());
+    bytes[94..98].copy_from_slice(&114u32.to_be_bytes());
+    bytes.extend_from_slice(&v5_entry(b"Top", true, 0, b"", b"", b"folder"));
+    let mut sentinel = [0; 48];
+    sentinel[..4].fill(0xa5);
+    sentinel[4] = 1;
+    sentinel[6..8].copy_from_slice(&48u16.to_be_bytes());
+    sentinel[9] = 0x40;
+    sentinel[34..38].copy_from_slice(&u32::MAX.to_be_bytes());
+    let crc = Crc16::checksum(&sentinel);
+    sentinel[32..34].copy_from_slice(&crc.to_be_bytes());
+    bytes.extend_from_slice(&sentinel);
+    bytes.extend_from_slice(&v5_entry(name, false, 114, b"Data fork\r", b"Resource fork",
+                                      b"comment"));
+    let length = bytes.len() as u32;
+    bytes[84..88].copy_from_slice(&length.to_be_bytes());
+    let crc = Crc16::checksum(&bytes[..114]);
+    bytes[98..100].copy_from_slice(&crc.to_be_bytes());
+    bytes
+}
+#[test]
+fn stuffit5_catalog_checks_crcs_sentinels_parents_metadata_and_both_forks()
+{
+    let bytes = v5_archive(b"Caf\x8e");
+    let (index, read) = catalog(&bytes, Limits::default()).unwrap();
+    assert_eq!(index.header().format, ArchiveFormat::StuffIt5);
+    assert_eq!(index.nodes().len(), 2);
+    assert_eq!(index.nodes()[0].child_count, 1);
+    assert_eq!(index.nodes()[1].parent, FIRST_ENTRY_ID);
+    assert_eq!(index.nodes()[1].attributes, 1);
+    assert_eq!(index.nodes()[1].comment, b"comment");
+    let Contents::File(file) = index.nodes()[1].contents
+    else
+    {
+        panic!("file expected")
+    };
+    assert_eq!(file.name.utf8(&mut [0; 765]).unwrap(), "Café");
+    assert_eq!(file.file_type, *b"TEXT");
+    assert_eq!(file.creator, *b"TEST");
+    assert_eq!(expand(file.resource,
+                      &bytes
+                          [file.resource.offset as usize..file.resource.end().unwrap() as usize],
+                      1,
+                      1).unwrap(),
+               b"Resource fork");
+    assert_eq!(expand(file.data,
+                      &bytes[file.data.offset as usize..file.data.end().unwrap() as usize],
+                      1,
+                      1).unwrap(),
+               b"Data fork\r");
+    assert_eq!(read, bytes.len() + 22 - 23, "catalog must skip both fork payloads");
+    let long = alloc::vec![b'a';255];
+    assert!(catalog(&v5_archive(&long), Limits::default()).is_ok());
+    let mut bad = bytes.clone();
+    bad[100] ^= 1;
+    assert_eq!(catalog(&bad, Limits::default()).err(), Some(Error::HeaderChecksum));
+    let mut bad = bytes.clone();
+    bad[114 + 48] ^= 1;
+    assert_eq!(catalog(&bad, Limits::default()).err(), Some(Error::HeaderChecksum));
+    assert_eq!(catalog(&bytes,
+                       Limits { entries: 1,
+                                depth:   64 }).err(),
+               Some(Error::Limit));
+    assert_eq!(catalog(&bytes,
+                       Limits { entries: 4096,
+                                depth:   0 }).err(),
+               Some(Error::Limit));
+    assert!(catalog(&bytes,
+                    Limits { entries: 4096,
+                             depth:   1 }).is_ok());
+}
+
+
+fn arsenic_data() -> Vec<u8>
+{
+    let mut state = 0x12345678u32;
+    let mut data = Vec::new();
+    for _ in 0..32768
+    {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        data.push(state as u8);
+    }
+    data.extend_from_slice(&[0x90; 1100]);
+    data.extend_from_slice(b"AAAA");
+    data.extend((0..512).map(|i| i as u8));
+    data
+}
+#[test]
+fn arsenic_randomization_multiblock_forks_and_arbitrary_fragmentation_verify_crc32()
+{
+    assert!(core::mem::size_of::<Decoder>() < 512,
+            "Arsenic state enlarged every codec/request move");
+    let data = arsenic_data();
+    let mut resource = b"Resource fork\r".to_vec();
+    resource.extend((0..1024).map(|i| i as u8));
+    for bytes in [include_bytes!("../tests/fixtures/arsenic-v5.sit").as_slice(),
+                  include_bytes!("../tests/fixtures/arsenic-randomized-v5.sit").as_slice()]
+    {
+        let (index, _) = catalog(bytes, Limits::default()).unwrap();
+        let Contents::File(file) = index.nodes()[0].contents
+        else
+        {
+            panic!("file expected")
+        };
+        for (fork, expected) in [(file.data, &data), (file.resource, &resource)]
+        {
+            for input in [1, 7, 4096]
+            {
+                for output in [1, 129, 4096]
+                {
+                    let packed = &bytes[fork.offset as usize..fork.end().unwrap() as usize];
+                    assert_eq!(expand(fork, packed, input, output).unwrap(), *expected);
+                }
+            }
+        }
+        let packed = &bytes[file.data.offset as usize..file.data.end().unwrap() as usize];
+        let mut decoder = Decoder::new(file.data).unwrap();
+        let (mut at, mut yields, mut steps) = (0, 0, 0);
+        let mut out = [0; 4096];
+        loop
+        {
+            let progress = decoder.step(&packed[at..], &mut out).unwrap();
+            at += progress.consumed;
+            steps += 1;
+            assert!(progress.consumed <= MAX_STEP && progress.written <= MAX_STEP);
+            if progress.consumed == 0
+               && progress.written == 0
+               && !progress.needs_input
+               && !progress.complete
+            {
+                yields += 1;
+            }
+            if progress.complete
+            {
+                break;
+            }
+            assert!(steps < 1000, "bounded decode stopped making progress");
+        }
+        assert!(yields > 0, "BWT construction never yielded CPU-only work");
+    }
+}
+#[test]
+fn arsenic_checksum_and_truncation_fail_explicitly_and_poison_only_the_decoder()
+{
+    let bytes = include_bytes!("../tests/fixtures/arsenic-bad-crc-v5.sit");
+    let (index, _) = catalog(bytes, Limits::default()).unwrap();
+    let Contents::File(file) = index.nodes()[0].contents
+    else
+    {
+        panic!("file expected")
+    };
+    let packed = &bytes[file.data.offset as usize..file.data.end().unwrap() as usize];
+    assert_eq!(expand(file.data, packed, 7, 129).err(), Some(Error::ForkChecksum));
+    let good = include_bytes!("../tests/fixtures/arsenic-v5.sit");
+    let (index, _) = catalog(good, Limits::default()).unwrap();
+    let Contents::File(file) = index.nodes()[0].contents
+    else
+    {
+        panic!("file expected")
+    };
+    let packed = &good[file.data.offset as usize..file.data.end().unwrap() as usize];
+    for length in [0, 2, packed.len() / 2]
+    {
+        let mut decoder = Decoder::new(Fork { packed_length: length as u64,
+                                              ..file.data }).unwrap();
+        let mut at = 0;
+        let mut out = [0; 4096];
+        let error = loop
+        {
+            match decoder.step(&packed[at..length], &mut out)
+            {
+                Ok(p) =>
+                {
+                    at += p.consumed;
+                    assert!(!p.complete, "truncated fork became verified");
+                }
+                Err(error) => break error
+            }
+        };
+        assert_eq!(error, Error::Truncated);
+        assert_eq!(decoder.step(&[], &mut out), Err(Error::InvalidState));
+    }
+    assert_eq!(expand(file.data, packed, 7, 129).unwrap(), arsenic_data());
 }

@@ -49,6 +49,10 @@ fn format_error(error: mac_sit::Error) -> Error
               {
                   ArchiveError::Version(version).status()
               }
+              mac_sit::Error::UnsupportedEntryVersion(version) =>
+              {
+                  ArchiveError::EntryVersion(version).status()
+              }
               mac_sit::Error::Limit => ArchiveError::Limit.status(),
               mac_sit::Error::Truncated => ArchiveError::Truncated.status(),
               mac_sit::Error::Signature => ArchiveError::Signature.status(),

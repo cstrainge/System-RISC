@@ -229,3 +229,83 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
     fs::write(root.join("results/system7/driver-module-checks.json"),
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
 }
+
+fn budget_package(heap_bytes: u32, stack_bytes: u32, reservation: u64) -> Vec<resource::Resource>
+{
+    let descriptor = native::Descriptor { role:        native::Role::CodeResource,
+                                          abi_version: native::ABI_VERSION,
+                                          load_base:   0x82000000,
+                                          load_limit:  0x82000000 + reservation,
+                                          entry:       0x82000000 };
+    let mut code = descriptor.encode().unwrap().to_vec();
+    code.extend(native::image::encode(&descriptor, [(0, 5, [0x82, 0x80].as_slice())]).unwrap());
+    code.extend_from_slice(b"RLC1\0\0\0\0");
+    let spec = mac_module::Spec { kind: mac_module::PackageKind::Driver,
+                                  kernel_abi: native::ABI_VERSION,
+                                  target: mac_module::Target::RV64IMAC,
+                                  identity: [0x73; 16],
+                                  code_id: 0,
+                                  code_digest: [0x73; 32],
+                                  heap_bytes,
+                                  stack_bytes,
+                                  name: "Decoder workspace",
+                                  version: "0.1.0",
+                                  provenance: "SDK budget test",
+                                  offers: &[],
+                                  dependencies: &[],
+                                  services: &[],
+                                  devices: &[] };
+    let mut metadata = vec![0; spec.encoded_len().unwrap()];
+    spec.encode(&mut metadata).unwrap();
+    digest_into(&mut metadata, &code);
+    vec![resource::Resource { kind:       *b"DABI",
+                              id:         0,
+                              name:       None,
+                              attributes: 0,
+                              data:       metadata },
+         resource::Resource { kind:       *b"DRVR",
+                              id:         0,
+                              name:       None,
+                              attributes: 0,
+                              data:       code }]
+}
+#[test]
+fn module_workspace_is_separate_from_stored_code_and_budget_failures_explain_the_limit()
+{
+    let heap = mac_module::MAX_HEAP_BYTES;
+    let stack = mac_module::MAX_STACK_BYTES;
+    let good = budget_package(heap, stack, 5 * 1024 * 1024);
+    let package = mac_formats::module::Package::inspect(&good, *b"DRVR").unwrap();
+    assert_eq!(package.contract.heap_bytes, heap);
+    assert!(good[1].data.len() < 1024);
+    for (heap, stack, reservation, message) in
+        [(heap + 1,
+          stack,
+          5 * 1024 * 1024,
+          "module declared heap exceeds the 4 MiB admission budget"),
+         (heap,
+          stack + 1,
+          5 * 1024 * 1024,
+          "module callback stack exceeds the 64 KiB admission budget"),
+         (heap,
+          stack,
+          mac_module::MAX_LOAD_BYTES + 4096,
+          "module runtime reservation exceeds the 6 MiB loading budget")]
+    {
+        let bad = budget_package(heap, stack, reservation);
+        let error =
+            mac_formats::module::Package::inspect(&bad, *b"DRVR").err()
+                                                                 .expect("over-budget module was \
+                                                                          admitted");
+        assert_eq!(error.to_string(), message);
+        assert!(mac_formats::module::Package::inspect(&good, *b"DRVR").is_ok(),
+                "failed admission contaminated later validation");
+    }
+    let mut oversized = good.clone();
+    oversized[1].data.resize(mac_module::MAX_CODE_BYTES + 1, 0);
+    let error =
+        mac_formats::module::Package::inspect(&oversized, *b"DRVR").err()
+                                                                   .expect("oversized stored \
+                                                                            code was admitted");
+    assert_eq!(error.to_string(), "module stored code exceeds the 2 MiB loading budget");
+}

@@ -21,6 +21,12 @@ pub const SERVICE_BYTES: usize = 16;
 pub const MATCH_BYTES: usize = 40;
 pub const MAX_RECORDS: usize = 32;
 pub const MAX_BYTES: usize = 16 * 1024;
+/// Current native module admission profile. Stored code and zeroed runtime
+/// workspace have separate limits: a decoder's BSS is not executable payload.
+pub const MAX_CODE_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_LOAD_BYTES: u64 = 6 * 1024 * 1024;
+pub const MAX_HEAP_BYTES: u32 = 4 * 1024 * 1024;
+pub const MAX_STACK_BYTES: u32 = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error

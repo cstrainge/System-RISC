@@ -823,6 +823,7 @@ dependencies = [
  "mac-hfs-b",
  "mac-object-table",
  "mac-sit",
+ "mac-text",
  "spinning_top",
 ]
 

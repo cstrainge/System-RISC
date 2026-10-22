@@ -5,22 +5,43 @@ pub const ROOT_ID: u32 = 2;
 pub const FIRST_ENTRY_ID: u32 = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArchiveFormat
+{
+    Classic(u8),
+    StuffIt5
+}
+impl ArchiveFormat
+{
+    pub const fn version(self) -> u32
+    {
+        match self
+        {
+            Self::Classic(version) => version as u32,
+            Self::StuffIt5 => 5
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArchiveHeader
 {
     /// Top-level files/folders, excluding nested contents and end sentinels.
     pub top_level_count: u16,
-    pub length:          u64
+    pub length:          u64,
+    pub format:          ArchiveFormat,
+    pub first_entry:     u64
 }
 impl ArchiveHeader
 {
     pub fn decode(bytes: &[u8], source_length: u64) -> Result<Self>
     {
         let bytes: &[u8; ARCHIVE_HEADER_BYTES] = bytes.try_into().map_err(|_| Error::Truncated)?;
-        if bytes[..4] != *b"SIT!" || bytes[10..14] != *b"rLau"
+        if ![b"SIT!", b"SITD", b"SIT2", b"SIT5", b"STin", b"STi3", b"ST65"].iter().any(|signature| bytes[..4] == signature[..])
+           || bytes[10..14] != *b"rLau"
         {
             return Err(Error::Signature);
         }
-        if bytes[14] != 1
+        if !matches!(bytes[14], 1 | 2)
         {
             return Err(Error::UnsupportedVersion(bytes[14]));
         }
@@ -30,8 +51,22 @@ impl ArchiveHeader
         {
             return Err(Error::Bounds);
         }
+        let first_entry = if bytes[14] == 1
+        {
+            ARCHIVE_HEADER_BYTES as u64
+        }
+        else
+        {
+            u32::from_be_bytes(bytes[16..20].try_into().map_err(|_| Error::Bounds)?) as u64
+        };
+        if first_entry < ARCHIVE_HEADER_BYTES as u64 || first_entry > length
+        {
+            return Err(Error::Bounds);
+        }
         Ok(Self { top_level_count: u16::from_be_bytes([bytes[4], bytes[5]]),
-                  length })
+                  length,
+                  format: ArchiveFormat::Classic(bytes[14]),
+                  first_entry })
     }
 }
 
@@ -40,7 +75,7 @@ impl ArchiveHeader
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Name
 {
-    bytes:  [u8; 63],
+    bytes:  [u8; 255],
     length: u8
 }
 impl Name
@@ -57,8 +92,17 @@ impl Name
         {
             return Err(Error::Name);
         }
-        let mut name = Self { bytes: [0; 63],
-                              length };
+        Self::from_macroman(content)
+    }
+
+    pub(crate) fn from_macroman(content: &[u8]) -> Result<Self>
+    {
+        if content.is_empty() || content.len() > 255 || content.contains(&0)
+        {
+            return Err(Error::Name);
+        }
+        let mut name = Self { bytes:  [0; 255],
+                              length: content.len() as u8 };
         name.bytes[..content.len()].copy_from_slice(content);
         Ok(name)
     }
@@ -88,7 +132,8 @@ pub enum Method
     Stored,
     Rle,
     Lzw,
-    Huffman
+    Huffman,
+    Arsenic
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fork
@@ -97,14 +142,16 @@ pub struct Fork
     pub packed_length: u64,
     pub length:        u64,
     pub crc:           u16,
-    pub method_byte:   u8
+    pub method_byte:   u8,
+    pub format:        ArchiveFormat
 }
 impl Fork
 {
     /// Encryption/unsupported methods leave the entry's catalog readable.
     pub fn method(self) -> Result<Method>
     {
-        if self.method_byte & 0x10 != 0
+        let mask = if self.format == ArchiveFormat::Classic(1) { 0x10 } else { 0x80 };
+        if self.method_byte & mask != 0
         {
             return Err(Error::Encrypted);
         }
@@ -114,6 +161,7 @@ impl Fork
             1 => Ok(Method::Rle),
             2 => Ok(Method::Lzw),
             3 => Ok(Method::Huffman),
+            15 => Ok(Method::Arsenic),
             other => Err(Error::UnsupportedMethod(other))
         }
     }
@@ -163,6 +211,12 @@ impl EntryHeader
 {
     pub fn decode(bytes: &[u8], offset: u64, archive_length: u64) -> Result<Self>
     {
+        Self::decode_for(bytes, offset, archive_length, ArchiveFormat::Classic(1))
+    }
+
+    pub(crate) fn decode_for(bytes: &[u8], offset: u64, archive_length: u64, format: ArchiveFormat)
+                             -> Result<Self>
+    {
         let bytes: &[u8; ENTRY_HEADER_BYTES] = bytes.try_into().map_err(|_| Error::Truncated)?;
         let payload = offset.checked_add(ENTRY_HEADER_BYTES as u64)
                             .filter(|end| *end <= archive_length)
@@ -173,28 +227,31 @@ impl EntryHeader
         }
         // Only the data-method sentinel is specified for endFolder. Every other
         // field may be invalid, including its Pascal-name length and sizes.
-        if bytes[1] == 33
+        let folder_mask = if format == ArchiveFormat::Classic(1) { 0x00 } else { 0x90 };
+        if bytes[1] & !folder_mask == 33
         {
             return Ok(Self::EndFolder);
         }
         let name = Name::decode(bytes[2..66].try_into().map_err(|_| Error::Name)?)?;
-        if bytes[0] == 32 && bytes[1] == 32
+        if bytes[0] & !folder_mask == 32 && bytes[1] & !folder_mask == 32
         {
             return Ok(Self::Folder(FolderHeader { name,
                                                   finder_flags: word(bytes, 74),
                                                   created_seconds: long(bytes, 76),
                                                   modified_seconds: long(bytes, 80) }));
         }
-        let resource = Fork { offset:        payload,
+        let resource = Fork { offset: payload,
                               packed_length: u64::from(long(bytes, 92)),
-                              length:        u64::from(long(bytes, 84)),
-                              crc:           word(bytes, 100),
-                              method_byte:   bytes[0] };
-        let data = Fork { offset:        resource.end()?,
+                              length: u64::from(long(bytes, 84)),
+                              crc: word(bytes, 100),
+                              method_byte: bytes[0],
+                              format };
+        let data = Fork { offset: resource.end()?,
                           packed_length: u64::from(long(bytes, 96)),
-                          length:        u64::from(long(bytes, 88)),
-                          crc:           word(bytes, 102),
-                          method_byte:   bytes[1] };
+                          length: u64::from(long(bytes, 88)),
+                          crc: word(bytes, 102),
+                          method_byte: bytes[1],
+                          format };
         if data.end()? > archive_length
         {
             return Err(Error::Bounds);
