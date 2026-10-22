@@ -33,7 +33,8 @@ impl<R: Rpc> Filesystem<R>
                   metadata,
                   layout,
                   key,
-                  host_name: Some(host_name) })
+                  host_name,
+                  plain: true })
     }
 
     pub(super) async fn open_plain(&mut self, volume: u32, parent: u32, name: &[u8])
@@ -74,13 +75,22 @@ impl<R: Rpc> Filesystem<R>
                                  .as_slice()
                                  .try_into()
                                  .map_err(|_| Cause::Format(forks::Error::Corrupt))?;
-                let (metadata, layout) = forks::decode_metadata(bytes, opened.header.offset)?;
+                let (mut metadata, layout) = forks::decode_metadata(bytes, opened.header.offset)?;
+                metadata.name =
+                    mac_hfs_b::names::normalize(core::str::from_utf8(name).map_err(|_| {
+                                                                              Cause::Invalid
+                                                                          })?).map_err(|_| {
+                                                                                  Cause::Invalid
+                                                                              })?;
+                let mut physical = buffer(name.len())?;
+                physical.copy_from_slice(name);
                 let key = mac_hfs_b::names::comparison(&metadata.name).map_err(|_| Cause::Invalid)?;
                 Ok(Node { parent: 0,
                           metadata,
                           layout,
                           key,
-                          host_name: None })
+                          host_name: physical,
+                          plain: false })
             }.await;
         self.cleanup(handle, result).await
     }

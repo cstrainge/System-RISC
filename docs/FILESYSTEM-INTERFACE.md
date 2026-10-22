@@ -430,3 +430,14 @@ disposed IDs after forced slot reuse, and real guest arrivals on writable and
 read-only host exports. Real Finder capture covers automatic host arrival without
 guest input. Classic notification trap compatibility, file-specific watches and
 hard latency bounds under sustained storage traffic remain future gates.
+
+### Readable host names
+
+Guest-created host files and directories now use their real NFC names, not opaque
+identity tokens. Native metadata retains persistent identity; directory entries
+supply the current name after external rename, including a fresh transport and
+remount. Portable-name validation happens before catalog-ID reservation or host
+publication. Both-fork/component tests and the private real-Finder incident gate
+verify readable New Folder publication, browsing/refresh and responsive provider
+errors. This does not claim completion of guest rename/move or the remaining
+provider metadata/Get Info parity work.

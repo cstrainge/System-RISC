@@ -7,6 +7,7 @@ pub enum Error
 {
     BadAbi,
     BadArgument,
+    InvalidName,
     NotFound,
     NotSupported,
     NoMemory,
@@ -42,6 +43,7 @@ impl Error
         {
             BAD_ABI => Self::BadAbi,
             BAD_ARGUMENT => Self::BadArgument,
+            INVALID_NAME => Self::InvalidName,
             NOT_FOUND => Self::NotFound,
             NOT_SUPPORTED => Self::NotSupported,
             NO_MEMORY => Self::NoMemory,
@@ -76,6 +78,7 @@ impl Error
         {
             Self::BadAbi => BAD_ABI,
             Self::BadArgument => BAD_ARGUMENT,
+            Self::InvalidName => INVALID_NAME,
             Self::NotFound => NOT_FOUND,
             Self::NotSupported => NOT_SUPPORTED,
             Self::NoMemory => NO_MEMORY,
@@ -112,6 +115,7 @@ impl core::fmt::Display for Error
         {
             Self::BadAbi => f.write_str("incompatible System ABI"),
             Self::BadArgument => f.write_str("invalid argument"),
+            Self::InvalidName => f.write_str("name cannot be represented on this host volume"),
             Self::NotFound => f.write_str("not found"),
             Self::NotSupported => f.write_str("service not supported"),
             Self::NoMemory => f.write_str("out of memory"),

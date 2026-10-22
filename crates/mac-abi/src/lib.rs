@@ -30,6 +30,7 @@ pub const OPERATION_CANCELLED: Status = -17;
 pub const CORRUPT_DATA: Status = -18;
 /// A mounted provider's backing device/export is no longer available.
 pub const STORAGE_UNAVAILABLE: Status = -19;
+pub const INVALID_NAME: Status = -20;
 
 pub mod crashes;
 pub mod dates;

@@ -52,7 +52,12 @@ fn ordinary_host_entries_boot_browse_and_allow_finder_folder_creation()
     let export = output.join("export");
     assert_eq!(fs::read(export.join("Notes.txt")).unwrap(), b"Ordinary host file\n");
     assert!(export.join("Test").is_dir());
-    assert!(fs::read_dir(&export).unwrap().filter_map(Result::ok).any(|entry| entry.file_name().to_string_lossy().starts_with("d-") && entry.path().join(".system-risc-directory").is_file()));
+    assert!(export.join("untitled folder").join(".system-risc-directory").is_file());
+    assert!(!fs::read_dir(&export).unwrap().filter_map(Result::ok).any(|entry| {
+                                                                      entry.file_name()
+                                                                           .to_string_lossy()
+                                                                           .starts_with("d-")
+                                                                  }));
 }
 
 #[test]

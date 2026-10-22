@@ -90,7 +90,8 @@ pub struct Node
     pub metadata: Metadata,
     pub layout:   Layout,
     key:          String,
-    host_name:    Option<Vec<u8>>
+    host_name:    Vec<u8>,
+    plain:        bool
 }
 #[derive(Clone, Debug)]
 pub struct MountInfo
@@ -114,14 +115,11 @@ impl Node
         key.try_reserve_exact(self.key.len()).map_err(|_| Cause::NoMemory)?;
         key.push_str(&self.key);
         Ok(Self { metadata: self.metadata.try_clone()?,
-                  host_name: self.host_name
-                                 .as_ref()
-                                 .map(|name| -> Result<Vec<u8>> {
-                                     let mut out = buffer(name.len())?;
-                                     out.copy_from_slice(name);
-                                     Ok(out)
-                                 })
-                                 .transpose()?,
+                  host_name: {
+                      let mut out = buffer(self.host_name.len())?;
+                      out.copy_from_slice(&self.host_name);
+                      out
+                  },
                   key,
                   ..*self })
     }
@@ -374,11 +372,24 @@ impl<R: Rpc> Filesystem<R>
         let result =
             read.and_then(|reply| {
                     let bytes = reply.body.as_slice().try_into().map_err(|_| Cause::Invalid)?;
-                    let (metadata, layout) = forks::decode_metadata(bytes, opened.header.offset)?;
+                    let (mut metadata, layout) =
+                        forks::decode_metadata(bytes, opened.header.offset)?;
+                    if metadata.kind == Kind::File
+                    {
+                        metadata.name =
+                        mac_hfs_b::names::normalize(core::str::from_utf8(name).map_err(|_| {
+                                                                                  Cause::Invalid
+                                                                              })?).map_err(|_| {
+                                                                                      Cause::Invalid
+                                                                                  })?;
+                    }
+                    let mut physical = buffer(name.len())?;
+                    physical.copy_from_slice(name);
                     let key =
                         mac_hfs_b::names::comparison(&metadata.name).map_err(|_| Cause::Invalid)?;
                     Ok(Node { parent: 0,
-                              host_name: None,
+                              host_name: physical,
+                              plain: false,
                               metadata,
                               layout,
                               key })
@@ -494,16 +505,9 @@ impl<R: Rpc> Filesystem<R>
         {
             return Err(Cause::Invalid.into());
         }
-        let plain = cached.host_name.is_some();
-        let mut name = buffer(cached.host_name.as_ref().map_or(34, Vec::len))?;
-        if let Some(raw) = &cached.host_name
-        {
-            name.copy_from_slice(raw);
-        }
-        else
-        {
-            name.copy_from_slice(&forks::host_name(Kind::File, cached.metadata.identity)?);
-        }
+        let plain = cached.plain;
+        let mut name = buffer(cached.host_name.len())?;
+        name.copy_from_slice(&cached.host_name);
         let parent = mount.directories.get(cached.parent).ok_or(Cause::NotFound)?.handle;
         let (handle, opened) = if plain
         {

@@ -186,23 +186,22 @@ fn incomplete_writes_are_invalid_and_failed_flush_can_be_retried_without_rewriti
     assert_eq!(writer.write_chunk(Fork::Data, &[]), Err(Error::Invalid));
 }
 #[test]
-fn host_tokens_cover_reserved_and_maximum_length_guest_names_without_collisions()
+fn host_components_preserve_real_names_and_reject_windows_and_provider_collisions()
 {
-    for name in ["CON", "AUX.", "LPT1 ", "Café", "café"]
+    for name in ["Untitled Folder", "Café", "🦀.txt", ".hidden", "COM10", "console.txt"]
     {
-        let meta = Metadata::new(Kind::File, 16, [2; 16], name, 0).unwrap();
-        let token = host_name(meta.kind, meta.identity).unwrap();
-        assert_eq!(token.len(), 34);
-        assert!(token.iter().all(u8::is_ascii));
-        assert_eq!(parse_host_name(&token), Ok((meta.kind, meta.identity)));
+        assert_eq!(host_component(name), Ok(()), "{name}");
     }
-    let name = "a".repeat(255);
-    assert!(Metadata::new(Kind::File, 16, [2; 16], &name, 0).is_ok());
-    assert_ne!(host_name(Kind::File, [1; 16]), host_name(Kind::File, [2; 16]));
-    assert_ne!(host_name(Kind::File, [1; 16]), host_name(Kind::Directory, [1; 16]));
-    let upper = host_name(Kind::File, [0xfa; 16]).unwrap().to_ascii_uppercase();
-    assert!(parse_host_name(&upper).is_err());
+    assert_eq!(host_component(&"a".repeat(255)), Ok(()));
+    for name in ["", ".", "..", "CON", "nul.txt", "PRN", "aUX.dat", "COM1", "Lpt9.txt", "COM¹",
+                 "lpt².txt", "a.", "a ", "a:b", "a/b", "a\\b", "a?b", "a*b", "a|b", "a<b", "a>b",
+                 "a\"b", "a\0b", "a\nb", ".SYSTEM-RISC-root", ".system-risc-stage-123"]
+    {
+        assert_eq!(host_component(name), Err(Error::Invalid), "{name:?}");
+    }
+    assert_eq!(host_component(&"a".repeat(256)), Err(Error::Invalid));
 }
+
 #[test]
 fn root_and_directory_records_cannot_contain_forks_or_reused_root_ids()
 {

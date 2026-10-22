@@ -9,6 +9,7 @@ pub enum Cause
     Transport(i32),
     Format(mac_fork_file::Error),
     Invalid,
+    InvalidName,
     NotFound,
     Stale,
     Conflict,

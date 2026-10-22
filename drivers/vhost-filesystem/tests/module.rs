@@ -315,7 +315,7 @@ fn cancellation_after_host_commit_returns_actual_identity_without_republishing()
                     .filter(|t| {
                         t.operation == HostOp::Commit
                         && t.phase == Phase::Start
-                        && t.payload.starts_with(b"f-")
+                        && t.payload == b"Committed"
                     })
                     .count(),
                1);

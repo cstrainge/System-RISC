@@ -166,14 +166,10 @@ impl<R: Rpc> Filesystem<R>
         {
             self.candidate(volume, handle, name).await?
         };
-        if node.host_name.is_none()
-        {
-            let (encoded_kind, identity) = forks::parse_host_name(name)?;
-            if encoded_kind != kind || node.metadata.identity != identity
-            {
-                return Err(Cause::Invalid.into());
-            }
-        }
+        node.host_name = buffer(name.len())?;
+        node.host_name.copy_from_slice(name);
+        node.metadata.name = mac_hfs_b::names::normalize(core::str::from_utf8(name).map_err(|_| Cause::Invalid)?).map_err(|_| Cause::Invalid)?;
+        node.key = mac_hfs_b::names::comparison(&node.metadata.name).map_err(|_| Cause::Invalid)?;
         node.parent = parent;
         let result = (|| {
             let mount = self.mounts.get_mut(volume).ok_or(Cause::NotFound)?;

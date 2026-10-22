@@ -111,7 +111,8 @@ impl Rpc for Host
         let ticket = self.tickets.insert(()).unwrap();
         let header = arguments.header(operation, ticket).unwrap();
         let (header, body) = self.session.respond(header, arguments.payload);
-        if operation == Operation::ListNext && (body.starts_with(b"d-") || body.starts_with(b"f-"))
+        if operation == Operation::ListNext
+           && (!body.starts_with(b".system-risc-") && !body.is_empty())
         {
             self.reached_child.store(true, Ordering::Relaxed);
         }
@@ -1187,14 +1188,10 @@ fn directory_creation_publishes_metadata_atomically_and_supports_nested_writes()
         properties:mac_filesystem_interface::FileProperties::fresh("Child",4_000_000_000_000_001),
         data_length:0,resource_length:0,when:4_000_000_000_000_001})).unwrap();
     run(fs.finish_write(volume, next)).unwrap();
-    let physical = mac_fork_file::host_name(Kind::Directory,
-                                            fs.cached_node(volume, folder)
-                                              .unwrap()
-                                              .metadata
-                                              .identity).unwrap();
+    let physical = "Café";
     assert!(temp.0
                 .join("Host Folder")
-                .join(core::str::from_utf8(&physical).unwrap())
+                .join(physical)
                 .join(mac_fork_file::DIRECTORY_RECORD)
                 .exists());
     run(fs.refresh(volume)).unwrap();
@@ -1220,13 +1217,8 @@ fn directory_change_probe_is_metadata_only_scoped_and_preserves_open_snapshots()
     fs.transport().calls.clear();
     assert!(!run(fs.check_directory(volume, folder)).unwrap().0);
     assert_eq!(fs.transport().calls, [Operation::Stat]);
-    let physical = mac_fork_file::host_name(Kind::Directory,
-                                            fs.cached_node(volume, folder)
-                                              .unwrap()
-                                              .metadata
-                                              .identity).unwrap();
-    std::fs::write(temp.0.join(core::str::from_utf8(&physical).unwrap()).join("Arrived.txt"),
-                   b"arrival").unwrap();
+    let physical = "Tools";
+    std::fs::write(temp.0.join(physical).join("Arrived.txt"), b"arrival").unwrap();
     fs.transport().calls.clear();
     assert!(run(fs.check_directory(volume, folder)).unwrap().0);
     assert_eq!(fs.transport().calls, [Operation::Stat], "probe must never enumerate");
@@ -1236,10 +1228,49 @@ fn directory_change_probe_is_metadata_only_scoped_and_preserves_open_snapshots()
     assert!(!run(fs.check_directory(volume, folder)).unwrap().0);
     // Editing a child's data leaves the directory mtime unchanged. The host's
     // notification generation must still invalidate the cached metadata.
-    std::fs::write(temp.0.join(core::str::from_utf8(&physical).unwrap()).join("Arrived.txt"),
-                   b"updated").unwrap();
+    std::fs::write(temp.0.join(physical).join("Arrived.txt"), b"updated").unwrap();
     assert!(run(fs.check_directory(volume, folder)).unwrap().0);
     assert_eq!(run(fs.lookup(volume, folder, "Arrived.txt")).unwrap().layout.data.length, 7);
     run(fs.close_file(volume, mark)).unwrap();
     run(fs.unmount(volume)).unwrap();
+}
+
+#[test]
+fn native_host_renames_preserve_identity_forks_and_nested_writes_across_remount()
+{
+    use vhost_filesystem::Create;
+    let (temp, file, data, resources) = seeded();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let folder = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
+    run(fs.scan(volume, folder)).unwrap();
+    std::fs::rename(temp.0.join("Tools"), temp.0.join("Renamed Tools")).unwrap();
+    std::fs::rename(temp.0.join("Renamed Tools/Café"), temp.0.join("Renamed Tools/New name")).unwrap();
+    run(fs.refresh(volume)).unwrap();
+    assert_eq!(run(fs.lookup(volume, 2, "Renamed Tools")).unwrap().metadata.catalog_id, folder);
+    assert_eq!(run(fs.lookup(volume, folder, "New name")).unwrap().metadata.catalog_id, file);
+    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mark = writes.insert(()).unwrap();
+    run(fs.begin_create(Create { volume, parent: folder, token: mark,
+        properties: mac_filesystem_interface::FileProperties::fresh("Readable Child", 4_000_000_000_000_000),
+        data_length: 0, resource_length: 0, when: 4_000_000_000_000_000 })).unwrap();
+    run(fs.finish_write(volume, mark)).unwrap();
+    assert!(temp.0.join("Renamed Tools/Readable Child").is_file());
+    run(fs.unmount(volume)).unwrap();
+    // New transport and driver discard every in-memory path/cache/lease.
+    drop(fs);
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    run(fs.mount(volume, 0)).unwrap();
+    assert_eq!(run(fs.lookup(volume, 2, "renamed tools")).unwrap().metadata.catalog_id, folder);
+    assert_eq!(run(fs.lookup(volume, folder, "NEW NAME")).unwrap().metadata.catalog_id, file);
+    let mut opens = Table::new(ObjectKind::Files);
+    let open = opens.insert(()).unwrap();
+    run(fs.open(volume, file, open)).unwrap();
+    assert_eq!(run(fs.read(volume, open, Fork::Data, 0, data.len())).unwrap(), data);
+    assert_eq!(run(fs.read(volume, open, Fork::Resource, 0, resources.len())).unwrap(), resources);
+    run(fs.close_file(volume, open)).unwrap();
+    run(fs.unmount(volume)).unwrap();
+    assert_eq!(Volume::open(&temp.0).unwrap().resolve("/Renamed Tools/New name").unwrap().metadata.catalog_id, file);
 }

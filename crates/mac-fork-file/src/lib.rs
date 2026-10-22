@@ -22,6 +22,45 @@ pub const MAX_COMMENT: usize = 255;
 pub const ROOT_RECORD: &str = ".system-risc-root";
 pub const DIRECTORY_RECORD: &str = ".system-risc-directory";
 pub const UNICODE_VERSION: u32 = mac_hfs_b::names::UNICODE_VERSION;
+/// Portable user-visible host component. Reserve provider bookkeeping and the
+/// Win32 device/character namespace even when the broker runs on Linux/WSL.
+/// https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+pub fn host_component(name: &str) -> Result<()>
+{
+    if name.is_empty()
+       || name.len() > MAX_NAME
+       || name.ends_with(['.', ' '])
+       || name.bytes().any(|b| b < 32 || b"<>:\"/\\|?*".contains(&b))
+       || name.get(..13).is_some_and(|s| s.eq_ignore_ascii_case(".system-risc-"))
+    {
+        return Err(Error::Invalid);
+    }
+    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
+    if ["CON", "PRN", "AUX", "NUL"].iter().any(|s| stem.eq_ignore_ascii_case(s))
+    {
+        return Err(Error::Invalid);
+    }
+    if stem.get(..3).is_some_and(|s| s.eq_ignore_ascii_case("COM") || s.eq_ignore_ascii_case("LPT"))
+       && stem.get(3..).is_some_and(|s| {
+                           matches!(s,
+                                    "1"
+                                    | "2"
+                                    | "3"
+                                    | "4"
+                                    | "5"
+                                    | "6"
+                                    | "7"
+                                    | "8"
+                                    | "9"
+                                    | "¹"
+                                    | "²"
+                                    | "³")
+                       })
+    {
+        return Err(Error::Invalid);
+    }
+    Ok(())
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error
 {
@@ -223,56 +262,4 @@ pub trait WriteAt: ReadAt
     fn set_len(&mut self, length: u64) -> Result<()>;
     fn write_all(&mut self, offset: u64, input: &[u8]) -> Result<()>;
     fn flush(&mut self) -> Result<()>;
-}
-/// Portable host names encode identity rather than expanding a255-byte UTF-8
-/// name past Linux/Windows component limits. The container is authoritative for
-/// the exact NFC display name. Renaming a guest name only replaces metadata.
-pub fn host_name(kind: Kind, identity: [u8; 16]) -> Result<[u8; 34]>
-{
-    if identity == [0; 16] || kind == Kind::Root
-    {
-        return Err(Error::Invalid);
-    }
-    let mut result = [0; 34];
-    result[0] = if kind == Kind::File { b'f' } else { b'd' };
-    result[1] = b'-';
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for (index, byte) in identity.iter().enumerate()
-    {
-        result[2 + index * 2] = HEX[(byte >> 4) as usize];
-        result[3 + index * 2] = HEX[(byte & 15) as usize];
-    }
-    Ok(result)
-}
-pub fn parse_host_name(bytes: &[u8]) -> Result<(Kind, [u8; 16])>
-{
-    if bytes.len() != 34 || bytes[1] != b'-'
-    {
-        return Err(Error::Invalid);
-    }
-    let kind = match bytes[0]
-    {
-        b'f' => Kind::File,
-        b'd' => Kind::Directory,
-        _ => return Err(Error::Invalid)
-    };
-    let mut identity = [0; 16];
-    fn nibble(byte: u8) -> Result<u8>
-    {
-        match byte
-        {
-            b'0'..=b'9' => Ok(byte - b'0'),
-            b'a'..=b'f' => Ok(byte - b'a' + 10),
-            _ => Err(Error::Invalid)
-        }
-    }
-    for (index, byte) in identity.iter_mut().enumerate()
-    {
-        *byte = (nibble(bytes[2 + index * 2])? << 4) | nibble(bytes[3 + index * 2])?;
-    }
-    if identity == [0; 16]
-    {
-        return Err(Error::Invalid);
-    }
-    Ok((kind, identity))
 }

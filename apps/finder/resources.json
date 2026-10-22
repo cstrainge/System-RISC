@@ -2362,7 +2362,8 @@
           "This memory handle is locked.",
           "File or catalog data is damaged or malformed.",
           "The backing storage or host export is unavailable.",
-          "An unrecognized System error occurred. Its identity is shown below."
+          "An unrecognized System error occurred. Its identity is shown below.",
+          "This name cannot be used on the host volume. Avoid reserved names, invalid characters and trailing dots or spaces."
         ]
       }
     },

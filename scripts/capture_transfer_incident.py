@@ -23,7 +23,7 @@ def capture(output, corrupt=False):
         source = output / 'Damaged'
         source.write_bytes(b'container corruption fixture')
         subprocess.run([str(host / 'risc-forks'), 'import', str(export), str(source)], check=True)
-        physical = next(export.glob('f-*'))
+        physical = export / 'Damaged'
         payload = bytearray(physical.read_bytes())
         payload[224] ^= 1
         physical.write_bytes(payload)

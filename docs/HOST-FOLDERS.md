@@ -50,15 +50,17 @@ inherit classic MacBinary name/date limits or require per-file resource sidecars
 host extended attributes or alternate data streams. Keep this format distinct
 from the existing build-package MacBinary transport and the HFS-B disk format.
 
-Host folders remain directories. Specify root/directory metadata and reserved
-internal records separately; these must not appear as guest documents. Freeze
-a reversible portable host-name encoding that handles Windows reserved names,
-characters, trailing dots/spaces, case and normalization differences. Guest names
-remain case-preserving NFC and case-insensitive regardless of host behavior.
-Externally introduced name collisions must report a conflict, never merge or
-overwrite files. Invalid/unsupported containers report explicit diagnostics;
-ordinary unwrapped host files require an explicit import policy/tool rather than
-being silently rewritten.
+Host folders remain directories. Native files and directories use their actual
+readable names on the host, with NFC UTF-8 names bounded to 255 bytes. The physical
+component supplies the current name, including after external renames; persistent
+identity comes from native metadata. Guest creation rejects Windows-reserved names,
+characters and trailing dot/space before any mutation. Bookkeeping uses the
+reserved `.system-risc-` prefix and never appears in guest listings. Guest lookup
+remains case-insensitive with the pinned Unicode contract regardless of host
+behavior. External collisions report conflicts rather than merging entries.
+Ordinary unwrapped files expose an unchanged data fork and an empty resource fork;
+no conversion or metadata sidecars are implicit. See [FORMAT.md](../FORMAT.md#native-host-fork-containers-rsfork01-version-1)
+for the exact naming and identity contract.
 
 Share the safe no_std format codec (`mac-fork-file`) between the driver,
 Linux init/import/export/check tools and the future System RISC Filesystem app.

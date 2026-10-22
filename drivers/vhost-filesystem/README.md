@@ -2,8 +2,10 @@
 
 The safe, `no_std` library implements host container catalogs, leased reads and
 staged two-fork creation/replacement over the separate `HDIR` transport contract.
-Names, identities and integrity use `mac-fork-file`; host paths never become guest
-filenames for native containers. Ordinary host files and folders also enumerate
+Names, identities and integrity use `mac-fork-file`. Native files and folders
+use their actual readable names on the host; the host directory entry supplies
+the current name while embedded identities survive renames and remounts. Guest
+creation validates portable names before reserving IDs or publishing anything. Ordinary host files and folders also enumerate
 without conversion: file bytes form the data fork, the resource fork is empty,
 and names/dates are projected from the host. No metadata sidecars are created.
 The companion pins these host objects and supplies session/export-scoped

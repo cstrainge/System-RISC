@@ -293,6 +293,9 @@ impl<R: Rpc> Filesystem<R>
         self.writes.reserve(token)?;
         properties.validate().map_err(|_| Cause::Invalid)?;
         let normalized = mac_hfs_b::names::normalize(properties.name).map_err(|_| Cause::Invalid)?;
+        forks::host_component(&normalized).map_err(|_| Cause::InvalidName)?;
+        let mut physical = buffer(normalized.len())?;
+        physical.copy_from_slice(normalized.as_bytes());
         let key = mac_hfs_b::names::comparison(&normalized).map_err(|_| Cause::Invalid)?;
         self.scan(volume, parent).await?;
         let mount = self.mounts.get(volume).unwrap();
@@ -336,7 +339,8 @@ impl<R: Rpc> Filesystem<R>
                 metadata.catalog_id = id;
                 metadata.identity = forks::catalog_identity(metadata.volume, id)?;
                 let node = Node { parent,
-                                  host_name: None,
+                                  host_name: physical,
+                                  plain: false,
                                   metadata,
                                   layout,
                                   key };
@@ -395,7 +399,8 @@ impl<R: Rpc> Filesystem<R>
             return Err(Cause::ReadOnly.into());
         }
         let layout = Layout::new(&cached.metadata, data_length, resource_length)?;
-        let name = forks::host_name(Kind::File, cached.metadata.identity)?;
+        let mut name = buffer(cached.host_name.len())?;
+        name.copy_from_slice(&cached.host_name);
         let parent_handle = self.mounts
                                 .get(volume)
                                 .unwrap()
@@ -416,6 +421,7 @@ impl<R: Rpc> Filesystem<R>
                 metadata.revision = metadata.revision.checked_add(1).ok_or(Cause::NoMemory)?;
                 let node = Node { parent: cached.parent,
                                   host_name: cached.host_name,
+                                  plain: false,
                                   metadata,
                                   layout,
                                   key: cached.key };
@@ -579,10 +585,10 @@ impl<R: Rpc> Filesystem<R>
         let (volume, parent, handle, when) =
             (pending.volume, pending.parent, pending.parent_handle, pending.when);
         let parent_node = self.cached_node(volume, parent)?;
-        if let Some(name) = &parent_node.host_name
+        if parent_node.plain
         {
-            let mut physical = buffer(name.len())?;
-            physical.copy_from_slice(name);
+            let mut physical = buffer(parent_node.host_name.len())?;
+            physical.copy_from_slice(&parent_node.host_name);
             let ancestor = self.mounts
                                .get(volume)
                                .unwrap()
@@ -604,7 +610,11 @@ impl<R: Rpc> Filesystem<R>
         let mut desired = cached.try_clone()?;
         desired.modified = when;
         desired.revision = desired.revision.checked_add(1).ok_or(Cause::NoMemory)?;
-        let (old, actual) = self.open_record(handle, forks::DIRECTORY_RECORD.as_bytes()).await?;
+        let (old, mut actual) =
+            self.open_record(handle, forks::DIRECTORY_RECORD.as_bytes()).await?;
+        actual.metadata.name.clear();
+        actual.metadata.name.try_reserve_exact(cached.name.len()).map_err(|_| Cause::NoMemory)?;
+        actual.metadata.name.push_str(&cached.name);
         let result =
             async {
                 if actual.metadata == desired
@@ -715,7 +725,8 @@ impl<R: Rpc> Filesystem<R>
             let pending = self.writes.get(token).unwrap();
             let node = pending.node.as_ref().unwrap();
             let is_directory = node.metadata.kind == Kind::Directory;
-            let name = forks::host_name(node.metadata.kind, node.metadata.identity)?;
+            let mut name = buffer(node.host_name.len())?;
+            name.copy_from_slice(&node.host_name);
             let (parent, expected, replacing) =
                 (pending.parent, pending.expected, pending.replacing);
             let mount = self.mounts.get_mut(volume).unwrap();

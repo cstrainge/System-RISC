@@ -798,17 +798,24 @@ shared generation facility. The cooperating writer advances the root counter
 before publishing a new entry and never reuses IDs, including after a failed
 publication. Revision/counter exhaustion fails explicitly.
 
-Portable host components are `f-` or `d-` followed by 32 lowercase hexadecimal
-identity digits. These fixed 34-byte tokens avoid Windows reserved names and
-UTF-8 expansion beyond host component limits. The exact guest name is recovered
-from the container metadata; it is never truncated or inferred from the token.
-The token's kind/identity must match the contained metadata. Root metadata lives
-in `.system-risc-root`; each directory has `.system-risc-directory`. A root-only
-`.system-risc-lock` serializes cooperating transactions. These records are hidden
-from guest directory listings. Unwrapped files, misplaced internal records,
-identity/token mismatches, duplicate catalog/object identities and canonical
-name collisions are errors, not silently merged or ignored entries. Importing a
-copy assigns fresh identities and catalog IDs; copying a raw container does not.
+Host components are the actual case-preserving NFC names, limited to 255 UTF-8
+bytes. The physical directory entry is authoritative for a child's current name;
+embedded catalog/object identity survives a host rename and a remount. The
+embedded name is a metadata snapshot, not a second naming namespace. Guest
+creation rejects nonportable Windows components before reserving an ID or writing:
+control characters, `<>:"/\|?*`, trailing dot/space, DOS device names (including
+extension variants), and the case-insensitive `.system-risc-` bookkeeping prefix.
+There is no opaque identity-to-filename encoding. Other mounted filesystems retain
+their own naming contracts.
+
+Root metadata lives in `.system-risc-root`; each native directory has
+`.system-risc-directory`. A root-only `.system-risc-lock` serializes cooperating
+transactions. These records are hidden from guest directory listings. Ordinary
+unwrapped host files expose their exact bytes as a data fork and an empty resource
+fork, without conversion or sidecars. Native container kind/volume mismatches,
+duplicate catalog/object identities and canonical name collisions are errors,
+never silently merged or ignored. Importing a copy assigns fresh identities and
+catalog IDs; copying a raw container does not.
 
 Writers use unpublished, exclusively created `.system-risc-stage-*` files. The
 shared chunk writer writes a valid header last, requires every fork chunk before

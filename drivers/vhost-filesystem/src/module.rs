@@ -362,6 +362,7 @@ fn status(error: crate::Error) -> i32
         }
         Cause::Transport(status) => status,
         Cause::Invalid => mac_abi::BAD_ARGUMENT,
+        Cause::InvalidName => mac_abi::INVALID_NAME,
         Cause::NotFound => mac_abi::NOT_FOUND,
         Cause::Stale => mac_abi::SCAN_STALE,
         Cause::Conflict => mac_abi::ALREADY_EXISTS,

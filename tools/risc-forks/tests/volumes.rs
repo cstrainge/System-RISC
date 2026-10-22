@@ -90,27 +90,32 @@ fn canonical_collisions_and_bad_requests_do_not_advance_catalog_state()
     assert_eq!(volume.root().unwrap().metadata, before);
 }
 #[test]
-fn nested_folders_and_windows_reserved_names_use_portable_identity_tokens()
+fn nested_folders_keep_real_names_and_reserved_names_fail_before_publication()
 {
-    let (_temp, volume) = volume();
+    let (temp, volume) = volume();
     volume.create("/", "Documents", Kind::Directory, &mut Slice(&[]), &mut Slice(&[]), None)
           .unwrap();
     let name = "x".repeat(255);
     let entry =
         volume.create("/Documents", &name, Kind::File, &mut Slice(b"hello"), &mut Slice(&[]), None)
               .unwrap();
-    let con = volume.create("/Documents",
-                            "CON",
-                            Kind::File,
-                            &mut Slice(b"native"),
-                            &mut Slice(&[]),
-                            None)
-                    .unwrap();
+    let before = volume.root().unwrap().metadata;
+    for invalid in
+        ["CON", "AUX.txt", "LPT¹", "trailing.", "trailing ", "bad:name", ".system-risc-root"]
+    {
+        assert!(volume.create("/Documents",
+                              invalid,
+                              Kind::File,
+                              &mut Slice(b"native"),
+                              &mut Slice(&[]),
+                              None)
+                      .is_err());
+        assert_eq!(volume.root().unwrap().metadata, before);
+    }
     assert_eq!(volume.resolve(&format!("/documents/{name}")).unwrap().metadata.catalog_id,
                entry.metadata.catalog_id);
-    assert_eq!(volume.resolve("/DOCUMENTS/con").unwrap().metadata.catalog_id,
-               con.metadata.catalog_id);
-    assert_eq!(volume.check().unwrap(), 4);
+    assert!(temp.0.join("share/Documents").join(name).is_file());
+    assert_eq!(volume.check().unwrap(), 3);
 }
 #[test]
 fn copied_container_ids_and_unwrapped_files_are_reported_as_conflicts()
@@ -154,8 +159,7 @@ fn symlinks_cannot_expose_files_outside_the_export_root()
     let (temp, volume) = volume();
     let outside = temp.0.join("outside");
     fs::write(&outside, b"private").unwrap();
-    let name = mac_fork_file::host_name(Kind::File, [4; 16]).unwrap();
-    let name = std::str::from_utf8(&name).unwrap();
+    let name = "Private.txt";
     std::os::unix::fs::symlink(&outside, temp.0.join("share").join(name)).unwrap();
     assert!(volume.children("/").is_err());
     assert_eq!(fs::read(outside).unwrap(), b"private");

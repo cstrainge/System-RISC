@@ -25,10 +25,6 @@ pub struct Volume
 {
     dir: Dir
 }
-fn token(kind: Kind, identity: [u8; 16]) -> Result<String>
-{
-    Ok(std::str::from_utf8(&format::host_name(kind, identity)?)?.into())
-}
 fn sync(dir: &Dir) -> Result<()>
 {
     // A capability directory may use an O_PATH descriptor. Open a real read
@@ -227,26 +223,22 @@ impl Volume
             {
                 return Err(error("catalog entry budget exceeded"));
             }
-            let (kind, identity) = format::parse_host_name(name.as_bytes()).map_err(|_| {
-                                       error("unwrapped/invalid host entry; use risc-forks import")
-                                   })?;
             let file_type = entry.file_type()?;
-            if file_type.is_symlink()
-               || kind == Kind::File && !file_type.is_file()
-               || kind == Kind::Directory && !file_type.is_dir()
+            if file_type.is_symlink() || (!file_type.is_file() && !file_type.is_dir())
             {
-                return Err(error("host entry type, link or reparse mismatch"));
+                return Err(error("host entry must be a regular file or directory"));
             }
+            let kind = if file_type.is_dir() { Kind::Directory } else { Kind::File };
             let path = parent.path.parent().unwrap_or(Path::new("")).join(name);
             let container =
                 if kind == Kind::Directory { path.join(DIRECTORY_RECORD) } else { path };
-            let observed = read_entry(&self.dir, &container, parent.metadata.catalog_id)?;
-            if observed.metadata.kind != kind
-               || observed.metadata.identity != identity
-               || observed.metadata.volume != parent.metadata.volume
+            let mut observed = read_entry(&self.dir, &container, parent.metadata.catalog_id)?;
+            if observed.metadata.kind != kind || observed.metadata.volume != parent.metadata.volume
             {
-                return Err(error("host token/container identity mismatch"));
+                return Err(error("host entry/container kind or volume mismatch"));
             }
+            observed.metadata.name = mac_hfs_b::names::normalize(name)?;
+            observed.key = mac_hfs_b::names::comparison(&observed.metadata.name)?;
             entries.push(observed);
         }
         entries.sort_by(|a, b| a.key.cmp(&b.key));
@@ -410,10 +402,7 @@ impl Volume
             std::fs::create_dir(&children)?;
             for child in self.children_unlocked(entry)?
             {
-                self.export_entry(&child,
-                                  &children.join(token(child.metadata.kind,
-                                                       child.metadata.identity)?),
-                                  depth + 1)?;
+                self.export_entry(&child, &children.join(&child.metadata.name), depth + 1)?;
             }
         }
         // Metadata is the completion record; a failed export lacks this marker.
@@ -476,6 +465,7 @@ impl Creation<'_>
         }
         let parent = self.resolve(parent)?;
         let prepared = mac_hfs_b::names::normalize(name)?;
+        format::host_component(&prepared)?;
         let key = mac_hfs_b::names::comparison(&prepared)?;
         if self.children(&parent)?.len() >= MAX_ENTRIES
         {
@@ -496,7 +486,7 @@ impl Creation<'_>
             meta.comment = template.comment.clone();
         }
         let dir = self.volume.folder(&parent)?;
-        let name = token(kind, meta.identity)?;
+        let name = prepared;
         if dir.symlink_metadata(&name).is_ok()
         {
             return Err(error("host identity collision"));

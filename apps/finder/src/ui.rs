@@ -33,6 +33,7 @@ pub fn error_text(system: &System<'_>, status: Error, operation: u32, subject: &
         Error::HandleLocked => 23,
         Error::CorruptData => 24,
         Error::StorageUnavailable => 25,
+        Error::InvalidName => 27,
         _ => 26
     };
     let mut a = [0; 256];
