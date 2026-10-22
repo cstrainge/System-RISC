@@ -7,6 +7,7 @@ use mac_toolbox::{events::{EventMask, Input, Modifiers},
                   *};
 
 use crate::browser::{Browser, Location, Text};
+static FULL_UPDATES: AtomicU64 = AtomicU64::new(0);
 static FILES: AtomicU64 = AtomicU64::new(0);
 static WIDTHS: AtomicU64 = AtomicU64::new(0);
 static DRAWS: AtomicU64 = AtomicU64::new(0);
@@ -15,6 +16,12 @@ static COMMITS: AtomicU64 = AtomicU64::new(0);
 /// Caller passes the public SDK's live, synchronously borrowed request.
 pub unsafe fn observe(number: u32, pointer: *mut (), size: usize)
 {
+    if number == abi::traps::WINDOW
+       && size == core::mem::size_of::<abi::traps::WindowCall>()
+       && unsafe { &*pointer.cast::<abi::traps::WindowCall>() }.operation == abi::BEGIN_UPDATE
+    {
+        FULL_UPDATES.fetch_add(1, Ordering::Relaxed);
+    }
     if number == abi::traps::FILE
     {
         FILES.fetch_add(1, Ordering::Relaxed);
@@ -80,7 +87,7 @@ fn fill(system: &System<'_>, browser: &mut Browser) -> Result<(), Error>
         let event = system.next_event(EventMask::ALL)?;
         if matches!(event, Event::Activate { .. })
         {
-            browser.activate(event);
+            browser.activate(&event);
         }
         if let Event::Update { window,
                                .. } = event
@@ -157,9 +164,9 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
                             folder: other.id })?;
     fill(system, &mut browser)?;
     system.select_window(lab)?;
-    browser.activate(Event::Activate { window: lab,
-                                       active: true,
-                                       input:  input(Point::default(), 0, false).with_active() });
+    browser.activate(&Event::Activate { window: lab,
+                                        active: true,
+                                        input:  input(Point::default(), 0, false).with_active() });
     browser.draw(system, lab)?;
     system.quickdraw().cursors().hide()?;
     system.log("DESKTOP_READY: Finder cached selection fixture\n")?;
@@ -190,8 +197,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     };
     let click = |browser: &mut Browser, h, v, when, shift| {
         browser.click(system,
-                      Event::MouseDown { window: Some(lab),
-                                         input:  input(point(h, v), when, shift) })
+                      &Event::MouseDown { window: Some(lab),
+                                          input:  input(point(h, v), when, shift) })
     };
     action(system, &mut browser, "single", 1, false, |browser| click(browser, 32, 44, 100, false))?;
     checkpoint(system, "single")?;
@@ -209,17 +216,17 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     checkpoint(system, "shift-toggle")?;
     action(system, &mut browser, "clear", 0, false, |browser| click(browser, 4, 24, 500, false))?;
     let move_band = |browser: &mut Browser, h, v, when, up| {
-        browser.track(system,
-                      if up
-                      {
-                          Event::MouseUp { window: Some(lab),
-                                           input:  input(point(h, v), when, false) }
-                      }
-                      else
-                      {
-                          Event::Idle { input: input(point(h, v), when, false),
-                                        tag:   0 }
-                      })
+        let event = if up
+        {
+            Event::MouseUp { window: Some(lab),
+                             input:  input(point(h, v), when, false) }
+        }
+        else
+        {
+            Event::Idle { input: input(point(h, v), when, false),
+                          tag:   0 }
+        };
+        browser.track(system, &event)
     };
     action(system, &mut browser, "marquee-three", 3, false, |browser| {
         move_band(browser, 182, 76, 501, false)
@@ -276,8 +283,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
             break;
         }
         info.event(system,
-                   Event::Idle { input: input(Point::default(), 4000, false),
-                                 tag:   0 })?;
+                   &Event::Idle { input: input(Point::default(), 4000, false),
+                                  tag:   0 })?;
         system.next_event(EventMask::from_bits_retain(0))?;
     }
     require(system, !info.pending(), "multiple info did not finish bounded totals")?;
@@ -305,9 +312,9 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
                                       Location { volume,
                                                  folder: wrapped.id })?;
     fill(system, &mut browser)?;
-    browser.activate(Event::Activate { window: wrapped_window,
-                                active: true,
-                                input:  input(Point::default(), 5000, false).with_active() });
+    browser.activate(&Event::Activate { window: wrapped_window,
+                                 active: true,
+                                 input:  input(Point::default(), 5000, false).with_active() });
     browser.draw(system, wrapped_window)?;
     let (index, item) =
         (0..8).find_map(|slot| {
@@ -346,8 +353,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     {
         action(system, &mut browser, name, 1, noop, |browser| {
             browser.click(system,
-                          Event::MouseDown { window: Some(wrapped_window),
-                                             input:  input(last_line, when, false) })
+                          &Event::MouseDown { window: Some(wrapped_window),
+                                              input:  input(last_line, when, false) })
         })?;
         checkpoint(system, if noop { "wrapped-noop" } else { "wrapped-selected" })?;
     }
@@ -356,21 +363,21 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     browser.folder_changed(system, wrapped_window)?;
     action(system, &mut browser, "wrapped-refresh-press", 0, true, |browser| {
         browser.click(system,
-                      Event::MouseDown { window: Some(wrapped_window),
-                                         input:  input(last_line, 5400, false) })
+                      &Event::MouseDown { window: Some(wrapped_window),
+                                          input:  input(last_line, 5400, false) })
     })?;
     action(system, &mut browser, "wrapped-refresh-release", 0, true, |browser| {
         browser.track(system,
-                      Event::MouseUp { window: Some(wrapped_window),
-                                       input:  input(last_line, 5401, false) })
+                      &Event::MouseUp { window: Some(wrapped_window),
+                                        input:  input(last_line, 5401, false) })
     })?;
     fill(system, &mut browser)?;
     require(system, browser.selection_count() == 1, "refresh lost a physical click")?;
     checkpoint(system, "wrapped-refreshed")?;
     let desktop_click = |browser: &mut Browser, at, when, shift| {
         browser.click(system,
-                      Event::MouseDown { window: None,
-                                         input:  input(at, when, shift) })
+                      &Event::MouseDown { window: None,
+                                          input:  input(at, when, shift) })
     };
     let root_point = Point { h: 600,
                              v: 44 };
@@ -400,23 +407,23 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
                            v: 474 };
     action(system, &mut browser, "desktop-band-trash", 1, false, |browser| {
         browser.track(system,
-                      Event::Idle { input: input(band_end, 6201, false),
-                                    tag:   0 })
+                      &Event::Idle { input: input(band_end, 6201, false),
+                                     tag:   0 })
     })?;
     checkpoint(system, "desktop-band-trash")?;
     action(system, &mut browser, "desktop-band-stationary", 1, true, |browser| {
         browser.track(system,
-                      Event::Idle { input: input(band_end, 6202, false),
-                                    tag:   0 })
+                      &Event::Idle { input: input(band_end, 6202, false),
+                                     tag:   0 })
     })?;
     action(system, &mut browser, "desktop-band-cancel", 0, false, |browser| {
         browser.track(system,
-                      Event::from(abi::events::Event { payload:   0,
-                                                       kind:      abi::events::EventKind::KeyDown,
-                                                       message:   0x351b,
-                                                       when:      6203,
-                                                       where_:    band_end,
-                                                       modifiers: 0 }))
+                      &Event::from(abi::events::Event { payload:   0,
+                                                        kind:      abi::events::EventKind::KeyDown,
+                                                        message:   0x351b,
+                                                        when:      6203,
+                                                        where_:    band_end,
+                                                        modifiers: 0 }))
     })?;
     checkpoint(system, "desktop-band-cancel")?;
     action(system, &mut browser, "desktop-all", 2, false, |browser| browser.select_all(system))?;
@@ -431,19 +438,19 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     for step in 0..2000
     {
         browser.track(system,
-                      Event::Idle { input: input(Point { h: 570 + (step % 60) as i16,
-                                                         v: 474 },
-                                                 6301 + step,
-                                                 false),
-                                    tag:   0 })?;
+                      &Event::Idle { input: input(Point { h: 570 + (step % 60) as i16,
+                                                          v: 474 },
+                                                  6301 + step,
+                                                  false),
+                                     tag:   0 })?;
         system.next_event(EventMask::from_bits_retain(0))?;
     }
     require(system,
             COMMITS.load(Ordering::Relaxed) == before,
             "desktop outline rebuilt retained drawing")?;
     browser.track(system,
-                  Event::MouseUp { window: None,
-                                   input:  input(band_end, 8401, false) })?;
+                  &Event::MouseUp { window: None,
+                                    input:  input(band_end, 8401, false) })?;
     require(system, browser.selection_count() == 2, "desktop marquee lost base selection")?;
     checkpoint(system, "desktop-outline")?;
     action(system, &mut browser, "desktop-selected-press", 2, true, |browser| {
@@ -451,15 +458,15 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     })?;
     action(system, &mut browser, "desktop-selected-release", 1, false, |browser| {
         browser.track(system,
-                      Event::MouseUp { window: None,
-                                       input:  input(root_point, 8501, false) })
+                      &Event::MouseUp { window: None,
+                                        input:  input(root_point, 8501, false) })
     })?;
     checkpoint(system, "desktop-collapse")?;
     // Delivery of the previous folder's deactivate edge may occur between the
     // two desktop presses. It must preserve the desktop target's click pair.
-    browser.activate(Event::Activate { window: wrapped_window,
-                                       active: false,
-                                       input:  input(root_point, 8502, false) });
+    browser.activate(&Event::Activate { window: wrapped_window,
+                                        active: false,
+                                        input:  input(root_point, 8502, false) });
     desktop_click(&mut browser, root_point, 8510, false)?;
     let root_window = crate::cache::with(0, |folder| folder.window);
     require(system,
@@ -538,7 +545,89 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
             geometry(destination_window) == Some(Rect::new(96, 68, 128, 100)),
             "folder move detached saved placement from its file")?;
     checkpoint(system, "placement-moved")?;
-    system.log("FINDER_SELECTION_USERSPACE_PASS stages=28 outline_steps=4000\n")?;
+    // New files from another application arrive without Finder positions.
+    // Existing manual placements are reserved before finding automatic holes.
+    let mut fresh = [files::CatalogInfo::EMPTY; 2];
+    for (slot, name) in fresh.iter_mut().zip(["New external file.txt", "New application file.txt"])
+    {
+        *slot = system.files()
+                      .create_data(files::DataFileSpec { volume,
+                                                         parent: destination.id,
+                                                         name,
+                                                         replacing: None,
+                                                         file_type: TypeCode::new(*b"TEXT"),
+                                                         creator: TypeCode::new(*b"ttxt") },
+                                   0)?
+                      .finish()?;
+        require(system, slot.saved_icon_location().is_none(), "new file unexpectedly placed")?;
+    }
+    browser.folder_changed(system, destination_window)?;
+    fill(system, &mut browser)?;
+    for entry in &mut fresh
+    {
+        let stored = system.files().catalog(volume, entry.id)?;
+        require(system,
+                stored.saved_icon_location().is_some(),
+                "first folder view did not save a new file position")?;
+        require(system,
+                stored.created == entry.created && stored.modified == entry.modified,
+                "automatic placement changed object dates")?;
+        *entry = stored;
+    }
+    let slot = (0..8).find(|&slot| crate::cache::with(slot, |f| f.window == destination_window))
+                     .ok_or(Error::BadArgument)?;
+    let removed_bounds = crate::cache::with(slot, |f| {
+                             for a in 0..f.count
+                             {
+                                 for b in a + 1..f.count
+                                 {
+                                     if crate::cache::overlaps(f.items[a].bounds, f.items[b].bounds)
+                                     {
+                                         return None;
+                                     }
+                                 }
+                             }
+                             f.items[..f.count].iter()
+                                               .find(|item| item.entry.id == placed_file.id)
+                                               .map(|item| item.bounds)
+                         }).ok_or(Error::BadArgument)?;
+    checkpoint(system, "placement-auto-added")?;
+    let full = FULL_UPDATES.load(Ordering::Relaxed);
+    let widths = WIDTHS.load(Ordering::Relaxed);
+    system.files().move_into(volume, placed_file.id, other.id)?;
+    browser.folder_changed(system, destination_window)?;
+    fill(system, &mut browser)?;
+    require(system,
+            FULL_UPDATES.load(Ordering::Relaxed) == full,
+            "source removal repainted the whole window")?;
+    require(system,
+            WIDTHS.load(Ordering::Relaxed) - widths <= 2,
+            "source refresh remeasured unchanged names")?;
+    for entry in fresh
+    {
+        let stored = system.files().catalog(volume, entry.id)?;
+        require(system,
+                stored.saved_icon_location() == entry.saved_icon_location(),
+                "source removal rearranged another file")?;
+        require(system,
+                stored.created == entry.created && stored.modified == entry.modified,
+                "source removal changed another file's dates")?;
+    }
+    let frame = system.window(destination_window)?.bounds;
+    let mut log = Text::<180>::default();
+    let _ = writeln!(&mut log,
+                     "FINDER_SOURCE_GAP_BOUNDS {} {} {} {} {} {} {} {}",
+                     frame.left,
+                     frame.top,
+                     frame.right,
+                     frame.bottom,
+                     frame.left + removed_bounds.left,
+                     frame.top + removed_bounds.top,
+                     frame.left + removed_bounds.right,
+                     frame.top + removed_bounds.bottom);
+    system.log(log.as_str())?;
+    checkpoint(system, "placement-source-gap")?;
+    system.log("FINDER_SELECTION_USERSPACE_PASS stages=30 outline_steps=4000\n")?;
     loop
     {
         system.wait_event(EventMask::from_bits_retain(0), 30)?;

@@ -100,3 +100,30 @@ project their returned names to Str31. Read-only providers reject mutations.
 Writable provider metadata/moves, resident Drag Manager, drop coordinate/group
 placement and batch copy/move/progress remain parts of the authoritative spec.
 The storage API is not a claim that the complete drag UI is implemented.
+
+## Catalog changes and saved placement, 2026-10-21
+
+An invalidated folder keeps its last rendered pixels while a new bounded scan
+runs. Finder retains one shared baseline for the active scan, not a second
+catalog per open window. Unchanged names reuse their measured captions. At
+publication, identity comparisons determine the old/new item masks; count and
+scroll-range changes update only the information band and managed scrollbars.
+There is no blank intermediate frame or full-window update for a catalog change.
+
+Before placing an unpositioned file, reserve every existing icon and its complete
+wrapped label. Assign a free automatic cell, then persist the new positions as
+one native catalog batch. Initial views and files created by another application
+use this same path. Existing positions remain unchanged when an item departs.
+Object dates, forks and unrelated Finder metadata are preserved. Immutable
+volumes retain stable placements in the current view without attempting writes.
+
+The native Finder selection fixture now checks 30 graphical stages. Its final
+cases create unpositioned files, verify saved positions and nonoverlap, move an
+item out, require zero full-window updates and no remeasurement of unchanged
+names, and compare every pixel outside the departed item/header/control damage.
+The physical drag gate also verifies persisted initial application placements.
+
+The external provider still lacks the complete metadata/move contract. Its
+current lack of position persistence is explicit unfinished driver work, not an
+acceptable final writable-filesystem contract. Folder-window bounds must also be
+stored on the directory and restored on reopen across every writable backend.

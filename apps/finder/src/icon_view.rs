@@ -243,7 +243,7 @@ pub trait Drawing
     fn icon(&mut self, id: Icon, name: &str, bounds: Rect, state: State) -> Result<(), Error>;
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Icon
 {
     Resource(i16),

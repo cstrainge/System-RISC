@@ -110,3 +110,51 @@ fn cached_interval_queries_include_tall_captions_below_shorter_neighbors()
         }
     });
 }
+
+#[test]
+fn automatic_placement_reserves_existing_icon_and_multiline_label_bounds()
+{
+    cache::edit(7, |folder| {
+        folder.reset(mac_toolbox::WindowId(99), browser::Location::default());
+        folder.count = 4;
+        for index in 0..4
+        {
+            let name = if index == 0
+            {
+                "A long saved caption that wraps over several lines"
+            }
+            else
+            {
+                "new file.txt"
+            };
+            let item = &mut folder.items[index];
+            item.entry = mac_toolbox::files::CatalogInfo::EMPTY;
+            item.entry.id = mac_toolbox::Cnid(index as u32 + 3);
+            let mut bytes = [0; 256];
+            bytes[..name.len()].copy_from_slice(name.as_bytes());
+            item.entry.name =
+                mac_toolbox::InlineText::from_reply(bytes, name.len() as u32).unwrap();
+            item.caption = Caption::measure(name, width).unwrap();
+            item.icon_bounds = Rect::ZERO;
+            item.bounds = Rect::ZERO;
+        }
+        folder.items[0].entry.finder_info[8..10].copy_from_slice(&0x100u16.to_be_bytes());
+        folder.items[0].entry.finder_info[10..14].fill(0);
+        folder.layout(180).unwrap();
+        assert_eq!(folder.items[0].icon_bounds, Rect::new(16, 28, 48, 60));
+        for a in 0..4
+        {
+            for b in a + 1..4
+            {
+                assert!(!cache::overlaps(folder.items[a].bounds, folder.items[b].bounds));
+            }
+        }
+        let unchanged: Vec<_> = folder.items[1..4].iter().map(|i| i.icon_bounds).collect();
+        // Removing the first icon does not compact or repack the survivors,
+        // even if another layout pass is needed after resizing the window.
+        folder.items.copy_within(1..4, 0);
+        folder.count = 3;
+        folder.layout(260).unwrap();
+        assert_eq!(folder.items[..3].iter().map(|i| i.icon_bounds).collect::<Vec<_>>(), unchanged);
+    });
+}

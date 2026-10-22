@@ -26,10 +26,10 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
     {
         assert!(!serial.contains(error), "{serial}");
     }
-    assert!(serial.contains("FINDER_SELECTION_USERSPACE_PASS stages=28 outline_steps=4000\n"),
+    assert!(serial.contains("FINDER_SELECTION_USERSPACE_PASS stages=30 outline_steps=4000\n"),
             "{serial}");
     let stages = report["stages"].as_array().unwrap();
-    assert_eq!(stages.len(), 28);
+    assert_eq!(stages.len(), 30);
     assert!(serial.contains("FINDER_INFO_MULTIPLE_TOTALS selected=10 logical=0 \
                              allocated=Some(0) error=None"),
             "{serial}");
@@ -49,6 +49,30 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
     assert_eq!(frame("select-all"),
                frame("outline-stress"),
                "transient outline left damage after 2000 moves");
+    let gap = serial.lines().find(|line| line.starts_with("FINDER_SOURCE_GAP_BOUNDS ")).unwrap();
+    let coords: Vec<i16> = gap.split_whitespace().skip(1).map(|s| s.parse().unwrap()).collect();
+    let before = frame("placement-auto-added");
+    let after = frame("placement-source-gap");
+    for y in 0..480i16
+    {
+        for x in 0..640i16
+        {
+            let departed = x >= coords[4] && x < coords[6] && y >= coords[5] && y < coords[7];
+            let header = x >= coords[0] && x < coords[2] && y >= coords[1] && y < coords[1] + 20;
+            let controls = x >= coords[0]
+                           && x <= coords[2]
+                           && y >= coords[1]
+                           && y <= coords[3]
+                           && (x >= coords[2] - 15 || y >= coords[3] - 15);
+            if !departed && !header && !controls
+            {
+                let at = (y as usize * 640 + x as usize) * 3;
+                assert_eq!(&before[at..at + 3],
+                           &after[at..at + 3],
+                           "source refresh changed unrelated pixel {x},{y}");
+            }
+        }
+    }
     let geometry =
         serial.lines().find(|line| line.starts_with("FINDER_SELECTION_BOUNDS ")).expect(&serial);
     let fields: Vec<i16> =

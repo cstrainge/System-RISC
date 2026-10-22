@@ -99,7 +99,37 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
                            Some(Point { h: 40,
                                         v: 40 }))
             }
-            _ => assert_eq!(*moved, original, "unrelated item changed: {name}")
+            _ =>
+            {
+                let point = match name.as_str()
+                {
+                    "Panic Test" =>
+                    {
+                        Point { h: 64,
+                                v: 0 }
+                    }
+                    "ResEdit" =>
+                    {
+                        Point { h: 192,
+                                v: 0 }
+                    }
+                    "TextEdit Exerciser" =>
+                    {
+                        Point { h: 256,
+                                v: 0 }
+                    }
+                    _ => panic!("unexpected installed app {name}")
+                };
+                assert_eq!(moved.saved_icon_location(), Some(point));
+                let mut expected = original;
+                expected.finder_info[8..10].copy_from_slice(&(original.finder_flags().bits()
+                                                              | 0x100)
+                                                                      .to_be_bytes());
+                expected.finder_info[10..12].copy_from_slice(&point.v.to_be_bytes());
+                expected.finder_info[12..14].copy_from_slice(&point.h.to_be_bytes());
+                assert_eq!(*moved, expected,
+                           "unrelated item changed beyond initial placement: {name}");
+            }
         }
     }
     let serial = fs::read_to_string(output.join("boot-1.log")).unwrap();
