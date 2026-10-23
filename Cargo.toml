@@ -4,6 +4,7 @@ members = [
     "crates/mac-abi",
     "crates/mac-module",
     "crates/mac-object-table",
+    "crates/mac-kernel-model",
     "crates/mac-fork-file",
     "crates/mac-host-protocol",
     "crates/mac-file-types",

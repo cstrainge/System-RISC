@@ -434,3 +434,6 @@ impl<T> Table<T>
         self.slots.iter_mut().filter_map(|slot| slot.value.as_mut())
     }
 }
+
+/// Next-model domain metadata; runtime adoption follows the staged rewrite.
+pub mod domain;

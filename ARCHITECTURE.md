@@ -37,6 +37,22 @@ diagnostic; a version field is not a promise to load older layouts.
 Compatibility with original Macintosh applications, classic media and explicitly
 supported external formats remains part of the product requirements.
 
+## Memory-model rewrite and platform separation
+
+The [first-cut memory/application/resource model](docs/MEMORY-APP-RESOURCE-MODEL.md)
+adds safe, host-testable structures in `crates/mac-kernel-model` and next-model
+domain metadata in the existing shared handle facility. These are staged shapes;
+the runtime limits described below remain in force until their migration gates.
+The [extension trait design](docs/EXTENSION-TRAITS-DESIGN.md) records the proposed
+composition boundaries and unresolved conflicts with earlier extension plans.
+
+Common code owns policy, accounting and lifetimes; architecture adapters own
+page geometry/encodings, CPU contexts, TLB/ASID operations and trap/System-stack
+entry. Board adapters own discovery and devices. Neither common records nor
+resource-service contracts may assume RV64 registers or a universal 4 KiB page.
+Use one validated layout input for Rust and linker output when paging becomes
+live; keep pointer access and CPU instructions behind narrow audited boundaries.
+
 ## Native application execution
 
 Finder and disk-loaded native applications run on separate OS-scheduled threads.

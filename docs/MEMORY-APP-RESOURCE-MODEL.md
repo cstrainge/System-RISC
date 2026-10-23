@@ -1,0 +1,237 @@
+# Memory, application and resource model: first-cut design
+
+Status: §13.1 structures for review, 2026-10-23. This is **not the live
+allocator/process migration**. The current System allocator, handle wire
+format, page mode, scheduler and applications are unchanged. Source contract:
+workspace `memory-app-resource-model-spec.md`; companion inputs are
+`extension-traits-shape-brief.md`, `extension-driver-system-spec.md` and Xtra's
+workspace `codebase.md`. Those private inputs remain outside this repository;
+this document preserves the implementation decisions and unresolved questions.
+
+## What landed
+
+The `no_std`, `forbid(unsafe_code)` **mac-kernel-model** crate is internal
+kernel infrastructure, not an application SDK. Keeping pure structures in a
+host-buildable crate permits checking arithmetic, ownership and allocation
+without emulating a CPU or adding test-only System traps. System will consume it
+as the §13.2 services migrate; it is deliberately not an unused System dependency.
+
+| §13.1 family | Code | Current scope |
+|---|---|---|
+| Buddy pool | `crates/mac-kernel-model/src/buddy.rs` | Caller-supplied metadata and order heads, split, O(1) unlink, coalescing, unique RAII block leases; never touches free-page bytes |
+| Page layer | `…/pages.rs` | Platform geometry, typed addresses, permissions/ownership, borrowed boot reservations, largest-leaf mapping plan, reserved `PageBox`/address-space root |
+| Domains/accounts | `…/policy.rs`, `mac-object-table/src/domain.rs` | Boot-monotonic incarnation, account/reserve records, checked registry construction; no live allocator charges yet |
+| Facility v2 | `mac-object-table/src/domain.rs` | Owner-index-authorized per-kind bitmap pools, generations, rotation, retirement, capacity policy, release tickets and registration shapes; no new public handle wire encoding |
+| Process/thread | `…/process.rs` | Address-space, image/memory/legacy capabilities, dynamic threads, saved manager slots, backend frame, vector marker and discovered save-area layout |
+| Control zone | `…/zone.rs` | Same-owner instance/zone binding, configured zone header, host-forwarding allocator contract; no allocator installed |
+| Uniform layout | `…/policy.rs` | One checked range record emits named linker symbols; no unapproved addresses or duplicate linker constants |
+| TE2 rope | `…/text.rs` | Immutable balanced chunk tree, byte/hard-break augmentation, shared snapshot roots, logarithmic chunk lookup; no edit/rebalance/control/file-provider migration yet |
+| Emergency kit | `…/emergency.rs` | Borrowed, checked requirement manifest and aligned size calculation; no failure path claims until backing kit is installed |
+
+The existing shared facility remains the sole active ID issuer. Its current
+u16-generation/one-based-slot wire layout is unchanged. The new internal key
+includes the domain incarnation; native/legacy projections are a later explicit
+migration. Legacy handles/refnums project through this same facility; never
+truncate a ResourceKey generation/incarnation into a smaller wire field. A
+projection must preserve its own generation history/retirement and resolve only
+to a currently valid key, while original 68k appearance stays intact. No second
+manager-local ID issuer is authorized. An index cannot recreate a kind pool or be recreated with a retired
+incarnation. No public mutable pool reference permits swapping another owner's
+pool into the index. Exhausted generations retire; metadata needing growth is
+reported separately from quota exhaustion. Allocation growth has no implicit
+initial size or hidden growth quantum.
+
+`ReleasedResource` records invalidation-before-dispatch. It is not yet the live
+cleanup dispatcher or a proof of quiescence. Values/callbacks, alias pinning,
+registration lifetime validation, account charging and lock-release-before-call
+are integration work. A drained observation alone cannot authorize page reuse.
+
+## Architecture and platform boundaries
+
+Common code owns domain identities, accounts, pool metadata, object lifetimes,
+text augmentation and layout policy. It has no CPU assembly, register numbers,
+PTE masks, `satp`, `sfence`, hart lookup, MMIO or global page-size constant.
+Physical/virtual addresses are distinct; conversion to a usable mapped pointer
+belongs to a narrow audited adapter. They are u64 address values, not host
+pointers or a promise that all target CPUs can map the full u64 range.
+
+The compile-time `Architecture` contract supplies base-page geometry, supported
+leaf sizes, canonical-range validation and concrete root/frame types. The
+future `system/src/machine` architecture adapter supplies PTE encodings including
+ownership software bits, ASID allocation/TLB shootdown, CPU-local current-context
+access, System-stack entry, context/vector save and activation. Machine/board
+adapters supply RAM/reservations, devices, timers and interrupts. The backend
+must reject an unrepresentable layout, never silently truncate it. ASIDs are
+hardware tags backed by central resource lifetimes, not a second OS object-ID
+scheme. The `AsidTag` here is only a descriptor; allocation/reuse/TLB fencing are
+not implemented.
+
+No Rust trait-object layout crosses independently linked modules. Architecture
+dispatch is static, not a dyn call per page. Extension traits use checked host
+adapters at request granularity; see [extension design](EXTENSION-TRAITS-DESIGN.md).
+
+The `PageBox` currently owns **uninitialized physical storage only**, has no
+`Deref`, and cannot activate a page table. Initialization/mapping proofs must
+precede live root activation. `VirtualPagePtr` stays private to the page layer;
+there is no machine-wide physical/virtual interpretation flag. Xtra's separation
+of common MMU ownership from architecture encodings is the reference. Its bump
+heap, intrusive free list, per-base-page full-RAM mapper, device model and
+scheduler are deliberately not imported. Its low-address-only validation must
+not become our kernel high-half validation.
+
+Pool locking is safe/thread-capable metadata synchronization, not yet an
+interrupt/preemption safety guarantee. The resident integration must establish
+its IRQ/preemption lock discipline in the architecture invocation wrapper before
+using it from traps/interrupts; no callback or heap operation runs under the pool
+lock. Host-thread stress is not evidence of interrupt-safe guest allocation.
+
+Large-map planning chooses the largest supported aligned leaf, falling back to
+base leaves only at boundaries. Tests describe 8 GiB using eight 1 GiB leaves,
+and exercise a different backend with 64 KiB base pages and 512 MiB leaves.
+These test geometries are not platform policy defaults.
+
+## Heap proposal for review
+
+Start with a coalescing free-list heap **per page-backed extent**, using the
+existing audited allocator's strategy rather than a new TLSF or custom slab
+framework. The current resident `linked_list_allocator` already reuses and
+coalesces; its *static backing and uncharged ownership* are the problem. Xtra's
+bump heap is a separate implementation and is unsuitable.
+
+The fixed System heap reserves its entire physical budget during bring-up.
+System-owned allocations use the protected account; process kernel allocations
+come from the same backing but require a process charge and sufficient space
+above the protected recovery floor. Admission reserves charge before publishing
+storage, rollback returns it, and the lease's `Drop` refunds once. This makes a
+process limit independent from physical exhaustion and protects Finder restart.
+Do not infer the allocation account from whichever module happens to execute.
+
+Application heaps acquire contiguous buddy extents on demand. Proposed growth:
+round the request plus allocator/alignment metadata to a buddy order, at least
+the configured growth minimum; do not require powers of two for user requests.
+Coalesce inside each extent, and return an entirely empty extent immediately.
+Never move live Rust allocations. Any later warm-extent cache needs measurements
+and an explicit account/limit; it is not a hidden v1 retention rule. Fragmented
+free space is reported distinctly from an unsupported request or bad alignment.
+System heap cannot grow past its boot-reserved fixed budget.
+
+Box/Vec/String work through the resident global allocator, **but GlobalAlloc's
+infallible clients cannot report Result**. Before the heap switch, audit every
+app-paced resident growth and independently linked module allocation. Such
+operations must reserve fallibly and preserve typed causes. Merely changing
+`allocation_failed` cannot make an infallible Rust allocation recoverable, and
+abandoning a stack with live locks/RAII values is not recovery. A platform
+panic/unwind/recovery contract must be proven before claiming module panic
+containment. The unsafe backing-pointer bridge belongs to one audited allocator
+adapter; accounting/free-list policy stays safe.
+
+## Proposed profiles, not active defaults
+
+Every figure below is a **review proposal**, not a shipped constant or a quota
+chosen implicitly by the structures. Evaluate with real image/control/account
+usage, including Res Edit and a 200 MB Text Edit document, before enabling.
+
+| Configured policy | Minimum / initial default / maximum proposal | Reason |
+|---|---|---|
+| Physical RAM for native release VM | 512 MiB / 8 GiB / platform-discovered | Target class is ~8 GiB; small guest remains a deliberate test profile |
+| Fixed System heap | 128 MiB / 512 MiB / 1 GiB | Must hold resident state plus charged process kernel allocations, including high-water reserve |
+| Protected recovery floor within System heap | 16 MiB / 32 MiB / 128 MiB | Measured kit + Finder restart, unavailable to ordinary process charges |
+| Finder restart portion of that floor | 8 MiB / 16 MiB / 64 MiB | Subset of floor, never added twice; final value measured from restart peak |
+| Process kernel account | 4 MiB / 16 MiB / 128 MiB | Controls, tables, zones, TCBs and frames; admission also checks global remainder |
+| Process app committed heap budget | 4 MiB / 64 MiB / 2 GiB | Grow on demand; a 200 MB file uses file-backed views, not a forced whole-file copy |
+| Application heap growth minimum | 16 KiB / 64 KiB / 2 MiB | Rounded up to target geometry; bounded by selected process budget |
+| Per-thread fixed stack | 64 KiB / 256 KiB / 8 MiB | Static per thread, charged app account, freed after switch-away |
+| Designated per-control space | 1 MiB / 16 MiB / 128 MiB | A sub-budget of process kernel account, never independently guaranteed physical memory |
+| TE2 owned threshold | Tunable 0–100%, ruled default 40% | Strictly below threshold owns; at/above uses view; input is designated control space |
+| Process/thread/handle counts | Grow until account or memory refusal | No fixed-eight or guessed high replacement constant |
+
+Selected values must satisfy cross-profile constraints: reserve <= fixed heap,
+Finder portion <= reserve, control space <= kernel budget, growth <= app budget,
+stack budget available before spawn. The current constructors do not select a
+profile, and no complete live profile validator is claimed yet.
+
+Uniform layout proposal: one app interval/preferred image VA for all processes;
+private supervisor process-kernel interval; shared supervisor module interval;
+shared supervisor kernel interval containing the physmap. Store the chosen
+ranges once, validate through the architecture, generate both Rust input and
+linker symbols in xtask, then rebuild all producers. **Concrete VA values and
+healthy range selections remain [DECIDE]**; don't fossilize today's physical
+0x81… application addresses as future virtual addresses. The emitter exists;
+production linker scripts have not switched to it.
+
+Image resource residency proposal: **resident-with-image** for v1 (the spec's
+permitted provisional default). Last image release drops code/resource backing
+immediately; no unaccounted warm cache. Shared immutable image backing plus
+per-process writable sections must replace today's never-unloaded `Once` slots.
+Demand paging is a separate [DECIDE], not an implicit change here.
+
+## Emergency services: draft enumeration for ratification
+
+Heap initialization must be immediately followed by kit reservation and pinning,
+before fonts, modules, Finder or ordinary service allocation. Failure to reserve
+the kit is a boot admission failure with a minimal ROM/framebuffer report.
+
+| Service | Preallocated contents / zero-allocation obligation |
+|---|---|
+| Fault / System panic | Trusted bounded diagnostic record, formatting scratch, bomb image/font, minimal display/input state, Restart action; truncate visibly rather than allocate |
+| OOM report | Account/domain/request details, event slot, core alert resources and scratch; never enumerate all objects just to display refusal |
+| Ledger teardown | One-at-a-time invalidation tickets, bounded failure-report slots, drain/cancel bookkeeping; no allocation proportional to object count |
+| Bootstrap / watchdog | Runnable recovery state, per-CPU emergency stack/context, scheduler fallback storage; independently usable from failed policy |
+| Save changes | Already pinned DLOG/controls/strings/fonts, modal state and bounded filename display; cannot depend on the dying app's heap |
+| Save / Save As | Dialog/control/scratch records and a bounded viewport/page of directory results, provider request/cancellation records, filename entry buffer |
+| Core alerts | Resource-backed error controls/icon/font and preallocated input/tracking state |
+| Finder restart | Separately protected admission/account allowance plus minimum launch/stack/image references; stop failed generation before relaunch |
+
+The manifest records per-service bytes/alignment and rejects duplicate entries
+and overflow. It does not assert that these paths are allocation-free today.
+The heap stage must enumerate each transitive allocation and prove worst-case
+scratch/event/provider demand with allocators refusing all new allocation.
+A Save dialog can still encounter a provider requiring memory: the reserved UI
+must remain usable, preserve the unsaved document, and report that refusal.
+Zero-allocation reporting does not promise every storage operation can succeed
+under global exhaustion. Healthy kit sizes and concurrent-use policy need
+ratification after measurement; no magic emergency buffer sizes are chosen now.
+
+## Divergences and required resolutions
+
+| ID | Evidence / conflict | Proposed handling; no silent resolution |
+|---|---|---|
+| M-D01 | `bootrom/src/main.rs` reports fixed 128 MiB; BootInfo has no reservation list; §3.1 assumes both discovery and reservations exist | Add discovered RAM plus borrowed/shared reservation transport before enabling pool; metadata storage itself must be reserved |
+| M-D02 | §3.5 globally maps module region supervisor-only into roots; §6.2 says definitions are not mapped in application address spaces | Read as **not user-accessible**, unless strict kernel-only mappings are intended; review before page activation |
+| M-D03 | §3.7 places dynamic processes on page layer; §13.2 enables dynamic capacity earlier | Migrate dynamic metadata on current backing first if useful, but page-backed domain enforcement waits for page activation; do not claim isolation or memory-scale acceptance early |
+| M-D04 | New spec's module-death containment vs P6/P13 trusted privileged fault policy | Domain cleanup contains controlled failures; arbitrary privileged writes/panics remain System-fatal until an actual recovery/isolation contract is proven |
+| M-D05 | Typed OOM rule vs infallible Rust allocation and current halt handler | Fallible-growth audit and reserve-backed failure reporting are prerequisites; do not replace halt with unsafe stack escape |
+| M-D06 | New refcounted/drop-on-last image vs fixed eight never-evicted `Once` cache | Replace cache with facility-owned image/pin aliases; shared RO and private RW mapping, not relocation into another hardcoded slot |
+| M-D07 | Module allocator forwarding vs current `drivers/vhost-filesystem` and `drivers/stuffit-filesystem` private global heaps (`mac-driver-alloc` calls the module global allocator) | New invocation adapter forwards explicit allocation context; migrate module implementations together, not by mixing heaps/free functions |
+| M-D08 | Port/copy definition protocol vs current raw surface/DefinitionCall ABI | Introduce host-owned port operations and bounded copies/managed buffers; remove raw app pointer access before privilege gate |
+| M-D09 | Synchronous participant shape brief vs queued/deadline participants in extension spec §5.5 | Design uses synchronous participants as latest brief requires; no implementation until review of the superseded asynchronous rule |
+
+Execution identity has **four independent parts**: executor/fault domain,
+subject process, allocation/zone account and stacked resource scope. A module
+callback on an app control cannot conflate them. Current process arrays and
+thread context are inspected migration inputs, not architecture to preserve.
+
+## Migration and gates
+
+Keep §13.2 stages explicit: ISA floor; facility/manager migration; owner walk and
+unified rollback; dynamic process records; live page layer; heaps/reserve/control
+zones; module domains/resource scopes/individual driver extraction/Host Clipboard;
+TE2+Text Edit; P13 privilege campaign; **scheduler extension in its own isolated
+commit after the full model boots cleanly**. No capstone scheduler feature slips
+into a memory change.
+
+Each manager migrates to the same facility before its new account is live.
+The teardown algorithm has no manager-ordered phase list: stop admission and
+threads, invalidate one ledger entry under lock, release lock, dispatch the
+kind's registered cleanup (recursive release allowed), continue despite typed
+cleanup failures, then wait for empty ledger and real thread/I/O quiescence.
+A launch failure enters the same path. An incomplete drain quarantines storage;
+it never reports success or reuses code/pages with outstanding users.
+
+This first cut uses pure model tests for metadata/geometry and existing public
+SDK tests for unchanged live behavior. Later stages add canonical tests through
+`crates/mac-toolbox/tests`: stale/foreign handles and teardown, more than eight
+apps, paging boot, per-domain exhaustion/retry, Res Edit full suite, 200 MB text
+view, extension death/reconnect, privilege adversaries, then scheduler handoff.
+Host-only tests cannot establish those System claims. Verification evidence for
+this cut is recorded in the milestone report/status log and commit description.

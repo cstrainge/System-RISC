@@ -1,0 +1,9 @@
+[package]
+name = "mac-kernel-model"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mac-object-table.workspace = true
+spinning_top = "=0.2.5"

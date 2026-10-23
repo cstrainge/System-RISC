@@ -436,6 +436,14 @@ name = "mac-host-protocol"
 version = "0.1.0"
 
 [[package]]
+name = "mac-kernel-model"
+version = "0.1.0"
+dependencies = [
+ "mac-object-table",
+ "spinning_top",
+]
+
+[[package]]
 name = "mac-module"
 version = "0.1.0"
 
