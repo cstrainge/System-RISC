@@ -5,3 +5,4 @@ edition.workspace = true
 publish.workspace = true
 [dependencies]
 mac-abi.workspace = true
+spinning_top = "=0.2.5"

@@ -281,7 +281,6 @@ impl Desktop
 
     pub fn route_events(&mut self)
     {
-        let mut retained = Vec::new();
         while let Some((event, _)) = self.events.next_system()
         {
             let id = match event.kind
@@ -311,16 +310,15 @@ impl Desktop
             let position = self.event_position(event, target);
             if target == self.owner
             {
-                retained.push((event, position));
+                // post_positioned clears the trusted-routing flag. Requeue
+                // immediately: next_system skips it, preserving the same FIFO
+                // result without allocating a temporary Vec per input event.
+                self.events.post_positioned(event, position);
             }
             else if let Some(saved) = self.locals.iter_mut().find(|s| s.id == target)
             {
                 saved.events.post_positioned(event, position);
             }
-        }
-        for (event, position) in retained
-        {
-            self.events.post_positioned(event, position);
         }
         self.window_owners.retain(|(id, _)| self.windows.window(*id).is_some());
     }

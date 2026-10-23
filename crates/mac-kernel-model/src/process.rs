@@ -2,7 +2,7 @@
 //! vector storage is sized from a discovered architecture requirement.
 use alloc::vec::Vec;
 
-use mac_object_table::domain::OwnerIndex;
+use mac_object_table::shared::OwnerLedger;
 
 use crate::{DomainId, DomainKind, ResourceKey,
             pages::{AddressSpace, Architecture},
@@ -37,9 +37,18 @@ impl ExecutionBinding
     /// This snapshot does not pin domains or resources. The live invocation
     /// guard must revalidate and pin them before dispatch, under its admission
     /// lock; keeping a snapshot is never permission to invoke a dead module.
-    pub fn new(executor: &OwnerIndex, subject: &OwnerIndex, allocation: AllocationContext)
+    pub fn new(executor: &impl OwnerLedger, subject: &impl OwnerLedger,
+               allocation: AllocationContext)
                -> Result<Self, ModelError>
     {
+        if !executor.accepting()
+        {
+            return Err(ModelError::DomainStopping(executor.owner()));
+        }
+        if !subject.accepting()
+        {
+            return Err(ModelError::DomainStopping(subject.owner()));
+        }
         if executor.owner().kind() == DomainKind::Process && executor.owner() != subject.owner()
         {
             return Err(ModelError::WrongDomain);

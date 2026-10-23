@@ -1,5 +1,14 @@
-use mac_object_table::domain::{CapacityPolicy, Directory, DirectoryError, DomainKind, KindCode,
-                               OwnerIndex};
+use mac_object_table::{domain::{CapacityPolicy, DirectoryError, DomainKind, KindCode, OwnerIndex},
+                       shared::InvocationGate};
+struct HostGate;
+impl InvocationGate for HostGate
+{
+    fn run<R>(operation: impl FnOnce() -> R) -> R
+    {
+        operation()
+    }
+}
+type Directory<T> = mac_object_table::domain::Directory<T, HostGate>;
 
 #[test]
 fn directory_preserves_owner_identity_and_has_no_fixed_eight_limit()
@@ -83,4 +92,92 @@ fn retirement_refuses_live_resources_and_succeeds_only_after_invalidation()
                Err(DirectoryError::NotFound { incarnation: owner.incarnation() }));
     assert!(matches!(directory.invalidate_next(owner.incarnation()),
                      Err(DirectoryError::NotFound { .. })));
+}
+
+#[test]
+fn manager_references_share_one_ledger_and_cannot_reopen_a_retired_owner()
+{
+    let mut directory = Directory::new();
+    let owner = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), ()).unwrap();
+    let first = directory.get(owner.incarnation()).unwrap().ledger().clone();
+    let second = first.clone();
+    let kind = KindCode(*b"SHAR");
+    first.add_pool(kind, CapacityPolicy::GrowableUntilMemory).unwrap();
+    first.grow(kind, 1).unwrap();
+    let key = first.allocate(kind).unwrap();
+    assert!(second.contains(key));
+    assert_eq!(second.live(), 1);
+    second.invalidate(key).unwrap();
+    assert!(!first.contains(key));
+    directory.remove(owner.incarnation()).unwrap();
+    for ledger in [first, second]
+    {
+        assert_eq!(ledger.owner(), owner);
+        assert!(matches!(ledger.allocate(kind), Err(mac_object_table::domain::PoolError::Stopping { owner: actual }) if actual == owner));
+        assert!(ledger.grow(kind, 2).unwrap_err().to_string().contains("stopping"));
+        assert!(!ledger.contains(key));
+    }
+}
+
+#[test]
+fn concurrent_admission_cannot_slip_between_empty_check_and_retirement()
+{
+    use std::sync::{Arc, Barrier};
+
+    use mac_object_table::domain::PoolError;
+    let kind = KindCode(*b"RACE");
+    for _ in 0..100
+    {
+        let mut directory = Directory::new();
+        let owner = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), ()).unwrap();
+        let ledger = directory.get(owner.incarnation()).unwrap().ledger().clone();
+        ledger.add_pool(kind, CapacityPolicy::GrowableUntilMemory).unwrap();
+        ledger.grow(kind, 1).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let peer = barrier.clone();
+        let reference = ledger.clone();
+        let worker = std::thread::spawn(move || {
+            peer.wait();
+            reference.allocate(kind)
+        });
+        barrier.wait();
+        let retired = directory.remove(owner.incarnation());
+        let allocated = worker.join().unwrap();
+        match (retired, allocated)
+        {
+            (Ok(()), Err(PoolError::Stopping { owner: actual })) => assert_eq!(actual, owner),
+            (Err(DirectoryError::LiveResources { owner: actual,
+                                                 live: 1 }),
+             Ok(key)) =>
+            {
+                assert_eq!(actual, owner);
+                assert!(ledger.contains(key));
+                ledger.invalidate(key).unwrap();
+                directory.remove(owner.incarnation()).unwrap();
+            }
+            other => panic!("admission and retirement disagreed: {other:?}")
+        }
+        assert!(directory.is_empty());
+        assert_eq!(ledger.live(), 0);
+    }
+}
+
+#[test]
+fn dropping_directory_closes_admission_without_losing_raii_cleanup_keys()
+{
+    let mut directory = Directory::new();
+    let owner = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), ()).unwrap();
+    let reference = directory.get(owner.incarnation()).unwrap().ledger().clone();
+    let kind = KindCode(*b"DROP");
+    reference.add_pool(kind, CapacityPolicy::GrowableUntilMemory).unwrap();
+    reference.grow(kind, 1).unwrap();
+    let key = reference.allocate(kind).unwrap();
+    drop(directory);
+    assert!(!reference.accepting());
+    assert!(reference.contains(key));
+    assert!(matches!(reference.allocate(kind),
+                     Err(mac_object_table::domain::PoolError::Stopping { .. })));
+    reference.invalidate(key).unwrap();
+    assert_eq!(reference.live(), 0);
+    assert!(!reference.contains(key));
 }

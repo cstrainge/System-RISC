@@ -6,6 +6,8 @@ use core::{fmt,
            num::NonZeroU64,
            sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
+use crate::shared::{InvocationGate, OwnerRef};
+
 static SYSTEM_INDEX_ISSUED: AtomicBool = AtomicBool::new(false);
 static NEXT_INCARNATION: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -582,24 +584,24 @@ pub struct OwnerIndex
 /// identities: the directory derives its key exclusively from the owned index.
 /// Entries stay ordered by boot incarnation for logarithmic identity lookup.
 /// Removing a domain moves only directory metadata, never its resident objects.
-pub struct Directory<T>
+pub struct Directory<T, G: InvocationGate>
 {
-    entries: Vec<DomainEntry<T>>
+    entries: Vec<DomainEntry<T, G>>
 }
 
-pub struct DomainEntry<T>
+pub struct DomainEntry<T, G: InvocationGate>
 {
-    ledger: OwnerIndex,
+    ledger: OwnerRef<G>,
     value:  T
 }
-impl<T> DomainEntry<T>
+impl<T, G: InvocationGate> DomainEntry<T, G>
 {
-    pub const fn owner(&self) -> DomainId
+    pub fn owner(&self) -> DomainId
     {
         self.ledger.owner()
     }
 
-    pub const fn ledger(&self) -> &OwnerIndex
+    pub const fn ledger(&self) -> &OwnerRef<G>
     {
         &self.ledger
     }
@@ -650,7 +652,7 @@ impl fmt::Display for DirectoryError
         }
     }
 }
-impl<T> Directory<T>
+impl<T, G: InvocationGate> Directory<T, G>
 {
     pub const fn new() -> Self
     {
@@ -672,6 +674,7 @@ impl<T> Directory<T>
     pub fn insert(&mut self, ledger: OwnerIndex, value: T) -> Result<DomainId, DirectoryError>
     {
         let owner = ledger.owner();
+        let ledger = OwnerRef::new(ledger)?;
         // OwnerIndex's issuer prohibits duplicate incarnations, including System.
         let at =
             self.entries.partition_point(|entry| entry.owner().incarnation() < owner.incarnation());
@@ -689,7 +692,7 @@ impl<T> Directory<T>
 
     /// Native process IDs are the complete boot-unique incarnation, not a
     /// truncated slot/generation projection. Managers still enforce caller policy.
-    pub fn get(&self, incarnation: u64) -> Option<&DomainEntry<T>>
+    pub fn get(&self, incarnation: u64) -> Option<&DomainEntry<T, G>>
     {
         self.entries.get(self.index(incarnation)?)
     }
@@ -702,7 +705,7 @@ impl<T> Directory<T>
         self.entries.get_mut(at).map(DomainEntry::value_mut)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &DomainEntry<T>>
+    pub fn iter(&self) -> impl Iterator<Item = &DomainEntry<T, G>>
     {
         self.entries.iter()
     }
@@ -733,22 +736,27 @@ impl<T> Directory<T>
     pub fn remove(&mut self, incarnation: u64) -> Result<T, DirectoryError>
     {
         let at = self.index(incarnation).ok_or(DirectoryError::NotFound { incarnation })?;
-        let entry = &mut self.entries[at];
-        let live = entry.ledger.live();
-        if live != 0
-        {
-            return Err(DirectoryError::LiveResources { owner: entry.owner(),
-                                                       live });
-        }
-        entry.ledger.stop_admission();
+        self.entries[at].ledger.retire()?;
         Ok(self.entries.remove(at).value)
     }
 }
-impl<T> Default for Directory<T>
+impl<T, G: InvocationGate> Default for Directory<T, G>
 {
     fn default() -> Self
     {
         Self::new()
+    }
+}
+impl<T, G: InvocationGate> Drop for Directory<T, G>
+{
+    fn drop(&mut self)
+    {
+        // Stop orphan references issuing new objects. Existing keys remain for
+        // RAII cleanup; kind dispatch/draining still belongs to the explicit walk.
+        for entry in &self.entries
+        {
+            entry.ledger.stop_admission();
+        }
     }
 }
 
@@ -795,6 +803,11 @@ impl OwnerIndex
         self.owner
     }
 
+    pub const fn accepting(&self) -> bool
+    {
+        self.accepting
+    }
+
     pub fn pools(&self) -> impl Iterator<Item = &DomainSlots>
     {
         self.pools.iter()
@@ -830,6 +843,10 @@ impl OwnerIndex
 
     pub fn grow(&mut self, kind: KindCode, slots: usize) -> Result<(), PoolError>
     {
+        if !self.accepting
+        {
+            return Err(PoolError::Stopping { owner: self.owner });
+        }
         let owner = self.owner;
         self.pool_mut(kind)
             .ok_or(PoolError::UnregisteredKind { owner,
@@ -839,6 +856,10 @@ impl OwnerIndex
 
     pub fn allocate(&mut self, kind: KindCode) -> Result<ResourceKey, PoolError>
     {
+        if !self.accepting
+        {
+            return Err(PoolError::Stopping { owner: self.owner });
+        }
         let owner = self.owner;
         self.pool_mut(kind)
             .ok_or(PoolError::UnregisteredKind { owner,
@@ -865,6 +886,23 @@ impl OwnerIndex
         }
     }
 
+    pub(crate) fn retire(&mut self) -> Result<(), DirectoryError>
+    {
+        let live = self.live();
+        if live != 0
+        {
+            return Err(DirectoryError::LiveResources { owner: self.owner,
+                                                       live });
+        }
+        // Check and close under the caller's single metadata lock. A manager's
+        // surviving reference is only a closed identity stub, not a pin on all
+        // of the dead domain's bitmap/generation storage. Incarnation uniqueness
+        // makes discarding this history safe; this index can never reopen.
+        self.stop_admission();
+        self.pools = Vec::new();
+        Ok(())
+    }
+
     /// Kind dispatch is resolved by the caller after dropping its registry lock.
     pub fn invalidate_next(&mut self) -> Option<ReleasedResource>
     {
@@ -882,6 +920,38 @@ mod tests
 {
     use super::*;
     #[test]
+    fn retirement_discards_domain_history_without_reopening_its_incarnation()
+    {
+        let mut index = OwnerIndex::issue(DomainKind::Process).unwrap();
+        let owner = index.owner();
+        let kind = KindCode(*b"META");
+        index.add_pool(kind, CapacityPolicy::GrowableUntilMemory).unwrap();
+        index.grow(kind, 1024).unwrap();
+        let key = index.allocate(kind).unwrap();
+        assert!(matches!(index.retire(),
+                         Err(DirectoryError::LiveResources { live: 1,
+                                                             .. })));
+        assert!(index.accepting());
+        index.invalidate(key).unwrap();
+        index.retire().unwrap();
+        assert_eq!(index.owner(), owner);
+        assert_eq!(index.pools.capacity(),
+                   0,
+                   "retirement must release the allocation, not only clear occupancy");
+        assert!(!index.contains(key));
+        assert!(matches!(index.add_pool(kind, CapacityPolicy::GrowableUntilMemory),
+                         Err(PoolError::Stopping { .. })));
+        assert!(matches!(index.allocate(kind), Err(PoolError::Stopping { .. })));
+    }
+    struct HostGate;
+    impl InvocationGate for HostGate
+    {
+        fn run<R>(operation: impl FnOnce() -> R) -> R
+        {
+            operation()
+        }
+    }
+    #[test]
     fn directory_does_not_truncate_wide_incarnations()
     {
         // Private-unit fixture only; no public identity-forging constructor or
@@ -895,7 +965,7 @@ mod tests
         };
         let low = 7;
         let high = (1u64 << 40) | low;
-        let mut directory = Directory::new();
+        let mut directory = Directory::<_, HostGate>::new();
         directory.insert(ledger(low), "low").unwrap();
         directory.insert(ledger(high), "high").unwrap();
         assert_eq!(directory.get(low).unwrap().value(), &"low");

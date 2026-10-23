@@ -68,6 +68,40 @@ fn control_callback_refuses_foreign_and_disposed_or_reused_resources()
     assert!(ModelError::InvalidBinding.to_string().contains("lifetime binding"));
 }
 
+#[test]
+fn execution_binding_accepts_shared_authority_and_checks_its_live_generation()
+{
+    struct HostGate;
+    impl mac_object_table::shared::InvocationGate for HostGate
+    {
+        fn run<R>(operation: impl FnOnce() -> R) -> R
+        {
+            operation()
+        }
+    }
+    let mut owners = mac_object_table::domain::Directory::<_, HostGate>::new();
+    let module = owners.insert(OwnerIndex::issue(DomainKind::Module).unwrap(), ()).unwrap();
+    let process = owners.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), ()).unwrap();
+    let module = owners.get(module.incarnation()).unwrap().ledger().clone();
+    let process = owners.get(process.incarnation()).unwrap().ledger().clone();
+    let mut keys = Vec::new();
+    for kind in [KindCode(*b"CTRL"), KindCode(*b"ZONE")]
+    {
+        process.add_pool(kind, CapacityPolicy::GrowableUntilMemory).unwrap();
+        process.grow(kind, 1).unwrap();
+        keys.push(process.allocate(kind).unwrap());
+    }
+    let context = AllocationContext::Control(ZoneBinding::new(keys[0], keys[1]).unwrap());
+    ExecutionBinding::new(&module, &process, context).unwrap();
+    process.invalidate(keys[1]).unwrap();
+    assert_eq!(ExecutionBinding::new(&module, &process, context).unwrap_err(),
+               ModelError::InvalidBinding);
+    process.stop_admission();
+    let error = ExecutionBinding::new(&module, &process, context).unwrap_err();
+    assert_eq!(error, ModelError::DomainStopping(process.owner()));
+    assert!(error.to_string().contains(&process.owner().to_string()));
+}
+
 struct Host
 {
     used:     Cell<u64>,

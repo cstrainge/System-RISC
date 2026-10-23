@@ -19,6 +19,7 @@ pub(crate) mod clock;
 
 pub(crate) mod scheduler;
 pub(crate) mod io;
+pub(crate) mod interrupts;
 
 /// Current hardware contract; resident lifecycle code does not choose an ISA.
 pub(crate) const MODULE_TARGET: mac_module::Target = mac_module::Target::RVA23U64;

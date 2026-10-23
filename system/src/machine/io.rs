@@ -49,25 +49,10 @@ ret
 );
 pub fn run<F: FnOnce() -> R, R>(function: F) -> R
 {
-    struct Interrupts(usize);
-    impl Drop for Interrupts
-    {
-        fn drop(&mut self)
-        {
-            if self.0 & 8 != 0
-            {
-                unsafe {
-                    core::arch::asm!("csrs mstatus, {}",in(reg)8usize,options(nomem,nostack));
-                }
-            }
-        }
-    }
-    let previous: usize;
-    unsafe {
-        core::arch::asm!("csrrc {}, mstatus, {}",out(reg)previous,in(reg)8usize,options(nomem,nostack));
-    }
-    let _interrupts = Interrupts(previous);
-
+    super::interrupts::with_masked(|| run_masked(function))
+}
+fn run_masked<F: FnOnce() -> R, R>(function: F) -> R
+{
     if super::scheduler::current_context().identity().thread == crate::context::BOOT_THREAD
     {
         return function();

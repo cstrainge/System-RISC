@@ -19,6 +19,7 @@ pub enum ModelError
     InvalidManifest,
     InvalidAddressRange,
     WrongDomain,
+    DomainStopping(DomainId),
     InvalidBinding
 }
 impl fmt::Display for ModelError
@@ -44,6 +45,10 @@ impl fmt::Display for ModelError
                         Self::WrongDomain =>
                         {
                             "memory-model object belongs to a different lifetime domain"
+                        }
+                        Self::DomainStopping(owner) =>
+                        {
+                            return write!(f, "{owner} is stopping; execution binding refused");
                         }
                         Self::InvalidBinding => "invalid or duplicate object lifetime binding",
                         Self::InvalidLayout =>

@@ -48,6 +48,26 @@ pool into the index. Exhausted generations retire; metadata needing growth is
 reported separately from quota exhaustion. Allocation growth has no implicit
 initial size or hidden growth quantum.
 
+The directory now retains a fallibly allocated, shared `OwnerRef` for each
+ledger. Managers clone that authority instead of creating another index. Its
+lock is private; every access runs inside the explicitly selected architecture
+`InvocationGate`. The native adapter masks/restores local MIE with compiler
+memory barriers, also replacing the old I/O-local guard. No callback runs under
+the metadata lock. Empty-check plus admission closure is atomic at retirement;
+directory Drop also stops new issuance through orphan references, while leaving
+existing keys for RAII cleanup and the explicit dispatch walk. A sealed ledger
+view lets binding validation consume owned or shared authority, and refuses
+stopping domains with an error naming the domain. Retirement discards the empty
+domain's bitmap/generation arrays immediately; surviving references retain only
+a closed identity stub, not the dead pool's storage.
+
+The existing resident heap now has a private `ResidentHeap` wrapper using the
+same architecture gate for allocation, deallocation, initialization and free-
+space reads. This closes the preempted-heap-holder path without changing the
+current 8 MiB backend or claiming the later page-backed/accounted heap stage.
+Trusted event routing also requeues directly into the fixed queue, avoiding a
+temporary heap allocation on every physical-input batch.
+
 This is the start of §13.2/2, not completion: other managers do not yet insert
 their objects into process ledgers, and the EXIT/rollback cleanup lists and
 fixed-eight scheduler/heap/image storage still exist. The real process fixture
@@ -95,7 +115,7 @@ heap, intrusive free list, per-base-page full-RAM mapper, device model and
 scheduler are deliberately not imported. Its low-address-only validation must
 not become our kernel high-half validation.
 
-Pool locking is safe/thread-capable metadata synchronization, not yet an
+Buddy-pool locking is safe/thread-capable metadata synchronization, not yet an
 interrupt/preemption safety guarantee. The resident integration must establish
 its IRQ/preemption lock discipline in the architecture invocation wrapper before
 using it from traps/interrupts; no callback or heap operation runs under the pool
@@ -225,9 +245,10 @@ ratification after measurement; no magic emergency buffer sizes are chosen now.
 Chloe accepted M-D01, M-D03, M-D06, M-D07 and M-D08 as migration work as
 classified above and authorized §13.2 staging on 2026-10-23. The remaining
 profile/layout proposals are not blanket-ratified by accepting the structures.
-Pool IRQ/preemption safety is carried debt: close it in the architecture
-invocation wrapper **before any pool serves traps or interrupts**. Host-thread
-stress alone cannot close that gate.
+Handle-ledger locking now uses the architecture invocation gate described above.
+The physical buddy pool remains disconnected and its IRQ/preemption discipline
+is still carried debt: close it **before it serves traps or interrupts**.
+Host-thread stress alone cannot close that gate.
 
 Execution identity has **four independent parts**: executor/fault domain,
 subject process, allocation/zone account and stacked resource scope. A module
@@ -257,10 +278,16 @@ admission and FP/vector preservation in the RISC-V machine adapter. Register
 state backing scales with discovered VLEN. Eager save is the correctness bridge
 until per-thread domain backing/dirty policy lands; this is not the later lazy-
 state or System-stack milestone. The LP64 transport ABI and development ABI 1
-remain unchanged. Pool IRQ-safe invocation is still a mandatory pre-use gate.
+remain unchanged. Physical-pool IRQ-safe invocation is still a mandatory pre-use gate.
 See [architecture](../ARCHITECTURE.md#native-isa-floor).
 
 ## Migration and gates
+
+Reactor is now the first customer for stage-2 inspection APIs and a visible
+acceptance surface for each later stage. Implement its application and native
+data controls alongside the services, following [Reactor integration](REACTOR.md)
+and the workspace unified design. Enumeration, capabilities, revisions and cheap
+cumulative counters are part of the model, not a private inspection backdoor.
 
 Keep §13.2 stages explicit: ISA floor; facility/manager migration; owner walk and
 unified rollback; dynamic process records; live page layer; heaps/reserve/control

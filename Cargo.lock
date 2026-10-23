@@ -454,6 +454,7 @@ name = "mac-object-table"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
+ "spinning_top",
 ]
 
 [[package]]

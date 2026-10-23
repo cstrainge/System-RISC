@@ -3,6 +3,7 @@
 //! are retired permanently rather than wrapping. Managers retain owner checks.
 #![no_std]
 #![forbid(unsafe_code)]
+#![feature(allocator_ext)]
 extern crate alloc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
@@ -431,3 +432,4 @@ impl<T> Table<T>
 
 /// Next-model domain metadata; runtime adoption follows the staged rewrite.
 pub mod domain;
+pub mod shared;

@@ -4,7 +4,6 @@ use core::{alloc::Layout,
            panic::PanicInfo,
            ptr::{self, addr_of_mut}};
 
-use linked_list_allocator::LockedHeap;
 use mac_abi::*;
 use spin::Once;
 
@@ -22,7 +21,7 @@ impl Write for Serial
     }
 }
 #[global_allocator]
-static HEAP: LockedHeap = LockedHeap::empty();
+static HEAP: crate::allocator::ResidentHeap = crate::allocator::ResidentHeap::empty();
 #[repr(C, align(16))]
 struct HeapMemory([u8; 8 * 1024 * 1024]);
 static mut HEAP_MEMORY: HeapMemory = HeapMemory([0; 8 * 1024 * 1024]);
@@ -215,7 +214,7 @@ pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontM
 /// thread stacks. Read under the allocator's own synchronization boundary.
 pub(crate) fn heap_available() -> usize
 {
-    HEAP.lock().free()
+    HEAP.available()
 }
 static RESOURCE_IMAGE: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(usize::MAX);
@@ -365,7 +364,7 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
     }
     BOOT_LOG.call_once(|| info.log);
     unsafe {
-        HEAP.lock().init(addr_of_mut!(HEAP_MEMORY).cast::<u8>(), 8 * 1024 * 1024);
+        HEAP.initialize(addr_of_mut!(HEAP_MEMORY).cast::<u8>(), 8 * 1024 * 1024);
     }
     crate::machine::traps::install();
     let files = match unsafe { crate::toolbox::files::BootStorage::from_boot_info(info) }
