@@ -521,11 +521,14 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                 Ok(c) => c, Err(e) => return e as i64,
             };
             if call.operation >= mac_abi::controls::CREATE_STANDARD {
+                let ledger = match inspection::control_owner(files::current_owner()) {
+                    Ok(ledger) => ledger, Err(status) => return status as i64
+                };
                 return SESSION.with(|slot| {
                     let session = slot.borrow();
                     let Some(session) = session.as_ref() else { return NOT_SUPPORTED as i64; };
                     let Ok(mut manager) = session.controls.try_borrow_mut() else { return SERVICE_BUSY as i64; };
-                    let owner = files::current_owner();
+                    let owner = ledger.owner().incarnation();
                     let result = (|| {
                         let entry = match manager.definition(call, owner)? {
                             0 => crate::test_cdef::standard_control_definition,
@@ -534,7 +537,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                             mac_abi::controls::CDEF_STATIC_TEXT => crate::test_static_text::static_text_definition,
                             _ => return Err(NOT_FOUND)
                         };
-                        manager.request(owner, call, entry, host_gate).map(|_| ())
+                        manager.request(&ledger, call, entry, host_gate).map(|_| ())
                     })();
                     result.map_or_else(|e| e as i64, |_| 0)
                 });

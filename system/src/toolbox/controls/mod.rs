@@ -36,7 +36,7 @@ impl State
 /// Retained immutable definition state, loader-validated entry and service gate.
 pub struct Drawing
 {
-    pub id:    u32,
+    pub id:    u64,
     state:     State,
     entry:     DefinitionEntry,
     gate:      TrapGate,

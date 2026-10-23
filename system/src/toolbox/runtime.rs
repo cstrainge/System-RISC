@@ -857,8 +857,10 @@ impl Desktop
         {
             call.operation = CANCEL_TRACKING;
         }
-        let drawing =
-            self.controls.request(self.owner, call, entry, crate::machine::traps::gateway)?;
+        let drawing = self.controls.request(&self.processes.ledger(self.owner)?,
+                                             call,
+                                             entry,
+                                             crate::machine::traps::gateway)?;
         if call.operation == DISPOSE_OBJECT
         {
             let mut removed = Vec::new();

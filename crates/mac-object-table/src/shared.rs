@@ -105,7 +105,7 @@ impl<G: InvocationGate> Clone for OwnerRef<G>
 }
 impl<G: InvocationGate> OwnerRef<G>
 {
-    pub(crate) fn new(index: OwnerIndex) -> Result<Self, DirectoryError>
+    pub fn try_new(index: OwnerIndex) -> Result<Self, DirectoryError>
     {
         let owner = index.owner();
         let state = Arc::try_new(State { owner,
@@ -121,7 +121,7 @@ impl<G: InvocationGate> OwnerRef<G>
         self.state.owner
     }
 
-    fn access<R>(&self, operation: impl FnOnce(&mut OwnerIndex) -> R) -> R
+    pub(crate) fn access<R>(&self, operation: impl FnOnce(&mut OwnerIndex) -> R) -> R
     {
         G::run(|| operation(&mut self.state.index.lock()))
     }

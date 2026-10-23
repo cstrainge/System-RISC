@@ -6,7 +6,7 @@ use mac_abi::{controls::*,
 use super::{Client, Result, StandardKind, StandardState};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ControlId(pub u32);
+pub struct ControlId(pub u64);
 #[derive(Clone, Copy)]
 pub struct ControlRef<'a>
 {

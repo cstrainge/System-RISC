@@ -198,12 +198,23 @@ fn managed_controls(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), 
     let state = StandardState::new(Rect::new(8, 8, 128, 32), "Parent cleanup");
     let owned = system.controls().create_standard(window.id(), StandardKind::Button, state)?;
     let stale = owned.id();
+    let before = system.inspection()
+                       .snapshot(mac_toolbox::inspection::Scope::Own)
+                       .map_err(|e| e.cause)?
+                       .at(0)
+                       .map_err(|e| e.cause)?;
+    assert_eq!((before.live, before.slots), (1, 1), "prepare a sole-slot native control pool");
     drop(window);
     assert!(matches!(owned.control().info(), Err(Error::NotFound)));
     let replacement_window = create(system)?;
     let replacement =
         system.controls().create_standard(replacement_window.id(), StandardKind::Button, state)?;
-    assert_eq!(replacement.id().0 & 0xffff, stale.0 & 0xffff);
+    let after = system.inspection()
+                      .snapshot(mac_toolbox::inspection::Scope::Own)
+                      .map_err(|e| e.cause)?
+                      .at(0)
+                      .map_err(|e| e.cause)?;
+    assert_eq!((after.live, after.slots), (1, 1), "parent cleanup must permit sole-slot reuse");
     assert_ne!(replacement.id(), stale);
     drop(owned);
     assert!(replacement.control().info().is_ok());

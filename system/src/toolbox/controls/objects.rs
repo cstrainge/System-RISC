@@ -1,15 +1,13 @@
 //! Owned resident controls. CDEFs own geometry; this manager owns identity and
 //! tracking policy. No caller memory or callback survives a request.
 #![forbid(unsafe_code)]
-use alloc::vec::Vec;
 
 use mac_abi::{controls::*, *};
 
-use crate::toolbox::handles::{Kind, Table};
+use crate::toolbox::handles::{CapacityPolicy, KindCode, OwnerRef, Store};
 
 struct Object
 {
-    owner:     u64,
     window:    u32,
     spec:      Spec,
     scrollbar: bool,
@@ -58,50 +56,40 @@ struct Tracking
 }
 pub struct Manager
 {
-    objects: Table<Object>
+    objects: Store<Object>
 }
 impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { objects: Table::new(Kind::Controls) }
+        Self { objects: Store::new(KindCode(*b"CTRL"), CapacityPolicy::GrowableUntilMemory) }
     }
 }
 impl Manager
 {
-    fn get(&self, id: u32, owner: u64) -> Result<&Object, Status>
+    fn get(&self, id: u64, owner: u64) -> Result<&Object, Status>
     {
         let o = self.objects.get(id).ok_or(NOT_FOUND)?;
-        if o.owner != owner
+        if self.objects.owner(id).map(|domain| domain.incarnation()) != Some(owner)
         {
             return Err(ACCESS_DENIED);
         }
         Ok(o)
     }
 
-    pub fn window(&self, id: u32, owner: u64) -> Result<u32, Status>
+    pub fn window(&self, id: u64, owner: u64) -> Result<u32, Status>
     {
         Ok(self.get(id, owner)?.window)
     }
 
     pub fn remove_window(&mut self, window: u32)
     {
-        let ids: Vec<_> =
-            self.objects.iter().filter(|(_, o)| o.window == window).map(|(id, _)| id).collect();
-        for id in ids
-        {
-            self.objects.remove(id);
-        }
+        self.objects.remove_where(|_, object| object.window == window);
     }
 
     pub fn remove_owner(&mut self, owner: u64)
     {
-        let ids: Vec<_> =
-            self.objects.iter().filter(|(_, o)| o.owner == owner).map(|(id, _)| id).collect();
-        for id in ids
-        {
-            self.objects.remove(id);
-        }
+        self.objects.remove_owner(owner);
     }
 
     pub fn definition(&self, call: &ControlCall, owner: u64) -> Result<i16, Status>
@@ -128,10 +116,11 @@ impl Manager
            })
     }
 
-    pub fn request(&mut self, owner: u64, call: &mut ControlCall, entry: DefinitionEntry,
-                   gate: TrapGate)
-                   -> Result<Option<super::Drawing>, Status>
+    pub(crate) fn request(&mut self, ledger: &OwnerRef, call: &mut ControlCall,
+                          entry: DefinitionEntry, gate: TrapGate)
+                          -> Result<Option<super::Drawing>, Status>
     {
+        let owner = ledger.owner().incarnation();
         let operation = call.operation;
         if !call.surface.is_null() || call.reserved != 0
         {
@@ -168,12 +157,17 @@ impl Manager
             if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
             {
                 call.id = self.objects
-                              .insert(Object { owner,
-                                               window: call.window,
+                              .insert(ledger,
+                                      Object { window: call.window,
                                                spec: Spec::from_call(&spec),
                                                scrollbar,
                                                tracking: None })
-                              .map_err(|_| NO_MEMORY)?;
+                              .map_err(|error| {
+                                  #[cfg(target_arch = "riscv64")]
+                                  serial!("CONTROL_ADMISSION_REFUSED: {error}");
+                                  let _ = error;
+                                  NO_MEMORY
+                              })?;
             }
         }
         let object = self.get(call.id, owner)?;
@@ -187,9 +181,13 @@ impl Manager
             return Ok(None);
         }
         if operation == BEGIN_TRACKING
-           && self.objects
-                  .iter()
-                  .any(|(id, o)| id != call.id && o.owner == owner && o.tracking.is_some())
+           && self.objects.iter().any(|(id, o)| {
+                                     id != call.id
+                                     && self.objects
+                                            .owner(id)
+                                            .is_some_and(|domain| domain.incarnation() == owner)
+                                     && o.tracking.is_some()
+                                 })
         {
             return Err(SERVICE_BUSY);
         }

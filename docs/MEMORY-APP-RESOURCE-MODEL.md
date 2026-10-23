@@ -22,7 +22,7 @@ as the §13.2 services migrate; it is deliberately not an unused System dependen
 | Buddy pool | `crates/mac-kernel-model/src/buddy.rs` | Caller-supplied metadata and order heads, split, O(1) unlink, coalescing, unique RAII block leases; never touches free-page bytes |
 | Page layer | `…/pages.rs` | Platform geometry, typed addresses, permissions/ownership, borrowed boot reservations, largest-leaf mapping plan, reserved `PageBox`/address-space root |
 | Domains/accounts | `…/policy.rs`, `mac-object-table/src/domain.rs` | Boot-monotonic incarnation, account/reserve records, checked registry construction; no live allocator charges yet |
-| Facility v2 | `mac-object-table/src/domain.rs` | Owner-index-authorized per-kind bitmap pools, generations, rotation, retirement, capacity policy, release tickets and registration shapes; no new public handle wire encoding |
+| Facility v2 | `mac-object-table/src/domain.rs` | Owner-index-authorized per-kind bitmap pools, generations, rotation, retirement, capacity policy, release tickets and registration shapes; managed controls use owner-backed value storage |
 | Process/thread | `…/process.rs` | Address-space, image/memory/legacy capabilities, dynamic threads, saved manager slots, backend frame, vector marker and discovered save-area layout |
 | Control zone | `…/zone.rs` | Same-owner instance/zone binding, configured zone header, host-forwarding allocator contract; no allocator installed |
 | Uniform layout | `…/policy.rs` | One checked range record emits named linker symbols; no unapproved addresses or duplicate linker constants |
@@ -35,7 +35,8 @@ the sole owner index beside the process payload. Directory lookup is binary
 search, and clients cannot mutate/swap a ledger through a payload reference.
 Retirement refuses a nonempty ledger; invalidation yields cleanup tickets for
 dispatch outside the lock. The old Processes namespace, capacity and shared
-generation array are removed. The other active kinds still use their existing
+generation array are removed. Managed controls now use opaque native u64 tokens resolving to these owner keys;
+remaining active kinds still use their existing
 u16-generation/one-based-slot wire layout. The new internal key includes the
 domain incarnation; native/legacy object projections are a later explicit
 migration. Legacy handles/refnums project through this same facility; never
@@ -356,3 +357,44 @@ under M-D04, as the invocation specs are. A completed walk attempt can report
 quarantined resources; it cannot claim complete reclamation or drop backing pages
 until pending cleanup and queues are drained. Arbitrary privileged-fault
 containment remains unproven and a required future gate.
+
+
+## First resident value-store customer: managed controls
+
+`mac-object-table::store::Store` now pairs typed values with the owner's real
+ledger. Managed controls are its first customer, including the boot Progress Bar.
+The facility issues every native control identity; the manager no longer issues
+IDs, stores a duplicate owner inside each payload, or shares a machine-wide
+256-control generation budget. Control ownership remains a distinct policy check.
+The System-domain bootstrap ledger is shared, not recreated for each panel.
+
+Native IDs and domain incarnations share the boot-wide nonwrapping u64 issuer,
+starting above the remaining u32 projection space. Tokens resolve through a
+fallibly reserved hash index to full owner/kind/slot/generation keys. Values are
+per owner, indexed directly by slot. Publication of ledger occupancy and its
+payload happens inside one metadata operation after reserving backing storage;
+stopping a domain cannot observe a live key with an unpublished value. Store
+lookups validate the authoritative ledger every time. Growing prepared slots
+starts at one and doubles as needed; it does not set a live-object limit.
+
+A private, exclusive per-owner/kind claim prevents raw ledger allocation/growth/
+completion from bypassing stored values. The claim stays alive through removal
+guards that outlive the store. Invalidation comes first, payload destruction runs
+outside the metadata lock, and the guard then acknowledges completed cleanup.
+A forgotten guard or failed destructor leaves visible pending cleanup. A refused
+walk dispatch retains its ticket. Empty value backing can be released on owner
+exit while generation history stays in the ledger until domain retirement.
+
+Canonical SDK tests inspect actual control births/deaths, force the sole slot's
+reuse, reject stale and foreign IDs, exercise native/Pascal-string calls, and
+create 300 simultaneous controls without the old global cap. Model tests cover
+exclusive claims, a guard outliving its store, reentrant ledger reads during
+destruction, failed cleanup, and publication racing domain stop. These are not
+a claim that all managers or the generic release-dispatch registry have migrated:
+the old EXIT cleanup roll call remains until the stage-3 walk replaces it.
+
+Definition-facing follow-up is explicit: authors receive safe typed message/state/
+port/service interfaces from one audited binding layer; unknown wire messages
+fail before author code; the platform owns panic reporting. M-D04 still gates
+arbitrary privileged-fault recovery. Static text must be transparent and all
+new definition color work uses resident theme roles, not new literal palettes.

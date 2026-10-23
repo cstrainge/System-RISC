@@ -72,7 +72,7 @@ pub struct ScrollbarState
 #[derive(Clone, Copy, Default)]
 pub struct ControlCall
 {
-    pub id:        u32,
+    pub id:        u64,
     pub flags:     u32,
     pub ticks:     u64,
     pub step:      i16,

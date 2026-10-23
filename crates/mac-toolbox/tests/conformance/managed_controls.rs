@@ -158,9 +158,10 @@ pub fn reuse(system: &System<'_>, window: WindowId, gate: mac_abi::TrapGate)
         let stale = owner.id();
         owner.control().dispose()?;
         let replacement = system.controls().create_standard(window, StandardKind::Button, state)?;
-        assert_eq!(stale.0 & 0xffff, replacement.id().0 & 0xffff);
+        assert!(replacement.id().0 > u64::from(u32::MAX),
+                "native identity is not a classic projection");
         assert_ne!(stale, replacement.id());
-        for id in [stale, ControlId(window.0), ControlId(u32::MAX)]
+        for id in [stale, ControlId(u64::from(window.0)), ControlId(u64::from(u32::MAX))]
         {
             let control = system.controls().control(id);
             assert!(matches!(control.info(), Err(Error::NotFound)));

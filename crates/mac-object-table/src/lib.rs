@@ -13,10 +13,6 @@ use core::sync::atomic::{AtomicU16, Ordering};
 static EDITOR_GENERATIONS: [AtomicU16; mac_abi::textedit::MAX_EDITORS] =
     [const { AtomicU16::new(0) }; mac_abi::textedit::MAX_EDITORS];
 static MENU_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
-// Bootstrap and desktop Control Managers share this namespace. Neither a
-// second table nor dropping the early panel may reissue its live/stale IDs.
-static CONTROL_GENERATIONS: [AtomicU16; 256] = [const { AtomicU16::new(0) }; 256];
-
 static MODULE_GENERATIONS: [AtomicU16; 32] = [const { AtomicU16::new(0) }; 32];
 static DRIVER_INTERFACE_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DRIVER_REQUEST_GENERATIONS: [AtomicU16; 256] = [const { AtomicU16::new(0) }; 256];
@@ -61,7 +57,6 @@ pub enum Kind
     FileWrites,
     StandardFiles,
     ScrollBoxes,
-    Controls,
     Volumes,
     TextEdit,
     Menus,
@@ -116,7 +111,6 @@ impl Kind
             Self::TextEdit => mac_abi::textedit::MAX_EDITORS,
             Self::Volumes => 128,
             Self::ScrollBoxes => 96,
-            Self::Controls => 256,
             Self::Memory => 512,
             Self::Windows => 32,
             Self::Files => 64,
@@ -183,8 +177,7 @@ impl Kind
             }
             Self::Menus => Self::TextEdit.first_slot() + Self::TextEdit.capacity() as u32,
             Self::TextEdit => Self::Volumes.first_slot() + Self::Volumes.capacity() as u32,
-            Self::Volumes => Self::Controls.first_slot() + Self::Controls.capacity() as u32,
-            Self::Controls => Self::ScrollBoxes.first_slot() + Self::ScrollBoxes.capacity() as u32,
+            Self::Volumes => Self::ScrollBoxes.first_slot() + Self::ScrollBoxes.capacity() as u32,
             Self::ScrollBoxes =>
             {
                 Self::StandardFiles.first_slot() + Self::StandardFiles.capacity() as u32
@@ -214,7 +207,6 @@ impl Kind
     {
         match self
         {
-            Self::Controls => CONTROL_GENERATIONS.get(index),
             Self::DocumentBatches => DOCUMENT_BATCH_GENERATIONS.get(index),
             Self::FileTransfers => FILE_TRANSFER_GENERATIONS.get(index),
             Self::FileGroups => FILE_GROUP_GENERATIONS.get(index),
@@ -249,8 +241,7 @@ impl Kind
             | Self::Files
             | Self::FileWrites
             | Self::StandardFiles
-            | Self::ScrollBoxes
-            | Self::Controls => u16::MAX,
+            | Self::ScrollBoxes => u16::MAX,
             Self::DocumentBatches
             | Self::FileTransfers
             | Self::FileGroups
@@ -433,3 +424,5 @@ impl<T> Table<T>
 /// Next-model domain metadata; runtime adoption follows the staged rewrite.
 pub mod domain;
 pub mod shared;
+
+pub mod store;

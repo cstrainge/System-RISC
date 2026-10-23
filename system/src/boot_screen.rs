@@ -10,7 +10,7 @@ use crate::toolbox::{controls::objects::Manager,
 pub struct BootScreen
 {
     controls: Manager,
-    id:       u32,
+    id:       u64,
     entry:    DefinitionEntry,
     state:    ControlDefinitionState
 }
@@ -66,9 +66,16 @@ impl BootScreen
                                      procedure: PROGRESS_BAR_PROCEDURE,
                                      standard: state,
                                      ..Default::default() };
-        controls.request(0, &mut call, entry, crate::machine::traps::gateway).map_err(failed)?;
+        controls.request(&crate::toolbox::handles::system_owner().map_err(failed)?,
+                         &mut call,
+                         entry,
+                         crate::machine::traps::gateway)
+                .map_err(failed)?;
         call.operation = DRAW_OBJECT;
-        let drawing = controls.request(0, &mut call, entry, crate::machine::traps::gateway)
+        let drawing = controls.request(&crate::toolbox::handles::system_owner().map_err(failed)?,
+                                       &mut call,
+                                       entry,
+                                       crate::machine::traps::gateway)
                               .map_err(failed)?
                               .ok_or(Error::Malformed("boot Progress Bar drawing is missing"))?;
         drawing.paint_clipped(&mut canvas).map_err(failed)?;
@@ -94,7 +101,10 @@ impl BootScreen
                                      standard: next,
                                      ..Default::default() };
         let drawing = self.controls
-                          .request(0, &mut call, self.entry, crate::machine::traps::gateway)
+                          .request(&crate::toolbox::handles::system_owner().map_err(failed)?,
+                                   &mut call,
+                                   self.entry,
+                                   crate::machine::traps::gateway)
                           .map_err(failed)?;
         self.state = next;
         if let Some(drawing) = drawing

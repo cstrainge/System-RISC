@@ -526,6 +526,30 @@ an exhausted slot is permanently retired rather than wrapped. Existing owner
 checks and Pascal/68k adapter contracts are unchanged. Other resident managers
 must register and adopt this facility when their implementation is next touched.
 
+## Native managed-control identities (development ABI 1)
+
+`ControlCall.id`, `ControlId` and retained control drawing identities are opaque
+u64 native tokens. A single boot-wide issuer supplies domain incarnations and
+native object tokens, starting above `u32::MAX`, never wrapping or resetting.
+Tokens resolve inside the shared facility to the complete owner-domain, semantic
+kind, slot and u64 generation. Every lookup validates that key in the
+corresponding authoritative owner ledger before accessing its value. Tokens have
+no public bit-field interpretation. Remaining 32-bit service projections cannot
+alias a native control token. Memory's high16/low16 contract is unchanged.
+
+Each owner's CTRL pool grows until backing-memory refusal. It begins with one
+prepared slot and doubles backing capacity on demand; this is a storage-growth
+algorithm, not a control-count quota. Other apps' churn cannot spend its
+slot-generation budget. An exclusive storage claim prevents raw metadata
+allocation, growth or cleanup acknowledgment from bypassing the value store.
+The claim lasts through outstanding removal guards. Values are destroyed outside
+the owner lock before their cleanup ticket completes and their slot is reusable.
+Native and Pascal-string Control calls share these IDs and resident validation;
+this is not a change to an original 68k Control Manager adapter.
+
+All native definitions, System, apps and fixtures rebuild together at ABI 1.
+The global 256-slot Control table and its shared generation array are removed.
+
 ## Native menu object ownership (development ABI 1)
 
 MenuCall includes a u32 generation-tagged handle after operation. INSTALL returns

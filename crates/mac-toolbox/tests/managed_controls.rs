@@ -206,3 +206,69 @@ fn default_button_outline_is_bounded_and_not_an_extra_hit_target()
         }
     });
 }
+
+
+#[test]
+fn controls_publish_into_the_real_owner_ledger_and_stale_ids_fail_after_slot_reuse()
+{
+    use mac_system::testing::{files::with_owner, inspection as fixture};
+    mac_system::testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let owner = fixture::add("Control owner", 0);
+        let other = fixture::add("Other control owner", 0);
+        let state = StandardState::new(Rect::new(8, 8, 128, 32), "Owned");
+        with_owner(owner, || {
+            let snapshot =
+                system.inspection().snapshot(mac_toolbox::inspection::Scope::Own).unwrap();
+            let before = snapshot.at(0).unwrap();
+            assert_eq!((before.live, before.pending, before.slots), (0, 0, 0));
+            let original = system.controls()
+                                 .create_standard(WindowId(0), StandardKind::Button, state)
+                                 .unwrap();
+            let stale = original.id();
+            let live = snapshot.at(0).unwrap();
+            assert_eq!((live.live, live.pending, live.slots, live.kinds), (1, 0, 1, 1));
+            assert!(live.ledger_revision > before.ledger_revision);
+            drop(original);
+            let dead = snapshot.at(0).unwrap();
+            assert_eq!((dead.live, dead.pending, dead.deaths), (0, 0, 1));
+            let replacement = system.controls()
+                                    .create_standard(WindowId(0), StandardKind::Button, state)
+                                    .unwrap();
+            assert_eq!(snapshot.at(0).unwrap().slots, 1, "the sole slot must actually be reused");
+            assert_ne!(stale, replacement.id());
+            let error = system.controls().control(stale).info().err().unwrap();
+            assert_eq!(error, Error::NotFound);
+            assert!(error.to_string().contains("not found"));
+            assert!(system.controls().control(controls::ControlId(owner)).info().is_err(),
+                    "a live process identity is foreign to controls");
+            with_owner(other, || {
+                assert!(matches!(replacement.control().info(), Err(Error::AccessDenied)));
+                let other_control = system.controls()
+                                          .create_standard(WindowId(0), StandardKind::Button, state)
+                                          .unwrap();
+                let own = system.inspection()
+                                .snapshot(mac_toolbox::inspection::Scope::Own)
+                                .unwrap()
+                                .at(0)
+                                .unwrap();
+                assert_eq!((own.live, own.slots),
+                           (1, 1),
+                           "one app cannot spend another app's slots");
+                drop(other_control);
+            });
+            drop(replacement);
+            let mut many = Vec::new();
+            for _ in 0..300
+            {
+                many.push(system.controls()
+                                .create_standard(WindowId(0), StandardKind::Button, state)
+                                .unwrap());
+            }
+            assert_eq!(snapshot.at(0).unwrap().live, 300, "the old global 256 cap is gone");
+            drop(many);
+            let after = snapshot.at(0).unwrap();
+            assert_eq!((after.live, after.pending, after.births, after.deaths), (0, 0, 302, 302));
+        });
+    });
+}

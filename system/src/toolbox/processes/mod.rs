@@ -56,6 +56,11 @@ impl Manager
                stamp:   0 }
     }
 
+    pub(crate) fn ledger(&self, id: u64) -> Result<crate::toolbox::handles::OwnerRef, Status>
+    {
+        self.entries.get(id).map(|entry| entry.ledger().clone()).ok_or(NOT_FOUND)
+    }
+
     pub fn len(&self) -> usize
     {
         self.entries.len()

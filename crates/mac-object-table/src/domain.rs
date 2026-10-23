@@ -9,7 +9,13 @@ use core::{fmt,
 use crate::shared::{InvocationGate, OwnerRef};
 
 static SYSTEM_INDEX_ISSUED: AtomicBool = AtomicBool::new(false);
-static NEXT_INCARNATION: AtomicU64 = AtomicU64::new(1);
+// Native identities and domain incarnations share one boot-wide issuer. The
+// lower 32-bit space belongs exclusively to the remaining classic projections.
+static NEXT_INCARNATION: AtomicU64 = AtomicU64::new(1 << 32);
+pub(crate) fn issue_native_identity() -> Result<NonZeroU64, IncarnationsExhausted>
+{
+    issue(&NEXT_INCARNATION)
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DomainKind
 {
@@ -79,7 +85,7 @@ impl fmt::Display for IncarnationsExhausted
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
     {
-        f.write_str("boot-wide 64-bit domain identity exhausted; an incarnation cannot be reused")
+        f.write_str("boot-wide 64-bit resident identity exhausted; an identity cannot be reused")
     }
 }
 /// A semantic kind code, not an object identity or an allocation-capacity limit.
@@ -180,6 +186,12 @@ pub struct KindRegistration
 pub enum PoolError
 {
     InvalidBoundReason,
+    ValueStorageAttached
+    {
+        owner: DomainId,
+        kind:  KindCode
+    },
+    IdentityExhausted,
     UnregisteredKind
     {
         owner: DomainId,
@@ -246,6 +258,13 @@ impl fmt::Display for PoolError
     {
         match self
         {
+            Self::ValueStorageAttached { owner,
+                                         kind } =>
+            {
+                write!(f,
+                       "'{kind}' in {owner} has exclusive value storage; use its registered store")
+            }
+            Self::IdentityExhausted => IncarnationsExhausted.fmt(f),
             Self::UnregisteredKind { owner,
                                      kind } =>
             {
@@ -349,7 +368,8 @@ pub struct DomainSlots
     births:        u64,
     deaths:        u64,
     accepting:     bool,
-    drain_word:    usize
+    drain_word:    usize,
+    value_storage: bool
 }
 impl DomainSlots
 {
@@ -377,7 +397,8 @@ impl DomainSlots
                   births: 0,
                   deaths: 0,
                   accepting: true,
-                  drain_word: 0 })
+                  drain_word: 0,
+                  value_storage: false })
     }
 
     /// Capacity comes from the caller's reviewed policy; there is no hidden
@@ -637,7 +658,7 @@ pub struct CompletionError
 }
 impl CompletionError
 {
-    fn stale(released: ReleasedResource) -> Self
+    pub(crate) fn stale(released: ReleasedResource) -> Self
     {
         Self { cause: PoolError::Stale { key: released.key },
                released }
@@ -802,7 +823,7 @@ impl<T, G: InvocationGate> Directory<T, G>
     pub fn insert(&mut self, ledger: OwnerIndex, value: T) -> Result<DomainId, DirectoryError>
     {
         let owner = ledger.owner();
-        let ledger = OwnerRef::new(ledger)?;
+        let ledger = OwnerRef::try_new(ledger)?;
         // OwnerIndex's issuer prohibits duplicate incarnations, including System.
         let at =
             self.entries.partition_point(|entry| entry.owner().incarnation() < owner.incarnation());
@@ -955,6 +976,36 @@ impl OwnerIndex
                   revision: 1 })
     }
 
+    pub(crate) fn attach_values(&mut self, kind: KindCode, policy: CapacityPolicy)
+                                -> Result<usize, PoolError>
+    {
+        if !self.accepting
+        {
+            return Err(PoolError::Stopping { owner: self.owner });
+        }
+        if !self.pools.iter().any(|pool| pool.kind == kind)
+        {
+            self.add_pool(kind, policy)?;
+        }
+        let owner = self.owner;
+        let pool = self.pool_mut(kind).unwrap();
+        if pool.value_storage || pool.live != 0 || pool.pending_count != 0 || pool.policy != policy
+        {
+            return Err(PoolError::ValueStorageAttached { owner,
+                                                         kind });
+        }
+        pool.value_storage = true;
+        Ok(pool.storage_slots())
+    }
+
+    pub(crate) fn detach_values(&mut self, kind: KindCode)
+    {
+        if let Some(pool) = self.pool_mut(kind)
+        {
+            pool.value_storage = false;
+        }
+    }
+
     pub const fn owner(&self) -> DomainId
     {
         self.owner
@@ -999,7 +1050,23 @@ impl OwnerIndex
         Ok(())
     }
 
+    fn check_metadata_access(&self, kind: KindCode) -> Result<(), PoolError>
+    {
+        if self.pools.iter().any(|pool| pool.kind == kind && pool.value_storage)
+        {
+            return Err(PoolError::ValueStorageAttached { owner: self.owner,
+                                                         kind });
+        }
+        Ok(())
+    }
+
     pub fn grow(&mut self, kind: KindCode, slots: usize) -> Result<(), PoolError>
+    {
+        self.check_metadata_access(kind)?;
+        self.grow_values(kind, slots)
+    }
+
+    pub(crate) fn grow_values(&mut self, kind: KindCode, slots: usize) -> Result<(), PoolError>
     {
         if !self.accepting
         {
@@ -1015,6 +1082,12 @@ impl OwnerIndex
     }
 
     pub fn allocate(&mut self, kind: KindCode) -> Result<ResourceKey, PoolError>
+    {
+        self.check_metadata_access(kind)?;
+        self.allocate_value(kind)
+    }
+
+    pub(crate) fn allocate_value(&mut self, kind: KindCode) -> Result<ResourceKey, PoolError>
     {
         if !self.accepting
         {
@@ -1043,6 +1116,17 @@ impl OwnerIndex
     }
 
     pub fn complete_release(&mut self, released: ReleasedResource) -> Result<(), CompletionError>
+    {
+        if let Err(cause) = self.check_metadata_access(released.key.kind)
+        {
+            return Err(CompletionError { cause,
+                                         released });
+        }
+        self.complete_value_release(released)
+    }
+
+    pub(crate) fn complete_value_release(&mut self, released: ReleasedResource)
+                                         -> Result<(), CompletionError>
     {
         let key = released.key;
         if key.owner != self.owner

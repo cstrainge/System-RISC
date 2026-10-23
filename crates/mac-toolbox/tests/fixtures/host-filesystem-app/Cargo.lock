@@ -126,6 +126,7 @@ dependencies = [
  "toolbox-drag",
  "toolbox-events",
  "toolbox-files",
+ "toolbox-inspection",
  "toolbox-memory",
  "toolbox-menus",
  "toolbox-processes",
@@ -307,6 +308,14 @@ version = "0.1.0"
 dependencies = [
  "mac-build",
  "mac-toolbox",
+]
+
+[[package]]
+name = "toolbox-inspection"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
 ]
 
 [[package]]

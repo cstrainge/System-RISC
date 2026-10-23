@@ -6,3 +6,4 @@ publish.workspace = true
 [dependencies]
 mac-abi.workspace = true
 spinning_top = "=0.2.5"
+hashbrown = { version = "=0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
