@@ -103,3 +103,8 @@ initial capacity is 10,000 events (user ruling, 2026-10-23). Host export is defe
 project the same snapshots. An outline is deferred until Registered proves it
 needs one. Canonical tests stay in `crates/mac-toolbox/tests`, using the public
 SDK and real resident services; the app is also the visible acceptance surface.
+
+The new control definitions follow the accepted [definition author
+interface](DEFINITION-SDK.md): safe native author handlers, exhaustive messages,
+platform-owned panic handling, theme roles and transparent static text. Their
+unique implementation remains in each relocatable code resource.
