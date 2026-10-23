@@ -58,7 +58,36 @@ pub fn exercise_ledger(owner: u64)
                       ledger.add_pool(kind, CapacityPolicy::GrowableUntilMemory).unwrap();
                       ledger.grow(kind, 64).unwrap();
                       let key = ledger.allocate(kind).unwrap();
-                      ledger.invalidate(key).unwrap();
+                      let released = ledger.invalidate(key).unwrap();
+                      ledger.complete_release(released).unwrap();
                       ledger.allocate(kind).unwrap();
                   });
+}
+
+pub struct Cleanup
+{
+    ledger: mac_object_table::shared::OwnerRef<Gate>,
+    ticket: Option<mac_object_table::domain::ReleasedResource>
+}
+impl Drop for Cleanup
+{
+    fn drop(&mut self)
+    {
+        if let Some(ticket) = self.ticket.take()
+        {
+            self.ledger.complete_release(ticket).unwrap();
+        }
+    }
+}
+/// Hold the real cleanup barrier until this trusted fixture's guard is dropped.
+pub fn begin_cleanup(owner: u64) -> Cleanup
+{
+    super::SESSION.with(|session| {
+                      let session = session.borrow();
+                      let ledger =
+                          session.as_ref().unwrap().inspection.get(owner).unwrap().ledger().clone();
+                      let ticket = ledger.invalidate_next().expect("fixture has a live resource");
+                      Cleanup { ledger,
+                                ticket: Some(ticket) }
+                  })
 }

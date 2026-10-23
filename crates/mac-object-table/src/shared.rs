@@ -5,8 +5,8 @@ use core::marker::PhantomData;
 
 use spinning_top::Spinlock;
 
-use crate::domain::{CapacityPolicy, DirectoryError, DomainId, KindCode, LedgerSummary, OwnerIndex,
-                    PoolError, ReleasedResource, ResourceKey};
+use crate::domain::{CapacityPolicy, CompletionError, DirectoryError, DomainId, KindCode,
+                    LedgerSummary, OwnerIndex, PoolError, ReleasedResource, ResourceKey};
 
 /// The resident adapter must mask local interrupts/preemption before calling
 /// the closure, and restore the previous state afterward, including nesting.
@@ -149,6 +149,11 @@ impl<G: InvocationGate> OwnerRef<G>
     pub fn invalidate(&self, key: ResourceKey) -> Result<ReleasedResource, PoolError>
     {
         self.access(|index| index.invalidate(key))
+    }
+
+    pub fn complete_release(&self, released: ReleasedResource) -> Result<(), CompletionError>
+    {
+        self.access(|index| index.complete_release(released))
     }
 
     pub fn live(&self) -> usize

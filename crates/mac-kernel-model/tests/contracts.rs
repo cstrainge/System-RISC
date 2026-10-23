@@ -52,7 +52,8 @@ fn control_callback_refuses_foreign_and_disposed_or_reused_resources()
     ExecutionBinding::new(&module, &process, context).unwrap();
     assert_eq!(ExecutionBinding::new(&module, &foreign, context).unwrap_err(),
                ModelError::WrongDomain);
-    process.invalidate(zone).unwrap();
+    let released = process.invalidate(zone).unwrap();
+    process.complete_release(released).unwrap();
     assert_eq!(ExecutionBinding::new(&module, &process, context).unwrap_err(),
                ModelError::InvalidBinding);
     let replacement = process.allocate(KindCode(*b"ZONE")).unwrap();
@@ -62,7 +63,8 @@ fn control_callback_refuses_foreign_and_disposed_or_reused_resources()
                ModelError::InvalidBinding);
     let context = AllocationContext::Control(ZoneBinding::new(instance, replacement).unwrap());
     ExecutionBinding::new(&module, &process, context).unwrap();
-    process.invalidate(instance).unwrap();
+    let released = process.invalidate(instance).unwrap();
+    process.complete_release(released).unwrap();
     assert_eq!(ExecutionBinding::new(&module, &process, context).unwrap_err(),
                ModelError::InvalidBinding);
     assert!(ModelError::InvalidBinding.to_string().contains("lifetime binding"));
@@ -93,7 +95,8 @@ fn execution_binding_accepts_shared_authority_and_checks_its_live_generation()
     }
     let context = AllocationContext::Control(ZoneBinding::new(keys[0], keys[1]).unwrap());
     ExecutionBinding::new(&module, &process, context).unwrap();
-    process.invalidate(keys[1]).unwrap();
+    let released = process.invalidate(keys[1]).unwrap();
+    process.complete_release(released).unwrap();
     assert_eq!(ExecutionBinding::new(&module, &process, context).unwrap_err(),
                ModelError::InvalidBinding);
     process.stop_admission();

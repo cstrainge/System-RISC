@@ -54,6 +54,7 @@ pub struct Domain
     /// Migrated resources only. Consult Snapshot::complete_ledgers first.
     pub live:               u64,
     pub retired:            u64,
+    pub pending:            u64,
     pub slots:              u64,
     pub births:             u64,
     pub deaths:             u64,
@@ -131,6 +132,7 @@ impl Snapshot<'_>
                     kinds:              row.kinds,
                     live:               row.live,
                     retired:            row.retired,
+                    pending:            row.pending,
                     slots:              row.slots,
                     births:             row.births,
                     deaths:             row.deaths,

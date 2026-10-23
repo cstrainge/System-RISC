@@ -41,6 +41,14 @@ fn self_scope_and_policy_granted_cross_scope_reject_foreign_and_stale_reads()
             assert_eq!(snapshot.at(0).unwrap().ledger_revision,
                        old_revision,
                        "reads must not mutate ledger revisions");
+            let cleanup = fixture::begin_cleanup(own);
+            let pending = snapshot.at(0).unwrap();
+            assert_eq!((pending.live, pending.pending), (0, 1));
+            assert!(pending.ledger_revision > old_revision);
+            drop(cleanup);
+            let completed = snapshot.at(0).unwrap();
+            assert_eq!((completed.live, completed.pending), (0, 0));
+            assert!(completed.ledger_revision > pending.ledger_revision);
             fixture::add("New process", 0);
             let error = snapshot.at(0).unwrap_err();
             assert_eq!(error.cause, Error::ScanStale);

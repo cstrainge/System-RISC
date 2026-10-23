@@ -20,6 +20,48 @@ mod ui;
 mod menus;
 use icon_view::{CAPTION_WIDTH, Caption, Layout};
 use mac_toolbox::{Error, Rect};
+
+#[test]
+#[ignore = "requires the generated System resource fork with its real Geneva fonts"]
+fn installed_application_captions_with_real_geneva_metrics_do_not_overlap()
+{
+    use mac_toolbox::{System, quickdraw::fonts::FontSelection};
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
+                                                                   .canonicalize()
+                                                                   .unwrap();
+    let resources = std::fs::read(mac_build::paths::dist_dir(&root).join("System.rsrc")).unwrap();
+    let empty = mac_formats::resource::encode(&[]).unwrap();
+    mac_system::testing::with_resource_forks(&resources, &empty, |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let mut layout = Layout::new(404);
+        let mut occupied = Vec::new();
+        for name in ["Cursor Test", "Panic Test", "QuickDraw Test", "Reactor Room", "Res Edit",
+                     "Text Edit", "Z QuickDraw Copy"]
+        {
+            let caption = Caption::measure(name, |text| {
+                              system.quickdraw().fonts().text_width(FontSelection { family: 3,
+                                                                                    size:   9,
+                                                                                    face:   0 },
+                                                                    text)
+                          }).unwrap();
+            let icon = layout.place(caption);
+            let center = (icon.left + icon.right) / 2;
+            let bounds = Rect::new((center - (caption.width() + 1) / 2 - 2).min(icon.left),
+                                   icon.top,
+                                   (center + caption.width() / 2 + 2).max(icon.right),
+                                   icon.bottom + caption.height());
+            for previous in &occupied
+            {
+                assert!(system.quickdraw().intersect(bounds, *previous).unwrap().is_none(),
+                        "caption collision for {name}");
+            }
+            occupied.push(bounds);
+            println!("APPLICATION_POINT name={name:?} x={} y={}",
+                     24 + center,
+                     62 + (icon.top + icon.bottom) / 2);
+        }
+    }).unwrap();
+}
 fn width(text: &str) -> Result<i16, Error>
 {
     Ok(text.chars().filter(|&c| c != '\u{301}').count() as i16 * 6)

@@ -1486,7 +1486,12 @@ Native trap `INSPECTION` (0x10024) authenticates the current process on every
 call. BEGIN returns a process-directory membership revision/count and explicit
 coverage flags. DOMAIN requires that revision; membership changes return
 SCAN_STALE with a restart explanation. Each row is a locked ledger snapshot
-with a separate revision and cumulative successful births/deaths. Counters and
+with a separate revision and cumulative successful births/deaths. Each row
+includes both live objects and invalidated objects whose cleanup is pending.
+Invalidation revokes an ID immediately; its slot remains unavailable until the
+unique cleanup ticket completes. A domain cannot retire while either count is
+nonzero. Refused completion retains the ticket for retry against its proper
+owner; it never acknowledges cleanup implicitly. Counters and
 revisions never wrap; saturated revisions refuse snapshots. The initial coverage
 is process domains and partial ledgers, not all objects or all lifetime domains.
 Snapshot values allocate no resident session object and convey no authority to a

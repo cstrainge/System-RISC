@@ -68,15 +68,15 @@ current 8 MiB backend or claiming the later page-backed/accounted heap stage.
 Trusted event routing also requeues directly into the fixed queue, avoiding a
 temporary heap allocation on every physical-input batch.
 
-The first Reactor slice now consumes the public inspection service. Directory
+The first Reactor Room slice now consumes the public inspection service. Directory
 membership and each atomic owner-ledger row have separate nonwrapping revisions;
 successful handle publications/invalidations update cumulative counters at their
 existing mutation points. Reads allocate nothing and never scan object values.
 Cross-domain detail is authorized by a generated System ACAP policy bound to
 canonical application resource digests; ordinary callers retain own-domain reads.
 The policy is not a gate on public chain/claim/mapping registry existence.
-Reactor explicitly reports process-only/partial-ledger coverage. See
-[Reactor staging](REACTOR.md) and [the policy wire format](../FORMAT.md#application-authority-policy-acap-0-development-abi-1).
+Reactor Room explicitly reports process-only/partial-ledger coverage. See
+[Reactor Room staging](REACTOR.md) and [the policy wire format](../FORMAT.md#application-authority-policy-acap-0-development-abi-1).
 
 This is the start of §13.2/2, not completion: other managers do not yet insert
 their objects into process ledgers, and the EXIT/rollback cleanup lists and
@@ -303,9 +303,9 @@ See [architecture](../ARCHITECTURE.md#native-isa-floor).
 
 ## Migration and gates
 
-Reactor is now the first customer for stage-2 inspection APIs and a visible
+Reactor Room is now the first customer for stage-2 inspection APIs and a visible
 acceptance surface for each later stage. Implement its application and native
-data controls alongside the services, following [Reactor integration](REACTOR.md)
+data controls alongside the services, following [Reactor Room integration](REACTOR.md)
 and the workspace unified design. Enumeration, capabilities, revisions and cheap
 cumulative counters are part of the model, not a private inspection backdoor.
 
@@ -331,3 +331,28 @@ apps, paging boot, per-domain exhaustion/retry, Res Edit full suite, 200 MB text
 view, extension death/reconnect, privilege adversaries, then scheduler handoff.
 Host-only tests cannot establish those System claims. Verification evidence for
 this cut is recorded in the milestone report/status log and commit description.
+
+## Cleanup completion and value-storage admission
+
+ID invalidation is immediate, but it is not payload destruction. Each owner/kind
+pool now has a bounded pending-cleanup bitmap beside occupancy/generations and
+retirement. Invalidation removes the ID from the live set, advances/retires its
+generation and produces one non-cloneable cleanup ticket. Pending slots cannot
+be allocated. Only completing that exact ticket clears pending state; rejected
+completion retains the ticket for a correct-owner retry. No callbacks run under
+the owner-index lock.
+
+Retirement checks live and pending counts atomically. A zero live bitmap with
+unfinished cleanup cannot discard the owner record or claim zero leaks. Pending
+counts cross the public inspection API and appear in Reactor Room's detail pane.
+This is a per-resource completion barrier, not a global teardown phase or an
+ordered manager cleanup list. It is required before resident value storage uses
+the metadata slots, so a new generation cannot reveal a previous payload while
+its disposal is still running. Actual kind registration/value-storage customers
+and the common EXIT walk remain staged work.
+
+The source spec's §4.6 cleanup recovery wording is scoped to contained failures
+under M-D04, as the invocation specs are. A completed walk attempt can report
+quarantined resources; it cannot claim complete reclamation or drop backing pages
+until pending cleanup and queues are drained. Arbitrary privileged-fault
+containment remains unproven and a required future gate.

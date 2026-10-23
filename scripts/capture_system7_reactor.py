@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Physical Reactor input/frame transport. Rust owns acceptance assertions."""
+"""Physical Reactor Room input/frame transport. Rust owns acceptance assertions."""
 import argparse
 import json
 from pathlib import Path
@@ -30,7 +30,7 @@ def capture(output):
         driver.click(40, 95, double=True)
         driver.wait_folder_ready('Applications')
         frame('applications')
-        driver.application('Reactor')
+        driver.application('Reactor Room')
         driver.wait('REACTOR_READY ')
         frame('domains')
         driver.click(80, 97)

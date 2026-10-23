@@ -61,7 +61,7 @@ revisions), handler claims and kind mappings are public introspection queries
 for every application. No inspector capability gates the existence of these
 registries. Inspector authority gates cross-domain detail and termination;
 publication is not permission to mutate registrations or invoke private services.
-Reactor's Registered view uses these same queries.
+Reactor Room's Registered view uses these same queries.
 Every chain entry includes the user-visible name of the extension/bundle it
 comes from. Enumeration preserves execution order and distinguishes that label
 from its identity/source resource/generation/revisions. Render the chain in

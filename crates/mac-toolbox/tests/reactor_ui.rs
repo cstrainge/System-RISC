@@ -1,4 +1,4 @@
-//! Reactor is the first visible customer of public lifetime inspection.
+//! Reactor Room is the first visible customer of public lifetime inspection.
 #![cfg(not(target_arch = "riscv64"))]
 use std::{fs,
           path::{Path, PathBuf},
@@ -26,7 +26,7 @@ fn reactor_uses_public_policy_grants_and_managed_views_without_selection_repaint
                                          .output()
                                          .unwrap();
     assert!(capture.status.success(),
-            "Reactor capture failed:\n{}\n{}",
+            "Reactor Room capture failed:\n{}\n{}",
             String::from_utf8_lossy(&capture.stdout),
             String::from_utf8_lossy(&capture.stderr));
     let report: serde_json::Value =
@@ -35,7 +35,7 @@ fn reactor_uses_public_policy_grants_and_managed_views_without_selection_repaint
                "capture changed installation artifacts");
     assert_eq!(report["owned_vm_exited"], true);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
-    assert!(serial.contains("name=Reactor\n"));
+    assert!(serial.contains("name=Reactor Room\n"));
     assert!(serial.contains("REACTOR_READY coverage=process-domains,partial-ledgers \
                              authority=system-policy\n"));
     for failure in ["REACTOR_ERROR", "REACTOR_INSPECTION_ERROR", "SYSTEM_PANIC:", "SYSTEM_TRAP:",
@@ -72,7 +72,7 @@ fn reactor_uses_public_policy_grants_and_managed_views_without_selection_repaint
     let system =
         mac_formats::resource::decode(&fs::read(dist.join("System.rsrc")).unwrap()).unwrap();
     let application =
-        mac_formats::resource::decode(&fs::read(dist.join("Reactor.rsrc")).unwrap()).unwrap();
+        mac_formats::resource::decode(&fs::read(dist.join("Reactor Room.rsrc")).unwrap()).unwrap();
     let policy = system.iter()
                        .find(|r| r.kind == mac_formats::authority::RESOURCE_KIND && r.id == 0)
                        .unwrap();

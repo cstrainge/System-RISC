@@ -134,7 +134,7 @@ impl<'a> Panes<'a>
                        .configure(spec(Rect::new(0, 26, split, height - 25), count, palette))?;
         self.details
             .control()
-            .configure(spec(Rect::new(split + 1, 26, width, height - 25), 10, palette))?;
+            .configure(spec(Rect::new(split + 1, 26, width, height - 25), 11, palette))?;
         self.status.set_bounds(Rect::new(5, height - 22, width - 4, height - 2))?;
         self.width = width;
         self.height = height;
@@ -165,7 +165,7 @@ impl<'a> Panes<'a>
                                                                           26,
                                                                           width,
                                                                           height - 25),
-                                                                10,
+                                                                11,
                                                                 palette))?;
         let mut text = [0; 128];
         let status = system.controls().create_static_text(window,
@@ -227,7 +227,8 @@ impl<'a> Panes<'a>
                     4 => write!(line, "Births / deaths: {} / {}", row.births, row.deaths),
                     5 => write!(line, "Slots / retired: {} / {}", row.slots, row.retired),
                     6 => write!(line, "Migrated kinds: {}", row.kinds),
-                    7 =>
+                    7 => write!(line, "Pending cleanup: {}", row.pending),
+                    8 =>
                     {
                         write!(line,
                                "Admission: {}",
@@ -236,7 +237,7 @@ impl<'a> Panes<'a>
                     _ =>
                     {
                         let mut bytes = [0; 128];
-                        line.write_str(label(system, index - 6, &mut bytes)?)
+                        line.write_str(label(system, index - 7, &mut bytes)?)
                     }
                 }.map_err(|_| Error::BadArgument)?;
             }

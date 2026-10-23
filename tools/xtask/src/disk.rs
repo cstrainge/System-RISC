@@ -109,7 +109,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                       (applications, "Applications", "Cursor Test"),
                                       (applications, "Applications", "Panic Test"),
                                       (applications, "Applications", "Res Edit"),
-                                      (applications, "Applications", "Reactor"),
+                                      (applications, "Applications", "Reactor Room"),
                                       (drivers, "System Folder/Drivers", "Host Transport"),
                                       (drivers, "System Folder/Drivers", "Host Filesystem"),
                                       (drivers, "System Folder/Drivers", "StuffIt Filesystem")]

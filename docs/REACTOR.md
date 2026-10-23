@@ -1,16 +1,16 @@
-# Reactor and native data controls
+# Reactor Room and native data controls
 
 > All good systems have inspection ports, and using them should never be a
 > privileged or 'magic' act.
 
-Reactor is the ordinary native application that makes the memory/lifetime-model
+Reactor Room is the ordinary native application that makes the memory/lifetime-model
 migration observable. Its source contract is the workspace document
 `reactor-and-toolbox-controls-unified.md` (2026-10-23), which supersedes its
 three earlier design notes. This document records integration, not completion.
 
 ## Stage integration
 
-| Model stage | Resident service and public SDK | Reactor customer |
+| Model stage | Resident service and public SDK | Reactor Room customer |
 |---|---|---|
 | 2: facility | Versioned snapshots of actual domains, owner ledgers and kind registrations; cumulative counters; stated coverage and staleness | Domains and Kinds; display migrated data and explicit unavailable facets |
 | 3: teardown walk | Ephemeral bounded journal, coalesced change subscriptions, capability-checked termination, completed-walk results | Journal and Kill/Restart; actual released/failed/pending/leaked counts |
@@ -39,10 +39,10 @@ is no claim of zero total handles, zero leaks or an armed emergency reserve.
 
 All reads go through a thin public `mac-toolbox` service. Exec chains (handlers in
 order, owners, claimed evidence and revisions), handler claims and kind mappings
-are ordinary public registry queries for every application; Reactor's Registered
+are ordinary public registry queries for every application; Reactor Room's Registered
 view is their first customer. Their existence is not inspector-only information.
 Chain entries carry the source extension/bundle's user-visible name and read in
-execution order. Reactor renders those names as the chain; identities, source
+execution order. Reactor Room renders those names as the chain; identities, source
 resource, generation, evidence and revisions belong in its details. The final
 resident entry has the visible name “System Native Handler”. Missing/invalid
 provider labels are informative registration refusals, not raw-ID UI fallbacks.
@@ -55,7 +55,7 @@ of file/display names and directory discovery order.
 The System authenticates the caller; ordinary callers can inspect themselves.
 Cross-domain detail and termination require System-issued inspector authority through a general policy,
 not an application-name exception, private debug trap or raw memory channel.
-Reactor is installed under Applications, with its own resources, icon, owned
+Reactor Room is installed under Applications, with its own resources, icon, owned
 window and system-owned panic reporting. Geometry/view/sort preferences are
 versioned JSON. It remains no_std until the real std platform milestone is ready.
 
@@ -69,7 +69,7 @@ raise, rather than the default plan.
 Graph, Meter, Data List and Segmented are native, capability-queried Toolbox
 controls with independently loaded, descriptively named CDEF resources. Classic
 IDs and behavior stay intact. Definitions draw through ports; System owns
-tracking/cancellation and owner/zone accounting. No literal palettes in Reactor
+tracking/cancellation and owner/zone accounting. No literal palettes in Reactor Room
 or the new definitions: the shared theme surface owns fills, patterns, strokes,
 alpha and text roles. Series 1 shares the Meter/progress fill role.
 
@@ -82,7 +82,7 @@ exclusive selection and keyboard tracking. Do not retain unused control stubs.
 ## Observation and performance
 
 CPU time, charges and handle births/deaths are model mechanism, independent of
-scheduler policy. History belongs to Reactor: 300 samples at one-second cadence
+scheduler policy. History belongs to Reactor Room: 300 samples at one-second cadence
 while frontmost. Part II §9 extends the earlier Memory-only timer rule to visible
 performance graphs. Backgrounding pauses sampling/subscriptions and records a
 visible gap; it never polls the whole model or interpolates missing history.

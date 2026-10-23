@@ -197,6 +197,7 @@ pub enum PoolError
         kind:          KindCode,
         used:          usize,
         retired:       usize,
+        pending:       usize,
         storage_slots: usize,
         policy_limit:  Option<usize>
     },
@@ -223,6 +224,7 @@ pub enum PoolError
         kind:    KindCode,
         used:    usize,
         retired: usize,
+        pending: usize,
         limit:   usize
     },
     Storage
@@ -265,12 +267,14 @@ impl fmt::Display for PoolError
                                    kind,
                                    used,
                                    retired,
+                                   pending,
                                    storage_slots,
                                    policy_limit } =>
             {
                 write!(f,
                        "'{kind}' metadata growth required for {owner}: {used} live, {retired} \
-                        retired, {storage_slots} prepared slots, policy limit {policy_limit:?}")
+                        retired, {pending} pending cleanup, {storage_slots} prepared slots, \
+                        policy limit {policy_limit:?}")
             }
             Self::InvalidBoundReason =>
             {
@@ -304,11 +308,12 @@ impl fmt::Display for PoolError
                               kind,
                               used,
                               retired,
+                              pending,
                               limit } =>
             {
                 write!(f,
                        "'{kind}' handle pool exhausted in {owner}: {used} live, {retired} \
-                        retired, {limit} slot limit")
+                        retired, {pending} pending cleanup, {limit} slot limit")
             }
             Self::Storage { owner,
                             kind,
@@ -335,10 +340,12 @@ pub struct DomainSlots
     policy:        CapacityPolicy,
     occupied:      Vec<u64>,
     retired:       Vec<u64>,
+    pending:       Vec<u64>,
     generations:   Vec<u64>,
     cursor:        usize,
     live:          usize,
     retired_count: usize,
+    pending_count: usize,
     births:        u64,
     deaths:        u64,
     accepting:     bool,
@@ -361,10 +368,12 @@ impl DomainSlots
                   policy,
                   occupied: Vec::new(),
                   retired: Vec::new(),
+                  pending: Vec::new(),
                   generations: Vec::new(),
                   cursor: 0,
                   live: 0,
                   retired_count: 0,
+                  pending_count: 0,
                   births: 0,
                   deaths: 0,
                   accepting: true,
@@ -398,9 +407,11 @@ impl DomainSlots
                                          limit:           self.policy.limit() };
         self.occupied.try_reserve(words - self.occupied.len()).map_err(|_| error)?;
         self.retired.try_reserve(words - self.retired.len()).map_err(|_| error)?;
+        self.pending.try_reserve(words - self.pending.len()).map_err(|_| error)?;
         self.generations.try_reserve(slots - self.generations.len()).map_err(|_| error)?;
         self.occupied.resize(words, 0);
         self.retired.resize(words, 0);
+        self.pending.resize(words, 0);
         self.generations.resize(slots, 0);
         Ok(())
     }
@@ -411,6 +422,7 @@ impl DomainSlots
                                kind:    self.kind,
                                used:    self.live,
                                retired: self.retired_count,
+                               pending: self.pending_count,
                                limit:   self.policy.limit().unwrap_or(self.generations.len()) }
     }
 
@@ -445,7 +457,7 @@ impl DomainSlots
                 let first = at % 64;
                 let take = (end - at).min(64 - first);
                 let span = if take == 64 { u64::MAX } else { ((1u64 << take) - 1) << first };
-                let free = !(self.occupied[word] | self.retired[word]) & span;
+                let free = !(self.occupied[word] | self.retired[word] | self.pending[word]) & span;
                 if free != 0
                 {
                     let slot = word * 64 + free.trailing_zeros() as usize;
@@ -470,6 +482,7 @@ impl DomainSlots
                                             kind: self.kind,
                                             used: self.live,
                                             retired: self.retired_count,
+                                            pending: self.pending_count,
                                             storage_slots: len,
                                             policy_limit: self.policy.limit() })
         }
@@ -498,6 +511,8 @@ impl DomainSlots
         }
         let mask = 1 << (key.slot % 64);
         self.occupied[key.slot / 64] &= !mask;
+        self.pending[key.slot / 64] |= mask;
+        self.pending_count += 1;
         self.live -= 1;
         self.deaths = self.deaths.saturating_add(1);
         match self.generations[key.slot].checked_add(1)
@@ -510,6 +525,33 @@ impl DomainSlots
             }
         }
         Ok(ReleasedResource { key })
+    }
+
+    /// Slot reuse follows completed cleanup, not merely ID invalidation. The
+    /// non-cloneable ticket names exactly the old generation. Dropping/forgetting
+    /// it leaves a visible pending slot; it can never expose an old payload
+    /// through a newly issued identity while its cleanup is outstanding.
+    pub fn complete_release(&mut self, released: ReleasedResource) -> Result<(), CompletionError>
+    {
+        let key = released.key;
+        if key.owner != self.owner
+        {
+            return Err(CompletionError { cause: PoolError::ForeignOwner { expected: self.owner,
+                                                                          actual:   key.owner },
+                                         released });
+        }
+        let valid = key.owner == self.owner
+                    && key.kind == self.kind
+                    && key.slot < self.generations.len()
+                    && self.pending[key.slot / 64] & (1 << (key.slot % 64)) != 0
+                    && self.generations[key.slot] == key.generation.get().saturating_add(1);
+        if !valid
+        {
+            return Err(CompletionError::stale(released));
+        }
+        self.pending[key.slot / 64] &= !(1 << (key.slot % 64));
+        self.pending_count -= 1;
+        Ok(())
     }
 
     pub fn stop_admission(&mut self)
@@ -560,6 +602,11 @@ impl DomainSlots
         self.retired_count
     }
 
+    pub const fn pending(&self) -> usize
+    {
+        self.pending_count
+    }
+
     pub fn storage_slots(&self) -> usize
     {
         self.generations.len()
@@ -573,9 +620,48 @@ impl DomainSlots
     }
 }
 /// Not Clone/Copy: one invalidation produces one dispatch ticket.
+#[must_use = "dispatch cleanup, then complete_release; an unfinished ticket keeps its slot pending"]
+#[derive(Debug)]
 pub struct ReleasedResource
 {
     key: ResourceKey
+}
+
+/// Refusal retains the cleanup capability so the host can retry against its
+/// proper owner. An erroneous completion never silently strands a live ticket.
+#[derive(Debug)]
+pub struct CompletionError
+{
+    cause:    PoolError,
+    released: ReleasedResource
+}
+impl CompletionError
+{
+    fn stale(released: ReleasedResource) -> Self
+    {
+        Self { cause: PoolError::Stale { key: released.key },
+               released }
+    }
+
+    pub fn cause(&self) -> PoolError
+    {
+        self.cause
+    }
+
+    pub fn into_ticket(self) -> ReleasedResource
+    {
+        self.released
+    }
+}
+impl fmt::Display for CompletionError
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        write!(f, "cleanup completion refused: {}; the ticket remains owned for retry", self.cause)
+    }
+}
+impl core::error::Error for CompletionError
+{
 }
 impl ReleasedResource
 {
@@ -602,6 +688,7 @@ pub struct LedgerSummary
     pub kinds:     usize,
     pub live:      usize,
     pub retired:   usize,
+    pub pending:   usize,
     pub slots:     usize,
     pub births:    u64,
     pub deaths:    u64,
@@ -660,6 +747,10 @@ pub enum DirectoryError
     LiveResources
     {
         owner: DomainId, live: usize
+    },
+    PendingResources
+    {
+        owner: DomainId, pending: usize
     }
 }
 impl fmt::Display for DirectoryError
@@ -677,6 +768,13 @@ impl fmt::Display for DirectoryError
                                   live } =>
             {
                 write!(f, "cannot retire {owner}: {live} live ledger resources remain")
+            }
+            Self::PendingResources { owner,
+                                     pending } =>
+            {
+                write!(f,
+                       "cannot retire {owner}: cleanup of {pending} invalidated ledger resources \
+                        is still pending")
             }
         }
     }
@@ -828,6 +926,7 @@ impl OwnerIndex
         {
             result.live += pool.live();
             result.retired += pool.retired();
+            result.pending += pool.pending();
             result.slots += pool.storage_slots();
             let (births, deaths) = pool.counters();
             result.births = result.births.saturating_add(births);
@@ -943,6 +1042,25 @@ impl OwnerIndex
         Ok(released)
     }
 
+    pub fn complete_release(&mut self, released: ReleasedResource) -> Result<(), CompletionError>
+    {
+        let key = released.key;
+        if key.owner != self.owner
+        {
+            return Err(CompletionError { cause: PoolError::ForeignOwner { expected: self.owner,
+                                                                          actual:   key.owner },
+                                         released });
+        }
+        let Some(pool) = self.pool_mut(key.kind())
+        else
+        {
+            return Err(CompletionError::stale(released));
+        };
+        pool.complete_release(released)?;
+        self.revision = self.revision.saturating_add(1);
+        Ok(())
+    }
+
     pub fn stop_admission(&mut self)
     {
         if self.accepting
@@ -963,6 +1081,12 @@ impl OwnerIndex
         {
             return Err(DirectoryError::LiveResources { owner: self.owner,
                                                        live });
+        }
+        let pending = self.pools.iter().map(DomainSlots::pending).sum();
+        if pending != 0
+        {
+            return Err(DirectoryError::PendingResources { owner: self.owner,
+                                                          pending });
         }
         // Check and close under the caller's single metadata lock. A manager's
         // surviving reference is only a closed identity stub, not a pin on all
@@ -1004,7 +1128,8 @@ mod tests
                          Err(DirectoryError::LiveResources { live: 1,
                                                              .. })));
         assert!(index.accepting());
-        index.invalidate(key).unwrap();
+        let released = index.invalidate(key).unwrap();
+        index.complete_release(released).unwrap();
         index.retire().unwrap();
         assert_eq!(index.owner(), owner);
         assert_eq!(index.pools.capacity(),
@@ -1056,18 +1181,22 @@ mod tests
                                         CapacityPolicy::PerDomainQuota { slots: 2 }).unwrap();
         pool.grow_to(2).unwrap();
         let old = pool.allocate(owner).unwrap();
-        pool.invalidate(old).unwrap();
+        let released = pool.invalidate(old).unwrap();
+        pool.complete_release(released).unwrap();
         let next = pool.allocate(owner).unwrap();
         assert_ne!(old.slot(), next.slot());
-        pool.invalidate(next).unwrap();
+        let released = pool.invalidate(next).unwrap();
+        pool.complete_release(released).unwrap();
         let reused = pool.allocate(owner).unwrap();
         assert_eq!(old.slot(), reused.slot());
         assert!(!pool.contains(old));
-        pool.invalidate(reused).unwrap();
+        let released = pool.invalidate(reused).unwrap();
+        pool.complete_release(released).unwrap();
         pool.generations[0] = u64::MAX;
         pool.cursor = 0;
         let last = pool.allocate(owner).unwrap();
-        pool.invalidate(last).unwrap();
+        let released = pool.invalidate(last).unwrap();
+        pool.complete_release(released).unwrap();
         assert_eq!(pool.retired(), 1);
         assert!(pool.allocate(owner).unwrap().slot() != 0);
         assert!(matches!(pool.allocate(owner),
@@ -1114,14 +1243,17 @@ mod tests
                                                          .. })));
         index.grow(kind, 1).unwrap();
         let old = index.allocate(kind).unwrap();
-        index.invalidate(old).unwrap();
+        let released = index.invalidate(old).unwrap();
+        index.complete_release(released).unwrap();
         assert!(matches!(index.add_pool(kind, CapacityPolicy::GrowableUntilMemory),
                          Err(PoolError::DuplicateKind { .. })));
         let new = index.allocate(kind).unwrap();
         assert_ne!(new, old);
         assert!(!index.contains(old));
         index.stop_admission();
-        assert_eq!(index.invalidate_next().unwrap().key(), new);
+        let released = index.invalidate_next().unwrap();
+        assert_eq!(released.key(), new);
+        index.complete_release(released).unwrap();
         assert_eq!(index.live(), 0);
         assert!(matches!(index.add_pool(KindCode(*b"MENU"), CapacityPolicy::GrowableUntilMemory),
                          Err(PoolError::Stopping { .. })));
@@ -1158,7 +1290,8 @@ mod tests
                                                     .. })));
         for &key in &old
         {
-            index.invalidate(key).unwrap();
+            let released = index.invalidate(key).unwrap();
+            index.complete_release(released).unwrap();
         }
         for expected in old
         {
@@ -1169,8 +1302,9 @@ mod tests
         }
         index.stop_admission();
         let mut count = 0;
-        while index.invalidate_next().is_some()
+        while let Some(released) = index.invalidate_next()
         {
+            index.complete_release(released).unwrap();
             count += 1;
         }
         assert_eq!(count, 130);

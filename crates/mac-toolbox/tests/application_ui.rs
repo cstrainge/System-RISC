@@ -113,7 +113,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
         serde_json::from_slice(&fs::read(output.join("icon-fixture.json")).unwrap()).unwrap();
     assert_eq!(fixture["icon_id"], 9433, "non-128 loaded-image icon fixture");
     let applications = image("applications-folder");
-    for (package, left, top) in [("QuickDraw Test", 168, 90), ("Text Edit", 360, 90)]
+    for (package, left, top) in [("QuickDraw Test", 168, 90), ("Text Edit", 40, 142)]
     {
         assert_eq!(region(&applications, left, top, left + 32, top + 32),
                    icon(&root, package, 128, 32),
@@ -131,7 +131,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
                           mac_toolbox::quickdraw::icons::IconFlags { open: true,
                                                                      ..Default::default() }),
                "running application's icon did not use the open transform");
-    assert_eq!(region(&running, 104, 142, 136, 174),
+    assert_eq!(region(&running, 168, 142, 200, 174),
                icon(&root, "QuickDraw Test", 128, 32),
                "unlaunched copy inherited the running application's mark");
     // The icon must already be normal before any Finder click or activation.

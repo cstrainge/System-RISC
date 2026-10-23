@@ -130,7 +130,7 @@ impl Workspace
              ("apps/cursor-test", "Cursor Test", "CursorTest"),
              ("apps/panic-test", "Panic Test", "PanicTest"),
              ("apps/resedit", "Res Edit", "ResEdit"),
-             ("apps/reactor", "Reactor", "Reactor"),
+             ("apps/reactor", "Reactor Room", "Reactor"),
              ("drivers/vhost-transport", "Host Transport", "HostTransport"),
              ("drivers/vhost-filesystem", "Host Filesystem", "HostFilesystem"),
              ("drivers/stuffit-filesystem", "StuffIt Filesystem", "StuffItFilesystem")]
@@ -218,7 +218,8 @@ impl Workspace
                      "text_edit_documents", "textedit_display", "textedit_performance", "typing",
                      "processes", "application_ui", "retained_update", "event_latency",
                      "cursor_graphical", "busy_cursor", "panic_graphical", "finder_selection",
-                     "transfer_incident", "remote_get_info", "finder_drag", "reactor_ui"]
+                     "transfer_incident", "remote_get_info", "finder_drag", "finder_layout",
+                     "reactor_ui"]
         {
             self.private_guest_test(test)?;
         }

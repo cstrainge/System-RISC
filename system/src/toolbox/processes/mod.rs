@@ -143,7 +143,8 @@ impl Manager
                                                match error
                                                {
                                                    DirectoryError::NotFound { .. } => NOT_FOUND,
-                                                   DirectoryError::LiveResources { .. } =>
+                                                   DirectoryError::LiveResources { .. }
+                                                   | DirectoryError::PendingResources { .. } =>
                                                    {
                                                        SERVICE_BUSY
                                                    }

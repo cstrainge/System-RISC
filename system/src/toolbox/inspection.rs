@@ -119,6 +119,7 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
                          kinds: ledger.kinds as u64,
                          live: ledger.live as u64,
                          retired: ledger.retired as u64,
+                         pending: ledger.pending as u64,
                          slots: ledger.slots as u64,
                          births: ledger.births,
                          deaths: ledger.deaths,

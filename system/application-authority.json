@@ -1,6 +1,6 @@
 {
   "version": 1,
   "grants": [
-    { "package": "Reactor", "capabilities": ["inspect-domains"] }
+    { "package": "Reactor Room", "capabilities": ["inspect-domains"] }
   ]
 }

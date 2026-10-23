@@ -86,6 +86,13 @@ fn retirement_refuses_live_resources_and_succeeds_only_after_invalidation()
     assert_eq!(ticket.key(), key);
     assert!(!directory.get(owner.incarnation()).unwrap().ledger().contains(key));
     assert!(directory.invalidate_next(owner.incarnation()).unwrap().is_none());
+    let error = directory.remove(owner.incarnation()).unwrap_err();
+    assert_eq!(error,
+               DirectoryError::PendingResources { owner,
+                                                  pending: 1 });
+    assert!(error.to_string()
+                 .contains("cleanup of 1 invalidated ledger resources is still pending"));
+    directory.get(owner.incarnation()).unwrap().ledger().complete_release(ticket).unwrap();
     assert_eq!(directory.remove(owner.incarnation()).unwrap(), "payload remains available");
     assert!(directory.is_empty());
     assert_eq!(directory.stop_admission(owner.incarnation()),
@@ -107,7 +114,8 @@ fn manager_references_share_one_ledger_and_cannot_reopen_a_retired_owner()
     let key = first.allocate(kind).unwrap();
     assert!(second.contains(key));
     assert_eq!(second.live(), 1);
-    second.invalidate(key).unwrap();
+    let released = second.invalidate(key).unwrap();
+    second.complete_release(released).unwrap();
     assert!(!first.contains(key));
     directory.remove(owner.incarnation()).unwrap();
     for ledger in [first, second]
@@ -152,7 +160,8 @@ fn concurrent_admission_cannot_slip_between_empty_check_and_retirement()
             {
                 assert_eq!(actual, owner);
                 assert!(ledger.contains(key));
-                ledger.invalidate(key).unwrap();
+                let released = ledger.invalidate(key).unwrap();
+                ledger.complete_release(released).unwrap();
                 directory.remove(owner.incarnation()).unwrap();
             }
             other => panic!("admission and retirement disagreed: {other:?}")
@@ -177,7 +186,8 @@ fn dropping_directory_closes_admission_without_losing_raii_cleanup_keys()
     assert!(reference.contains(key));
     assert!(matches!(reference.allocate(kind),
                      Err(mac_object_table::domain::PoolError::Stopping { .. })));
-    reference.invalidate(key).unwrap();
+    let released = reference.invalidate(key).unwrap();
+    reference.complete_release(released).unwrap();
     assert_eq!(reference.live(), 0);
     assert!(!reference.contains(key));
 }

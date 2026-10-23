@@ -26,10 +26,10 @@ APPLICATION_POINTS = {
     'Cursor Test': (56, 106),
     'Panic Test': (120, 106),
     'QuickDraw Test': (184, 106),
-    'Reactor': (248, 106),
-    'Res Edit': (312, 106),
-    'Text Edit': (376, 106),
-    'Z QuickDraw Copy': (120, 158),
+    'Reactor Room': (312, 106),
+    'Res Edit': (376, 106),
+    'Text Edit': (56, 158),
+    'Z QuickDraw Copy': (184, 158),
 }
 
 
