@@ -112,3 +112,6 @@ Performance bar: the code must not do unnecessary work. Full recomputation is th
 - Use the supplied rustfmt.toml. Run checks appropriate to the change and report
   actual coverage and remaining gaps. A passing subset is not full Toolbox or
   original 68k application compatibility.
+- Do not retain dead code or superseded implementations. Remove unused
+  placeholders instead of suppressing dead-code warnings; introduce executable
+  pieces with their consumers as the staged model becomes resident.

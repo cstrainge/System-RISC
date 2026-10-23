@@ -2,6 +2,8 @@
 //! vector storage is sized from a discovered architecture requirement.
 use alloc::vec::Vec;
 
+use mac_object_table::domain::OwnerIndex;
+
 use crate::{DomainId, DomainKind, ResourceKey,
             pages::{AddressSpace, Architecture},
             policy::{AddressRange, ConfiguredRange, ModelError},
@@ -9,12 +11,78 @@ use crate::{DomainId, DomainKind, ResourceKey,
 
 /// Separate identities matter: a definition executes/faults as its module,
 /// resolves that module's resources, but allocates for the app's control zone.
+///
+/// Bindings cannot be assembled without validation:
+/// ```compile_fail
+/// use mac_kernel_model::{DomainId, process::ExecutionBinding, zone::AllocationContext};
+/// fn forge(executor: DomainId, subject: DomainId) -> ExecutionBinding {
+///     ExecutionBinding { executor, subject, allocation: AllocationContext::System }
+/// }
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct ExecutionBinding
 {
-    pub executor:   DomainId,
-    pub subject:    DomainId,
-    pub allocation: AllocationContext
+    executor:   DomainId,
+    subject:    DomainId,
+    allocation: AllocationContext
+}
+impl ExecutionBinding
+{
+    /// Construct at the resident invocation gate, after authenticating the
+    /// request. Identity alone is not authority. An application cannot execute
+    /// for another subject; privileged executors may serve a different subject,
+    /// but allocation must remain charged to that subject. Control callbacks
+    /// additionally require both live resources in the subject's ledger.
+    ///
+    /// This snapshot does not pin domains or resources. The live invocation
+    /// guard must revalidate and pin them before dispatch, under its admission
+    /// lock; keeping a snapshot is never permission to invoke a dead module.
+    pub fn new(executor: &OwnerIndex, subject: &OwnerIndex, allocation: AllocationContext)
+               -> Result<Self, ModelError>
+    {
+        if executor.owner().kind() == DomainKind::Process && executor.owner() != subject.owner()
+        {
+            return Err(ModelError::WrongDomain);
+        }
+        match allocation
+        {
+            AllocationContext::System if subject.owner() == DomainId::SYSTEM =>
+            {}
+            AllocationContext::Kernel(owner) if owner == subject.owner() =>
+            {}
+            AllocationContext::Application(owner)
+                if owner == subject.owner() && owner.kind() == DomainKind::Process =>
+            {}
+            AllocationContext::Control(binding)
+                if binding.owner() == subject.owner()
+                   && subject.owner().kind() == DomainKind::Process =>
+            {
+                if !subject.contains(binding.instance()) || !subject.contains(binding.zone())
+                {
+                    return Err(ModelError::InvalidBinding);
+                }
+            }
+            _ => return Err(ModelError::WrongDomain)
+        }
+        Ok(Self { executor: executor.owner(),
+                  subject: subject.owner(),
+                  allocation })
+    }
+
+    pub const fn executor(self) -> DomainId
+    {
+        self.executor
+    }
+
+    pub const fn subject(self) -> DomainId
+    {
+        self.subject
+    }
+
+    pub const fn allocation(self) -> AllocationContext
+    {
+        self.allocation
+    }
 }
 /// Each entry is a ledger alias/pin, not a global resource-file pointer.
 pub struct ResourceScopeStack

@@ -271,11 +271,3 @@ impl<'pool, 'storage, A: Architecture> AddressSpace<'pool, 'storage, A>
         self.state.lock().mappings.len()
     }
 }
-// Private to the page layer. Its meaning is always a checked virtual address;
-// conversion/mapping access will belong to the architecture adapter.
-#[allow(dead_code)]
-struct VirtualPagePtr<T>
-{
-    address: VirtualAddress,
-    marker:  PhantomData<T>
-}

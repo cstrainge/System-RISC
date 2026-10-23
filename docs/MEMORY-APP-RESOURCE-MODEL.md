@@ -72,8 +72,9 @@ adapters at request granularity; see [extension design](EXTENSION-TRAITS-DESIGN.
 
 The `PageBox` currently owns **uninitialized physical storage only**, has no
 `Deref`, and cannot activate a page table. Initialization/mapping proofs must
-precede live root activation. `VirtualPagePtr` stays private to the page layer;
-there is no machine-wide physical/virtual interpretation flag. Xtra's separation
+precede live root activation. A virtual-pointer wrapper will be introduced with
+its page-layer consumer, rather than retaining an unused placeholder. There is
+no machine-wide physical/virtual interpretation flag. Xtra's separation
 of common MMU ownership from architecture encodings is the reference. Its bump
 heap, intrusive free list, per-base-page full-RAM mapper, device model and
 scheduler are deliberately not imported. Its low-address-only validation must
@@ -217,6 +218,22 @@ Execution identity has **four independent parts**: executor/fault domain,
 subject process, allocation/zone account and stacked resource scope. A module
 callback on an app control cannot conflate them. Current process arrays and
 thread context are inspected migration inputs, not architecture to preserve.
+
+`ExecutionBinding` has private fields and checked construction from the executor
+and subject owner ledgers. Process execution cannot impersonate another subject;
+the allocation account must belong to the subject. A control callback additionally
+requires live instance and zone keys in that subject's ledger. The snapshot is
+not authentication, a liveness pin or permission to dispatch after teardown:
+the resident invocation guard must authenticate, revalidate and pin under its
+admission lock before entering code or resource scopes.
+
+Forwarding allocation returns the concrete, non-cloneable `ForwardingLease`,
+which borrows its host allocator and owns the reserve/release pairing. Its Drop
+passes the original allocation context, layout and storage back exactly once;
+an implementation cannot substitute a lease with no destructor. Failed reserve
+must undo its own provisional charge. Rust permits forgetting a lease, so the
+zone ledger remains authoritative and must reclaim forgotten allocations at
+instance teardown. These shapes do not yet install a live allocator.
 
 ## ISA-floor stage
 
