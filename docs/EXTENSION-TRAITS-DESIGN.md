@@ -69,6 +69,21 @@ those visible provider names, ending with “System Native Handler” for the
 resident default. Validate the provider label at registration; never force an
 application to infer a name from a FourCC, slot or callback address.
 
+Load order follows declared dependencies and service contracts: providers before
+dependents. Exec registration precedence is reverse topological order:
+Shelly Script Extension depends on CLAP Extension, so Shelly gets first refusal,
+then CLAP; System Native Handler stays last. Modules without an exec registration
+do not participate. Inspect cheap evidence before deeper evidence within each
+handler, preserving this precedence. Independent entries use a documented stable
+bundle/source-resource identity tie rule. Filenames, display labels and discovery
+order never determine boot admission or chain precedence.
+
+Boot-critical roots and required service contracts are explicit. The essential
+bootstrap/recovery path remains available in safe mode. Missing dependencies and
+cycles are typed, named dependency-path diagnostics with actionable next steps;
+contained failures block dependents honestly. M-D04 remains the gate for arbitrary
+privileged faults. A chain refusal names its provider, cause and useful next action.
+
 What a file is, who handles it and how it launches are System determinations
 with typed refusals. Finder asks and presents. Launch keeps a chain position for
 the default native handler even while it is the only participant; callers do

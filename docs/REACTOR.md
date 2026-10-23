@@ -32,6 +32,12 @@ execution order. Reactor renders those names as the chain; identities, source
 resource, generation, evidence and revisions belong in its details. The final
 resident entry has the visible name “System Native Handler”. Missing/invalid
 provider labels are informative registration refusals, not raw-ID UI fallbacks.
+The displayed order is the actual exec precedence: dependents before their
+providers, while initialization runs providers first. Shelly precedes its CLAP
+dependency; the resident native handler stays last. Show missing/cyclic dependency
+paths and useful corrective actions with the relevant extension names. Boot and
+dispatch order derive from declared contracts and stable identities, independently
+of file/display names and directory discovery order.
 The System authenticates the caller; ordinary callers can inspect themselves.
 Cross-domain detail and termination require System-issued inspector authority through a general policy,
 not an application-name exception, private debug trap or raw memory channel.
