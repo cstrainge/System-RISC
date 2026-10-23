@@ -326,7 +326,7 @@ impl<'a> Panes<'a>
                                     }
                                 }
                             }
-                            2 => write!(line, "Generation headroom: {}", pool.generation_headroom),
+                            2 => write!(line, "Gen. headroom: {}", pool.generation_headroom),
                             _ =>
                             {
                                 write!(line,
