@@ -10,13 +10,16 @@ use mac_build::{Result, error, package};
 use mac_formats::{macbinary, native::Descriptor, resource};
 use serde_json::{Value, json};
 
-use crate::{TARGET, Workspace, disk, output, run, write_json};
+use crate::{Workspace, disk, output, run, write_json};
 
 pub fn package_rom(workspace: &Workspace) -> Result<Value>
 {
     let dist = workspace.build.join("dist");
     fs::create_dir_all(&dist)?;
-    let elf = workspace.build.join("target").join(TARGET).join("release/bootrom");
+    let elf = workspace.build
+                       .join("target")
+                       .join(&workspace.platform.rust_target)
+                       .join("release/bootrom");
     let rom = dist.join("bootrom.bin");
     run(Command::new("llvm-objcopy").args(["-O", "binary"]).arg(&elf).arg(&rom))?;
     let length = rom.metadata()?.len();
@@ -45,7 +48,7 @@ fn command(workspace: &Workspace, disks: &[(&Path, &str)]) -> Command
     command.args(["-machine",
                   "virt",
                   "-cpu",
-                  mac_build::platform::current().qemu_cpu.as_str(),
+                  workspace.platform.qemu_cpu.as_str(),
                   "-m",
                   "128M",
                   "-smp",

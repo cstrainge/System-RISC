@@ -516,3 +516,12 @@ Build output, ROMs, VM disks and private runtime captures stay in the enclosing
 RE workspace. See [scripts/README.md](scripts/README.md) for harness prerequisites.
 Commit completed, verified milestones here; do not add unrelated Strange Forth
 source or generated target directories.
+
+
+Select the current named native platform explicitly with
+`cargo xtask image --platform QemuRISC-V`. The optimized build emits the 500 MiB
+HFS-B/qcow2 installation and boot ROM under the selected external build directory;
+`--build-dir` keeps private checks separate. The platform name is recorded in the
+build report and propagated to guest builds and VM helpers. Unknown names fail
+before creating installation output. QemuRISC-V is currently the supported
+platform; future Pi partitioned-media and ARM backends remain roadmap work.

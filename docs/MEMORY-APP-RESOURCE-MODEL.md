@@ -398,3 +398,85 @@ port/service interfaces from one audited binding layer; unknown wire messages
 fail before author code; the platform owns panic reporting. M-D04 still gates
 arbitrary privileged-fault recovery. Static text must be transparent and all
 new definition color work uses resident theme roles, not new literal palettes.
+
+## Platform build and native-slice requirements
+
+The accepted build contract is one command selecting a known platform and
+producing deployable media, for example `cargo xtask image --platform <name>`.
+Selection must encompass architecture/ISA, board facts, memory layout, drivers,
+boot files and partition layout. Unknown or unsupported targets fail with an
+informative error; a platform declaration alone is not a claim of hardware
+support. A new board adds a definition and board adapter, not a fork of shared
+kernel services. A new CPU family also needs its architecture backend.
+
+The platform JSON is the home for defined layout policy. One checked record
+emits both linker scripts/symbols and the Rust constants code consumes, plus the
+BootInfo reservation list for the page layer. Sizes and ranges remain tunable.
+Validate overlaps/alignment and statically knowable RAM bounds at build time;
+validate resolved placement against discovered actual RAM at boot too. Current
+ROM BootInfo still reports fixed 128 MiB: DTB RAM/topology discovery is a required
+part of that transport migration, not an already fulfilled prerequisite. Current
+QEMU module/firmware/FDT carveouts must leave kernel memory policy source.
+The generated fatal-finisher device constants introduced with definition failure
+reporting are an initial consumer, not the complete memory-map migration.
+
+Future Pi targets produce one whole-device image with a board boot partition
+(firmware and loader) and an HFS-B System RISC partition. The loader discovers
+the filesystem partition and blessed System Folder and selects native System
+code. The platform build packages both partitions; manual assembly is not the
+interface. Pi/ARM implementations remain future platform work.
+
+Fat native bundles may carry RV64 and AR64 code slices, sharing non-code
+resources. ABI/relocation metadata must be associated with the selected slice;
+System's native handler makes that determination. Definition code needs the same
+architecture selection while retaining semantic WDEF/CDEF/MDEF IDs. Today's
+single-slice NABI/RLOC association is not yet that fat-bundle implementation.
+
+## Enumeration requirements carried by the migration
+
+The 2026-10-23 Reactor enumeration handoff and unified design require eight
+queries from the authoritative facility, not a second inspector database:
+
+1. Domains: kind, incarnation, human label, state and account summary.
+2. Ledgers: kind counts, retired/pending counts, generation headroom and
+   individual keys with owning registration and kind-specific identity labels.
+   File entries must identify the item by volume and name/path.
+3. Kind registrations: namespace, capacity policy, usage/quota and the owner
+   of release dispatch.
+4. Accounts: charges by category, quotas, System reserve and emergency-kit
+   reserved/spent status.
+5. Memory: buddy orders, System heap/reserve, domain ranges and control zones.
+   At the page-layer stage include address-ordered regions with base, length,
+   kind and charge; committed/used sub-extents; each named thread's stack.
+6. Registrations/chains/images: order, readable provider names, owner domains,
+   claimed evidence, revisions, image references and resident extents.
+7. An ephemeral event journal: births/deaths, completed walks with leak counts,
+   quota/allocation refusals and quarantine. Its default capacity is **10,000
+   events**, configurable; no persistence.
+8. Monotonic per-domain counters: CPU ticks attributed to the subject on whose
+   behalf work ran, handle births/deaths, committed and charged totals.
+   Mechanism accounting must not depend on scheduler policy.
+
+Every enumeration states its snapshot generation and rejects stale continuation.
+Refresh from changes/deltas or on demand; do not scan all objects on input events
+or repaint. Until a source is live, mark its coverage unavailable rather than
+inventing zero totals. Current process/control coverage is deliberately partial.
+Registry existence/order/claims/mappings are ordinary public queries; inspector
+authority gates cross-domain detail and termination, not registry existence.
+
+Menu-bar extras, Get Info panels and language-pack contributions use the same
+generation-scoped, ledger-owned registration mechanism. Extras publish state;
+the Menu Manager renders only changed cells, coalesces updates and shows stale
+owners. Teardown removes dead owners' extras. Get Info panels are additive,
+match system-resolved item/folder/volume identities, and use safe port/services
+within their section. Finder asks the System which panels apply. It does not
+duplicate kind knowledge. These are registration customers, not a request to
+implement the deferred Pipes/CLAP/Terminal/Shelly stack during this migration.
+
+Localization is a resident public service: stable string IDs, named facts,
+per-item language/dependency/base fallback, and language-pack grammar/formatters.
+The base voice is Canadian English. Public collation supplies display ordering
+and cached keys; a contracted custom sorter honestly lacks generated sort keys.
+Language tailoring never changes HFS-B's fixed locale-independent name identity.
+Language changes invalidate affected string/sort snapshots, not whole screens.
+No new trust, suspend, outline-control or host-projection ruling is implied here.

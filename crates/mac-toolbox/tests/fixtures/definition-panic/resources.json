@@ -1,0 +1,24 @@
+{
+  "name": "CDEF_PANIC",
+  "file_type": "rsrc",
+  "creator": "TEST",
+  "role": "code_resource",
+  "abi_version": 1,
+  "load_base": "0x82500000",
+  "load_limit": "0x82600000",
+  "description": "Private definition-runtime fault probe",
+  "resources": [
+    {
+      "type": "CDEF",
+      "id": -32759,
+      "name": "Private Static Text Panic Probe",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_PANIC",
+        "load_base": "0x82500000",
+        "load_limit": "0x82600000"
+      },
+      "symbol": "PRIVATE_PANIC_CDEF"
+    }
+  ]
+}

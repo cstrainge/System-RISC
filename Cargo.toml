@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/mac-abi",
+    "crates/mac-definition",
     "crates/mac-module",
     "crates/mac-object-table",
     "crates/mac-kernel-model",
@@ -46,6 +47,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+mac-definition = { path = "crates/mac-definition" }
 mac-file-types = { path = "crates/mac-file-types" }
 mac-module = { path = "crates/mac-module" }
 mac-device-interface = { path = "crates/mac-device-interface" }

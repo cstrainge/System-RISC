@@ -4,7 +4,15 @@ import os
 from pathlib import Path
 import shlex
 
-PLATFORM = json.loads((Path(__file__).resolve().parents[1] / 'platforms/riscv64.json').read_text())
+NAME = os.environ.get('SYSTEM7_PLATFORM', 'QemuRISC-V')
+if not NAME or not all(c.isascii() and (c.isalnum() or c in '-_') for c in NAME):
+    raise ValueError('Invalid platform name: expected ASCII letters, digits, - or _')
+DEFINITION = Path(__file__).resolve().parents[1] / 'platforms' / (NAME + '.json')
+if not DEFINITION.is_file():
+    raise ValueError(f"Unknown platform {NAME!r}; known platform: QemuRISC-V")
+PLATFORM = json.loads(DEFINITION.read_text())
+if PLATFORM['name'] != NAME:
+    raise ValueError(f"Platform {NAME!r} declares a different name")
 TARGET = PLATFORM['rust_target']
 CPU = PLATFORM['qemu_cpu']
 

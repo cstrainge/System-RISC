@@ -69,10 +69,11 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
     if frame.cause != 11
     {
         serial!("SYSTEM_TRAP: cause={} pc=0x{:x} value=0x{:x}", frame.cause, frame.pc, frame.value);
-        loop
+        if let Some((kind, id)) = crate::context::current_thread_context().definitions.current()
         {
-            core::hint::spin_loop();
+            serial!("DEFINITION_FAULT_FATAL: kind=0x{kind:08x} id={id}");
         }
+        super::power::fatal_shutdown();
     }
     let thread = crate::context::current_thread_context();
     let scope = thread.traps.enter();
@@ -321,6 +322,36 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         {
             let call = read_request!(mac_abi::inspection::Call);
             toolbox::processes::inspection_request(call) as i64
+        }
+        DEFINITION_PANIC =>
+        {
+            let Some((kind, id)) = crate::context::current_thread_context().definitions.current()
+            else
+            {
+                return ACCESS_DENIED as i64;
+            };
+            let report = read_request!(mac_abi::definitions::DefinitionPanic);
+            let text = report.message
+                             .get(..report.length as usize)
+                             .and_then(|bytes| core::str::from_utf8(bytes).ok())
+                             .unwrap_or("invalid definition panic diagnostic");
+            let bytes = kind.to_be_bytes();
+            let family = core::str::from_utf8(&bytes).unwrap_or("invalid family");
+            let identity = crate::context::current_thread_context().identity();
+            serial!("DEFINITION_PANIC_FATAL: kind={family} id={id} app={} thread={} flags={} \
+                     {text}",
+                    identity.app.0,
+                    identity.thread.0,
+                    report.flags);
+            if report.flags & mac_abi::definitions::DefinitionPanic::TRUNCATED != 0
+            {
+                serial!("DEFINITION_DIAGNOSTIC_TRUNCATED: retained {} UTF-8 bytes", report.length);
+            }
+            if report.flags & mac_abi::definitions::DefinitionPanic::FORMAT_FAILED != 0
+            {
+                serial!("DEFINITION_DIAGNOSTIC_FORMAT_FAILED: partial panic information retained");
+            }
+            super::power::fatal_shutdown()
         }
         THEME =>
         {

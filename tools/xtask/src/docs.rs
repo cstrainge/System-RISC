@@ -18,6 +18,7 @@ pub(super) fn generate(workspace: &Workspace) -> Result<()>
                API</title><h1>System RISC Rust API</h1><p><a \
                href=\"mac_toolbox/index.html\">Toolbox application SDK</a></p><p><a \
                href=\"mac_driver/index.html\">Kernel module SDK</a></p><p><a \
+               href=\"mac_definition/index.html\">Definition author SDK</a></p><p><a \
                href=\"mac_module/index.html\">Native module contracts</a></p><p><a \
                href=\"mac_hfs_b/index.html\">HFS-B filesystem</a></p><p><a \
                href=\"mac_fork_file/index.html\">Host fork containers</a></p><p><a \

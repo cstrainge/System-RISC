@@ -12,6 +12,7 @@ path = "src/main.rs"
 test = false
 bench = false
 [dependencies]
+mac-definition.workspace = true
 mac-abi.workspace = true
 mac-traps.workspace = true
 toolbox-quickdraw = { path = "../../toolbox/quickdraw" }

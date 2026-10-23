@@ -390,6 +390,25 @@ mod tests
     use mac_abi::{Point, Rect};
 
     use super::*;
+    // This replay uses an offscreen surface rather than a process service table.
+    // Definitions still query the same resident theme used by live controls.
+    unsafe extern "C" fn definition_services(number: u32, request: *mut (), size: usize) -> i64
+    {
+        if number == mac_abi::traps::THEME
+        {
+            if request.is_null()
+               || size != core::mem::size_of::<mac_abi::theme::Palette>()
+               || !(request as usize).is_multiple_of(core::mem::align_of::<mac_abi::theme::Palette>())
+            {
+                return BAD_ARGUMENT as i64;
+            }
+            unsafe {
+                request.cast::<mac_abi::theme::Palette>().write(crate::toolbox::theme::palette())
+            };
+            return OK as i64;
+        }
+        unsafe { crate::toolbox::quickdraw::surface_gate(number, request, size) }
+    }
     #[test]
     fn resource_replay_preserves_window_origin_clip_and_global_track_phase()
     {
@@ -402,7 +421,7 @@ mod tests
                                 state:     State::Scrollbar(state),
                                 variation: 0,
                                 entry:     crate::test_scrollbar::scrollbar_definition,
-                                gate:      crate::toolbox::quickdraw::surface_gate,
+                                gate:      definition_services,
                                 damage:    [state.bounds, Rect::ZERO] };
         let background = 0xff00ff;
         let mut full = vec![background; 80 * 100];

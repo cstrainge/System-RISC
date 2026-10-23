@@ -9,6 +9,8 @@ pub const POSITIONED_EVENT: u32 = 0x10023;
 /// Public capability-checked domain inspection; outside the classic trap range.
 pub const INSPECTION: u32 = 0x10024;
 pub const THEME: u32 = 0x10025;
+/// Definition-runtime fault report; admitted only during a host-owned invocation.
+pub const DEFINITION_PANIC: u32 = 0x10026;
 pub const PSTRING_SCROLL_BOX: u32 = SCROLL_BOX | PSTRING_BIT;
 pub const STANDARD_FILE: u32 = 0x10020;
 pub const PSTRING_STANDARD_FILE: u32 = STANDARD_FILE | PSTRING_BIT;

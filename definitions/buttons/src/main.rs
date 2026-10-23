@@ -1,9 +1,10 @@
 //! Control definitions. Full Control Manager ownership/tracking follows later.
 #![cfg_attr(target_arch = "riscv64", no_std)]
 #![cfg_attr(target_arch = "riscv64", no_main)]
-pub use mac_abi::definitions::{CDEF, ControlDefinitionState};
-use mac_abi::{BAD_ABI, BAD_ARGUMENT, DefinitionCall, NOT_SUPPORTED};
-use toolbox_quickdraw::{Point, SurfacePort, WHITE, font::CHICAGO_12};
+#![deny(unsafe_code)]
+use mac_definition::{Button, ButtonKind, CaptionMode, Error, Highlight, Message, Part, Reply,
+                     Result, Services};
+use toolbox_quickdraw::{Point, SurfacePort, font::CHICAGO_12};
 #[derive(Clone, Copy)]
 enum CaptionFont
 {
@@ -50,107 +51,75 @@ impl CaptionFont
         }
     }
 }
-/// Standard CDEF0 push/check/radio definitions. Native message signatures are
-/// explicit adapters; they are not the original Pascal CDEF calling convention.
-/// # Safety
-/// Call/state/surface storage must be live and exclusively borrowed.
-pub unsafe extern "C" fn standard_control_definition(pointer: *mut DefinitionCall) -> i64
+fn handle<'a>(message: Message<'a, Button<'a>>, services: Services<'a>) -> Result<Reply>
 {
-    let Some(call) = (unsafe { pointer.as_mut() })
-    else
+    match message
     {
-        return BAD_ARGUMENT as i64;
-    };
-    if !call.header.supports::<DefinitionCall>()
-    {
-        return BAD_ABI as i64;
-    }
-    if call.kind != CDEF || call.id != 0 || !matches!(call.variation,0..=2|8..=10)
-    {
-        return NOT_SUPPORTED as i64;
-    }
-    let Some(state) = (unsafe { (call.object as *mut ControlDefinitionState).as_mut() })
-    else
-    {
-        return BAD_ARGUMENT as i64;
-    };
-    match call.message
-    {
-        0 =>
+        Message::Draw { state,
+                        mut port } => draw(&mut port, &state, services.theme()?)?,
+        Message::HitTest { state,
+                           point } => return Ok(Reply::Hit(hit(&state, point))),
+        Message::Validate(state) =>
         {
-            let Some(surface) = (unsafe { call.surface.as_mut() })
-            else
-            {
-                return BAD_ARGUMENT as i64;
-            };
-            let connection = unsafe { mac_traps::SurfaceConnection::new(surface, call.gate) };
-            let mut canvas = SurfacePort::new(connection);
-            draw(&mut canvas, state, call.variation).map_or_else(|e| e.status() as i64, |_| 0)
+            validate(&state)?;
         }
-        1 =>
-        {
-            let bits = call.param as u32;
-            hit(state,
-                call.variation,
-                Point { v: (bits >> 16) as i16,
-                        h: bits as i16 }) as i64
-        }
-        2..=4 => 0,
-        mac_abi::controls::VALIDATE_DEFINITION =>
-        {
-            validate(state, call.variation).map_or_else(|e| e.status() as i64, |_| 0)
-        }
-        _ => NOT_SUPPORTED as i64
+        Message::CalculateRegions(_) | Message::Initialize(_) | Message::Dispose(_) => (),
+        Message::Track { .. } | Message::ChangeBounds { .. } => return Err(Error::NotSupported)
     }
+    Ok(Reply::Done)
 }
+mac_definition::define_buttons!(standard_control_definition, handle);
 /// Full control rectangle hit, including push-button rounded corners (original
 /// CDEF0 offsets3f4..424). Hilite254 is a distinct original part result.
-pub fn hit(state: &ControlDefinitionState, variation: i16, point: Point) -> i16
+pub fn hit(state: &Button<'_>, point: Point) -> Part
 {
-    if state.enabled == 0
-       || state.highlighted == 255
-       || !button_bounds(state, variation).contains(point)
+    if !state.enabled
+       || state.highlight == Highlight::Disabled
+       || !button_bounds(state).contains(point)
     {
-        0
+        Part::None
     }
-    else if state.highlighted == 254
+    else if state.highlight == Highlight::Inactive
     {
-        254
+        Part::Inactive
     }
-    else if variation & 7 == 0
+    else if state.kind == ButtonKind::Push
     {
-        10
+        Part::Button
     }
     else
     {
-        11
+        Part::Check
     }
 }
 /// CDEF0 original System7.6.1 algorithm, with bounded12×12 radio masks. The masks
 /// encode only the glyph geometry; caption and arbitrary bounds remain dynamic.
-pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variation: i16)
+pub fn draw(canvas: &mut SurfacePort<'_>, state: &Button<'_>, theme: mac_definition::Theme)
             -> mac_traps::Result<()>
 {
     use toolbox_quickdraw::graphics::{PortState, Shape, Verb};
-    let font = validate(state, variation)?;
-    let r = button_bounds(state, variation);
-    let title=core::str::from_utf8(&state.title[..state.title_length as usize]).map_err(|_|mac_traps::Error::BadArgument)?;
+    let font = validate(state)?;
+    let r = button_bounds(state);
+    let title = state.title;
     if matches!(font, CaptionFont::GenevaBold(_))
     {
         font.width(canvas, "")?;
     }
-    let style = variation & 7;
-    let disabled = state.enabled == 0 || state.highlighted >= 254;
-    let pressed = !disabled && state.highlighted != 0;
-    let mut port = PortState::default();
-    if style == 0
+    let style = state.kind;
+    let disabled =
+        !state.enabled || matches!(state.highlight, Highlight::Inactive | Highlight::Disabled);
+    let pressed = !disabled && state.highlight != Highlight::Normal;
+    let mut port = PortState { foreground: theme.control_outline,
+                               background: theme.content,
+                               ..Default::default() };
+    if style == ButtonKind::Push
     {
-        if state.flags & mac_abi::definitions::DEFAULT_BUTTON != 0
+        if state.default_button
         {
-            canvas.paint_rect(state.bounds, WHITE)?;
+            canvas.paint_rect(state.bounds, theme.content)?;
             port.pen_size = Point { h: 3,
                                     v: 3 };
-            port.foreground = if disabled { 0x888888 } else { 0 };
+            port.foreground = if disabled { theme.separator } else { theme.control_outline };
             canvas.draw_shape(&mut port,
                               Shape::RoundRect { bounds: state.bounds,
                                                  corner: Point { h: 16,
@@ -163,17 +132,17 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
         let shape = Shape::RoundRect { bounds: r,
                                        corner: Point { h: corner,
                                                        v: corner } };
-        port.foreground = if pressed { 0 } else { WHITE };
+        port.foreground = if pressed { theme.control_outline } else { theme.content };
         canvas.draw_shape(&mut port, shape, Verb::Paint)?;
-        port.foreground = 0;
+        port.foreground = theme.control_outline;
         canvas.draw_shape(&mut port, shape, Verb::Frame)?;
     }
     else
     {
-        canvas.paint_rect(r, WHITE)?;
+        canvas.paint_rect(r, theme.content)?;
         let top = i32::from(r.bottom) - ((i32::from(r.bottom) - i32::from(r.top) - 12) >> 1) - 12;
         let left = i32::from(r.left) + 2;
-        if style == 1
+        if style == ButtonKind::Check
         {
             let glyph =
                 mac_abi::Rect::new(left as i16, top as i16, (left + 12) as i16, (top + 12) as i16);
@@ -184,8 +153,8 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
             {
                 for n in 1..11
                 {
-                    pixel(canvas, left + n, top + n)?;
-                    pixel(canvas, left + 11 - n, top + n)?;
+                    pixel(canvas, left + n, top + n, theme.control_outline)?;
+                    pixel(canvas, left + 11 - n, top + n, theme.control_outline)?;
                 }
             }
         }
@@ -198,7 +167,7 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
                 {
                     if row & (1 << (11 - x)) != 0
                     {
-                        pixel(canvas, left + x, top + y as i32)?;
+                        pixel(canvas, left + x, top + y as i32, theme.control_outline)?;
                     }
                 }
             }
@@ -210,7 +179,7 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
                     {
                         if row & (1 << (11 - x)) != 0
                         {
-                            pixel(canvas, left + x, top + y as i32)?;
+                            pixel(canvas, left + x, top + y as i32, theme.control_outline)?;
                         }
                     }
                 }
@@ -228,7 +197,7 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
     for line in title.split('\r')
     {
         let width = font.width(canvas, line)?;
-        let x = if style == 0
+        let x = if style == ButtonKind::Push
         {
             i32::from(r.left) + ((i32::from(r.right) - i32::from(r.left) - i32::from(width)) >> 1)
         }
@@ -244,40 +213,28 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
                   limit,
                   if disabled
                   {
-                      0xa5a5a5
+                      theme.disabled_text
                   }
-                  else if pressed && style == 0
+                  else if pressed && style == ButtonKind::Push
                   {
-                      WHITE
+                      theme.content
                   }
                   else
                   {
-                      0
+                      theme.text
                   })?;
         baseline += line_height;
     }
     Ok(())
 }
-fn validate(state: &ControlDefinitionState, variation: i16) -> mac_traps::Result<CaptionFont>
+fn validate(state: &Button<'_>) -> mac_traps::Result<CaptionFont>
 {
     use toolbox_quickdraw::font::GENEVA_9;
-    if !matches!(variation,0..=2|8..=10)
+    if button_bounds(state).is_empty()
     {
-        return Err(mac_traps::Error::NotSupported);
+        return Err(Error::BadArgument);
     }
-    if state.flags & !mac_abi::definitions::DEFAULT_BUTTON != 0
-       || (state.flags != 0 && variation & 7 != 0)
-    {
-        return Err(mac_traps::Error::BadArgument);
-    }
-    let r = button_bounds(state, variation);
-    let length = state.title_length as usize;
-    if r.is_empty() || length > state.title.len()
-    {
-        return Err(mac_traps::Error::BadArgument);
-    }
-    core::str::from_utf8(&state.title[..length]).map_err(|_| mac_traps::Error::BadArgument)?;
-    let font = if variation & 8 == 0
+    let font = if state.caption == CaptionMode::System
                   || (state.font.family == 0 && state.font.size == 12 && state.font.face == 0)
     {
         CaptionFont::Classic(CHICAGO_12)
@@ -296,10 +253,10 @@ fn validate(state: &ControlDefinitionState, variation: i16) -> mac_traps::Result
     };
     Ok(font)
 }
-fn button_bounds(state: &ControlDefinitionState, variation: i16) -> mac_abi::Rect
+fn button_bounds(state: &Button<'_>) -> mac_abi::Rect
 {
     let mut bounds = state.bounds;
-    if variation & 7 == 0 && state.flags & mac_abi::definitions::DEFAULT_BUTTON != 0
+    if state.kind == ButtonKind::Push && state.default_button
     {
         bounds.left = bounds.left.saturating_add(4);
         bounds.top = bounds.top.saturating_add(4);
@@ -308,9 +265,9 @@ fn button_bounds(state: &ControlDefinitionState, variation: i16) -> mac_abi::Rec
     }
     bounds
 }
-fn pixel(canvas: &mut SurfacePort<'_>, x: i32, y: i32) -> mac_traps::Result<()>
+fn pixel(canvas: &mut SurfacePort<'_>, x: i32, y: i32, ink: u32) -> mac_traps::Result<()>
 {
-    canvas.paint_rect(mac_abi::Rect::new(x as i16, y as i16, (x + 1) as i16, (y + 1) as i16), 0)
+    canvas.paint_rect(mac_abi::Rect::new(x as i16, y as i16, (x + 1) as i16, (y + 1) as i16), ink)
 }
 // Original CDEF0 FrameOval12×12 with1px/2px pen, and PaintOval inset3.
 // Provenance: results/control-tracking-reference/static-{0,1,3}.png; resource
@@ -320,62 +277,3 @@ const RADIO: [u16; 12] =
 const RADIO_PRESSED: [u16; 12] =
     [0x0f0, 0x3fc, 0x70e, 0x606, 0xc03, 0xc03, 0xc03, 0xc03, 0x606, 0x70e, 0x3fc, 0x0f0];
 const RADIO_DOT: [u16; 12] = [0, 0, 0, 0x0f0, 0x1f8, 0x1f8, 0x1f8, 0x1f8, 0x0f0, 0, 0, 0];
-#[cfg(test)]
-mod tests
-{
-    use mac_abi::{Header, Rect};
-
-    use super::*;
-    unsafe extern "C" fn gate(_: u32, _: *mut (), _: usize) -> i64
-    {
-        mac_abi::NOT_SUPPORTED as i64
-    }
-    #[test]
-    fn button_hit_disabled_and_protocol_validation()
-    {
-        let mut state = ControlDefinitionState { bounds: Rect::new(10, 10, 80, 30),
-                                                 title: [0; mac_abi::INLINE_STRING_BYTES],
-                                                 title_length: 0,
-                                                 enabled: 1,
-                                                 highlighted: 0,
-                                                 ..Default::default() };
-        let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
-                                        kind: CDEF,
-                                        id: 0,
-                                        variation: 0,
-                                        message: 1,
-                                        reserved: 0,
-                                        param: (15 << 16) | 15,
-                                        object:
-                                            (&mut state as *mut ControlDefinitionState).cast(),
-                                        gate,
-                                        surface: core::ptr::null_mut() };
-        assert_eq!(unsafe { standard_control_definition(&mut call) }, 10);
-        state.enabled = 0;
-        assert_eq!(state.enabled, 0);
-        assert_eq!(unsafe { standard_control_definition(&mut call) }, 0);
-        call.message = 999;
-        assert_eq!(unsafe { standard_control_definition(&mut call) }, NOT_SUPPORTED as i64);
-        call.header.version = 99;
-        assert_eq!(unsafe { standard_control_definition(&mut call) }, BAD_ABI as i64);
-    }
-}
-
-/// # Safety
-/// System supplies a live definition call and exclusive borrowed state/surface.
-#[cfg(target_arch = "riscv64")]
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(call: *mut mac_abi::DefinitionCall) -> i64
-{
-    unsafe { standard_control_definition(call) }
-}
-#[cfg(target_arch = "riscv64")]
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo<'_>) -> !
-{
-    loop
-    {
-        core::hint::spin_loop();
-    }
-}

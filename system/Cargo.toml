@@ -7,7 +7,7 @@ publish.workspace = true
 [features]
 guest = []
 event-trace = []
-test-support = ["dep:mac-traps", "dep:toolbox-quickdraw"]
+test-support = ["dep:mac-definition", "dep:mac-traps", "dep:toolbox-quickdraw"]
 
 [[bin]]
 name = "System"
@@ -42,6 +42,7 @@ skrifa = { version = "0.48.0", default-features = false, features = ["libm"] }
 mac-build.workspace = true
 
 [dev-dependencies]
+mac-definition.workspace = true
 unicode-segmentation = "=1.13.3"
 mac-build.workspace = true
 mac-toolbox.workspace = true
@@ -56,5 +57,6 @@ spin = { version = "=0.12.3", default-features = false, features = ["once"] }
 linked_list_allocator = "0.10"
 
 [target.'cfg(not(target_arch = "riscv64"))'.dependencies]
+mac-definition = { workspace = true, optional = true }
 mac-traps = { workspace = true, optional = true }
 toolbox-quickdraw = { path = "../toolbox/quickdraw", optional = true }

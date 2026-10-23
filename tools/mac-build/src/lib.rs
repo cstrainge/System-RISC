@@ -21,6 +21,11 @@ pub fn error(message: impl Into<String>) -> Box<dyn std::error::Error>
 pub fn build_guest() -> Result<()>
 {
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
+    println!("cargo:rerun-if-env-changed={}", platform::PLATFORM_ENV);
+    let definition =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../platforms")
+                                             .join(format!("{}.json", platform::current().name));
+    println!("cargo:rerun-if-changed={}", definition.display());
     platform::validate_guest(&env::var("TARGET")?, &env::var("CARGO_CFG_TARGET_FEATURE")?)?;
     let root = env::var("CARGO_MANIFEST_DIR")?;
     let path = Path::new(&root).join("resources.json");
@@ -53,11 +58,14 @@ pub fn build_guest() -> Result<()>
         fs::write(out.join("module_contract.bin"), module::declaration(&path, &manifest)?)?;
     }
     let descriptor = manifest.descriptor()?;
-    let script =
+    let (constants, platform_symbols) = platform::guest_artifacts()?;
+    fs::write(out.join("platform.rs"), constants)?;
+    let mut script =
         include_str!("native.ld").replace("@BASE@", &format!("0x{:x}", descriptor.load_base))
                                  .replace("@LENGTH@",
                                           &format!("0x{:x}",
                                                    descriptor.load_limit - descriptor.load_base));
+    script.push_str(&platform_symbols);
     let script_path = out.join("native.ld");
     fs::write(&script_path, script)?;
     println!("cargo:rustc-link-arg-bin={}=-T{}", manifest.binary_name(), script_path.display());

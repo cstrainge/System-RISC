@@ -1,0 +1,29 @@
+[package]
+name = "definition-panic-probe"
+version = "0.1.0"
+edition = "2024"
+[workspace]
+[features]
+guest = []
+[[bin]]
+name = "CDEF_PANIC"
+path = "src/main.rs"
+required-features = ["guest"]
+test = false
+[[bin]]
+name = "package"
+path = "src/package.rs"
+test = false
+[dependencies]
+mac-definition = { path = "../../../../mac-definition" }
+[target.'cfg(not(target_arch = "riscv64"))'.dependencies]
+mac-build = { path = "../../../../../tools/mac-build" }
+mac-formats = { path = "../../../../mac-formats" }
+[build-dependencies]
+mac-build = { path = "../../../../../tools/mac-build" }
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = true

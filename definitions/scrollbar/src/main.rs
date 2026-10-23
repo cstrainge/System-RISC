@@ -2,8 +2,9 @@
 //! owned entirely by this resource; clients retain only scalar control state.
 #![cfg_attr(target_arch = "riscv64", no_std)]
 #![cfg_attr(target_arch = "riscv64", no_main)]
-pub use mac_abi::controls::ScrollbarState;
-use mac_abi::{controls::*, definitions::CDEF, *};
+#![deny(unsafe_code)]
+use mac_definition::{Error, Message, Part, Point, Rect, Reply, Result,
+                     Scrollbar as ScrollbarState, Services};
 use toolbox_quickdraw::SurfacePort;
 #[derive(Clone, Copy, Debug)]
 pub struct Geometry
@@ -14,7 +15,7 @@ pub struct Geometry
     pub track:      Rect,
     pub thumb:      Rect
 }
-pub fn geometry(state: &ScrollbarState) -> Result<Geometry, Status>
+pub fn geometry(state: &ScrollbarState) -> Result<Geometry>
 {
     let r = state.bounds;
     let width = r.right as i32 - r.left as i32;
@@ -25,14 +26,14 @@ pub fn geometry(state: &ScrollbarState) -> Result<Geometry, Status>
        || state.value < 0
        || state.value > state.maximum
     {
-        return Err(BAD_ARGUMENT);
+        return Err(Error::BadArgument);
     }
     let horizontal = width > height;
     let length = if horizontal { width } else { height };
     let thickness = if horizontal { height } else { width };
     if !(15..=16).contains(&thickness) || length < thickness * 2
     {
-        return Err(NOT_SUPPORTED);
+        return Err(Error::NotSupported);
     }
     let cap = thickness.min(length / 2);
     let start = if horizontal { r.left as i32 } else { r.top as i32 };
@@ -63,27 +64,27 @@ pub fn geometry(state: &ScrollbarState) -> Result<Geometry, Status>
                   track: along(track_start, track_end),
                   thumb: along(track_start + position, track_start + position + thumb_length) })
 }
-pub fn hit(state: &ScrollbarState, point: Point) -> i16
+pub fn hit(state: &ScrollbarState, point: Point) -> Part
 {
     let Ok(g) = geometry(state)
     else
     {
-        return 0;
+        return Part::None;
     };
-    if state.active == 0 || state.maximum == 0 || !state.bounds.contains(point)
+    if !state.active || state.maximum == 0 || !state.bounds.contains(point)
     {
-        return 0;
+        return Part::None;
     }
     let along = if g.horizontal { point.h } else { point.v };
     let first_end = if g.horizontal { g.first.right } else { g.first.bottom };
     // Original TestControl includes the first track shadow strip in the arrow.
     if along <= first_end
     {
-        return SCROLL_UP;
+        return Part::Up;
     }
     if g.last.contains(point)
     {
-        return SCROLL_DOWN;
+        return Part::Down;
     }
     let mut inner = g.thumb;
     if g.horizontal
@@ -100,7 +101,7 @@ pub fn hit(state: &ScrollbarState, point: Point) -> i16
     }
     if inner.contains(point)
     {
-        return SCROLL_THUMB;
+        return Part::Thumb;
     }
     let middle = if g.horizontal
     {
@@ -110,11 +111,11 @@ pub fn hit(state: &ScrollbarState, point: Point) -> i16
     {
         (g.thumb.top as i32 + g.thumb.bottom as i32) / 2
     };
-    if (along as i32) < middle { SCROLL_PAGE_UP } else { SCROLL_PAGE_DOWN }
+    if (along as i32) < middle { Part::PageUp } else { Part::PageDown }
 }
 /// Return a value for relative thumb movement, retaining the mouse-down grab
 /// offset and initial value. This neither draws nor modifies the control.
-pub fn track_value(state: &ScrollbarState, anchor: Point, point: Point) -> Result<i16, Status>
+pub fn track_value(state: &ScrollbarState, anchor: Point, point: Point) -> Result<i16>
 {
     let g = geometry(state)?;
     let travel = if g.horizontal
@@ -125,7 +126,7 @@ pub fn track_value(state: &ScrollbarState, anchor: Point, point: Point) -> Resul
     {
         g.track.bottom as i32 - g.track.top as i32 - (g.thumb.bottom as i32 - g.thumb.top as i32)
     };
-    if travel <= 0 || state.active == 0 || state.maximum == 0
+    if travel <= 0 || !state.active || state.maximum == 0
     {
         return Ok(state.value);
     }
@@ -143,10 +144,11 @@ pub fn track_value(state: &ScrollbarState, anchor: Point, point: Point) -> Resul
 
 /// Draw the resource's complete scrollbar at window-local bounds. The supplied
 /// surface connection applies the caller's origin and clipping on every span.
-pub fn draw(canvas: &mut SurfacePort<'_>, state: &ScrollbarState) -> mac_traps::Result<()>
+pub fn draw(canvas: &mut SurfacePort<'_>, state: &ScrollbarState, theme: mac_definition::Theme)
+            -> mac_traps::Result<()>
 {
-    let g = geometry(state).map_err(mac_traps::Error::from_status)?;
-    let active = state.active != 0 && state.maximum > 0;
+    let g = geometry(state)?;
+    let active = state.active && state.maximum > 0;
     let thickness = if g.horizontal
     {
         state.bounds.bottom - state.bounds.top
@@ -155,9 +157,10 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ScrollbarState) -> mac_traps::
     {
         state.bounds.right - state.bounds.left
     };
+    let colors = theme.scrollbar.sprite_palette();
     let base = (thickness as usize - 15) * 16 + usize::from(g.horizontal) * 8;
-    canvas.paint_rect(state.bounds, 0xf3f3f3)?;
-    canvas.frame_rect(state.bounds, 0)?;
+    canvas.paint_rect(state.bounds, theme.scrollbar.face_light)?;
+    canvas.frame_rect(state.bounds, theme.scrollbar.ink)?;
     if active
     {
         let r = if g.horizontal
@@ -168,13 +171,16 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ScrollbarState) -> mac_traps::
         {
             Rect::new(g.track.left + 1, g.track.top, g.track.right - 1, g.track.bottom)
         };
-        canvas.fill_rect(r, [0x88, 0x22, 0x88, 0x22, 0x88, 0x22, 0x88, 0x22], 0x969696, 0xe7e7e7)?;
+        canvas.fill_rect(r,
+                         [0x88, 0x22, 0x88, 0x22, 0x88, 0x22, 0x88, 0x22],
+                         theme.scrollbar.gray_mid,
+                         theme.scrollbar.gray_light)?;
     }
     let first = if !active
     {
         2
     }
-    else if state.highlighted == SCROLL_UP
+    else if state.highlighted == Part::Up
     {
         4
     }
@@ -186,7 +192,7 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ScrollbarState) -> mac_traps::
     {
         3
     }
-    else if state.highlighted == SCROLL_DOWN
+    else if state.highlighted == Part::Down
     {
         5
     }
@@ -194,20 +200,21 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ScrollbarState) -> mac_traps::
     {
         1
     };
-    sprite(canvas, g.first, SPRITES[base + first], thickness)?;
-    sprite(canvas, g.last, SPRITES[base + last], thickness)?;
+    sprite(canvas, g.first, SPRITES[base + first], thickness, &colors)?;
+    sprite(canvas, g.last, SPRITES[base + last], thickness, &colors)?;
     if active
        && (if g.horizontal { g.thumb.right - g.thumb.left } else { g.thumb.bottom - g.thumb.top })
           == thickness
     {
         sprite(canvas,
                g.thumb,
-               SPRITES[base + if state.highlighted == SCROLL_THUMB { 7 } else { 6 }],
-               thickness)?;
+               SPRITES[base + if state.highlighted == Part::Thumb { 7 } else { 6 }],
+               thickness,
+               &colors)?;
     }
     Ok(())
 }
-fn sprite(canvas: &mut SurfacePort<'_>, bounds: Rect, data: &[u8], size: i16)
+fn sprite(canvas: &mut SurfacePort<'_>, bounds: Rect, data: &[u8], size: i16, colors: &[u32; 11])
           -> mac_traps::Result<()>
 {
     for row in 0..size
@@ -225,93 +232,42 @@ fn sprite(canvas: &mut SurfacePort<'_>, bounds: Rect, data: &[u8], size: i16)
                                         bounds.top + row,
                                         bounds.left + end,
                                         bounds.top + row + 1),
-                              COLORS[(color - b'A') as usize])?;
+                              colors[(color - b'A') as usize])?;
             x = end;
         }
     }
     Ok(())
 }
 /// # Safety
-/// The caller supplies live native state and an exclusive surface for drawing.
-pub unsafe extern "C" fn scrollbar_definition(pointer: *mut DefinitionCall) -> i64
+fn handle<'a>(message: Message<'a, ScrollbarState>, services: Services<'a>) -> Result<Reply>
 {
-    let Some(call) = (unsafe { pointer.as_mut() })
-    else
+    match message
     {
-        return BAD_ARGUMENT as i64;
-    };
-    if !call.header.supports::<DefinitionCall>()
-    {
-        return BAD_ABI as i64;
-    }
-    if call.kind != CDEF || call.id != 1 || call.variation != 0
-    {
-        return NOT_SUPPORTED as i64;
-    }
-    let Some(state) = (unsafe { call.object.cast::<ScrollbarState>().as_ref() })
-    else
-    {
-        return BAD_ARGUMENT as i64;
-    };
-    match call.message
-    {
-        0 =>
+        Message::Draw { state,
+                        mut port } => draw(&mut port, &state, services.theme()?)?,
+        Message::HitTest { state,
+                           point } => return Ok(Reply::Hit(hit(&state, point))),
+        Message::Track { state,
+                         anchor,
+                         point } =>
         {
-            let Some(surface) = (unsafe { call.surface.as_mut() })
-            else
-            {
-                return BAD_ARGUMENT as i64;
-            };
-            let connection = unsafe { mac_traps::SurfaceConnection::new(surface, call.gate) };
-            draw(&mut SurfacePort::new(connection), state).map_or_else(|error| {
-                                                                           error.status() as i64
-                                                                       },
-                                                                       |_| 0)
+            return Ok(Reply::Value(track_value(&state, anchor, point)? as u16));
         }
-        1 =>
+        Message::Validate(state) =>
         {
-            let bits = call.param as u32;
-            hit(state,
-                Point { h: bits as i16,
-                        v: (bits >> 16) as i16 }) as i64
+            geometry(&state)?;
         }
-        2 =>
+        Message::Initialize(_) | Message::Dispose(_) => (),
+        Message::CalculateRegions(_) | Message::ChangeBounds { .. } =>
         {
-            let bits = call.param as u64;
-            let point = Point { h: bits as i16,
-                                v: (bits >> 16) as i16 };
-            let anchor = Point { h: (bits >> 32) as i16,
-                                 v: (bits >> 48) as i16 };
-            track_value(state, anchor, point).map_or_else(|status| status as i64,
-                                                          |value| value as i64)
+            return Err(Error::NotSupported);
         }
-        3..=4 => 0,
-        mac_abi::controls::VALIDATE_DEFINITION => geometry(state).map_or_else(|e| e as i64, |_| 0),
-        _ => NOT_SUPPORTED as i64
     }
+    Ok(Reply::Done)
 }
-/// # Safety
-/// System supplies a live native definition call and exclusive borrowed state/surface.
-#[cfg(target_arch = "riscv64")]
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(call: *mut DefinitionCall) -> i64
-{
-    unsafe { scrollbar_definition(call) }
-}
-#[cfg(target_arch = "riscv64")]
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo<'_>) -> !
-{
-    loop
-    {
-        core::hint::spin_loop();
-    }
-}
+mac_definition::define_scrollbar!(scrollbar_definition, handle);
 // BEGIN GENERATED BOUNDED SCROLLBAR ASSETS
 // Generated by scripts/extract_scrollbar_assets.py from original System7.6.1.
-const COLORS: [u32; 11] = [0x000000, 0x545487, 0x777777, 0x8787b3, 0x969696, 0xb3b3da, 0xc0c0c0,
-                           0xdadaff, 0xe7e7e7, 0xf3f3f3, 0xffffff];
 const SPRITES: [&[u8];32] = [
     b"AAAAAAAAAAAAAAAAKKKKKKKKKKKKEAAKIIIIIIIIIIIEAAKIIIIIBIIIIIEAAKIIIIBBIIIIIEAAKIIIBFFBIIIIEAAKIIBFFFFBIIIEAAKBBBBFFBBBBIEAAKIIIBFFBIIIIEAAKIIIBFFBIIIIEAAKIIIBFFBIIIIEAAKIIIBBBBIIIIEAAKIIIIIIIIIIIEAAEEEEEEEEEEEEEAAAAAAAAAAAAAAAA", // 15_v_first_active
     b"AAAAAAAAAAAAAAAAKKKKKKKKKKKKEAAKIIIIIIIIIIIEAAKIIIBBBBIIIIEAAKIIIBFFBIIIIEAAKIIIBFFBIIIIEAAKIIIBFFBIIIIEAAKBBBBFFBBBBIEAAKIIBFFFFBIIIEAAKIIIBFFBIIIIEAAKIIIIBBIIIIIEAAKIIIIIBIIIIIEAAKIIIIIIIIIIIEAAEEEEEEEEEEEEEAAAAAAAAAAAAAAAA", // 15_v_last_active
@@ -352,16 +308,12 @@ const SPRITES: [&[u8];32] = [
 mod tests
 {
     use super::*;
-    unsafe extern "C" fn unused_gate(_: u32, _: *mut (), _: usize) -> i64
-    {
-        NOT_SUPPORTED as i64
-    }
     #[test]
     fn original_thumb_positions_geometry_and_interior_hit_parts()
     {
         let mut state = ScrollbarState { bounds: Rect::new(400, 100, 416, 280),
                                          maximum: 100,
-                                         active: 1,
+                                         active: true,
                                          ..Default::default() };
         for (value, start) in [(0, 116), (50, 182), (100, 248)]
         {
@@ -373,11 +325,11 @@ mod tests
             assert_eq!(hit(&state,
                            Point { h: 408,
                                    v: start + 8 }),
-                       SCROLL_THUMB);
+                       Part::Thumb);
         }
         state.value = 50;
         for (v, part) in
-            [(108, SCROLL_UP), (272, SCROLL_DOWN), (150, SCROLL_PAGE_UP), (220, SCROLL_PAGE_DOWN)]
+            [(108, Part::Up), (272, Part::Down), (150, Part::PageUp), (220, Part::PageDown)]
         {
             assert_eq!(hit(&state,
                            Point { h: 408,
@@ -387,28 +339,28 @@ mod tests
         assert_eq!(hit(&state,
                        Point { h: 399,
                                v: 190 }),
-                   0);
-        state.active = 0;
+                   Part::None);
+        state.active = false;
         assert_eq!(hit(&state,
                        Point { h: 408,
                                v: 190 }),
-                   0);
-        state.active = 1;
+                   Part::None);
+        state.active = true;
         state.value = 0;
         state.maximum = 0;
         assert_eq!(hit(&state,
                        Point { h: 408,
                                v: 108 }),
-                   0);
+                   Part::None);
         state.bounds = Rect::new(100, 280, 380, 295);
         state.maximum = 100;
         state.value = 50;
         assert_eq!(geometry(&state).unwrap().thumb, Rect::new(232, 280, 247, 295));
         state.value = 101;
-        assert_eq!(geometry(&state).unwrap_err(), BAD_ARGUMENT);
+        assert_eq!(geometry(&state).unwrap_err(), Error::BadArgument);
         state.value = 0;
         state.bounds = Rect::new(100, 100, 114, 280);
-        assert_eq!(geometry(&state).unwrap_err(), NOT_SUPPORTED);
+        assert_eq!(geometry(&state).unwrap_err(), Error::NotSupported);
     }
     #[test]
     fn thumb_tracking_keeps_grab_offset_and_clamps_at_extremes()
@@ -416,7 +368,7 @@ mod tests
         let mut state = ScrollbarState { bounds: Rect::new(400, 100, 416, 280),
                                          value: 17,
                                          maximum: 100,
-                                         active: 1,
+                                         active: true,
                                          ..Default::default() };
         let anchor = Point { h: 402,
                              v: 150 };
@@ -449,43 +401,11 @@ mod tests
                                Point { h: 266,
                                        v: 310 }).unwrap(),
                    75);
-        state.active = 0;
+        state.active = false;
         assert_eq!(track_value(&state,
                                anchor,
                                Point { h: 300,
                                        v: 300 }).unwrap(),
                    25);
-    }
-
-    #[test]
-    fn definition_protocol_rejects_bad_abi_identity_and_borrows()
-    {
-        let mut state = ScrollbarState { bounds: Rect::new(0, 0, 16, 180),
-                                         maximum: 100,
-                                         active: 1,
-                                         ..Default::default() };
-        let mut call = DefinitionCall { header:    Header::for_type::<DefinitionCall>(),
-                                        kind:      CDEF,
-                                        id:        1,
-                                        variation: 0,
-                                        message:   1,
-                                        reserved:  0,
-                                        param:     (8 << 16) | 8,
-                                        object:    (&mut state as *mut ScrollbarState).cast(),
-                                        gate:      unused_gate,
-                                        surface:   core::ptr::null_mut() };
-        assert_eq!(unsafe { scrollbar_definition(&mut call) }, SCROLL_UP as i64);
-        call.message = 0;
-        assert_eq!(unsafe { scrollbar_definition(&mut call) }, BAD_ARGUMENT as i64);
-        call.message = 99;
-        assert_eq!(unsafe { scrollbar_definition(&mut call) }, NOT_SUPPORTED as i64);
-        call.message = 1;
-        call.object = core::ptr::null_mut();
-        assert_eq!(unsafe { scrollbar_definition(&mut call) }, BAD_ARGUMENT as i64);
-        call.id = 0;
-        assert_eq!(unsafe { scrollbar_definition(&mut call) }, NOT_SUPPORTED as i64);
-        call.header.version = 0;
-        assert_eq!(unsafe { scrollbar_definition(&mut call) }, BAD_ABI as i64);
-        assert_eq!(unsafe { scrollbar_definition(core::ptr::null_mut()) }, BAD_ARGUMENT as i64);
     }
 }

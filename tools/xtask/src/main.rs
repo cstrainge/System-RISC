@@ -13,19 +13,20 @@ use std::{env,
 use mac_build::{Result, error, package};
 use serde_json::{Value, json};
 
-const TARGET: &str = "riscv64imac-unknown-none-elf";
 
 struct Workspace
 {
     root:     PathBuf,
     repo:     PathBuf,
     build:    PathBuf,
-    checking: bool
+    checking: bool,
+    platform: mac_build::platform::Platform
 }
 
 impl Workspace
 {
-    fn new(build: Option<PathBuf>, checking: bool) -> Result<Self>
+    fn new(build: Option<PathBuf>, checking: bool, platform: mac_build::platform::Platform)
+           -> Result<Self>
     {
         let root =
             Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
@@ -48,13 +49,15 @@ impl Workspace
         Ok(Self { root,
                   repo,
                   build,
-                  checking })
+                  checking,
+                  platform })
     }
 
     fn command(&self, program: impl AsRef<OsStr>) -> Command
     {
         let mut command = Command::new(program);
         command.env(mac_build::paths::BUILD_DIR_ENV, &self.build);
+        command.env(mac_build::platform::PLATFORM_ENV, &self.platform.name);
         command
     }
 
@@ -74,7 +77,8 @@ impl Workspace
     fn guest_build(&self, packages: &[&str]) -> Result<()>
     {
         let mut command = self.cargo();
-        command.args(["build", "--locked", "--release", "--target", TARGET, "--target-dir"])
+        command.args(["build", "--locked", "--release", "--target", &self.platform.rust_target,
+                      "--target-dir"])
                .arg(self.build.join("target"));
         for package in packages
         {
@@ -105,7 +109,7 @@ impl Workspace
         {
             command.args(["--features", "text-edit/input-trace"]);
         }
-        mac_build::platform::configure(&mut command);
+        mac_build::platform::configure_for(&self.platform, &mut command);
         run(&mut command)
     }
 
@@ -138,7 +142,7 @@ impl Workspace
             let report = package::build(&self.root.join(directory).join("resources.json"),
                                         &self.build
                                              .join("target")
-                                             .join(TARGET)
+                                             .join(&self.platform.rust_target)
                                              .join("release")
                                              .join(binary),
                                         &self.build.join("dist"))?;
@@ -159,7 +163,7 @@ impl Workspace
                 }
             }
         }
-        let report = json!({"target": TARGET, "guest_profile": "release", "build_dir": self.build, "toolchain": {"cargo": output(self.cargo().arg("--version"))?, "rustc": output(Command::new("rustc").arg("--version"))?}, "packages": reports});
+        let report = json!({"platform": self.platform.name, "target": &self.platform.rust_target, "guest_profile": "release", "build_dir": self.build, "toolchain": {"cargo": output(self.cargo().arg("--version"))?, "rustc": output(Command::new("rustc").arg("--version"))?}, "packages": reports});
         write_json(&self.build.join("dist/build.json"), &report)?;
         Ok(reports)
     }
@@ -219,7 +223,7 @@ impl Workspace
                      "processes", "application_ui", "retained_update", "event_latency",
                      "cursor_graphical", "busy_cursor", "panic_graphical", "finder_selection",
                      "transfer_incident", "remote_get_info", "finder_drag", "finder_layout",
-                     "reactor_ui"]
+                     "reactor_ui", "definition_binding"]
         {
             self.private_guest_test(test)?;
         }
@@ -323,7 +327,7 @@ impl Workspace
                                                                  .join("results/system7/\
                                                                         panic-checks.json"))?)?;
         let report = json!({
-            "target": TARGET, "host_tests": "passed", "driver_modules": drivers, "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"processes":processes,"application_ui":application_ui,"retained_update":retained_update,"event_latency":event_latency,"cursors":cursors,"panics":panics,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
+            "platform": self.platform.name, "target": &self.platform.rust_target, "host_tests": "passed", "driver_modules": drivers, "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"processes":processes,"application_ui":application_ui,"retained_update":retained_update,"event_latency":event_latency,"cursors":cursors,"panics":panics,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
             "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS-B, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, resource menus/alerts, captured Event/Scrap and monochrome TextEdit services with Finder exercisers, shared native HFS-B read/write services with UTF-8 names and microsecond dates, unchanged classic HFS exchange access, and read-only resource-fork inspection. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
         });
         let mut report = report;
@@ -392,10 +396,20 @@ fn execute() -> Result<()>
 {
     let mut args = Vec::new();
     let mut build = None;
+    let mut platform = None;
     let mut input = env::args().skip(1);
     while let Some(arg) = input.next()
     {
-        if arg == "--build-dir"
+        if arg == "--platform"
+        {
+            if platform.is_some()
+            {
+                return Err(error("--platform may only be supplied once"));
+            }
+            platform = Some(input.next()
+                                 .ok_or_else(|| error("--platform needs a known platform name"))?);
+        }
+        else if arg == "--build-dir"
         {
             if build.is_some()
             {
@@ -412,7 +426,9 @@ fn execute() -> Result<()>
     }
     let checking =
         args.first().is_some_and(|s| matches!(s.as_str(), "check" | "test" | "boot-check"));
-    let workspace = Workspace::new(build, checking)?;
+    let name = platform.or_else(|| env::var(mac_build::platform::PLATFORM_ENV).ok())
+                       .unwrap_or_else(|| mac_build::platform::DEFAULT_PLATFORM.into());
+    let workspace = Workspace::new(build, checking, mac_build::platform::load(&name)?)?;
     let lease = if args.first().is_some_and(|s| {
                                    matches!(s.as_str(),
                                             "build"
@@ -514,6 +530,7 @@ fn help()
               FILE   Validate a native MacBinary file\n  cargo xtask package MANIFEST ELF OUT  \
               Package a native application\n  cargo xtask check          Host, disk, ABI, ROM \
               boot and graphical desktop checks");
+    println!("\n  --platform NAME           Select a known platform (default QemuRISC-V)");
     println!("\n  --build-dir DIRECTORY     Override all build/media output (also \
               SYSTEM7_BUILD_DIR)\n  check defaults to build/system7/check; normal builds use \
               build/system7");

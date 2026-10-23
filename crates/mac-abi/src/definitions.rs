@@ -108,3 +108,27 @@ impl ControlDefinitionState
         state
     }
 }
+
+/// Allocation-free definition fault report. The System supplies the current
+/// invocation identity; the reporting code cannot select another definition.
+#[repr(C)]
+pub struct DefinitionPanic
+{
+    pub length:  u32,
+    pub flags:   u32,
+    pub message: [u8; 1024]
+}
+impl DefinitionPanic
+{
+    pub const FORMAT_FAILED: u32 = 2;
+    pub const TRUNCATED: u32 = 1;
+}
+impl Default for DefinitionPanic
+{
+    fn default() -> Self
+    {
+        Self { length:  0,
+               flags:   0,
+               message: [0; 1024] }
+    }
+}

@@ -351,6 +351,16 @@ name = "mac-code-resource"
 version = "0.1.0"
 
 [[package]]
+name = "mac-definition"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
+ "toolbox-controls",
+ "toolbox-quickdraw",
+]
+
+[[package]]
 name = "mac-device-interface"
 version = "0.1.0"
 dependencies = [
@@ -490,6 +500,7 @@ dependencies = [
  "mac-abi",
  "mac-boot-screen",
  "mac-build",
+ "mac-definition",
  "mac-device-interface",
  "mac-file-source-interface",
  "mac-file-types",
@@ -598,6 +609,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-build",
+ "mac-definition",
  "mac-traps",
  "toolbox-quickdraw",
 ]
@@ -608,6 +620,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-build",
+ "mac-definition",
  "mac-traps",
  "toolbox-quickdraw",
 ]
@@ -618,6 +631,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-build",
+ "mac-definition",
  "mac-traps",
  "toolbox-quickdraw",
 ]
@@ -628,6 +642,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-build",
+ "mac-definition",
  "mac-traps",
  "toolbox-quickdraw",
 ]
@@ -636,10 +651,8 @@ dependencies = [
 name = "native-static-text-cdef"
 version = "0.1.0"
 dependencies = [
- "mac-abi",
  "mac-build",
- "mac-traps",
- "toolbox-quickdraw",
+ "mac-definition",
 ]
 
 [[package]]
@@ -648,6 +661,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-build",
+ "mac-definition",
  "mac-traps",
  "toolbox-quickdraw",
 ]

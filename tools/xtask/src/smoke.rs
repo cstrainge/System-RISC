@@ -9,7 +9,7 @@ use mac_formats::{macbinary,
                   resource};
 use serde_json::{Value, json};
 
-use crate::{TARGET, Workspace, output, run};
+use crate::{Workspace, output, run};
 
 pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
 {
@@ -36,12 +36,16 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
         fs::write(out.join(format!("{name}.raw")), memory)?;
     }
     run(workspace.cargo()
-                 .args(["build", "--locked", "--release", "--target", TARGET, "--target-dir"])
+                 .args(["build", "--locked", "--release", "--target",
+                        &workspace.platform.rust_target, "--target-dir"])
                  .arg(workspace.build.join("target"))
                  .args(["--package", "abi-smoke"])
                  .env("SYSTEM7_SYSTEM_ENTRY", reports[0]["entry"].as_u64().unwrap().to_string())
                  .env("SYSTEM7_FINDER_ENTRY", reports[1]["entry"].as_u64().unwrap().to_string()))?;
-    let kernel = workspace.build.join("target").join(TARGET).join("release/abi-smoke");
+    let kernel = workspace.build
+                          .join("target")
+                          .join(&workspace.platform.rust_target)
+                          .join("release/abi-smoke");
     let serial = out.join("serial.log");
     let stderr = out.join("qemu.log");
     File::create(&serial)?;
@@ -49,7 +53,7 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
     command.args(["-machine",
                   "virt",
                   "-cpu",
-                  mac_build::platform::current().qemu_cpu.as_str(),
+                  workspace.platform.qemu_cpu.as_str(),
                   "-m",
                   "128M",
                   "-smp",

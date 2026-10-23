@@ -53,3 +53,28 @@ panic probe must produce a System report and a contained refusal/quarantine or
 an observable shutdown; a timeout or silent hang is failure. Panic containment
 is not inferred from a host catch_unwind test. Keep original-system pixel and
 interaction reference provenance when migrating the remaining families.
+
+
+The current control migration includes every shipped CDEF family: buttons,
+checkboxes/radios, scrollbars, progress bars and static text. They use shared
+mac-definition codecs, native borrowed values, exhaustive Message dispatch,
+typed Reply results and generated entry/panic scaffolding. The binding rejects
+wrong reply kinds instead of reinterpreting them as success. Standard-control
+geometry/drawing/tracking math remains in each resource. Theme snapshots now
+provide the control/progress roles and named scrollbar sprite shades; the
+original masks retain their recorded reference provenance.
+
+WDEF/MDEF use the same platform-owned panic scaffold and host invocation scope;
+their state/message author interfaces still require migration. Do not describe
+the control landing as completion of every definition-family interface.
+
+For the current abort-only privileged context, the native panic path formats a
+bounded UTF-8 diagnostic (with explicit truncation/format-failure flags), names
+the host-owned active resource and shuts down. It does not borrow Desktop,
+allocate, unwind arbitrary privileged frames or pretend the invocation recovered.
+The current board's failure register is generated into Rust constants and linker
+symbols from platforms/QemuRISC-V.json. Device provenance is
+[QEMU virt's map](https://github.com/qemu/qemu/blob/v10.1.0/hw/riscv/virt.c),
+[finisher constants](https://github.com/qemu/qemu/blob/v10.1.0/include/hw/misc/sifive_test.h)
+and [shutdown behavior](https://github.com/qemu/qemu/blob/v10.1.0/hw/misc/sifive_test.c).
+The broader JSON memory-map/DTB/BootInfo migration remains the page-layer gate.

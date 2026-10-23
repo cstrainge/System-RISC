@@ -107,18 +107,20 @@ impl Drop for TrapScope<'_>
 #[cfg(target_arch = "riscv64")]
 pub struct ThreadContext
 {
-    app:       core::sync::atomic::AtomicU64,
-    thread:    core::sync::atomic::AtomicU64,
-    pub traps: ThreadTrapState
+    app:             core::sync::atomic::AtomicU64,
+    thread:          core::sync::atomic::AtomicU64,
+    pub traps:       ThreadTrapState,
+    pub definitions: DefinitionInvocations
 }
 #[cfg(target_arch = "riscv64")]
 impl ThreadContext
 {
     pub const fn new() -> Self
     {
-        Self { app:    core::sync::atomic::AtomicU64::new(0),
-               thread: core::sync::atomic::AtomicU64::new(1),
-               traps:  ThreadTrapState::new() }
+        Self { app:         core::sync::atomic::AtomicU64::new(0),
+               thread:      core::sync::atomic::AtomicU64::new(1),
+               traps:       ThreadTrapState::new(),
+               definitions: DefinitionInvocations::new() }
     }
 
     pub fn identity(&self) -> ExecutionContext
@@ -176,5 +178,77 @@ mod tests
         assert_eq!(state.take_deferred(), None);
         drop(outer);
         assert_eq!(state.defer(19), Err(mac_abi::WRONG_THREAD));
+    }
+}
+
+
+/// Diagnostic invocation identity belongs to the scheduled thread, never a hart
+/// global or caller-selected request. This is not the later module resource scope.
+#[cfg(any(target_arch = "riscv64", test))]
+pub struct DefinitionInvocations
+{
+    current: core::sync::atomic::AtomicU64
+}
+#[cfg(any(target_arch = "riscv64", test))]
+impl DefinitionInvocations
+{
+    pub const fn new() -> Self
+    {
+        Self { current: core::sync::atomic::AtomicU64::new(0) }
+    }
+
+    pub fn with<R>(&self, kind: u32, id: i16, operation: impl FnOnce() -> R) -> R
+    {
+        let _scope = self.enter(kind, id);
+        operation()
+    }
+
+    fn enter(&self, kind: u32, id: i16) -> DefinitionScope<'_>
+    {
+        let identity = (u64::from(kind) << 16) | u64::from(id as u16);
+        assert_ne!(kind, 0, "definition family must be named");
+        let previous = self.current.swap(identity, core::sync::atomic::Ordering::Relaxed);
+        DefinitionScope { state: self,
+                          previous }
+    }
+
+    pub fn current(&self) -> Option<(u32, i16)>
+    {
+        let identity = self.current.load(core::sync::atomic::Ordering::Relaxed);
+        (identity != 0).then_some(((identity >> 16) as u32, identity as i16))
+    }
+}
+#[cfg(any(target_arch = "riscv64", test))]
+struct DefinitionScope<'a>
+{
+    state:    &'a DefinitionInvocations,
+    previous: u64
+}
+#[cfg(any(target_arch = "riscv64", test))]
+impl Drop for DefinitionScope<'_>
+{
+    fn drop(&mut self)
+    {
+        self.state.current.store(self.previous, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+#[cfg(test)]
+mod definition_tests
+{
+    use super::*;
+    #[test]
+    fn nested_definition_scopes_restore_only_their_threads_identity()
+    {
+        let first = DefinitionInvocations::new();
+        let other = DefinitionInvocations::new();
+        assert_eq!(first.current(), None);
+        first.with(mac_abi::definitions::WDEF, 0, || {
+                 first.with(mac_abi::definitions::CDEF, -32759, || {
+                          assert_eq!(first.current(), Some((mac_abi::definitions::CDEF, -32759)));
+                          assert_eq!(other.current(), None);
+                      });
+                 assert_eq!(first.current(), Some((mac_abi::definitions::WDEF, 0)));
+             });
+        assert_eq!(first.current(), None);
     }
 }

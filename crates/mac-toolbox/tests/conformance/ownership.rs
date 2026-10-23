@@ -67,6 +67,15 @@ fn rejected_window(system: &System<'_>, id: WindowId, gate: mac_abi::TrapGate)
 /// real WDEF are available. Memory ownership also has host acceptance coverage.
 pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>
 {
+    let mut failure = mac_abi::definitions::DefinitionPanic::default();
+    assert_eq!(unsafe {
+                   gate(mac_abi::traps::DEFINITION_PANIC,
+                        core::ptr::from_mut(&mut failure).cast(),
+                        core::mem::size_of_val(&failure))
+               },
+               mac_abi::ACCESS_DENIED as i64,
+               "ordinary applications cannot request privileged definition shutdown");
+    system.log("DEFINITION_PANIC_ADMISSION_PASS caller=ordinary-app\n")?;
     let mut memory = mac_abi::memory::MemoryCall { operation: mac_abi::memory::NEW_CLEAR,
                                                    size: 4,
                                                    ..Default::default() };

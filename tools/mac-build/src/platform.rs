@@ -10,27 +10,55 @@ use crate::{Result, error};
 #[serde(deny_unknown_fields)]
 pub struct Platform
 {
-    pub rust_target:  String,
-    pub llvm_profile: String,
-    pub qemu_cpu:     String
+    pub name:           String,
+    pub rust_target:    String,
+    pub llvm_profile:   String,
+    pub qemu_cpu:       String,
+    pub fatal_shutdown: FatalShutdown
+}
+pub const DEFAULT_PLATFORM: &str = "QemuRISC-V";
+pub const PLATFORM_ENV: &str = "SYSTEM7_PLATFORM";
+pub fn load(name: &str) -> Result<Platform>
+{
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(error("platform name must contain only ASCII letters, digits, - or _"));
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../platforms")
+                                                               .join(format!("{name}.json"));
+    let bytes = std::fs::read(&path).map_err(|cause| {
+                                        error(format!("cannot select platform '{name}': {cause}; \
+                                                       known platform: {DEFAULT_PLATFORM}"))
+                                    })?;
+    let platform: Platform =
+        serde_json::from_slice(&bytes).map_err(|cause| {
+                                          error(format!("invalid platform '{name}' at {}: {cause}",
+                                                        path.display()))
+                                      })?;
+    if platform.name != name
+    {
+        return Err(error(format!("platform '{name}' declares a different name '{}'",
+                                 platform.name)));
+    }
+    artifacts_for(&platform.fatal_shutdown)?;
+    Ok(platform)
 }
 static PLATFORM: LazyLock<Platform> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("../../../platforms/riscv64.json")).expect("checked-in \
-                                                                                  RISC-V platform \
-                                                                                  configuration")
+    let name = env::var(PLATFORM_ENV).unwrap_or_else(|_| DEFAULT_PLATFORM.into());
+    load(&name).expect("native platform selection failed")
 });
 pub fn current() -> &'static Platform
 {
     &PLATFORM
 }
-pub fn flags() -> String
-{
-    format!("-C\u{1f}target-feature=+{}", current().llvm_profile)
-}
 /// Guest builds launched outside the workspace still receive the same profile.
 /// Existing flags remain visible; validation below rejects a narrowed or
 /// broadened instruction set rather than silently ignoring caller flags.
 pub fn configure(command: &mut Command)
+{
+    configure_for(current(), command);
+}
+pub fn configure_for(platform: &Platform, command: &mut Command)
 {
     let mut flags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_else(|_| {
                                                            env::var("RUSTFLAGS").unwrap_or_default()
@@ -42,7 +70,8 @@ pub fn configure(command: &mut Command)
     {
         flags.push('\u{1f}');
     }
-    flags.push_str(&self::flags());
+    flags.push_str(&format!("-C\u{1f}target-feature=+{}", platform.llvm_profile));
+    command.env(PLATFORM_ENV, &platform.name);
     command.env("CARGO_ENCODED_RUSTFLAGS", flags);
 }
 fn features(text: &str) -> BTreeSet<&str>
@@ -116,5 +145,90 @@ mod tests
                                                                      .to_string()
                                                                      .contains("native guest \
                                                                                 target must be"));
+    }
+}
+
+
+/// Board failure signal, emitted alongside linker symbols and Rust constants.
+/// General memory-layout/reservation emission follows the page-layer stage.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FatalShutdown
+{
+    mmio_address:  String,
+    failure_value: u32
+}
+pub fn guest_artifacts() -> Result<(String, String)>
+{
+    artifacts_for(&current().fatal_shutdown)
+}
+fn artifacts_for(device: &FatalShutdown) -> Result<(String, String)>
+{
+    let address =
+        device.mmio_address
+              .strip_prefix("0x")
+              .ok_or_else(|| {
+                  error("platform fatal-shutdown MMIO address must use 0x hexadecimal")
+              })?;
+    let address = u64::from_str_radix(address, 16).map_err(|cause| {
+                                                      error(format!("platform fatal-shutdown \
+                                                                     MMIO address '{}': {cause}",
+                                                                    device.mmio_address))
+                                                  })?;
+    if address == 0
+       || address % 4 != 0
+       || address.checked_add(4).is_none()
+       || device.failure_value == 0
+    {
+        return Err(error("platform fatal-shutdown MMIO requires a nonzero aligned u32 register \
+                          and failure value"));
+    }
+    let rust = format!("// Generated from the validated platform definition.\npub const \
+                        FATAL_FINISHER_ADDRESS: u64 = {address};\npub const \
+                        FATAL_FINISHER_FAILURE: u32 = {};\n",
+                       device.failure_value);
+    let linker = format!("\nPROVIDE(__platform_fatal_finisher = \
+                          0x{address:x});\nPROVIDE(__platform_fatal_failure = 0x{:x});\n",
+                         device.failure_value);
+    Ok((rust, linker))
+}
+
+#[cfg(test)]
+mod artifact_tests
+{
+    use super::*;
+    #[test]
+    fn named_platform_generates_one_consistent_device_record_and_rejects_bad_selection()
+    {
+        let platform = load("QemuRISC-V").unwrap();
+        let (rust, linker) = artifacts_for(&platform.fatal_shutdown).unwrap();
+        let address = u64::from_str_radix(platform.fatal_shutdown
+                                                  .mmio_address
+                                                  .trim_start_matches("0x"),
+                                          16).unwrap();
+        assert!(rust.contains(&format!("FATAL_FINISHER_ADDRESS: u64 = {address}")));
+        assert!(linker.contains(&format!("__platform_fatal_finisher = 0x{address:x}")));
+        assert!(rust.contains(&format!("FATAL_FINISHER_FAILURE: u32 = {}",
+                                       platform.fatal_shutdown.failure_value)));
+        assert!(linker.contains(&format!("__platform_fatal_failure = 0x{:x}",
+                                         platform.fatal_shutdown.failure_value)));
+        for name in ["../QemuRISC-V", "QemuRISC-V/other", ""]
+        {
+            assert!(load(name).err().unwrap().to_string().contains("platform name must contain"));
+        }
+        let error = load("NoSuchBoard").err().unwrap().to_string();
+        assert!(error.contains("cannot select platform 'NoSuchBoard'")
+                && error.contains("known platform: QemuRISC-V"));
+        for text in ["0x0", "0x3", "0xffffffffffffffff", "0xgarbage", "1234"]
+        {
+            let bad = FatalShutdown { mmio_address:  text.into(),
+                                      failure_value: 1 };
+            assert!(artifacts_for(&bad).err()
+                                       .unwrap()
+                                       .to_string()
+                                       .contains("platform fatal-shutdown"));
+        }
+        assert!(artifacts_for(&FatalShutdown { mmio_address:  "0x100000".into(),
+                                               failure_value: 0 }).is_err());
     }
 }

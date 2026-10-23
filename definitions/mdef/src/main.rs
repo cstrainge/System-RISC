@@ -318,12 +318,4 @@ pub unsafe extern "C" fn _start(call: *mut DefinitionCall) -> i64
 {
     unsafe { standard_menu_definition(call) }
 }
-#[cfg(target_arch = "riscv64")]
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo<'_>) -> !
-{
-    loop
-    {
-        core::hint::spin_loop()
-    }
-}
+mac_definition::definition_panic_handler!();
