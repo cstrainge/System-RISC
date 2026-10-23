@@ -48,7 +48,6 @@ pub struct Desktop
     text_cursor:                      mac_abi::quickdraw::MonoCursor,
     worlds:                           super::quickdraw::worlds::Worlds,
     classic_font:                     mac_abi::quickdraw::FontSelection,
-    legacy:                           crate::context::LegacyGlobals,
     pub windows:                      WindowManager,
     first_window:                     WindowId,
     events:                           Box<EventManager>,
@@ -284,7 +283,6 @@ impl Desktop
                   text_cursor,
                   worlds: Default::default(),
                   classic_font: Default::default(),
-                  legacy:Default::default(),
                   windows: WindowManager::with_gate(crate::machine::traps::gateway),
                   events: Box::new(EventManager::new()),
                   drag: Default::default(),
@@ -2417,7 +2415,6 @@ impl super::classic::Services for Desktop
             crate::kernel::fonts().ok_or(NOT_SUPPORTED)?
                                   .metrics(fonts_service::selection(selection))?;
             self.classic_font = selection;
-            self.legacy.font = selection;
         }
         Ok(self.classic_font)
     }

@@ -20,8 +20,7 @@ pub(super) struct Saved
     worlds:       crate::toolbox::quickdraw::worlds::Worlds,
     classic_font: mac_abi::quickdraw::FontSelection,
     events:       Box<EventManager>,
-    textedit:     crate::toolbox::textedit::Manager,
-    legacy:       crate::context::LegacyGlobals
+    textedit:     crate::toolbox::textedit::Manager
 }
 impl Saved
 {
@@ -35,8 +34,7 @@ impl Saved
                worlds: Default::default(),
                classic_font: Default::default(),
                events: Box::new(EventManager::new()),
-               textedit: Default::default(),
-               legacy: Default::default() }
+               textedit: Default::default() }
     }
 }
 impl Desktop
@@ -250,7 +248,6 @@ impl Desktop
                 core::mem::swap(&mut self.$field, &mut self.locals[next].$field);
             };
         }
-        swap!(legacy);
         swap!(crash);
         swap!(dialogs);
         swap!(menus);

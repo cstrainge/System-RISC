@@ -89,7 +89,7 @@ The scheduler must supply a trusted execution context at trap entry:
 | --- | --- |
 | `AppId` | Resource chain/current resource file, Memory Manager partition and errors, open-file ownership, events, windows/controls, ports/fonts/text state, callbacks and cleanup |
 | `ThreadId` | OS stack/register state, blocking/wakeup/cancellation, trap depth and callback stack, error state explicitly specified per thread |
-| `LegacyContextId` | Optional cooperative Thread Manager register/stack/A5 state inside one application; never substitutes for ThreadId |
+| Legacy cooperative context (planned) | Optional Thread Manager register/stack/A5 state inside one application; never substitutes for ThreadId |
 | `HartId` | Hardware trap/interrupt stack and current ThreadId pointer; not the identity of an application |
 
 Request payloads cannot impersonate these identities. The scheduler/service gate
@@ -208,12 +208,12 @@ runnable service thread.
 `spin::Once` publishes immutable font/resource catalogs and logging callbacks.
 A one-shot entry guard prevents live manager replacement and races in heap setup.
 
-`context.rs` names AppId, ThreadId and LegacyContextId and provides an owned
-`LegacyGlobals` shape: resource-file selection, graphics port/font, memory and
-resource errors, volume/directory, event mask, A5 world, application zone and scrap
-reference. The native application context now saves these fields with its
-manager state. This does not implement original low-memory addresses or 68k
-Thread Manager save/restore semantics. Only actual system-wide catalogs, device
+`context.rs` carries AppId and ThreadId. Active app-local state is saved by its
+resident managers, including the classic font selection. An earlier unused
+`LegacyGlobals` record and always-empty cooperative-context field were removed:
+copying placeholders was not implementation of low-memory globals or original
+68k Thread Manager save/restore. Those remain required legacy work; add each
+state field with its actual service and ownership contract. Only system-wide catalogs, device
 ownership, compositor state and system configuration stay shared. A global
 current-app variable is prohibited.
 
@@ -277,7 +277,7 @@ resident implementation code.
 
 ## Architecture portability
 
-The scheduler's AppId/ThreadId/LegacyContextId, manager ownership, queues,
+The scheduler's AppId/ThreadId, future legacy-context identity, manager ownership, queues,
 blocking/wakeup semantics and std platform services are architecture-neutral.
 RISC-V is the first live machine. x86 is a future target, not a supported build;
 whether that means x86-64 or 32-bit x86 is an explicit later platform decision.

@@ -1,5 +1,5 @@
-//! Lifetime-domain identity and next-model ledger shapes. Not installed in the
-//! resident managers yet: migration follows the memory/app/resource spec §13.
+//! Lifetime-domain identity, the resident process owner directory, and ledger
+//! metadata. Other managers migrate under memory/app/resource spec §13.
 //! Native/legacy wire projections remain the responsibility of the facility.
 use alloc::vec::Vec;
 use core::{fmt,
