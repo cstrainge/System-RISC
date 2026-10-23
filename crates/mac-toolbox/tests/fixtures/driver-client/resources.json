@@ -4,7 +4,7 @@
   "file_type": "DRVR",
   "creator": "MACS",
   "role": "code_resource",
-  "abi_version": 11,
+  "abi_version": 1,
   "load_base": "0x82000000",
   "load_limit": "0x82100000",
   "description": "Generic module contract conformance fixture",

@@ -28,8 +28,9 @@ fn run(system: &System<'_>) -> Result<(), Error>
     system.log("TEXT_EDIT_READY\n")?;
     loop
     {
-        let (event, position) =
-            system.wait_positioned(mac_toolbox::events::EventMask::ALL, 30)?.into_parts();
+        let (event, position) = system.wait_positioned(mac_toolbox::events::EventMask::ALL,
+                                                       application.wait_ticks())?
+                                      .into_parts();
         if !application.event(system, event, position)?
         {
             return Ok(());

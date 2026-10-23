@@ -43,7 +43,7 @@ fn durable_file_manager_operations_survive_three_actual_disk_boots()
                 if boot == 1 { "FILE_INFO_EDITS_COMMITTED" } else { "FILE_INFO_EDITS_PERSISTED" };
             assert!(serial.contains(marker), "metadata edit/remount evidence missing: {serial}");
         }
-        assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=11"),
+        assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=1"),
                 "actual gate missing: {serial}");
     }
     let acceptance = serde_json::json!({"status":"passed","boots":3,"rename_file_and_folder":"passed","stationery_and_lock_persistence":"passed","exact_physical_fork_sizes":"passed","desktop_comments_persistence":"passed","acceptance":"mac-toolbox/tests/file_write_cases.rs","capture":report,"limits":["read-only volumes rejected","bounded existing catalog/overflow capacity","no power-loss atomicity without journal","Trash name conflicts return ALREADY_EXISTS rather than renaming older original Finder item","locked-item Option override not implemented"]});

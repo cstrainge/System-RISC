@@ -14,6 +14,9 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   Keep validation and clear rebuild/recreate errors for incompatible artifacts.
   Original Macintosh compatibility and external-format support remain explicit
   product requirements; this policy does not remove them.
+- Keep the native development ABI at version 1 until the first proper release.
+  Rebuild System, all apps, drivers, definitions and fixtures together whenever
+  a contract changes; do not increment it for unreleased internal changes.
 - Commit completed, verified milestones with descriptive messages. Do not push
   or publish without an explicit request. Keep generated targets, ROMs, disks,
   private working captures, and unrelated Strange Forth code outside this repo.

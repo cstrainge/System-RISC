@@ -27,7 +27,7 @@ fn resident_textedit_matches_original_text_selection_clipping_caret_and_scroll()
         serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
     assert_eq!(report["original_before"], report["original_after"], "base OS changed");
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
-    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=11"));
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=1"));
     assert!(!serial.contains("TEXTEDIT_PROBE_FAIL"), "{serial}");
     let finder_serial = fs::read_to_string(output.join("finder-vm/serial.log")).unwrap();
     process_trace::launched(&finder_serial, "Text Edit");

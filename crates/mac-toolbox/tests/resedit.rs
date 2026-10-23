@@ -164,7 +164,7 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
                 else {format!("{:08x} {}",0x86800000u64+u64::from(row/2)*6+if row%2==0 {0}else{4},if row%2==0 {"li a0,1"}else{"ret"})}
             }).collect();assert_eq!(actual,expected,"row {start}");
         }
-        let mut loader=Vec::new();code::loader(&a,&source,|line|loader.push(line.to_owned()));assert_eq!(loader.len(),code::HEADER_ROWS as usize);assert!(loader[0].contains("RV64"));assert_eq!(loader[2],"NABI: format 1 role 2 ABI 11");assert_eq!(loader[3],"Load base: 0x86800000");assert_eq!(loader[4],"Load limit: 0x87000000");assert!(loader[5].starts_with("RLOC: 1 patches"));
+        let mut loader=Vec::new();code::loader(&a,&source,|line|loader.push(line.to_owned()));assert_eq!(loader.len(),code::HEADER_ROWS as usize);assert!(loader[0].contains("RV64"));assert_eq!(loader[2],"NABI: format 1 role 2 ABI 1");assert_eq!(loader[3],"Load base: 0x86800000");assert_eq!(loader[4],"Load limit: 0x87000000");assert!(loader[5].starts_with("RLOC: 1 patches"));
         let mut records=Vec::new();code::relocations(a.get(ResourceKey{kind:mac_toolbox::TypeCode::new(*b"RLOC"),id:0}).unwrap().info.length,1,1,|at,out|a.read(ResourceKey{kind:mac_toolbox::TypeCode::new(*b"RLOC"),id:0},at,out),|line|records.push(line.to_owned())).unwrap();assert_eq!(records,["+00000020  64-bit pointer"]);
         assert!(code::Index::build(3,&source.descriptor,|at,out|a.read(ResourceKey{kind:mac_toolbox::TypeCode::new(*b"CODE"),id:i16::MIN},at,out)).is_err());
         for &(kind,_) in mac_code_resource::code_types::STANDARD_CODE_TYPES {

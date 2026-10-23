@@ -26,6 +26,7 @@ pub struct Editor<'a>
     size:             Point,
     tracking:         bool,
     last_mouse:       Point,
+    drag_selection:   (u32, u32),
     ticks:            u32,
     defer_drawing:    bool,
     draw_pending:     bool,
@@ -569,6 +570,30 @@ impl<'a> Editor<'a>
         Ok(true)
     }
 
+    pub fn tracking(&self) -> bool
+    {
+        self.tracking
+    }
+
+    fn track_selection(&mut self, system: &System<'a>, screen: Point, local: Point)
+                       -> Result<(), Error>
+    {
+        if screen == self.last_mouse
+        {
+            return Ok(());
+        }
+        self.last_mouse = screen;
+        let info = system.textedit().click(self.id(), local, true)?;
+        let selection = (info.selection_start, info.selection_end);
+        if selection != self.drag_selection
+        {
+            self.drag_selection = selection;
+            self.draw(system)?;
+            self.report(system)?;
+        }
+        Ok(())
+    }
+
     pub fn event(&mut self, system: &System<'a>, event: &Event, position: PointerPosition)
                  -> Result<bool, Error>
     {
@@ -584,14 +609,27 @@ impl<'a> Editor<'a>
             edit.activate(self.id(), self.active(system))?;
             self.draw(system)?;
         }
-        if matches!(event, Event::Update { .. } | Event::WindowGeometryChanged { .. })
-           && event.window().unwrap_or_default() == self.window
+        if matches!(event, Event::Update { .. }) && event.window() == Some(self.window)
+        {
+            // Model changes already commit their bounded retained pixels.
+            // Exposure needs acknowledgement, not another repaint/Update loop.
+            system.windows().validate(self.window)?;
+            return Ok(true);
+        }
+        if matches!(event, Event::WindowGeometryChanged { .. })
+           && event.window() == Some(self.window)
         {
             self.draw(system)?;
+            system.windows().validate(self.window)?;
             return Ok(true);
         }
         if !self.active(system)
         {
+            #[cfg(feature = "input-trace")]
+            if self.tracking
+            {
+                system.log("TEXTEDIT_DRAG_INACTIVE\n")?;
+            }
             self.tracking = false;
             return Ok(false);
         }
@@ -630,18 +668,28 @@ impl<'a> Editor<'a>
                     }
                 }
                 self.last_mouse = event.input().at;
-                edit.click(self.id(),
-                           position.in_window(self.window)?.point()?,
-                           event.input()
-                                .modifiers
-                                .contains(mac_toolbox::events::Modifiers::SHIFT))?;
+                let info = edit.click(self.id(),
+                                      position.in_window(self.window)?.point()?,
+                                      event.input()
+                                           .modifiers
+                                           .contains(mac_toolbox::events::Modifiers::SHIFT))?;
+                self.drag_selection = (info.selection_start, info.selection_end);
                 self.tracking = true;
+                #[cfg(feature = "input-trace")]
+                system.log("TEXTEDIT_DRAG_BEGIN\n")?;
+                self.report(system)?;
                 self.draw(system)?;
                 Ok(true)
             }
             Event::MouseUp { .. } if self.tracking =>
             {
                 self.tracking = false;
+                self.track_selection(system,
+                                     event.input().at,
+                                     position.in_window(self.window)?.point()?)?;
+                #[cfg(feature = "input-trace")]
+                system.log("TEXTEDIT_DRAG_END\n")?;
+                self.report(system)?;
                 Ok(true)
             }
             // A key release does not change browser policy or the filesystem.
@@ -711,11 +759,11 @@ impl<'a> Editor<'a>
             }
             Event::Idle { .. } =>
             {
-                if self.tracking && event.input().at != self.last_mouse
+                if self.tracking
                 {
-                    edit.click(self.id(), position.in_window(self.window)?.point()?, true)?;
-                    self.last_mouse = event.input().at;
-                    self.draw(system)?;
+                    self.track_selection(system,
+                                         event.input().at,
+                                         position.in_window(self.window)?.point()?)?;
                 }
                 if edit.blink(self.id(), self.window, event.input().when)?
                 {

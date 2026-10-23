@@ -326,3 +326,63 @@ fn row_text_has_native_utf8_and_pascal_traps_and_tracking_uses_cdef()
         assert_eq!(control.set_row(0, "outside", false), Err(Error::BadArgument));
     });
 }
+
+#[test]
+fn row_hit_testing_uses_resident_scroll_position_and_rejects_dead_or_foreign_ids()
+{
+    mac_system::testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let owned =
+            with_owner(7, || system.controls().create_scroll_box(WindowId(0), spec(10)).unwrap());
+        let id = owned.id();
+        let list = owned.control();
+        with_owner(7, || {
+            assert_eq!(list.row_at(Point { h: 10,
+                                           v: 8 })
+                           .unwrap(),
+                       Some(0));
+            assert_eq!(list.row_at(Point { h: 10,
+                                           v: 24 })
+                           .unwrap(),
+                       Some(1));
+            assert_eq!(list.row_at(Point { h: 10,
+                                           v: 56 })
+                           .unwrap(),
+                       None,
+                       "partial trailing row");
+            assert_eq!(list.row_at(Point { h: 108,
+                                           v: 24 })
+                           .unwrap(),
+                       None,
+                       "scrollbar is not a row");
+            list.scroll_to(7).unwrap();
+            assert_eq!(list.row_at(Point { h: 10,
+                                           v: 24 })
+                           .unwrap(),
+                       Some(8));
+            list.configure(spec(1)).unwrap();
+            assert_eq!(list.row_at(Point { h: 10,
+                                           v: 24 })
+                           .unwrap(),
+                       None,
+                       "blank space after last item");
+        });
+        let error = with_owner(8, || {
+            list.row_at(Point { h: 10,
+                                v: 8 })
+                .unwrap_err()
+        });
+        assert_eq!(error, Error::AccessDenied);
+        assert!(error.to_string().contains("protected"));
+        with_owner(7, || drop(owned));
+        with_owner(7, || {
+            let replacement = system.controls().create_scroll_box(WindowId(0), spec(10)).unwrap();
+            assert_ne!(replacement.id(), id);
+            let error = list.row_at(Point { h: 10,
+                                            v: 8 })
+                            .unwrap_err();
+            assert_eq!(error, Error::NotFound);
+            assert!(error.to_string().contains("found"));
+        });
+    });
+}

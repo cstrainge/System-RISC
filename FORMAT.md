@@ -181,7 +181,7 @@ unsafe extern "C" fn(*const SystemServices) -> i32
 ```
 
 An application validates the table before calling the loader-supplied trap gate.
-ABI 11's `SystemServices` is 24 bytes on RV64:
+ABI 1's `SystemServices` is 24 bytes on RV64:
 
 | Offset | Size | Field |
 | --- | --- | --- |
@@ -524,7 +524,7 @@ an exhausted slot is permanently retired rather than wrapped. Existing owner
 checks and Pascal/68k adapter contracts are unchanged. Other resident managers
 must register and adopt this facility when their implementation is next touched.
 
-## Native menu object ownership (ABI 7)
+## Native menu object ownership (development ABI 1)
 
 MenuCall includes a u32 generation-tagged handle after operation. INSTALL returns
 that handle and the resource's semantic menu_id. MenuId is a resource property,
@@ -533,9 +533,9 @@ object before accessing its semantic menu number; stale and foreign handles fail
 FIND resolves a current semantic menu number explicitly, and DISPOSE requires a
 live handle. CLEAR retains generation history. Native owners use these handles;
 classic semantic menu operations continue to use their original resource IDs.
-All native applications, System and definition resources rebuild at ABI 11.
+All native applications, System and definition resources rebuild at ABI 1.
 
-## Native drag transport (ABI 11)
+## Native drag transport (development ABI 1)
 
 Native Event records add a u64 manager payload; the original big-endian
 16-byte EventRecord codec still excludes it. Drag notifications put the complete
@@ -544,7 +544,7 @@ high 32 bits. These IDs must never be truncated into the message field. Message
 high byte selects enter/within/leave/drop/promise/data-ready/finished; tracking
 low bits carry item count and a precomputed intersection of offered types.
 These messages are native service events, not the original Drag Manager callback
-ABI. Rebuild System and every application/definition together at ABI 11.
+ABI. Rebuild System and every application/definition together at ABI 1.
 
 Application-file lifecycle notifications use native OsEvent message prefix
 `0x0c000000` with bit 0 set while the exact file has a running instance. The
@@ -1364,7 +1364,7 @@ removed catalog entry no longer exists. Kernel and SDK ownership lasts through
 acknowledged cleanup, including cancellation and application exit.
 
 
-## Native document delivery and transfers (ABI 11)
+## Native document delivery and transfers (development ABI 1)
 
 Size-distinct `DocumentCall` records use the Process trap. Begin reserves a shared
 generation-tagged batch before declaration I/O. Classic `open` resources supply
@@ -1425,3 +1425,24 @@ installation. The extensionless preference document retains JSON/TEDT metadata.
 Normal release builds omit input/state logging. `text-edit/input-trace` is an
 explicit diagnostic feature; `cargo xtask check` enables it only in private check
 media (alongside resident tracing). Neither diagnostic is required for normal use.
+
+## Native dynamic menu and control presentation
+
+MenuCall carries an inline MenuItemState replacement. Development ABI stays at
+1 until the first proper release. Rebuild System, applications, drivers,
+definitions and guest fixtures together when this record changes. Trap
+boundaries require the current record size. SET_ITEM (9) replaces
+one existing item or appends exactly at count + 1; TRUNCATE (10) only shrinks.
+System validates UTF-8, bounds and the live menu handle, measures a staged state
+through MDEF, then publishes. Failed requests preserve the previous menu.
+
+ControlDefinitionState uses its former reserved i16 as flags. DEFAULT_BUTTON
+(bit 0) is valid only for push buttons. The declared bounds contain the classic
+three-pixel default outline, a white gap, and the button inset four pixels.
+CDEF0 owns drawing and hit geometry; the outline does not activate the button.
+Other flags and use on non-button controls are rejected.
+
+SCROLL_BOX ROW_AT (10) returns the resident row at a window-local point in row,
+or u32::MAX for blank space, partial trailing rows and the scrollbar. It uses
+the current scroll position and the same generation/owner validation as other
+scroll-box operations. It does not invalidate or paint.

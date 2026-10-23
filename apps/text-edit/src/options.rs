@@ -6,10 +6,11 @@ use mac_toolbox::{controls::{Control, StandardKind, StandardState},
                   *};
 
 use crate::{Text, preferences::Settings};
-const ITEMS: usize = 28;
+const ITEMS: usize = 20;
 
 pub struct Options<'a>
 {
+    fonts:      controls::ScrollBox<'a>,
     controls:   [Option<Control<'a>>; ITEMS],
     states:     [StandardState; ITEMS],
     limit:      textedit::Editor<'a>,
@@ -85,9 +86,16 @@ impl<'a> Options<'a>
                 5 => Some(StandardKind::Checkbox),
                 6 => Some(StandardKind::Radio),
                 8 => Some(StandardKind::StaticText),
-                16 if index == 20 => None,
+                16 if index == 12 => None,
+                0 if index == 0 => None,
                 _ => return Err(Error::CorruptData)
             };
+            if index == 19
+            {
+                state.flags = controls::DEFAULT_BUTTON;
+                state.bounds =
+                    Rect::new(bounds.left - 4, bounds.top - 4, bounds.right + 4, bounds.bottom + 4);
+            }
             if let Some(procedure) = procedure
             {
                 controls[index] =
@@ -99,7 +107,16 @@ impl<'a> Options<'a>
         {
             return Err(Error::CorruptData);
         }
-        let rect = states[20].bounds;
+        let bounds = states[0].bounds;
+        let fonts = system.controls().create_scroll_box(window.id(), controls::ScrollBoxSpec {
+            viewport: Rect::new(bounds.left, bounds.top, bounds.right - 16, bounds.bottom),
+            scrollbar: Rect::new(bounds.right - 16, bounds.top, bounds.right, bounds.bottom),
+            count: crate::preferences::FAMILIES.len() as u32,
+            row_height: 20,
+            padding: Point { h: 5, v: 14 },
+            ..Default::default()
+        })?;
+        let rect = states[12].bounds;
         let limit = system.textedit().create_owned(rect, rect)?;
         limit.set_font(quickdraw::fonts::FontSelection { family: 4,
                                                          size:   12,
@@ -115,7 +132,8 @@ impl<'a> Options<'a>
         limit.set_text(value_text.as_str())?;
         limit.select(0, u32::MAX)?;
         limit.activate(true)?;
-        let mut dialog = Self { controls,
+        let mut dialog = Self { fonts,
+                                controls,
                                 states,
                                 limit,
                                 window,
@@ -124,6 +142,7 @@ impl<'a> Options<'a>
                                 mode,
                                 tracking: false,
                                 last_mouse: Point::default() };
+        dialog.fill_fonts(system, dialog.fonts.control().info()?.missing)?;
         dialog.refresh()?;
         dialog.draw(system)?;
         system.select_window(dialog.window.id())?;
@@ -131,28 +150,46 @@ impl<'a> Options<'a>
         Ok(dialog)
     }
 
+    fn fill_fonts(&self, system: &System<'a>, range: core::ops::Range<u32>) -> Result<(), Error>
+    {
+        let list = self.fonts.control();
+        let view = list.info()?;
+        for row in range
+        {
+            if row < view.top || row >= view.top + view.rows()
+            {
+                continue;
+            }
+            let mut bytes = [0; 128];
+            let name = system.resources().application().indexed_string(2005, row, &mut bytes)?;
+            list.set_row(row,
+                         name,
+                         self.font.family == crate::preferences::FAMILIES[row as usize])?;
+        }
+        Ok(())
+    }
+
     fn kind(index: usize) -> StandardKind
     {
         match index
         {
-            0..=14 | 17..=19 => StandardKind::Radio,
-            15 | 16 => StandardKind::Checkbox,
-            26 | 27 => StandardKind::Button,
+            1..=6 | 9..=11 => StandardKind::Radio,
+            7 | 8 => StandardKind::Checkbox,
+            18 | 19 => StandardKind::Button,
             _ => StandardKind::StaticText
         }
     }
 
     fn refresh(&mut self) -> Result<(), Error>
     {
-        for index in 0..20
+        for index in 1..12
         {
             let value = match index
             {
-                0..=8 => self.font.family == crate::preferences::FAMILIES[index],
-                9..=14 => self.font.size == crate::preferences::SIZES[index - 9],
-                15 => self.display.wrap,
-                16 => self.display.line_numbers,
-                17..=19 => self.mode == index - 17,
+                1..=6 => self.font.size == crate::preferences::SIZES[index - 1],
+                7 => self.display.wrap,
+                8 => self.display.line_numbers,
+                9..=11 => self.mode == index - 9,
                 _ => false
             };
             let next = i16::from(value);
@@ -171,7 +208,7 @@ impl<'a> Options<'a>
     fn draw_limit(&self, system: &System<'a>) -> Result<(), Error>
     {
         let port = system.quickdraw().graphics(self.window.id());
-        let bounds = self.states[20].bounds;
+        let bounds = self.states[12].bounds;
         let frame = Rect::new(bounds.left - 2, bounds.top - 2, bounds.right + 2, bounds.bottom + 2);
         let update = port.masked_rectangles(&[frame])?;
         port.reset()?;
@@ -196,9 +233,12 @@ impl<'a> Options<'a>
         {
             control.control().draw()?;
         }
+        self.fonts.control().draw()?;
+        let list = self.states[0].bounds;
+        port.frame_rect(Rect::new(list.left - 1, list.top - 1, list.right + 1, list.bottom + 1))?;
         self.limit.idle(system.events().ticks()?)?;
         self.limit.draw(self.window.id())?;
-        let bounds = self.states[20].bounds;
+        let bounds = self.states[12].bounds;
         port.frame_rect(Rect::new(bounds.left - 2,
                                   bounds.top - 2,
                                   bounds.right + 2,
@@ -258,7 +298,7 @@ impl<'a> Options<'a>
                 let point = position.in_window(self.window.id())?;
                 for index in 0..ITEMS
                 {
-                    if matches!(index, 20..=25)
+                    if matches!(index, 0 | 12..=17)
                     {
                         continue;
                     }
@@ -275,20 +315,38 @@ impl<'a> Options<'a>
                         }
                         match index
                         {
-                            0..=8 => self.font.family = crate::preferences::FAMILIES[index],
-                            9..=14 => self.font.size = crate::preferences::SIZES[index - 9],
-                            15 => self.display.wrap ^= true,
-                            16 => self.display.line_numbers ^= true,
-                            17..=19 => self.mode = index - 17,
-                            26 => return Ok(Outcome::Cancel),
-                            27 => return self.accept(system),
+                            1..=6 => self.font.size = crate::preferences::SIZES[index - 1],
+                            7 => self.display.wrap ^= true,
+                            8 => self.display.line_numbers ^= true,
+                            9..=11 => self.mode = index - 9,
+                            18 => return Ok(Outcome::Cancel),
+                            19 => return self.accept(system),
                             _ => ()
                         }
                         self.refresh()?;
                         return Ok(Outcome::Pending);
                     }
                 }
-                if self.states[20].bounds.contains(point.point()?)
+                let list = self.fonts.control();
+                if let Some(row) = list.row_at(point.point()?)?
+                {
+                    let family = crate::preferences::FAMILIES[row as usize];
+                    if self.font.family != family
+                    {
+                        let old = crate::preferences::FAMILIES.iter()
+                                                              .position(|&f| f == self.font.family);
+                        self.font.family = family;
+                        if let Some(old) = old
+                        {
+                            self.fill_fonts(system, old as u32..old as u32 + 1)?;
+                        }
+                        self.fill_fonts(system, row..row + 1)?;
+                        list.draw()?;
+                    }
+                    return Ok(Outcome::Pending);
+                }
+                list.track(point.point()?, |view| self.fill_fonts(system, view.missing))?;
+                if self.states[12].bounds.contains(point.point()?)
                 {
                     self.limit.click(point.point()?,
                                       event.input().modifiers.contains(events::Modifiers::SHIFT))?;

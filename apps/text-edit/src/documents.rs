@@ -22,6 +22,8 @@ pub(super) struct Application<'a>
     untitled:          u32,
     settings:          preferences::Settings,
     menu_policy:       menus::Policy,
+    windows_dirty:     bool,
+    checked_window:    Option<usize>,
     location:          standard_file::Location
 }
 impl<'a> Application<'a>
@@ -57,7 +59,9 @@ impl<'a> Application<'a>
                              untitled: 0,
                              settings: loaded.unwrap_or_default(),
                              location,
-                             menu_policy: menus::Policy::default() };
+                             menu_policy: menus::Policy::default(),
+                             windows_dirty: true,
+                             checked_window: None };
         app.receive(system)?;
         if app.editors.iter().all(Option::is_none) && app.alert.is_none()
         {
@@ -79,7 +83,7 @@ impl<'a> Application<'a>
 
     fn modal_menus(system: &System<'a>, enabled: bool) -> Result<(), Error>
     {
-        for id in [128, 129, 130, 131, 132]
+        for id in [128, 129, 132, 133]
         {
             system.menus().set_item_enabled(MenuId(id), 0, enabled)?;
         }
@@ -123,6 +127,7 @@ impl<'a> Application<'a>
             editor::Editor::with_font(self.settings.font()).with_options(self.settings.options()?);
         editor.new_document(system, title.as_str())?;
         self.editors[slot] = Some(editor);
+        self.windows_dirty = true;
         self.untitled = number;
         self.update_menus(system, Some(slot))?;
         Ok(slot)
@@ -146,6 +151,7 @@ impl<'a> Application<'a>
             editor::Editor::with_font(self.settings.font()).with_options(self.settings.options()?);
         editor.open_document(system, file)?;
         self.editors[slot] = Some(editor);
+        self.windows_dirty = true;
         self.update_menus(system, Some(slot))?;
         Ok(slot)
     }
@@ -195,6 +201,7 @@ impl<'a> Application<'a>
                     if created & (1 << slot) != 0
                     {
                         *editor = None;
+                        self.windows_dirty = true;
                     }
                 }
                 let name = batch.info(current).ok();
@@ -214,11 +221,12 @@ impl<'a> Application<'a>
     {
         self.editors[slot].as_mut().ok_or(Error::NotFound)?.close(system)?;
         self.editors[slot] = None;
+        self.windows_dirty = true;
         if self.welcome == Some(slot)
         {
             self.welcome = None;
         }
-        Ok(())
+        self.update_front_menus(system)
     }
 
     fn request_close(&mut self, system: &System<'a>, slot: usize) -> Result<(), Error>
@@ -257,6 +265,7 @@ impl<'a> Application<'a>
                                       .save(system, save_as, self.location, &occupied[..count])?;
         if saved
         {
+            self.windows_dirty = true;
             let file = self.editors[slot].as_ref()
                                          .and_then(|editor| editor.document)
                                          .ok_or(Error::BadAbi)?;
@@ -285,46 +294,51 @@ impl<'a> Application<'a>
     fn update_menus(&mut self, system: &System<'a>, slot: Option<usize>) -> Result<(), Error>
     {
         let editor = slot.and_then(|slot| self.editors[slot].as_ref());
-        self.menu_policy.update(system, editor, self.settings.font())
+        self.menu_policy.update(system, editor)?;
+        if self.windows_dirty
+        {
+            let menu = system.menus().find(MenuId(133))?;
+            let mut count = 0;
+            for (index, editor) in self.editors.iter().enumerate()
+            {
+                if let Some(editor) = editor
+                {
+                    let mut title = [0; 256];
+                    count += 1;
+                    menu.set_item(count,
+                                  editor.name(system, &mut title)?,
+                                  u32::from_be_bytes(*b"win0") + index as u32,
+                                  true,
+                                  slot == Some(index))?;
+                }
+            }
+            menu.truncate(count)?;
+            self.windows_dirty = false;
+            self.checked_window = slot;
+        }
+        else if self.checked_window != slot
+        {
+            let menu = system.menus().find(MenuId(133))?;
+            let mut item = 0;
+            for (index, editor) in self.editors.iter().enumerate()
+            {
+                if editor.is_some()
+                {
+                    item += 1;
+                    if self.checked_window == Some(index) || slot == Some(index)
+                    {
+                        menu.set_item_checked(item, slot == Some(index))?;
+                    }
+                }
+            }
+            self.checked_window = slot;
+        }
+        Ok(())
     }
 
-    fn choose_font(&mut self, system: &System<'a>, slot: Option<usize>, command: u32)
-                   -> Result<bool, Error>
+    pub fn wait_ticks(&self) -> u32
     {
-        let bytes = command.to_be_bytes();
-        if !matches!(bytes[0], b'f' | b's') || !bytes[1..].iter().all(u8::is_ascii_digit)
-        {
-            return Ok(false);
-        }
-        let value = i16::from(bytes[1] - b'0') * 100
-                    + i16::from(bytes[2] - b'0') * 10
-                    + i16::from(bytes[3] - b'0');
-        let mut font = slot.and_then(|slot| self.editors[slot].as_ref())
-                           .map_or(self.settings.font(), editor::Editor::font);
-        if bytes[0] == b'f'
-        {
-            font.family = *preferences::FAMILIES.get(value as usize).ok_or(Error::BadArgument)?;
-        }
-        else
-        {
-            if !preferences::SIZES.contains(&value)
-            {
-                return Err(Error::BadArgument);
-            }
-            font.size = value;
-        }
-        system.quickdraw().fonts().metrics(font)?;
-        if let Some(editor) = slot.and_then(|slot| self.editors[slot].as_mut())
-        {
-            editor.set_font(system, font)?;
-        }
-        self.settings = self.settings.with_font(font);
-        self.update_menus(system, slot)?;
-        if let Err(error) = self.settings.save(system)
-        {
-            self.preference_error(system, 8, error)?;
-        }
-        Ok(true)
+        if self.editors.iter().flatten().any(editor::Editor::tracking) { 1 } else { 30 }
     }
 
     pub fn event(&mut self, system: &System<'a>, event: Event<'a>, position: PointerPosition)
@@ -445,6 +459,18 @@ impl<'a> Application<'a>
         let update_policy = !matches!(event, Event::Idle { .. } | Event::KeyUp { .. });
         let keyboard = batch::is_keyboard(&event);
         let result = (|| {
+            if let Some(selection) = selection
+               && selection.menu_id == MenuId(133)
+            {
+                let target = selection.command
+                                      .checked_sub(u32::from_be_bytes(*b"win0"))
+                                      .and_then(|index| self.editors.get(index as usize))
+                                      .and_then(Option::as_ref)
+                                      .ok_or(Error::NotFound)?;
+                system.select_window(target.window)?;
+                self.update_front_menus(system)?;
+                return Ok(true);
+            }
             if command == Some(u32::from_be_bytes(*b"quit"))
             {
                 self.quitting = true;
@@ -497,11 +523,6 @@ impl<'a> Application<'a>
                     self.update_menus(system, Some(slot))?;
                     return Ok(true);
                 }
-            }
-            if let Some(command) = command
-               && self.choose_font(system, slot, command)?
-            {
-                return Ok(true);
             }
             if command == Some(u32::from_be_bytes(*b"clos"))
                || matches!(event, Event::CloseRequested { .. })

@@ -3,7 +3,7 @@
   "file_type": "APPL",
   "creator": "PRTS",
   "role": "application",
-  "abi_version": 11,
+  "abi_version": 1,
   "load_base": "0x86000000",
   "load_limit": "0x87000000",
   "description": "Public Process Manager acceptance fixture",

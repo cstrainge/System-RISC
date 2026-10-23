@@ -36,7 +36,7 @@ fn resource_based_finder_clipboard_matches_original_empty_and_text_pixels()
         serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
     assert_eq!(report["original_before"], report["original_after"], "base OS artifacts changed");
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
-    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=11"));
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=1"));
     assert!(!serial.contains("CLIPBOARD_PROBE_FAIL"), "{serial}");
     for definition in ["CODE_LOADED WDEF0", "CODE_LOADED CDEF1"]
     {

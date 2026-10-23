@@ -38,3 +38,10 @@ Canonical tracking/ownership assertions live in
 disk-booted RV64 tests. Original CDEF pixel/hit fixtures remain the appearance
 oracle. Custom controls, focus traversal and arbitrary action callbacks remain
 separate work; this is not full classic Control Manager parity.
+
+Push buttons may set `StandardState::flags = DEFAULT_BUTTON`. Their declared
+bounds include a four-pixel margin containing the classic default outline;
+CDEF0 draws the outline and excludes it from activation hit testing. The dialog
+controller routes Return to its default action. Other control kinds reject the
+flag. `ScrollBoxRef::row_at` resolves current resident row geometry; blank space,
+partial bottom rows and the scrollbar return `None`, without painting.

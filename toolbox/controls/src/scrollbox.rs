@@ -98,6 +98,18 @@ impl ScrollBoxRef<'_>
         self.call(Call::default())
     }
 
+    /// Hit-test resident row geometry. Blank space, partial rows and the bar
+    /// return None; stale IDs and foreign ownership remain service errors.
+    pub fn row_at(self, point: crate::Point) -> Result<Option<u32>>
+    {
+        let mut call = Call { operation: ROW_AT,
+                              id: self.id.0,
+                              point,
+                              ..Default::default() };
+        self.client.scroll_box(&mut call)?;
+        Ok((call.row != u32::MAX).then_some(call.row))
+    }
+
     pub fn configure(self, spec: ScrollBoxSpec) -> Result<View>
     {
         self.call(Call { operation: CONFIGURE,

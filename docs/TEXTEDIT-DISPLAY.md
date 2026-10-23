@@ -44,8 +44,10 @@ caller to provide a current drawing because the caret's retained state is stale.
 The original `idle` remains a model-only operation. Blink is not a substitute for
 an app drawing its text changes.
 
-Text Edit's resource-defined Options dialog uses managed radio/button/checkbox
-and static-text CDEF objects plus an owned TextEdit for numeric input. Changes
+Text Edit's resource-defined Options dialog uses a managed font list with a
+CDEF scrollbar, size radios, checkboxes, static text and an outlined default OK
+button. Return accepts and Escape cancels. An owned TextEdit handles numeric
+input. View holds display commands; Windows lists and activates open documents. Changes
 apply to the selected document and defaults for new documents. Cancel keeps the
 original settings. Invalid limits use a System alert; persistence errors remain
 visible. Strict preference JSON version2 stores font, size, wrapping, numbers
@@ -84,3 +86,16 @@ are QEMU observations, not fixed-host speed guarantees. The Text Edit viewport
 is larger after removing its footer; whole-frame typing/scroll timing includes
 those additional visible pixels. Trace work counts and exact caret damage are
 the reproducible performance acceptance criteria.
+
+Text Edit acknowledges exposure with Window Manager `validate`: its model
+changes have already committed retained pixels through bounded patches. An
+Update event must not trigger another repaint and leave the same exposure
+pending. Resizing redraws the changed layout and then acknowledges it. Drag
+selection commits the captured release position, preserves the anchor, and
+paints only when the selection changes. Active tracking uses a short scheduler
+wait; ordinary idle waits remain unchanged. Diagnostic drag markers are compiled
+only with `text-edit/input-trace`.
+
+The Options GUI acceptance also covers held, forward/reverse, multiline,
+outside-window and Shift-extended selection, bounded Update/render counts,
+closing the last clean document, the empty Windows menu and reopening a document.

@@ -4,7 +4,7 @@
   "file_type": "APPL",
   "creator": "TEDT",
   "role": "application",
-  "abi_version": 11,
+  "abi_version": 1,
   "load_base": "0x84000000",
   "load_limit": "0x85000000",
   "description": "System RISC Text Edit",
@@ -162,14 +162,14 @@
           "Untitled",
           "",
           "Plain text",
-          "Save changes to “^0” before closing?",
+          "Save changes to \u201c^0\u201d before closing?",
           "Save text as:",
           "Text Edit Preferences",
           "Preferences",
           "Could not load Text Edit preferences.",
           "Could not save Text Edit preferences.",
           "Text Edit Options",
-          "Enter a valid ruler limit (columns 1–65535, pixels 0–32767)."
+          "Enter a valid ruler limit (columns 1\u201365535, pixels 0\u201332767)."
         ]
       }
     },
@@ -205,103 +205,6 @@
       "payload": {
         "format": "hex",
         "hex": "0002000000000094016000a801a004024f4b00000000000c0014002c0034a002000200000000000c004a008801a088025e30"
-      }
-    },
-    {
-      "type": "MENU",
-      "id": 130,
-      "symbol": "FONT_MENU",
-      "payload": {
-        "format": "menu",
-        "title": "Font",
-        "items": [
-          {
-            "text": "Chicago",
-            "command": "f000",
-            "enabled": true
-          },
-          {
-            "text": "New York",
-            "command": "f001",
-            "enabled": true
-          },
-          {
-            "text": "Geneva",
-            "command": "f002",
-            "enabled": true
-          },
-          {
-            "text": "Monaco",
-            "command": "f003",
-            "enabled": true
-          },
-          {
-            "text": "Palatino",
-            "command": "f004",
-            "enabled": true
-          },
-          {
-            "text": "Times",
-            "command": "f005",
-            "enabled": true
-          },
-          {
-            "text": "Helvetica",
-            "command": "f006",
-            "enabled": true
-          },
-          {
-            "text": "Courier",
-            "command": "f007",
-            "enabled": true
-          },
-          {
-            "text": "Symbol",
-            "command": "f008",
-            "enabled": true
-          }
-        ]
-      }
-    },
-    {
-      "type": "MENU",
-      "id": 131,
-      "symbol": "SIZE_MENU",
-      "payload": {
-        "format": "menu",
-        "title": "Size",
-        "items": [
-          {
-            "text": "9",
-            "command": "s009",
-            "enabled": true
-          },
-          {
-            "text": "10",
-            "command": "s010",
-            "enabled": true
-          },
-          {
-            "text": "12",
-            "command": "s012",
-            "enabled": true
-          },
-          {
-            "text": "14",
-            "command": "s014",
-            "enabled": true
-          },
-          {
-            "text": "18",
-            "command": "s018",
-            "enabled": true
-          },
-          {
-            "text": "24",
-            "command": "s024",
-            "enabled": true
-          }
-        ]
       }
     },
     {
@@ -368,7 +271,36 @@
       "name": "Text Edit Options controls",
       "payload": {
         "format": "hex",
-        "hex": "001b00000000002400100036009b06074368696361676f000000000000380010004a009b06084e657720596f726b00000000004c0010005e009b060647656e65766100000000006000100072009b06064d6f6e61636f00000000007400100086009b060850616c6174696e6f0000000000880010009a009b060554696d65730000000000009c001000ae009b060948656c766574696361000000000000b0001000c2009b0607436f7572696572000000000000c4001000d6009b060653796d626f6c00000000002400b4003600f40601390000000000003800b4004a00f40602313000000000004c00b4005e00f40602313200000000006000b4007200f40602313400000000007400b4008600f40602313800000000008800b4009a00f4060232340000000000240112003801e0050a57726170206c696e65730000000000400112005401e0050c4c696e65206e756d6265727300000000006a0112007e01e0060952756c6572206f6666000000000000840112009801e0061052756c657220696e20636f6c756d6e7300000000009e011200b201e0060f52756c657220696e20706978656c73000000000000c0015e00d401ae100000000000000a0010001c00960804466f6e7400000000000a00b4001c00f4080453697a6500000000000a0112001c01e00807446973706c6179000000000000c0011200d4015c08064c696d69743a0000000000f40010010a01e008375468657365206f7074696f6e73206170706c7920746f207468697320646f63756d656e7420616e64206e657720646f63756d656e74732e0000000000011a013401300186040643616e63656c00000000011a019a013001e204024f4b"
+        "hex": "0013000000000024001000d8009e000000000000002400b4003600f40601390000000000003800b4004a00f40602313000000000004c00b4005e00f40602313200000000006000b4007200f40602313400000000007400b4008600f40602313800000000008800b4009a00f4060232340000000000240112003801e0050a57726170206c696e65730000000000400112005401e0050c4c696e65206e756d6265727300000000006a0112007e01e0060952756c6572206f6666000000000000840112009801e0061052756c657220696e20636f6c756d6e7300000000009e011200b201e0060f52756c657220696e20706978656c73000000000000c0015e00d401ae100000000000000a0010001c00960804466f6e7400000000000a00b4001c00f4080453697a6500000000000a0112001c01e00807446973706c6179000000000000c0011200d4015c08064c696d69743a0000000000f40010010a01e008375468657365206f7074696f6e73206170706c7920746f207468697320646f63756d656e7420616e64206e657720646f63756d656e74732e0000000000011a013401300186040643616e63656c00000000011a019a013001e204024f4b"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 133,
+      "symbol": "WINDOWS_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "Windows",
+        "items": []
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 2005,
+      "symbol": "FONT_NAMES",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Chicago",
+          "New York",
+          "Geneva",
+          "Monaco",
+          "Palatino",
+          "Times",
+          "Helvetica",
+          "Courier",
+          "Symbol"
+        ]
       }
     }
   ]

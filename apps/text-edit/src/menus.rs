@@ -9,29 +9,26 @@ pub const CLEAR: u32 = u32::from_be_bytes(*b"cler");
 pub const SELECT_ALL: u32 = u32::from_be_bytes(*b"sela");
 
 
-pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 5], Error>
+pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 4], Error>
 {
     let menus = system.menus();
     menus.clear()?;
     Ok([menus.install_owned(resources::APPLICATION, 128)?,
         menus.install_owned(resources::APPLICATION, 129)?,
-        menus.install_owned(resources::APPLICATION, 130)?,
-        menus.install_owned(resources::APPLICATION, 131)?,
-        menus.install_owned(resources::APPLICATION, 132)?])
+        menus.install_owned(resources::APPLICATION, 132)?,
+        menus.install_owned(resources::APPLICATION, 133)?])
 }
 #[derive(Default)]
 pub struct Policy
 {
     enabled: [Option<bool>; 8],
-    font:    Option<quickdraw::fonts::FontSelection>,
     scrap:   Option<scrap::ScrapInfo>,
     paste:   bool,
     display: Option<textedit::DisplayOptions>
 }
 impl Policy
 {
-    pub fn update<'a>(&mut self, system: &System<'a>, editor: Option<&editor::Editor<'a>>,
-                      default_font: quickdraw::fonts::FontSelection)
+    pub fn update<'a>(&mut self, system: &System<'a>, editor: Option<&editor::Editor<'a>>)
                       -> Result<(), Error>
     {
         let info = editor.map(|editor| editor.info(system)).transpose()?;
@@ -76,27 +73,6 @@ impl Policy
             system.menus().set_item_checked(MenuId(132), 1, display.wrap)?;
             system.menus().set_item_checked(MenuId(132), 2, display.line_numbers)?;
             self.display = Some(display);
-        }
-        let font = editor.map_or(default_font, editor::Editor::font);
-        if self.font != Some(font)
-        {
-            for (at, family) in crate::preferences::FAMILIES.into_iter().enumerate()
-            {
-                let checked = family == font.family;
-                if self.font.is_none_or(|old| (old.family == family) != checked)
-                {
-                    system.menus().set_item_checked(MenuId(130), at as u16 + 1, checked)?;
-                }
-            }
-            for (at, size) in crate::preferences::SIZES.into_iter().enumerate()
-            {
-                let checked = size == font.size;
-                if self.font.is_none_or(|old| (old.size == size) != checked)
-                {
-                    system.menus().set_item_checked(MenuId(131), at as u16 + 1, checked)?;
-                }
-            }
-            self.font = Some(font);
         }
         Ok(())
     }

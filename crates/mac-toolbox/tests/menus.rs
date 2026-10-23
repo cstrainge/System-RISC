@@ -361,3 +361,46 @@ fn owned_resource_menus_reject_stale_foreign_and_cleared_handles()
 }
 #[allow(dead_code)]
 mod conformance;
+
+#[test]
+fn dynamic_document_items_remeasure_and_failed_changes_leave_menu_usable()
+{
+    use mac_toolbox::{Error, MenuId, resources};
+    let fork = include_bytes!("data/original-menus.rsrc");
+    mac_system::testing::menus::with_resources(fork, fork, |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let mut menu = system.menus().install_owned(resources::APPLICATION, 257).unwrap();
+        menu.truncate(0).unwrap();
+        menu.set_item(1, "Untitled", 100, true, true).unwrap();
+        let short = menu.layout().unwrap();
+        menu.set_item(2, "A much longer document name — café", 101, true, false).unwrap();
+        let wide = menu.layout().unwrap();
+        assert!(wide.popup.right - wide.popup.left > short.popup.right - short.popup.left);
+        assert!(wide.popup.bottom > short.popup.bottom);
+        assert_eq!(menu.item_count().unwrap(), 2);
+        assert!(menu.item(1).unwrap().checked);
+        assert_eq!(menu.item(2).unwrap().command, 101);
+        let failure = menu.set_item(4, "Skipped index", 0, true, false).unwrap_err();
+        assert_eq!(failure, Error::BadArgument);
+        assert!(failure.to_string().contains("argument"));
+        assert_eq!(menu.layout().unwrap(), wide);
+        assert_eq!(menu.truncate(3), Err(Error::BadArgument));
+        assert_eq!(menu.item_count().unwrap(), 2);
+        assert_eq!(menu.set_item(2,
+                                 &"x".repeat(mac_toolbox::abi::INLINE_STRING_BYTES + 1),
+                                 0,
+                                 true,
+                                 false),
+                   Err(Error::BadArgument));
+        assert_eq!(menu.item(2).unwrap().command, 101);
+        menu.set_item(1, "Renamed", 100, true, false).unwrap();
+        menu.set_item_checked(2, true).unwrap();
+        assert!(!menu.item(1).unwrap().checked);
+        assert!(menu.item(2).unwrap().checked);
+        menu.truncate(1).unwrap();
+        assert_eq!(menu.item_count().unwrap(), 1);
+        assert_eq!(system.menus().item(MenuId(257), 2), Err(Error::NotFound));
+        menu.dispose().unwrap();
+        assert_eq!(menu.set_item(1, "Stale", 0, true, false), Err(Error::NotFound));
+    });
+}

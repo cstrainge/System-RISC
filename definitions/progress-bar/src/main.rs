@@ -23,7 +23,7 @@ fn interior(state: &ControlDefinitionState) -> Result<Rect, Status>
            && (state.progress.total != 0
                || state.progress.completed != 0
                || state.progress.in_progress != 0))
-       || state.reserved != 0
+       || state.flags != 0
        || state.highlighted != 0
        || state.title_length != 0
     {

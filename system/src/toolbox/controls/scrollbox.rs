@@ -375,6 +375,20 @@ impl Manager
         match call.operation
         {
             CREATE | CONFIGURE | INFO => (),
+            ROW_AT =>
+            {
+                call.row = u32::MAX;
+                if object.spec.viewport.contains(call.point)
+                {
+                    let row = ((i32::from(call.point.v) - i32::from(object.spec.viewport.top))
+                               / i32::from(object.spec.row_height))
+                              as u32;
+                    if row < object.rows() && object.top + row < object.spec.count
+                    {
+                        call.row = object.top + row;
+                    }
+                }
+            }
             INVALIDATE =>
             {
                 let data = writable(object)?;

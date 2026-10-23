@@ -225,6 +225,34 @@ fn options_dialog_uses_managed_controls_validates_and_persists_display_settings(
     let report: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
     assert_eq!(report["original_before"], report["original_after"]);
+    for (name, selection) in [("forward", "0..3"),
+                              ("reverse", "0..3"),
+                              ("multiple-lines", "0..7"),
+                              ("outside", "0..7"),
+                              ("shift-extend", "0..3"),
+                              ("held-before-release", "0..3")]
+    {
+        let log = report["drag_steps"][name].as_str().unwrap();
+        let state =
+            log.lines().filter(|line| line.starts_with("FINDER_TEXTEDIT_STATE ")).last().unwrap();
+        assert!(state.ends_with(&format!("selection={selection}")), "{name}: {log}");
+        assert!(!log.contains("TEXTEDIT_DRAG_INACTIVE"), "drag unexpectedly lost focus: {log}");
+    }
+    let counters = &report["drag_trace"]["counters"][report["editor_app"].as_str().unwrap()];
+    assert!(counters["update"].as_u64().unwrap_or(0) <= 2,
+            "text exposure caused an Update storm: {counters}");
+    assert!(counters["render"].as_u64().unwrap_or(0) <= 8,
+            "selection triggered repeated scene recomposition: {counters}");
+    let windows = &report["window_menu"];
+    assert_ne!(windows["first"], windows["second"]);
+    assert_eq!(windows["first_selected"], windows["first"]);
+    assert_eq!(windows["second_selected"], windows["second"]);
+    assert_eq!(windows["remaining_selected"], windows["second"]);
+    let closed: u32 = windows["last_closed_windows"].as_str().unwrap().parse().unwrap();
+    assert_eq!(windows["last_closed_windows"], windows["empty_menu_windows"],
+               "empty Windows menu triggered a stale item");
+    let reopened: u32 = windows["reopened_windows"].as_str().unwrap().parse().unwrap();
+    assert_eq!(reopened, closed + 1, "New must remain usable after the last document closes");
     let settings: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("preferences.json")).unwrap()).unwrap();
     assert_eq!(settings["version"], 2);
@@ -246,6 +274,10 @@ fn options_dialog_uses_managed_controls_validates_and_persists_display_settings(
         support_pixels::ppm(&fs::read(output.join("options.ppm")).unwrap());
     let (_, _, background_options) =
         support_pixels::ppm(&fs::read(output.join("background-options.ppm")).unwrap());
+    // Default button ring is CDEF-owned, outside the original OK bounds.
+    assert_eq!(&active_options[(349 * 640 + 516) * 3..(349 * 640 + 516) * 3 + 3], &[0, 0, 0]);
+    // Monaco's list row has a selected black background, not a radio glyph.
+    assert_eq!(&active_options[(167 * 640 + 90) * 3..(167 * 640 + 90) * 3 + 3], &[0, 0, 0]);
     let selection_pixel = (263 * 640 + 422) * 3;
     assert_ne!(&active_options[selection_pixel..selection_pixel + 3],
                &background_options[selection_pixel..selection_pixel + 3],
@@ -322,5 +354,39 @@ fn edge_to_edge_gutter_preserves_text_inset_and_reaches_the_last_line()
         // Classic TEGetPoint intentionally excludes that empty row.
         assert_eq!(info.scroll_max, 101 * 16 + 8 - 64);
         assert_eq!(editor.display_info().unwrap().text_view.top, 0);
+    });
+}
+
+#[test]
+fn pointer_selection_preserves_anchor_with_text_inset_and_number_gutter()
+{
+    support::with_system(|system| {
+        let view = Rect::new(8, 8, 220, 120);
+        let editor = system.textedit().create_owned(view, view).unwrap();
+        editor.set_text("abc\rdef").unwrap();
+        for numbers in [false, true]
+        {
+            editor.set_display_options(DisplayOptions { line_numbers: numbers,
+                                                        ..DisplayOptions::default() })
+                  .unwrap();
+            let geometry = editor.display_info().unwrap();
+            let x = view.left + geometry.gutter_width as i16 + 1;
+            editor.click(Point { h: x,
+                                 v: 12 },
+                         false)
+                  .unwrap();
+            editor.click(Point { h: x + 21,
+                                 v: 12 },
+                         true)
+                  .unwrap();
+            let info = editor.info().unwrap();
+            assert_eq!((info.selection_start, info.selection_end), (0, 3));
+            editor.click(Point { h: x + 7,
+                                 v: 12 },
+                         true)
+                  .unwrap();
+            let info = editor.info().unwrap();
+            assert_eq!((info.selection_start, info.selection_end), (0, 1));
+        }
     });
 }

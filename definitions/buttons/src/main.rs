@@ -107,7 +107,9 @@ pub unsafe extern "C" fn standard_control_definition(pointer: *mut DefinitionCal
 /// CDEF0 offsets3f4..424). Hilite254 is a distinct original part result.
 pub fn hit(state: &ControlDefinitionState, variation: i16, point: Point) -> i16
 {
-    if state.enabled == 0 || state.highlighted == 255 || !state.bounds.contains(point)
+    if state.enabled == 0
+       || state.highlighted == 255
+       || !button_bounds(state, variation).contains(point)
     {
         0
     }
@@ -131,7 +133,7 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
 {
     use toolbox_quickdraw::graphics::{PortState, Shape, Verb};
     let font = validate(state, variation)?;
-    let r = state.bounds;
+    let r = button_bounds(state, variation);
     let title=core::str::from_utf8(&state.title[..state.title_length as usize]).map_err(|_|mac_traps::Error::BadArgument)?;
     if matches!(font, CaptionFont::GenevaBold(_))
     {
@@ -143,6 +145,20 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &ControlDefinitionState, variat
     let mut port = PortState::default();
     if style == 0
     {
+        if state.flags & mac_abi::definitions::DEFAULT_BUTTON != 0
+        {
+            canvas.paint_rect(state.bounds, WHITE)?;
+            port.pen_size = Point { h: 3,
+                                    v: 3 };
+            port.foreground = if disabled { 0x888888 } else { 0 };
+            canvas.draw_shape(&mut port,
+                              Shape::RoundRect { bounds: state.bounds,
+                                                 corner: Point { h: 16,
+                                                                 v: 16 } },
+                              Verb::Frame)?;
+            port.pen_size = Point { h: 1,
+                                    v: 1 };
+        }
         let corner = ((i32::from(r.bottom) - i32::from(r.top)) / 2) as i16;
         let shape = Shape::RoundRect { bounds: r,
                                        corner: Point { h: corner,
@@ -249,7 +265,12 @@ fn validate(state: &ControlDefinitionState, variation: i16) -> mac_traps::Result
     {
         return Err(mac_traps::Error::NotSupported);
     }
-    let r = state.bounds;
+    if state.flags & !mac_abi::definitions::DEFAULT_BUTTON != 0
+       || (state.flags != 0 && variation & 7 != 0)
+    {
+        return Err(mac_traps::Error::BadArgument);
+    }
+    let r = button_bounds(state, variation);
     let length = state.title_length as usize;
     if r.is_empty() || length > state.title.len()
     {
@@ -274,6 +295,18 @@ fn validate(state: &ControlDefinitionState, variation: i16) -> mac_traps::Result
         return Err(mac_traps::Error::NotSupported);
     };
     Ok(font)
+}
+fn button_bounds(state: &ControlDefinitionState, variation: i16) -> mac_abi::Rect
+{
+    let mut bounds = state.bounds;
+    if variation & 7 == 0 && state.flags & mac_abi::definitions::DEFAULT_BUTTON != 0
+    {
+        bounds.left = bounds.left.saturating_add(4);
+        bounds.top = bounds.top.saturating_add(4);
+        bounds.right = bounds.right.saturating_sub(4);
+        bounds.bottom = bounds.bottom.saturating_sub(4);
+    }
+    bounds
 }
 fn pixel(canvas: &mut SurfacePort<'_>, x: i32, y: i32) -> mac_traps::Result<()>
 {

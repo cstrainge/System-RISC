@@ -2,7 +2,9 @@
 
 Native plain-text documents through `mac-toolbox`: owned document windows,
 System-owned Open, Save As and save-before-closing dialogs, managed scrollbars,
-and resource-based File, Edit, Font and Size menus. New documents default to
+and resource-based File, Edit, View and Windows menus. The Options dialog has a
+managed font list, size and display controls, and a default OK button (Return).
+The Windows menu selects open documents and marks the active one. New documents default to
 Monaco 12. Files retain their original CR, LF or CRLF line endings on save.
 
 Font choices are saved as versioned JSON in

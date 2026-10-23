@@ -39,8 +39,12 @@ def capture(output):
         driver.key('h')
         driver.key('i')
         driver.wait('FINDER_TEXTEDIT_STATE length=2 selection=2..2\n')
-        driver.menu(106, 60, popup_x=136)  # Geneva
-        driver.menu(148, 92, popup_x=159)  # 18 points
+        driver.menu(110, 76, popup_x=145)  # View / Options
+        driver.wait('TEXT_EDIT_OPTIONS_READY\n')
+        driver.click(110, 156)  # Geneva in the font list
+        driver.click(266, 194)  # 18 points
+        driver.key('ret')  # Default OK
+        driver.wait('TEXT_EDIT_OPTIONS_APPLIED\n')
         frame('chosen-font')
         driver.key('s', ('ctrl',))
         driver.wait('STANDARD_FILE_BEGIN ')

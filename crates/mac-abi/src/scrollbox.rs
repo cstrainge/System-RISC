@@ -10,6 +10,8 @@ pub const SET_ROW: u32 = 6;
 pub const DRAW: u32 = 7;
 pub const TRACK_BEGIN: u32 = 8;
 pub const TRACK_POLL: u32 = 9;
+/// Resolve a complete, populated row under a local point; u32::MAX means none.
+pub const ROW_AT: u32 = 10;
 pub const SELECTED: u32 = 1;
 pub const BUTTON_DOWN: u32 = 2;
 pub const TRACKING: u32 = 4;

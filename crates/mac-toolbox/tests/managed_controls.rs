@@ -151,3 +151,58 @@ fn captured_release_boot_uses_the_same_framed_progress_meter()
         assert!(!serial.contains(failure), "unexpected boot failure: {serial}");
     }
 }
+
+#[test]
+fn default_button_outline_is_bounded_and_not_an_extra_hit_target()
+{
+    support::with_system(|system| {
+        let controls = system.controls();
+        let state = StandardState { flags: mac_toolbox::controls::DEFAULT_BUTTON,
+                                    ..StandardState::new(Rect::new(8, 8, 100, 40), "OK") };
+        let mut pixels = vec![0x123456; 120 * 50];
+        controls.draw_standard_pixels(&mut pixels, 120, 50, StandardKind::Button, state).unwrap();
+        assert_eq!(pixels[8 * 120 + 50], 0, "default outline missing");
+        assert_eq!(pixels[11 * 120 + 50], 0xffffff, "outline must be separated from button");
+        assert_eq!(pixels[12 * 120 + 50], 0, "button frame missing");
+        for y in 0..50
+        {
+            for x in 0..120
+            {
+                if !(8..100).contains(&x) || !(8..40).contains(&y)
+                {
+                    assert_eq!(pixels[y * 120 + x],
+                               0x123456,
+                               "default ring escaped its own bounds");
+                }
+            }
+        }
+        assert_eq!(controls.standard_hit(StandardKind::Button,
+                                         state,
+                                         Point { h: 50,
+                                                 v: 9 })
+                           .unwrap(),
+                   controls::Part::None);
+        assert_eq!(controls.standard_hit(StandardKind::Button,
+                                         state,
+                                         Point { h: 50,
+                                                 v: 20 })
+                           .unwrap(),
+                   controls::Part::Button);
+        let owner = controls.create_standard(WindowId(0), StandardKind::Button, state).unwrap();
+        let before = owner.control().info().unwrap().standard;
+        for (kind, flags) in
+            [(StandardKind::Checkbox, controls::DEFAULT_BUTTON), (StandardKind::Button, 2)]
+        {
+            let error = owner.control()
+                             .configure(kind,
+                                        StandardState { flags,
+                                                        ..state })
+                             .err()
+                             .unwrap();
+            assert_eq!(error, Error::BadArgument);
+            assert!(error.to_string().contains("argument"));
+            assert!(owner.control().info().unwrap().standard == before,
+                    "invalid configuration damaged default button");
+        }
+    });
+}

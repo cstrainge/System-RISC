@@ -112,7 +112,7 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     system.textedit().set_text(id, sample)?;
     editor.draw(system)?;
     let mut policy = menus::Policy::default();
-    policy.update(system, Some(&editor), editor.font())?;
+    policy.update(system, Some(&editor))?;
     system.log("DESKTOP_READY: actual TextEdit application typing profile\n")?;
     let mut edit_ticks = 0;
     let mut menu_ticks = 0;
@@ -133,7 +133,7 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
             return Err(mac_toolbox::Error::BadArgument);
         }
         let edited = system.events().uptime_ticks()?;
-        policy.update(system, Some(&editor), editor.font())?;
+        policy.update(system, Some(&editor))?;
         // Releases update the key map without rebuilding menu policy.
         editor_event(system,
                      &mut editor,
@@ -190,7 +190,7 @@ fn keyboard_batch<'a>(system: &System<'a>, editor: &mut editor::Editor<'a>)
     let id = textedit::EditorId(EDITOR.load(Ordering::Relaxed) as u32);
     let before = system.textedit().info(id)?;
     let mut policy = menus::Policy::default();
-    policy.update(system, Some(editor), editor.font())?;
+    policy.update(system, Some(editor))?;
     system.events()
           .flush(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT),
                  mac_toolbox::events::EventMask::from_bits_retain(0))?;
@@ -222,7 +222,7 @@ fn keyboard_batch<'a>(system: &System<'a>, editor: &mut editor::Editor<'a>)
     let first = system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
     if batch::keyboard(system, editor, first.into())?
     {
-        policy.update(system, Some(editor), editor.font())?;
+        policy.update(system, Some(editor))?;
     }
     let updates = UPDATES.load(Ordering::Relaxed);
     let key_calls = KEYS.load(Ordering::Relaxed);
@@ -284,7 +284,7 @@ fn keyboard_batch<'a>(system: &System<'a>, editor: &mut editor::Editor<'a>)
     let first = system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
     if batch::keyboard(system, editor, first.into())?
     {
-        policy.update(system, Some(editor), editor.font())?;
+        policy.update(system, Some(editor))?;
     }
     let command = system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
     let Some(selection) = system.menus().selection(&command.into())?
@@ -297,7 +297,7 @@ fn keyboard_batch<'a>(system: &System<'a>, editor: &mut editor::Editor<'a>)
     {
         return Err(mac_toolbox::Error::BadArgument);
     }
-    policy.update(system, Some(editor), editor.font())?;
+    policy.update(system, Some(editor))?;
     let after = system.next_event(mac_toolbox::events::EventMask::from_bits_retain(events::classic::EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
     batch::keyboard(system, editor, after.into())?;
     let mut bytes = [0; 8];

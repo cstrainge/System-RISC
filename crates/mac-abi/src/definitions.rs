@@ -57,6 +57,8 @@ impl WindowDefinitionState
 }
 
 pub const CDEF: u32 = u32::from_be_bytes(*b"CDEF");
+/// Push-button bounds include its four-pixel default outline margin.
+pub const DEFAULT_BUTTON: i16 = 1;
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ControlDefinitionState
@@ -69,7 +71,7 @@ pub struct ControlDefinitionState
     pub value:        i16,
     pub minimum:      i16,
     pub maximum:      i16,
-    pub reserved:     i16,
+    pub flags:        i16,
     pub font:         crate::quickdraw::FontSelection,
     pub progress:     crate::controls::ProgressRange
 }
@@ -85,7 +87,7 @@ impl Default for ControlDefinitionState
                value:        0,
                minimum:      0,
                maximum:      1,
-               reserved:     0,
+               flags:        0,
                font:         Default::default(),
                progress:     Default::default() }
     }

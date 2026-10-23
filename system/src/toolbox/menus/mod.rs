@@ -185,6 +185,68 @@ impl Manager
                 call.popup_bounds = menu.state.popup_bounds;
                 Ok(false)
             }
+            SET_ITEM | TRUNCATE =>
+            {
+                let index = self.menus
+                                .iter()
+                                .position(|m| m.state.menu_id == call.menu_id)
+                                .ok_or(NOT_FOUND)?;
+                let current = &self.menus[index].state;
+                let mut state = new_state()?;
+                state.as_mut().clone_from(current.as_ref());
+                if call.operation == TRUNCATE
+                {
+                    if call.value > state.item_count
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    if call.value == state.item_count
+                    {
+                        return Ok(false);
+                    }
+                    state.items[call.value as usize..].fill(MenuItemState::EMPTY);
+                    state.item_count = call.value;
+                }
+                else
+                {
+                    let item = call.replacement;
+                    let length = item.text_length as usize;
+                    if call.item == 0
+                       || call.item as usize > MAX_ITEMS
+                       || u32::from(call.item) > state.item_count + 1
+                       || length > item.text.len()
+                       || item.enabled > 1
+                       || item.checked > 1
+                       || item.separator > 1
+                       || item.icon.present != 0
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    core::str::from_utf8(&item.text[..length]).map_err(|_| BAD_ARGUMENT)?;
+                    let slot = &mut state.items[call.item as usize - 1];
+                    if slot.text == item.text
+                       && slot.text_length == item.text_length
+                       && slot.command == item.command
+                       && slot.enabled == item.enabled
+                       && slot.checked == item.checked
+                       && slot.key == item.key
+                       && slot.mark == item.mark
+                       && slot.style == item.style
+                       && slot.separator == item.separator
+                       && u32::from(call.item) <= state.item_count
+                    {
+                        return Ok(false);
+                    }
+                    *slot = item;
+                    state.item_count = state.item_count.max(u32::from(call.item));
+                }
+                self.measure(&mut state)?;
+                self.menus[index].state = state;
+                self.tracking = false;
+                self.active = None;
+                self.highlighted = 0;
+                Ok(true)
+            }
             SET_ENABLED | SET_CHECKED | COMMAND =>
             {
                 let menu = self.menus

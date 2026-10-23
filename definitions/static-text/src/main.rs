@@ -9,7 +9,7 @@ use toolbox_quickdraw::SurfacePort;
 fn text(state: &ControlDefinitionState) -> Result<&str, Status>
 {
     if state.bounds.is_empty()
-       || state.reserved != 0
+       || state.flags != 0
        || state.highlighted != 0
        || state.minimum != 0
        || state.maximum != 0

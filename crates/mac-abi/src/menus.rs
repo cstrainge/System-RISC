@@ -11,6 +11,10 @@ pub const KEY: u32 = 6;
 /// Dispose a generation-checked menu object, not a semantic resource number.
 pub const DISPOSE: u32 = 7;
 pub const FIND: u32 = 8;
+/// Replace one item, or append at item_count + 1, then remeasure atomically.
+pub const SET_ITEM: u32 = 9;
+/// Truncate a dynamic menu; growing requires initialized SET_ITEM requests.
+pub const TRUNCATE: u32 = 10;
 pub const MAX_ITEMS: usize = 31;
 pub const MDEF: u32 = u32::from_be_bytes(*b"MDEF");
 pub const MEASURE: i16 = 0;
@@ -52,7 +56,8 @@ pub struct MenuCall
     pub value:        u32,
     pub title_bounds: Rect,
     pub popup_bounds: Rect,
-    pub command:      u32
+    pub command:      u32,
+    pub replacement:  MenuItemState
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Selection
@@ -62,7 +67,7 @@ pub struct Selection
     pub command: u32
 }
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct MenuItemState
 {
     pub text:        [u8; INLINE_STRING_BYTES],
@@ -76,6 +81,13 @@ pub struct MenuItemState
     pub style:       u8,
     pub separator:   u8,
     pub icon:        MenuIcon
+}
+impl Default for MenuItemState
+{
+    fn default() -> Self
+    {
+        Self::EMPTY
+    }
 }
 impl MenuItemState
 {

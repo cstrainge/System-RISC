@@ -241,6 +241,34 @@ impl MenuRef<'_>
         self.call(SET_CHECKED, item, u32::from(checked)).map(|_| ())
     }
 
+    /// Replace an item or append at the next index. System validates UTF-8 and
+    /// remeasures before publishing; failure leaves the menu intact.
+    pub fn set_item(self, item: u16, text: &str, command: u32, enabled: bool, checked: bool)
+                    -> Result<()>
+    {
+        let mut replacement = MenuItemState::EMPTY;
+        if text.len() > replacement.text.len()
+        {
+            return Err(Error::BadArgument);
+        }
+        replacement.text[..text.len()].copy_from_slice(text.as_bytes());
+        replacement.text_length = text.len() as u32;
+        replacement.command = command;
+        replacement.enabled = u32::from(enabled);
+        replacement.checked = u32::from(checked);
+        self.client.menu(&mut MenuCall { operation: SET_ITEM,
+                                         handle: self.handle.0,
+                                         item,
+                                         replacement,
+                                         ..Default::default() })
+    }
+
+    /// Remove items after this count. This never grows uninitialized entries.
+    pub fn truncate(self, count: u16) -> Result<()>
+    {
+        self.call(TRUNCATE, 0, u32::from(count)).map(|_| ())
+    }
+
     pub fn dispose(self) -> Result<()>
     {
         self.call(DISPOSE, 0, 0).map(|_| ())
