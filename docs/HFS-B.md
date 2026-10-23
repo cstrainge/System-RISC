@@ -22,7 +22,15 @@ both forks, Finder metadata, comments, Unicode names and precise dates; restorin
 them merges directories, with explicit opt-in to replace existing files. Keep
 these user exports separately from generated disk cleanup. Preferences remain
 versioned JSON; this is file preservation, not a compatibility migration.
-See [host-tool commands](../tools/hfs-b/README.md).
+`cargo xtask image` snapshots an offline writable desktop disk before formatting
+and restores the user folders into the new volume. Exports live in the selected
+build profile's `user-state/`, outside generated-image cleanup. A running VM is
+left untouched; the launcher snapshots its latest saved files after it stops,
+then restores and checks a staged replacement before retiring its disk. Failed
+preservation aborts replacement and leaves the old disk and complete export
+available for retry. Fresh capture VMs do not inherit desktop user state; custom
+build/state directories remain isolated. This preserves saved files, not unsaved
+application buffers. See [host-tool commands](../tools/hfs-b/README.md).
 
 HFS-B is a new volume format that lives
 *alongside* classic HFS. HFS stays frozen as the treaty surface for legacy

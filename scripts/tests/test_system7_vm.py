@@ -83,6 +83,45 @@ class LauncherTests(unittest.TestCase):
                 self.assertFalse(state.exists())
             process.assert_not_called()
 
+    def test_unchanged_base_still_marks_stopped_desktop_disk_as_persistent(self):
+        from unittest.mock import Mock
+        import hashlib
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);state=root/'vm';dist=root/'dist'
+            state.mkdir();dist.mkdir()
+            for name in ['system7.qcow2','bootrom.bin']:
+                (dist/name).write_bytes(b'current base')
+            (state/'system7.qcow2').write_bytes(b'guest saved changes')
+            (state/'base-disk.sha256').write_text(hashlib.sha256(b'current base').hexdigest())
+            def start(*args,**kwargs):
+                (state/'serial.log').write_text('DESKTOP_READY\n')
+                return Mock(pid=999999999,poll=lambda:None)
+            with patch.object(vm,'DIST',dist),patch.object(vm.subprocess,'Popen',side_effect=start), \
+                 patch.object(vm,'qmp',return_value={'status':'running'}):
+                vm.launch(state,preserve=True)
+            self.assertEqual((state/'system7.qcow2').read_bytes(),b'guest saved changes')
+            self.assertTrue((state/'persistent-user-state.json').exists())
+
+    def test_failed_user_file_preservation_keeps_old_disk_rom_and_stamp(self):
+        import system7_user_state
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state = root / 'vm'
+            dist = root / 'dist'
+            state.mkdir();dist.mkdir()
+            for name in ['system7.qcow2', 'bootrom.bin']:
+                (state/name).write_bytes(b'old saved state')
+                (dist/name).write_bytes(b'new release')
+            (state/'base-disk.sha256').write_text('old hash')
+            with patch.object(vm,'DIST',dist), patch.object(vm.subprocess,'Popen') as process, \
+                 patch.object(system7_user_state,'replace_disk',side_effect=RuntimeError('Cannot export Preferences: read failed')):
+                with self.assertRaisesRegex(RuntimeError,'Preferences: read failed'):
+                    vm.launch(state,preserve=True)
+                process.assert_not_called()
+            self.assertEqual((state/'system7.qcow2').read_bytes(),b'old saved state')
+            self.assertEqual((state/'bootrom.bin').read_bytes(),b'old saved state')
+            self.assertEqual((state/'base-disk.sha256').read_text(),'old hash')
+
     def test_custom_build_directory_reaches_builder_without_shell_splitting(self):
         with tempfile.TemporaryDirectory(prefix='system risc ') as folder, \
              patch.dict(os.environ), patch.object(vm, 'DIST'), patch.object(vm, 'STATE'), \

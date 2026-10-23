@@ -131,6 +131,15 @@ test/capture commands; relative environment paths are outer-workspace-relative,
 while command-line paths are relative to the current directory. Keep build
 directories outside the OS source repository. `check --no-build` uses the check
 profile's existing installation, or the explicit `--build-dir` you supply.
+
+Saved
+`System Folder/Preferences` and `Documents` survive regenerated images through
+lossless exports in that profile's `user-state/` directory, including resource
+forks and Finder metadata. A live VM stays untouched during builds; before the
+launcher replaces its stopped writable disk, it exports the latest saved files,
+restores them into a checked staging image, then replaces the old disk. Failed
+preservation leaves the old disk intact. Fresh test VMs remain independent.
+
 When the normal build root comes from the environment, checks still use its
 separate `check/` child; an explicit `--build-dir` selects the exact check root.
 

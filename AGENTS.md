@@ -66,6 +66,11 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   calls the System-owned bomb dialog without app opt-in. Migrate apps only with
   verified target/sysroot/runtime support; retain no_std for kernel, minimal
   ABI/transport, Toolbox bindings and independently loaded low-level modules.
+- Rebuilding images preserves saved Preferences and Documents through the shared
+  HFS-B lossless export/import tool. Keep user-state exports outside generated
+  media cleanup. Before replacing a writable VM disk, export its latest saved
+  files and validate a staged restored disk; never read a live guest through
+  offline tools or discard files after a preservation error.
 - All system preferences use versioned JSON with typed access and safe concurrent
   transactions. Persistence requires writable storage; do not fake success.
 - Every resident Toolbox manager must issue and validate object IDs through

@@ -55,6 +55,12 @@ pub fn image(workspace: &Workspace) -> Result<Value>
 {
     let started = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let scratch = Scratch::create(&workspace.build)?;
+    if !workspace.checking
+    {
+        run(workspace.command("python3")
+                     .arg(workspace.root.join("scripts/system7_user_state.py"))
+                     .arg("prepare"))?;
+    }
     let raw = scratch.path.join("system7.hfsb");
     let mut image = hfs_b::Image::create(&raw, DISK_SIZE)?;
     let partition = image.partition();
@@ -129,10 +135,15 @@ pub fn image(workspace: &Workspace) -> Result<Value>
             "resource_fork_sha256":package::sha256(&resources),"fork_and_metadata_roundtrip":"passed"}));
     }
     volume.bless(system, when)?;
-    let checked = volume.check()?;
-    let h = volume.header().clone();
     drop(volume);
     drop(image);
+    if !workspace.checking
+    {
+        run(workspace.command("python3")
+                     .arg(workspace.root.join("scripts/system7_user_state.py"))
+                     .arg("restore")
+                     .arg(&raw))?;
+    }
     // A fresh mount, not the formatter's retained state, verifies the blessing.
     let mut image = hfs_b::Image::open(&raw, false)?;
     let mut volume = mac_hfs_b::Volume::mount(&mut image, partition, Default::default())?;
@@ -140,7 +151,8 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     {
         return Err(error("HFS-B blessing did not survive remount"));
     }
-    volume.check()?;
+    let checked = volume.check()?;
+    let h = volume.header().clone();
     drop(volume);
     drop(image);
     let qcow = scratch.path.join("system7.qcow2");
@@ -172,4 +184,94 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     println!("Built 500 MiB HFS-B v1/qcow2; all installed forks, metadata, blessing and \
               structural checks passed.");
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+
+    /// Uses existing release packages in a wholly separate build/media root.
+    #[test]
+    #[ignore = "requires SYSTEM7_REBUILD_PACKAGES and an empty SYSTEM7_REBUILD_OUTPUT outside the \
+                source tree"]
+    fn regenerated_image_preserves_real_user_folders()
+    {
+        let packages =
+            PathBuf::from(env::var_os("SYSTEM7_REBUILD_PACKAGES").expect("release package \
+                                                                          directory"));
+        let output =
+            PathBuf::from(env::var_os("SYSTEM7_REBUILD_OUTPUT").expect("private output directory"));
+        assert!(!output.exists(), "refuse to overwrite existing test/user data");
+        let workspace = Workspace::new(Some(output), false).unwrap();
+        let dist = workspace.build.join("dist");
+        fs::create_dir_all(&dist).unwrap();
+        for entry in fs::read_dir(packages).unwrap()
+        {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|s| s == "bin")
+            {
+                fs::copy(&path, dist.join(path.file_name().unwrap())).unwrap();
+            }
+        }
+        // Two actual builder runs, with user changes in the first writable disk.
+        image(&workspace).unwrap();
+        let preferences = br#"{"version":2,"font_family":22,"font_size":18,"wrap":true,"line_numbers":false,"ruler_kind":0,"ruler_value":0}"#;
+        edit(&dist.join("system7.hfsb"), |volume| {
+            let folder = hfs_b::copy::resolve(volume, "/System Folder/Preferences")?.id;
+            let pref = volume.create(folder, "Text Edit Preferences", false, hfs_b::now()?)?.id;
+            let mut finder = [0; 32];
+            finder[..8].copy_from_slice(b"JSONTEDT");
+            volume.set_finder_metadata(pref, 0, finder, hfs_b::now()?)?;
+            hfs_b::write_stream(volume,
+                                pref,
+                                mac_hfs_b::ForkKind::Data,
+                                preferences.as_slice(),
+                                hfs_b::now()?)?;
+            hfs_b::write_stream(volume,
+                                pref,
+                                mac_hfs_b::ForkKind::Resource,
+                                b"preference resource".as_slice(),
+                                hfs_b::now()?)?;
+            let documents = hfs_b::copy::resolve(volume, "/Documents")?.id;
+            let doc = volume.create(documents, "Saved Notes", false, hfs_b::now()?)?.id;
+            finder[..8].copy_from_slice(b"TEXTTEDT");
+            volume.set_finder_metadata(doc, 0, finder, hfs_b::now()?)?;
+            hfs_b::write_stream(volume,
+                                doc,
+                                mac_hfs_b::ForkKind::Data,
+                                b"Survives rebuilding.\r".as_slice(),
+                                hfs_b::now()?)?;
+            Ok(())
+        }).unwrap();
+        let state = workspace.build.join("vm");
+        fs::create_dir(&state).unwrap();
+        run(Command::new("qemu-img").args(["convert", "-f", "raw", "-O", "qcow2"])
+                                    .arg(dist.join("system7.hfsb"))
+                                    .arg(state.join("system7.qcow2"))).unwrap();
+        image(&workspace).unwrap();
+        edit(&dist.join("system7.hfsb"), |volume| {
+            for (path, expected) in
+                [("/System Folder/Preferences/Text Edit Preferences", preferences.as_slice()),
+                 ("/Documents/Saved Notes", b"Survives rebuilding.\r".as_slice())]
+            {
+                let entry = hfs_b::copy::resolve(volume, path)?;
+                let mut bytes = Vec::new();
+                hfs_b::read_stream(volume, entry.id, mac_hfs_b::ForkKind::Data, &mut bytes)?;
+                assert_eq!(bytes, expected, "user contents changed at {path}");
+                if path.contains("Preferences")
+                {
+                    assert_eq!(&entry.finder_info[..8], b"JSONTEDT");
+                    bytes.clear();
+                    hfs_b::read_stream(volume,
+                                       entry.id,
+                                       mac_hfs_b::ForkKind::Resource,
+                                       &mut bytes)?;
+                    assert_eq!(bytes, b"preference resource");
+                }
+            }
+            volume.check()?;
+            Ok(())
+        }).unwrap();
+    }
 }

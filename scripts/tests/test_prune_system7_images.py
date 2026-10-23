@@ -63,6 +63,16 @@ class ImageCleanupTests(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertEqual(self.prune()['removed_files'], 0)
 
+    def test_user_exports_and_stopped_persistent_disks_are_not_generated_garbage(self):
+        keep = [self.write('build/system7/user-state/snapshot/children/bootrom.bin'),
+                self.write('build/system7/check/user-state/snapshot/source.hfsb'),
+                self.write('build/system7/custom/vm/system7.qcow2')]
+        self.write('build/system7/custom/vm/persistent-user-state.json', b'{"version":1}')
+        obsolete = self.write('build/system7/obsolete.qcow2')
+        self.prune()
+        self.assertTrue(all(path.exists() for path in keep))
+        self.assertFalse(obsolete.exists())
+
     def test_live_capture_is_preserved_while_dead_capture_is_pruned(self):
         self.write('results/system7/live/vm/pid', str(os.getpid()).encode())
         live = self.write('results/system7/live/dist/disk.hfs')

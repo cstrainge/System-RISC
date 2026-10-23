@@ -28,7 +28,8 @@ def qmp(command, arguments=None, endpoint=None):
 
 def build():
     subprocess.run(['cargo', 'xtask', 'image', '--build-dir', str(build_dir())],
-                   cwd=ROOT / 'System7', check=True)
+                   cwd=ROOT / 'System7', check=True,
+                   env=dict(os.environ, SYSTEM7_VM_STATE_DIR=str(STATE)))
 
 
 def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
@@ -36,7 +37,8 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     """Launch a private disk copy. Tests default to read-only and fresh copies.
 
     Persistent desktop starts retain their writable copy while the build is unchanged.
-    A new OS build replaces that copy; obsolete boot disks are not retained.
+    A new OS build preserves Preferences/Documents into the replacement before
+    retiring that copy; obsolete boot disks are not retained.
     """
     state = Path(state).resolve()
     if host_bridge is not None and (type(host_bridge) is not int or not 0 < host_bridge < 65536):
@@ -57,14 +59,21 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
         else:
             connection.close()
             raise RuntimeError(f'QMP port {qmp_port} is already in use; choose --qmp-port for this VM')
-    shutil.copyfile(DIST / 'bootrom.bin', state / 'bootrom.bin')
+    if preserve:
+        import system7_user_state
     disk = state / 'system7.qcow2'
     base_hash = hashlib.sha256((DIST / 'system7.qcow2').read_bytes()).hexdigest()
     stamp = state / 'base-disk.sha256'
     same_base = stamp.exists() and stamp.read_text().strip() == base_hash
-    if not preserve or not disk.exists() or not same_base:
-        shutil.copyfile(DIST / 'system7.qcow2', disk)
+    if not disk.exists() or not same_base or not preserve:
+        if preserve:
+            system7_user_state.replace_disk(build_dir(), state, DIST / 'system7.qcow2')
+        else:
+            shutil.copyfile(DIST / 'system7.qcow2', disk)
         stamp.write_text(base_hash + '\n')
+    elif preserve:
+        system7_user_state.mark_persistent(build_dir(), state)
+    shutil.copyfile(DIST / 'bootrom.bin', state / 'bootrom.bin')
     executable = str(native_executable()) if native else 'qemu-system-riscv64'
     host_path = windows_path if native else str
     endpoint = ({'transport': 'tcp', 'host': '127.0.0.1', 'port': qmp_port, 'platform': 'windows'}

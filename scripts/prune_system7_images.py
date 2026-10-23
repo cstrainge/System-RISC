@@ -20,6 +20,11 @@ def prune():
         if inventory.parent.name == 'dist':
             current.add(inventory.parent)
     protected = []
+    # These contain user files, including lossless bundles whose original names
+    # can themselves end in .raw/.img. They are not generated media.
+    user_state = [p for p in build.rglob('user-state') if p.is_dir()]
+    persistent = [p.parent for base in (build, results)
+                  for p in base.rglob('persistent-user-state.json')]
     # Keep an entire capture while any of its VM or fixture owners is still alive.
     # A reused live PID can conservatively retain a little extra media.
     for base in (results, build):
@@ -39,7 +44,7 @@ def prune():
                 continue
             if path.is_symlink() or not path.is_file():
                 continue
-            if any(path.is_relative_to(directory) for directory in protected):
+            if any(path.is_relative_to(directory) for directory in protected + user_state + persistent):
                 continue
             candidates.append(path)
     # The current desktop disk and original Macintosh media are outside this list.
@@ -58,6 +63,8 @@ def prune():
         freed += stat.st_blocks * 512
     report = {'removed_files': len(removed), 'allocated_bytes_freed': freed,
               'protected_live_captures': [str(p.relative_to(ROOT)) for p in protected],
+              'protected_user_exports': [str(p.relative_to(ROOT)) for p in user_state],
+              'protected_persistent_vms': [str(p.relative_to(ROOT)) for p in persistent],
               'files': removed}
     (results / 'image-cleanup.json').write_text(json.dumps(report, indent=2) + '\n')
     print(f'Removed {len(removed)} obsolete generated images; freed {freed / 2**30:.2f} GiB.')
