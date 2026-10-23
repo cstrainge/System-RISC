@@ -212,6 +212,34 @@ impl ContentCache
         entry.valid_len = length;
     }
 
+    /// XOR cached content in place. Invalid pixels may be toggled too; they
+    /// remain invalid and are replaced by normal retained replay before use.
+    pub fn invert(&mut self, id: u32, local: Rect)
+    {
+        let Some(entry) = self.entries.iter_mut().find(|e| e.id == id)
+        else
+        {
+            return;
+        };
+        let mut screen = local;
+        screen.offset(entry.origin.h, entry.origin.v);
+        let mut rect = Rect::ZERO;
+        if !sect_rect(screen, entry.crop, &mut rect)
+        {
+            return;
+        }
+        let stride = (entry.crop.right - entry.crop.left) as usize;
+        for y in rect.top..rect.bottom
+        {
+            let start =
+                (y - entry.crop.top) as usize * stride + (rect.left - entry.crop.left) as usize;
+            for pixel in &mut entry.pixels[start..start + (rect.right - rect.left) as usize]
+            {
+                *pixel ^= 0x00ffffff;
+            }
+        }
+    }
+
     pub fn retain(&mut self, mut live: impl FnMut(u32) -> bool)
     {
         self.entries.retain(|entry| live(entry.id));

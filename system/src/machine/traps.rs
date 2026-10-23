@@ -256,6 +256,10 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                         {
                             runtime.textedit_request(call, input, output)
                         }
+                        toolbox::textedit::native::Request::Display(call) =>
+                        {
+                            runtime.textedit_display_request(call)
+                        }
                         toolbox::textedit::native::Request::Font(call) =>
                         {
                             runtime.textedit_font_request(call)

@@ -15,7 +15,7 @@ from capture_system7_applications_ui import Driver
 import capture_system7_conformance as packaging
 import system7_vm as vm
 
-KINDS = {1: 'input', 2: 'delivery', 3: 'peek', 4: 'update', 5: 'window',
+KINDS = {0: 'textedit', 1: 'input', 2: 'delivery', 3: 'peek', 4: 'update', 5: 'window',
          6: 'activate', 7: 'render', 8: 'route', 9: 'null', 10: 'poll', 11: 'present',
          12: 'wake', 13: 'wait', 14: 'frame_copy', 15: 'slow_service'}
 SERVICES = ['log', 'window', 'draw', 'next_event', 'definition', 'classic', 'geometry',
@@ -56,7 +56,7 @@ def decode(path):
     for _ in range(capacity):
         row = values[offset:offset + 8]
         offset += 8
-        if max(0, seq - capacity) <= row[0] < seq and row[2]:
+        if max(0, seq - capacity) <= row[0] < seq and (row[2] or row[1]):
             records.append(list(row))
     return {'seq': seq, 'services': stats, 'counters': counters,
             'records': sorted(records), 'capacity': capacity}

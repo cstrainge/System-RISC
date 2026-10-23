@@ -25,9 +25,26 @@ static MENUS: AtomicUsize = AtomicUsize::new(0);
 static UPDATES: AtomicUsize = AtomicUsize::new(0);
 static GROW_CLIPS: AtomicUsize = AtomicUsize::new(0);
 static EDITOR: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "performance")]
+mod performance;
+static LOGS: AtomicUsize = AtomicUsize::new(0);
+static CONFIGURES: AtomicUsize = AtomicUsize::new(0);
 static KEYS: AtomicUsize = AtomicUsize::new(0);
 unsafe extern "C" fn trace(number: u32, pointer: *mut (), size: usize) -> i64
 {
+    if number == mac_abi::traps::LOG
+    {
+        LOGS.fetch_add(1, Ordering::Relaxed);
+    }
+    if number == mac_abi::traps::CONTROL
+       && size == core::mem::size_of::<mac_abi::controls::ControlCall>()
+    {
+        let call = unsafe { &*pointer.cast::<mac_abi::controls::ControlCall>() };
+        if call.operation == mac_abi::controls::CONFIGURE_OBJECT
+        {
+            CONFIGURES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     if number == mac_abi::traps::FILE
     {
         FILES.fetch_add(1, Ordering::Relaxed);
@@ -306,7 +323,11 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
         Ok(s) => s,
         Err(e) => return e.status()
     };
-    if let Err(e) = run(&system)
+    #[cfg(feature = "performance")]
+    let result = performance::run(&system);
+    #[cfg(not(feature = "performance"))]
+    let result = run(&system);
+    if let Err(e) = result
     {
         let _ = system.log("TYPING_PROFILE_FAIL\n");
         return e.status();

@@ -21,16 +21,19 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def private_disk(output, fixture_name='conformance'):
+def private_disk(output, fixture_name='conformance', *, features=()):
     # Own the whole capture before its disk exists. The VM's pid is too late:
     # other fixtures may still be compiling while this prepared disk is live.
     (output / 'pid').write_text(str(os.getpid()))
     fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture_name
     target = vm.build_dir() / 'fixtures' / fixture_name
     manifest = fixture / 'Cargo.toml'
-    subprocess.run(['cargo', 'build', '--manifest-path', str(manifest), '--locked',
-                    '--release', '--target', 'riscv64imac-unknown-none-elf',
-                    '--bin', 'Finder', '--target-dir', str(target)], cwd=vm.ROOT, check=True)
+    arguments = ['cargo', 'build', '--manifest-path', str(manifest), '--locked',
+                 '--release', '--target', 'riscv64imac-unknown-none-elf',
+                 '--bin', 'Finder', '--target-dir', str(target)]
+    if features:
+        arguments.extend(['--features', ','.join(features)])
+    subprocess.run(arguments, cwd=vm.ROOT, check=True)
     binary = target / 'riscv64imac-unknown-none-elf/release/Finder'
     packaged = output / 'package'
     subprocess.run(['cargo', 'run', '--manifest-path', str(manifest), '--locked',

@@ -32,6 +32,9 @@ pub const SET_CURSOR_ENABLED: u32 = 24;
 /// Native wide vertical viewport origin, in pixels (TextEditCall.index).
 pub const SCROLL_TO: u32 = 25;
 pub const REVEAL_SELECTION: u32 = 26;
+/// Native idle plus resident XOR caret presentation. index returns 1 only when
+/// the previously drawn editor is stale and its caller must draw the new state.
+pub const BLINK: u32 = 27;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TextEditFontCall
@@ -150,4 +153,61 @@ impl Default for TextEditCall
                capacity:     0,
                transferred:  0 }
     }
+}
+
+/// Versioned native presentation contract; classic records above remain unchanged.
+pub const DISPLAY_VERSION: u32 = 1;
+pub const GET_DISPLAY: u32 = 28;
+pub const SET_DISPLAY: u32 = 29;
+pub const DISPLAY_CAPABILITIES: u32 = 30;
+pub const DISPLAY_INFO: u32 = 31;
+pub const SCROLL_AXES: u32 = 32;
+pub const DISPLAY_FEATURES: u32 = 15;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayOptions
+{
+    pub version:      u32,
+    pub wrap:         u32,
+    pub line_numbers: u32,
+    /// 0 off, 1 text columns, 2 text-space pixels.
+    pub ruler_kind:   u32,
+    pub ruler_value:  i32
+}
+impl Default for DisplayOptions
+{
+    fn default() -> Self
+    {
+        Self { version:      DISPLAY_VERSION,
+               wrap:         1,
+               line_numbers: 0,
+               ruler_kind:   0,
+               ruler_value:  0 }
+    }
+}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DisplayGeometry
+{
+    pub text_view:     Rect,
+    pub scroll_x:      u32,
+    pub scroll_max_x:  u32,
+    pub logical_lines: u32,
+    pub gutter_width:  u32,
+    pub ruler_x:       i32,
+    pub column_width:  u32,
+    pub monospaced:    u32,
+    pub features:      u32
+}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TextEditDisplayCall
+{
+    pub operation: u32,
+    pub id:        EditorId,
+    pub options:   DisplayOptions,
+    pub x:         u32,
+    pub y:         u32,
+    pub info:      EditorInfo,
+    pub geometry:  DisplayGeometry
 }

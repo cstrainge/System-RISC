@@ -17,7 +17,7 @@ def capture(output, windows_headless=False):
     original = vm.DIST
     before = {name: packaging.sha(original / name)
               for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
-    private, binary = packaging.private_disk(output, 'typing-probe')
+    private, binary = packaging.private_disk(output, 'typing-probe', features=('input-trace',))
     vm.DIST = private
     options = {'frontend': 'native-headless', 'qmp_port': 4457} if windows_headless else {}
     process, endpoint = vm.launch(output / 'profile-vm', **options)

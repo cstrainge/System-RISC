@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+input-trace = []
+
 [[bin]]
 name = "TextEdit"
 path = "src/main.rs"

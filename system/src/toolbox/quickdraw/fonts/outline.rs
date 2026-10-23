@@ -34,6 +34,30 @@ pub(super) fn glyph(face: &Face<'_>, character: char) -> GlyphId
     GlyphId(0)
 }
 
+pub(super) fn is_monospaced(resolved: &Resolved<'_>) -> Result<bool, Status>
+{
+    let face = parse(resolved)?;
+    if face.is_monospaced()
+    {
+        return Ok(true);
+    }
+    let mut width = None;
+    for code in 32u8..=126
+    {
+        let advance = face.glyph_hor_advance(glyph(&face, char::from(code))).unwrap_or(0);
+        if advance == 0
+        {
+            continue;
+        }
+        if width.is_some_and(|old| old != advance)
+        {
+            return Ok(false);
+        }
+        width = Some(advance);
+    }
+    Ok(width.is_some())
+}
+
 pub(super) fn metrics(resolved: &Resolved<'_>) -> Result<FontMetrics, Status>
 {
     let face = parse(resolved)?;

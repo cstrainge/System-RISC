@@ -16,9 +16,10 @@ const TARGET: &str = "riscv64imac-unknown-none-elf";
 
 struct Workspace
 {
-    root:  PathBuf,
-    repo:  PathBuf,
-    build: PathBuf
+    root:     PathBuf,
+    repo:     PathBuf,
+    build:    PathBuf,
+    checking: bool
 }
 
 impl Workspace
@@ -45,7 +46,8 @@ impl Workspace
         }
         Ok(Self { root,
                   repo,
-                  build })
+                  build,
+                  checking })
     }
 
     fn command(&self, program: impl AsRef<OsStr>) -> Command
@@ -92,9 +94,15 @@ impl Workspace
                 command.arg("--features").arg(format!("{package}/guest"));
             }
         }
-        if packages.contains(&"mac-system") && env::var_os("SYSTEM7_EVENT_TRACE").is_some()
+        if packages.contains(&"mac-system")
+           && (self.checking || env::var_os("SYSTEM7_EVENT_TRACE").is_some())
         {
             command.args(["--features", "mac-system/event-trace"]);
+        }
+        if packages.contains(&"text-edit")
+           && (self.checking || env::var_os("SYSTEM7_TEXTEDIT_INPUT_TRACE").is_some())
+        {
+            command.args(["--features", "text-edit/input-trace"]);
         }
         run(&mut command)
     }
@@ -203,10 +211,10 @@ impl Workspace
         }
         for test in ["dates", "boot_ui", "resedit", "menus", "finder_trash", "file_writes_guest",
                      "deferred_close", "get_info_ui", "events", "clipboard", "textedit_graphical",
-                     "text_edit_documents", "typing", "processes", "application_ui",
-                     "retained_update", "event_latency", "cursor_graphical", "busy_cursor",
-                     "panic_graphical", "finder_selection", "transfer_incident", "remote_get_info",
-                     "finder_drag"]
+                     "text_edit_documents", "textedit_display", "textedit_performance", "typing",
+                     "processes", "application_ui", "retained_update", "event_latency",
+                     "cursor_graphical", "busy_cursor", "panic_graphical", "finder_selection",
+                     "transfer_incident", "remote_get_info", "finder_drag"]
         {
             self.private_guest_test(test)?;
         }

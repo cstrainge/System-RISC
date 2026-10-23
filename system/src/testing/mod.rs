@@ -255,6 +255,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                         |request| match request {
                             crate::toolbox::textedit::native::Request::Edit(call, input, output) => crate::toolbox::textedit::clipboard::request(
                                 &mut session.textedit, &mut session.scrap, call, input, output, &session.fonts),
+                            crate::toolbox::textedit::native::Request::Display(call) => session.textedit.display_request(call),
                             crate::toolbox::textedit::native::Request::Font(call) => session.textedit.font_request(call, &session.fonts)
                         })
                         }

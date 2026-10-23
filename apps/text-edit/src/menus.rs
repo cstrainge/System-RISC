@@ -9,14 +9,15 @@ pub const CLEAR: u32 = u32::from_be_bytes(*b"cler");
 pub const SELECT_ALL: u32 = u32::from_be_bytes(*b"sela");
 
 
-pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 4], Error>
+pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 5], Error>
 {
     let menus = system.menus();
     menus.clear()?;
     Ok([menus.install_owned(resources::APPLICATION, 128)?,
         menus.install_owned(resources::APPLICATION, 129)?,
         menus.install_owned(resources::APPLICATION, 130)?,
-        menus.install_owned(resources::APPLICATION, 131)?])
+        menus.install_owned(resources::APPLICATION, 131)?,
+        menus.install_owned(resources::APPLICATION, 132)?])
 }
 #[derive(Default)]
 pub struct Policy
@@ -24,7 +25,8 @@ pub struct Policy
     enabled: [Option<bool>; 8],
     font:    Option<quickdraw::fonts::FontSelection>,
     scrap:   Option<scrap::ScrapInfo>,
-    paste:   bool
+    paste:   bool,
+    display: Option<textedit::DisplayOptions>
 }
 impl Policy
 {
@@ -67,6 +69,13 @@ impl Policy
                 system.menus().set_item_enabled(MenuId(menu), item, enabled)?;
                 self.enabled[slot] = Some(enabled);
             }
+        }
+        let display = editor.map_or(textedit::DisplayOptions::default(), editor::Editor::options);
+        if self.display != Some(display)
+        {
+            system.menus().set_item_checked(MenuId(132), 1, display.wrap)?;
+            system.menus().set_item_checked(MenuId(132), 2, display.line_numbers)?;
+            self.display = Some(display);
         }
         let font = editor.map_or(default_font, editor::Editor::font);
         if self.font != Some(font)

@@ -52,10 +52,10 @@ fn font_preferences_are_versioned_json_with_monaco_default_and_strict_validation
     let selected = preferences::Settings::from_font(FontSelection { family: 22,
                                                                     size:   18,
                                                                     face:   0 });
-    let mut bytes = [0; 128];
+    let mut bytes = [0; 256];
     let length = selected.encode(&mut bytes).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes[..length]).unwrap();
-    assert_eq!(json["version"], 1);
+    assert_eq!(json["version"], 2);
     assert_eq!(preferences::Settings::decode(&bytes[..length]).unwrap().font(), selected.font());
     for invalid in [br#"{"version":2,"font_family":4,"font_size":12}"#.as_slice(),
                     br#"{"version":1,"font_family":999,"font_size":12}"#,
@@ -167,7 +167,7 @@ fn finder_opens_extensionless_json_preferences_and_text_edit_preserves_their_typ
         let bytes = fs::read(output.join(format!("{key}.bytes"))).unwrap();
         let json: Value =
             serde_json::from_slice(&bytes).expect("saved preferences must remain valid JSON");
-        assert_eq!(json["version"], 1);
+        assert_eq!(json["version"], if key == "preferences" { 2 } else { 1 });
         if key == "preferences"
         {
             assert_eq!(json["font_family"], 3);

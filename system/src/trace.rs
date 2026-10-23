@@ -129,6 +129,8 @@ pub fn clock() -> u64
     }
 }
 
+/// TextEdit: a=0 rewrap,1 snapshot,2 draw,3 XOR caret; b/c/d are work metrics.
+pub const TEXTEDIT: u64 = 0;
 pub const INPUT: u64 = 1;
 pub const DELIVERY: u64 = 2;
 pub const PEEK: u64 = 3;

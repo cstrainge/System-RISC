@@ -137,6 +137,29 @@ impl<'a> BitmapFont<'a>
         self.strike().metrics
     }
 
+    pub(super) fn is_monospaced(&self) -> bool
+    {
+        let strike = self.strike();
+        let mut width = None;
+        // Classic Monaco's special non-ASCII symbols can have narrower
+        // advances and its metadata need not declare fixed pitch. Text columns
+        // are defined by its printable ASCII advances, not those symbols.
+        for code in 32u8..=126
+        {
+            let (_, _, _, advance) = strike.glyph(char::from(code));
+            if advance == 0
+            {
+                continue;
+            }
+            if width.is_some_and(|old| old != advance)
+            {
+                return false;
+            }
+            width = Some(advance);
+        }
+        width.is_some()
+    }
+
     pub fn maximum_width(&self) -> i16
     {
         word(self.data, 6).min(i16::MAX as u16) as i16

@@ -14,6 +14,7 @@ pub(super) struct Application<'a>
 {
     editors:           [Option<editor::Editor<'a>>; MAX_DOCUMENTS],
     alert:             Option<dialogs::Alert<'a>>,
+    options:           Option<(usize, crate::options::Options<'a>)>,
     purpose:           AlertPurpose,
     documents_pending: bool,
     quitting:          bool,
@@ -48,6 +49,7 @@ impl<'a> Application<'a>
         let loaded = preferences::Settings::load(system);
         let mut app = Self { editors: core::array::from_fn(|_| None),
                              alert: None,
+                             options: None,
                              purpose: AlertPurpose::Error,
                              documents_pending: true,
                              quitting: false,
@@ -77,7 +79,7 @@ impl<'a> Application<'a>
 
     fn modal_menus(system: &System<'a>, enabled: bool) -> Result<(), Error>
     {
-        for id in [128, 129, 130, 131]
+        for id in [128, 129, 130, 131, 132]
         {
             system.menus().set_item_enabled(MenuId(id), 0, enabled)?;
         }
@@ -117,7 +119,8 @@ impl<'a> Application<'a>
         {
             write!(title, " {number}").map_err(|_| Error::NoMemory)?;
         }
-        let mut editor = editor::Editor::with_font(self.settings.font());
+        let mut editor =
+            editor::Editor::with_font(self.settings.font()).with_options(self.settings.options()?);
         editor.new_document(system, title.as_str())?;
         self.editors[slot] = Some(editor);
         self.untitled = number;
@@ -139,7 +142,8 @@ impl<'a> Application<'a>
             return Ok(slot);
         }
         let slot = self.editors.iter().position(Option::is_none).ok_or(Error::NoMemory)?;
-        let mut editor = editor::Editor::with_font(self.settings.font());
+        let mut editor =
+            editor::Editor::with_font(self.settings.font()).with_options(self.settings.options()?);
         editor.open_document(system, file)?;
         self.editors[slot] = Some(editor);
         self.update_menus(system, Some(slot))?;
@@ -314,7 +318,7 @@ impl<'a> Application<'a>
         {
             editor.set_font(system, font)?;
         }
-        self.settings = preferences::Settings::from_font(font);
+        self.settings = self.settings.with_font(font);
         self.update_menus(system, slot)?;
         if let Err(error) = self.settings.save(system)
         {
@@ -329,6 +333,59 @@ impl<'a> Application<'a>
         if matches!(event, Event::DocumentsAvailable { .. })
         {
             self.documents_pending = true;
+        }
+        if let Some((slot, dialog)) = &mut self.options
+        {
+            let slot = *slot;
+            let result = dialog.event(system, &event, position);
+            let outcome = match result
+            {
+                Ok(outcome) => outcome,
+                Err(error) =>
+                {
+                    self.options = None;
+                    Self::modal_menus(system, true)?;
+                    self.error(system, "Could not change Text Edit options", error)?;
+                    return Ok(true);
+                }
+            };
+            match outcome
+            {
+                crate::options::Outcome::Pending => (),
+                crate::options::Outcome::Cancel =>
+                {
+                    self.options = None;
+                    Self::modal_menus(system, true)?;
+                    self.update_front_menus(system)?;
+                    system.log("TEXT_EDIT_OPTIONS_CANCELLED\n")?;
+                }
+                crate::options::Outcome::Apply(settings) =>
+                {
+                    // Validate the complete native request before changing the
+                    // application's defaults or writing preferences.
+                    let editor = self.editors[slot].as_mut().ok_or(Error::NotFound)?;
+                    let applied =
+                        editor.set_font(system, settings.font())
+                              .and_then(|()| editor.set_options(system, settings.options()?));
+                    if let Err(error) = applied
+                    {
+                        self.options = None;
+                        Self::modal_menus(system, true)?;
+                        self.error(system, "Could not apply Text Edit options", error)?;
+                        return Ok(true);
+                    }
+                    self.settings = settings;
+                    self.options = None;
+                    Self::modal_menus(system, true)?;
+                    if let Err(error) = self.settings.save(system)
+                    {
+                        self.preference_error(system, 8, error)?;
+                    }
+                    self.update_front_menus(system)?;
+                    system.log("TEXT_EDIT_OPTIONS_APPLIED\n")?;
+                }
+            }
+            return Ok(true);
         }
         if let Some(alert) = &mut self.alert
         {
@@ -406,6 +463,40 @@ impl<'a> Application<'a>
                     self.open_file(system, processes::DocumentRef { volume: choice.entry.volume, id: choice.entry.id })?;
                 }
                 return Ok(true);
+            }
+            if let Some(slot) = slot
+            {
+                if command == Some(u32::from_be_bytes(*b"opts"))
+                {
+                    let editor = self.editors[slot].as_ref().ok_or(Error::NotFound)?;
+                    self.options = Some((slot,
+                                         crate::options::Options::open(system,
+                                                                       editor.font(),
+                                                                       editor.options())?));
+                    Self::modal_menus(system, false)?;
+                    return Ok(true);
+                }
+                if matches!(command, Some(value) if value == u32::from_be_bytes(*b"wrap") || value == u32::from_be_bytes(*b"lnum"))
+                {
+                    let editor = self.editors[slot].as_mut().ok_or(Error::NotFound)?;
+                    let mut options = editor.options();
+                    if command == Some(u32::from_be_bytes(*b"wrap"))
+                    {
+                        options.wrap ^= true;
+                    }
+                    else
+                    {
+                        options.line_numbers ^= true;
+                    }
+                    editor.set_options(system, options)?;
+                    self.settings = self.settings.with_options(options);
+                    if let Err(error) = self.settings.save(system)
+                    {
+                        self.preference_error(system, 8, error)?;
+                    }
+                    self.update_menus(system, Some(slot))?;
+                    return Ok(true);
+                }
             }
             if let Some(command) = command
                && self.choose_font(system, slot, command)?

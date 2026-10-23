@@ -6,6 +6,7 @@
 use mac_toolbox::*;
 
 mod editor;
+mod options;
 mod preferences;
 mod font_choices;
 mod encoding;

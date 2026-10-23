@@ -18,17 +18,25 @@ pub use crate::font_choices::{FAMILIES, SIZES};
 #[serde(deny_unknown_fields)]
 pub struct Settings
 {
-    version:     u32,
-    font_family: i16,
-    font_size:   i16
+    version:      u32,
+    font_family:  i16,
+    font_size:    i16,
+    wrap:         bool,
+    line_numbers: bool,
+    ruler_kind:   u8,
+    ruler_value:  i32
 }
 impl Default for Settings
 {
     fn default() -> Self
     {
-        Self { version:     1,
-               font_family: 4,
-               font_size:   12 }
+        Self { version:      2,
+               font_family:  4,
+               font_size:    12,
+               wrap:         true,
+               line_numbers: false,
+               ruler_kind:   0,
+               ruler_value:  0 }
     }
 }
 impl Settings
@@ -42,9 +50,44 @@ impl Settings
 
     pub fn from_font(font: FontSelection) -> Self
     {
-        Self { version:     1,
+        Self { version: 2,
                font_family: font.family,
-               font_size:   font.size }
+               font_size: font.size,
+               ..Self::default() }
+    }
+
+    pub fn with_font(mut self, font: FontSelection) -> Self
+    {
+        self.font_family = font.family;
+        self.font_size = font.size;
+        self
+    }
+
+    pub fn options(self) -> Result<textedit::DisplayOptions, Error>
+    {
+        let ruler = match (self.ruler_kind, self.ruler_value)
+        {
+            (0, 0) => textedit::Ruler::Off,
+            (1, n) if n > 0 && n <= i32::from(u16::MAX) => textedit::Ruler::Column(n as u16),
+            (2, n) if n >= 0 && n <= i32::from(i16::MAX) => textedit::Ruler::X(n as i16),
+            _ => return Err(Error::CorruptData)
+        };
+        Ok(textedit::DisplayOptions { wrap: self.wrap,
+                                      line_numbers: self.line_numbers,
+                                      ruler })
+    }
+
+    pub fn with_options(mut self, options: textedit::DisplayOptions) -> Self
+    {
+        self.wrap = options.wrap;
+        self.line_numbers = options.line_numbers;
+        (self.ruler_kind, self.ruler_value) = match options.ruler
+        {
+            textedit::Ruler::Off => (0, 0),
+            textedit::Ruler::Column(n) => (1, i32::from(n)),
+            textedit::Ruler::X(x) => (2, i32::from(x))
+        };
+        self
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Error>
@@ -52,9 +95,10 @@ impl Settings
         let (settings, used): (Self, usize) =
             serde_json_core::from_slice(bytes).map_err(|_| Error::CorruptData)?;
         if !bytes[used..].iter().all(u8::is_ascii_whitespace)
-           || settings.version != 1
+           || settings.version != 2
            || !FAMILIES.contains(&settings.font_family)
            || !SIZES.contains(&settings.font_size)
+           || settings.options().is_err()
         {
             return Err(Error::CorruptData);
         }
@@ -133,7 +177,7 @@ impl Settings
             Err(Error::NotFound) => None,
             Err(error) => return Err(error)
         };
-        let mut bytes = [0; 128];
+        let mut bytes = [0; 256];
         let length = self.encode(&mut bytes)?;
         let mut writer = system.files()
                                .create_data(DataFileSpec { volume: location.volume,

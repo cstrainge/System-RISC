@@ -2,7 +2,7 @@
 
 The application-facing `toolbox-textedit` crate contains synchronous trap
 bindings only. System owns editor text, selection, wrapping, hit testing and
-Chicago 12 metrics. Drawing lives in the resident Desktop runtime child module
+font advances. Drawing lives in the resident Desktop runtime child module
 and uses the existing resident QuickDraw and Font Manager.
 
 The first compatibility profile is plain, left-aligned Chicago 12 with its
@@ -49,8 +49,8 @@ publishing any mutation. Pascal string convenience traps convert textual
 arguments and results but retain native UTF-8 offsets. Original TEHandle layout,
 MacRoman byte indices, private scrap and A-line adaptation remain deferred.
 
-Editors require explicit `dispose`; the SDK has no destructor that can hide a
-busy-service disposal failure. IDs include a slot generation. Exhausted
+The SDK offers owned `Editor` and borrowed `EditorRef` wrappers; `Drop` releases
+an owned editor, and explicit `dispose` remains available to report errors. IDs include a slot generation. Exhausted
 sixteen-bit generations retire their slot, so stale IDs never alias replacements.
 The native profile bounds text at 32767 UTF-8 bytes and resident editors at 64.
 Text and line-layout allocations use fallible reservation. Drawing stages its
@@ -58,10 +58,32 @@ new commands before publication, while port/region clones retain the existing
 QuickDraw allocation behavior. An unsuccessful edit preserves the
 previous text, selection and layout. No client pointer survives a request.
 
-The current Desktop owns the foreground application's manager and serializes it
-under its existing guard. The manager owns only transferable Rust data. A future
-application scheduler must put a manager in each application context; this code
-does not claim that process isolation or a multi-application scheduler exists.
-Styled TextEdit, arbitrary font selection, alignment modes, word selection,
-double-click tracking, autoscroll and editable Dialog Manager items remain to
-be implemented and compared separately.
+Each application context owns its manager; System serializes service dispatch
+under the existing Desktop guard and uses the shared generation-tagged table.
+The manager owns transferable Rust data. This does not claim MMU isolation.
+Styled TextEdit, alignment modes, word selection, double-click tracking,
+autoscroll and general editable Dialog Manager items remain separate work.
+
+Native display options default to ruler off, wrapping on and numbers off, with
+unchanged classic geometry/pixels. The additional versioned request records
+leave original EditorInfo and classic TE semantics intact. The rich SDK exposes
+`DisplayOptions`, `Ruler`, capability/extended-geometry queries and two-axis
+scrolling on owned and borrowed editors. Rulers retain columns or pixels across
+font changes; the classic Monaco strikes have special narrower non-ASCII symbols,
+so column classification checks printable ASCII advances rather than trusting
+only fixed-pitch metadata. See Apple's [font type specification](https://leopard-adc.pepas.com/documentation/mac/Text/Text-251.html)
+and [TrueType post specification](https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6post.html).
+
+Edits prepare a virtual splice and rewrap only until cached starts resynchronize;
+unchanged suffix lines shift offsets/logical numbers without measuring glyphs.
+Visible retained text and port snapshots are shared across line commands. Native
+`blink` changes the retained caret and XORs cached/screen pixels inside its exact
+clip, respecting window occlusion; it does not replay text. Pending scene damage
+uses the same bounded caret damage through the compositor. Normal typing has no
+UART logging. Private checks opt in to `input-trace` and resident trace code0
+records (rewrapped bytes, snapshots, emitted commands and XOR bounds).
+
+Canonical coverage: `tests/textedit.rs`, `textedit_display.rs`,
+`text_edit_documents.rs`, `textedit_graphical.rs`, `typing.rs` and
+`textedit_performance.rs`. Performance/graphical cases use private optimized
+QEMU images; Rust owns assertions, capture scripts only transport evidence.

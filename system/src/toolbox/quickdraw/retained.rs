@@ -1,6 +1,6 @@
 //! Retained drawing shared by window content and the application-owned desktop layer.
 #![forbid(unsafe_code)]
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 
 use mac_abi::{BAD_ARGUMENT, DrawCommand, Point, Rect, Status, WindowId};
 
@@ -10,6 +10,40 @@ use super::{Canvas,
             region::{BooleanOp, Region},
             service};
 
+/// Immutable retained text: shared editor snapshots avoid one allocation per
+/// visible line and survive subsequent in-place document edits.
+pub enum TextData
+{
+    Owned(String),
+    Shared
+    {
+        source: Arc<String>,
+        range:  core::ops::Range<usize>
+    }
+}
+impl TextData
+{
+    fn as_str(&self) -> &str
+    {
+        match self
+        {
+            Self::Owned(s) => s,
+            Self::Shared { source,
+                           range } => &source[range.clone()]
+        }
+    }
+
+    fn storage(&self) -> usize
+    {
+        // Conservative charging includes the whole snapshot for each reference.
+        match self
+        {
+            Self::Owned(s) => s.len(),
+            Self::Shared { source,
+                           .. } => source.len()
+        }
+    }
+}
 pub enum RenderCommand
 {
     Legacy(alloc::boxed::Box<DrawCommand>),
@@ -20,13 +54,20 @@ pub enum RenderCommand
     Image(super::png::Drawing),
     Icon(super::icons_service::Drawing),
     Bitmap(super::bitmaps_service::BitmapDrawing),
+    Caret
+    {
+        editor: mac_abi::textedit::EditorId,
+        info:   mac_abi::textedit::EditorInfo,
+        bounds: Rect,
+        port:   service::Port
+    },
     Text
     {
         font:         mac_abi::quickdraw::FontSelection,
         baseline:     Point,
-        text:         String,
+        text:         TextData,
         color:        u32,
-        port:         service::Port,
+        port:         Arc<service::Port>,
         vertical_ink: Option<(i32, i32)>
     }
 }
@@ -43,10 +84,12 @@ impl RenderCommand
             Self::Picture(p) => p.storage(),
             Self::Image(i) => i.storage(),
             Self::Icon(i) => i.storage(),
+            Self::Caret { port,
+                          .. } => port.storage() + 96,
             Self::Bitmap(b) => b.storage() + b.port.storage(),
             Self::Text { text,
                          port,
-                         .. } => text.len() + port.storage() + 32
+                         .. } => text.storage() + port.storage() + 32
         }
     }
 
@@ -55,6 +98,18 @@ impl RenderCommand
     {
         match self
         {
+            Self::Caret { bounds,
+                          port,
+                          info,
+                          .. } =>
+            {
+                if info.active != 0
+                   && info.caret_visible != 0
+                   && info.selection_start == info.selection_end
+                {
+                    service::with_clip(canvas, port, |canvas| canvas.invert_rect(*bounds));
+                }
+            }
             Self::Legacy(c) => legacy(canvas, c),
             Self::Control(c) => c.paint(canvas),
             Self::ScrollBox(c) => c.paint(canvas),
@@ -105,7 +160,7 @@ impl RenderCommand
                         let _ = fonts.draw(fonts_service::selection(*font),
                                            canvas,
                                            *baseline,
-                                           text,
+                                           text.as_str(),
                                            *color);
                     });
                 }
@@ -164,6 +219,56 @@ impl Content
     pub fn iter_commands_mut(&mut self) -> impl Iterator<Item = &mut RenderCommand>
     {
         self.fragments.iter_mut().flat_map(|f| f.commands.iter_mut()).chain(&mut self.commands)
+    }
+
+    pub fn blink_caret(&mut self, editor: mac_abi::textedit::EditorId,
+                       before: mac_abi::textedit::EditorInfo, after: mac_abi::textedit::EditorInfo)
+                       -> Option<Region>
+    {
+        fn toggle(commands: &mut [RenderCommand], mask: Option<&Region>,
+                  editor: mac_abi::textedit::EditorId, before: mac_abi::textedit::EditorInfo,
+                  after: mac_abi::textedit::EditorInfo, damage: &mut Region, found: &mut bool)
+        {
+            for command in commands
+            {
+                if let RenderCommand::Caret { editor: id,
+                                              info,
+                                              bounds,
+                                              port } = command
+                   && *id == editor
+                   && *info == before
+                {
+                    *info = after;
+                    *found = true;
+                    let mut region = Region::from_rect(*bounds);
+                    if let Some(clip) = &port.state.clip
+                    {
+                        region = region.combine(clip, BooleanOp::Intersection);
+                    }
+                    if let Ok(region) = region.offset(port.origin.h, port.origin.v)
+                    {
+                        let region =
+                            mask.map_or_else(|| region.clone(),
+                                             |mask| region.combine(mask, BooleanOp::Intersection));
+                        *damage = damage.combine(&region, BooleanOp::Union);
+                    }
+                }
+            }
+        }
+        let mut damage = Region::from_rect(Rect::ZERO);
+        let mut found = false;
+        for fragment in &mut self.fragments
+        {
+            toggle(&mut fragment.commands,
+                   Some(&fragment.clip),
+                   editor,
+                   before,
+                   after,
+                   &mut damage,
+                   &mut found);
+        }
+        toggle(&mut self.commands, None, editor, before, after, &mut damage, &mut found);
+        found.then_some(damage)
     }
 
     pub fn retain_commands(&mut self, mut keep: impl FnMut(&RenderCommand) -> bool)

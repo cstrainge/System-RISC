@@ -165,6 +165,34 @@ impl Manager
                          })
     }
 
+    pub fn display_request(&mut self, call: &mut TextEditDisplayCall) -> Status
+    {
+        let result = (|| {
+            if call.options.version != DISPLAY_VERSION
+            {
+                return Err(NOT_SUPPORTED);
+            }
+            if call.operation == DISPLAY_CAPABILITIES
+            {
+                call.geometry.features = DISPLAY_FEATURES;
+                return Ok(());
+            }
+            let editor = self.inspect_mut(call.id).ok_or(NOT_FOUND)?;
+            match call.operation
+            {
+                GET_DISPLAY | DISPLAY_INFO => (),
+                SET_DISPLAY => editor.set_display(call.options)?,
+                SCROLL_AXES => editor.scroll_axes(call.x, call.y),
+                _ => return Err(NOT_SUPPORTED)
+            }
+            call.info = editor.info();
+            call.options = editor.display_options();
+            call.geometry = editor.display_geometry();
+            Ok(())
+        })();
+        result.map_or_else(|status| status, |()| OK)
+    }
+
     pub fn font_request(&mut self, call: &mut TextEditFontCall,
                         fonts: &crate::toolbox::quickdraw::fonts::FontManager)
                         -> Status
@@ -318,7 +346,7 @@ impl Manager
                                 call.index != 0)?;
             }
             SELECT => editor.select(call.info.selection_start, call.info.selection_end)?,
-            LINE => call.line = *editor.lines().get(call.index as usize).ok_or(NOT_FOUND)?,
+            LINE => call.line = editor.lines().get(call.index as usize).ok_or(NOT_FOUND)?.classic,
             OFFSET => call.index = editor.offset(call.point),
             POINT => call.point = editor.point(call.index)?,
             SCROLL => editor.scroll(call.delta)?,

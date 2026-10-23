@@ -258,6 +258,11 @@ impl<'a> Client<'a>
         status(self.invoke(FILE, call))
     }
 
+    pub fn textedit_display(self, call: &mut textedit::TextEditDisplayCall) -> Result<()>
+    {
+        status(self.invoke(TEXTEDIT, call))
+    }
+
     pub fn textedit_font(self, call: &mut textedit::TextEditFontCall) -> Result<()>
     {
         status(self.invoke(TEXTEDIT, call))

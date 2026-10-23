@@ -258,7 +258,34 @@
         "strings": [
           "Text Edit",
           "TextEdit runs inside System.\rSelect text, type, or use Edit to cut, copy and paste.\rThis window uses the public Rust Toolbox API.",
-          "Chicago 12  \u2022  Drag to select  \u2022  Ctrl-X / C / V / A"
+          "Chicago 12  •  Drag to select  •  Ctrl-X / C / V / A"
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 132,
+      "symbol": "VIEW_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "View",
+        "items": [
+          {
+            "text": "Wrap Lines",
+            "command": "wrap",
+            "enabled": true
+          },
+          {
+            "text": "Line Numbers",
+            "command": "lnum",
+            "enabled": true
+          },
+          "-",
+          {
+            "text": "Options...",
+            "command": "opts",
+            "enabled": true
+          }
         ]
       }
     }

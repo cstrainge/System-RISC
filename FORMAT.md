@@ -479,7 +479,26 @@ Its paired Pascal trap converts strings only; it retains native UTF8 offsets.
 This is separate from original TEHandle, counted MacRoman and private TE scrap
 A-line conventions. Native Copy/Cut/Paste use the shared System clipboard.
 Drawing appends a clipped snapshot to the window's retained update; clients
-erase and redraw inside BeginUpdate/EndUpdate after edits or caret transitions.
+erase and redraw inside BeginUpdate/EndUpdate after edits. Native `BLINK` (27)
+services idle and XORs only the committed caret pixels, preserving retained/cache
+state, occlusion and clipping; its `index` reply requests drawing only when the
+caret's committed snapshot is stale. The original `IDLE` operation remains a
+model-only classic-compatible call.
+
+Native display calls use a size-distinct `TextEditDisplayCall`: GET_DISPLAY28,
+SET_DISPLAY29, DISPLAY_CAPABILITIES30, DISPLAY_INFO31 and SCROLL_AXES32. Version1
+options carry checked wrapping/line-number booleans and a ruler mode (0 off,
+1 positive u16 columns,2 nonnegative i16 text-space pixels). Unsupported versions
+or option kinds return NOT_SUPPORTED; malformed values return BAD_ARGUMENT,
+without changing the editor. The extended geometry reports both scroll axes,
+effective text view, logical CR-line count, gutter width, ruler x and fixed-ASCII
+column advance. Existing `EditorInfo`, `LineInfo` and legacy traps are unchanged.
+Defaults remain ruler off, wrap on, numbers off. Horizontal extents use wide
+cached advances; legacy line widths retain their signed16-bit saturation.
+Numbers count logical lines rather than wrapped rows. Gutter digit-width changes
+reflow once; presentation only visits visible rows. Each edit rewraps from its
+affected line to a matching unchanged line start, then shifts cached suffix
+metadata. All fallible allocation is prepared before committing a splice.
 See `system/src/toolbox/textedit/README.md` for the captured profile and gaps.
 
 CRASH0x1001f is a new System RISC native service, outside every classic16-bit
@@ -1397,3 +1416,12 @@ and extensionless native names. The initial registry is `Preferences/File Types`
 Text Edit uses `Preferences/Text Edit Preferences` with schema version1,
 `font_family` and `font_size`. Its default is Monaco12. JSON/TEXT are declared
 Text Edit document types; font/view settings never modify document contents.
+
+
+Text Edit preferences use strict JSON version2 with `font_family`, `font_size`,
+`wrap`, `line_numbers`, `ruler_kind` and `ruler_value`. Unknown fields, invalid
+values and earlier schemas are rejected; recreate preferences with a rebuilt
+installation. The extensionless preference document retains JSON/TEDT metadata.
+Normal release builds omit input/state logging. `text-edit/input-trace` is an
+explicit diagnostic feature; `cargo xtask check` enables it only in private check
+media (alongside resident tracing). Neither diagnostic is required for normal use.

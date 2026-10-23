@@ -1,9 +1,12 @@
 //! Drain consecutive keyboard input before committing the editor's next frame.
+#[cfg(feature = "input-trace")]
 use core::fmt::Write;
 
 use mac_toolbox::*;
 
-use crate::{Text, editor};
+#[cfg(feature = "input-trace")]
+use crate::Text;
+use crate::editor;
 
 pub fn is_keyboard(kind: &Event) -> bool
 {
@@ -50,6 +53,7 @@ pub fn keyboard<'a>(system: &System<'a>, editor: &mut editor::Editor<'a>, first:
         }
     }
     editor.flush_drawing(system)?;
+    #[cfg(feature = "input-trace")]
     if keys != 0
     {
         let mut message = Text::<64>::default();

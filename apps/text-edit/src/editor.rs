@@ -1,4 +1,5 @@
 //! Interactive editor using only resident TextEdit and the public Toolbox SDK.
+#[cfg(feature = "input-trace")]
 use core::fmt::Write;
 
 use mac_toolbox::{textedit::{CursorMovement, EditorId},
@@ -8,23 +9,28 @@ use mac_toolbox::{textedit::{CursorMovement, EditorId},
 #[derive(Default)]
 pub struct Editor<'a>
 {
-    pub window:     WindowId,
-    editor:         Option<textedit::Editor<'a>>,
-    scrollbar:      Option<controls::Control<'a>>,
-    owner:          Option<windows::Window<'a>>,
-    pub document:   Option<processes::DocumentRef>,
-    file_type:      TypeCode,
-    saved_revision: u64,
-    ending:         crate::encoding::LineEnding,
-    font:           quickdraw::fonts::FontSelection,
-    size:           Point,
-    tracking:       bool,
-    last_mouse:     Point,
-    ticks:          u32,
-    defer_drawing:  bool,
-    draw_pending:   bool,
-    reveal:         bool,
-    report_pending: bool
+    pub window:       WindowId,
+    editor:           Option<textedit::Editor<'a>>,
+    scrollbar:        Option<controls::Control<'a>>,
+    scrollbar_state:  Option<(controls::ScrollbarState, i16)>,
+    horizontal:       Option<controls::Control<'a>>,
+    horizontal_state: Option<(controls::ScrollbarState, i16)>,
+    horizontal_scale: u32,
+    options:          textedit::DisplayOptions,
+    owner:            Option<windows::Window<'a>>,
+    pub document:     Option<processes::DocumentRef>,
+    file_type:        TypeCode,
+    saved_revision:   u64,
+    ending:           crate::encoding::LineEnding,
+    font:             quickdraw::fonts::FontSelection,
+    size:             Point,
+    tracking:         bool,
+    last_mouse:       Point,
+    ticks:            u32,
+    defer_drawing:    bool,
+    draw_pending:     bool,
+    reveal:           bool,
+    report_pending:   bool
 }
 impl<'a> Editor<'a>
 {
@@ -32,6 +38,30 @@ impl<'a> Editor<'a>
     {
         Self { font,
                ..Default::default() }
+    }
+
+    pub fn options(&self) -> textedit::DisplayOptions
+    {
+        self.options
+    }
+
+    pub fn set_options(&mut self, system: &System<'a>, options: textedit::DisplayOptions)
+                       -> Result<(), Error>
+    {
+        if options == self.options
+        {
+            return Ok(());
+        }
+        system.textedit().set_display_options(self.id(), options)?;
+        self.options = options;
+        self.size = Point::default();
+        self.draw(system)
+    }
+
+    pub fn with_options(mut self, options: textedit::DisplayOptions) -> Self
+    {
+        self.options = options;
+        self
     }
 
     fn id(&self) -> EditorId
@@ -52,12 +82,14 @@ impl<'a> Editor<'a>
                 scrollbar.control().dispose()?;
             }
             self.scrollbar = None;
+            self.horizontal = None;
             self.owner.as_mut().ok_or(Error::BadAbi)?.close()?;
             *self = Self::default();
         }
         Ok(())
     }
 
+    #[cfg(feature = "input-trace")]
     fn report(&mut self, system: &System<'a>) -> Result<(), Error>
     {
         if self.defer_drawing
@@ -71,6 +103,12 @@ impl<'a> Editor<'a>
                          "FINDER_TEXTEDIT_STATE length={} selection={}..{}",
                          info.text_length, info.selection_start, info.selection_end);
         system.log(line.as_str())
+    }
+
+    #[cfg(not(feature = "input-trace"))]
+    fn report(&mut self, _system: &System<'a>) -> Result<(), Error>
+    {
+        Ok(())
     }
 
     /// Apply queued edits immediately, committing their final drawing together.
@@ -287,6 +325,7 @@ impl<'a> Editor<'a>
             };
             self.saved_revision = editor.set_text(sample)?.content_revision;
             system.textedit().set_font(editor.id(), self.font)?;
+            editor.set_display_options(self.options)?;
             self.window = window;
             self.editor = Some(editor);
             self.owner = Some(owner);
@@ -372,21 +411,29 @@ impl<'a> Editor<'a>
         let size = Point { h: window.bounds.right - window.bounds.left,
                            v: window.bounds.bottom - window.bounds.top };
         let full = size != self.size;
-        let view = Rect::new(8, 8, size.h - 23, size.v - 24);
+        let bottom = size.v - if self.options.wrap { 0 } else { 15 };
+        // Numbering owns an edge-to-edge gutter; text retains its top inset.
+        let view = Rect::new(if self.options.line_numbers { 0 } else { 8 },
+                             if self.options.line_numbers { 0 } else { 8 },
+                             size.h - 16,
+                             bottom);
+        let dest = Rect::new(view.left, 8, view.right, view.bottom);
         if full
         {
-            system.textedit().set_rects(self.id(), view, view)?;
-            let info = self.info(system)?;
-            system.textedit().scroll_to(self.id(), info.scroll_y)?;
+            system.textedit().set_rects(self.id(), dest, view)?;
+
             system.windows().set_grow_icon_clip(self.window,
                                                  Some(Rect::new(size.h - 15,
                                                                 size.v - 15,
                                                                 size.h,
                                                                 size.v)))?;
             self.size = size;
-            let mut line = crate::Text::<96>::default();
-            writeln!(&mut line, "FINDER_TEXTEDIT_LAYOUT width={} height={}",size.h,size.v).map_err(|_|Error::NoMemory)?;
-            system.log(line.as_str())?;
+            #[cfg(feature = "input-trace")]
+            {
+                let mut line = crate::Text::<96>::default();
+                writeln!(&mut line, "FINDER_TEXTEDIT_LAYOUT width={} height={}",size.h,size.v).map_err(|_|Error::NoMemory)?;
+                system.log(line.as_str())?;
+            }
         }
         if core::mem::take(&mut self.reveal)
         {
@@ -410,12 +457,58 @@ impl<'a> Editor<'a>
         let page = (visible - 1).max(1).min(i16::MAX as i32) as i16;
         if let Some(control) = &self.scrollbar
         {
-            control.control().configure_scrollbar(state, 1, page)?;
+            if self.scrollbar_state != Some((state, page))
+            {
+                control.control().configure_scrollbar(state, 1, page)?;
+            }
         }
         else
         {
             self.scrollbar =
                 Some(system.controls().create_scrollbar(self.window, state, 1, page)?);
+        }
+        self.scrollbar_state = Some((state, page));
+        if !self.options.wrap
+        {
+            let horizontal = system.textedit().display_info(self.id())?;
+            let scale = horizontal.scroll_max_x.div_ceil(i16::MAX as u32).max(1);
+            let maximum = horizontal.scroll_max_x.div_ceil(scale).min(i16::MAX as u32) as i16;
+            let hstate = controls::ScrollbarState { bounds: Rect::new(-1,
+                                                                      size.v - 15,
+                                                                      size.h - 14,
+                                                                      size.v + 1),
+                                                    value: horizontal.scroll_x
+                                                                     .div_ceil(scale)
+                                                                     .min(maximum as u32)
+                                                           as i16,
+                                                    maximum,
+                                                    active: u32::from(info.active
+                                                                      && maximum != 0),
+                                                    ..Default::default() };
+            let hpage =
+                ((i32::from(view.right) - i32::from(view.left)).max(1) as u32 / scale).max(1)
+                                                                                      .min(i16::MAX
+                                                                                           as u32)
+                as i16;
+            if let Some(control) = &self.horizontal
+            {
+                if self.horizontal_state != Some((hstate, hpage))
+                {
+                    control.control().configure_scrollbar(hstate, 1, hpage)?;
+                }
+            }
+            else
+            {
+                self.horizontal =
+                    Some(system.controls().create_scrollbar(self.window, hstate, 1, hpage)?);
+            }
+            self.horizontal_scale = scale;
+            self.horizontal_state = Some((hstate, hpage));
+        }
+        else
+        {
+            self.horizontal = None;
+            self.horizontal_state = None;
         }
         let port = system.quickdraw().graphics(self.window);
         let bounds = if full { Rect::new(0, 0, size.h, size.v) } else { view };
@@ -426,19 +519,11 @@ impl<'a> Editor<'a>
         system.textedit().draw(self.id(), self.window)?;
         if full
         {
-            port.colors(0, 0xffffff)?;
-            let mut bytes = [0; 768];
-            let footer = crate::text(system, 2, &mut bytes)?;
-            port.clip_rect(Rect::new(0, size.v - 20, size.h - 16, size.v))?;
-            port.text(quickdraw::fonts::FontSelection { family: 3,
-                                                        size:   9,
-                                                        face:   0 },
-                      Point { h: 8,
-                              v: size.v - 7 },
-                      footer,
-                      0)?;
-            port.reset()?;
             self.scrollbar.as_ref().ok_or(Error::BadAbi)?.control().draw()?;
+            if let Some(horizontal) = &self.horizontal
+            {
+                horizontal.control().draw()?;
+            }
         }
         port.reset()?;
         update.commit()
@@ -529,6 +614,21 @@ impl<'a> Editor<'a>
                         return Ok(true);
                     }
                 }
+                if let Some(control) = self.horizontal.as_ref().map(|owner| owner.control())
+                {
+                    if control.track_at(local, |state| {
+                                  let info = self.info(system)?;
+                                  system.textedit().scroll_axes(self.id(),
+                                                                 state.scrollbar.value.max(0)
+                                                                 as u32
+                                                                 * self.horizontal_scale,
+                                                                 info.scroll_y)?;
+                                  self.draw(system)
+                              })?
+                    {
+                        return Ok(true);
+                    }
+                }
                 self.last_mouse = event.input().at;
                 edit.click(self.id(),
                            position.in_window(self.window)?.point()?,
@@ -611,14 +711,13 @@ impl<'a> Editor<'a>
             }
             Event::Idle { .. } =>
             {
-                let before = edit.info(self.id())?;
                 if self.tracking && event.input().at != self.last_mouse
                 {
                     edit.click(self.id(), position.in_window(self.window)?.point()?, true)?;
                     self.last_mouse = event.input().at;
+                    self.draw(system)?;
                 }
-                let after = edit.idle(self.id(), event.input().when)?;
-                if before != after
+                if edit.blink(self.id(), self.window, event.input().when)?
                 {
                     self.draw(system)?;
                 }

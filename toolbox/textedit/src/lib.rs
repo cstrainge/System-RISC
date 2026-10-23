@@ -8,6 +8,126 @@ pub use mac_abi::{Point, Rect, WindowId,
                   textedit::{CursorMovement, EditorId, MAX_BYTES, MAX_EDITORS}};
 pub use mac_traps::{Client, Error, Result};
 
+/// Text-space ruler. The selected mode is retained across font changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Ruler
+{
+    #[default]
+    Off,
+    Column(u16),
+    X(i16)
+}
+/// Opt-in presentation. Defaults preserve classic geometry and pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayOptions
+{
+    pub wrap:         bool,
+    pub line_numbers: bool,
+    pub ruler:        Ruler
+}
+impl Default for DisplayOptions
+{
+    fn default() -> Self
+    {
+        Self { wrap:         true,
+               line_numbers: false,
+               ruler:        Ruler::Off }
+    }
+}
+impl DisplayOptions
+{
+    pub const fn wrapping(mut self, enabled: bool) -> Self
+    {
+        self.wrap = enabled;
+        self
+    }
+
+    pub const fn numbered(mut self, enabled: bool) -> Self
+    {
+        self.line_numbers = enabled;
+        self
+    }
+
+    pub const fn ruler(mut self, ruler: Ruler) -> Self
+    {
+        self.ruler = ruler;
+        self
+    }
+
+    fn raw(self) -> mac_abi::textedit::DisplayOptions
+    {
+        let (ruler_kind, ruler_value) = match self.ruler
+        {
+            Ruler::Off => (0, 0),
+            Ruler::Column(n) => (1, i32::from(n)),
+            Ruler::X(x) => (2, i32::from(x))
+        };
+        mac_abi::textedit::DisplayOptions { wrap: u32::from(self.wrap),
+                                            line_numbers: u32::from(self.line_numbers),
+                                            ruler_kind,
+                                            ruler_value,
+                                            ..Default::default() }
+    }
+
+    fn from_raw(raw: mac_abi::textedit::DisplayOptions) -> Result<Self>
+    {
+        if raw.version != DISPLAY_VERSION || raw.wrap > 1 || raw.line_numbers > 1
+        {
+            return Err(Error::BadAbi);
+        }
+        let ruler = match raw.ruler_kind
+        {
+            0 => Ruler::Off,
+            1 => Ruler::Column(u16::try_from(raw.ruler_value).map_err(|_| Error::BadAbi)?),
+            2 => Ruler::X(i16::try_from(raw.ruler_value).map_err(|_| Error::BadAbi)?),
+            _ => return Err(Error::BadAbi)
+        };
+        Ok(Self { wrap: raw.wrap != 0,
+                  line_numbers: raw.line_numbers != 0,
+                  ruler })
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayCapabilities
+{
+    pub version:           u32,
+    pub ruler:             bool,
+    pub wrap:              bool,
+    pub line_numbers:      bool,
+    pub horizontal_scroll: bool
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayInfo
+{
+    pub editor:        EditorInfo,
+    pub options:       DisplayOptions,
+    pub text_view:     Rect,
+    pub scroll_x:      u32,
+    pub scroll_max_x:  u32,
+    pub logical_lines: u32,
+    pub gutter_width:  u32,
+    pub ruler_x:       Option<i32>,
+    pub column_width:  u32,
+    pub monospaced:    bool
+}
+impl DisplayInfo
+{
+    fn from_call(call: TextEditDisplayCall) -> Result<Self>
+    {
+        let g = call.geometry;
+        Ok(Self { editor:        call.info.into(),
+                  options:       DisplayOptions::from_raw(call.options)?,
+                  text_view:     g.text_view,
+                  scroll_x:      g.scroll_x,
+                  scroll_max_x:  g.scroll_max_x,
+                  logical_lines: g.logical_lines,
+                  gutter_width:  g.gutter_width,
+                  ruler_x:       (call.options.ruler_kind != 0).then_some(g.ruler_x),
+                  column_width:  g.column_width,
+                  monospaced:    g.monospaced != 0 })
+    }
+}
+
 /// Native editor snapshot. Boolean state and layout data do not expose requests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EditorInfo
@@ -157,6 +277,85 @@ impl<'a> TextEdit<'a>
                                           ..Default::default() };
         self.client.textedit_font(&mut call)?;
         Ok(call.info.into())
+    }
+
+    /// Service idle blinking in the System without replaying text. Returns true
+    /// when a blink needs a current committed drawing. Edits still need drawing.
+    pub fn blink(self, id: EditorId, window: WindowId, ticks: u32) -> Result<bool>
+    {
+        Ok(self.request(TextEditCall { id,
+                                       window,
+                                       operation: BLINK,
+                                       ticks,
+                                       ..Default::default() },
+                        "",
+                        &mut [])?
+               .index
+           != 0)
+    }
+
+    fn display_request(self, id: EditorId, operation: u32, options: DisplayOptions, x: u32, y: u32)
+                       -> Result<TextEditDisplayCall>
+    {
+        let mut call = TextEditDisplayCall { id,
+                                             operation,
+                                             options: options.raw(),
+                                             x,
+                                             y,
+                                             ..Default::default() };
+        self.client.textedit_display(&mut call)?;
+        Ok(call)
+    }
+
+    pub fn display_capabilities(self) -> Result<DisplayCapabilities>
+    {
+        let call = self.display_request(EditorId(0),
+                                        DISPLAY_CAPABILITIES,
+                                        DisplayOptions::default(),
+                                        0,
+                                        0)?;
+        let f = call.geometry.features;
+        Ok(DisplayCapabilities { version:           call.options.version,
+                                 ruler:             f & 1 != 0,
+                                 wrap:              f & 2 != 0,
+                                 line_numbers:      f & 4 != 0,
+                                 horizontal_scroll: f & 8 != 0 })
+    }
+
+    pub fn display_info(self, id: EditorId) -> Result<DisplayInfo>
+    {
+        DisplayInfo::from_call(self.display_request(id,
+                                                    DISPLAY_INFO,
+                                                    DisplayOptions::default(),
+                                                    0,
+                                                    0)?)
+    }
+
+    pub fn display_options(self, id: EditorId) -> Result<DisplayOptions>
+    {
+        Ok(self.display_info(id)?.options)
+    }
+
+    pub fn set_display_options(self, id: EditorId, options: DisplayOptions) -> Result<DisplayInfo>
+    {
+        DisplayInfo::from_call(self.display_request(id, SET_DISPLAY, options, 0, 0)?)
+    }
+
+    pub fn scroll_axes(self, id: EditorId, x: u32, y: u32) -> Result<DisplayInfo>
+    {
+        DisplayInfo::from_call(self.display_request(id,
+                                                    SCROLL_AXES,
+                                                    DisplayOptions::default(),
+                                                    x,
+                                                    y)?)
+    }
+
+    pub fn create_owned_with_options(self, dest: Rect, view: Rect, options: DisplayOptions)
+                                     -> Result<Editor<'a>>
+    {
+        let editor = self.create_owned(dest, view)?;
+        editor.set_display_options(options)?;
+        Ok(editor)
     }
 
     pub fn set_text(self, id: EditorId, text: &str) -> Result<EditorInfo>
@@ -468,6 +667,36 @@ impl Drop for Editor<'_>
 
 impl EditorRef<'_>
 {
+    pub fn display_capabilities(self) -> Result<DisplayCapabilities>
+    {
+        TextEdit::new(self.client).display_capabilities()
+    }
+
+    pub fn display_info(self) -> Result<DisplayInfo>
+    {
+        TextEdit::new(self.client).display_info(self.id)
+    }
+
+    pub fn display_options(self) -> Result<DisplayOptions>
+    {
+        TextEdit::new(self.client).display_options(self.id)
+    }
+
+    pub fn set_display_options(self, options: DisplayOptions) -> Result<DisplayInfo>
+    {
+        TextEdit::new(self.client).set_display_options(self.id, options)
+    }
+
+    pub fn scroll_axes(self, x: u32, y: u32) -> Result<DisplayInfo>
+    {
+        TextEdit::new(self.client).scroll_axes(self.id, x, y)
+    }
+
+    pub fn blink(self, window: WindowId, ticks: u32) -> Result<bool>
+    {
+        TextEdit::new(self.client).blink(self.id, window, ticks)
+    }
+
     pub fn id(self) -> EditorId
     {
         self.id

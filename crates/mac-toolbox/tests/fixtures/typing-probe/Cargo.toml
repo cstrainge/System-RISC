@@ -7,6 +7,10 @@ build = "build.rs"
 
 [workspace]
 
+[features]
+performance = []
+input-trace = []
+
 [[bin]]
 name = "Finder"
 path = "src/main.rs"

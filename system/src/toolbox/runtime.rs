@@ -1427,9 +1427,9 @@ impl Desktop
         call.width = fonts.text_width(fonts_service::selection(call.selection), text)?;
         content.commands.push(RenderCommand::Text { font:     call.selection,
                                                     baseline: call.baseline,
-                                                    text:     String::from(text),
+                                                    text:     super::quickdraw::retained::TextData::Owned(String::from(text)),
                                                     color:    call.color,
-                                                    port:     content.port.clone(),
+                                                    port:     alloc::sync::Arc::new(content.port.clone()),
                                                     vertical_ink: fonts.vertical_ink_bounds(fonts_service::selection(call.selection)).ok().flatten() });
         self.content_changed(call.window);
         Ok(())
@@ -2211,6 +2211,7 @@ impl Desktop
 
     fn compose_cursor(&mut self, full: bool, mut damaged: Vec<Rect>)
     {
+        let cursor_changed = self.cursor_dirty;
         let text_cursor = self.text_cursor_at_mouse().then_some(self.text_cursor);
         let cursor =
             if self.responsiveness.active() { &mut self.busy_cursor } else { &mut self.cursors };
@@ -2242,7 +2243,15 @@ impl Desktop
             }
             else
             {
-                Region::from_rectangles(damaged.iter().copied().chain([self.cursor_bounds, bounds]))
+                Region::from_rectangles(damaged.iter().copied().chain(if cursor_changed
+                                                                      {
+                                                                          [self.cursor_bounds,
+                                                                           bounds]
+                                                                      }
+                                                                      else
+                                                                      {
+                                                                          [Rect::ZERO; 2]
+                                                                      }))
             };
             if let Some((window, rect)) = drag_highlight
             {
@@ -2258,8 +2267,21 @@ impl Desktop
                 self.outline_under.paint(&mut canvas, &self.windows, desktop_outline, &damage);
             }
         }
-        let under = super::quickdraw::overlay::CursorUnder::capture(&canvas, bounds);
-        cursor.draw_auto(&mut canvas, self.events.mouse, text_cursor);
+        let cursor_affected =
+            full
+            || cursor_changed
+            || damaged.iter().any(|&rect| {
+                                 let mut hit = Rect::ZERO;
+                                 super::quickdraw::geometry::sect_rect(rect, bounds, &mut hit)
+                             });
+        let under = cursor_affected.then(|| {
+                                       super::quickdraw::overlay::CursorUnder::capture(&canvas,
+                                                                                       bounds)
+                                   });
+        if cursor_affected
+        {
+            cursor.draw_auto(&mut canvas, self.events.mouse, text_cursor);
+        }
         if full
         {
             platform::present(canvas.pixels);
@@ -2267,9 +2289,19 @@ impl Desktop
         else
         {
             platform::present_rects(canvas.pixels,
-                                    damaged.iter().copied().chain([self.cursor_bounds, bounds]));
+                                    damaged.iter().copied().chain(if cursor_changed
+                                                                  {
+                                                                      [self.cursor_bounds, bounds]
+                                                                  }
+                                                                  else
+                                                                  {
+                                                                      [Rect::ZERO; 2]
+                                                                  }));
         }
-        under.restore(&mut canvas);
+        if let Some(under) = under
+        {
+            under.restore(&mut canvas);
+        }
         if outline_visible
         {
             self.outline_under.restore(&mut canvas);

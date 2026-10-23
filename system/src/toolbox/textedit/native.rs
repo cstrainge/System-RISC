@@ -5,7 +5,8 @@ use super::Manager;
 pub enum Request<'a>
 {
     Edit(&'a mut TextEditCall, &'a str, &'a mut [u8]),
-    Font(&'a mut TextEditFontCall)
+    Font(&'a mut TextEditFontCall),
+    Display(&'a mut TextEditDisplayCall)
 }
 /// # Safety
 /// Request and nested buffers must be valid, non-overlapping borrowed storage
@@ -17,7 +18,8 @@ pub unsafe fn dispatch(manager: &mut Manager, number: u32, pointer: *mut (), siz
             match request
             {
                 Request::Edit(call, input, output) => manager.request(call, input, output),
-                Request::Font(_) => NOT_SUPPORTED
+                Request::Font(_) => NOT_SUPPORTED,
+                Request::Display(call) => manager.display_request(call)
             }
         })
     }
@@ -31,6 +33,17 @@ pub unsafe fn dispatch_with(number: u32, pointer: *mut (), size: usize,
     if number != TEXTEDIT
     {
         return NOT_SUPPORTED as i64;
+    }
+    if size == core::mem::size_of::<TextEditDisplayCall>()
+    {
+        if pointer.is_null()
+           || !(pointer as usize).is_multiple_of(core::mem::align_of::<TextEditDisplayCall>())
+        {
+            return BAD_ARGUMENT as i64;
+        }
+        // SAFETY: size/alignment validated above; caller lends this complete record.
+        let call = unsafe { &mut *pointer.cast::<TextEditDisplayCall>() };
+        return request(Request::Display(call)) as i64;
     }
     if size == core::mem::size_of::<TextEditFontCall>()
     {

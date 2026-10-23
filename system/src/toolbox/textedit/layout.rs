@@ -18,9 +18,10 @@ fn resident(selection: FontSelection) -> crate::toolbox::quickdraw::fonts::FontS
 #[derive(Default)]
 pub(super) struct Font
 {
-    selected: Option<FontSelection>,
-    metrics:  FontMetrics,
-    advances: Vec<(char, i16)>
+    selected:       Option<FontSelection>,
+    metrics:        FontMetrics,
+    advances:       Vec<(char, i16)>,
+    pub monospaced: bool
 }
 impl Font
 {
@@ -39,7 +40,9 @@ impl Font
         }
         let mut font = Self { selected: Some(selection),
                               metrics,
-                              advances: Vec::new() };
+                              advances: Vec::new(),
+                              monospaced: fonts.is_monospaced(resident(selection))? };
+        font.prepare(" 0123456789", fonts)?;
         font.prepare(text, fonts)?;
         Ok(font)
     }
@@ -108,7 +111,13 @@ impl Font
         advances.extend_from_slice(&self.advances);
         Ok(Self { selected: self.selected,
                   metrics: self.metrics,
-                  advances })
+                  advances,
+                  monospaced: self.monospaced })
+    }
+
+    pub fn width_wide(&self, text: &str) -> u32
+    {
+        text.chars().map(|c| u32::from(self.width(c.encode_utf8(&mut [0; 4])).max(0) as u16)).sum()
     }
 
     pub fn width(&self, text: &str) -> i16
@@ -126,19 +135,80 @@ impl Font
                     })
     }
 }
-pub(super) fn lines(text: &str, maximum: i32, font: &Font) -> Result<Vec<LineInfo>, Status>
+#[derive(Clone, Copy, Default)]
+pub(in crate::toolbox) struct Line
 {
-    let mut result = Vec::new();
-    result.try_reserve_exact(text.chars().count().saturating_add(1)).map_err(|_| NO_MEMORY)?;
-    let mut start = 0;
-    while start < text.len()
+    pub classic: LineInfo,
+    pub extent:  u32,
+    pub logical: u32,
+    pub first:   bool
+}
+impl core::ops::Deref for Line
+{
+    type Target = LineInfo;
+
+    fn deref(&self) -> &LineInfo
+    {
+        &self.classic
+    }
+}
+impl core::ops::DerefMut for Line
+{
+    fn deref_mut(&mut self) -> &mut LineInfo
+    {
+        &mut self.classic
+    }
+}
+
+/// A proposed splice is read without copying or mutating the document. Layout
+/// allocations can fail without leaving the editor partly changed.
+pub(super) struct Splice<'a>
+{
+    pub prefix: &'a str,
+    pub input:  &'a str,
+    pub suffix: &'a str
+}
+impl Splice<'_>
+{
+    fn len(&self) -> usize
+    {
+        self.prefix.len() + self.input.len() + self.suffix.len()
+    }
+
+    fn chars(&self, start: usize) -> impl Iterator<Item = (usize, char)> + '_
+    {
+        let middle = self.prefix.len();
+        let tail = middle + self.input.len();
+        fn part(text: &str, base: usize, start: usize) -> impl Iterator<Item = (usize, char)> + '_
+        {
+            let at = start.saturating_sub(base).min(text.len());
+            text[at..].char_indices().map(move |(offset, ch)| (base + at + offset, ch))
+        }
+        part(self.prefix, 0, start).chain(part(self.input, middle, start))
+                                   .chain(part(self.suffix, tail, start))
+    }
+
+    fn byte(&self, at: usize) -> Option<u8>
+    {
+        if at < self.prefix.len()
+        {
+            return self.prefix.as_bytes().get(at).copied();
+        }
+        let at = at - self.prefix.len();
+        if at < self.input.len()
+        {
+            return self.input.as_bytes().get(at).copied();
+        }
+        self.suffix.as_bytes().get(at - self.input.len()).copied()
+    }
+
+    fn line(&self, start: usize, maximum: i32, font: &Font, logical: u32) -> Line
     {
         let mut end = start;
         let mut advance = 0i32;
         let mut last_space = None;
-        for (relative, character) in text[start..].char_indices()
+        for (at, character) in self.chars(start)
         {
-            let at = start + relative;
             if character == '\r'
             {
                 end = at + 1;
@@ -149,22 +219,102 @@ pub(super) fn lines(text: &str, maximum: i32, font: &Font) -> Result<Vec<LineInf
                && at > start
                && (character != ' ' || (advance > maximum.max(1) && last_space.is_none()))
             {
-                end = last_space.unwrap_or(at);
+                if let Some((offset, width)) = last_space
+                {
+                    end = offset;
+                    advance = width;
+                }
+                else
+                {
+                    end = at;
+                }
                 break;
             }
             advance = next;
             end = at + character.len_utf8();
             if character == ' '
             {
-                last_space = Some(end);
+                last_space = Some((end, advance));
             }
         }
-        let visible = text[start..end].strip_suffix('\r').unwrap_or(&text[start..end]);
-        result.push(LineInfo { start:    start as u32,
-                               end:      end as u32,
-                               width:    font.width(visible),
-                               reserved: 0 });
-        start = end;
+        Line { classic: LineInfo { start:    start as u32,
+                                   end:      end as u32,
+                                   width:    advance.min(i32::from(i16::MAX)) as i16,
+                                   reserved: 0 },
+               extent: advance.max(0) as u32,
+               logical,
+               first: start == 0 || self.byte(start - 1) == Some(b'\r') }
+    }
+}
+pub(super) fn lines(text: &str, maximum: i32, font: &Font) -> Result<Vec<Line>, Status>
+{
+    let source = Splice { prefix: text,
+                          input:  "",
+                          suffix: "" };
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut logical = 1;
+    while start < text.len()
+    {
+        result.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        let line = source.line(start, maximum, font, logical);
+        logical += u32::from(source.byte(line.end as usize - 1) == Some(b'\r'));
+        start = line.end as usize;
+        result.push(line);
     }
     Ok(result)
+}
+
+/// Rewrap from the touched line until an unchanged line start resynchronizes.
+/// Suffix glyphs are never measured. The caller shifts cached offsets only.
+pub(super) fn replacement(text: &str, old: &[Line], start: usize, end: usize, input: &str,
+                          maximum: i32, font: &Font)
+                          -> Result<(usize, usize, Vec<Line>), Status>
+{
+    let source = Splice { prefix: &text[..start],
+                          input,
+                          suffix: &text[end..] };
+    let mut first = old.partition_point(|line| (line.end as usize) < start);
+    // The preceding soft row examined this row's first word before wrapping.
+    // Shortening that word can pull it back, even when the edit lies inside it.
+    if first > 0 && old.get(first).is_some_and(|line| !line.first)
+    {
+        first -= 1;
+    }
+    let mut at = old.get(first).map_or(0, |line| line.start as usize);
+    let mut logical = old.get(first).map_or(1, |line| line.logical);
+    let delta = input.len() as i64 - (end - start) as i64;
+    let mut result = Vec::new();
+    let mut resume = old.len();
+    loop
+    {
+        if at >= start + input.len()
+        {
+            let original = (at as i64 - delta) as usize;
+            if original >= end
+            {
+                let index = old.partition_point(|line| (line.start as usize) < original);
+                if index > first
+                   && old.get(index).is_some_and(|line| {
+                                        line.start as usize == original
+                                        && line.first
+                                           == (at == 0 || source.byte(at - 1) == Some(b'\r'))
+                                    })
+                {
+                    resume = index;
+                    break;
+                }
+            }
+        }
+        if at >= source.len()
+        {
+            break;
+        }
+        result.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        let line = source.line(at, maximum, font, logical);
+        logical += u32::from(source.byte(line.end as usize - 1) == Some(b'\r'));
+        at = line.end as usize;
+        result.push(line);
+    }
+    Ok((first, resume, result))
 }

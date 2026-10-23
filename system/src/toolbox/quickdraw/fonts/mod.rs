@@ -293,6 +293,20 @@ impl FontManager
            })
     }
 
+    pub fn is_monospaced(&self, selection: FontSelection) -> Result<bool, Status>
+    {
+        let face = self.resolve(selection, FontPreference::default())?;
+        if face.size == 0
+        {
+            outline::is_monospaced(&face)
+        }
+        else
+        {
+            Ok(super::font::BitmapFont::parse(&face.resource.data).ok_or(BAD_ARGUMENT)?
+                                                                  .is_monospaced())
+        }
+    }
+
     pub fn metrics(&self, selection: FontSelection) -> Result<FontMetrics, Status>
     {
         self.metrics_with_preference(selection, FontPreference::BitmapPreferred)
