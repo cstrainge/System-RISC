@@ -6,7 +6,8 @@ use core::marker::PhantomData;
 use spinning_top::Spinlock;
 
 use crate::domain::{CapacityPolicy, CompletionError, DirectoryError, DomainId, KindCode,
-                    LedgerSummary, OwnerIndex, PoolError, ReleasedResource, ResourceKey};
+                    LedgerReadError, LedgerSummary, OwnerIndex, PoolError, PoolSummary,
+                    ReleasedResource, ResourceKey};
 
 /// The resident adapter must mask local interrupts/preemption before calling
 /// the closure, and restore the previous state afterward, including nesting.
@@ -164,6 +165,13 @@ impl<G: InvocationGate> OwnerRef<G>
     pub fn summary(&self) -> LedgerSummary
     {
         self.access(|index| index.summary())
+    }
+
+    /// The revision check and value copy share the same invocation/metadata
+    /// lock. Callers receive neither a mutable pool nor an escaping guard.
+    pub fn pool_at(&self, revision: u64, at: usize) -> Result<PoolSummary, LedgerReadError>
+    {
+        self.access(|index| index.pool_at(revision, at))
     }
 
     pub fn stop_admission(&self)

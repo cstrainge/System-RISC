@@ -127,7 +127,8 @@
           "Memory accounting is not live.",
           "Module domains are not live.",
           "Domains",
-          "Ledger snapshot"
+          "Ledger snapshot",
+          "Ledger changed; refresh pending"
         ]
       }
     },

@@ -59,6 +59,29 @@ pub fn exercise_ledger(owner: u64)
                   });
 }
 
+/// Prepare real metadata policies; observations still go through the public
+/// dispatcher/SDK. No policy values are fabricated by the inspection service.
+pub fn policy_pools(owner: u64)
+{
+    super::SESSION.with(|session| {
+                      let session = session.borrow();
+                      let ledger =
+                          session.as_ref().unwrap().inspection.get(owner).unwrap().ledger();
+                      for (code, policy) in
+                          [(*b"GROW", CapacityPolicy::GrowableUntilMemory),
+                           (*b"QUOT", CapacityPolicy::PerDomainQuota { slots: 2 }),
+                           (*b"BNDR",
+                            CapacityPolicy::HardBound { slots:  1,
+                                                        reason: "one hardware channel" })]
+                      {
+                          let kind = KindCode(code);
+                          ledger.add_pool(kind, policy).unwrap();
+                          ledger.grow(kind, policy.limit().unwrap_or(4)).unwrap();
+                          ledger.allocate(kind).unwrap();
+                      }
+                  });
+}
+
 pub struct Cleanup
 {
     ledger: mac_object_table::shared::OwnerRef<Gate>,

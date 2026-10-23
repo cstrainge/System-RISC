@@ -10,8 +10,12 @@ fn managed_controls_track_and_validate_lifetimes_through_sdk()
 {
     mac_system::testing::with_services(|services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
-        conformance::managed_controls::tracking(&system, WindowId(0)).unwrap();
-        conformance::managed_controls::reuse(&system, WindowId(0), services.trap).unwrap();
+        let owner = mac_system::testing::inspection::add("Managed controls", 0);
+        mac_system::testing::files::with_owner(owner, || {
+            conformance::managed_controls::tracking(&system, WindowId(0)).unwrap();
+            conformance::managed_controls::reuse(&system, WindowId(0), services.trap).unwrap();
+            conformance::managed_controls::ledger_pools(&system, WindowId(0)).unwrap();
+        });
     });
 }
 

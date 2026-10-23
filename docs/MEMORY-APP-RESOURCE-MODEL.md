@@ -480,3 +480,26 @@ and cached keys; a contracted custom sorter honestly lacks generated sort keys.
 Language tailoring never changes HFS-B's fixed locale-independent name identity.
 Language changes invalidate affected string/sort snapshots, not whole screens.
 No new trust, suspend, outline-control or host-projection ruling is implied here.
+
+### Per-owner pool census
+
+Public `Snapshot::ledger` / `LedgerSnapshot::at` now read a domain's actual
+prepared pools through the resident service. Each continuation checks membership,
+the captured subject incarnation, and the ledger revision under its invocation
+gate. Scope and inspector admission are checked again on every call; lending a
+self-scope snapshot cannot relabel another caller's pools. Pool reads allocate
+no resident cursor, copy no payloads and do not mutate revisions.
+
+The census includes policy (with the reason for a hard bound), live, pending,
+retired and prepared slots, cumulative births/deaths, and generation headroom.
+Headroom is `u64::MAX - generation_high_water`: the high-water mark is maintained
+on issuance/invalidation, including retired history. A zero value describes the
+most advanced slot, not exhaustion of every other slot. Reads do not scan the
+generation array. Empty pools retain their history until domain retirement.
+
+Reactor Room shows this census below the selected domain summary through managed
+cached rows. Selection/refresh/uncached scrolling obtains data; repaint never
+enumerates. A stale snapshot refreshes on the next event and is labelled if churn
+prevents completion. This is query 2's per-kind census, not completion of global
+kind registrations, individual object labels, CPU/account/page accounting or the
+generic release-dispatch walk. Those remain staged work.

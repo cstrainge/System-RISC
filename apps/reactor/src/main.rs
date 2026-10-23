@@ -5,7 +5,7 @@
 use core::fmt::{self, Write};
 
 use mac_toolbox::{controls::{ScrollBox, ScrollBoxSpec, StaticText, TextAlignment, scrollbox::View},
-                  inspection::{Domain, Scope, Snapshot},
+                  inspection::{CapacityPolicy, Domain, LedgerSnapshot, Pool, Scope, Snapshot},
                   quickdraw::{fonts::FontSelection, theme},
                   *};
 mac_toolbox::panic_handler!();
@@ -52,6 +52,10 @@ fn label<'a>(system: &System<'_>, index: u32, bytes: &'a mut [u8]) -> ToolboxRes
 }
 fn inspection_error(system: &System<'_>, error: inspection::Failure) -> Error
 {
+    if error.cause == Error::ScanStale
+    {
+        return error.cause; // Normal snapshot churn is handled by the refresh path.
+    }
     let mut line = Line::new();
     let _ = writeln!(line, "REACTOR_INSPECTION_ERROR: {error}");
     let _ = system.log(line.text());
@@ -60,6 +64,22 @@ fn inspection_error(system: &System<'_>, error: inspection::Failure) -> Error
 fn snapshot<'a>(system: &System<'a>) -> ToolboxResult<Snapshot<'a>>
 {
     system.inspection().snapshot(Scope::All).map_err(|e| inspection_error(system, e))
+}
+
+fn pool_name(line: &mut Line, kind: [u8; 4]) -> fmt::Result
+{
+    for byte in kind
+    {
+        if byte.is_ascii_graphic()
+        {
+            write!(line, "{}", char::from(byte))?;
+        }
+        else
+        {
+            write!(line, "\\x{byte:02x}")?;
+        }
+    }
+    Ok(())
 }
 
 fn window_layout(system: &System<'_>) -> ToolboxResult<(Rect, i16)>
@@ -94,6 +114,7 @@ struct Panes<'a>
     width:          i16,
     height:         i16,
     selected:       Option<Domain>,
+    ledger:         Option<LedgerSnapshot<'a>>,
     selected_index: Option<u32>
 }
 fn spec(bounds: Rect, count: u32, palette: theme::Palette) -> ScrollBoxSpec
@@ -132,9 +153,9 @@ impl<'a> Panes<'a>
         let view = self.domains
                        .control()
                        .configure(spec(Rect::new(0, 26, split, height - 25), count, palette))?;
-        self.details
-            .control()
-            .configure(spec(Rect::new(split + 1, 26, width, height - 25), 11, palette))?;
+        self.details.control().configure(spec(Rect::new(split + 1, 26, width, height - 25),
+                                               self.detail_count()?,
+                                               palette))?;
         self.status.set_bounds(Rect::new(5, height - 22, width - 4, height - 2))?;
         self.width = width;
         self.height = height;
@@ -182,6 +203,7 @@ impl<'a> Panes<'a>
                             width,
                             height,
                             selected: None,
+                            ledger: None,
                             selected_index: None };
         result.populate(snapshot, result.domains.control().info()?)?;
         result.detail_rows(system)?;
@@ -210,9 +232,32 @@ impl<'a> Panes<'a>
         self.domains.control().set_row(index, text.text(), selected)
     }
 
+    fn detail_count(&self) -> ToolboxResult<u32>
+    {
+        u32::try_from(self.ledger.map_or(0, |ledger| ledger.len())).ok()
+                                                                   .and_then(|kinds| {
+                                                                       kinds.checked_mul(4)
+                                                                   })
+                                                                   .and_then(|rows| {
+                                                                       rows.checked_add(11)
+                                                                   })
+                                                                   .ok_or(Error::BadAbi)
+    }
+
+    fn configure_details(&self) -> ToolboxResult<()>
+    {
+        let mut spec = self.details.control().info()?.spec;
+        spec.count = self.detail_count()?;
+        self.details.control().configure(spec)?;
+        Ok(())
+    }
+
     fn detail_rows(&self, system: &System<'_>) -> ToolboxResult<()>
     {
         let view = self.details.control().info()?;
+        // At most one public read per missing pool, not four per text row.
+        // Managed row caches service repaints without re-enumerating anything.
+        let mut cached: Option<(u64, Pool)> = None;
         for index in view.missing
         {
             let mut line = Line::new();
@@ -234,10 +279,61 @@ impl<'a> Panes<'a>
                                "Admission: {}",
                                if row.accepting { "open" } else { "stopping" })
                     }
-                    _ =>
+                    9 | 10 =>
                     {
                         let mut bytes = [0; 128];
                         line.write_str(label(system, index - 7, &mut bytes)?)
+                    }
+                    _ =>
+                    {
+                        let kind_index = u64::from((index - 11) / 4);
+                        let pool = match cached
+                        {
+                            Some((at, pool)) if at == kind_index => pool,
+                            _ =>
+                            {
+                                let pool = self.ledger
+                                               .ok_or(Error::BadAbi)?
+                                               .at(kind_index)
+                                               .map_err(|e| inspection_error(system, e))?;
+                                cached = Some((kind_index, pool));
+                                pool
+                            }
+                        };
+                        match (index - 11) % 4
+                        {
+                            0 =>
+                            {
+                                pool_name(&mut line, pool.kind).map_err(|_| Error::BadArgument)?;
+                                write!(line, ": {} live, {} pending", pool.live, pool.pending)
+                            }
+                            1 =>
+                            {
+                                match pool.capacity
+                                {
+                                    CapacityPolicy::GrowableUntilMemory =>
+                                    {
+                                        line.write_str("Capacity: growable until memory")
+                                    }
+                                    CapacityPolicy::PerDomainQuota { slots } =>
+                                    {
+                                        write!(line, "Domain quota: {slots} slots")
+                                    }
+                                    CapacityPolicy::HardBound { slots,
+                                                                reason } =>
+                                    {
+                                        write!(line, "Bound: {slots}; {}", reason.as_str())
+                                    }
+                                }
+                            }
+                            2 => write!(line, "Generation headroom: {}", pool.generation_headroom),
+                            _ =>
+                            {
+                                write!(line,
+                                       "Slots {} / retired {}; births {} / deaths {}",
+                                       pool.slots, pool.retired, pool.births, pool.deaths)
+                            }
+                        }
                     }
                 }.map_err(|_| Error::BadArgument)?;
             }
@@ -264,17 +360,21 @@ impl<'a> Panes<'a>
         if let Some(selected) = self.selected
         {
             self.selected = None;
+            self.ledger = None;
             self.selected_index = None;
             for index in 0..snapshot.count
             {
-                let row = snapshot.at(index).map_err(|e| e.cause)?;
+                let ledger = snapshot.ledger(index).map_err(|e| inspection_error(system, e))?;
+                let row = ledger.domain();
                 if row.incarnation == selected.incarnation
                 {
                     self.selected = Some(row);
+                    self.ledger = Some(ledger);
                     self.selected_index = Some(index as u32);
                     break;
                 }
             }
+            self.configure_details()?;
             self.details.control().invalidate()?;
             self.detail_rows(system)?;
         }
@@ -291,11 +391,13 @@ impl<'a> Panes<'a>
     {
         if let Some(index) = self.domains.control().row_at(point)?
         {
-            let row = snapshot.at(u64::from(index)).map_err(|e| e.cause)?;
-            if self.selected.is_some_and(|selected| selected.incarnation == row.incarnation)
+            if self.selected_index == Some(index)
             {
                 return Ok(());
             }
+            let ledger =
+                snapshot.ledger(u64::from(index)).map_err(|e| inspection_error(system, e))?;
+            let row = ledger.domain();
             if let (Some(previous), Some(previous_index)) = (self.selected, self.selected_index)
             {
                 let view = self.domains.control().info()?;
@@ -305,8 +407,10 @@ impl<'a> Panes<'a>
                 }
             }
             self.selected = Some(row);
+            self.ledger = Some(ledger);
             self.selected_index = Some(index);
             self.set_domain_row(index, row, true)?;
+            self.configure_details()?;
             self.details.control().invalidate()?;
             self.detail_rows(system)?;
             self.domains.control().draw()?;
@@ -391,6 +495,7 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
     system.log("REACTOR_READY coverage=process-domains,partial-ledgers authority=system-policy\n")?;
     let mut front = true;
     let mut dirty = false;
+    let mut stale = false;
     loop
     {
         // Background waits exclude advisory OsEvents. Membership bursts coalesce
@@ -443,7 +548,18 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
                 let (width, height) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
                 if (width, height) != (panes.width, panes.height)
                 {
-                    panes.resize(system, window, width, height, current, palette)?;
+                    if let Err(error) =
+                        panes.resize(system, window, width, height, current, palette)
+                    {
+                        if error == Error::ScanStale
+                        {
+                            dirty = true;
+                        }
+                        else
+                        {
+                            return Err(error);
+                        }
+                    }
                 }
             }
             Event::Update { window: target,
@@ -470,8 +586,33 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
         if front && dirty
         {
             current = snapshot(system)?;
-            panes.refresh(system, current, true)?;
-            dirty = false;
+            match panes.refresh(system, current, true)
+            {
+                Ok(()) =>
+                {
+                    dirty = false;
+                    if stale
+                    {
+                        let mut text = [0; 128];
+                        panes.status.set(label(system, 0, &mut text)?)?;
+                        panes.status.draw()?;
+                        stale = false;
+                    }
+                }
+                Err(Error::ScanStale) =>
+                {
+                    // Subject churn invalidates snapshots, not the inspector.
+                    // Retry on the next event instead of a busy loop.
+                    if !stale
+                    {
+                        let mut text = [0; 128];
+                        panes.status.set(label(system, 6, &mut text)?)?;
+                        panes.status.draw()?;
+                        stale = true;
+                    }
+                }
+                Err(error) => return Err(error)
+            }
         }
     }
 }

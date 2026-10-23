@@ -5,6 +5,44 @@ use mac_toolbox::{abi::{NOT_FOUND, OK},
 
 use super::Failure;
 
+/// The same census/staleness assertions run against host services and real
+/// native ECALLs. No private inspection fixture supplies these observations.
+pub fn ledger_pools(system: &System<'_>, window: WindowId) -> Result<(), Failure>
+{
+    let map = |error: mac_toolbox::inspection::Failure| Failure::Service(error.cause.status());
+    let owned = system.controls().create_static_text(window,
+                                                      Rect::new(4, 4, 104, 24),
+                                                      "Ledger census",
+                                                      Default::default(),
+                                                      controls::TextAlignment::Left)?;
+    let membership = system.inspection().snapshot(inspection::Scope::Own).map_err(map)?;
+    let ledger = membership.ledger(0).map_err(map)?;
+    let mut found = None;
+    for index in 0..ledger.len()
+    {
+        let pool = ledger.at(index).map_err(map)?;
+        if pool.kind == *b"CTRL"
+        {
+            found = Some((index, pool));
+            break;
+        }
+    }
+    let (index, before) = found.ok_or(Failure::Mismatch("live controls absent from owner ledger"))?;
+    assert!(before.live > 0 && before.slots >= before.live);
+    assert_eq!(before.capacity, inspection::CapacityPolicy::GrowableUntilMemory);
+    assert_eq!(ledger.at(index).map_err(map)?, before, "inspection mutated the live ledger");
+    drop(owned);
+    let stale = ledger.at(index).unwrap_err();
+    assert_eq!(stale.cause, Error::ScanStale, "disposal must invalidate the snapshot");
+    let after = membership.ledger(0).map_err(map)?.at(index).map_err(map)?;
+    assert_eq!(after.live + 1, before.live);
+    assert_eq!(after.deaths, before.deaths + 1);
+    assert_eq!(after.pending, 0);
+    assert_eq!(after.births, before.births);
+    system.log("LEDGER_POOLS_USERSPACE_PASS real_controls=passed stale=passed cleanup=passed\n")?;
+    Ok(())
+}
+
 pub fn tracking(system: &System<'_>, window: WindowId) -> Result<(), Failure>
 {
     let inside = Point { h: 40,

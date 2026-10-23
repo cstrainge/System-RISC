@@ -1,6 +1,10 @@
 //! Native, read-only lifetime inspection. No pointers or caller identity on wire.
 pub const BEGIN: u32 = 0;
 pub const DOMAIN: u32 = 1;
+pub const LEDGER_POOL: u32 = 2;
+pub const CAPACITY_GROWABLE: u32 = 0;
+pub const CAPACITY_QUOTA: u32 = 1;
+pub const CAPACITY_BOUND: u32 = 2;
 pub const SELF: u32 = 0;
 pub const ALL: u32 = 1;
 pub const INSPECT_DOMAINS: u64 = 1;
@@ -14,6 +18,46 @@ pub const ACCEPTING: u32 = 1;
 pub const FOREGROUND: u32 = 2;
 pub const COUNTERS_SATURATED: u32 = 4;
 pub const DETAIL_BYTES: usize = 192;
+
+/// Prepared owner-pool census. Registration/release-dispatch metadata is a
+/// distinct query; an empty pool does not imply a dead kind registration.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Pool
+{
+    pub kind:                [u8; 4],
+    pub policy:              u32,
+    pub limit:               u64,
+    pub live:                u64,
+    pub retired:             u64,
+    pub pending:             u64,
+    pub slots:               u64,
+    pub births:              u64,
+    pub deaths:              u64,
+    pub generation_headroom: u64,
+    pub reason:              [u8; DETAIL_BYTES],
+    pub reason_length:       u32,
+    pub flags:               u32
+}
+impl Default for Pool
+{
+    fn default() -> Self
+    {
+        Self { kind:                [0; 4],
+               policy:              CAPACITY_GROWABLE,
+               limit:               0,
+               live:                0,
+               retired:             0,
+               pending:             0,
+               slots:               0,
+               births:              0,
+               deaths:              0,
+               generation_headroom: 0,
+               reason:              [0; DETAIL_BYTES],
+               reason_length:       0,
+               flags:               0 }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -59,30 +103,38 @@ impl Default for Domain
 #[derive(Clone, Copy)]
 pub struct Call
 {
-    pub operation:     u32,
-    pub scope:         u32,
-    pub revision:      u64,
-    pub index:         u64,
-    pub count:         u64,
-    pub coverage:      u64,
-    pub domain:        Domain,
-    pub detail:        [u8; DETAIL_BYTES],
-    pub detail_length: u32,
-    pub reserved:      u32
+    pub operation:       u32,
+    pub scope:           u32,
+    pub revision:        u64,
+    pub index:           u64,
+    pub count:           u64,
+    pub coverage:        u64,
+    pub ledger_revision: u64,
+    pub subject:         u64,
+    pub pool_index:      u64,
+    pub pool:            Pool,
+    pub domain:          Domain,
+    pub detail:          [u8; DETAIL_BYTES],
+    pub detail_length:   u32,
+    pub reserved:        u32
 }
 impl Default for Call
 {
     fn default() -> Self
     {
-        Self { operation:     BEGIN,
-               scope:         SELF,
-               revision:      0,
-               index:         0,
-               count:         0,
-               coverage:      0,
-               domain:        Domain::default(),
-               detail:        [0; DETAIL_BYTES],
-               detail_length: 0,
-               reserved:      0 }
+        Self { operation:       BEGIN,
+               scope:           SELF,
+               revision:        0,
+               index:           0,
+               count:           0,
+               coverage:        0,
+               ledger_revision: 0,
+               subject:         0,
+               pool_index:      0,
+               pool:            Pool::default(),
+               domain:          Domain::default(),
+               detail:          [0; DETAIL_BYTES],
+               detail_length:   0,
+               reserved:        0 }
     }
 }

@@ -82,6 +82,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     system.client().memory(&mut memory, &[], &mut [])?;
     let memory_id = memory.handle;
     let window = create(system)?;
+    super::managed_controls::ledger_pools(system, window.id())?;
     assert_ne!(memory_id & 0xffff,
                window.id().0 & 0xffff,
                "memory and windows must have disjoint registered slots");

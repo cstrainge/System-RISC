@@ -354,22 +354,23 @@ impl fmt::Display for PoolError
 /// Host synchronization and account charging surround it during migration.
 pub struct DomainSlots
 {
-    owner:         DomainId,
-    kind:          KindCode,
-    policy:        CapacityPolicy,
-    occupied:      Vec<u64>,
-    retired:       Vec<u64>,
-    pending:       Vec<u64>,
-    generations:   Vec<u64>,
-    cursor:        usize,
-    live:          usize,
-    retired_count: usize,
-    pending_count: usize,
-    births:        u64,
-    deaths:        u64,
-    accepting:     bool,
-    drain_word:    usize,
-    value_storage: bool
+    owner:                 DomainId,
+    kind:                  KindCode,
+    policy:                CapacityPolicy,
+    occupied:              Vec<u64>,
+    retired:               Vec<u64>,
+    pending:               Vec<u64>,
+    generations:           Vec<u64>,
+    cursor:                usize,
+    live:                  usize,
+    retired_count:         usize,
+    pending_count:         usize,
+    births:                u64,
+    deaths:                u64,
+    generation_high_water: u64,
+    accepting:             bool,
+    drain_word:            usize,
+    value_storage:         bool
 }
 impl DomainSlots
 {
@@ -396,6 +397,7 @@ impl DomainSlots
                   pending_count: 0,
                   births: 0,
                   deaths: 0,
+                  generation_high_water: 0,
                   accepting: true,
                   drain_word: 0,
                   value_storage: false })
@@ -484,6 +486,7 @@ impl DomainSlots
                     let slot = word * 64 + free.trailing_zeros() as usize;
                     let generation = NonZeroU64::new(self.generations[slot].max(1)).unwrap();
                     self.generations[slot] = generation.get();
+                    self.generation_high_water = self.generation_high_water.max(generation.get());
                     self.occupied[word] |= 1 << (slot % 64);
                     self.live += 1;
                     self.births = self.births.saturating_add(1);
@@ -538,11 +541,16 @@ impl DomainSlots
         self.deaths = self.deaths.saturating_add(1);
         match self.generations[key.slot].checked_add(1)
         {
-            Some(next) => self.generations[key.slot] = next,
+            Some(next) =>
+            {
+                self.generations[key.slot] = next;
+                self.generation_high_water = self.generation_high_water.max(next);
+            }
             None =>
             {
                 self.retired[key.slot / 64] |= mask;
                 self.retired_count += 1;
+                self.generation_high_water = u64::MAX;
             }
         }
         Ok(ReleasedResource { key })
@@ -714,6 +722,71 @@ pub struct LedgerSummary
     pub births:    u64,
     pub deaths:    u64,
     pub accepting: bool
+}
+
+/// An atomic view of one prepared per-domain pool, not a global kind
+/// registration. No payload or generation-array scan is required.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolSummary
+{
+    pub kind:                KindCode,
+    pub policy:              CapacityPolicy,
+    pub live:                usize,
+    pub retired:             usize,
+    pub pending:             usize,
+    pub slots:               usize,
+    pub births:              u64,
+    pub deaths:              u64,
+    /// Remaining increments of the most advanced slot, including retired
+    /// history. Zero does not imply all other slots are exhausted.
+    pub generation_headroom: u64
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LedgerReadError
+{
+    Stale
+    {
+        owner: DomainId, expected: u64, actual: u64
+    },
+    RevisionExhausted
+    {
+        owner: DomainId
+    },
+    PoolNotFound
+    {
+        owner: DomainId, index: usize
+    }
+}
+impl fmt::Display for LedgerReadError
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Stale { owner,
+                          expected,
+                          actual } =>
+            {
+                write!(f,
+                       "{owner} ledger changed from revision {expected} to {actual}; obtain a new \
+                        ledger snapshot and retry")
+            }
+            Self::RevisionExhausted { owner } =>
+            {
+                write!(f,
+                       "{owner} ledger revision exhausted; restart this domain to obtain new \
+                        snapshots")
+            }
+            Self::PoolNotFound { owner,
+                                 index } =>
+            {
+                write!(f, "pool index {index} is outside {owner}'s ledger snapshot")
+            }
+        }
+    }
+}
+impl core::error::Error for LedgerReadError
+{
 }
 
 /// Shared owner directory. The ledger and payload cannot acquire different
@@ -937,6 +1010,32 @@ impl fmt::Display for IndexError
 }
 impl OwnerIndex
 {
+    pub fn pool_at(&self, revision: u64, index: usize) -> Result<PoolSummary, LedgerReadError>
+    {
+        if self.revision == u64::MAX
+        {
+            return Err(LedgerReadError::RevisionExhausted { owner: self.owner });
+        }
+        if revision != self.revision
+        {
+            return Err(LedgerReadError::Stale { owner:    self.owner,
+                                                expected: revision,
+                                                actual:   self.revision });
+        }
+        let pool =
+            self.pools.get(index).ok_or(LedgerReadError::PoolNotFound { owner: self.owner,
+                                                                         index })?;
+        Ok(PoolSummary { kind:                pool.kind,
+                         policy:              pool.policy,
+                         live:                pool.live,
+                         retired:             pool.retired_count,
+                         pending:             pool.pending_count,
+                         slots:               pool.generations.len(),
+                         births:              pool.births,
+                         deaths:              pool.deaths,
+                         generation_headroom: u64::MAX - pool.generation_high_water })
+    }
+
     pub fn summary(&self) -> LedgerSummary
     {
         let mut result = LedgerSummary { revision: self.revision,
@@ -1415,5 +1514,53 @@ mod tests
                                           CapacityPolicy::HardBound { slots:  1,
                                                                       reason: "" }),
                          Err(PoolError::InvalidBoundReason)));
+    }
+}
+
+#[cfg(test)]
+mod pool_snapshot_tests
+{
+    use alloc::string::ToString;
+
+    use super::*;
+    #[test]
+    fn policy_and_generation_headroom_are_authoritative_without_read_mutation()
+    {
+        for policy in [CapacityPolicy::GrowableUntilMemory,
+                       CapacityPolicy::PerDomainQuota { slots: 1 },
+                       CapacityPolicy::HardBound { slots:  1,
+                                                   reason: "one hardware channel" }]
+        {
+            let mut ledger = OwnerIndex::issue(DomainKind::Process).unwrap();
+            let kind = KindCode(*b"SNAP");
+            ledger.add_pool(kind, policy).unwrap();
+            ledger.grow(kind, 1).unwrap();
+            let epoch = ledger.summary().revision;
+            let empty = ledger.pool_at(epoch, 0).unwrap();
+            assert_eq!(empty.policy, policy);
+            assert_eq!(empty.generation_headroom, u64::MAX);
+            assert_eq!(ledger.summary().revision, epoch);
+            assert!(matches!(ledger.pool_at(epoch, 1),
+                             Err(LedgerReadError::PoolNotFound { index: 1,
+                                                                 .. })));
+            // Set up the last issuable generation; allocation/invalidation still
+            // update the same high-water mechanism used by ordinary resources.
+            ledger.pool_mut(kind).unwrap().generations[0] = u64::MAX;
+            let key = ledger.allocate(kind).unwrap();
+            assert!(matches!(ledger.pool_at(epoch, 0), Err(LedgerReadError::Stale { .. })));
+            let full = ledger.pool_at(ledger.summary().revision, 0).unwrap();
+            assert_eq!((full.live, full.births, full.generation_headroom), (1, 1, 0));
+            let ticket = ledger.invalidate(key).unwrap();
+            let pending = ledger.pool_at(ledger.summary().revision, 0).unwrap();
+            assert_eq!((pending.live, pending.retired, pending.pending, pending.deaths),
+                       (0, 1, 1, 1));
+            ledger.complete_release(ticket).unwrap();
+            let complete = ledger.pool_at(ledger.summary().revision, 0).unwrap();
+            assert_eq!((complete.pending, complete.generation_headroom), (0, 0));
+            ledger.revision = u64::MAX;
+            let error = ledger.pool_at(u64::MAX, 0).unwrap_err();
+            assert!(matches!(error, LedgerReadError::RevisionExhausted { .. }));
+            assert!(error.to_string().contains("restart this domain"));
+        }
     }
 }

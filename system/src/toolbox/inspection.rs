@@ -2,7 +2,7 @@
 //! object-value scans, formatting allocations, or caller-selected identity.
 #![forbid(unsafe_code)]
 use mac_abi::{inspection::*, *};
-use mac_object_table::{domain::{Directory, DomainKind},
+use mac_object_table::{domain::{CapacityPolicy, Directory, DomainKind, LedgerReadError},
                        shared::InvocationGate};
 
 /// Implemented by trusted resident process metadata, never by an ABI caller.
@@ -28,6 +28,7 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
     call.detail_length = 0;
     call.detail.fill(0);
     call.domain = Domain::default();
+    call.pool = Pool::default();
     call.count = 0;
     if call.reserved != 0 || ![SELF, ALL].contains(&call.scope)
     {
@@ -61,7 +62,7 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
             call.count = if call.scope == SELF { 1 } else { directory.len() as u64 };
             OK
         }
-        DOMAIN =>
+        DOMAIN | LEDGER_POOL =>
         {
             if call.revision != directory.revision()
             {
@@ -87,6 +88,85 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
             {
                 return reject(call, NOT_SUPPORTED,
                               "this inspection source does not describe a process domain");
+            }
+            if call.operation == LEDGER_POOL
+            {
+                if call.scope == SELF && call.subject != caller
+                {
+                    return reject(call,
+                                  ACCESS_DENIED,
+                                  "ledger snapshot belongs to a different lifetime domain; \
+                                   obtain your own snapshot");
+                }
+                if call.subject != entry.owner().incarnation()
+                {
+                    return reject(call,
+                                  SCAN_STALE,
+                                  "ledger subject changed; obtain a new ledger snapshot and \
+                                   retry");
+                }
+                let Ok(index) = usize::try_from(call.pool_index)
+                else
+                {
+                    return reject(call, NOT_FOUND, "pool index is outside this ledger snapshot");
+                };
+                let pool = match entry.ledger().pool_at(call.ledger_revision, index)
+                {
+                    Ok(pool) => pool,
+                    Err(LedgerReadError::Stale { .. }) =>
+                    {
+                        return reject(call,
+                                      SCAN_STALE,
+                                      "domain ledger changed while reading pools; obtain a new \
+                                       ledger snapshot and retry");
+                    }
+                    Err(LedgerReadError::RevisionExhausted { .. }) =>
+                    {
+                        return reject(call,
+                                      NOT_SUPPORTED,
+                                      "domain ledger revision exhausted; restart this domain to \
+                                       obtain new snapshots");
+                    }
+                    Err(LedgerReadError::PoolNotFound { .. }) =>
+                    {
+                        return reject(call, NOT_FOUND,
+                                      "pool index is outside this ledger snapshot");
+                    }
+                };
+                let (policy, limit, reason) = match pool.policy
+                {
+                    CapacityPolicy::GrowableUntilMemory => (CAPACITY_GROWABLE, 0, ""),
+                    CapacityPolicy::PerDomainQuota { slots } => (CAPACITY_QUOTA, slots as u64, ""),
+                    CapacityPolicy::HardBound { slots,
+                                                reason } => (CAPACITY_BOUND, slots as u64, reason)
+                };
+                if reason.len() > call.pool.reason.len()
+                {
+                    return reject(call, CORRUPT_DATA,
+                                  "pool capacity reason exceeds the inspection wire limit");
+                }
+                call.pool = Pool { kind: pool.kind.0,
+                                   policy,
+                                   limit,
+                                   live: pool.live as u64,
+                                   retired: pool.retired as u64,
+                                   pending: pool.pending as u64,
+                                   slots: pool.slots as u64,
+                                   births: pool.births,
+                                   deaths: pool.deaths,
+                                   generation_headroom: pool.generation_headroom,
+                                   flags: if pool.births == u64::MAX || pool.deaths == u64::MAX
+                                   {
+                                       COUNTERS_SATURATED
+                                   }
+                                   else
+                                   {
+                                       0
+                                   },
+                                   ..Default::default() };
+                call.pool.reason[..reason.len()].copy_from_slice(reason.as_bytes());
+                call.pool.reason_length = reason.len() as u32;
+                return OK;
             }
             let ledger = entry.ledger().summary();
             if ledger.revision == u64::MAX
