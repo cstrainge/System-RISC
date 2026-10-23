@@ -2,7 +2,7 @@
 //! in an attached pool; object payloads cannot be swapped behind a live key.
 //! No destructor or callback runs inside the owner metadata lock.
 use alloc::{sync::Arc, vec::Vec};
-use core::ops::{Deref, DerefMut};
+use core::ops::Deref;
 
 use hashbrown::HashMap;
 
@@ -273,6 +273,14 @@ impl<T, G: InvocationGate> Drop for Store<T, G>
 /// visible pending slot; it cannot alias a replacement. A panicking destructor
 /// likewise never acknowledges successful cleanup. Claim lifetime includes guards
 /// that survive dropping their store, so raw metadata cannot bypass destruction.
+/// A removal guard offers no mutable dereference or owned extraction: cleanup
+/// cannot be acknowledged by replacing its payload and keeping the old one.
+/// ```compile_fail
+/// use mac_object_table::{shared::InvocationGate, store::Removed};
+/// fn steal<G: InvocationGate>(mut removed: Removed<String, G>) -> String {
+///     core::mem::take(&mut *removed)
+/// }
+/// ```
 pub struct Removed<T, G: InvocationGate>
 {
     value:    Option<T>,
@@ -286,13 +294,6 @@ impl<T, G: InvocationGate> Deref for Removed<T, G>
     fn deref(&self) -> &T
     {
         self.value.as_ref().unwrap()
-    }
-}
-impl<T, G: InvocationGate> DerefMut for Removed<T, G>
-{
-    fn deref_mut(&mut self) -> &mut T
-    {
-        self.value.as_mut().unwrap()
     }
 }
 impl<T, G: InvocationGate> Drop for Removed<T, G>

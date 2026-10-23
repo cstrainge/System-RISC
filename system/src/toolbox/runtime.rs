@@ -672,7 +672,6 @@ impl Desktop
             _ => return NOT_SUPPORTED
         }
         self.route_events();
-        self.window_owners.retain(|(id, _)| self.windows.window(*id).is_some());
         if operation == END_UPDATE
         {
             if let Some(mask) = patch_damage
@@ -1564,6 +1563,11 @@ impl Desktop
                                                 message: 0x02000000 | id.0,
                                                 when,
                                                 ..self.events.null_event(when) });
+                // Route the final close notice while its ownership is known,
+                // then remove exactly this entry. Input routing never needs a
+                // defensive sweep over every window after every key or move.
+                self.route_events();
+                self.window_owners.retain(|(window, _)| *window != id);
                 "CLOSE"
             }
         };
@@ -1867,8 +1871,6 @@ impl Desktop
             self.input(*input, when);
             self.route_events();
         }
-        self.sync_input_state();
-        self.enter(caller);
         let mut keys = events::KeyMap::default();
         for decoder in &self.decoders
         {
@@ -1879,6 +1881,7 @@ impl Desktop
         }
         self.events.keys = keys;
         self.sync_input_state();
+        self.enter(caller);
         pending[..count].iter()
                         .flatten()
                         .any(|input| matches!(input, Input::Move(_) | Input::Button { .. }))

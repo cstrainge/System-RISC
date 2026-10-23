@@ -12,9 +12,11 @@ use crate::{context::ThreadContext,
             toolbox::handles::{Kind, Table}};
 pub const MAX_THREADS: usize = Kind::Threads.capacity();
 const STACK_WORDS: usize = 16384; // 256KiB, including nested service/definition frames.
-// The CLINT runs at 10 MHz. Sampling input every 500 us avoids the old 10 ms
-// event-polling floor; a freshly woken event consumer takes the next timeslice.
-const TIMER_INTERVAL: u64 = 5_000;
+// The CLINT runs at 10 MHz. At 500 us, two runnable peers can consume the
+// entire 1 ms interaction budget before a queued caller resumes. Use 250 us
+// for this resident round-robin policy; a freshly woken input consumer still
+// takes priority. This is not a hard real-time or future scheduler contract.
+const TIMER_INTERVAL: u64 = 2_500;
 static CONTEXTS: [ThreadContext; MAX_THREADS] = [const { ThreadContext::new() }; MAX_THREADS];
 static CURRENT: AtomicUsize = AtomicUsize::new(MAX_THREADS);
 static IO: AtomicBool = AtomicBool::new(false);

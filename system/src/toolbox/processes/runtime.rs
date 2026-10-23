@@ -320,7 +320,6 @@ impl Desktop
                 saved.events.post_positioned(event, position);
             }
         }
-        self.window_owners.retain(|(id, _)| self.windows.window(*id).is_some());
     }
 
     pub fn sync_input_state(&mut self)
