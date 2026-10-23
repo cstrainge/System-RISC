@@ -122,8 +122,10 @@ write-back or a second schema/format implementation.
    snapshot. Failure leaves the prior store/UI state intact. The chain cannot
    make external side effects transactional if arbitrary plug-ins perform them;
    participant contracts therefore prohibit independent mutation during planning.
-6. **Mid-chain retirement/failure.** A generation that died after snapshot,
-   disconnect, invalid reply, typed exception, or detected budget violation fails
+6. **Mid-chain retirement/contained failure.** Contained failures are typed
+   errors, contract-level refusals, and faults covered by the proven panic/unwind
+   contract. A generation that died after snapshot, disconnect, invalid reply,
+   or detected budget violation fails
    this request with provider/contract/link/cause named. Discard staged transforms,
    release all pins/guards, quarantine by policy, do not execute remaining links
    or retry a non-idempotent operation automatically. A later independent request
@@ -133,12 +135,16 @@ write-back or a second schema/format implementation.
    callback state or code. Disable and initialization rollback use this same
    ownership path; no special manager cleanup roll call.
 
+**M-D04:** The walk provides resource containment. Arbitrary privileged-fault
+containment is **unproven** and is a **required future gate**. Until a recovery
+contract exists and passes, the System must not claim it can safely recover from
+every mid-call module fault.
+
 A synchronous callback can consume CPU. Ordinary preemption plus a bounded
-contract must keep unrelated UI/threads progressing, but forcibly unwinding an
-arbitrary privileged callback holding state is **not proven** today. Synchronous
-participant fault containment cannot honestly be declared complete until the
-invocation/cancellation mechanism satisfies that gate. No spin timeout on the
-host's locked stack, and no unsafe jump over Rust destructors, is proposed.
+contract must keep unrelated UI/threads progressing. Forcibly unwinding a
+privileged callback holding state requires that same recovery contract. No spin
+timeout on the host's locked stack, and no unsafe jump over Rust destructors,
+is proposed.
 
 ## Observer algorithm: no veto path
 
@@ -225,12 +231,14 @@ resident architecture mechanisms. No dyn calls per register save or queue elemen
 
 At a safe boundary, stage against a snapshot, validate a shadow decision, then
 atomically publish the active policy generation. Resident watchdog validates
-progress/deadlines/decisions and records a typed quarantine on controlled failure.
+progress/deadlines/decisions and records a typed quarantine on contained failure.
+Contained failures are typed errors, contract-level refusals, and faults covered
+by the proven panic/unwind contract.
 Fallback parks/drains secondary CPUs at safe points before resuming single-hart
 bootstrap; never schedules a thread simultaneously on both. This needs a real
-handoff/quiescence test, not a boolean policy flag. Arbitrary privileged corruption
-remains a System fault; preemption/deadline containment must be proven for the
-scheduler's actual interrupt/lock context.
+handoff/quiescence test, not a boolean policy flag. M-D04's required future gate
+applies to the scheduler's actual interrupt/lock context; observing a missed
+deadline alone is not proof that the interrupted callback can be recovered.
 
 Missing extension still boots a usable single-hart session and reports the
 missing/degraded policy. Implement this **after** the full memory model passes,
@@ -259,7 +267,7 @@ Finder uses the Toolbox facade; the hook does not import private System managers
 |---|---|---|
 | T-D01 | Older §5.5 defers participant replies/defaults; new brief requires synchronous participants | **Ratified, Chloe 2026-10-23:** synchronous participants; the old queued/deadline/default-on-expiry rule is superseded. Queued rights are observers/services |
 | T-D02 | Older §5.2 queues all extension code and bans host-stack callbacks | Synchronous participants and bounded SCHD calls are explicit exceptions needed by newer brief; observer deliveries remain queued. Review invocation-stack/fault mechanism before implementation |
-| T-D03 | Brief promises fault containment; landed panic-abort privileged modules are System-fatal | Typed/endpoint failures containable; arbitrary kernel panic/write is not. Stronger invocation gate remains an acceptance blocker, not a claim supplied by RAII alone |
+| T-D03 | Mid-call recovery wording previously exceeded the accepted model ruling | **Resolved by M-D04, Chloe 2026-10-23.** Recovery/quarantine/degradation promises apply to contained failures only. Arbitrary privileged-fault containment is **unproven** and is a **required future gate**; the proof remains outstanding |
 | T-D04 | Registry described as holding module dyn objects/vtables; independent binaries have no stable Rust trait-object ABI | Registry holds host-owned dyn adapters over generated checked ABI; same semantic trait, no Rust-vtable wire contract |
 | T-D05 | Published multi-version wrappers vs current exact revision selection and unreleased rebuild policy | Publication boundary + adapters remain required module work. No wrappers solely for stale project artifacts; don't claim published driver support until tests prove it |
 | T-D06 | Older teardown is an ordered registration/capability list; new model requires pure ledger composition | Stop admission globally, invalidate per ledger, kind-specific cleanup/cancellation outside locks, wait for quiescence; don't copy the old manual ordered roll call |
@@ -271,7 +279,7 @@ Finder uses the Toolbox facade; the hook does not import private System managers
 |---|---|
 | Coarse dyn + object safety | Concrete request methods, host wrappers; compile-check dyn use per published revision, benchmark boundaries |
 | Unmixable chain kinds | Distinct participant Decision vs observer `()`/mailbox surface, distinct registration rights; test observer cannot obtain reply capability |
-| Failure containment | Transactional plans, generation pin/validation, cancellation and quarantine; resource containment ratified; **T-D03 privileged-fault recovery proof outstanding** |
+| Failure containment | Transactional plans, generation pin/validation, cancellation and quarantine for contained failures; **M-D04 arbitrary privileged-fault containment unproven; required future gate** |
 | Generation scope | Central owner ledger, per-use checks, retirement cache drain; race retirement against each chain/request phase |
 | Enumeration | Registry records include owner/order/rights/outcome, no orphan hidden callback registry |
 | One outcome vocabulary | Common report schema above; lifetime state kept separate |

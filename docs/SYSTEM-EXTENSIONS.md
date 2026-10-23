@@ -100,12 +100,19 @@ service contract whether reached through native or legacy adapters.
 The 2026-10-23 first-cut review ratifies **synchronous participants**. The earlier
 workspace extension spec §5.5 rule using queued participant replies, deadlines
 and default-on-expiry is **superseded**. A participant runs synchronously in
-deterministic order, returns a validated transform/veto, and a failure fails the
-request with an informative typed cause. Observers remain read-only and queued
+deterministic order, returns a validated transform/veto, and a contained failure
+fails the request with an informative typed cause. Observers remain read-only and queued
 to their own thread/context; they have no veto/reply path. See the
-[trait design](EXTENSION-TRAITS-DESIGN.md) for the algorithm. This ruling does not
-claim arbitrary privileged-fault recovery; controlled resource cleanup and
-System-fatal native memory corruption remain distinct.
+[trait design](EXTENSION-TRAITS-DESIGN.md) for the algorithm. Contained failures
+are typed errors, contract-level refusals, and faults covered by the proven
+panic/unwind contract. For contained failures, a mid-call failure fails the call
+typed, quarantines the registration, and degrades the service to `NotAvailable`
+according to its contract.
+
+**M-D04:** The walk provides resource containment. Arbitrary privileged-fault
+containment is **unproven** and is a **required future gate**. Until a recovery
+contract exists and passes, the System must not claim it can safely recover from
+every mid-call module fault.
 
 Specify execution context for every callback: boot initialization, preemptible
 kernel work, or narrowly bounded interrupt-safe work. General work must not run

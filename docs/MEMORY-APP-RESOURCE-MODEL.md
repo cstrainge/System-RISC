@@ -158,7 +158,17 @@ operations must reserve fallibly and preserve typed causes. Merely changing
 `allocation_failed` cannot make an infallible Rust allocation recoverable, and
 abandoning a stack with live locks/RAII values is not recovery. A platform
 panic/unwind/recovery contract must be proven before claiming module panic
-containment. The unsafe backing-pointer bridge belongs to one audited allocator
+containment. Contained failures are typed errors, contract-level refusals, and
+faults covered by the proven panic/unwind contract. For contained failures, a
+mid-call failure fails the call typed, quarantines the registration, and degrades
+the service to `NotAvailable` according to its contract.
+
+**M-D04:** The walk provides resource containment. Arbitrary privileged-fault
+containment is **unproven** and is a **required future gate**. Until a recovery
+contract exists and passes, the System must not claim it can safely recover from
+every mid-call module fault.
+
+The unsafe backing-pointer bridge belongs to one audited allocator
 adapter; accounting/free-list policy stays safe.
 
 ## Proposed profiles, not active defaults
@@ -235,7 +245,7 @@ ratification after measurement; no magic emergency buffer sizes are chosen now.
 | M-D01 | `bootrom/src/main.rs` reports fixed 128 MiB; BootInfo has no reservation list; §3.1 assumes both discovery and reservations exist | Add discovered RAM plus borrowed/shared reservation transport before enabling pool; metadata storage itself must be reserved |
 | M-D02 | Module mapping wording was ambiguous | **Resolved, Chloe 2026-10-23.** Each process owns its address space/page tables, including its own module/kernel mapping entries. Only immutable code frames are shared; writable state belongs to module-domain pages. No app-owned state in the module region. All module mappings are supervisor-only, entered by System under module context |
 | M-D03 | §3.7 places dynamic processes on page layer; §13.2 enables dynamic capacity earlier | Migrate dynamic metadata on current backing first if useful, but page-backed domain enforcement waits for page activation; do not claim isolation or memory-scale acceptance early |
-| M-D04 | Resource containment vs privileged-fault containment | **Accepted as written, Chloe 2026-10-23.** The walk provides resource containment. No claim to contain arbitrary privileged faults without a proven recovery contract |
+| M-D04 | Resource containment vs privileged-fault containment | **Accepted, Chloe 2026-10-23.** The walk provides resource containment. Arbitrary privileged-fault containment is **unproven** and is a **required future gate**; no claim to recover safely from every mid-call module fault until a recovery contract exists and passes |
 | M-D05 | Typed OOM rule vs infallible Rust allocation and current halt handler | Fallible-growth audit and reserve-backed failure reporting are prerequisites; do not replace halt with unsafe stack escape |
 | M-D06 | New refcounted/drop-on-last image vs fixed eight never-evicted `Once` cache | Replace cache with facility-owned image/pin aliases; shared RO and private RW mapping, not relocation into another hardcoded slot |
 | M-D07 | Module allocator forwarding vs current `drivers/vhost-filesystem` and `drivers/stuffit-filesystem` private global heaps (`mac-driver-alloc` calls the module global allocator) | New invocation adapter forwards explicit allocation context; migrate module implementations together, not by mixing heaps/free functions |
