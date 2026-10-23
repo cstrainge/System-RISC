@@ -39,6 +39,7 @@ impl Disk
             mac_formats::resource::Resource { kind:*b"RV64",id:0,name:None,attributes:0,data:vec![0xaa;1024*1024]},
             mac_formats::resource::Resource { kind:*b"vers",id:1,name:None,attributes:0,data:version.to_vec()},
             mac_formats::resource::Resource { kind:*b"vers",id:2,name:None,attributes:0,data:vec![0;6]},
+            mac_formats::resource::Resource { kind:*b"vers",id:3,name:None,attributes:0,data:vec![0;519]},
         ]).unwrap();
         for (name, bytes) in [("Sample", resources), ("Malformed", vec![0; 16])]
         {
@@ -154,7 +155,7 @@ fn arbitrary_file_versions_are_utf8_scoped_and_read_only()
                              .unwrap(),
                        count);
             assert_eq!(system.resources()
-                             .file_version(system.files().volume_at(0).unwrap().id, file.id, 3)
+                             .file_version(system.files().volume_at(0).unwrap().id, file.id, 4)
                              .unwrap_err()
                              .status(),
                        mac_abi::NOT_FOUND);
@@ -163,6 +164,17 @@ fn arbitrary_file_versions_are_utf8_scoped_and_read_only()
                              .unwrap_err()
                              .status(),
                        mac_abi::BAD_ARGUMENT);
+            let oversized = system.resources()
+                                  .file_version(system.files().volume_at(0).unwrap().id, file.id, 3)
+                                  .unwrap_err();
+            assert_eq!(oversized, mac_toolbox::Error::NoMemory);
+            assert_eq!(oversized.to_string(), "out of memory");
+            // Rejection leaves the same file and resource search scope usable.
+            assert_eq!(system.resources()
+                             .file_version(system.files().volume_at(0).unwrap().id, file.id, 1)
+                             .unwrap()
+                             .short(),
+                       "Café");
             let bad = system.files()
                             .lookup(system.files().volume_at(0).unwrap().id,
                                     mac_toolbox::Cnid(2),

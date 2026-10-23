@@ -102,6 +102,16 @@ impl<R: Rpc> Filesystem<R>
         name.copy_from_slice(&child.name);
         let host_kind = child.kind;
         let existing_directory = child.directory;
+        if name == forks::annotation::DIRECTORY.as_bytes()
+        {
+            if host_kind != 2
+            {
+                return Err(Cause::Invalid.into());
+            }
+            self.mounts.get_mut(volume).unwrap().directories.get_mut(parent).unwrap().pending =
+                None;
+            return Ok(false);
+        }
         if name == forks::ROOT_RECORD.as_bytes()
            || name == forks::DIRECTORY_RECORD.as_bytes()
            || name == b".system-risc-lock"
@@ -148,19 +158,7 @@ impl<R: Rpc> Filesystem<R>
         };
         let mut node = if let Some(directory) = directory
         {
-            match self.open_record(directory, forks::DIRECTORY_RECORD.as_bytes()).await
-            {
-                Ok((record, node)) =>
-                {
-                    self.close(record).await?;
-                    node
-                }
-                Err(error) if error.cause == Cause::Host(wire::status::NOT_FOUND) =>
-                {
-                    self.plain_node(volume, handle, name).await?
-                }
-                Err(error) => return Err(error)
-            }
+            self.directory_node(volume, handle, name, directory).await?
         }
         else
         {
@@ -273,7 +271,7 @@ impl<R: Rpc> Filesystem<R>
     pub async fn check_directory(&mut self, volume: u32, parent: u32) -> Result<(bool, [u8; 32])>
     {
         self.owner = volume;
-        if self.writes.entries.iter().any(|(_, p)| p.volume == volume)
+        if self.writes.entries.iter().any(|(_, p)| p.volume == volume) || self.group_busy(volume)
         {
             return Err(Cause::Busy.into());
         }
@@ -285,6 +283,10 @@ impl<R: Rpc> Filesystem<R>
         let mount = self.mounts.get_mut(volume).unwrap();
         if changed
         {
+            if parent == ROOT
+            {
+                mount.annotations = annotations::Directory::Unknown;
+            }
             // Reserve before changing ownership. Descendant count is bounded by
             // MAX_NODES and this traversal performs no transport operations.
             let mut removed = Vec::new();

@@ -77,6 +77,9 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   radios and scrollbars, with CDEF-owned drawing/geometry and resident tracking,
   highlighting/cancellation. Use managed scroll boxes for compound views; do not
   duplicate control hit testing or press/release loops inside applications.
+- Give every CDEF a descriptive control-family resource name and build artifact
+  (for example, `CDEF_PROGRESS_BAR` / “Progress Bar”). Keep package and source
+  names informative too; numeric resource IDs alone do not identify a control.
 - Repainting is bounded by the changed object: cursor, control, or window area.
   Accumulate exact damage, preserve occlusion and clipping, and leave unrelated
   pixels and drawing work untouched. Movement damages both old and new bounds;

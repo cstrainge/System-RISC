@@ -110,54 +110,14 @@ impl<'a> Raster<'a>
 pub const PANEL: Rect = Rect::new(170, 150, 470, 326);
 pub const PROGRESS: Rect = Rect::new(204, 289, 436, 305);
 pub const TITLE_BASELINE: i16 = 271;
-pub struct Panel
+/// Draw only the welcome panel. Progress is a resource-backed managed control
+/// owned by System; the ROM never carries a duplicate progress implementation.
+pub fn draw_panel(raster: &mut Raster<'_>, happy: &[u8; 256])
 {
-    filled: usize,
-    total:  u8
-}
-impl Panel
-{
-    pub fn begin(raster: &mut Raster<'_>, total: u8, happy: &[u8; 256]) -> Self
-    {
-        raster.background();
-        raster.fill(Rect::new(PANEL.left + 4, PANEL.top + 4, PANEL.right + 4, PANEL.bottom + 4), 0);
-        raster.fill(PANEL, 0);
-        raster.fill(Rect::new(PANEL.left + 2, PANEL.top + 2, PANEL.right - 2, PANEL.bottom - 2),
-                    0xffffff);
-        raster.icon(happy, 288, 170, 2);
-        raster.fill(PROGRESS, 0);
-        raster.fill(Rect::new(PROGRESS.left + 2,
-                              PROGRESS.top + 2,
-                              PROGRESS.right - 2,
-                              PROGRESS.bottom - 2),
-                    0xffffff);
-        Self { filled: 0,
-               total:  total.max(1) }
-    }
-
-    /// Only newly completed progress pixels change. Repeated/regressing stages
-    /// do no drawing and produce no framebuffer damage.
-    pub fn advance(&mut self, raster: &mut Raster<'_>, completed: u8) -> Option<Rect>
-    {
-        let width = (PROGRESS.right - PROGRESS.left - 4) as usize;
-        let next = width * usize::from(completed.min(self.total)) / usize::from(self.total);
-        if next <= self.filled
-        {
-            return None;
-        }
-        let damage = Rect::new(PROGRESS.left + 2 + self.filled as i16,
-                               PROGRESS.top + 2,
-                               PROGRESS.left + 2 + next as i16,
-                               PROGRESS.bottom - 2);
-        for y in damage.top..damage.bottom
-        {
-            for x in damage.left..damage.right
-            {
-                raster.fill(Rect::new(x, y, x + 1, y + 1),
-                            if (x + y) & 7 < 3 { 0 } else { 0xffffff });
-            }
-        }
-        self.filled = next;
-        Some(damage)
-    }
+    raster.background();
+    raster.fill(Rect::new(PANEL.left + 4, PANEL.top + 4, PANEL.right + 4, PANEL.bottom + 4), 0);
+    raster.fill(PANEL, 0);
+    raster.fill(Rect::new(PANEL.left + 2, PANEL.top + 2, PANEL.right - 2, PANEL.bottom - 2),
+                0xffffff);
+    raster.icon(happy, 288, 170, 2);
 }

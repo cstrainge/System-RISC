@@ -1,4 +1,4 @@
-//! Serialized callback state machine. All I/O state is owned, every callback
+//! Multiplexed callback state machine. All I/O state is owned, every callback
 //! advances one bounded step, and no state guard reaches a lower service.
 use alloc::vec::Vec;
 
@@ -13,6 +13,7 @@ use crate::{Sources, buffer,
             stream::{Fetch, Stream}};
 const MAX_MOUNTS: usize = 16;
 const MAX_OPENS: usize = 16;
+const MAX_ACTIVE: usize = 32;
 struct Open
 {
     volume: u32,
@@ -299,13 +300,15 @@ struct Active
 {
     ticket:    u32,
     operation: u32,
+    volume:    u32,
+    token:     u32,
     task:      Task,
     cancel:    bool
 }
 struct State<S>
 {
     backend:   Option<Backend<S>>,
-    active:    Option<Active>,
+    active:    Vec<Active>,
     running:   bool,
     quiescing: bool
 }
@@ -325,7 +328,7 @@ impl<S: Sources> Service<S>
     pub const fn new() -> Self
     {
         Self { state: Spinlock::new(State { backend:   None,
-                                            active:    None,
+                                            active:    Vec::new(),
                                             running:   false,
                                             quiescing: false }) }
     }
@@ -333,7 +336,7 @@ impl<S: Sources> Service<S>
     pub fn initialize(&self, sources: S) -> Result<()>
     {
         let mut state = self.state.try_lock().ok_or(Error(mac_abi::SERVICE_BUSY))?;
-        if state.backend.is_some() || state.running || state.active.is_some() || state.quiescing
+        if state.backend.is_some() || state.running || !state.active.is_empty() || state.quiescing
         {
             return Err(Error(mac_abi::SERVICE_BUSY));
         }
@@ -360,10 +363,15 @@ impl<S: Sources> Service<S>
         }
         let mut active = if call.phase == Phase::Start
         {
-            if state.active.is_some()
+            if state.active.len() == MAX_ACTIVE
             {
-                return Err(Error(mac_abi::SERVICE_BUSY));
+                return Err(Error(mac_abi::NO_MEMORY));
             }
+            if state.active.iter().any(|active| active.ticket == call.ticket)
+            {
+                return Err(Error(mac_abi::BAD_ARGUMENT));
+            }
+            state.active.try_reserve(1).map_err(|_| Error(mac_abi::NO_MEMORY))?;
             let op =
                 Operation::try_from(call.operation).map_err(|_| Error(mac_abi::NOT_SUPPORTED))?;
             let args = Arguments::decode(call.input).map_err(|_| Error(mac_abi::BAD_ARGUMENT))?;
@@ -376,27 +384,57 @@ impl<S: Sources> Service<S>
             {
                 return Err(Error(mac_abi::BAD_ARGUMENT));
             }
+            // Independent reads may progress while another task waits for a
+            // backing fork from this same provider. A single open's decoder
+            // remains exclusively owned until its task acknowledges completion.
+            if state.active.iter().any(|active| {
+                                      active.volume == args.volume
+                                      && (op == Operation::Unmount
+                                          || active.operation == Operation::Mount as u32
+                                          || matches!(op, Operation::Read | Operation::Close)
+                                             && active.token == args.token)
+                                  })
+            {
+                return Err(Error(mac_abi::SERVICE_BUSY));
+            }
+            if op == Operation::Mount
+            {
+                let mounting = state.active
+                                    .iter()
+                                    .filter(|active| active.operation == Operation::Mount as u32)
+                                    .count();
+                let backend = state.backend.as_mut().ok_or(Error(mac_abi::NOT_SUPPORTED))?;
+                if backend.volumes.len() + mounting >= MAX_MOUNTS
+                {
+                    return Err(Error(mac_abi::NO_MEMORY));
+                }
+                // Reserve for every admitted but not yet published mount.
+                backend.volumes.try_reserve(mounting + 1).map_err(|_| Error(mac_abi::NO_MEMORY))?;
+            }
             // No lower invocation during planning. Owned root/catalog/read
             // buffers are prepared before the first callback can pend.
             let task =
                 state.backend.as_mut().ok_or(Error(mac_abi::NOT_SUPPORTED))?.start(op, args)?;
             Active { ticket: call.ticket,
                      operation: call.operation,
+                     volume: args.volume,
+                     token: args.token,
                      task,
                      cancel: false }
         }
         else
         {
-            let active = state.active.as_mut().ok_or(Error(mac_abi::NOT_FOUND))?;
-            if active.ticket != call.ticket || active.operation != call.operation
-            {
-                return Err(Error(mac_abi::NOT_FOUND));
-            }
+            let at = state.active
+                          .iter()
+                          .position(|active| {
+                              active.ticket == call.ticket && active.operation == call.operation
+                          })
+                          .ok_or(Error(mac_abi::NOT_FOUND))?;
             if call.phase == Phase::Cancel
             {
-                active.cancel = true;
+                state.active[at].cancel = true;
             }
-            state.active.take().unwrap()
+            state.active.swap_remove(at)
         };
         let mut backend = state.backend.take().ok_or(Error(mac_abi::BAD_ABI))?;
         state.running = true;
@@ -426,7 +464,8 @@ impl<S: Sources> Service<S>
                              Completion::Complete(bytes.len())
                          });
         }
-        state.active = Some(active);
+        active.cancel |= state.quiescing;
+        state.active.push(active);
         Ok(Completion::Pending)
     }
 
@@ -434,12 +473,12 @@ impl<S: Sources> Service<S>
     {
         let mut state = self.state.try_lock().ok_or(Error(mac_abi::SERVICE_BUSY))?;
         state.quiescing = true;
-        if let Some(active) = &mut state.active
+        for active in &mut state.active
         {
             active.cancel = true;
         }
         if state.running
-           || state.active.is_some()
+           || !state.active.is_empty()
            || state.backend.as_ref().is_none_or(|b| !b.volumes.is_empty() || !b.opens.is_empty())
         {
             return Err(Error(mac_abi::SERVICE_BUSY));

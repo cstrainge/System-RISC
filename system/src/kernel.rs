@@ -61,6 +61,9 @@ pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [
                                                        slot.get().is_some_and(|image| {
                                                                      image.volume == volume
                                                                      && image.cnid == cnid
+                                                                     && image.creator == creator
+                                                                     && image.file_type == file_type
+                                                                     && image.resources == resources
                                                                  })
                                                    })
     {
@@ -278,7 +281,12 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
              });
     let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system);
     serial!("FONTS_READY: families={} resources loaded from System", fonts.catalog().len());
-    let mut boot_screen = crate::boot_screen::BootScreen::begin(&system, &fonts)?;
+    // Progress uses the real loaded CDEF before any application loop exists.
+    let fonts = FONTS.call_once(|| fonts);
+    let files = RESOURCE_FILES.call_once(|| crate::toolbox::resources::manager::Files { system });
+    let mut definitions = crate::loader::Definitions::new(files);
+    let mut boot_screen =
+        crate::boot_screen::BootScreen::begin(&files.system, fonts, &mut definitions)?;
     if !crate::platform::setup_framebuffer()
     {
         return Err(mac_formats::Error::Malformed("RAM framebuffer is unavailable"));
@@ -286,10 +294,8 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     serial!("BOOT_PANEL_READY stages=7");
     // Immutable publication is acquire/release synchronized by Once. Runtime
     // readers never spin or take a mutable catalog guard.
-    FONTS.call_once(|| fonts);
-    boot_screen.completed(1);
-    let files = RESOURCE_FILES.call_once(|| crate::toolbox::resources::manager::Files { system });
-    boot_screen.completed(2);
+    boot_screen.completed(1)?;
+    boot_screen.completed(2)?;
     crate::toolbox::files::types::initialize().map_err(|status| {
                                                   serial!("FILE_TYPES_ERROR status={}", status);
                                                   mac_formats::Error::Malformed("File Types is \
@@ -306,26 +312,26 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     {
         serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
     }
-    let definitions = crate::loader::Definitions::new(files);
-    boot_screen.completed(3);
+    boot_screen.completed(3)?;
     let runtime =
         crate::toolbox::runtime::Desktop::new(definitions).map_err(|_| {
                                               mac_formats::Error::Malformed("Toolbox initialization failed")
                                           })?;
-    boot_screen.completed(4);
+    boot_screen.completed(4)?;
     DESKTOP.publish(runtime)
            .map_err(|_| mac_formats::Error::Malformed("desktop already published"))?;
-    boot_screen.completed(5);
+    boot_screen.completed(5)?;
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", &SERVICES as *const SystemServices as usize);
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
     let thread=crate::machine::scheduler::spawn(crate::context::finder_app().0,0,finder_entry).map_err(|_|mac_formats::Error::Malformed("Finder thread creation failed"))?;
-    boot_screen.completed(6);
+    boot_screen.completed(6)?;
     with_desktop(|desktop| desktop.started(crate::context::finder_app().0, thread)).map_err(|_| {
                                                           mac_formats::Error::Malformed("Finder context \
                                                                               initialization \
                                                                               failed")
                                                       })?;
-    boot_screen.completed(7);
+    boot_screen.completed(7)?;
+    drop(boot_screen);
     crate::machine::scheduler::start()
 }
 
@@ -402,7 +408,8 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
 
 pub fn allocation_failed(layout: Layout) -> !
 {
-    serial!("SYSTEM_ALLOCATION_FAILED: {} bytes", layout.size());
+    let free = heap_available();
+    serial!("SYSTEM_ALLOCATION_FAILED: {} bytes, {} free", layout.size(), free);
     halt()
 }
 pub fn panic(info: &PanicInfo<'_>) -> !

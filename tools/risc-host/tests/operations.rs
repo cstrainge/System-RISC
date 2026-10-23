@@ -7,6 +7,39 @@ use std::{fs,
 use mac_host_protocol::{self as wire, Header, Operation as Op, status};
 use risc_host::{Export, Session};
 #[test]
+fn descriptor_descriptions_preserve_stage_incarnations_and_reject_closed_foreign_or_changed_handles(
+    )
+{
+    let temp = Temp::new();
+    let mut client = Client::new(exports(&temp, true));
+    let (root, body) = client.ok(Op::DescribeObject, client.root, 0, 0, &[]);
+    assert_eq!(root.value, 2);
+    assert!(wire::Description::decode(&body).unwrap().identity.is_some());
+    let stage = client.stage(b"payload");
+    let (_, body) = client.ok(Op::DescribeObject, stage, 0, 0, &[]);
+    let before = wire::Description::decode(&body).unwrap();
+    client.ok(Op::Commit, stage, 0, 0, b"native");
+    assert_eq!(client.call(Op::DescribeObject, stage, 0, 0, &[]).0.status, status::STALE);
+    let (snapshot, _) = client.ok(Op::OpenRead, client.root, 0, 0, b"native");
+    let (node, body) = client.ok(Op::DescribeObject, snapshot.object, 0, 0, &[]);
+    assert_eq!(wire::Description::decode(&body).unwrap().identity, before.identity);
+    assert_eq!(client.call(Op::DescribeObject, node.object, 0, 0, &[]).0.status, status::STALE);
+    let source = temp.0.join("native");
+    let modified = fs::metadata(&source).unwrap().modified().unwrap();
+    fs::write(&source, b"changed").unwrap();
+    fs::OpenOptions::new().write(true)
+                          .open(&source)
+                          .unwrap()
+                          .set_times(fs::FileTimes::new().set_modified(modified))
+                          .unwrap();
+    assert_eq!(client.call(Op::DescribeObject, snapshot.object, 0, 0, &[]).0.status, status::STALE);
+    client.ok(Op::Close, snapshot.object, 0, 0, &[]);
+    assert_eq!(client.call(Op::DescribeObject, snapshot.object, 0, 0, &[]).0.status, status::STALE);
+    assert_eq!(client.call(Op::DescribeObject, client.root, 1, 0, &[]).0.status, status::INVALID);
+    assert_eq!(client.call(Op::DescribeObject, client.root, 0, 0, b"name").0.status,
+               status::INVALID);
+}
+#[test]
 #[cfg(target_os = "linux")]
 fn persistent_incarnations_survive_sessions_and_renames_but_not_replacement()
 {
@@ -384,4 +417,83 @@ fn host_files_with_pre_unix_dates_remain_readable()
     let mut client = Client::new(exports(&temp, false));
     let (source, _) = client.ok(Op::OpenRead, client.root, 0, 0, b"old");
     assert_eq!(client.ok(Op::Read, source.object, 0, 8, &[]).1, b"old file");
+}
+
+fn removal_payload(name: &str, record: Option<&str>) -> Vec<u8>
+{
+    let mut bytes = (name.len() as u16).to_le_bytes().to_vec();
+    bytes.extend_from_slice(name.as_bytes());
+    if let Some(record) = record
+    {
+        bytes.extend_from_slice(record.as_bytes());
+    }
+    bytes
+}
+#[test]
+fn removal_receipts_restore_on_cancel_or_disconnect_and_never_reuse_closed_tokens()
+{
+    let temp = Temp::new();
+    fs::write(temp.0.join("Document"), b"original bytes").unwrap();
+    let mut client = Client::new(exports(&temp, true));
+    let (source, _) = client.ok(Op::OpenRead, client.root, 0, 0, b"Document");
+    let payload = removal_payload("Document", None);
+    let (intent, _) = client.ok(Op::BeginRemove, client.root, 0, source.object, &payload);
+    assert_eq!(client.ok(Op::RemoveState, intent.object, 0, 0, &[]).0.value, wire::REMOVE_PREPARED);
+    client.ok(Op::QuarantineRemove, intent.object, 0, 0, &[]);
+    assert!(!temp.0.join("Document").exists());
+    assert_eq!(client.ok(Op::RemoveState, intent.object, 0, 0, &[]).0.value,
+               wire::REMOVE_QUARANTINED);
+    assert_eq!(client.ok(Op::AbortRemove, intent.object, 0, 0, &[]).0.value, 0);
+    assert_eq!(fs::read(temp.0.join("Document")).unwrap(), b"original bytes");
+    client.ok(Op::Close, intent.object, 0, 0, &[]);
+    assert_eq!(client.call(Op::RemoveState, intent.object, 0, 0, &[]).0.status, status::STALE);
+    // Rename changes ctime; acquire a fresh snapshot for the next operation.
+    let (source, _) = client.ok(Op::OpenRead, client.root, 0, 0, b"Document");
+    let (next, _) = client.ok(Op::BeginRemove, client.root, 0, source.object, &payload);
+    assert_ne!(next.object, intent.object);
+    client.ok(Op::QuarantineRemove, next.object, 0, 0, &[]);
+    drop(client);
+    assert_eq!(fs::read(temp.0.join("Document")).unwrap(), b"original bytes");
+    let mut client = Client::new(exports(&temp, true));
+    let (source, _) = client.ok(Op::OpenRead, client.root, 0, 0, b"Document");
+    let (intent, _) = client.ok(Op::BeginRemove, client.root, 0, source.object, &payload);
+    assert_eq!(client.call(Op::CommitRemove, intent.object, 0, 0, &[]).0.status, status::INVALID);
+    client.ok(Op::QuarantineRemove, intent.object, 0, 0, &[]);
+    client.ok(Op::CommitRemove, intent.object, 0, 0, &[]);
+    assert_eq!(client.ok(Op::RemoveState, intent.object, 0, 0, &[]).0.value, wire::REMOVE_REMOVED);
+    client.ok(Op::CommitRemove, intent.object, 0, 0, &[]);
+    assert_eq!(client.ok(Op::AbortRemove, intent.object, 0, 0, &[]).0.value, 1);
+    client.ok(Op::Close, intent.object, 0, 0, &[]);
+    assert!(!temp.0.join("Document").exists());
+    assert_eq!(fs::read_dir(&temp.0).unwrap().count(), 0);
+}
+
+#[test]
+fn removal_rejects_nonempty_readonly_and_foreign_sources_without_touching_them()
+{
+    let temp = Temp::new();
+    fs::create_dir(temp.0.join("Folder")).unwrap();
+    fs::write(temp.0.join("Folder/record"), b"private marker").unwrap();
+    fs::write(temp.0.join("Folder/Document"), b"do not remove").unwrap();
+    let mut client = Client::new(exports(&temp, true));
+    let (folder, _) = client.ok(Op::OpenDirectory, client.root, 0, 0, b"Folder");
+    let payload = removal_payload("Folder", Some("record"));
+    assert_eq!(client.call(Op::BeginRemove, client.root, 0, folder.object, &payload).0.status,
+               status::NOT_EMPTY);
+    assert_eq!(fs::read(temp.0.join("Folder/Document")).unwrap(), b"do not remove");
+    let mut foreign = Client::new(exports(&temp, true));
+    assert_eq!(foreign.call(Op::BeginRemove, foreign.root, 0, folder.object, &payload).0.status,
+               status::STALE);
+    let mut readonly = Client::new(exports(&temp, false));
+    let (ro_folder, _) = readonly.ok(Op::OpenDirectory, readonly.root, 0, 0, b"Folder");
+    assert_eq!(readonly.call(Op::BeginRemove, readonly.root, 0, ro_folder.object, &payload)
+                       .0
+                       .status,
+               status::READ_ONLY);
+    fs::remove_file(temp.0.join("Folder/Document")).unwrap();
+    let (intent, _) = client.ok(Op::BeginRemove, client.root, 0, folder.object, &payload);
+    client.ok(Op::QuarantineRemove, intent.object, 0, 0, &[]);
+    client.ok(Op::CommitRemove, intent.object, 0, 0, &[]);
+    client.ok(Op::Close, intent.object, 0, 0, &[]);
+    assert!(!temp.0.join("Folder").exists());
 }

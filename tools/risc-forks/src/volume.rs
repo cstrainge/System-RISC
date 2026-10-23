@@ -15,28 +15,45 @@ const MAX_DEPTH: usize = 128;
 #[derive(Clone)]
 pub struct Entry
 {
-    pub metadata: Metadata,
-    pub parent:   u32,
-    pub path:     PathBuf,
-    pub layout:   format::Layout,
-    key:          String
+    pub metadata:         Metadata,
+    pub parent:           u32,
+    pub path:             PathBuf,
+    pub layout:           format::Layout,
+    pub(super) key:       String,
+    pub(super) plain:     bool,
+    pub(super) pinned:    std::sync::Arc<FileIo>,
+    pub(super) directory: Option<std::sync::Arc<FileIo>>
 }
+impl Entry
+{
+    fn validate(&self) -> Result<()>
+    {
+        self.pinned.validate()?;
+        if let Some(directory) = &self.directory
+        {
+            directory.validate()?;
+        }
+        Ok(())
+    }
+}
+
 pub struct Volume
 {
-    dir: Dir
+    pub(super) dir:        Dir,
+    pub(super) projection: std::sync::Mutex<super::projection::Projection>
 }
-fn sync(dir: &Dir) -> Result<()>
+pub(super) fn sync(dir: &Dir) -> Result<()>
 {
     // A capability directory may use an O_PATH descriptor. Open a real read
     // descriptor relative to that capability before requesting durability.
     dir.open(".")?.sync_all()?;
     Ok(())
 }
-struct Stage<'a>
+pub(super) struct Stage<'a>
 {
-    dir:       &'a Dir,
-    name:      String,
-    published: bool
+    pub(super) dir:       &'a Dir,
+    pub(super) name:      String,
+    pub(super) published: bool
 }
 impl Drop for Stage<'_>
 {
@@ -48,7 +65,7 @@ impl Drop for Stage<'_>
         }
     }
 }
-fn stage_name() -> Result<String>
+pub(super) fn stage_name() -> Result<String>
 {
     let mut id = [0; 16];
     getrandom::fill(&mut id).map_err(|e| error(format!("entropy unavailable: {e}")))?;
@@ -98,7 +115,7 @@ fn write_file(dir: &Dir, name: &str, meta: &Metadata, data: &mut impl ReadAt,
     sync(dir)?;
     Ok(())
 }
-fn read_entry(dir: &Dir, path: &Path, parent: u32) -> Result<Entry>
+pub(super) fn read_entry(dir: &Dir, path: &Path, parent: u32) -> Result<Entry>
 {
     let kind = dir.symlink_metadata(path)?.file_type();
     if kind.is_symlink() || !kind.is_file()
@@ -106,14 +123,33 @@ fn read_entry(dir: &Dir, path: &Path, parent: u32) -> Result<Entry>
         return Err(error("container must be a regular file"));
     }
     let file = dir.open(path)?.into_std();
-    let mut source = FileIo::snapshot(file)?;
-    let opened = Opened::open(&mut source)?;
-    Ok(Entry { metadata: opened.metadata().clone(),
-               layout: opened.layout(),
-               parent,
-               path: path.to_path_buf(),
-               key: mac_hfs_b::names::comparison(&opened.metadata().name)? })
+    let mut entry = read_pinned(FileIo::snapshot(file)?, path, parent)?;
+    if entry.metadata.kind != Kind::File
+    {
+        let folder = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        entry.directory =
+            Some(std::sync::Arc::new(FileIo::snapshot(dir.open(folder)?.into_std())?));
+    }
+    Ok(entry)
 }
+pub(super) fn read_pinned(mut source: FileIo, path: &Path, parent: u32) -> Result<Entry>
+{
+    let opened = Opened::open(&mut source)?;
+    let metadata = opened.metadata().clone();
+    let layout = opened.layout();
+    drop(opened);
+    source.validate()?;
+    let key = mac_hfs_b::names::comparison(&metadata.name)?;
+    Ok(Entry { metadata,
+               layout,
+               parent,
+               plain: false,
+               path: path.to_path_buf(),
+               key,
+               pinned: std::sync::Arc::new(source),
+               directory: None })
+}
+
 impl Volume
 {
     pub fn initialize(path: &Path, name: &str) -> Result<Self>
@@ -142,7 +178,8 @@ impl Volume
         lock.sync_all()?;
         write_file(&dir, ROOT_RECORD, &root, &mut Slice(&[]), &mut Slice(&[]), false)?;
         drop(lock);
-        Ok(Self { dir })
+        Ok(Self { dir,
+                  projection: std::sync::Mutex::new(super::projection::Projection::new()) })
     }
 
     pub fn open(path: &Path) -> Result<Self>
@@ -152,7 +189,9 @@ impl Volume
             return Err(error("export root cannot be a symlink"));
         }
         let dir = Dir::open_ambient_dir(path, cap_std::ambient_authority())?;
-        let result = Self { dir };
+        let result = Self { dir,
+                            projection:
+                                std::sync::Mutex::new(super::projection::Projection::new()) };
         let _lock = result.lock(false)?;
         let root = result.root()?;
         if root.metadata.kind != Kind::Root
@@ -189,11 +228,15 @@ impl Volume
             Kind::Root => Ok(self.dir.try_clone()?),
             Kind::Directory =>
             {
-                Ok(self.dir.open_dir(entry.path
-                                           .parent()
-                                           .ok_or_else(|| {
-                                               error("invalid directory metadata path")
-                                           })?)?)
+                let path = if entry.plain
+                {
+                    entry.path.as_path()
+                }
+                else
+                {
+                    entry.path.parent().ok_or_else(|| error("invalid directory metadata path"))?
+                };
+                Ok(self.dir.open_dir(path)?)
             }
             Kind::File => Err(error("not a folder"))
         }
@@ -214,10 +257,51 @@ impl Volume
             {
                 continue;
             }
-            if name.starts_with(STAGE_PREFIX)
+            if name == format::annotation::DIRECTORY
             {
-                return Err(error("unfinished host transaction; check and remove its \
-                                  uncommitted stage"));
+                if !entry.file_type()?.is_dir()
+                {
+                    return Err(error("metadata bookkeeping must be a directory"));
+                }
+                continue;
+            }
+            if name.starts_with(STAGE_PREFIX) || name.starts_with(".system-risc-delete-")
+            {
+                let recovered = risc_host::recover_removals_in(&dir).map_err(|e| {
+                                    error(format!("cannot recover interrupted removal: host \
+                                                   status {}",
+                                                  e.0))
+                                })?;
+                if recovered
+                {
+                    // Recovery is per change, not a second scan on ordinary
+                    // reads. Refresh the parent's physical snapshot before retry.
+                    let refreshed = if parent.metadata.kind == Kind::Root
+                    {
+                        self.root()?
+                    }
+                    else
+                    {
+                        let physical = if parent.plain
+                        {
+                            parent.path.as_path()
+                        }
+                        else
+                        {
+                            parent.path
+                                  .parent()
+                                  .ok_or_else(|| error("invalid directory metadata path"))?
+                        };
+                        self.observe(physical,
+                                     parent.parent,
+                                     parent.metadata.volume,
+                                     Kind::Directory,
+                                     &parent.metadata.name)?
+                    };
+                    return self.children_unlocked(&refreshed);
+                }
+                return Err(error("unfinished host write transaction; inspect the private stage \
+                                  before removing it"));
             }
             if entries.len() >= MAX_ENTRIES
             {
@@ -229,16 +313,17 @@ impl Volume
                 return Err(error("host entry must be a regular file or directory"));
             }
             let kind = if file_type.is_dir() { Kind::Directory } else { Kind::File };
-            let path = parent.path.parent().unwrap_or(Path::new("")).join(name);
-            let container =
-                if kind == Kind::Directory { path.join(DIRECTORY_RECORD) } else { path };
-            let mut observed = read_entry(&self.dir, &container, parent.metadata.catalog_id)?;
-            if observed.metadata.kind != kind || observed.metadata.volume != parent.metadata.volume
+            let base = if parent.plain
             {
-                return Err(error("host entry/container kind or volume mismatch"));
+                parent.path.as_path()
             }
-            observed.metadata.name = mac_hfs_b::names::normalize(name)?;
-            observed.key = mac_hfs_b::names::comparison(&observed.metadata.name)?;
+            else
+            {
+                parent.path.parent().unwrap_or(Path::new(""))
+            };
+            let path = base.join(name);
+            let observed = self.observe(&path, parent.metadata.catalog_id,
+                                        parent.metadata.volume, kind, name)?;
             entries.push(observed);
         }
         entries.sort_by(|a, b| a.key.cmp(&b.key));
@@ -284,8 +369,9 @@ impl Volume
     {
         let mut root = self.root()?.metadata;
         let id = root.next_catalog_id;
-        root.next_catalog_id =
-            id.checked_add(1).ok_or_else(|| error("catalog identities exhausted"))?;
+        root.next_catalog_id = id.checked_add(1)
+                                 .filter(|id| *id < 0x8000_0000)
+                                 .ok_or_else(|| error("catalog identities exhausted"))?;
         root.revision =
             root.revision.checked_add(1).ok_or_else(|| error("root revision exhausted"))?;
         root.modified = crate::now()?;
@@ -325,13 +411,22 @@ impl Volume
                     return Err(error("duplicate catalog/container identity; import copied \
                                       containers explicitly"));
                 }
-                if entry.metadata.catalog_id >= root.metadata.next_catalog_id
+                if entry.metadata.catalog_id < 0x8000_0000
+                   && entry.metadata.catalog_id >= root.metadata.next_catalog_id
                    && entry.metadata.kind != Kind::Root
                 {
                     return Err(error("root identity counter is behind catalog"));
                 }
-                let source = FileIo::snapshot(self.dir.open(&entry.path)?.into_std())?;
-                Opened::open(source)?.verify()?;
+                entry.validate()?;
+                let source = FileIo::snapshot(entry.pinned.file.try_clone()?)?;
+                if entry.plain
+                {
+                    source.validate()?;
+                }
+                else
+                {
+                    Opened::open(source)?.verify()?;
+                }
                 count += 1;
                 if count > MAX_ENTRIES
                 {
@@ -373,11 +468,20 @@ impl Volume
         {
             return Err(error("folder depth limit exceeded"));
         }
+        entry.validate()?;
         std::fs::create_dir(destination)?;
         if entry.metadata.kind == Kind::File
         {
-            let mut source = FileIo::snapshot(self.dir.open(&entry.path)?.into_std())?;
-            let mut opened = Opened::open(&mut source)?;
+            entry.pinned.validate()?;
+            let mut source = FileIo::snapshot(entry.pinned.file.try_clone()?)?;
+            let mut opened = if entry.plain
+            {
+                None
+            }
+            else
+            {
+                Some(Opened::open(FileIo::snapshot(entry.pinned.file.try_clone()?)?)?)
+            };
             let mut buffer = [0; CHUNK_BYTES];
             for (kind, name) in [(Fork::Data, "data"), (Fork::Resource, "resources")]
             {
@@ -385,7 +489,21 @@ impl Volume
                 let mut at = 0;
                 loop
                 {
-                    let n = opened.read(kind, at, &mut buffer)?;
+                    let n = if let Some(opened) = opened.as_mut()
+                    {
+                        opened.read(kind, at, &mut buffer)?
+                    }
+                    else if kind == Fork::Resource
+                    {
+                        0
+                    }
+                    else
+                    {
+                        let n = source.len().saturating_sub(at).min(CHUNK_BYTES as u64) as usize;
+                        source.validate()?;
+                        source.read_exact(at, &mut buffer[..n])?;
+                        n
+                    };
                     if n == 0
                     {
                         break;
@@ -405,6 +523,7 @@ impl Volume
                 self.export_entry(&child, &children.join(&child.metadata.name), depth + 1)?;
             }
         }
+        entry.validate()?;
         // Metadata is the completion record; a failed export lacks this marker.
         let mut file = File::create(destination.join("metadata.json"))?;
         file.write_all(&serde_json::to_vec_pretty(&crate::json(&entry.metadata, entry.layout))?)?;
@@ -516,9 +635,18 @@ impl Creation<'_>
         {
             return Err(error("cannot create a second root"));
         }
-        let path = parent.path.parent().unwrap_or(Path::new("")).join(name);
-        let path = if kind == Kind::Directory { path.join(DIRECTORY_RECORD) } else { path };
-        let entry = read_entry(&self.volume.dir, &path, parent.metadata.catalog_id)?;
+        let base = if parent.plain
+        {
+            parent.path.as_path()
+        }
+        else
+        {
+            parent.path.parent().unwrap_or(Path::new(""))
+        };
+        let path = base.join(&name);
+        self.volume.bind_created(&path, &meta)?;
+        let entry =
+            self.volume.observe(&path, parent.metadata.catalog_id, meta.volume, kind, &name)?;
         self.children(&parent)?.insert(key, entry.clone());
         Ok(entry)
     }

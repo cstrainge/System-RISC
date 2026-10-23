@@ -1,6 +1,6 @@
 # Native scrollbar CDEF1
 
-`SCROLLBAR` is independently linked at `0x82200000..0x82300000` and packaged as
+`CDEF_SCROLL_BAR` is independently linked at `0x82200000..0x82300000` and packaged as
 System `CDEF` ID1. Its source owns geometry, rendering and hit testing. The
 resident Control Manager retains scalar state and a loader-validated entry;
 window repaint calls the same resource with the window's origin and clip.

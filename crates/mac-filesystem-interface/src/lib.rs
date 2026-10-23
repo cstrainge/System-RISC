@@ -7,13 +7,19 @@
 mod metadata;
 mod properties;
 mod receipt;
+mod patch;
+mod icon_moves;
+pub use icon_moves::{ICON_MOVE_BYTES, ICON_MOVE_PROGRESS_BYTES, IconMove, IconMovePhase,
+                     IconMoveProgress, IconMoves, MAX_ICON_MOVE_BYTES, MAX_ICON_MOVES};
 pub use metadata::{MAX_METADATA_BYTES, MAX_MOUNT_BYTES, METADATA_BYTES, MOUNT_BYTES, Metadata,
                    Mount};
+pub use patch::{MAX_PATCH_BYTES, MetadataPatch, PATCH_BYTES};
 pub use properties::{FileProperties, PROPERTIES_BYTES};
-pub use receipt::{AbortReceipt, MAX_ABORT_RECEIPT_BYTES, MAX_WRITE_RECEIPT_BYTES,
+pub use receipt::{AbortReceipt, MAX_ABORT_RECEIPT_BYTES, MAX_REMOVAL_RECEIPT_BYTES,
+                  MAX_WRITE_RECEIPT_BYTES, MetadataAbortReceipt, MetadataReceipt, RemovalReceipt,
                   WRITE_RECEIPT_BYTES, WriteReceipt};
 pub const CLASS: [u8; 4] = *b"FSYS";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 4;
 pub const SCHEMA: u16 = 1;
 pub const HEADER_BYTES: usize = 64;
 pub const MAX_TRANSFER: usize = 64 * 1024;
@@ -37,6 +43,8 @@ pub const INCLUDE_CHILD_COUNT: u32 = 1;
 /// BeginReplace flag: retain the original resource fork. Auxiliary must be zero;
 /// the provider leases/copies the actual fork in bounded, verified chunks.
 pub const PRESERVE_RESOURCE_FORK: u32 = 1;
+/// BeginReplace carries FileProperties, rather than retaining existing metadata.
+pub const REPLACE_PROPERTIES: u32 = 2;
 /// BeginCreate creates a directory with an empty pair of forks.
 pub const CREATE_DIRECTORY: u32 = 1;
 /// Provider source capabilities, used by class-neutral interface discovery.
@@ -77,13 +85,16 @@ pub enum Operation
     Refresh        = 15,
     Rename         = 16,
     Move           = 17,
-    MakeDirectory  = 18,
     Remove         = 19,
     SetMetadata    = 20,
     /// Metadata-only directory probe; reply is one changed byte (0/1), then
     /// 32 opaque revision bytes. Reset only this folder's cached descendants
     /// on change; never enumerate as part of the probe.
-    CheckDirectory = 21
+    CheckDirectory = 21,
+    ReadWrite      = 22,
+    BeginIconMoves = 23,
+    StepIconMoves  = 24,
+    AbortIconMoves = 25
 }
 impl TryFrom<u32> for Operation
 {
@@ -110,10 +121,13 @@ impl TryFrom<u32> for Operation
             15 => Self::Refresh,
             16 => Self::Rename,
             17 => Self::Move,
-            18 => Self::MakeDirectory,
             19 => Self::Remove,
             20 => Self::SetMetadata,
             21 => Self::CheckDirectory,
+            22 => Self::ReadWrite,
+            23 => Self::BeginIconMoves,
+            24 => Self::StepIconMoves,
+            25 => Self::AbortIconMoves,
             _ => return Err(Error::Invalid)
         })
     }

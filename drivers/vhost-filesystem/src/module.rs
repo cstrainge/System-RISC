@@ -106,7 +106,10 @@ impl<C: Channel + 'static> Service<C>
                 Operation::try_from(request.operation).map_err(|_| Error(mac_abi::NOT_SUPPORTED))?;
             if state.quiescing
                && !matches!(operation,
-                            Operation::Close | Operation::AbortWrite | Operation::Unmount)
+                            Operation::Close
+                            | Operation::AbortWrite
+                            | Operation::AbortIconMoves
+                            | Operation::Unmount)
             {
                 return Err(Error(mac_abi::SERVICE_BUSY));
             }
@@ -219,15 +222,20 @@ fn reply_capacity(op: Operation, a: Arguments<'_>) -> mac_driver::Result<usize>
 {
     Ok(match op
     {
+        Operation::BeginIconMoves | Operation::StepIconMoves | Operation::AbortIconMoves => 16,
         Operation::Mount => fs::MAX_MOUNT_BYTES,
         Operation::Catalog
         | Operation::Lookup
         | Operation::BeginCreate
         | Operation::BeginReplace => fs::MAX_METADATA_BYTES,
-        Operation::Scan => 4 + fs::MAX_METADATA_BYTES,
+        Operation::Scan
+        | Operation::SetMetadata
+        | Operation::Rename
+        | Operation::Move
+        | Operation::Remove => 4 + fs::MAX_METADATA_BYTES,
         Operation::FinishWrite => fs::MAX_WRITE_RECEIPT_BYTES,
         Operation::AbortWrite => fs::MAX_ABORT_RECEIPT_BYTES,
-        Operation::Read =>
+        Operation::Read | Operation::ReadWrite =>
         {
             usize::try_from(a.length).ok()
                                      .filter(|n| *n <= fs::MAX_TRANSFER)
@@ -261,7 +269,38 @@ async fn run<C: Channel + 'static>(mut client: Filesystem<DirectoryRpc<C>>, oper
         let op = Operation::try_from(operation).expect("START validated operation");
         let cleanup = match op
         {
+            Operation::BeginIconMoves | Operation::StepIconMoves | Operation::AbortIconMoves
+                if client.has_group(volume, token) =>
+            {
+                loop
+                {
+                    match client.step_icon_moves(volume, token, true).await
+                    {
+                        Ok(progress) if progress[0] == 1 =>
+                        {
+                            input.truncate(16);
+                            for (out, value) in input.chunks_exact_mut(4).zip(progress)
+                            {
+                                out.copy_from_slice(&value.to_le_bytes());
+                            }
+                            result = Ok(core::mem::take(&mut input));
+                            break Ok(());
+                        }
+                        Ok(progress) if progress[0] == 3 =>
+                        {
+                            result = Err(Cause::Cancelled.into());
+                            break Ok(());
+                        }
+                        Ok(_) => crate::rpc::yield_once().await,
+                        Err(error) => break Err(error)
+                    }
+                }
+            }
             Operation::BeginCreate
+            | Operation::SetMetadata
+            | Operation::Rename
+            | Operation::Remove
+            | Operation::Move
             | Operation::BeginReplace
             | Operation::WriteChunk
             | Operation::FinishWrite
@@ -269,6 +308,7 @@ async fn run<C: Channel + 'static>(mut client: Filesystem<DirectoryRpc<C>>, oper
                 if client.has_write(volume, token) =>
             {
                 let node = client.write_node(volume, token).unwrap();
+                let removing = client.removing(volume, token).unwrap();
                 match client.abort_write(volume, token).await
                 {
                     Ok(published) =>
@@ -278,7 +318,17 @@ async fn run<C: Channel + 'static>(mut client: Filesystem<DirectoryRpc<C>>, oper
                             // Reuse storage reserved before START. A commit
                             // ACK survives cancellation even if subsequent
                             // metadata or cleanup was interrupted.
-                            if op == Operation::AbortWrite
+                            if removing
+                            {
+                                input.resize(fs::MAX_REMOVAL_RECEIPT_BYTES, 0);
+                                result = client.encode_removal_receipt(volume, published,
+                                                                       &mut input)
+                                               .map(|count| {
+                                                   input.truncate(count);
+                                                   core::mem::take(&mut input)
+                                               });
+                            }
+                            else if op == Operation::AbortWrite
                             {
                                 input.resize(fs::MAX_ABORT_RECEIPT_BYTES, 0);
                                 result = client.encode_abort_receipt(volume, node, published,
@@ -357,6 +407,10 @@ fn status(error: crate::Error) -> i32
                 mac_host_protocol::status::LIMIT => mac_abi::NO_MEMORY,
                 mac_host_protocol::status::CONFLICT => mac_abi::ALREADY_EXISTS,
                 mac_host_protocol::status::BUSY => mac_abi::SERVICE_BUSY,
+                mac_host_protocol::status::CORRUPT => mac_abi::CORRUPT_DATA,
+                mac_host_protocol::status::NOT_EMPTY => mac_abi::DIRECTORY_NOT_EMPTY,
+                mac_host_protocol::status::DENIED => mac_abi::ACCESS_DENIED,
+                mac_host_protocol::status::FULL => mac_abi::DISK_FULL,
                 _ => mac_abi::IO_ERROR
             }
         }
@@ -364,9 +418,11 @@ fn status(error: crate::Error) -> i32
         Cause::Invalid => mac_abi::BAD_ARGUMENT,
         Cause::InvalidName => mac_abi::INVALID_NAME,
         Cause::NotFound => mac_abi::NOT_FOUND,
+        Cause::NotEmpty => mac_abi::DIRECTORY_NOT_EMPTY,
         Cause::Stale => mac_abi::SCAN_STALE,
         Cause::Conflict => mac_abi::ALREADY_EXISTS,
         Cause::ReadOnly => mac_abi::READ_ONLY,
+        Cause::Protected => mac_abi::ACCESS_DENIED,
         Cause::NoMemory => mac_abi::NO_MEMORY,
         Cause::Busy => mac_abi::SERVICE_BUSY,
         Cause::Unsupported => mac_abi::NOT_SUPPORTED,

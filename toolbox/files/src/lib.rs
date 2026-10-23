@@ -2,9 +2,17 @@
 #![no_std]
 #![forbid(unsafe_code)]
 mod moves;
+mod folders;
+mod stream;
+mod transfer;
+pub use folders::FolderState;
 use mac_abi::files::*;
 use mac_traps::types::{FileHandle, FileWriteHandle};
-pub use moves::{IconMove, Placement};
+pub use moves::{IconMove, IconMoveGroup, MoveProgress, Placement};
+pub use stream::{ForkAbort, ForkMetadata, ForkWriteSpec, ForkWriter};
+pub use transfer::{FileTransfer, FileTransferId, TransferDestination, TransferFailure,
+                   TransferMode, TransferPhase, TransferProgress, TransferRecovery,
+                   TransferSource, TransferSpec};
 mod scan;
 mod watch;
 pub use mac_abi::{archive::ArchiveError, dates::Timestamp, files::COMMENT_MAX_BYTES};
@@ -125,6 +133,24 @@ impl<'a> Files<'a>
                   "")?
             .entry
             .try_into()
+    }
+
+    /// Remove a file or an empty folder. Nonempty directories, locked objects,
+    /// and read-only mounts fail before publication.
+    pub fn remove(self, volume: VolumeId, cnid: Cnid) -> Result<()>
+    {
+        self.remove_at(volume, cnid, self.client.now()?)
+    }
+
+    pub fn remove_at(self, volume: VolumeId, cnid: Cnid, when: Timestamp) -> Result<()>
+    {
+        self.call(FileCall { operation: REMOVE,
+                             volume: volume.0,
+                             cnid: cnid.0,
+                             position: when.mac_microseconds().ok_or(Error::BadArgument)?,
+                             ..Default::default() },
+                  "")
+            .map(|_| ())
     }
 
     /// Use the System clock. Use `set_locked_at` when preserving an explicit date.
@@ -493,7 +519,7 @@ impl<'a> Files<'a>
                                         ..Default::default() },
                              "")?;
         Ok(TrashUsage { items:           call.index,
-                        allocated_bytes: call.length })
+                        allocated_bytes: (call.length != ALLOCATION_UNKNOWN).then_some(call.length) })
     }
 
     pub fn empty_trash_at(self, volume: VolumeId, when: Timestamp) -> Result<u32>
@@ -620,7 +646,9 @@ impl Drop for OpenFile<'_>
 pub struct TrashUsage
 {
     pub items:           u32,
-    pub allocated_bytes: u64
+    /// Physical space reclaimed by emptying Trash; None if any provider cannot
+    /// report it. Logical fork lengths must never masquerade as allocation.
+    pub allocated_bytes: Option<u64>
 }
 
 /// Physical fork allocation, distinct from logical lengths. None means the

@@ -49,6 +49,32 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
         }
     }
     let volume = mounted.ok_or(Error::NotFound)?;
+    let startup = files.volume_at(0)?.id;
+    if let Ok(source) = files.lookup(startup, ROOT_ID, "Exit Transfer Source")
+    {
+        use mac_toolbox::files::*;
+        let target = files.lookup(volume, ROOT_ID, "Exit Transfer Target")?;
+        let mut owner =
+            files.begin_transfer(TransferSpec { mode:        TransferMode::Copy,
+                                                destination:
+                                                    TransferDestination::Folder { volume,
+                                                                                  parent:
+                                                                                      target.id } },
+                                 &[TransferSource::new(startup, source.id, ROOT_ID)])?;
+        for _ in 0..10000
+        {
+            let progress = owner.step().map_err(|failure| failure.cause)?;
+            require(!progress.finished())?;
+            if progress.completed_bytes != 0
+            {
+                core::mem::forget(owner);
+                system.log("HOST_FS_EXIT_WORKER_READY\n")?;
+                return Ok(());
+            }
+            system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?;
+        }
+        return Err(Error::ServiceBusy);
+    }
     let folder = files.lookup(volume, ROOT_ID, "Tools")?;
     let file = files.lookup(volume, folder.id, "Forks")?;
     let mut data = files.open(volume, file.id, Fork::Data)?;

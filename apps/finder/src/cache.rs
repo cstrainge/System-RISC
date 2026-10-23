@@ -80,25 +80,27 @@ impl<const N: usize, const M: usize> BoundsIndex<N, M>
 #[derive(Clone, Copy)]
 pub struct Item
 {
-    pub entry:        CatalogInfo,
-    pub icon:         Icon,
-    pub caption:      Caption,
-    pub icon_bounds:  Rect,
-    pub bounds:       Rect,
-    pub running:      bool,
-    pub can_trash:    bool,
-    pub can_put_away: bool
+    pub entry:            CatalogInfo,
+    pub icon:             Icon,
+    pub caption:          Caption,
+    pub icon_bounds:      Rect,
+    pub bounds:           Rect,
+    pub running:          bool,
+    pub can_trash:        bool,
+    pub can_put_away:     bool,
+    pub session_position: bool
 }
 impl Item
 {
-    const EMPTY: Self = Self { entry:        CatalogInfo::EMPTY,
-                               icon:         Icon::Resource(0),
-                               caption:      Caption::EMPTY,
-                               icon_bounds:  Rect::ZERO,
-                               bounds:       Rect::ZERO,
-                               running:      false,
-                               can_trash:    false,
-                               can_put_away: false };
+    const EMPTY: Self = Self { entry:            CatalogInfo::EMPTY,
+                               icon:             Icon::Resource(0),
+                               caption:          Caption::EMPTY,
+                               icon_bounds:      Rect::ZERO,
+                               bounds:           Rect::ZERO,
+                               running:          false,
+                               can_trash:        false,
+                               can_put_away:     false,
+                               session_position: false };
 
     pub fn location(self) -> Location
     {
@@ -207,20 +209,23 @@ impl core::ops::DerefMut for Folder<'_>
 }
 impl Folder<'_>
 {
-    pub fn layout(&mut self, width: i16) -> Result<(), Error>
+    pub fn layout(&mut self, width: i16) -> Result<bool, Error>
     {
         let metadata = &mut self.metadata;
         if metadata.width == width
         {
-            return Ok(());
+            return Ok(false);
         }
         let mut occupied = crate::selection::Selection::EMPTY;
+        let mut placements = metadata.placements;
         for index in 0..metadata.count
         {
             let item = &mut self.items[index];
-            if let Some(saved) = crate::icon_view::saved_icon_bounds(&item.entry)
+            if let Some(saved) =
+                crate::icon_view::saved_icon_bounds(&item.entry).filter(|_| !item.session_position)
             {
                 item.icon_bounds = saved;
+                placements.set(index, false);
             }
             if !item.icon_bounds.is_empty()
             {
@@ -234,7 +239,6 @@ impl Folder<'_>
                           if occupied.contains(i) { self.items[i].bounds } else { Rect::ZERO }
                       });
         let mut layout = Layout::new(width);
-        metadata.placements = crate::selection::Selection::EMPTY;
         for index in 0..metadata.count
         {
             if occupied.contains(index)
@@ -268,7 +272,7 @@ impl Folder<'_>
                 }
                 self.items[index].icon_bounds = icon;
                 self.items[index].bounds = bounds;
-                metadata.placements.set(index, true);
+                placements.set(index, true);
                 break;
             }
         }
@@ -285,7 +289,8 @@ impl Folder<'_>
         }
         metadata.index.rebuild(metadata.count, |index| self.items[index].bounds);
         metadata.width = width;
-        Ok(())
+        metadata.placements = placements;
+        Ok(true)
     }
 
     /// O(log n + intersecting rows), including unusually tall saved captions.

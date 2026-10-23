@@ -45,7 +45,7 @@ fn preferences_documents_and_application_forks_roundtrip_into_fresh_image()
         {
             copy_in(&mut v, 2, &host, false).unwrap();
             let prefs = resolve(&mut v, "/System Folder/Preferences").unwrap();
-            let file = v.create(prefs.id, "Terminal.json", false, time).unwrap();
+            let file = v.create(prefs.id, "Terminal", false, time).unwrap();
             v.write_fork(file.id,
                          ForkKind::Data,
                          0,
@@ -54,7 +54,7 @@ fn preferences_documents_and_application_forks_roundtrip_into_fresh_image()
              .unwrap();
             v.write_fork(file.id, ForkKind::Resource, 0, b"resource fork", time).unwrap();
             let mut info = [0; 32];
-            info[..8].copy_from_slice(b"TEXTTERM");
+            info[..8].copy_from_slice(b"JSONTEDT");
             info[8..10].copy_from_slice(&0x0804u16.to_be_bytes());
             v.set_comment(file.id, "Keep this 😀", time).unwrap();
             v.set_metadata(file.id, 1, info, time, time, Some(Timestamp(0)), time).unwrap();
@@ -68,12 +68,12 @@ fn preferences_documents_and_application_forks_roundtrip_into_fresh_image()
         {
             let folder = copy_in(&mut v, system.id, &scratch.0.join("Preferences"), false).unwrap();
             assert_eq!(folder.name, "Preferences");
-            let file = resolve(&mut v, "/System Folder/Preferences/Terminal.json").unwrap();
+            let file = resolve(&mut v, "/System Folder/Preferences/Terminal").unwrap();
             assert_eq!(file.created, time);
             assert_eq!(file.modified, time);
             assert_eq!(file.backup, Some(Timestamp(0)));
             assert_eq!(file.flags, 1);
-            assert_eq!(&file.finder_info[..8], b"TEXTTERM");
+            assert_eq!(&file.finder_info[..8], b"JSONTEDT");
             assert_eq!(v.comment(file.id).unwrap(), "Keep this 😀");
             let mut resources = Vec::new();
             read_stream(&mut v, file.id, ForkKind::Resource, &mut resources).unwrap();

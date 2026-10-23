@@ -8,7 +8,30 @@ use crate::toolbox::quickdraw::{Canvas, SurfaceExt};
 enum State
 {
     Scrollbar(ScrollbarState),
+    Progress
+    {
+        bounds:   Rect,
+        progress: ProgressRange
+    },
     Standard(Box<ControlDefinitionState>)
+}
+impl State
+{
+    fn standard(&self) -> Option<ControlDefinitionState>
+    {
+        match self
+        {
+            Self::Standard(s) => Some(**s),
+            Self::Progress { bounds,
+                             progress } =>
+            {
+                Some(ControlDefinitionState { bounds: *bounds,
+                                              progress: *progress,
+                                              ..Default::default() })
+            }
+            _ => None
+        }
+    }
 }
 /// Retained immutable definition state, loader-validated entry and service gate.
 pub struct Drawing
@@ -17,15 +40,65 @@ pub struct Drawing
     state:     State,
     entry:     DefinitionEntry,
     gate:      TrapGate,
-    variation: i16
+    variation: i16,
+    damage:    [Rect; 2]
 }
 impl Drawing
 {
+    pub fn damage(&self) -> [Rect; 2]
+    {
+        self.damage
+    }
+
+    /// CDEF-owned delta geometry. A changed value need not change a pixel.
+    pub fn change_from(&mut self, before: ControlDefinitionState) -> Result<(), Status>
+    {
+        if !matches!(self.variation, PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE)
+        {
+            return Ok(());
+        }
+        let after = self.state.standard().ok_or(BAD_ABI)?;
+        let mut change = ControlChange { before,
+                                         after,
+                                         damage: [Rect::ZERO; 2] };
+        let mut call = DefinitionCall { header:    Header::for_type::<DefinitionCall>(),
+                                        kind:      CDEF,
+                                        id:        CDEF_PROGRESS_BAR,
+                                        variation: 0,
+                                        message:   CHANGE_BOUNDS_DEFINITION,
+                                        reserved:  0,
+                                        param:     0,
+                                        object:    (&mut change as *mut ControlChange).cast(),
+                                        gate:      self.gate,
+                                        surface:   core::ptr::null_mut() };
+        let status = super::resources::definitions::invoke(self.entry, &mut call);
+        if status < 0
+        {
+            return Err(status as Status);
+        }
+        for r in change.damage
+        {
+            // A definition cannot invalidate its parent or another object.
+            if !r.is_empty()
+               && (r.left < after.bounds.left
+                   || r.top < after.bounds.top
+                   || r.right > after.bounds.right
+                   || r.bottom > after.bounds.bottom)
+            {
+                return Err(BAD_ABI);
+            }
+        }
+        self.damage = change.damage;
+        Ok(())
+    }
+
     pub fn bounds(&self) -> Rect
     {
         match &self.state
         {
             State::Standard(s) => s.bounds,
+            State::Progress { bounds,
+                              .. } => *bounds,
             State::Scrollbar(s) => s.bounds
         }
     }
@@ -45,30 +118,32 @@ impl Drawing
 
     pub fn paint(&self, canvas: &mut Canvas)
     {
+        let _ = self.paint_clipped(canvas);
+    }
+
+    pub fn paint_clipped(&self, canvas: &mut Canvas) -> Result<(), Status>
+    {
         let mut bounds = self.bounds();
         bounds.offset(canvas.origin().h, canvas.origin().v);
         let mut clip = Rect::ZERO;
         if !crate::toolbox::quickdraw::geometry::sect_rect(bounds, canvas.clip(), &mut clip)
         {
-            return;
+            return Ok(());
         }
         let previous = canvas.clip();
         clip.offset(-canvas.origin().h, -canvas.origin().v);
         canvas.set_clip(clip);
-        let _ = self.paint_checked(canvas);
+        let result = self.paint_checked(canvas);
         let mut restore = previous;
         restore.offset(-canvas.origin().h, -canvas.origin().v);
         canvas.set_clip(restore);
+        result
     }
 
     fn paint_checked(&self, canvas: &mut Canvas) -> Result<(), Status>
     {
         let mut surface = Surface::from_canvas(canvas);
-        let mut standard = match &self.state
-        {
-            State::Standard(s) => Some(**s),
-            _ => None
-        };
+        let mut standard = self.state.standard();
         let mut scrollbar = match &self.state
         {
             State::Scrollbar(s) => Some(*s),
@@ -76,7 +151,7 @@ impl Drawing
         };
         let (id, object) = if let Some(s) = standard.as_mut()
         {
-            (0, (s as *mut ControlDefinitionState).cast())
+            (standard_definition(self.variation)?, (s as *mut ControlDefinitionState).cast())
         }
         else
         {
@@ -85,7 +160,7 @@ impl Drawing
         let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
                                         kind: CDEF,
                                         id,
-                                        variation: self.variation,
+                                        variation: variation(self.variation, id),
                                         message: 0,
                                         reserved: 0,
                                         param: 0,
@@ -96,12 +171,37 @@ impl Drawing
         if result < 0 { Err(result as Status) } else { Ok(()) }
     }
 }
+fn standard_definition(procedure: i16) -> Result<i16, Status>
+{
+    match procedure
+    {
+        0..=2 | 8..=10 => Ok(0),
+        PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE => Ok(CDEF_PROGRESS_BAR),
+        STATIC_TEXT_PROCEDURE => Ok(CDEF_STATIC_TEXT),
+        _ => Err(NOT_SUPPORTED)
+    }
+}
+fn variation(procedure: i16, id: i16) -> i16
+{
+    if id == 0
+    {
+        procedure
+    }
+    else if procedure == MONOCHROME_PROGRESS_BAR_PROCEDURE
+    {
+        1
+    }
+    else
+    {
+        0
+    }
+}
 pub fn definition_id(call: &ControlCall) -> Result<i16, Status>
 {
     match call.operation
     {
         DRAW_SCROLLBAR | HIT_SCROLLBAR | TRACK_SCROLLBAR => Ok(1),
-        DRAW_STANDARD | HIT_STANDARD if matches!(call.procedure,0..=2|8..=10) => Ok(0),
+        DRAW_STANDARD | HIT_STANDARD => standard_definition(call.procedure),
         _ => Err(NOT_SUPPORTED)
     }
 }
@@ -118,7 +218,7 @@ pub fn validate(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
     {
         return Err(BAD_ARGUMENT);
     }
-    if id == 0 && (call.standard.bounds.is_empty()
+    if id != 1 && (call.standard.bounds.is_empty()
         || call.standard.title_length as usize > call.standard.title.len()
         || core::str::from_utf8(&call.standard.title[..(call.standard.title_length as usize).min(call.standard.title.len())]).is_err()) {
         return Err(BAD_ARGUMENT);
@@ -134,7 +234,7 @@ pub fn validate(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
     let mut validation = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
                                           kind: CDEF,
                                           id,
-                                          variation: if id == 0 { call.procedure } else { 0 },
+                                          variation: variation(call.procedure, id),
                                           message: VALIDATE_DEFINITION,
                                           reserved: 0,
                                           param: 0,
@@ -182,13 +282,27 @@ pub fn prepare(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
                                  {
                                      State::Scrollbar(call.scrollbar)
                                  }
+                                 else if id == CDEF_PROGRESS_BAR
+                                 {
+                                     State::Progress { bounds:   call.standard.bounds,
+                                                       progress: call.standard.progress }
+                                 }
                                  else
                                  {
                                      State::Standard(Box::new(call.standard))
                                  },
                                  entry,
                                  gate,
-                                 variation: if id == 0 { call.procedure } else { 0 } }));
+                                 variation: if id != 1 { call.procedure } else { 0 },
+                                 damage: [if id == 1
+                                          {
+                                              call.scrollbar.bounds
+                                          }
+                                          else
+                                          {
+                                              call.standard.bounds
+                                          },
+                                          Rect::ZERO] }));
     }
     let object = if id == 1
     {
@@ -207,7 +321,7 @@ pub fn prepare(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
         DefinitionCall { header: Header::for_type::<DefinitionCall>(),
                          kind: CDEF,
                          id,
-                         variation: if id == 0 { call.procedure } else { 0 },
+                         variation: variation(call.procedure, id),
                          message: if call.operation == TRACK_SCROLLBAR { 2 } else { 1 },
                          reserved: 0,
                          param: bits as i64,
@@ -232,7 +346,7 @@ pub unsafe fn paint_surface(drawing: &Drawing, surface: *mut Surface) -> Result<
         return Err(BAD_ARGUMENT);
     }
     let mut canvas = unsafe { (&mut *surface).canvas() }.ok_or(BAD_ARGUMENT)?;
-    drawing.paint_checked(&mut canvas)
+    drawing.paint_clipped(&mut canvas)
 }
 pub mod native
 {
@@ -288,7 +402,8 @@ mod tests
                                 state:     State::Scrollbar(state),
                                 variation: 0,
                                 entry:     crate::test_scrollbar::scrollbar_definition,
-                                gate:      crate::toolbox::quickdraw::surface_gate };
+                                gate:      crate::toolbox::quickdraw::surface_gate,
+                                damage:    [state.bounds, Rect::ZERO] };
         let background = 0xff00ff;
         let mut full = vec![background; 80 * 100];
         let mut clipped = full.clone();

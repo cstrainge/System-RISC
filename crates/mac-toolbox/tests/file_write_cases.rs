@@ -124,8 +124,7 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
                 && sample.finder_flags().bits() & 0x0800 != 0,
                 "catalog lock and stationery persisted across real boot")?;
         let allocation = files.allocation_info(volume.id, sample.id)?;
-        require(files.trash_usage(volume.id)?.allocated_bytes
-                == allocation.total_bytes()?.ok_or(Error::BadAbi)?,
+        require(files.trash_usage(volume.id)?.allocated_bytes == allocation.total_bytes()?,
                 "persisted exact physical fork allocation")?;
         payload(system, volume.id, (sample.id).0)?;
         files.set_locked_at(volume.id, sample.id, false, WHEN)?;
@@ -146,11 +145,12 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
         files.move_to_trash_at(volume.id, sample.id, WHEN)?;
         files.move_to_trash_at(volume.id, folder.id, WHEN)?;
         let usage = files.trash_usage(volume.id)?;
-        require(usage.items == 3 && usage.allocated_bytes >= 2600, "recursive Trash usage")?;
+        require(usage.items == 3 && usage.allocated_bytes.is_some_and(|n| n >= 2600),
+                "recursive Trash usage")?;
         let free = files.volume(volume.id)?.capacity.unwrap().free_bytes;
         require(files.empty_trash_at(volume.id, WHEN)? == 3, "recursive delete count")?;
         require(files.volume(volume.id)?.capacity.unwrap().free_bytes
-                == free + usage.allocated_bytes,
+                == free + usage.allocated_bytes.ok_or(Error::BadAbi)?,
                 "actual allocation blocks released")?;
         let done = files.new_folder_at(volume.id, ROOT_ID, DONE, WHEN)?;
         files.set_comment_at(volume.id, done.id, "Boot two sentinel", WHEN)?;
@@ -181,8 +181,7 @@ pub fn stage(system: &System<'_>) -> Result<u8, Failure>
     files.move_to_trash_at(volume.id, child.id, WHEN)?;
     files.move_to_trash_at(volume.id, sample.id, WHEN)?;
     files.set_locked_at(volume.id, sample.id, true, WHEN)?;
-    require(files.trash_usage(volume.id)?.allocated_bytes
-            == allocation.total_bytes()?.ok_or(Error::BadAbi)?,
+    require(files.trash_usage(volume.id)?.allocated_bytes == allocation.total_bytes()?,
             "physical allocation matches independently summed Trash bytes")?;
     system.log("FILE_INFO_EDITS_COMMITTED\n")?;
     require(files.trash_usage(volume.id)?.items == 2,

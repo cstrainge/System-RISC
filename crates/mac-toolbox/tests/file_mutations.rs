@@ -145,7 +145,7 @@ fn folders_trash_putaway_and_recursive_empty_persist_across_remounts()
                               free);
                    let usage = files.trash_usage(system.files().volume_at(0).unwrap().id).unwrap();
                    assert_eq!(usage.items, 1);
-                   assert!(usage.allocated_bytes >= 2600);
+                   assert!(usage.allocated_bytes.is_some_and(|n| n >= 2600));
                    (source.id, sample.id, free, data, resources)
                });
     fixture.verify_hfs(":Trash:");
@@ -377,7 +377,7 @@ fn default_500mb_preallocated_catalog_and_map_nodes_are_supported()
                     .unwrap();
                let usage = files.trash_usage(system.files().volume_at(0).unwrap().id).unwrap();
                assert_eq!(usage.items, 1);
-               assert_eq!(usage.allocated_bytes, 16 * 1024);
+               assert_eq!(usage.allocated_bytes, Some(16 * 1024));
                assert_eq!(files.empty_trash_at(system.files().volume_at(0).unwrap().id, WHEN)
                                .unwrap(),
                           1);

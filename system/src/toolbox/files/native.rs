@@ -5,6 +5,82 @@ use mac_abi::{files::FileCall, *};
 #[cfg(target_arch = "riscv64")]
 pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -> Option<i64>
 {
+    if size == size_of::<files::FileTransferCall>()
+    {
+        return Some(unsafe {
+            checked_transfer(pointer, size, |call, sources| {
+                super::provider::runtime::transfer::request(owner, call, sources) as i64
+            })
+        });
+    }
+    if size == size_of::<files::IconGroupCall>()
+    {
+        return Some(unsafe {
+            checked_icon_group(pointer, size, |call, rows| {
+                let provider = crate::kernel::with_files(|manager| {
+                                   if call.operation == files::BEGIN_ICON_GROUP
+                                   {
+                                       manager.read_provider(call.volume)
+                                   }
+                                   else
+                                   {
+                                       manager.group_provider(owner, call.handle)
+                                   }
+                               }).map_err(crate::state::AccessError::status)
+                                 .and_then(|result| result);
+                match provider
+                {
+                    Ok(Some(_)) =>
+                    {
+                        super::provider::runtime::request_group(owner, call, rows) as i64
+                    }
+                    Ok(None) =>
+                    {
+                        crate::kernel::with_files(|manager| {
+                            manager.group_request(owner, call, rows)
+                        }).map_err(crate::state::AccessError::status)
+                          .and_then(|result| result)
+                          .err()
+                          .unwrap_or(OK) as i64
+                    }
+                    Err(error) => error as i64
+                }
+            })
+        });
+    }
+    if size == size_of::<files::ForkWriteCall>()
+    {
+        return Some(unsafe {
+            super::stream_native::checked(pointer, size, |call, name, comment, data, output| {
+                let provider = crate::kernel::with_files(|manager| {
+                    if call.operation == files::BEGIN_FORK_WRITE
+                    {
+                        manager.read_provider(call.volume)
+                    }
+                    else
+                    {
+                        manager.stream_provider(owner, call.handle)
+                    }
+                });
+                match provider
+                {
+                    Ok(Ok(Some(_))) =>
+                    {
+                        super::provider::runtime::request_stream(owner, call, name, comment, data,
+                                                                 output)
+                    }
+                    Ok(Ok(None)) =>
+                    {
+                        crate::kernel::with_files(|manager| {
+                            manager.stream_request(owner, call, name, comment, data, output)
+                        }).map_or_else(|e| e.status(), |r| r.err().unwrap_or(OK))
+                    }
+                    Ok(Err(error)) => error,
+                    Err(error) => error.status()
+                }
+            })
+        });
+    }
     if size == size_of::<files::DataWriteCall>()
     {
         return Some(unsafe {
@@ -65,6 +141,56 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
         return None;
     }
     let call = unsafe { &mut *pointer.cast::<FileCall>() };
+    if matches!(call.operation,
+                files::MOVE_TO_TRASH | files::PUT_AWAY | files::EMPTY_TRASH | files::TRASH_USAGE)
+    {
+        let query = matches!(call.operation, files::EMPTY_TRASH | files::TRASH_USAGE);
+        if call.volume == 0
+           || (!query && call.cnid <= files::ROOT_ID)
+           || query && call.cnid != 0
+           || call.index != 0
+           || call.handle != 0
+           || call.fork != 0
+           || call.whence != 0
+           || call.reserved != 0
+           || call.offset != 0
+           || call.length != 0
+           || call.name_length != 0
+           || call.capacity != 0
+        {
+            return Some(BAD_ARGUMENT as i64);
+        }
+        let routed =
+            crate::kernel::with_files(|m| {
+                let provider = m.read_provider(call.volume)?;
+                let info =
+                    m.volumes.get(call.volume).and_then(super::Mounted::info).ok_or(NOT_FOUND)?;
+                Ok(provider.is_some() || info.filesystem == files::FILESYSTEM_HFS_B)
+            }).map_err(crate::state::AccessError::status)
+              .and_then(|r| r);
+        return match routed
+        {
+            Ok(true) =>
+            {
+                Some(super::provider::runtime::transfer::bridge::request(owner, call) as i64)
+            }
+            Ok(false) => None,
+            Err(error) => Some(error as i64)
+        };
+    }
+    if matches!(call.operation,
+                files::SET_COMMENT
+                | files::SET_LOCKED
+                | files::SET_STATIONERY
+                | files::SET_ICON_LOCATION
+                | files::SET_FOLDER_STATE
+                | files::RENAME
+                | files::REMOVE
+                | files::SET_PROPERTIES
+                | files::MOVE_INTO)
+    {
+        return Some(unsafe { dispatch_metadata_async(owner, call) });
+    }
     let catalog = matches!(call.operation,
                            files::CATALOG
                            | files::PARENT
@@ -73,7 +199,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
                            | files::ALLOCATION_INFO
                            | files::COMMENT
                            | files::PATH);
-    let trash_query = call.operation == files::TRASH_DIRECTORY && call.index == 0;
+    let trash_query = call.operation == files::TRASH_DIRECTORY;
     let opening = call.operation == files::OPEN;
     let making_folder = call.operation == files::NEW_FOLDER;
     let mounting_file = matches!(call.operation, files::MOUNT_FILE | files::OPEN_ITEM);
@@ -110,6 +236,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
            && call.capacity != 0)
        || call.capacity > 1024 * 1024
        || (call.capacity != 0 && call.output.is_null())
+       || trash_query && call.index > 1
        || call.operation == files::HOST_EXPORT_COUNT && (call.volume != 0 || call.index != 0)
        || call.operation == files::MOUNT_HOST_EXPORT && call.volume != 0
        || call.operation == files::UNMOUNT_VOLUME && (call.volume == 0 || call.index != 0)
@@ -172,6 +299,133 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
     }
     Some(super::provider::runtime::request(owner, call, name, output) as i64)
 }
+
+/// # Safety
+/// The record and its optional input array are live caller borrows. No pointer
+/// survives this boundary: admission copies source references into resident state.
+#[cfg(target_arch = "riscv64")]
+unsafe fn checked_transfer(pointer: *mut (), size: usize,
+                           dispatch: impl FnOnce(&mut files::FileTransferCall,
+                                  &[files::FileTransferSource])
+                                  -> i64)
+                           -> i64
+{
+    if pointer.is_null()
+       || size != size_of::<files::FileTransferCall>()
+       || !(pointer as usize).is_multiple_of(align_of::<files::FileTransferCall>())
+    {
+        return BAD_ARGUMENT as i64;
+    }
+    let call = unsafe { &mut *pointer.cast::<files::FileTransferCall>() };
+    if call.operation > files::ABANDON_TRANSFER
+       || call.reserved != [0; 4]
+       || call.source_count > files::MAX_TRANSFER_SOURCES
+       || (call.operation != files::BEGIN_TRANSFER
+           && (call.source_count != 0 || !call.sources.is_null()))
+       || call.source_count != 0
+          && (call.sources.is_null()
+              || !(call.sources as usize).is_multiple_of(align_of::<files::FileTransferSource>()))
+    {
+        return BAD_ARGUMENT as i64;
+    }
+    let sources = if call.source_count == 0
+    {
+        &[]
+    }
+    else
+    {
+        unsafe { core::slice::from_raw_parts(call.sources, call.source_count) }
+    };
+    dispatch(call, sources)
+}
+#[cfg(target_arch = "riscv64")]
+unsafe fn dispatch_metadata_async(owner: u64, call: &mut FileCall) -> i64
+{
+    use mac_abi::files::*;
+    let comment = matches!(call.operation, SET_COMMENT | SET_PROPERTIES);
+    let rename = call.operation == RENAME;
+    let moving = call.operation == MOVE_INTO;
+    let removing = call.operation == REMOVE;
+    let icon = call.operation == SET_ICON_LOCATION;
+    if call.operation == SET_FOLDER_STATE
+    {
+        let info = call.entry.finder_info;
+        let bounds = Rect::from_be_bytes(info[..8].try_into().unwrap());
+        if bounds.right <= bounds.left
+           || bounds.bottom <= bounds.top
+           || info[8..14].iter().chain(info[20..].iter()).any(|b| *b != 0)
+           || call.index != 0
+        {
+            return BAD_ARGUMENT as i64;
+        }
+    }
+    if call.cnid < ROOT_ID
+       || call.handle != 0
+       || call.reserved != 0
+       || call.whence != 0
+       || call.offset != 0
+       || call.length != 0
+       || call.capacity != 0
+       || call.name_length > if rename { 4096 } else { 255 }
+       || (!(comment || rename) && call.name_length != 0)
+       || (rename && (call.name_length == 0 || call.index != 0 || call.cnid <= ROOT_ID))
+       || (moving && (call.index < ROOT_ID || call.cnid <= ROOT_ID))
+       || (removing && (call.index != 0 || call.cnid <= ROOT_ID))
+       || (call.name_length != 0 && call.name.is_null())
+       || (!icon && call.fork != 0)
+       || (comment && call.index != 0)
+       || (matches!(call.operation, SET_LOCKED | SET_STATIONERY) && call.index > 1)
+       || (icon
+           && (call.fork > 1
+               || call.fork == 0 && call.index != 0
+               || call.fork == 1 && call.index == u32::MAX))
+    {
+        return BAD_ARGUMENT as i64;
+    }
+    let text = if call.name_length == 0
+    {
+        ""
+    }
+    else
+    {
+        match core::str::from_utf8(unsafe {
+                  core::slice::from_raw_parts(call.name, call.name_length)
+              })
+        {
+            Ok(text) => text,
+            Err(_) => return BAD_ARGUMENT as i64
+        }
+    };
+    if call.operation == SET_PROPERTIES
+    {
+        if let Err(error) = super::properties::validate(call, text)
+        {
+            return error as i64;
+        }
+    }
+    call.transferred = 0;
+    if super::provider::runtime::metadata_pending()
+    {
+        return super::provider::runtime::request_metadata(owner, call, text) as i64;
+    }
+    let routed = crate::kernel::with_files(|m| {
+        if m.read_provider(call.volume)?.is_some()
+        {
+            Ok(None)
+        }
+        else
+        {
+            m.request_owned(owner, call, text, &mut []).map(|()| Some(OK))
+        }
+    });
+    match routed
+    {
+        Ok(Ok(Some(status))) => status as i64,
+        Ok(Ok(None)) => super::provider::runtime::request_metadata(owner, call, text) as i64,
+        Ok(Err(error)) => error as i64,
+        Err(error) => error.status() as i64
+    }
+}
 #[cfg(target_arch = "riscv64")]
 unsafe fn dispatch_scan_async(owner: u64, pointer: *mut (), size: usize) -> i64
 {
@@ -204,9 +458,21 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
                                     size: usize)
                                     -> i64
 {
+    if size == size_of::<files::IconGroupCall>()
+    {
+        return unsafe {
+            checked_icon_group(pointer, size, |call, rows| {
+                manager.group_request(owner, call, rows).err().unwrap_or(OK) as i64
+            })
+        };
+    }
+    if size == size_of::<files::ForkWriteCall>()
+    {
+        return unsafe { super::stream_native::dispatch(manager, owner, pointer, size) };
+    }
     if size == size_of::<files::IconMoveCall>()
     {
-        return unsafe { dispatch_icon_moves(manager, pointer, size) };
+        return unsafe { dispatch_icon_moves(manager, owner, pointer, size) };
     }
     if size == size_of::<mac_abi::files::DataWriteCall>()
     {
@@ -263,7 +529,9 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
 
 /// # Safety
 /// The request and its declared array are live, aligned caller borrows.
-unsafe fn dispatch_icon_moves(manager: &mut super::Manager, pointer: *mut (), size: usize) -> i64
+unsafe fn dispatch_icon_moves(manager: &mut super::Manager, owner: u64, pointer: *mut (),
+                              size: usize)
+                              -> i64
 {
     if pointer.is_null()
        || size != size_of::<files::IconMoveCall>()
@@ -287,5 +555,42 @@ unsafe fn dispatch_icon_moves(manager: &mut super::Manager, pointer: *mut (), si
     {
         unsafe { core::slice::from_raw_parts(call.entries, call.count as usize) }
     };
-    manager.move_icons(call, rows).err().unwrap_or(OK) as i64
+    manager.move_icons(owner, call, rows).err().unwrap_or(OK) as i64
+}
+
+/// # Safety
+/// The live request and optional begin array are exclusively borrowed for this call.
+pub(super) unsafe fn checked_icon_group(pointer: *mut (), size: usize,
+                                        dispatch: impl FnOnce(&mut files::IconGroupCall,
+                                               &[files::IconMove])
+                                               -> i64)
+                                        -> i64
+{
+    if pointer.is_null()
+       || size != size_of::<files::IconGroupCall>()
+       || !(pointer as usize).is_multiple_of(align_of::<files::IconGroupCall>())
+    {
+        return BAD_ARGUMENT as i64;
+    }
+    let call = unsafe { &mut *pointer.cast::<files::IconGroupCall>() };
+    if call.reserved != 0
+       || call.operation > files::ABANDON_ICON_GROUP
+       || call.count > 1024
+       || (call.operation != files::BEGIN_ICON_GROUP
+           && (call.count != 0 || !call.entries.is_null()))
+       || (call.count != 0
+           && (call.entries.is_null()
+               || !(call.entries as usize).is_multiple_of(align_of::<files::IconMove>())))
+    {
+        return BAD_ARGUMENT as i64;
+    }
+    let rows = if call.count == 0
+    {
+        &[]
+    }
+    else
+    {
+        unsafe { core::slice::from_raw_parts(call.entries, call.count as usize) }
+    };
+    dispatch(call, rows)
 }

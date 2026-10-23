@@ -97,8 +97,11 @@ pub(super) fn writes_catalog(operation: u32, index: u32) -> bool
              | PUT_AWAY
              | EMPTY_TRASH
              | RENAME
+             | REMOVE
+             | SET_PROPERTIES
              | SET_LOCKED
              | SET_STATIONERY
+             | SET_FOLDER_STATE
              | SET_ICON_LOCATION
              | MOVE_INTO
              | SET_COMMENT)

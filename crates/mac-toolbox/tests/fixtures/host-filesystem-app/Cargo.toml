@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 [workspace]
+[features]
+metadata-restore = []
+disconnect-source = []
+disconnect-destination = []
 [[bin]]
 name = "Finder"
 path = "src/main.rs"

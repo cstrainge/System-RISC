@@ -119,6 +119,7 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
         cache.ready = false;
         ids
     };
+    let mut mounted = [VolumeId::NONE; CAPACITY];
     let bounds = system.quickdraw().desktop().bounds()?;
     let mut next = Selection::EMPTY;
     let mut column = 0i16;
@@ -129,6 +130,7 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
         let (volume, name, icon, mut icon_bounds) = if index < volumes
         {
             let info = system.files().volume_at(index as u32)?;
+            mounted[index] = info.id;
             let icon = crate::browser::volume_icon(&info);
             (info.id, info.name, icon, crate::icon_view::volume_bounds(index as u32))
         }
@@ -190,6 +192,8 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
         }
         CACHE.lock().items[index] = item;
     }
+    mounted[..volumes].sort_unstable_by_key(|id| id.0);
+    super::session_positions::retain(&mounted[..volumes]);
     let mut cache = CACHE.lock();
     cache.count = volumes + 1;
     cache.bounds = bounds;
@@ -405,7 +409,7 @@ impl Browser
             {
                 next = Selection::singleton(index);
             }
-            if !shift && previous.contains(index) && previous.len() > 1
+            if !item(index).unwrap().is_trash() && next.contains(index)
             {
                 self.desktop.pressed = Some((index, event.input().at));
             }

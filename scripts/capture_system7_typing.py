@@ -47,6 +47,7 @@ def capture(output, windows_headless=False):
     vm.DIST = original
     process, endpoint = vm.launch(output / 'finder-vm', **options)
     serial = output / 'finder-vm/serial.log'
+    driver = Driver(endpoint, serial)
     steps = []
 
     def send(events):

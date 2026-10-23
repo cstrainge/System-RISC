@@ -269,9 +269,10 @@ pub(super) fn advance(flight: Flight, result: Result<Vec<u8>, Status>, never_sen
                                                        // A serialized provider cannot serve its
                                                        // own backing reads.
                                                        if ctx.provider == provider
-                                                       {
-                                                           return Err(NOT_SUPPORTED);
-                                                       }
+                                               && crate::drivers::provider_serialized(provider)?
+                                            {
+                                                return Err(NOT_SUPPORTED);
+                                            }
                                                        ctx.existing().map(|v| v.map(Reply::Mounted))
                                                    });
             match selected

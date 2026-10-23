@@ -58,7 +58,7 @@
     "status": "passed",
     "packages": [
       "mac-system",
-      "native-cdef",
+      "native-buttons-cdef",
       "native-scrollbar-cdef",
       "toolbox-controls"
     ],

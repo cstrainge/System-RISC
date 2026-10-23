@@ -1,0 +1,316 @@
+{
+  "schema": 1,
+  "source": "working/finder-reference/Finder.bin",
+  "source_size": 515200,
+  "source_sha256": "647b19dba89dc0167ae45dda20fd02bd8e44c91252e7513c9c584f1588eb4d3f",
+  "evidence": "Original Finder7.6.1 resource bytes, REA/Ghidra retained draw routine and private original q800 live copy/Escape capture.",
+  "sources": [
+    {
+      "type": "STR#",
+      "id": 8750,
+      "attributes": 32,
+      "resource_fork_offset": 52220,
+      "size": 1050,
+      "sha256": "95b5cc2c6b7107a688ef59f9c95a08bb916b0b74503af7883f9053cca1720aee"
+    },
+    {
+      "type": "fvew",
+      "id": 8751,
+      "attributes": 32,
+      "resource_fork_offset": 482393,
+      "size": 228,
+      "sha256": "b82ebb3b8b40be41d995d0bb3f026f10a2131b9f9641a7968538723810f7201f"
+    }
+  ],
+  "width": 280,
+  "height": 76,
+  "procedure": 5,
+  "records": [
+    {
+      "item": 8805,
+      "source_offset": 42,
+      "class_id": 3250,
+      "rect_tlbr": [
+        7,
+        9,
+        23,
+        210
+      ],
+      "font": [
+        0,
+        12,
+        0,
+        0
+      ]
+    },
+    {
+      "item": 8800,
+      "source_offset": 72,
+      "class_id": 3250,
+      "rect_tlbr": [
+        7,
+        210,
+        23,
+        258
+      ],
+      "font": [
+        0,
+        12,
+        -1,
+        0
+      ]
+    },
+    {
+      "item": 8801,
+      "source_offset": 102,
+      "class_id": 3250,
+      "rect_tlbr": [
+        29,
+        9,
+        45,
+        80
+      ],
+      "font": [
+        0,
+        12,
+        0,
+        0
+      ]
+    },
+    {
+      "item": 8802,
+      "source_offset": 132,
+      "class_id": 3250,
+      "rect_tlbr": [
+        29,
+        81,
+        45,
+        270
+      ],
+      "font": [
+        0,
+        12,
+        0,
+        0
+      ]
+    },
+    {
+      "item": 8803,
+      "source_offset": 162,
+      "class_id": 5250,
+      "rect_tlbr": [
+        55,
+        10,
+        66,
+        198
+      ],
+      "parameters": [
+        1,
+        21
+      ]
+    },
+    {
+      "item": 3063,
+      "source_offset": 188,
+      "class_id": 21000,
+      "rect_tlbr": [
+        51,
+        211,
+        71,
+        270
+      ],
+      "font": [
+        0,
+        12,
+        1,
+        0
+      ],
+      "text": "Stop",
+      "command": "ucan"
+    }
+  ],
+  "strings": [
+    "Reading:",
+    "Copying:",
+    "Moving:",
+    "Writing:",
+    "Verifying:",
+    "*0x/read/*",
+    "*0x/copied/*",
+    "*0x/moved/*",
+    "*0x/written/*",
+    "*0x/verified/*",
+    "Preparing to copy\u2026",
+    "Preparing to move\u2026",
+    "Items remaining to be copied:",
+    "Items remaining to be moved:",
+    "Finishing copy\u2026",
+    "Finishing move\u2026",
+    "*0x/The/* ^2 couldn\u2019t *0x/be/* ^3, ^1.  Do you want to continue copying?",
+    "You don\u2019t have enough access privileges to see all the items in \u201c^1\u201d.  Copy the visible ones?",
+    "You don\u2019t have enough access privileges to see all the items if they are put into \u201c^1\u201d.  Put them there anyway?",
+    "^0 \u201c^1\u201d",
+    "There is not enough room on the disk \u201c^3\u201d to copy %1%\u201c^4\u201d%the selected items% (an additional ^2 is needed).",
+    "There is not enough room on the disk \u201c^3\u201d to copy %1%\u201c^4\u201d%the selected items% (an additional ^2 must be thrown away first).",
+    "Move",
+    "There is not enough room on the disk \u201c^2\u201d to copy %1%\u201c^3\u201d%the selected items%, unless you empty the Trash.  Do you want to empty the Trash now?",
+    "%1%\u201c^1\u201d%Some selected items% cannot be copied, because of copy protection.%1%%  Do you want to continue copying?%",
+    "Canceling, please wait..."
+  ],
+  "native_projection": {
+    "path": "apps/finder/assets/copy-window/copy-window.bin",
+    "size": 76,
+    "sha256": "bf227c14e8288038c3e1ff0fb5cac6df5479ec1daac8d2fddeb0d541c4021b3c"
+  },
+  "limitations": [
+    "Native uses the user-requested fixed-frame single-range bar; original renderer also supports a neighboring active range.",
+    "Original live capture covers one-volume Duplicate and Escape; original cross-volume scheduling/Stop mouse tracking remain unobserved.",
+    "CDEF128 is a separate original control; the identified progress renderer is private fvew5250 code."
+  ],
+  "renderer": {
+    "source": "working/finder-reference/decompressed-code/CODE-174.bin",
+    "source_sha256": "407bd3f5935a784c6d6f0d0685cc6071bfd39f25867c42e7f9ae2b90f1e66ece",
+    "source_bytes": 1848,
+    "compressed_resource_offset": 342528,
+    "compressed_resource_sha256": "43d002a79809443bdbf9a20219aaf6fbf698472ae8439c16887e5ec56696e500",
+    "declared_export_bytes": 1848,
+    "function_start": "0x36e",
+    "function_end_inclusive": "0x737",
+    "listing": "working/finder-copy-reference/CODE-174-progress.asm",
+    "class_association": {
+      "class": 5250,
+      "CODE1_sequence_offset": "0x19ba",
+      "class_id_method": "CODE8:0x272",
+      "class_ordinal_method": "CODE93:0x454",
+      "class_is_a_method": "CODE64:0x2a4",
+      "update_renderer_a5_slot": "0x565a",
+      "update_renderer": "CODE174:0x36e",
+      "explicit_copy_item_compare": "CODE174:0x388 (8803)"
+    },
+    "observations": [
+      "Inset the view rectangle by one pixel before deriving horizontal positions.",
+      "Read two neighboring model properties: the item ID and item ID+1; the copy item8803 has a special64-bit path.",
+      "Keep a four-pixel minimum filled extent (CODE174:0x638..0x658).",
+      "The first rectangle starts at the secondary edge and ends at the primary edge; the second covers the settled prefix.",
+      "Colour path uses RGB(cccc,cccc,ffff) for the active range and RGB(4000,4000,4000) for the prefix.",
+      "Monochrome FillRect patterns are Finder A5-98 and A5-106, white and black in the retained RAM snapshot.",
+      "Frame the primary filled extent after undoing the one-pixel inset, then erase the remaining right-hand area white."
+    ],
+    "ram_patterns": {
+      "path": "working/finder-reference/finder-ram.bin",
+      "sha256": "cea9a34642c519ca4cb081737b9b775abff9540f7f65155892006d0f1da60137",
+      "current_a5_lowmem": "0x904",
+      "a5": "0x07fa5e18",
+      "active_a5_minus_98": "0000000000000000",
+      "prefix_a5_minus_106": "ffffffffffffffff",
+      "colour_flag_a5_minus_2503": 1
+    },
+    "rea_snapshot": "working/finder-copy-reference/progress-renderer.rea-snapshot.json",
+    "limitations": [
+      "Ghidra truncates the decompiled body at an A-line trap; the complete retained objdump listing supplies the drawing tail.",
+      "The compressed global class-data stream has not been fully reconstructed; the neighboring jump-table method identities and explicit8803 branch establish this targeted attribution.",
+      "Counter roles in the running copy model and pixel parity still require the deferred original-runtime comparison."
+    ],
+    "reference_display": {
+      "depth": 8,
+      "main_device": "0xc470",
+      "pixmap": "0xc4c0",
+      "color_table": "0x3ef56c",
+      "entries": 256,
+      "dark_grey_nearest_rgb16": [
+        "0x4444",
+        "0x4444",
+        "0x4444"
+      ],
+      "note": "Retained original palette plus live8-bit QMP pixel capture. The live copied prefix is #666666 and remaining track #dadaff; see live_copy.",
+      "inverse_table": "0x4dd1ac",
+      "inverse_resolution": 4,
+      "grey_inverse_slot": 1092,
+      "grey_palette_index": 252,
+      "grey_rgb16": [
+        17476,
+        17476,
+        17476
+      ]
+    }
+  },
+  "live_copy": {
+    "transport": "ordinary QMP capture, not REA runtime Evidence",
+    "source_disk_before": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c",
+    "source_disk_after": "77fff8134192c1b029359dc3cb4c6fd08785213338f7ac3f73950b1bfd837f6c",
+    "frames": [
+      {
+        "path": "results/finder-copy-live/copy-0.png",
+        "sha256": "eef5d5e8364a13b1368518c06906b12fae098a3bc454a30432e6d310d0830b45"
+      },
+      {
+        "path": "results/finder-copy-live/copy-1.png",
+        "sha256": "f29e28e565051ffd691424153108bc5233f33d143dd81788c55ba643f91b3c3b"
+      },
+      {
+        "path": "results/finder-copy-live/copy-2.png",
+        "sha256": "daeac1a0e634a08fc15e85ac248d447dbac5c036e40f3de825ee0d80121d4b26"
+      },
+      {
+        "path": "results/finder-copy-live/copy-3.png",
+        "sha256": "daeac1a0e634a08fc15e85ac248d447dbac5c036e40f3de825ee0d80121d4b26"
+      },
+      {
+        "path": "results/finder-copy-live/copy-4.png",
+        "sha256": "63cd80a83576fe001c443499444319235f7dd6b63c06b3eaf35ae5d19c5c7206"
+      },
+      {
+        "path": "results/finder-copy-live/copy-5.png",
+        "sha256": "a3058f9fcb1aa0962ad40f91f5aa524e6de072771e975880a468dbf5556cbdda"
+      },
+      {
+        "path": "results/finder-copy-live/copy-6.png",
+        "sha256": "a3058f9fcb1aa0962ad40f91f5aa524e6de072771e975880a468dbf5556cbdda"
+      },
+      {
+        "path": "results/finder-copy-live/copy-7.png",
+        "sha256": "8249d436dde4a6e77f21db5edd0b0d4a860d04b166895acab04603c8924566d8"
+      },
+      {
+        "path": "results/finder-copy-live/source.png",
+        "sha256": "37e688812c0fd3a41be86f2a55d865fe47dca1c2dc95a551d870665d76e9a77a"
+      },
+      {
+        "path": "results/finder-copy-live/stopped.png",
+        "sha256": "9ae906543999c69e208387868a6afbd8854a4dff03880065a0d9f4ef360eb544"
+      },
+      {
+        "path": "results/finder-copy-live/wait-for-finder.png",
+        "sha256": "059d0e8682fa800857a5906ded70b67d6f326338c19bb30b085ad09b6d92bf40"
+      }
+    ],
+    "content_origin": [
+      180,
+      96
+    ],
+    "title": "Copy",
+    "progress_bounds": [
+      190,
+      151,
+      378,
+      162
+    ],
+    "track_rgb": [
+      218,
+      218,
+      255
+    ],
+    "completed_rgb": [
+      102,
+      102,
+      102
+    ],
+    "frame_rgb": [
+      0,
+      0,
+      0
+    ],
+    "cancel": "Escape dismissed copy window and removed the partial duplicate; original32MiB source remained the sole item.",
+    "limits": "One-volume duplicate, 640x480 indexed8-bit colour; in-flight reads/writes sampled. Other resolutions and original cross-volume/Stop-button interactions not observed in this capture."
+  }
+}

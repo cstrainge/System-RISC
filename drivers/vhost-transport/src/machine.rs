@@ -392,6 +392,17 @@ impl Device
 }
 impl Channel for Device
 {
+    fn monotonic_microseconds(&self) -> u64
+    {
+        let ticks: u64;
+        // SAFETY: rdtime is a side-effect-free read of the virt machine's
+        // 10 MHz monotonic counter, also used by the resident scheduler.
+        unsafe {
+            core::arch::asm!("rdtime {ticks}", ticks = out(reg) ticks, options(nomem, nostack));
+        }
+        ticks / 10
+    }
+
     fn poll(&mut self) -> Result<bool>
     {
         if !self.live || self.lost || self.read(0x70) & 64 != 0

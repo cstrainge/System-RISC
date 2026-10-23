@@ -350,7 +350,19 @@ impl Viewer
         let window = system.window(self.window)?;
         let width = window.bounds.right - window.bounds.left;
         let height = window.bounds.bottom - window.bounds.top;
-        let point = position.in_window(window.id)?.point()?;
+        // Non-pointer events (including unrelated activation) need no coordinate
+        // projection. A position is meaningful only for this control gesture.
+        let point = if (matches!(event, Event::MouseDown { .. })
+                        && event.window().unwrap_or_default() == self.window)
+                       || (self.tracking.is_some()
+                           && matches!(event, Event::Idle { .. } | Event::MouseUp { .. }))
+        {
+            position.in_window(window.id)?.point()?
+        }
+        else
+        {
+            Point::default()
+        };
         let limits = self.limits(width, height);
         if let Some(index) = self.tracking
            && matches!(event, Event::Idle { .. } | Event::MouseUp { .. } | Event::Activate { .. })

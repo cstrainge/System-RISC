@@ -58,6 +58,24 @@ pub enum Target
         volume: VolumeId,
         id:     Cnid
     },
+    /// Rearrange icons already in this folder, including immutable volumes.
+    /// Positions are view state; no file is copied or moved between folders.
+    IconLayout
+    {
+        volume: VolumeId,
+        id:     Cnid
+    },
+    Application
+    {
+        volume: VolumeId,
+        id:     Cnid
+    },
+    /// Unmount one volume offered as its root-directory reference. Read-only
+    /// mounts are valid; the resident service rejects startup/busy volumes.
+    Eject
+    {
+        volume: VolumeId
+    },
     Content
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +112,12 @@ impl Flavors<'_>
     pub fn all_file_items(self) -> bool
     {
         self.summary.is_some_and(|(_, common)| common & 1 != 0)
+    }
+
+    /// Frozen once at Begin; no service call or item inspection during motion.
+    pub fn is_volume_root(self) -> bool
+    {
+        self.summary.is_some_and(|(_, common)| common & 4 != 0)
     }
 
     pub fn item_count(self) -> Result<usize>
@@ -177,6 +201,11 @@ pub struct TrackingOffer<'a>
 }
 impl<'a> TrackingOffer<'a>
 {
+    pub const fn id(&self) -> wire::DragId
+    {
+        wire::DragId(self.route.id)
+    }
+
     pub const fn flavors(&self) -> Flavors<'a>
     {
         Flavors { route:   self.route,
@@ -191,6 +220,23 @@ impl<'a> TrackingOffer<'a>
     pub const fn position(&self) -> Point
     {
         self.at
+    }
+
+    /// Inspect immutable inline reference metadata without taking a flavor or
+    /// invoking a promise. Promised-only references remain unavailable here.
+    pub fn file_metadata(&self, index: usize) -> Result<FileItem>
+    {
+        let mut bytes = [0; wire::FILE_ITEM_BYTES];
+        let call = self.route.call(wire::Call { operation: wire::FILE_ITEM_METADATA,
+                                                 index:
+                                                     u32::try_from(index).map_err(|_| {
+                                                         DragError::Unknown(mac_abi::BAD_ARGUMENT)
+                                                     })?,
+                                                 ..Default::default() },
+                                    &[],
+                                    &mut bytes)?;
+        FileItem::decode(bytes.get(..call.transferred)
+                              .ok_or(DragError::Unknown(mac_abi::BAD_ABI))?)
     }
 
     pub fn respond(mut self, response: Response) -> Result<()>
@@ -209,7 +255,21 @@ impl<'a> TrackingOffer<'a>
                                      id } => (flags, volume.0, id.0, highlight),
                     Target::Trash { volume,
                                     id } => (flags | wire::TARGET_TRASH, volume.0, id.0, highlight),
-                    Target::Content => (flags, 0, 0, highlight)
+                    Target::IconLayout { volume,
+                                         id } =>
+                    {
+                        (flags | wire::TARGET_ICON_LAYOUT, volume.0, id.0, highlight)
+                    }
+                    Target::Application { volume,
+                                          id } =>
+                    {
+                        (flags | wire::TARGET_APPLICATION, volume.0, id.0, highlight)
+                    }
+                    Target::Content => (flags, 0, 0, highlight),
+                    Target::Eject { volume } =>
+                    {
+                        (flags | wire::TARGET_EJECT, volume.0, mac_abi::files::ROOT_ID, highlight)
+                    }
                 }
             }
         };
@@ -291,14 +351,8 @@ impl<'a> DropPayload<'a>
     pub fn custom<'b>(&self, item: Item, flavor: FlavorType, output: &'b mut [u8])
                       -> TakeFuture<'a, 'b>
     {
-        TakeFuture { route: self.route,
-                     window: self.window,
-                     item,
-                     flavor,
-                     output,
-                     done: false,
-                     requested: false,
-                     registered: false }
+        TakeFuture { state: TakeState::new(self.route, self.window, item, flavor),
+                     output }
     }
 
     pub async fn text<'b>(&self, item: Item, output: &'b mut [u8]) -> Result<&'b str>
@@ -307,11 +361,45 @@ impl<'a> DropPayload<'a>
         core::str::from_utf8(&output[..n]).map_err(|_| DragError::Unknown(mac_abi::BAD_ABI))
     }
 
-    pub async fn file(&self, item: Item) -> Result<FileItem>
+    /// Owns its bounded result buffer so an event-driven receiver can retain
+    /// the pending take alongside its payload without a self-reference or heap.
+    pub fn file(&self, item: Item) -> FileTakeFuture<'a>
     {
-        let mut bytes = [0; wire::FILE_ITEM_BYTES];
-        let n = self.custom(item, FILE_REFERENCE, &mut bytes).await?;
-        FileItem::decode(&bytes[..n])
+        FileTakeFuture { state: TakeState::new(self.route, self.window, item, FILE_REFERENCE),
+                         bytes: [0; wire::FILE_ITEM_BYTES] }
+    }
+
+    /// True after Escape/source cancellation while this receiver drains storage.
+    /// The System keeps the session dropping until its receiver acknowledges.
+    pub fn cancellation_requested(&self) -> Result<bool>
+    {
+        self.route
+            .call(wire::Call { operation: wire::INFO,
+                               ..Default::default() },
+                  &[],
+                  &mut [])
+            .map(|call| call.info.phase == wire::DROPPING && call.info.outcome == wire::CANCELLED)
+    }
+
+    /// Request cancellation without relinquishing the receiver's ownership.
+    /// Keep draining storage and complete only after undo is acknowledged.
+    pub fn request_cancel(&self) -> Result<()>
+    {
+        self.route
+            .call(wire::Call { operation: wire::CANCEL_RECEIVE,
+                               window: self.window.map_or(0, |w| w.0),
+                               ..Default::default() },
+                  &[],
+                  &mut [])
+            .map(|_| ())
+    }
+
+    /// Finish a bounded event-driven receive after storage commits or rollback
+    /// is acknowledged. Like receive(), completion consumes the sole owner.
+    pub fn complete(mut self, result: Result<()>) -> Result<()>
+    {
+        self.acknowledge(result)?;
+        result
     }
 
     /// Complete receive work once. Rejection and dropped futures undo resident
@@ -336,6 +424,10 @@ impl<'a> DropPayload<'a>
                                                              match e
                                                              {
                                                                  DragError::Unknown(s) => s,
+                                                                 DragError::Cancelled =>
+                                                                 {
+                                                                     mac_abi::OPERATION_CANCELLED
+                                                                 }
                                                                  _ => mac_abi::IO_ERROR
                                                              }
                                                          }),
@@ -361,16 +453,12 @@ impl Drop for DropPayload<'_>
         }
     }
 }
+/// Borrowed output for arbitrary flavors; its state never borrows the payload.
+#[must_use = "takes make progress only when polled by an executor or event loop"]
 pub struct TakeFuture<'a, 'b>
 {
-    route:      Route<'a>,
-    window:     Option<WindowId>,
-    item:       Item,
-    flavor:     FlavorType,
-    output:     &'b mut [u8],
-    done:       bool,
-    requested:  bool,
-    registered: bool
+    state:  TakeState<'a>,
+    output: &'b mut [u8]
 }
 impl Future for TakeFuture<'_, '_>
 {
@@ -379,52 +467,105 @@ impl Future for TakeFuture<'_, '_>
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output>
     {
         let this = self.get_mut();
-        if this.done
+        this.state.poll(context, this.output)
+    }
+}
+/// Allocation-free owned file-reference take, compatible with std executors and
+/// the app's ordinary event loop. Dropping it removes its wake registration.
+#[must_use = "takes make progress only when polled by an executor or event loop"]
+pub struct FileTakeFuture<'a>
+{
+    state: TakeState<'a>,
+    bytes: [u8; wire::FILE_ITEM_BYTES]
+}
+impl Future for FileTakeFuture<'_>
+{
+    type Output = Result<FileItem>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output>
+    {
+        let this = self.get_mut();
+        match this.state.poll(context, &mut this.bytes)
         {
-            return Poll::Ready(Err(DragError::FlavorUnavailable { flavor: this.flavor }));
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) =>
+            {
+                Poll::Ready(result.and_then(|n| FileItem::decode(&this.bytes[..n])))
+            }
+        }
+    }
+}
+struct TakeState<'a>
+{
+    route:      Route<'a>,
+    window:     Option<WindowId>,
+    item:       Item,
+    flavor:     FlavorType,
+    done:       bool,
+    requested:  bool,
+    registered: bool
+}
+impl<'a> TakeState<'a>
+{
+    fn new(route: Route<'a>, window: Option<WindowId>, item: Item, flavor: FlavorType) -> Self
+    {
+        Self { route,
+               window,
+               item,
+               flavor,
+               done: false,
+               requested: false,
+               registered: false }
+    }
+
+    fn poll(&mut self, context: &mut Context<'_>, output: &mut [u8]) -> Poll<Result<usize>>
+    {
+        if self.done
+        {
+            return Poll::Ready(Err(DragError::FlavorUnavailable { flavor: self.flavor }));
         }
         let mut call = wire::Call { operation: wire::READ,
-                                    flags: u32::from(this.requested),
-                                    id: this.route.id,
-                                    window: this.window.map_or(0, |w| w.0),
-                                    item: this.item.0,
-                                    kind: this.flavor.0,
+                                    flags: u32::from(self.requested),
+                                    id: self.route.id,
+                                    window: self.window.map_or(0, |w| w.0),
+                                    item: self.item.0,
+                                    kind: self.flavor.0,
                                     ..Default::default() };
-        match this.route.client.drag(&mut call, &[], this.output)
+        match self.route.client.drag(&mut call, &[], output)
         {
             Err(ToolboxError::ServiceBusy) =>
             {
-                this.requested = true;
-                match super::wake::register(this.route.id,
-                                            this.item.0,
-                                            this.flavor,
+                self.requested = true;
+                match super::wake::register(self.route.id,
+                                            self.item.0,
+                                            self.flavor,
                                             context.waker())
                 {
                     Ok(()) =>
                     {
-                        this.registered = true;
+                        self.registered = true;
                         Poll::Pending
                     }
                     Err(error) =>
                     {
-                        this.done = true;
+                        self.done = true;
                         Poll::Ready(Err(error))
                     }
                 }
             }
             result =>
             {
-                if this.registered
+                if self.registered
                 {
-                    super::wake::remove(this.route.id, this.item.0, this.flavor);
-                    this.registered = false;
+                    super::wake::remove(self.route.id, self.item.0, self.flavor);
+                    self.registered = false;
                 }
-                this.done = true;
+                self.done = true;
                 Poll::Ready(match result {
-                    Ok(()) if call.transferred <= this.output.len() => Ok(call.transferred),
+                    Ok(()) if call.transferred <= output.len() => Ok(call.transferred),
                     Ok(()) => Err(DragError::Unknown(mac_abi::BAD_ABI)),
-                Err(error) if error.status() == wire::FLAVOR_UNAVAILABLE => Err(DragError::FlavorUnavailable { flavor: this.flavor }),
-                Err(error) if error.status() == wire::PROMISE_FAILED => Err(DragError::PromiseFailed { flavor: this.flavor, source: ToolboxError::from_status(call.error) }),
+                Err(error) if error.status() == wire::FLAVOR_UNAVAILABLE => Err(DragError::FlavorUnavailable { flavor: self.flavor }),
+                Err(error) if error.status() == wire::PROMISE_FAILED => Err(DragError::PromiseFailed { flavor: self.flavor, source: ToolboxError::from_status(call.error) }),
                 Err(error) => Err(error.into())
             })
             }
@@ -442,7 +583,10 @@ pub enum DragEvent<'a>
     },
     /// Wake the SDK source owner; a producer is never called in a foreign app.
     DataRequested,
-    DataReady
+    DataReady,
+    /// Receiver must cancel/undo storage, then complete its payload. A committed
+    /// racing operation still reports its actual outcome, never a false undo.
+    CancelRequested
 }
 impl<'a> DragEvent<'a>
 {
@@ -492,6 +636,11 @@ impl<'a> DragEvent<'a>
                  {
                      super::wake::notify(route.id);
                      Self::DataReady
+                 }
+                 wire::CANCEL_REQUESTED_EVENT =>
+                 {
+                     super::wake::notify(route.id);
+                     Self::CancelRequested
                  }
                  wire::FINISHED_EVENT =>
                  {
@@ -567,7 +716,8 @@ impl DragEvent<'_>
                  Point::default())
             }
             Self::DataRequested => (wire::PROMISE_EVENT, 0, 0, Point::default()),
-            Self::DataReady => (wire::DATA_READY_EVENT, 0, 0, Point::default())
+            Self::DataReady => (wire::DATA_READY_EVENT, 0, 0, Point::default()),
+            Self::CancelRequested => (wire::CANCEL_REQUESTED_EVENT, 0, 0, Point::default())
         };
         mac_abi::Event { kind: mac_abi::EventKind::OsEvent,
                          message,
@@ -578,7 +728,7 @@ impl DragEvent<'_>
     }
 }
 
-impl Drop for TakeFuture<'_, '_>
+impl Drop for TakeState<'_>
 {
     fn drop(&mut self)
     {

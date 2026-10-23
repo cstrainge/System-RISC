@@ -50,6 +50,16 @@ pub const SET_ICON_LOCATION: u32 = 34;
 /// Preserve identity, object dates, Finder information and both forks.
 pub const MOVE_INTO: u32 = 35;
 pub const MOVE_ICONS: u32 = 36;
+/// Save DInfo.frRect/frView and DXInfo.frScroll. Input uses only entry.finder_info
+/// bytes 0..8 and 14..20; all other bytes must be zero. Preserve every other
+/// Finder field and both forks. position is the catalog-change timestamp.
+pub const SET_FOLDER_STATE: u32 = 37;
+/// Remove a file or empty folder, retaining an owned receipt through cleanup.
+pub const REMOVE: u32 = 38;
+/// Replace object flags, Finder info, dates, backup and UTF-8 comment together.
+/// Properties are in entry; name/name_length carry only the comment text.
+/// Every non-property input field of entry must be zero.
+pub const SET_PROPERTIES: u32 = 39;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct IconMove
@@ -70,6 +80,26 @@ pub struct IconMoveCall
     pub count:     u32,
     pub changed:   u32,
     pub when:      u64,
+    pub entries:   *const IconMove
+}
+/// Size-distinct owner for stepped same-volume catalog moves.
+pub const BEGIN_ICON_GROUP: u32 = 0;
+pub const STEP_ICON_GROUP: u32 = 1;
+pub const CANCEL_ICON_GROUP: u32 = 2;
+pub const ABANDON_ICON_GROUP: u32 = 3;
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct IconGroupCall
+{
+    pub operation: u32,
+    pub handle:    u32,
+    pub volume:    u32,
+    pub phase:     u32,
+    pub when:      u64,
+    pub count:     u32,
+    pub completed: u32,
+    pub changed:   u32,
+    pub reserved:  u32,
     pub entries:   *const IconMove
 }
 pub const SCAN_ENTRY: u32 = 0;
@@ -399,6 +429,49 @@ pub const APPEND_DATA_WRITE: u32 = 1;
 pub const COMMIT_DATA_WRITE: u32 = 2;
 pub const ABORT_DATA_WRITE: u32 = 3;
 pub const MAX_DATA_WRITE: usize = 4 * 1024 * 1024;
+pub const BEGIN_FORK_WRITE: u32 = 0;
+pub const APPEND_FORK_WRITE: u32 = 1;
+pub const FINISH_FORK_WRITE: u32 = 2;
+pub const ABORT_FORK_WRITE: u32 = 3;
+pub const ABANDON_FORK_WRITE: u32 = 4;
+pub const READ_FORK_WRITE: u32 = 5;
+/// Native streaming two-fork transaction. Payload requests are at most 64 KiB;
+/// declared fork lengths are u64 and never require whole-fork allocations.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ForkWriteCall
+{
+    pub operation:       u32,
+    pub handle:          u32,
+    pub volume:          u32,
+    pub parent:          u32,
+    pub expected_cnid:   u32,
+    pub fork:            u32,
+    pub when:            u64,
+    pub data_length:     u64,
+    pub resource_length: u64,
+    pub created:         u64,
+    pub modified:        u64,
+    pub backup:          u64,
+    pub backup_present:  u32,
+    pub attributes:      u16,
+    pub padding:         u16,
+    pub finder_info:     [u8; 32],
+    pub name:            *const u8,
+    pub name_length:     usize,
+    pub comment:         *const u8,
+    pub comment_length:  usize,
+    pub data:            *const u8,
+    pub count:           usize,
+    pub output:          *mut u8,
+    pub capacity:        usize,
+    pub offset:          u64,
+    pub transferred:     usize,
+    /// Zero requires another bounded commit/abort step; one is terminal.
+    pub completed:       u32,
+    pub reserved:        u32,
+    pub entry:           CatalogInfo
+}
 /// Size-distinct native copy-on-write data-file transaction. expected_cnid=0
 /// means create-new; otherwise commit requires that same confirmed file ID.
 #[repr(C)]
@@ -421,3 +494,86 @@ pub struct DataWriteCall
     pub entry:         CatalogInfo,
     pub reserved:      [u64; 2]
 }
+
+/// Owned recursive transfer requests use a size-distinct File trap record.
+pub const BEGIN_TRANSFER: u32 = 0;
+pub const STEP_TRANSFER: u32 = 1;
+pub const CANCEL_TRANSFER: u32 = 2;
+pub const ABANDON_TRANSFER: u32 = 3;
+pub const TRANSFER_COPY: u32 = 0;
+pub const TRANSFER_MOVE: u32 = 1;
+pub const TRANSFER_TRASH: u32 = 2;
+pub const TRANSFER_PREPARING: u32 = 0;
+pub const TRANSFER_COPYING: u32 = 1;
+pub const TRANSFER_VERIFYING: u32 = 2;
+pub const TRANSFER_COMMITTING: u32 = 3;
+pub const TRANSFER_ROLLING_BACK: u32 = 4;
+pub const TRANSFER_CLEANING_UP: u32 = 5;
+pub const TRANSFER_COMMITTED: u32 = 6;
+pub const TRANSFER_CANCELLED: u32 = 7;
+pub const TRANSFER_FAILED: u32 = 8;
+pub const TRANSFER_READING: u32 = 9;
+pub const TRANSFER_WRITING: u32 = 10;
+pub const MAX_TRANSFER_SOURCES: usize = 1024;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileTransferSource
+{
+    pub volume:          u32,
+    pub cnid:            u32,
+    pub expected_parent: u32,
+    /// 0 preserve copied placement; 1 place at point; 2 clear placement.
+    pub placement:       u32,
+    pub point:           crate::Point,
+    pub reserved:        u32
+}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FileTransferCall
+{
+    pub operation:          u32,
+    pub handle:             u32,
+    pub mode:               u32,
+    pub destination_volume: u32,
+    pub destination_parent: u32,
+    pub phase:              u32,
+    pub completed_items:    u32,
+    pub total_items:        u32,
+    pub completed_bytes:    u64,
+    pub total_bytes:        u64,
+    pub when:               u64,
+    /// Original cause and any failed cleanup remain separately typed.
+    pub error:              crate::Status,
+    pub cleanup_error:      crate::Status,
+    /// The irreversible barrier has won; cancellation can no longer undo.
+    pub commit_decided:     u32,
+    pub sources:            *const FileTransferSource,
+    pub source_count:       usize,
+    pub current:            CatalogInfo,
+    pub reserved:           [u32; 4]
+}
+
+// The native File gate selects the record family by its exact byte size. Keep
+// every family disjoint at compile time: a collision would route valid calls to
+// the wrong service before operation-specific validation could run.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    let sizes = [core::mem::size_of::<FileCall>(),
+                 core::mem::size_of::<DataWriteCall>(),
+                 core::mem::size_of::<FileScanCall>(),
+                 core::mem::size_of::<ForkWriteCall>(),
+                 core::mem::size_of::<IconMoveCall>(),
+                 core::mem::size_of::<IconGroupCall>(),
+                 core::mem::size_of::<FileTransferCall>()];
+    let mut left = 0;
+    while left < sizes.len()
+    {
+        let mut right = left + 1;
+        while right < sizes.len()
+        {
+            assert!(sizes[left] != sizes[right], "native File request sizes must be distinct");
+            right += 1;
+        }
+        left += 1;
+    }
+};

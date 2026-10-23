@@ -7,10 +7,10 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 4;
 pub const HEADER_BYTES: usize = 48;
 pub const MAX_PAYLOAD: usize = 64 * 1024;
-pub const MAGIC: [u8; 8] = *b"RSHOST02";
+pub const MAGIC: [u8; 8] = *b"RSHOST04";
 pub const LOCK_SHARED: u32 = 0;
 pub const LOCK_EXCLUSIVE: u32 = 1;
 pub const READ: u32 = 1;
@@ -19,6 +19,11 @@ pub const DURABLE: u32 = 4;
 pub const ATOMIC_PUBLISH: u32 = 8;
 pub const ALL_CAPABILITIES: u32 = READ | WRITE | DURABLE | ATOMIC_PUBLISH;
 pub const DESCRIPTION_BYTES: usize = 88;
+pub const REMOVE_PREPARED: u32 = 0;
+pub const REMOVE_QUARANTINED: u32 = 1;
+pub const REMOVE_COMMITTING: u32 = 2;
+pub const REMOVE_REMOVED: u32 = 3;
+pub const REMOVE_ABORTED: u32 = 4;
 /// Opaque host-object incarnation. This is persistent backing identity, not a
 /// capability or a catalog ID. The provider owns any guest name/metadata mapping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -109,6 +114,10 @@ pub mod status
     pub const NOT_FOUND: i32 = -8;
     pub const BUSY: i32 = -9;
     pub const UNSUPPORTED: i32 = -10;
+    pub const CORRUPT: i32 = -11;
+    pub const NOT_EMPTY: i32 = -12;
+    pub const DENIED: i32 = -13;
+    pub const FULL: i32 = -14;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,7 +146,27 @@ pub enum Operation
     Unlock           = 20,
     Stat             = 21,
     Describe         = 22,
-    PublishDirectory = 23
+    PublishDirectory = 23,
+    DescribeObject   = 24,
+    /// Prepare a checked, non-replacing rename. object=source directory,
+    /// offset=destination directory, value=expected source capability.
+    BeginRename      = 25,
+    /// Publish/durably finish a prepared rename. Retry never renames twice.
+    FinishRename     = 26,
+    /// Query actual publication (reply.value=0/1), without publishing.
+    RenameState      = 27,
+    /// Positioned read from an owned, unpublished write transaction.
+    ReadWrite        = 28,
+    /// Logical metadata changed outside this folder's physical namespace.
+    NotifyDirectory  = 29,
+    /// Prepare exact-object removal; payload is source/optional metadata record.
+    BeginRemove      = 30,
+    /// Reversibly hide the source, retaining a receipt until commit/abort.
+    QuarantineRemove = 31,
+    /// Irreversible removal; retries acknowledge cleanup/durability only.
+    CommitRemove     = 32,
+    AbortRemove      = 33,
+    RemoveState      = 34
 }
 impl TryFrom<u16> for Operation
 {
@@ -170,9 +199,31 @@ impl TryFrom<u16> for Operation
             21 => Self::Stat,
             22 => Self::Describe,
             23 => Self::PublishDirectory,
+            24 => Self::DescribeObject,
+            25 => Self::BeginRename,
+            26 => Self::FinishRename,
+            27 => Self::RenameState,
+            28 => Self::ReadWrite,
+            29 => Self::NotifyDirectory,
+            30 => Self::BeginRemove,
+            31 => Self::QuarantineRemove,
+            32 => Self::CommitRemove,
+            33 => Self::AbortRemove,
+            34 => Self::RemoveState,
             _ => return Err(Error::Operation)
         })
     }
+}
+
+/// u16 source-name length followed by the source and optional private record
+/// component. An absent record is represented by no remaining bytes.
+pub fn remove_names(bytes: &[u8]) -> Result<(&str, Option<&str>), Error>
+{
+    let count =
+        u16::from_le_bytes(bytes.get(..2).ok_or(Error::Length)?.try_into().unwrap()) as usize;
+    let source = component(bytes.get(2..2 + count).ok_or(Error::Length)?)?;
+    let record = bytes.get(2 + count..).ok_or(Error::Length)?;
+    Ok((source, if record.is_empty() { None } else { Some(component(record)?) }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -434,7 +485,7 @@ impl Receiver
 /// ticket; class input contains only session/object arguments and payload. The
 /// transport creates the actual wire header after it receives its live ticket.
 pub const DIRECTORY_CLASS: [u8; 4] = *b"HDIR";
-pub const DIRECTORY_VERSION: u32 = 2;
+pub const DIRECTORY_VERSION: u32 = 4;
 pub const ARGUMENT_BYTES: usize = 24;
 pub struct Arguments<'a>
 {

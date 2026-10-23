@@ -12,6 +12,7 @@ pub enum MutationError
     Invalid,
     ReadOnly,
     NotFound,
+    NotEmpty,
     Exists,
     Protected,
     Busy,

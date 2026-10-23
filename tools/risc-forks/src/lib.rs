@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 pub mod io;
 mod volume;
+mod projection;
 mod import;
 use std::time::{SystemTime, UNIX_EPOCH};
 

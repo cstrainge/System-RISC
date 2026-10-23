@@ -436,6 +436,11 @@ impl crate::SurfacePort<'_>
         self.connection.font_width(font, text)
     }
 
+    pub fn selected_font_metrics(&mut self, font: FontSelection) -> Result<FontMetrics>
+    {
+        self.connection.selected_font_metrics(font)
+    }
+
     pub fn font_text_clipped(&mut self, font: FontSelection, baseline: Point, text: &str,
                              limit: i16, color: u32)
                              -> Result<i16>

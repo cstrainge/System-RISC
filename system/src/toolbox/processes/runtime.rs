@@ -41,6 +41,25 @@ impl Saved
 }
 impl Desktop
 {
+    pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
+    {
+        if matches!(notice.event.message & 0xff00_0000,
+                    mac_abi::drag::CANCEL_REQUESTED_EVENT | mac_abi::drag::FINISHED_EVENT)
+        {
+            super::super::processes::documents::cancel_drag(&mut self.processes,
+                                                            notice.event.payload as u32);
+        }
+        let position = self.event_position(notice.event, notice.owner);
+        if notice.owner == self.owner
+        {
+            self.events.post_drag(notice.event, position);
+        }
+        else if let Some(local) = self.locals.iter_mut().find(|s| s.id == notice.owner)
+        {
+            local.events.post_drag(notice.event, position);
+        }
+    }
+
     pub(crate) fn notify_document_batch(&mut self, owner: u64, handle: u32) -> Result<(), Status>
     {
         let event = Event { kind: EventKind::OsEvent,
@@ -63,17 +82,26 @@ impl Desktop
         Ok(())
     }
 
-    pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
+    pub(crate) fn notify_file_transfer(&mut self, owner: u64, handle: u32) -> Result<(), Status>
     {
-        let position = self.event_position(notice.event, notice.owner);
-        if notice.owner == self.owner
+        let event = Event { kind: EventKind::OsEvent,
+                            message: mac_abi::events::FILE_TRANSFER_CHANGED,
+                            payload: u64::from(handle),
+                            when: Self::when(),
+                            ..Default::default() };
+        if owner == self.owner
         {
-            self.events.post_drag(notice.event, position);
+            self.events.post_transfer(event);
         }
-        else if let Some(local) = self.locals.iter_mut().find(|s| s.id == notice.owner)
+        else if let Some(local) = self.locals.iter_mut().find(|s| s.id == owner)
         {
-            local.events.post_drag(notice.event, position);
+            local.events.post_transfer(event);
         }
+        else
+        {
+            return Err(NOT_FOUND);
+        }
+        Ok(())
     }
 
     pub(super) fn forget_cursor_window(&mut self, window: WindowId)
@@ -534,12 +562,24 @@ impl Desktop
                                                catalog.file_type, resources)?;
         let entry = crate::kernel::reload_image(image)?;
         let id = self.processes.add(catalog.name(), call.volume, call.cnid, image)?;
+        // RAM-only pin admission closes launch-vs-transfer races. No storage
+        // operation or provider callback runs under this desktop guard.
+        let pinned = crate::kernel::with_files(|files| {
+                         files.pin_executable(id, call.volume, call.cnid)
+                     }).map_err(crate::state::AccessError::status)
+                       .and_then(|r| r);
+        if let Err(error) = pinned
+        {
+            self.processes.remove(id);
+            return Err(error);
+        }
         let thread = match crate::machine::scheduler::spawn(id, image, entry)
         {
             Ok(t) => t,
             Err(e) =>
             {
                 self.processes.remove(id);
+                let _ = crate::kernel::with_files(|files| files.close_all(id));
                 return Err(e);
             }
         };

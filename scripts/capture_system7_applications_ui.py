@@ -125,10 +125,12 @@ class Driver:
 
     def discard_text_edit(self, quit=True):
         """Physical File command followed by the resource-based Don't Save button."""
+        before = int(self.state()['windows'])
         self.key('q' if quit else 'w', ('ctrl',))
-        time.sleep(.10)
-        # Centered 366x136 ALRT, Don't Save at local20,96..124,118.
-        self.click(193, 279)
+        self.wait_state(lambda state: int(state['windows']) > before)
+        # System positions the 366x136 Save Changes ALRT in the upper fifth.
+        # Content origin is137,89; Don't Save is local20,96..124,118.
+        self.click(193, 196)
 
     def menu(self, x, row_y, popup_x=None):
         self.move(x, 10)

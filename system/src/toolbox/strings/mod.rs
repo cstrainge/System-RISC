@@ -412,7 +412,8 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                                        files::LOOKUP
                                        | files::NEW_FOLDER
                                        | files::RENAME
-                                       | files::SET_COMMENT)
+                                       | files::SET_COMMENT
+                                       | files::SET_PROPERTIES)
                 {
                     unsafe { input(call.name, call.name_length) }?
                 }
@@ -461,7 +462,9 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                         | files::SET_LOCKED
                         | files::SET_STATIONERY
                         | files::SET_ICON_LOCATION
-                        | files::MOVE_INTO =>
+                        | files::MOVE_INTO
+                        | files::SET_FOLDER_STATE
+                        | files::SET_PROPERTIES =>
                         {
                             inline_name_output(&mut call.entry.name, &mut call.entry.name_length)?
                         }

@@ -1,0 +1,11 @@
+{
+  "name": "CDEF_PROGRESS_BAR",
+  "file_type": "rsrc",
+  "creator": "MACS",
+  "role": "code_resource",
+  "abi_version": 11,
+  "load_base": "0x82400000",
+  "load_limit": "0x82500000",
+  "description": "Progress Bar control definition",
+  "resources": []
+}

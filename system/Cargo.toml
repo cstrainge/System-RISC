@@ -26,6 +26,7 @@ mac-abi.workspace = true
 mac-boot-screen.workspace = true
 mac-formats.workspace = true
 mac-hfs.workspace = true
+mac-hfs-b.workspace = true
 mac-filesystem.workspace = true
 mac-filesystem-interface.workspace = true
 mac-file-source-interface.workspace = true

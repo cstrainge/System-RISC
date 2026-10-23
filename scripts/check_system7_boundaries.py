@@ -127,6 +127,9 @@ def check(args):
         helpers = {
             'resedit': ['disc-v', 'mac-code-resource', 'mac-text'],
             'mac-finder': ['spinning_top', 'unicode-segmentation'],
+            # Versioned font/view preferences only; all storage and UI still
+            # go through mac-toolbox. Neither codec implements OS services.
+            'text-edit': ['serde', 'serde-json-core'],
         }
         expected = sorted(['mac-toolbox', *helpers.get(name, [])])
         assert direct == expected, (name, 'services must use aggregate Toolbox; helper dependencies require review', direct)
@@ -139,7 +142,20 @@ def check(args):
              for name in ['chicago-12.font', 'geneva-9.font']]
     reports = []
     release = args.release_dir.resolve()
-    binaries = [('mac-finder', 'Finder'), ('quickdraw-test', 'QuickDrawTest'), ('text-edit', 'TextEdit'), ('cursor-test', 'CursorTest'), ('panic-test', 'PanicTest'), ('resedit', 'ResEdit'), ('native-wdef', 'WDEF'), ('native-cdef', 'CDEF'), ('native-scrollbar-cdef', 'SCROLLBAR'), ('native-mdef', 'MDEF')]
+    binaries = [
+        ('mac-finder', 'Finder'),
+        ('quickdraw-test', 'QuickDrawTest'),
+        ('text-edit', 'TextEdit'),
+        ('cursor-test', 'CursorTest'),
+        ('panic-test', 'PanicTest'),
+        ('resedit', 'ResEdit'),
+        ('native-wdef', 'WDEF'),
+        ('native-buttons-cdef', 'CDEF_BUTTONS'),
+        ('native-scrollbar-cdef', 'CDEF_SCROLL_BAR'),
+        ('native-progress-bar-cdef', 'CDEF_PROGRESS_BAR'),
+        ('native-static-text-cdef', 'CDEF_STATIC_TEXT'),
+        ('native-mdef', 'MDEF'),
+    ]
     missing = [str(release / binary) for binary in ['System'] + [b for _, b in binaries]
                if not (release / binary).is_file()]
     if missing:

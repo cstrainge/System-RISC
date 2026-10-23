@@ -332,3 +332,51 @@ pub enum SurfaceOperation
 
 identity!(DocumentBatchId, u32);
 identity!(FileTransferId, u32);
+/// A frozen source reference for a resident file transfer. The resident checks
+/// its volume generation, identity and expected parent before any mutation.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TransferSource(mac_abi::files::FileTransferSource);
+impl TransferSource
+{
+    pub const fn new(volume: VolumeId, id: Cnid, expected_parent: Cnid) -> Self
+    {
+        Self(mac_abi::files::FileTransferSource { volume:          volume.0,
+                                                  cnid:            id.0,
+                                                  expected_parent: expected_parent.0,
+                                                  placement:       0,
+                                                  point:           mac_abi::Point { h: 0,
+                                                                                    v: 0 },
+                                                  reserved:        0 })
+    }
+
+    pub const fn volume(self) -> VolumeId
+    {
+        VolumeId(self.0.volume)
+    }
+
+    pub const fn id(self) -> Cnid
+    {
+        Cnid(self.0.cnid)
+    }
+
+    pub const fn expected_parent(self) -> Cnid
+    {
+        Cnid(self.0.expected_parent)
+    }
+
+    pub const fn at(mut self, point: mac_abi::Point) -> Self
+    {
+        self.0.placement = 1;
+        self.0.point = point;
+        self
+    }
+
+    pub const fn clear_placement(mut self) -> Self
+    {
+        self.0.placement = 2;
+        self.0.point = mac_abi::Point { h: 0,
+                                        v: 0 };
+        self
+    }
+}

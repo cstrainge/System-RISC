@@ -150,7 +150,7 @@ def capture(output, windows=False):
         # The commit marker precedes Finder's public-SDK browser redraw. Wait
         # for the Cases window's completed draw after this specific commit,
         # including when that draw already completed before reading the log.
-        marker = f'FINDER_FOLDER_READY window={cases_window}\n'
+        marker = f'FINDER_FOLDER_CHANGED window={cases_window}\n'
         committed = log.rindex('FINDER_INFO_RENAMED ')
         driver.wait(marker, log[:committed].count(marker))
 
@@ -234,12 +234,12 @@ def capture(output, windows=False):
         close_info()
         frame('browser-file-renamed')
         totals = driver.log().count('FINDER_INFO_TOTALS ')
-        open_info(120, 'Plain Folder', True)
+        open_info(184, 'Plain Folder', True)
         driver.wait('FINDER_INFO_TOTALS ', totals)
         frame('folder-empty')
         text('folder comment\rsecond line')
         close_info()
-        open_info(120, 'Plain Folder', True)
+        open_info(184, 'Plain Folder', True)
         frame('folder-reopened')
         driver.click(110, 68)
         driver.key('a', ('ctrl',))

@@ -334,6 +334,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-traps",
+ "toolbox-drag",
  "toolbox-files",
 ]
 

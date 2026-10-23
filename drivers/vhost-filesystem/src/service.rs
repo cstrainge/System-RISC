@@ -14,8 +14,41 @@ impl<R: Rpc> Filesystem<R>
         let op = Operation::try_from(operation).map_err(|_| Cause::Invalid)?;
         let args = Arguments::decode(input).map_err(|_| Cause::Invalid)?;
         self.validate_request(op, args)?;
+        if self.group_busy(args.volume)
+           && !matches!(op,
+                        Operation::StepIconMoves
+                        | Operation::AbortIconMoves
+                        | Operation::AbortWrite
+                        | Operation::Read
+                        | Operation::Close)
+        {
+            return Err(Cause::Busy.into());
+        }
         match op
         {
+            Operation::BeginIconMoves | Operation::StepIconMoves | Operation::AbortIconMoves =>
+            {
+                let mut out = buffer(16)?;
+                let progress = if op == Operation::BeginIconMoves
+                {
+                    self.begin_icon_moves(args.volume,
+                                          args.token,
+                                          fs::IconMoves::decode(args.payload).map_err(|_| {
+                                                                                 Cause::Invalid
+                                                                             })?,
+                                          args.when)
+                        .await?
+                }
+                else
+                {
+                    self.step_icon_moves(args.volume, args.token, op == Operation::AbortIconMoves)
+                        .await?
+                };
+                fs::IconMoveProgress::from_words(progress).map_err(|_| Cause::Invalid)?
+                                                          .encode(&mut out)
+                                                          .map_err(|_| Cause::Invalid)?;
+                Ok(out)
+            }
             Operation::Exports =>
             {
                 let mut out = buffer(4)?;
@@ -160,6 +193,59 @@ impl<R: Rpc> Filesystem<R>
                 out.truncate(count);
                 Ok(out)
             }
+            Operation::Rename | Operation::Move =>
+            {
+                let mut out = buffer(4 + fs::MAX_METADATA_BYTES)?;
+                self.find(args.volume, args.node).await?;
+                let cached = self.cached_node(args.volume, args.node)?.try_clone()?;
+                let (parent, name) = if op == Operation::Rename
+                {
+                    (cached.parent, args.name().map_err(|_| Cause::Invalid)?)
+                }
+                else
+                {
+                    (args.parent, cached.metadata.name.as_str())
+                };
+                let staged = self.begin_rename(args.volume, args.node, parent, name, args.token,
+                                               args.when)
+                                 .await?;
+                out[..4].copy_from_slice(&u32::from(staged).to_le_bytes());
+                let node = if staged
+                {
+                    self.pending_node(args.volume, args.token)?
+                }
+                else
+                {
+                    self.cached_node(args.volume, args.node)?
+                };
+                let count = self.project_node(args.volume, node)?
+                                .encode(&mut out[4..])
+                                .map_err(|_| Cause::Invalid)?;
+                out.truncate(4 + count);
+                Ok(out)
+            }
+            Operation::SetMetadata =>
+            {
+                let mut out = buffer(4 + fs::MAX_METADATA_BYTES)?;
+                let patch = fs::MetadataPatch::decode(args.payload).map_err(|_| Cause::Invalid)?;
+                let staged = self.begin_metadata(args.volume, args.node, args.token, patch,
+                                                 args.when)
+                                 .await?;
+                out[..4].copy_from_slice(&u32::from(staged).to_le_bytes());
+                let node = if staged
+                {
+                    self.pending_node(args.volume, args.token)?
+                }
+                else
+                {
+                    self.cached_node(args.volume, args.node)?
+                };
+                let count = self.project_node(args.volume, node)?
+                                .encode(&mut out[4..])
+                                .map_err(|_| Cause::Invalid)?;
+                out.truncate(4 + count);
+                Ok(out)
+            }
             Operation::BeginReplace =>
             {
                 let mut out = buffer(fs::MAX_METADATA_BYTES)?;
@@ -171,7 +257,10 @@ impl<R: Rpc> Filesystem<R>
                                              when:               args.when,
                                              preserve_resources: args.flags
                                                                  & fs::PRESERVE_RESOURCE_FORK
-                                                                 != 0 })
+                                                                 != 0,
+                                             properties: if args.flags & fs::REPLACE_PROPERTIES!=0 {
+                                                 Some(fs::FileProperties::decode(args.payload).map_err(|_|Cause::Invalid)?)
+                                             }else {None} })
                     .await?;
                 let count = self.project_node(args.volume,
                                               self.pending_node(args.volume, args.token)?)?
@@ -179,6 +268,32 @@ impl<R: Rpc> Filesystem<R>
                                 .map_err(|_| Cause::Invalid)?;
                 out.truncate(count);
                 Ok(out)
+            }
+            Operation::Remove =>
+            {
+                let mut out = buffer(4 + fs::MAX_METADATA_BYTES)?;
+                self.begin_remove(args.volume, args.node, args.token, args.when).await?;
+                let count = self.project_node(args.volume,
+                                              self.pending_node(args.volume, args.token)?)?
+                                .encode(&mut out[4..])
+                                .map_err(|_| Cause::Invalid)?;
+                out[..4].copy_from_slice(&1u32.to_le_bytes());
+                out.truncate(4 + count);
+                Ok(out)
+            }
+            Operation::ReadWrite =>
+            {
+                self.read_write(args.volume,
+                                args.token,
+                                match args.flags
+                                {
+                                    fs::DATA_FORK => mac_fork_file::Fork::Data,
+                                    fs::RESOURCE_FORK => mac_fork_file::Fork::Resource,
+                                    _ => return Err(Cause::Invalid.into())
+                                },
+                                args.offset,
+                                usize::try_from(args.length).map_err(|_| Cause::Invalid)?)
+                    .await
             }
             Operation::WriteChunk =>
             {
@@ -196,18 +311,38 @@ impl<R: Rpc> Filesystem<R>
             }
             Operation::FinishWrite =>
             {
-                let mut out = buffer(fs::MAX_WRITE_RECEIPT_BYTES)?;
+                let removing = self.removing(args.volume, args.token)?;
+                let mut out =
+                    buffer(fs::MAX_WRITE_RECEIPT_BYTES.max(fs::MAX_REMOVAL_RECEIPT_BYTES))?;
                 let node = self.finish_write(args.volume, args.token).await?;
-                let count = self.encode_receipt(args.volume, node, &mut out)?;
+                let count = if removing
+                {
+                    fs::RemovalReceipt { removed: true, volume: self.mount_descriptor(args.volume)? }
+                        .encode(&mut out).map_err(|_| Cause::Invalid)?
+                }
+                else
+                {
+                    self.encode_receipt(args.volume, node, &mut out)?
+                };
                 out.truncate(count);
                 Ok(out)
             }
             Operation::AbortWrite =>
             {
-                let mut out = buffer(fs::MAX_ABORT_RECEIPT_BYTES)?;
+                let removing = self.removing(args.volume, args.token)?;
+                let mut out =
+                    buffer(fs::MAX_ABORT_RECEIPT_BYTES.max(fs::MAX_REMOVAL_RECEIPT_BYTES))?;
                 let node = self.write_node(args.volume, args.token).ok_or(Cause::NotFound)?;
                 let published = self.abort_write(args.volume, args.token).await?;
-                let count = self.encode_abort_receipt(args.volume, node, published, &mut out)?;
+                let count = if removing
+                {
+                    fs::RemovalReceipt { removed: published, volume: self.mount_descriptor(args.volume)? }
+                        .encode(&mut out).map_err(|_| Cause::Invalid)?
+                }
+                else
+                {
+                    self.encode_abort_receipt(args.volume, node, published, &mut out)?
+                };
                 out.truncate(count);
                 Ok(out)
             }
@@ -225,7 +360,6 @@ impl<R: Rpc> Filesystem<R>
                 out[1..].copy_from_slice(&revision);
                 Ok(out)
             }
-            _ => Err(Cause::Unsupported.into())
         }
     }
 
@@ -270,7 +404,7 @@ impl<R: Rpc> Filesystem<R>
                 Arguments { token: a.token,
                             ..node }
             }
-            Operation::Read =>
+            Operation::Read | Operation::ReadWrite =>
             {
                 Arguments { flags: a.flags,
                             offset: a.offset,
@@ -278,6 +412,13 @@ impl<R: Rpc> Filesystem<R>
                             ..token }
             }
             Operation::Close | Operation::FinishWrite | Operation::AbortWrite => token,
+            Operation::StepIconMoves | Operation::AbortIconMoves => token,
+            Operation::BeginIconMoves =>
+            {
+                Arguments { when: a.when,
+                            payload: a.payload,
+                            ..token }
+            }
             Operation::BeginCreate =>
             {
                 if a.flags & !fs::CREATE_DIRECTORY != 0
@@ -292,13 +433,46 @@ impl<R: Rpc> Filesystem<R>
                             payload: a.payload,
                             ..token }
             }
+            Operation::Remove =>
+            {
+                Arguments { token: a.token,
+                            when: a.when,
+                            ..node }
+            }
+            Operation::Rename =>
+            {
+                Arguments { token: a.token,
+                            when: a.when,
+                            payload: a.payload,
+                            ..node }
+            }
+            Operation::Move =>
+            {
+                Arguments { token: a.token,
+                            when: a.when,
+                            parent: a.parent,
+                            ..node }
+            }
+            Operation::SetMetadata =>
+            {
+                Arguments { token: a.token,
+                            when: a.when,
+                            payload: a.payload,
+                            ..node }
+            }
             Operation::BeginReplace =>
             {
+                if a.flags & !(fs::PRESERVE_RESOURCE_FORK | fs::REPLACE_PROPERTIES) != 0
+                   || (a.flags & fs::REPLACE_PROPERTIES == 0 && !a.payload.is_empty())
+                {
+                    return Err(Cause::Invalid.into());
+                }
                 Arguments { node: a.node,
                             flags: a.flags,
                             length: a.length,
                             auxiliary: a.auxiliary,
                             when: a.when,
+                            payload: a.payload,
                             ..token }
             }
             Operation::WriteChunk =>
@@ -307,11 +481,10 @@ impl<R: Rpc> Filesystem<R>
                             payload: a.payload,
                             ..token }
             }
-            _ => return Err(Cause::Unsupported.into())
         };
         if a != accepted
            || op == Operation::BeginReplace
-              && (a.flags & !fs::PRESERVE_RESOURCE_FORK != 0
+              && (a.flags & !(fs::PRESERVE_RESOURCE_FORK | fs::REPLACE_PROPERTIES) != 0
                   || a.flags & fs::PRESERVE_RESOURCE_FORK != 0 && a.auxiliary != 0)
            || matches!(op, Operation::Catalog | Operation::Lookup)
               && a.flags & !fs::INCLUDE_CHILD_COUNT != 0
@@ -322,14 +495,24 @@ impl<R: Rpc> Filesystem<R>
                        | Operation::Close
                        | Operation::BeginCreate
                        | Operation::BeginReplace
+                       | Operation::SetMetadata
+                       | Operation::Rename
+                       | Operation::Remove
+                       | Operation::Move
                        | Operation::WriteChunk
                        | Operation::FinishWrite
                        | Operation::AbortWrite)
               && a.token == 0
-           || matches!(op, Operation::Catalog | Operation::Open | Operation::BeginReplace)
+           || matches!(op,
+                       Operation::Catalog
+                       | Operation::Open
+                       | Operation::BeginReplace
+                       | Operation::SetMetadata
+                       | Operation::Remove)
               && a.node < 2
            || matches!(op, Operation::Scan | Operation::Lookup | Operation::BeginCreate)
               && a.parent < 2
+           || op == Operation::Move && a.parent < 2
            || op == Operation::Read && a.length > fs::MAX_TRANSFER as u64
         {
             return Err(Cause::Invalid.into());
@@ -427,11 +610,19 @@ impl<R: Rpc> Filesystem<R>
     pub(crate) fn encode_receipt(&self, volume: u32, node: u32, output: &mut [u8])
                                  -> Result<usize>
     {
-        fs::WriteReceipt { file:   self.project(volume, node)?,
-                           volume: self.mount_descriptor(volume)? }.encode(output)
-                                                                   .map_err(|_| {
-                                                                       Cause::Invalid.into()
-                                                                   })
+        let receipt = fs::WriteReceipt { file:   self.project(volume, node)?,
+                                         volume: self.mount_descriptor(volume)? };
+        if node == 2 {fs::MetadataReceipt(receipt).encode(output)} else {receipt.encode(output)}.map_err(|_| Cause::Invalid.into())
+    }
+
+    pub(crate) fn encode_removal_receipt(&self, volume: u32, removed: bool, output: &mut [u8])
+                                         -> Result<usize>
+    {
+        fs::RemovalReceipt { removed,
+                             volume: self.mount_descriptor(volume)? }.encode(output)
+                                                                     .map_err(|_| {
+                                                                         Cause::Invalid.into()
+                                                                     })
     }
 
     pub(crate) fn encode_abort_receipt(&self, volume: u32, node: u32, published: bool,
@@ -447,7 +638,14 @@ impl<R: Rpc> Filesystem<R>
         {
             None
         };
-        fs::AbortReceipt(receipt).encode(output).map_err(|_| Cause::Invalid.into())
+        if node == 2
+        {
+            fs::MetadataAbortReceipt(receipt).encode(output)
+        }
+        else
+        {
+            fs::AbortReceipt(receipt).encode(output)
+        }.map_err(|_| Cause::Invalid.into())
     }
 
     fn encode_node(&self, volume: u32, id: u32) -> Result<Vec<u8>>

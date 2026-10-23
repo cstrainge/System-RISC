@@ -8,10 +8,9 @@ fn native_trash<D: WritableBlockDevice>(v: &mut mac_hfs_b::Volume<'_, D>, create
         Ok(_) => Err(MutationError::Exists),
         Err(mac_hfs_b::Error::NotFound) if create =>
         {
-            let e = v.create(2, "Trash", true, Timestamp(when)).map_err(mutation_error)?;
-            let mut info = e.finder_info;
+            let mut info = [0; 32];
             info[8..10].copy_from_slice(&0x1000u16.to_be_bytes());
-            v.set_metadata(e.id, e.flags, info, e.created, e.modified, e.backup, Timestamp(when))
+            v.create_with_finder_info(2, "Trash", true, info, Timestamp(when))
              .map_err(mutation_error)
         }
         Err(e) => Err(mutation_error(e))

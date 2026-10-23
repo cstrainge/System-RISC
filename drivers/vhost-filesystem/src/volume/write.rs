@@ -1,6 +1,8 @@
 //! Bounded two-fork staging. Catalog IDs are reserved durably before publication;
 //! a root writer lease serializes case-folded name checks and final publication.
 use super::*;
+mod metadata;
+mod identity;
 
 pub struct Create<'a>
 {
@@ -12,7 +14,7 @@ pub struct Create<'a>
     pub resource_length: u64,
     pub when:            u64
 }
-pub struct Replace
+pub struct Replace<'a>
 {
     pub volume:             u32,
     pub node:               u32,
@@ -20,31 +22,42 @@ pub struct Replace
     pub data_length:        u64,
     pub resource_length:    u64,
     pub when:               u64,
-    pub preserve_resources: bool
+    pub preserve_resources: bool,
+    pub properties:         Option<mac_filesystem_interface::FileProperties<'a>>
 }
 pub(super) struct Pending
 {
-    pub(super) volume: u32,
-    parent:            u32,
-    parent_handle:     u32,
-    stage:             u32,
-    expected:          u32,
-    lock:              u32,
-    cnid:              u32,
-    node:              Option<Node>,
-    header:            [u8; forks::HEADER_BYTES],
-    data_chunks:       u64,
-    resource_chunks:   u64,
-    header_written:    bool,
-    flushed:           bool,
-    published:         bool,
-    aborting:          bool,
-    replacing:         bool,
-    revision_updated:  bool,
-    parent_updated:    bool,
-    volume_updated:    bool,
-    when:              u64,
-    locked:            bool
+    pub(super) volume:             u32,
+    pub(super) removing:           bool,
+    pub(super) rename:             Option<super::namespace::Rename>,
+    pub(super) parent:             u32,
+    pub(super) parent_handle:      u32,
+    pub(super) stage:              u32,
+    pub(super) expected:           u32,
+    pub(super) lock:               u32,
+    pub(super) cnid:               u32,
+    pub(super) node:               Option<Node>,
+    pub(super) header:             [u8; forks::HEADER_BYTES],
+    pub(super) data_chunks:        u64,
+    pub(super) resource_chunks:    u64,
+    pub(super) header_written:     bool,
+    pub(super) flushed:            bool,
+    pub(super) published:          bool,
+    pub(super) identity_bound:     bool,
+    pub(super) previous_object:    Option<wire::ObjectIdentity>,
+    pub(super) aborting:           bool,
+    pub(super) replacing:          bool,
+    pub(super) revision_updated:   bool,
+    pub(super) parent_updated:     bool,
+    pub(super) volume_updated:     bool,
+    pub(super) when:               u64,
+    pub(super) locked:             bool,
+    pub(super) metadata_name:      Option<Vec<u8>>,
+    pub(super) source_guard:       u32,
+    pub(super) root_metadata:      Option<Metadata>,
+    pub(super) revision_directory: Option<u32>,
+    pub(super) notification:       Option<u32>,
+    pub(super) notified:           bool
 }
 impl Pending
 {
@@ -55,7 +68,7 @@ impl Pending
 
     pub(super) fn references(&self, id: u32) -> bool
     {
-        self.stage == id || self.expected == id || self.lock == id
+        self.stage == id || self.expected == id || self.lock == id || self.source_guard == id
     }
 }
 impl<R: Rpc> Filesystem<R>
@@ -64,6 +77,8 @@ impl<R: Rpc> Filesystem<R>
     {
         self.writes.entries.iter().any(|(_, p)| {
                                       p.volume == volume
+                                      && !p.replacing
+                                      && !p.removing
                                       && p.node.as_ref().is_some_and(|n| {
                                                             n.metadata.catalog_id == node
                                                             && n.metadata.kind == Kind::Directory
@@ -82,7 +97,7 @@ impl<R: Rpc> Filesystem<R>
         pending.node.as_ref().ok_or(Cause::Busy.into())
     }
 
-    fn writable(&self, volume: u32) -> Result<()>
+    pub(super) fn writable(&self, volume: u32) -> Result<()>
     {
         let mount = self.mounts.get(volume).ok_or(Cause::NotFound)?;
         if mount.info.read_only
@@ -100,8 +115,16 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    async fn writer_lock(&mut self, volume: u32) -> Result<u32>
+    pub(super) async fn writer_lock(&mut self, volume: u32) -> Result<u32>
     {
+        if let Some((owner, lock)) = self.batch_lock
+        {
+            return if owner == volume { Ok(lock) } else { Err(Cause::Busy.into()) };
+        }
+        if self.group_busy(volume)
+        {
+            return Err(Cause::Busy.into());
+        }
         self.owner = volume;
         let mount = self.mounts.get(volume).ok_or(Cause::NotFound)?;
         if mount.ejecting
@@ -131,15 +154,19 @@ impl<R: Rpc> Filesystem<R>
         Ok(lock)
     }
 
-    async fn release_writer(&mut self, lock: u32) -> Result<()>
+    pub(super) async fn release_writer(&mut self, lock: u32) -> Result<()>
     {
+        if self.batch_lock.is_some_and(|(_, held)| held == lock)
+        {
+            return Ok(());
+        }
         let result = self.call(Op::Unlock, lock, 0, 0, &[]).await.map(|_| ());
         self.cleanup(lock, result).await
     }
 
-    async fn publish_record(&mut self, parent: u32, name: &[u8], expected: u32,
-                            metadata: &Metadata)
-                            -> Result<()>
+    pub(super) async fn publish_record(&mut self, parent: u32, name: &[u8], expected: u32,
+                                       metadata: &Metadata)
+                                       -> Result<()>
     {
         let (mut bytes, layout) = forks::encode_metadata(metadata, 0, 0)?;
         let header: [u8; forks::HEADER_BYTES] = bytes[..forks::HEADER_BYTES].try_into().unwrap();
@@ -164,7 +191,8 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    async fn update_root(&mut self, volume: u32, when: Option<u64>, reserve: bool) -> Result<u32>
+    pub(super) async fn update_root(&mut self, volume: u32, when: Option<u64>, reserve: u32)
+                                    -> Result<u32>
     {
         let mount = self.mounts.get(volume).ok_or(Cause::NotFound)?;
         let root = mount.root;
@@ -178,10 +206,12 @@ impl<R: Rpc> Filesystem<R>
                 }
                 let mut metadata = node.metadata;
                 let id = metadata.next_catalog_id;
-                let already = !reserve && when == Some(metadata.modified);
-                if reserve
+                let already = reserve == 0 && when == Some(metadata.modified);
+                if reserve != 0
                 {
-                    metadata.next_catalog_id = id.checked_add(1).ok_or(Cause::NoMemory)?;
+                    metadata.next_catalog_id = id.checked_add(reserve)
+                                                 .filter(|n| *n < 0x8000_0000)
+                                                 .ok_or(Cause::NoMemory)?;
                 }
                 if !already
                 {
@@ -212,14 +242,29 @@ impl<R: Rpc> Filesystem<R>
     }
 
     async fn stage_file(&mut self, volume: u32, parent: u32, lock: u32, expected: u32, node: Node,
-                        replacing: bool)
+                        replacing: bool, when: u64)
                         -> Result<Pending>
     {
+        self.mounts
+            .get_mut(volume)
+            .ok_or(Cause::NotFound)?
+            .bindings
+            .try_reserve(1)
+            .map_err(|_| Cause::NoMemory)?;
         let parent_handle = self.mounts
                                 .get(volume)
                                 .and_then(|mount| mount.directories.get(parent))
                                 .ok_or(Cause::NotFound)?
                                 .handle;
+        let previous_object = if expected != 0
+        {
+            let described = self.call(Op::DescribeObject, expected, 0, 0, &[]).await?;
+            wire::Description::decode(&described.body).map_err(|_| Cause::Invalid)?.identity
+        }
+        else
+        {
+            None
+        };
         let (mut bytes, layout) = forks::encode_metadata(&node.metadata, node.layout.data.length,
                                                          node.layout.resources.length)?;
         let header = bytes[..forks::HEADER_BYTES].try_into().unwrap();
@@ -239,16 +284,29 @@ impl<R: Rpc> Filesystem<R>
             return self.cleanup(stage, Err(error)).await;
         }
         let cnid = node.metadata.catalog_id;
-        let when = node.metadata.modified;
-        let revision = self.directory_revision(parent_handle).await?;
+        let revision = match self.directory_revision(parent_handle).await
+        {
+            Ok(revision) => revision,
+            Err(error) => return self.cleanup(stage, Err(error)).await
+        };
         self.mounts.get_mut(volume).unwrap().directories.get_mut(parent).unwrap().revision =
             Some(revision);
+        let identity_bound = false;
         Ok(Pending { volume,
+                     removing: false,
+                     rename: None,
                      parent,
                      parent_handle,
                      stage,
                      expected,
-                     lock,
+                     lock: if self.batch_lock.is_some_and(|(_, held)| held == lock)
+                     {
+                         0
+                     }
+                     else
+                     {
+                         lock
+                     },
                      cnid,
                      node: Some(node),
                      header,
@@ -257,13 +315,21 @@ impl<R: Rpc> Filesystem<R>
                      header_written: false,
                      flushed: false,
                      published: false,
+                     identity_bound,
+                     previous_object,
                      aborting: false,
                      replacing,
                      revision_updated: false,
                      parent_updated: false,
                      volume_updated: false,
                      when,
-                     locked: true })
+                     locked: true,
+                     metadata_name: None,
+                     source_guard: 0,
+                     root_metadata: None,
+                     revision_directory: Some(parent),
+                     notification: None,
+                     notified: true })
     }
 
     pub async fn begin_create(&mut self, request: Create<'_>) -> Result<u32>
@@ -335,7 +401,7 @@ impl<R: Rpc> Filesystem<R>
                 }
                 // Reserving an identity is durable bookkeeping, not a visible
                 // catalog publication. An aborted create must not change dates.
-                let id = self.update_root(volume, None, true).await?;
+                let id = self.update_root(volume, None, 1).await?;
                 metadata.catalog_id = id;
                 metadata.identity = forks::catalog_identity(metadata.volume, id)?;
                 let node = Node { parent,
@@ -345,7 +411,7 @@ impl<R: Rpc> Filesystem<R>
                                   metadata,
                                   layout,
                                   key };
-                self.stage_file(volume, parent, lock, 0, node, false).await
+                self.stage_file(volume, parent, lock, 0, node, false, when).await
             }.await;
         let mut pending = match result
         {
@@ -367,7 +433,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(id)
     }
 
-    pub async fn begin_replace(&mut self, request: Replace) -> Result<()>
+    pub async fn begin_replace(&mut self, request: Replace<'_>) -> Result<()>
     {
         if request.preserve_resources && request.resource_length != 0
         {
@@ -380,7 +446,12 @@ impl<R: Rpc> Filesystem<R>
                       data_length,
                       resource_length,
                       when,
-                      preserve_resources } = request;
+                      preserve_resources,
+                      properties } = request;
+        if let Some(properties) = properties
+        {
+            properties.validate().map_err(|_| Cause::Invalid)?;
+        }
         self.writes.reserve(token)?;
         if self.is_open(volume, node)
         {
@@ -397,9 +468,8 @@ impl<R: Rpc> Filesystem<R>
         }
         if cached.metadata.attributes & 1 != 0
         {
-            return Err(Cause::ReadOnly.into());
+            return Err(Cause::Protected.into());
         }
-        let layout = Layout::new(&cached.metadata, data_length, resource_length)?;
         let mut name = buffer(cached.host_name.len())?;
         name.copy_from_slice(&cached.host_name);
         let parent_handle = self.mounts
@@ -412,22 +482,60 @@ impl<R: Rpc> Filesystem<R>
         let lock = self.writer_lock(volume).await?;
         let result =
             async {
-                let (expected, current) = self.open_record(parent_handle, &name).await?;
+                let (expected, current) = if cached.plain
+                {
+                    self.open_plain(volume, parent_handle, &name).await?
+                }
+                else
+                {
+                    self.open_file_record(volume, parent_handle, &name).await?
+                };
                 if current.metadata != cached.metadata || current.layout != cached.layout
                 {
                     return self.cleanup(expected, Err(Cause::Stale.into())).await;
                 }
-                let mut metadata = current.metadata;
-                metadata.modified = when;
-                metadata.revision = metadata.revision.checked_add(1).ok_or(Cause::NoMemory)?;
-                let node = Node { parent: cached.parent,
-                                  host_name: cached.host_name,
-                                  plain: false,
-                                  source: None,
-                                  metadata,
-                                  layout,
-                                  key: cached.key };
-                match self.stage_file(volume, node.parent, lock, expected, node, true).await
+                let prepared: Result<Node> = (|| {
+                    let mut metadata = current.metadata;
+                    if let Some(properties) = properties
+                    {
+                        if mac_hfs_b::names::normalize(properties.name).map_err(|_| {
+                                                                           Cause::InvalidName
+                                                                       })?
+                           != metadata.name
+                        {
+                            return Err(Cause::Stale.into());
+                        }
+                        metadata.created = properties.created;
+                        metadata.modified = properties.modified;
+                        metadata.backup = properties.backup;
+                        metadata.attributes = properties.attributes;
+                        metadata.finder_info = properties.finder_info;
+                        metadata.comment.clear();
+                        metadata.comment
+                                .try_reserve_exact(properties.comment.len())
+                                .map_err(|_| Cause::NoMemory)?;
+                        metadata.comment.push_str(properties.comment);
+                    }
+                    else
+                    {
+                        metadata.modified = when;
+                    }
+                    metadata.revision = metadata.revision.checked_add(1).ok_or(Cause::NoMemory)?;
+                    let layout = Layout::new(&metadata, data_length, resource_length)?;
+                    Ok(Node { parent: cached.parent,
+                              host_name: cached.host_name,
+                              plain: false,
+                              source: None,
+                              metadata,
+                              layout,
+                              key: cached.key })
+                })();
+                let node = match prepared
+                {
+                    Ok(node) => node,
+                    Err(error) => return self.cleanup(expected, Err(error)).await
+                };
+                match self.stage_file(volume, node.parent, lock, expected, node, true, when).await
                 {
                     Ok(pending) => Ok(pending),
                     Err(error) => self.cleanup(expected, Err(error)).await
@@ -453,6 +561,61 @@ impl<R: Rpc> Filesystem<R>
             self.copy_resource(volume, token, original_resources).await?;
         }
         Ok(())
+    }
+
+    pub async fn read_write(&mut self, volume: u32, token: u32, kind: Fork, offset: u64,
+                            capacity: usize)
+                            -> Result<Vec<u8>>
+    {
+        if capacity > mac_filesystem_interface::MAX_TRANSFER
+        {
+            return Err(Cause::Invalid.into());
+        }
+        let pending =
+            self.writes.get(token).filter(|p| p.volume == volume).ok_or(Cause::NotFound)?;
+        if pending.published
+           || pending.aborting
+           || pending.metadata_name.is_some()
+           || pending.rename.is_some()
+        {
+            return Err(Cause::Busy.into());
+        }
+        let layout = pending.node.as_ref().ok_or(Cause::Invalid)?.layout.fork(kind);
+        let chunks = if kind == Fork::Data { pending.data_chunks } else { pending.resource_chunks };
+        let written = if chunks == layout.chunks
+        {
+            layout.length
+        }
+        else
+        {
+            chunks.checked_mul(forks::CHUNK_BYTES as u64).ok_or(Cause::Invalid)?
+        };
+        if offset > written
+        {
+            return Err(Cause::Invalid.into());
+        }
+        let count = (written - offset).min(capacity as u64) as usize;
+        let stage = pending.stage;
+        let mut output = buffer(count)?;
+        let mut done = 0;
+        while done < count
+        {
+            let logical = offset + done as u64;
+            let (at, size, _) = layout.chunk(logical / forks::CHUNK_BYTES as u64)?;
+            let bytes = self.call(Op::ReadWrite,
+                                  stage,
+                                  at,
+                                  (size + forks::HASH_BYTES as usize) as u32,
+                                  &[])
+                            .await?;
+            let verified = forks::decode_chunk(&bytes.body, size)?;
+            let within = (logical % forks::CHUNK_BYTES as u64) as usize;
+            let take = (size - within).min(count - done);
+            output[done..done + take].copy_from_slice(&verified[within..within + take]);
+            done += take;
+            yield_once().await;
+        }
+        Ok(output)
     }
 
     async fn copy_resource(&mut self, volume: u32, token: u32, source: forks::ForkLayout)
@@ -536,6 +699,10 @@ impl<R: Rpc> Filesystem<R>
         {
             return Err(Cause::Invalid.into());
         }
+        if pending.metadata_name.is_some()
+        {
+            return Err(Cause::Invalid.into());
+        }
         let fork = pending.node.as_ref().unwrap().layout.fork(kind);
         let index = match kind
         {
@@ -556,7 +723,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    async fn update_volume_after_publication(&mut self, token: u32) -> Result<()>
+    pub(super) async fn update_volume_after_publication(&mut self, token: u32) -> Result<()>
     {
         let pending = self.writes.get(token).ok_or(Cause::NotFound)?;
         if pending.volume_updated
@@ -566,13 +733,13 @@ impl<R: Rpc> Filesystem<R>
         let (volume, when) = (pending.volume, pending.when);
         if self.info(volume)?.metadata.modified != when
         {
-            self.update_root(volume, Some(when), false).await?;
+            self.update_root(volume, Some(when), 0).await?;
         }
         self.writes.get_mut(token).unwrap().volume_updated = true;
         Ok(())
     }
 
-    async fn update_parent_after_create(&mut self, token: u32) -> Result<()>
+    pub(super) async fn update_parent_after_create(&mut self, token: u32) -> Result<()>
     {
         let pending = self.writes.get(token).unwrap();
         if pending.parent_updated
@@ -584,81 +751,104 @@ impl<R: Rpc> Filesystem<R>
             self.writes.get_mut(token).unwrap().parent_updated = true;
             return Ok(());
         }
-        let (volume, parent, handle, when) =
-            (pending.volume, pending.parent, pending.parent_handle, pending.when);
-        let parent_node = self.cached_node(volume, parent)?;
-        if parent_node.plain
-        {
-            let mut physical = buffer(parent_node.host_name.len())?;
-            physical.copy_from_slice(&parent_node.host_name);
-            let ancestor = self.mounts
-                               .get(volume)
-                               .unwrap()
-                               .directories
-                               .get(parent_node.parent)
-                               .ok_or(Cause::NotFound)?
-                               .handle;
-            let observed = self.plain_node(volume, ancestor, &physical).await?;
-            if observed.metadata.catalog_id != parent
-            {
-                return Err(Cause::Stale.into());
-            }
-            let cached = self.mounts.get_mut(volume).unwrap().nodes.get_mut(parent).unwrap();
-            cached.metadata = observed.metadata;
-            cached.source = observed.source;
-            self.writes.get_mut(token).unwrap().parent_updated = true;
-            return Ok(());
-        }
-        let cached = self.cached_node(volume, parent)?.metadata.try_clone()?;
-        let mut desired = cached.try_clone()?;
-        desired.modified = when;
-        desired.revision = desired.revision.checked_add(1).ok_or(Cause::NoMemory)?;
-        let (old, mut actual) =
-            self.open_record(handle, forks::DIRECTORY_RECORD.as_bytes()).await?;
-        actual.metadata.name.clear();
-        actual.metadata.name.try_reserve_exact(cached.name.len()).map_err(|_| Cause::NoMemory)?;
-        actual.metadata.name.push_str(&cached.name);
-        let result =
-            async {
-                if actual.metadata == desired
-                {
-                    // A previous publication may have succeeded before directory
-                    // durability failed. Reassert durability without republishing.
-                    self.call(Op::SyncDirectory, handle, 0, 0, &[]).await?;
-                }
-                else if actual.metadata == cached
-                {
-                    self.publish_record(handle, forks::DIRECTORY_RECORD.as_bytes(), old, &desired)
-                        .await?;
-                }
-                else
-                {
-                    return Err(Cause::Stale.into());
-                }
-                Ok(desired)
-            }.await;
-        let desired = self.cleanup(old, result).await?;
-        self.mounts.get_mut(volume).unwrap().nodes.get_mut(parent).unwrap().metadata = desired;
+        let (volume, parent, when) = (pending.volume, pending.parent, pending.when);
+        self.stamp_directory(volume, parent, when).await?;
         self.writes.get_mut(token).unwrap().parent_updated = true;
         Ok(())
     }
 
-    async fn cleanup_write(&mut self, token: u32) -> Result<()>
+    pub(super) async fn stamp_directory(&mut self, volume: u32, parent: u32, when: u64)
+                                        -> Result<()>
     {
-        for which in 0..3
+        if parent == ROOT
+        {
+            return Ok(());
+        }
+        self.refresh_plain_directory(volume, parent).await?;
+        let cached = self.cached_node(volume, parent)?.metadata.try_clone()?;
+        let mut desired = cached.try_clone()?;
+        desired.modified = when;
+        if desired.modified != cached.modified
+        {
+            use forks::annotation::Annotation;
+            use mac_filesystem_interface::MetadataPatch;
+            let source = self.cached_node(volume, parent)?
+                             .source
+                             .and_then(|s| s.identity)
+                             .ok_or(Cause::Unsupported)?;
+            let before = self.annotation(volume, source).await?.ok_or(Cause::Invalid)?;
+            let old = Annotation::decode(&before)?;
+            let patch = old.patch
+                           .merged(MetadataPatch { modified: Some(when),
+                                                   ..Default::default() })
+                           .map_err(|_| Cause::Invalid)?;
+            let record =
+                Annotation { revision: old.revision.checked_add(1).ok_or(Cause::NoMemory)?,
+                             patch,
+                             ..old };
+            let mut after = [0; forks::annotation::BYTES];
+            record.encode(&mut after)?;
+            desired.revision = desired.revision.checked_add(1).ok_or(Cause::NoMemory)?;
+            self.publish_annotation_locked(volume, source, &before, &after).await?;
+            self.mounts.get_mut(volume).unwrap().nodes.get_mut(parent).unwrap().metadata = desired;
+        }
+        Ok(())
+    }
+
+    /// Namespace changes update physical host directory dates/revisions. Refresh
+    /// that directory's pinned projection before a subsequent metadata edit;
+    /// never mistake our own rename for an unrelated host rewrite.
+    pub(super) async fn refresh_plain_directory(&mut self, volume: u32, id: u32) -> Result<()>
+    {
+        let node = self.cached_node(volume, id)?;
+        if node.metadata.kind != Kind::Directory
+        {
+            return Ok(());
+        }
+        let mut name = buffer(node.host_name.len())?;
+        name.copy_from_slice(&node.host_name);
+        let parent = self.mounts
+                         .get(volume)
+                         .ok_or(Cause::NotFound)?
+                         .directories
+                         .get(node.parent)
+                         .ok_or(Cause::NotFound)?
+                         .handle;
+        let directory =
+            self.mounts.get(volume).unwrap().directories.get(id).ok_or(Cause::NotFound)?.handle;
+        let observed = self.directory_node(volume, parent, &name, directory).await?;
+        if observed.metadata.catalog_id != id
+        {
+            return Err(Cause::Stale.into());
+        }
+        let cached = self.mounts
+                         .get_mut(volume)
+                         .ok_or(Cause::NotFound)?
+                         .nodes
+                         .get_mut(id)
+                         .ok_or(Cause::NotFound)?;
+        cached.metadata = observed.metadata;
+        cached.source = observed.source;
+        Ok(())
+    }
+
+    pub(super) async fn cleanup_write(&mut self, token: u32) -> Result<()>
+    {
+        for which in 0..4
         {
             let pending = self.writes.get(token).ok_or(Cause::NotFound)?;
             let handle = match which
             {
                 0 => pending.stage,
                 1 => pending.expected,
+                2 => pending.source_guard,
                 _ => pending.lock
             };
             if handle == 0
             {
                 continue;
             }
-            if which == 2 && pending.locked
+            if which == 3 && pending.locked
             {
                 self.call(Op::Unlock, handle, 0, 0, &[]).await?;
                 self.writes.get_mut(token).unwrap().locked = false;
@@ -669,12 +859,13 @@ impl<R: Rpc> Filesystem<R>
             {
                 0 => pending.stage = 0,
                 1 => pending.expected = 0,
+                2 => pending.source_guard = 0,
                 _ => pending.lock = 0
             }
-            if which == 0
+            if which == 0 && pending.revision_directory.is_some()
             {
                 let (volume, parent, parent_handle) =
-                    (pending.volume, pending.parent, pending.parent_handle);
+                    (pending.volume, pending.revision_directory.unwrap(), pending.parent_handle);
                 let revision = self.directory_revision(parent_handle).await?;
                 self.mounts
                     .get_mut(volume)
@@ -701,18 +892,42 @@ impl<R: Rpc> Filesystem<R>
         {
             return Err(Cause::Invalid.into());
         }
+        if pending.removing
+        {
+            return self.finish_remove(volume, token).await;
+        }
+        if pending.rename.is_some()
+        {
+            return self.finish_rename(volume, token).await;
+        }
         if !pending.published
         {
-            if self.is_open(volume, pending.cnid)
+            if pending.metadata_name.is_none() && self.is_open(volume, pending.cnid)
             {
                 return Err(Cause::Busy.into());
             }
             let layout = pending.node.as_ref().unwrap().layout;
-            if pending.data_chunks != layout.data.chunks
-               || pending.resource_chunks != layout.resources.chunks
+            if pending.metadata_name.is_none()
+               && (pending.data_chunks != layout.data.chunks
+                   || pending.resource_chunks != layout.resources.chunks)
             {
                 return Err(forks::Error::Incomplete.into());
             }
+            if pending.source_guard != 0
+            {
+                let (guard, expected) =
+                    (pending.source_guard, pending.node.as_ref().and_then(|node| node.source));
+                let reply = self.call(Op::DescribeObject, guard, 0, 0, &[]).await?;
+                let current = wire::Description::decode(&reply.body).map_err(|_| Cause::Invalid)?;
+                if expected.is_some_and(|source| {
+                               source.identity != current.identity
+                               || source.revision != current.revision
+                           })
+                {
+                    return Err(Cause::Stale.into());
+                }
+            }
+            let pending = self.writes.get(token).unwrap();
             let (stage, header, written, flushed) =
                 (pending.stage, pending.header, pending.header_written, pending.flushed);
             if !written
@@ -727,9 +942,11 @@ impl<R: Rpc> Filesystem<R>
             }
             let pending = self.writes.get(token).unwrap();
             let node = pending.node.as_ref().unwrap();
-            let is_directory = node.metadata.kind == Kind::Directory;
-            let mut name = buffer(node.host_name.len())?;
-            name.copy_from_slice(&node.host_name);
+            let is_directory =
+                pending.metadata_name.is_none() && node.metadata.kind == Kind::Directory;
+            let physical = pending.metadata_name.as_deref().unwrap_or(&node.host_name);
+            let mut name = buffer(physical.len())?;
+            name.copy_from_slice(physical);
             let (parent, expected, replacing) =
                 (pending.parent, pending.expected, pending.replacing);
             let mount = self.mounts.get_mut(volume).unwrap();
@@ -765,6 +982,7 @@ impl<R: Rpc> Filesystem<R>
             pending.published = true;
             pending.stage = 0;
             let node = pending.node.take().unwrap();
+            let root_metadata = pending.root_metadata.take();
             let id = node.metadata.catalog_id;
             let mount = self.mounts.get_mut(volume).unwrap();
             if is_directory
@@ -775,6 +993,10 @@ impl<R: Rpc> Filesystem<R>
             }
             if replacing
             {
+                if let Some(metadata) = root_metadata
+                {
+                    mount.info.metadata = metadata;
+                }
                 *mount.nodes.get_mut(id).ok_or(Cause::Stale)? = node;
             }
             else
@@ -792,15 +1014,43 @@ impl<R: Rpc> Filesystem<R>
                 directory.by_name.insert(name_at, id);
             }
         }
+        self.bind_file_publication(token).await?;
         self.update_volume_after_publication(token).await?;
         self.update_parent_after_create(token).await?;
         let pending = self.writes.get(token).unwrap();
+        if !pending.notified
+        {
+            if let Some(handle) = pending.notification
+            {
+                self.call(Op::NotifyDirectory, handle, 0, 0, &[]).await?;
+            }
+            self.writes.get_mut(token).unwrap().notified = true;
+        }
+        let pending = self.writes.get(token).unwrap();
         if !pending.revision_updated
         {
-            let (parent, parent_handle) = (pending.parent, pending.parent_handle);
+            let (parent, parent_handle) =
+                (pending.revision_directory.ok_or(Cause::Invalid)?, pending.parent_handle);
+            let notification =
+                pending.notification.map(|handle| (pending.parent.max(ROOT), handle));
             let revision = self.directory_revision(parent_handle).await?;
             self.mounts.get_mut(volume).unwrap().directories.get_mut(parent).unwrap().revision =
                 Some(revision);
+            // Direct directory records live inside the changed directory, but
+            // its metadata notification belongs to the containing folder. Each
+            // cache needs the stat of its own capability, never the other's.
+            if let Some((notified_parent, handle)) = notification
+               && notified_parent != parent
+            {
+                let revision = self.directory_revision(handle).await?;
+                self.mounts
+                    .get_mut(volume)
+                    .unwrap()
+                    .directories
+                    .get_mut(notified_parent)
+                    .unwrap()
+                    .revision = Some(revision);
+            }
             self.writes.get_mut(token).unwrap().revision_updated = true;
         }
         self.cleanup_write(token).await?;
@@ -812,6 +1062,14 @@ impl<R: Rpc> Filesystem<R>
     pub async fn abort_write(&mut self, volume: u32, token: u32) -> Result<bool>
     {
         self.owner = volume;
+        if self.writes.get(token).filter(|p| p.volume == volume).is_some_and(|p| p.removing)
+        {
+            return self.abort_remove(volume, token).await;
+        }
+        if self.writes.get(token).filter(|p| p.volume == volume).is_some_and(|p| p.rename.is_some())
+        {
+            return self.abort_rename(volume, token).await;
+        }
         let published = self.writes
                             .get(token)
                             .filter(|pending| pending.volume == volume)
@@ -820,6 +1078,7 @@ impl<R: Rpc> Filesystem<R>
         self.writes.get_mut(token).unwrap().aborting = true;
         if published
         {
+            self.bind_file_publication(token).await?;
             self.update_volume_after_publication(token).await?;
             self.update_parent_after_create(token).await?;
         }

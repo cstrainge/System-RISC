@@ -238,7 +238,9 @@ pub(crate) fn request(owner: u64, volume: u32, cnid: u32,
                     fork: RESOURCE_FORK,
                     capacity: 0,
                     cursor: DirectoryScanCursor::default(),
-                    resource: None };
+                    resource: None,
+                    metadata: None,
+                    when: 0 };
     if let Some(flight) = claim(owner, thread, key, "")?
     {
         return deliver(super::advance(flight));

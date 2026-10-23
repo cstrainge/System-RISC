@@ -26,8 +26,12 @@ pub const CLASSIC_FLAVOR: u32 = 20;
 pub const CLASSIC_READ: u32 = 21;
 pub const ITEM_BOUNDS: u32 = 22;
 pub const FILE_ITEMS: u32 = 24;
+/// Non-taking inline file-reference metadata during tracking.
+pub const FILE_ITEM_METADATA: u32 = 27;
 /// RAII rejection only; validates receiver ownership but permits cleanup on any thread.
 pub const ABANDON: u32 = 25;
+/// Receiver-side Stop; identical cancellation/acknowledgement policy to Escape.
+pub const CANCEL_RECEIVE: u32 = 26;
 pub const CLASSIC_COUNT: u32 = 23;
 pub const DRAFT: u32 = 6;
 pub const COPY: u32 = 1;
@@ -40,13 +44,22 @@ pub const ACCEPT_COPY: u32 = 4;
 pub const ACCEPT_MOVE: u32 = 8;
 /// Resident File Manager admission: its atomic catalog move retains a volume.
 pub const SAME_VOLUME_MOVE: u32 = 16;
+/// Presentation-only icon rearrangement. Every inline fref must already belong
+/// to (volume,parent); this never grants a filesystem mutation capability.
+pub const TARGET_ICON_LAYOUT: u32 = 32;
+/// Open documents in an application; always Copy regardless of modifiers.
+pub const TARGET_APPLICATION: u32 = 64;
+/// Eject a mounted volume; never a filesystem move into Trash.
+pub const TARGET_EJECT: u32 = 128;
 pub const FLAVOR_UNAVAILABLE: i32 = -1852;
 pub const PROMISE_FAILED: i32 = -1854;
 pub const MAX_ITEMS: usize = 1024;
 pub const MAX_FLAVORS: usize = 8;
 pub const MAX_BYTES: usize = 64 * 1024;
-/// fref: LE volume/CNID/expected parent, LE origin h/v, BE QuickDraw bounds.
-pub const FILE_ITEM_BYTES: usize = 24;
+/// fref: LE volume/CNID/expected parent, LE origin h/v, BE QuickDraw bounds,
+/// then a FourCC type snapshot and LE directory flag (0/1) for negotiation. The receiver
+/// revalidates actual identity/type before committing document delivery.
+pub const FILE_ITEM_BYTES: usize = 32;
 pub const PROMISED: u32 = 1;
 pub const ARMED: u32 = 0;
 pub const TRACKING: u32 = 2;
@@ -64,6 +77,8 @@ pub const DROP_EVENT: u32 = 0x0800_0000;
 pub const PROMISE_EVENT: u32 = 0x0900_0000;
 pub const DATA_READY_EVENT: u32 = 0x0b00_0000;
 pub const FINISHED_EVENT: u32 = 0x0a00_0000;
+/// Escape while dropping requests receiver rollback; it is not a terminal event.
+pub const CANCEL_REQUESTED_EVENT: u32 = 0x0e00_0000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]

@@ -50,7 +50,7 @@ fn fixed_little_endian_layout_and_every_truncation_are_checked()
     header.offset = 0x1020_3040_5060_7080;
     header.value = 4096;
     let bytes = header.encode().unwrap();
-    assert_eq!(&bytes[..12], b"RSHOST02\x02\x00\x30\x00");
+    assert_eq!(&bytes[..12], b"RSHOST04\x04\x00\x30\x00");
     assert_eq!(&bytes[16..24], b"\x01\x00\x01\x00\x07\x00\x00\x00");
     assert_eq!(&bytes[32..40], b"\x80\x70\x60\x50\x40\x30\x20\x10");
     assert_eq!(Header::decode(&bytes), Ok(header));

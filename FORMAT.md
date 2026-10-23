@@ -90,6 +90,36 @@ future 68k translator too; implementing that translator is outside this change.
 
 ## RLOC and native definitions
 
+Native ABI11 carries `ProgressRange` in `ControlDefinitionState`: u64 completed,
+in-progress and total counts; u32 determinate and zero-reserved fields. The CDEF
+projects these directly onto its pixel geometry using checked u128 arithmetic.
+No intermediate16-bit percentage is stored. `ControlChange` returns up to two
+rectangles for separate fill/outline changes. Native `ControlCall`/definition
+state sizes change with ABI11; rebuild System, every app and all definitions.
+The code-resource envelope remains format1, and no earlier native ABI path is
+retained. Classic68k control records/procIDs remain at their existing adapter.
+
+
+System's native controls have descriptive resource names and independent Cargo
+artifacts: CDEF0 “Buttons, Checkboxes and Radio Buttons” (`CDEF_BUTTONS`), CDEF1
+“Scroll Bar” (`CDEF_SCROLL_BAR`), CDEF-32760 “Progress Bar”
+(`CDEF_PROGRESS_BAR`), and CDEF-32759 “Static Text” (`CDEF_STATIC_TEXT`). The
+negative IDs and native-only procedure discriminators are declared in
+`mac_abi::controls`; they do not change the classic procID dispatch contract.
+Progress Bar message6 takes a borrowed `ControlChange` (before/after typed
+standard states and two output rectangles) and returns only its own changed fill
+bounds. Empty rectangles mean no pixel change. System validates that damage stays
+inside the control, and retains the new state even if no repaint is needed.
+
+Finder cpUI8751 is the76-byte, big-endian CpW1 projection of original fvew8751:
+magic4, content dimensions u16×2, procedure i16, zero u16, font family/size i16×2,
+face u16, zero u16, six top/left/bottom/right i16 rectangles, UTF-8 Stop caption
+length u8 and bytes, then zero padding. The full source-resource provenance is
+`provenance/finder-copy-window.json`. The six rectangles are remaining label,
+remaining count, operation, filename, progress and Stop, in that order. No
+native struct bytes or executable code are stored in this layout resource.
+
+
 RLOC is unchanged: `RLC1`, a little-endian u32 count, then 8-byte records containing
 little-endian u32 offset from the preferred base, u8 pointer width (4 or 8), and
 three zero bytes. Count is bounded at 65,536. Records are ordered and
@@ -151,7 +181,7 @@ unsafe extern "C" fn(*const SystemServices) -> i32
 ```
 
 An application validates the table before calling the loader-supplied trap gate.
-ABI 8's `SystemServices` is 24 bytes on RV64:
+ABI 11's `SystemServices` is 24 bytes on RV64:
 
 | Offset | Size | Field |
 | --- | --- | --- |
@@ -422,7 +452,7 @@ HFS-B writes preserve the complete microsecond value.
 Resource STRING operation10 decodes STR or zero-based STR# to UTF8; only the
 paired Pascal Resource trap returns a Pascal/MacRoman result.
 
-## Native positioned events (additive ABI8 service)
+## Native positioned events (additive native service)
 
 POSITIONED_EVENT0x10023 uses `events::PositionedEventCall` for NEXT=0, WAIT=1,
 PEEK=2, INPUT=3 and LOCATE=4. It returns the original Event plus EventPosition
@@ -484,9 +514,9 @@ object before accessing its semantic menu number; stale and foreign handles fail
 FIND resolves a current semantic menu number explicitly, and DISPOSE requires a
 live handle. CLEAR retains generation history. Native owners use these handles;
 classic semantic menu operations continue to use their original resource IDs.
-All native applications, System and definition resources rebuild at ABI 8.
+All native applications, System and definition resources rebuild at ABI 11.
 
-## Native drag transport (ABI 8)
+## Native drag transport (ABI 11)
 
 Native Event records add a u64 manager payload; the original big-endian
 16-byte EventRecord codec still excludes it. Drag notifications put the complete
@@ -495,7 +525,7 @@ high 32 bits. These IDs must never be truncated into the message field. Message
 high byte selects enter/within/leave/drop/promise/data-ready/finished; tracking
 low bits carry item count and a precomputed intersection of offered types.
 These messages are native service events, not the original Drag Manager callback
-ABI. Rebuild System and every application/definition together at ABI 8.
+ABI. Rebuild System and every application/definition together at ABI 11.
 
 Application-file lifecycle notifications use native OsEvent message prefix
 `0x0c000000` with bit 0 set while the exact file has a running instance. The
@@ -504,10 +534,12 @@ half. The resident process service sends this on launch/exit, independent of
 activation. Finder updates only matching cached icons; lifecycle changes do not
 invalidate folder windows or re-enumerate catalogs.
 
-Native `fref` flavor payloads are exactly 24 bytes: little-endian u32 volume at
+Native `fref` flavor payloads are exactly 32 bytes: little-endian u32 volume at
 0, CNID at 4, source parent CNID at 8; little-endian i16 origin h/v at 12/14;
-big-endian QuickDraw Rect at 16. Bulk item publication concatenates those records
-in one bounded request. The parent binds a drop to the captured source snapshot,
+big-endian QuickDraw Rect at 16; file-type FourCC at 24 and a checked
+little-endian u32 directory flag (0/1) at 28. A draft accepts bounded chunks
+before Begin; a failed chunk poisons that draft, so no partial selection can
+become visible. The parent binds a drop to the captured source snapshot,
 so concurrent moves fail validation instead of moving an item from an unexpected
 folder. This is distinct from the original `hfs ` HFSFlavor/FSSpec contract.
 
@@ -517,8 +549,11 @@ resident data. See [the compatibility inventory](docs/DRAG-MANAGER.md).
 
 Native ACCEPT flags are acceptance=1, Trash=2, Copy supported=4, Move supported=8.
 An accepting response must name at least one supported action. Folder/Trash
-admission also attaches same-volume-move=16 for the File Manager's current atomic
-catalog operation. Unsupported actions and read-only destinations record a
+admission uses the resident recursive transfer contract. Flag 16 is an explicit
+same-volume-only restriction; ordinary Finder folders accept copy or move.
+Application targets use flag64 with Copy only, carry exact application volume/CNID,
+and may reside on read-only media. IconLayout uses flag32 for session-only
+rearrangement within one immutable source folder. Unsupported actions and read-only destinations record a
 rejection, without a highlight or drop delivery. Modifier changes recompute
 eligibility; physical release freezes the final modifiers. Explicitly answered
 rejection is separate from an unanswered offer, so release cannot wait for an
@@ -715,7 +750,7 @@ magic `FAS1`, u16 version 1, u16 rule count (1..32), then exact 12-byte records:
 Duplicate file codes are rejected, including conflicts with another
 initializing/ready module. File-name classification is a separate preference
 service; FASS contains no extension matching rules.
-Mount actions require a driver offering FSYS v2 `SOURCE_FILE`. Local icon families
+Mount actions require a driver offering FSYS v4 `SOURCE_FILE`. Local icon families
 are decoded once at admission and shared while painting; they do not reserve
 global System icon IDs or read resource forks during repaint.
 
@@ -728,7 +763,7 @@ Finder uses this generic service, with no archive-type or suffix special case.
 
 ### File type preferences
 
-`System Folder/Preferences/File Types.json` is a UTF-8 JSON document with exactly
+`System Folder/Preferences/File Types` is a UTF-8 JSON document with exactly
 `version` (currently 1) and `associations`. Each association has `extension`,
 `file_type`, and `creator` fields. Extensions are case-insensitive ASCII
 alphanumeric suffixes of 1..16 bytes without the dot; duplicate extensions are
@@ -900,7 +935,7 @@ the HFS-B tool, preserving both forks, complete Finder information, comments,
 attributes, and unsigned 64-bit microsecond dates. Copying assigns destination
 identities; IDs/revisions are not restored as another live object's identity.
 
-## Host directory wire protocol (RSHOST02, version 2)
+## Host directory wire protocol (RSHOST04, version 4)
 
 `mac-host-protocol` owns the allocation-free codec and incremental reply decoder.
 The VM byte channel carries a 48-byte little-endian header followed by exactly
@@ -910,8 +945,8 @@ matching rebuild; there is no older decoder.
 
 | Offset | Bytes | Meaning |
 | --- | --- | --- |
-| 0 | 8 | `RSHOST02` |
-| 8 | 2 | whole protocol version, 2 |
+| 0 | 8 | `RSHOST04` |
+| 8 | 2 | whole protocol version, 4 |
 | 10 | 2 | header length, 48 |
 | 12 | 4 | payload length, at most 65536 |
 | 16 | 4 | nonzero correlation ticket, echoed unchanged in reply |
@@ -959,6 +994,11 @@ separate fork-container format, never inferred by this transport.
 | 21 Stat | object=snapshot/directory | value=1 file or 2 directory, offset=file length, body=32-byte opaque revision |
 | 22 Describe | object=parent, body=component | object=catalog identity, value=1 file or 2 directory, offset=file length, body=88-byte description below |
 | 23 PublishDirectory | object=flushed transaction, body=two names: target, metadata-record name | object=new directory capability; containing directory synced; transaction consumed |
+| 24 DescribeObject | object=owned open directory, read snapshot, stage or lock; other fields zero | same 88-byte description as Describe, with the checked pinned object's identity/revision |
+| 25 BeginRename | object=source directory, offset=destination directory, value=expected source snapshot/directory, body=two names | object=owned rename intent; no publication |
+| 26 FinishRename | object=rename intent | publish without replacement and sync both directories; repeated calls reassert durability without a second rename |
+| 27 RenameState | object=rename intent | value=0 unpublished or 1 published; does not publish; uncertain source substitution is an error |
+
 
 Unused request fields must be zero. Rename encodes `u16 first_name_length`, first
 name, then second name; PublishDirectory uses the same two-name encoding.
@@ -980,7 +1020,7 @@ on writes even when mtime is restored; they are distinct from object incarnation
 Generation-tagged session IDs still authorize runtime lookups, independently of
 these persistent backing keys. Unsupported old wire/class versions require a
 matching rebuild of System, both drivers and the host companion; no v1 path is
-retained. FSYS v2 and the RSFORK01 storage format are unchanged by this wire change.
+retained. FSYS v4 and the RSFORK01 storage format are unchanged by this wire change.
 Enumerations stop with Stale if their directory changes.
 Only currently active transaction stages are hidden; leftover crash stages remain
 visible for explicit format validation/recovery. Read-only exports refuse every
@@ -999,12 +1039,12 @@ See `tools/risc-host/README.md` for staged-publication, cooperating-lock and
 external-edit limits. This protocol is a directory class, not a block protocol;
 actual block exports require their own class contract.
 
-### Host directory transport class (`HDIR`, version 2)
+### Host directory transport class (`HDIR`, version 4)
 
 The loadable Host Transport driver publishes the serialized, exclusive `HDIR`
 class. This is a byte/directory transport, not a block device and not a Macintosh
 catalog implementation. The separate filesystem provider consumes it. Operations
-use the `RSHOST02` operation numbers above. START input is a 24-byte little-endian
+use the `RSHOST04` operation numbers above. START input is a 24-byte little-endian
 argument record followed by its exact payload:
 
 | Offset | Bytes | Meaning |
@@ -1018,7 +1058,7 @@ argument record followed by its exact payload:
 
 The broker's live request ticket supplies wire correlation; callers cannot choose
 it. POLL/CANCEL have empty inputs. A completed output is the full checked 48-byte
-`RSHOST02` reply header followed by its exact payload. Transport errors and host
+`RSHOST04` reply header followed by its exact payload. Transport errors and host
 operation status are distinct: a completed transport can carry a failed host
 operation. Each callback transfers at most two 4 KiB fragments in each direction,
 plus bounded device control work. Packet buffers belong to the driver, never to
@@ -1033,7 +1073,7 @@ cannot reclaim DMA-visible module memory. The module remains pinned until reboot
 
 ## Native filesystem provider class
 
-The `FSYS` class version 2 carries bounded little-endian owned byte requests and
+The `FSYS` class version 4 carries bounded little-endian owned byte requests and
 catalog/mount replies, independent of resource-fork layouts and physical storage.
 The exact header/metadata fields and allocated operation numbers are documented
 in [FILESYSTEM-INTERFACE.md](docs/FILESYSTEM-INTERFACE.md); their shared checked
@@ -1054,7 +1094,7 @@ the retained byte. Unknown statuses remain lossless.
 Catalog/Lookup flag bit 0 requests an exact child count. Metadata-only ancestry
 queries leave unscanned counts unknown instead of enumerating unused children;
 all other flag bits are rejected. Header/metadata schemas remain 1; producers
-and consumers rebuild together, with no older project decoder. Class v2 creation
+and consumers rebuild together, with no older project decoder. Class v3 creation
 uses the documented FileProperties template, and data-only replacements can
 request verified resource-fork preservation. Wrong installed contract versions
 produce an ABI/rebuild error; physical HFS-B/host-container formats are unchanged.
@@ -1136,29 +1176,224 @@ Finder derives its proposal from the complete cached icon-and-caption extent,
 chrome and minimum size, constrained to the usable screen. Zoom restoration also
 restores its user scroll origin. Manual resizing establishes a new user state.
 
-## Native document applications (ABI 11)
+## Optional host annotations and metadata patches
 
-All native applications, System and definitions rebuild together at ABI11.
-The Process gate accepts size-distinct DocumentCall records (1240 bytes on RV64)
-for Begin, Push, Commit, Abort, Accepts, Next, At and Finish. The drag prefix is
-reserved zero in this document-opening milestone. Whole-set preparation is owned
-by a shared generation-tagged batch; Commit transfers ownership to the exact
-application file/instance. File/volume pins last until Finish or owner cleanup.
-OsEvent0x10000000 announces an available batch and carries its full ID in payload.
-The Rust SDK owns preparation and reception with Drop guards.
+`mac-fork-file::annotation` owns the fixed 512-byte `RSMETA01` record used in
+`.system-risc-metadata/<64 lowercase hex incarnation bytes>`. It is optional
+bookkeeping; ordinary host file bytes and user-visible names remain untouched.
+Native fork containers retain their existing `RSFORK01` framing.
 
-Opening declarations use classic Translation Manager `open` resources: creator
-FourCC, zero u16, count u16, then accepted FourCCs, all big-endian. Declaration
-probes validate the complete resource map but read only selected payloads under
-a64KiB budget, rather than loading executable resources.
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 8 | `RSMETA01` |
+| 8 | 4 | LE whole format version 1 |
+| 12 | 4 | LE record bytes, 512 |
+| 16 | 16 | Export volume identity |
+| 32 | 32 | Qualified host object incarnation |
+| 64 | 4 | LE persistent catalog ID (2/root or 16..0x7fffffff) |
+| 68 | 2 | LE encoded patch length |
+| 70 | 2 | Reserved zero |
+| 72 | 8 | LE annotation revision; zero only for an identity-only empty patch |
+| 80 | 16 | Reserved zero |
+| 96 | variable | MetadataPatch, then zero padding through byte 479 |
+| 480 | 32 | SHA-256 of bytes 0..480 |
 
-Native TextEdit snapshots add content_revision (u64, changed text only), scroll_y
-and scroll_max (u32 pixel offsets). ScrollTo and RevealSelection preserve the
-classic destination/view rectangles and visit only visible layout rows.
+Reject unknown versions with a recreate/reimport diagnostic. Reject checksum,
+reserved-bit, padding, identity or volume mismatches rather than guessing at
+metadata. The source incarnation is independent of editable guest dates.
 
-Text Edit accepts TEXT and JSON. Preferences have Finder type JSON, creator TEDT
-and extensionless names: `System Folder/Preferences/File Types` and
-`System Folder/Preferences/Text Edit Preferences`. The latter is a strict JSON
-schema with version1, font_family and font_size; the default is Monaco12. Saving
-a JSON document retains JSON type. Plain-text saves preserve CR/LF/CRLF style and
-the existing resource fork.
+`mac-filesystem-interface::MetadataPatch` uses a 104-byte LE header followed by
+an optional UTF8 comment (at most 255 bytes): schema/header length u16 at 0/2,
+presence flags u32 at 4, attribute mask/value u16 at 8/10, comment length u16 at
+12, zero u16 at 14, created/modified/backup microseconds u64 at 16/24/32,
+32-byte Finder mask at 40 and 32-byte Finder value at 72. Presence bits are
+comment=1, created=2, modified=4, backup-field=8 and backup-present=16.
+Unselected scalar values are zero; value bits outside their masks are invalid.
+Absent, empty, cleared and explicit zero remain distinct.
+
+FSYS v4 SetMetadata(20) takes volume/node/resident writer token/when plus the
+patch. Rename(16) takes volume/node/token/when plus a UTF8 name; Move(17) takes
+volume/node/token/new parent/when with no payload. Their preparation replies
+start with LE u32 0 (unchanged) or 1 (staged), then prospective Metadata. Only a
+staged result is followed by FinishWrite/AbortWrite. MetadataReceipt permits the
+root only when its file metadata equals the accompanying mount root; ordinary
+creation/data-write receipts still prohibit root publication.
+
+Native FileCall SET_FOLDER_STATE(37) saves DInfo.frRect/frView and DXInfo.frScroll.
+Only input entry.finder_info bytes 0..8 and 14..20 are used; other Finder bytes
+must be zero. It preserves placement, flags, comments and forks. The typed Rust
+interface is Files::set_folder_state[_at] with FolderState. Finder coalesces
+geometry/scroll changes before persistence.
+
+Native drag response flag TARGET_ICON_LAYOUT(32) describes presentation-only
+rearrangement. It requires Move alone, no Trash bit, and the same (volume,parent)
+for every frozen inline file reference. It cannot authorize filesystem mutation
+or make a read-only destination writable. Classic drag/file semantics are
+unchanged; this flag is the native Finder view-state path.
+
+Native drag response flag TARGET_EJECT(128) describes a volume-to-Trash eject,
+not a filesystem transfer. It requires Move alone, root CNID 2, and exactly one
+frozen inline directory reference whose volume matches the destination. It
+cannot combine with application, Trash, copy or icon-layout intent. Eject is
+always Move regardless of modifiers and accepts read-only mounts. Resident
+admission rejects the startup volume, unsupported block-device unmounts, active
+forks/writers/transfers, executable/document pins and outstanding provider reads;
+the unmount service repeats those checks before entering the driver. The
+tracking-summary bit 2 identifies a single volume-root reference and is computed
+once at Begin, so ordinary pointer motion does not inspect reference payloads.
+Finder saves pending folder state before unmounting and closes that volume's
+windows only after the provider acknowledges teardown. Failure preserves them.
+Mounted volume IDs retire through the shared generation-tagged object table.
+
+Root SetMetadata publishes the volume record itself; its confirmed modification
+date is authoritative. View-state edits preserve that date, and explicit date
+restoration is never overwritten with the transaction's operation timestamp.
+
+
+### Bounded native fork writers
+
+`ForkWriteCall` is a size-distinct native File Manager record, exposed by the
+Rust SDK as `ForkWriter`. It declares u64 data/resource lengths and retains
+native UTF-8 creation metadata and comment. BEGIN returns a generation-tagged
+FileStreams identity; APPEND, READ, FINISH, ABORT and ABANDON validate that identity
+and its application owner. Each payload is at most 64 KiB. Nonfinal append
+chunks are multiples of 4096 bytes; each fork advances independently. READ
+verifies unpublished contents without exposing a staging CNID.
+
+FINISH/ABORT are stepped: completed=0 requires another bounded call,
+completed=1 retires the mark. Abort distinguishes an unpublished operation from
+an already-published file. The SDK owner requests resident cleanup on Drop;
+async finish/abort use ordinary core futures and work with a std executor.
+Application exit requests the same cleanup. An uncertain rollback retains its
+owner and quarantines the affected storage rather than returning false success.
+
+HFS-B stages ordinary catalog files in the invisible, reserved root directory
+`.System RISC Transactions`, whose comment identifies the staging contract.
+Every payload block remains reachable from a valid catalog entry while copying.
+Publication changes both forks and all logical metadata in one transaction.
+Replacement preserves its target CNID and swaps the old payload into the hidden
+stage; reclamation frees at most 64 KiB per step. Exclusive startup recovery
+reclaims unpublished/old stages with the same stepped operation. The physical
+HFS-B v1 layout and Unicode contract remain unchanged; these are ordinary files,
+not orphan extents or a second filesystem implementation. Classic HFS explicitly
+rejects admission to this new staging service.
+
+FSYS v4 operation ReadWrite(22) reads verified bytes from an owned unpublished
+writer: volume/token, fork flag, offset and length, without publication.
+BeginReplace flag REPLACE_PROPERTIES=2 carries a FileProperties template;
+PRESERVE_RESOURCE_FORK=1 remains the distinct data-only save intent. Existing
+resource preservation and full-fork replacement are deliberate operations.
+The host wire and HDIR v4 expose ReadWrite(28) for positioned reads of an owned
+unpublished transaction; ordinary read snapshots remain immutable. Obsolete
+wire/interface versions require rebuilding both guest packages and host tooling.
+
+
+Host NotifyDirectory(29) invalidates a folder’s logical metadata revision without
+changing its physical timestamps. Watches are shared by pinned directory
+incarnation across aliases/exports, including read-only aliases. Private
+`.system-risc-*` bookkeeping does not count as a directory-content event;
+metadata publication explicitly notifies the affected parent once. Pure saved
+folder-window geometry does not notify or re-enumerate its contents. Directory
+revision polling uses the shared event counter and pinned identity, with no
+per-poll fstat and no enumeration.
+
+
+## Host removal receipts and recovery
+
+HDIR/RSHOST v4 operations 30–34 are BeginRemove, QuarantineRemove,
+CommitRemove, AbortRemove and RemoveState. BeginRemove uses the source directory
+in object and the expected source capability in value. Its payload is a LE u16
+source-component length, source bytes, then an optional approved private marker
+component. It returns a shared-facility transaction capability. The other four
+operations use that capability with no other input. RemoveState values are
+prepared=0, quarantined=1, committing=2, removed=3, aborted=4; AbortRemove reports
+whether irreversible removal had already committed. Close acknowledges cleanup.
+A filename alone never authorizes deletion; foreign or stale capabilities fail.
+
+A `.system-risc-delete-<nonce>` journal beside the source records the exact
+qualified parent/source/marker incarnations, original component and private
+quarantine component. It is exclusively locked while live. Two 1024-byte slots
+use the same format, with the highest valid sequence selected after a torn write:
+
+| Offset | Bytes | Field |
+| --- | --- | --- |
+| 0 | 8 | `RSHDEL01` |
+| 8 | 4 | LE whole format version 1 |
+| 12 | 4 | LE phase (0, 1, 2 or 4 above) |
+| 16 | 32 | Qualified parent incarnation |
+| 48 | 32 | Qualified source incarnation |
+| 80 | 32 | Qualified marker incarnation, zero when absent |
+| 112 | 6 | Three LE u16 component lengths: original, hidden, marker |
+| 118 | 2 | Reserved zero |
+| 120 | 8 | LE monotonic slot sequence |
+| 128 | variable | Original, hidden and optional marker UTF-8 components |
+| after names | variable | Zero padding through byte 991 |
+| 992 | 32 | SHA-256 of bytes 0..992 |
+
+Each component is validated/bounded to 255 bytes. The hidden component must have
+its reserved stage prefix. The prepared intent is durable before quarantine;
+the committing phase is durable before irreversible deletion. Recovery restores
+precommit quarantines without replacing a colliding visible object. Committed
+cleanup addresses only the recorded hidden incarnation, never a reused visible
+name. Corrupt/foreign/locked intents retain their objects and report a typed
+error. Enumeration triggers recovery when it encounters private leftovers, then
+invalidates its old snapshot; ordinary enumeration performs no recovery scan.
+
+FSYS Remove admission returns tag + original Metadata. FinishWrite/AbortWrite
+return RemovalReceipt (LE u32 actual removed flag followed by Mount), since the
+removed catalog entry no longer exists. Kernel and SDK ownership lasts through
+acknowledged cleanup, including cancellation and application exit.
+
+
+## Native document delivery and transfers (ABI 11)
+
+Size-distinct `DocumentCall` records use the Process trap. Begin reserves a shared
+generation-tagged batch before declaration I/O. Classic `open` resources supply
+creator-checked accepted FourCCs; compatibility probes load only those payloads,
+not CODE. Push validates and pins each exact volume/CNID; Commit validates the
+complete set against the executable actually launched and queues it to that
+exact file instance. Queued/receiving owners retain references and mount pins
+until Finish or process cleanup. Probing/preparing owners abort through RAII;
+a drag-bound batch is also abandoned on drag cancellation. Native OsEvent
+`0x10000000` announces queued documents, with the full batch ID in payload.
+
+Size-distinct `FileTransferCall` records use the File trap (472 bytes on RV64,
+including four reserved zero u32 words). File record sizes are compile-time
+checked for uniqueness; `DataWriteCall` remains 464 bytes. The shared transfer
+ID owns bounded planning, hidden staging, two-fork copying/readback verification,
+source quarantine, grouped root publication and reverse-order undo. Copy, Move
+and per-source-volume Trash share the coordinator. Cancellation and the
+irreversible commit decision are serialized together. `commit_decided` is an
+explicit checked boolean; progress phase alone cannot imply publication.
+Phases are Preparing=0, Copying=1, Verifying=2, Committing=3, RollingBack=4,
+CleaningUp=5, Committed=6, Cancelled=7, Failed=8, Reading=9 and Writing=10.
+Reading/Writing describe presentation progress, not new publication barriers.
+Cleanup failures retain their leases/ledger and report the original and cleanup
+causes separately. Coalesced OsEvent `0x0f000000` notices carry the transfer ID;
+observing progress acknowledges its pending notice. Drop/app exit request owned
+cancellation without abandoning actual storage receipts. Native public-SDK
+acceptance covers both endpoint disconnects, cancellation, Drop and application
+exit, recursive two-fork transfers, rollback and immediate healthy-volume reuse.
+These gates do not claim exhaustive hardware fault injection.
+
+Host transport packets have a five-second no-progress deadline measured by the
+machine monotonic clock, including while cancellation drains a sent request.
+Connection loss, malformed/foreign replies and timeout poison that incarnation;
+late bytes cannot be interpreted as another request's receipt. Unknown storage
+publication remains owned/quarantined for acknowledged recovery. A dead endpoint
+does not retain leases on untouched volumes; after destination undo completes,
+unrelated healthy storage is available even if a read capability still needs
+cleanup on the unreachable endpoint.
+
+Native TextEdit snapshots distinguish `content_revision` (only changed text)
+from presentation revision. Native ScrollTo/RevealSelection operations use
+32-bit pixel offsets and report `scroll_y`/`scroll_max`, leaving classic QuickDraw
+rectangles intact. Painting and selection geometry visit only visible lines.
+Text Edit keeps its document newline style (CR/LF/CRLF), preserves resource forks
+on data saves, and uses System-owned Open/Save As/Save Changes dialogs.
+
+Preferences are versioned JSON documents with Finder type `JSON`, creator `TEDT`
+and extensionless native names. The initial registry is `Preferences/File Types`;
+Text Edit uses `Preferences/Text Edit Preferences` with schema version1,
+`font_family` and `font_size`. Its default is Monaco12. JSON/TEXT are declared
+Text Edit document types; font/view settings never modify document contents.

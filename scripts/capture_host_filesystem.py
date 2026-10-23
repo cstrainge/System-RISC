@@ -3,6 +3,7 @@
 Rust owns the acceptance assertions; no live user VM or export is used here.
 """
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -20,28 +21,45 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def prepare(output, sdk=False):
+def prepare(output, sdk=False, restore=False, disconnect=None):
+    # Feature variants share a guest binary path. Cargo's build lock ends
+    # before packaging, so hold our own through both steps; tests may run in
+    # parallel once each has copied its package into its private output.
+    fixtures = vm.build_dir() / 'fixtures'
+    fixtures.mkdir(parents=True, exist_ok=True)
+    with (fixtures / 'host-filesystem-package.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _prepare(output, sdk, restore, disconnect)
+
+
+def _prepare(output, sdk=False, restore=False, disconnect=None):
     fixtures = [('host-filesystem-app', 'Finder'),
                 ('host-filesystem-exit-worker', 'HostExitWorker')] if sdk else [
                     ('host-filesystem-probe', 'HostFilesystemProbe')]
+    if restore:
+        fixtures = [('host-filesystem-app', 'Finder')]
+    features = ['--features', 'metadata-restore'] if restore else []
+    if disconnect:
+        features = ['--features', 'disconnect-' + disconnect]
     for fixture, binary in fixtures:
+        selected_features = features if fixture == 'host-filesystem-app' else []
         target = vm.build_dir() / 'fixtures' / fixture
         manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
         subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
                         '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin',
-                        binary, '--target-dir', str(target)], cwd=vm.ROOT, check=True)
+                        binary, '--target-dir', str(target), *selected_features], cwd=vm.ROOT, check=True)
         subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
-                        '--bin', 'package', '--target-dir', str(target), '--',
+                        '--bin', 'package', '--target-dir', str(target), *selected_features, '--',
                         str(target / 'riscv64imac-unknown-none-elf/release' / binary),
                         str(output / 'packages')], cwd=vm.ROOT, check=True)
     subprocess.run(['cargo', 'build', '--locked', '-p', 'risc-host', '-p', 'risc-forks',
                     '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.ROOT / 'System7', check=True)
 
 
-def capture(output, sdk=False):
+def capture(output, sdk=False, disconnect=None):
     output.mkdir(parents=True, exist_ok=False)
     (output / 'pid').write_text(str(os.getpid()))
-    prepare(output, sdk)
+    prepare(output, sdk, disconnect=disconnect)
     base = vm.DIST
     before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
     dist = output / 'dist'
@@ -119,7 +137,7 @@ def capture(output, sdk=False):
             readonly = output / 'readonly-export'
             subprocess.run([str(host / 'risc-forks'), 'init', str(readonly), 'Read Only Host'], check=True)
             subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(readonly),
-                            str(base / 'ResEdit.bin')], check=True)
+                            str(base / 'Res Edit.bin')], check=True)
             subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(readonly),
                             str(output / 'packages/Host Exit Worker.bin')], check=True)
             (readonly / 'Host Folder').mkdir()
@@ -137,16 +155,21 @@ def capture(output, sdk=False):
             (output / 'companion-ready.txt').write_text(ready)
             port = int(ready.rsplit(':', 1)[1])
             vm.DIST = dist
-            process, endpoint = vm.launch(output / 'vm', host_bridge=port)
+            process, endpoint = vm.launch(output / 'vm', writable=sdk, host_bridge=port)
             termination = 'desktop-ready'
             if sdk:
                 termination = 'timeout'
                 deadline = time.monotonic() + 30
                 watch_changes = set()
                 snapshot_changes = set()
-                application_releases = set()
+                application_releases = {}
+                disconnected = False
                 while time.monotonic() < deadline:
                     text = (output / 'vm/serial.log').read_text(errors='replace')
+                    if disconnect and not disconnected and 'TRANSFER_DISCONNECT_READY\n' in text:
+                        companion.terminate()
+                        companion.wait(timeout=10)
+                        disconnected = True
                     for marker, directory in [('RW', export), ('RO', readonly)]:
                         if f'HOST_FS_SNAPSHOT_READY_{marker}\n' in text and marker not in snapshot_changes:
                             source = directory / 'Snapshot.txt'
@@ -157,11 +180,12 @@ def capture(output, sdk=False):
                                 {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'spc'}, 'down': down}}
                                 for down in [True, False]]}, endpoint)
                             snapshot_changes.add(marker)
-                        if f'HOST_FS_EXTERNAL_APPLICATION_RELEASE_{marker}\n' in text and marker not in application_releases:
+                        releases = text.count(f'HOST_FS_EXTERNAL_APPLICATION_RELEASE_{marker}\n')
+                        if releases > application_releases.get(marker, 0):
                             vm.qmp('input-send-event', {'events': [
                                 {'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'spc'}, 'down': down}}
                                 for down in [True, False]]}, endpoint)
-                            application_releases.add(marker)
+                            application_releases[marker] = releases
                         if f'HOST_FS_WATCH_READY_{marker}\n' in text and marker not in watch_changes:
                             (directory / 'Runtime Host File.txt').write_bytes(b'live')
                             watch_changes.add(marker)
@@ -172,9 +196,34 @@ def capture(output, sdk=False):
                         termination = 'process-exited'
                         break
                     time.sleep(.02)
+            reboot = None
+            if sdk and not disconnect and termination == 'guest-outcome' and 'HOST_FILESYSTEM_PASS' in text:
+                first_pid = process.pid
+                vm.qmp('quit', endpoint=endpoint)
+                process.wait(timeout=10)
+                process = None
+                prepare(output, sdk=True, restore=True)
+                image.remove('/System Folder/Finder')
+                image.import_macbinary(output / 'packages/Finder.bin', '/System Folder')
+                subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2',
+                                str(raw), str(dist / 'system7.qcow2')], check=True)
+                process, endpoint = vm.launch(output / 'restore-vm', host_bridge=port)
+                deadline = time.monotonic() + 30
+                restore_termination = 'timeout'
+                while time.monotonic() < deadline:
+                    restored = (output / 'restore-vm/serial.log').read_text(errors='replace')
+                    if 'HOST_METADATA_RESTORE_PASS' in restored or 'HOST_FILESYSTEM_FAIL' in restored:
+                        restore_termination = 'guest-outcome'
+                        break
+                    if process.poll() is not None:
+                        restore_termination = 'process-exited'
+                        break
+                    time.sleep(.02)
+                reboot = {'termination': restore_termination, 'first_pid': first_pid,
+                          'second_pid': process.pid, 'serial': str(output / 'restore-vm/serial.log')}
             command = json.loads((output / 'vm/command.json').read_text())
             (output / 'capture.json').write_text(json.dumps({
-                'termination': termination, 'command': command,
+                'termination': termination, 'command': command, 'reboot': reboot,
                 'serial': str(output / 'vm/serial.log'),
                 'original_before': before,
                 'original_after': {name: digest(base / name) for name in before}
@@ -191,7 +240,7 @@ def capture(output, sdk=False):
         vm.DIST = base
         # Keep evidence, current images and original media. Delete private disks
         # even when admission/boot/protocol assertions fail.
-        for folder in [dist, output / 'vm']:
+        for folder in [dist, output / 'vm', output / 'restore-vm']:
             for pattern in ['*.raw', '*.qcow2', '*.bin']:
                 for path in folder.glob(pattern):
                     path.unlink()
@@ -201,5 +250,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--sdk', action='store_true')
+    parser.add_argument('--disconnect', choices=['source', 'destination'])
     args = parser.parse_args()
-    capture(args.output.resolve(), args.sdk)
+    capture(args.output.resolve(), args.sdk or bool(args.disconnect), args.disconnect)

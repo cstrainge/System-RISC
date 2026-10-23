@@ -90,11 +90,16 @@ impl Manager
                                                            node: u32, kind: u32)
                                                            -> Result<(u32, u32), Status>
     {
+        self.validate_transfer_read(owner, volume, node)?;
         if node < ROOT_ID || !matches!(kind, DATA_FORK | RESOURCE_FORK)
         {
             return Err(BAD_ARGUMENT);
         }
         let provider = self.read_provider(volume)?.ok_or(BAD_ARGUMENT)?;
+        if self.streams.iter().any(|(_, mark)| mark.volume == volume && mark.expected == node)
+        {
+            return Err(SERVICE_BUSY);
+        }
         if self.writes.iter().any(|(_, mark)| {
                                  mark.volume == volume
                                  && mark.expected_cnid == node

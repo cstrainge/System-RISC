@@ -112,10 +112,11 @@ fn cancellation_wakes_pending_take_and_duplicate_take_cannot_steal_its_waker()
         input::receiver(1, 1, WINDOW);
         let mut builder = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
         builder.empty_item(Rect::ZERO).unwrap();
-        let source = builder.promise::<Text<'_>, _>(|| panic!("cancelled producer must not run"))
-                            .unwrap()
-                            .begin()
-                            .unwrap();
+        let mut source =
+            builder.promise::<Text<'_>, _>(|| panic!("cancelled producer must not run"))
+                   .unwrap()
+                   .begin()
+                   .unwrap();
         let offer = entered(&system);
         let item = offer.flavors().item(0).unwrap();
         offer.respond(Response::Accept { actions:   DropActions::CopyOrMove,
@@ -125,22 +126,26 @@ fn cancellation_wakes_pending_take_and_duplicate_take_cannot_steal_its_waker()
         let payload = dropped(&system);
         let count = Arc::new(Counter(AtomicUsize::new(0)));
         let waker = Waker::from(count.clone());
-        let mut bytes = [0; 32];
-        let mut take = pin!(payload.text(item, &mut bytes));
-        assert!(take.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
         {
-            let mut other = [0; 32];
-            let mut duplicate = pin!(payload.text(item, &mut other));
-            assert_eq!(poll(duplicate.as_mut()),
-                       Poll::Ready(Err(DragError::FlavorUnavailable { flavor: TEXT })));
+            let mut bytes = [0; 32];
+            let mut take = pin!(payload.text(item, &mut bytes));
+            assert!(take.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+            {
+                let mut other = [0; 32];
+                let mut duplicate = pin!(payload.text(item, &mut other));
+                assert_eq!(poll(duplicate.as_mut()),
+                           Poll::Ready(Err(DragError::FlavorUnavailable { flavor: TEXT })));
+            }
+            source.cancel().unwrap();
+            for _ in 0..4
+            {
+                let _ = system.next_event(EventMask::ALL).unwrap();
+            }
+            assert_eq!(count.0.load(Ordering::SeqCst), 1);
+            assert_eq!(poll(take.as_mut()), Poll::Ready(Err(DragError::Cancelled)));
+            assert!(!source.service_promises().unwrap(), "cancelled producer ran");
         }
-        source.cancel().unwrap();
-        for _ in 0..4
-        {
-            let _ = system.next_event(EventMask::ALL).unwrap();
-        }
-        assert_eq!(count.0.load(Ordering::SeqCst), 1);
-        assert_eq!(poll(take.as_mut()), Poll::Ready(Err(DragError::NoSession)));
+        assert_eq!(payload.complete(Err(DragError::Cancelled)), Err(DragError::Cancelled));
         for tick in 1..9
         {
             input::tick(tick);
@@ -775,10 +780,103 @@ fn modifier_change_withdraws_highlight_before_receiver_runs_and_release_can_rest
 }
 
 #[test]
-fn mounted_policy_rejects_unimplemented_moves_and_all_readonly_destination_actions()
+fn volume_eject_is_a_move_even_for_readonly_mounts_and_option_at_drop()
+{
+    for readonly in [false, true]
+    {
+        testing::with_services(|services| {
+            let volume = input::provider_volume(readonly);
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            input::receiver(1, 1, WINDOW);
+            let mut builder =
+                system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            let mut root =
+                file_item(volume, files::ROOT_ID, files::ROOT_ID, Point::default(), Rect::ZERO);
+            root.directory = true;
+            builder.item(root).unwrap();
+            let source = builder.begin().unwrap();
+            let offer = entered(&system);
+            assert!(offer.flavors().is_volume_root());
+            offer.respond(Response::Accept { target:    Target::Eject { volume },
+                                             actions:   DropActions::Move,
+                                             highlight: Rect::new(20, 40, 60, 90) })
+                 .unwrap();
+            assert!(input::highlight().is_some());
+            input::release(DROP, abi::events::OPTION_KEY, WINDOW, 2);
+            let Event::Drag { offer: DragEvent::Tracking(offer),
+                              .. } = system.next_event(EventMask::ALL).unwrap()
+            else
+            {
+                panic!("missing drop-time modifier update")
+            };
+            offer.respond(Response::Accept { target:    Target::Eject { volume },
+                                             actions:   DropActions::Move,
+                                             highlight: Rect::new(20, 40, 60, 90) })
+                 .unwrap();
+            let Event::Drag { offer: DragEvent::Dropped(payload),
+                              .. } = system.next_event(EventMask::ALL).unwrap()
+            else
+            {
+                panic!("eject did not reach the receiver")
+            };
+            assert_eq!(payload.action, DropAction::Move);
+            payload.complete(Ok(())).unwrap();
+            assert_eq!(ended(&system), DragOutcome::Moved);
+            drop(source);
+        });
+    }
+}
+
+#[test]
+fn eject_target_rejects_file_references_and_wrong_mount_identity()
+{
+    for root_reference in [false, true]
+    {
+        testing::with_services(|services| {
+            let volume = input::provider_volume(false);
+            let foreign = input::provider_volume_for_export(false, 2);
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            input::receiver(1, 1, WINDOW);
+            let mut builder =
+                system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            let mut item = file_item(volume,
+                                     if root_reference { files::ROOT_ID } else { Cnid(16) },
+                                     files::ROOT_ID,
+                                     Point::default(),
+                                     Rect::ZERO);
+            item.directory = root_reference;
+            builder.item(item).unwrap();
+            let _source = builder.begin().unwrap();
+            let offer = entered(&system);
+            assert_eq!(offer.respond(Response::Accept { target:
+                                                            Target::Eject { volume:
+                                                                                if root_reference
+                                                                                {
+                                                                                    foreign
+                                                                                }
+                                                                                else
+                                                                                {
+                                                                                    volume
+                                                                                } },
+                                                        actions:   DropActions::Move,
+                                                        highlight: Rect::ZERO }),
+                       Err(DragError::Unknown(abi::BAD_ARGUMENT)));
+            assert!(input::highlight().is_none());
+            input::release(DROP, 0, WINDOW, 2);
+            for tick in 3..12
+            {
+                input::tick(tick);
+            }
+            assert_eq!(ended(&system), DragOutcome::Rejected);
+        });
+    }
+}
+
+#[test]
+fn mounted_policy_accepts_writable_transfers_and_rejects_readonly_destinations()
 {
     for (read_only, actions, modifiers, accepted) in
-        [(false, DropActions::Move, 0, false),
+        [(false, DropActions::Move, 0, true),
          (true, DropActions::Move, 0, false),
          (true, DropActions::Copy, abi::events::OPTION_KEY, false),
          // Copy can be implemented by the receiver through ordinary read/write
@@ -903,7 +1001,7 @@ fn atomic_folder_move_negotiation_checks_volume_scope_without_disk_io()
     std::fs::copy(source, &disk.0).unwrap();
     let (_, baseline) =
         testing::with_file_disk(&disk.0, false, Default::default(), |_| ()).unwrap();
-    for (foreign_source, accepted) in [(false, true), (true, false)]
+    for (foreign_source, accepted) in [(false, true), (true, true)]
     {
         let (_, activity) =
             testing::with_file_disk(&disk.0, false, Default::default(), |services| {

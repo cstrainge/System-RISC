@@ -3,8 +3,8 @@
   "heap_bytes": 4194304,
   "stack_bytes": 65536,
   "interfaces": [
-    { "class": "FSYS", "version": 2, "request_schema": 1, "reply_schema": 1,
-      "max_request": 65600, "max_reply": 65536, "serialized": true,
+    { "class": "FSYS", "version": 4, "request_schema": 1, "reply_schema": 1,
+      "max_request": 65600, "max_reply": 65536, "serialized": false,
       "capabilities": 2 }
   ],
   "services": [ { "class": "FORK", "version": 1 } ]

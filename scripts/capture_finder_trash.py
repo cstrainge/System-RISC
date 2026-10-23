@@ -56,7 +56,7 @@ def capture(output):
         move(16,444);button(False)
         # New folders are selected by Finder; drag the fourth root item to Trash.
         move(296,90);button(True);move(592,436);snapshot('trash-drop-held');button(False)
-        wait(lambda _: 'FINDER_TRASHED ' in serial.read_text(errors='replace'))
+        wait(lambda _: 'FINDER_DRAG_TRANSFER_COMMITTED\n' in serial.read_text(errors='replace'))
         move(16,444);snapshot('trashed')
         click(592,436);click(592,436);snapshot('trash-open')
         # The single Trash item is the first icon in its second cascaded window.
@@ -66,7 +66,7 @@ def capture(output):
         key('w',True)
         # Root selection was cleared by Put Away; select and exercise Ctrl-Backspace.
         click(296,90);key('backspace',True)
-        wait(lambda _: serial.read_text(errors='replace').count('FINDER_TRASHED ') >= 2)
+        wait(lambda _: serial.read_text(errors='replace').count('FINDER_TRASHED ') >= 1)
         snapshot('trashed-again')
         empty_menu();move(16,444);snapshot('empty-confirm')
         # Modal background/menu clicks must not activate anything or create a folder.

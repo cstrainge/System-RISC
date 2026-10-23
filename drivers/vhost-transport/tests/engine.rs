@@ -16,7 +16,8 @@ struct Peer
     sends:         usize,
     receives:      usize,
     stale:         bool,
-    replied:       bool
+    replied:       bool,
+    now:           u64
 }
 impl Peer
 {
@@ -32,7 +33,8 @@ impl Peer
                sends:         0,
                receives:      0,
                stale:         false,
-               replied:       false }
+               replied:       false,
+               now:           0 }
     }
 
     fn reset_counts(&mut self)
@@ -44,6 +46,11 @@ impl Peer
 }
 impl Channel for Peer
 {
+    fn monotonic_microseconds(&self) -> u64
+    {
+        self.now
+    }
+
     fn poll(&mut self) -> Result<bool>
     {
         self.polls += 1;
@@ -147,6 +154,38 @@ fn calls_are_bounded_and_replies_never_retain_borrows_to_the_callers_input()
     assert_eq!(&output[wire::HEADER_BYTES..wire::HEADER_BYTES + 9000],
                (0..9000).map(|i| (i * 17) as u8).collect::<Vec<_>>());
 }
+#[test]
+fn a_silent_peer_times_out_and_poisoned_incarnations_never_reuse_late_replies()
+{
+    for phase in [Phase::Poll, Phase::Cancel]
+    {
+        let mut engine = Engine::new();
+        let mut buffers = Box::new(Buffers::new());
+        let mut peer = Peer::new();
+        peer.receive_limit = 0;
+        let input = arguments(b"data");
+        let mut output = vec![0; MAX_PACKET];
+        assert_eq!(engine.request(&mut peer,
+                                  call(7, Phase::Start, &input),
+                                  &mut output,
+                                  &mut buffers),
+                   Ok(Completion::Pending));
+        peer.now = vhost_transport::engine::STALL_MICROSECONDS - 1;
+        assert_eq!(engine.request(&mut peer, call(7, phase, &[]), &mut output, &mut buffers),
+                   Ok(Completion::Pending));
+        peer.now += 1;
+        assert_eq!(engine.request(&mut peer, call(7, phase, &[]), &mut output, &mut buffers),
+                   Err(Error(IO_ERROR)));
+        peer.receive_limit = FRAGMENT;
+        assert_eq!(engine.request(&mut peer,
+                                  call(8, Phase::Start, &input),
+                                  &mut output,
+                                  &mut buffers),
+                   Err(Error(IO_ERROR)));
+        assert!(!peer.rx.is_empty(), "a late reply must never be consumed by another request");
+    }
+}
+
 #[test]
 fn pending_connection_does_not_consume_a_request_or_poison_the_transport()
 {

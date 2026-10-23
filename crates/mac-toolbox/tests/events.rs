@@ -158,7 +158,7 @@ fn physical_input_uses_real_ecalls_and_keeps_raw_events_during_menu_dispatch()
         previous = uptime;
     }
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
-    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=8"));
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=11"));
     let acceptance = serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","acceptance":"public Event Manager ECALL physical state, raw queue and resource menu composition","capture":capture})).unwrap();
     fs::write(output.join("rust-acceptance.json"), &acceptance).unwrap();
     fs::write(root.join("results/system7/event-manager-checks.json"), &acceptance).unwrap();
@@ -221,9 +221,8 @@ fn positioned_delivery_is_additive_and_shares_the_existing_native_queue()
 {
     use mac_toolbox::{Event, EventMask, Point,
                       events::{Input, Modifiers}};
-    // Freeze the existing RV64-compatible transports; new positions have their
-    // own trap and request, so existing binaries need no ABI or layout change.
-    assert_eq!(mac_toolbox::abi::ABI_VERSION, 8);
+    // Position delivery has its own trap/request and leaves these event
+    // layouts intact. The global ABI also covers unrelated service families.
     assert_eq!(core::mem::size_of::<mac_toolbox::abi::Event>(), 32);
     assert_eq!(core::mem::size_of::<mac_toolbox::abi::traps::NextEventCall>(), 40);
     assert_eq!(core::mem::size_of::<mac_toolbox::abi::traps::WaitEventCall>(), 48);

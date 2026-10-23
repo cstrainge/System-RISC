@@ -7,7 +7,10 @@ use their actual readable names on the host; the host directory entry supplies
 the current name while embedded identities survive renames and remounts. Guest
 creation validates portable names before reserving IDs or publishing anything. Ordinary host files and folders also enumerate
 without conversion: file bytes form the data fork, the resource fork is empty,
-and names/dates are projected from the host. No metadata sidecars are created.
+and names/dates are projected from the host. Writable exports persist identities
+and optional field-selective metadata in `.system-risc-metadata`; ordinary file
+bytes and readable host names remain intact. Read-only exports never create
+these records. Two-fork native files retain their checked fork container.
 The companion pins these host objects and supplies session/export-scoped
 generation-tagged catalog identities, preserving rename identity and rejecting
 replacement reuse. Runtime volume/open/write tokens come from the resident generation
@@ -34,10 +37,15 @@ external changes, stale/foreign tokens, flush/close failures, cancellation and
 ID reservation. These are component tests; native public-SDK guest coverage is
 documented in `docs/FILESYSTEM-INTERFACE.md`. The normal launcher exposes a default
 Transfer volume plus explicitly selected exports. System mounts them before
-launching Finder. Provider app loading, remaining mutations, complete Finder
-copying and external-change refresh are still delivery work.
+launching Finder. The implementation includes application/resource reads,
+two-fork writes, namespace operations, selective metadata, directory watches and
+acknowledged group transactions. Native public-SDK acceptance verifies recursive two-fork transfers in both
+directions, metadata/identity across cold boot, cancellation, Drop, application
+exit and both endpoint disconnects. Physical Finder checks cover external apps,
+document drops, copy/move, Trash and RW/RO eject. See
+[the milestone record](../../docs/TRANSFER-MILESTONE.md) for coverage and limits.
 
-The common `FSYS` v2 byte codec and its library-side service dispatch now exist;
+The common `FSYS` v4 byte codec and its library-side service dispatch now exist;
 see `docs/FILESYSTEM-INTERFACE.md`. `DirectoryRpc` adapts the checked module
 provider capability into bounded futures with reusable packet buffers. Its ticket
 survives an abandoned future, and draining returns an acknowledged host mutation

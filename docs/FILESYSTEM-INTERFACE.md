@@ -1,4 +1,4 @@
-# Native filesystem class (FSYS v2)
+# Native filesystem class (FSYS v4)
 
 `mac-filesystem-interface` is the safe, allocation-free byte contract between
 resident File Manager and independently loaded filesystem providers. It is a
@@ -23,8 +23,10 @@ until acknowledged unmount/cleanup. Block-backed and provider-backed sources,
 including archives on writable/read-only Transfer exports, are supported through
 owned deferred Catalog/Open/Read/Close jobs. No guard or app-buffer borrow crosses
 a provider callback. Cancellation retains source identity and buffers until ACK;
-uncertain cleanup quarantines the source. Recursive mounting from the same
-serialized provider is explicitly NotSupported.
+uncertain cleanup quarantines the source. Same-provider recursive mounting
+requires an interface without SERIALIZED admission. StuffIt multiplexes bounded,
+independent owned requests while keeping each open decoder exclusive; a serialized
+provider is refused explicitly rather than admitted to a dependency deadlock.
 
 File actions and default icon families are declared by the provider's `FASS 0`
 resource (see FORMAT.md), published with its Ready module and withdrawn on
@@ -60,7 +62,7 @@ Operation is the broker operation number. Unused arguments must be zero:
 | Read (8) | volume, token, fork flag 0/1, offset, capacity in length | verified fork bytes, at most 64 KiB |
 | Close (9) | volume, token | empty |
 | BeginCreate (10) | volume, parent, resident write token, data length, resource length in auxiliary, operation timestamp in when, FileProperties payload | prospective Metadata, including reserved CNID and normalized name |
-| BeginReplace (11) | volume, node, write token, fork lengths and when; optional PRESERVE_RESOURCE_FORK flag | prospective Metadata, including actual retained resource length |
+| BeginReplace (11) | volume, node, write token, fork lengths and when; PRESERVE_RESOURCE_FORK=1 retains that fork, REPLACE_PROPERTIES=2 supplies a FileProperties template | prospective Metadata, including actual retained resource length |
 | WriteChunk (12) | volume, write token, fork flag, next sequential bytes (up to 64 KiB) | empty |
 | FinishWrite (13) | volume, write token | WriteReceipt containing actual published Metadata and Mount |
 | AbortWrite (14) | volume, write token | AbortReceipt: u32 publication-observed boolean; WriteReceipt follows only when true |
@@ -72,12 +74,32 @@ before success, even when that read exactly fills the requested buffer. A
 copy-out consumer must abort its destination transaction if any read fails;
 it must not publish a partially verified fork.
 
-Rename/Move/MakeDirectory/Remove/SetMetadata (16–20) are allocated operation codes;
-the host provider currently rejects them as unsupported. Their payload contracts
-must be specified and tested with their implementation. This checkpoint is not
-full File Manager mutation coverage. Public data-fork saves are connected; folder
-creation, metadata edits, rename/move/delete and full two-fork copy still need
-their resident/provider contracts and acceptance gates.
+The current implementation batch adds Rename(16), Move(17) and SetMetadata(20)
+using the existing resident-owned write tokens and finish/abort receipts:
+
+| Operation | Inputs | Preparation reply |
+| --- | --- | --- |
+| Rename (16) | volume, node, token, when, UTF8 name payload | LE u32 staged 0/1, then Metadata |
+| Move (17) | volume, node, token, new parent, when; empty payload | LE u32 staged 0/1, then Metadata |
+| SetMetadata (20) | volume, node, token, when, MetadataPatch payload | LE u32 staged 0/1, then Metadata |
+
+A zero tag is an exact no-change: there is no backend transaction to finish.
+A staged result must finish or abort using the same token. Metadata edits use
+masked attributes/Finder bytes and selected dates/comments; unselected fields
+remain raw provider metadata rather than freezing registry-inferred values.
+The exact patch/annotation layouts are in FORMAT.md. Metadata receipts allow a
+root only when it equals the accompanying mount root. Creation and data-write
+receipts still reject roots.
+
+The pending host rename/move implementation retains an owned lower intent until
+publication, directory durability and acknowledged cleanup finish. A sync failure
+cannot erase whether publication occurred; abort queries the actual outcome.
+Operation 18 is reserved and has no separate MakeDirectory path. Remove(19)
+owns an exact file/empty-directory deletion through FinishWrite/AbortWrite;
+public folder creation uses BeginCreate's CREATE_DIRECTORY flag. Full transfer/delete, atomic
+icon-group moves and the complete writable-provider acceptance matrix remain
+open. These newly implemented paths are not yet verified: the user requested one
+verification pass after the remaining implementation batch.
 
 Class version 2 replaces the old raw-name creation request directly. There is no
 v1 producer/decoder path. Rebuild System, driver packages and their dependents
@@ -450,3 +472,40 @@ publication. Both-fork/component tests and the private real-Finder incident gate
 verify readable New Folder publication, browsing/refresh and responsive provider
 errors. This does not claim completion of guest rename/move or the remaining
 provider metadata/Get Info parity work.
+
+
+FSYS v4 also provides ReadWrite(22): volume, resident writer token, fork flag,
+logical offset and capacity in length. It reads only the acknowledged staged
+prefix, verifies physical hash chunks, and never publishes the candidate. It is
+used by the owned native ForkWriter service before copy publication. Runtime
+marks retain both declared lengths and acknowledged progress; a failed chunk
+aborts the whole candidate rather than guessing how much the provider stored.
+Implementation is pending the final combined verification pass.
+
+
+## Owned empty-object removal
+
+`Remove` admits a generation-tagged resident write token for an exact file or
+empty folder and returns the ordinary tag + checked metadata admission response.
+`FinishWrite`/`AbortWrite` return `RemovalReceipt`: an actual committed flag plus
+the resulting mount descriptor. They do not attempt to read metadata from the
+now-deleted entry. The System retains ownership until provider ACK, including
+app exit and cancellation; a failed cleanup quarantines the write token.
+
+The host transport prepares an exact-object receipt, quarantines by a checked
+non-replacing rename, and separates irreversible commit from reversible abort.
+A sync failure retains its phase; retries never reinterpret absence as success
+or repeat deletion against a reused source path. A native folder may name one
+pinned bookkeeping record; other contents reject the request before mutation.
+Every lower callback is bounded. These source changes and their new SDK/component
+acceptance cases are pending the combined implementation-batch verification.
+
+
+Full copied object properties use native `Files::set_properties` / FileCall
+SET_PROPERTIES. Rust strings carry the comment; legacy conversion is confined
+to the Pascal/MacRoman trap boundary. Provider edits use the existing selective
+metadata-patch format with all properties selected. HFS-B publishes the entry and
+comment in one metadata transaction. An exact no-change edits neither metadata
+nor the catalog clock. A locked object permits a full-property unlock only if
+every other property agrees; comments/dates cannot piggyback on that exception.
+Both forks, catalog identity, physical name and hierarchy are preserved.

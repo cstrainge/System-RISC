@@ -5,6 +5,7 @@ Rust owns assertions and inspects the final disk through the public Files SDK.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -20,6 +21,7 @@ from hfs_b_tool import Image as NativeImage
 
 def capture(output):
     output.mkdir(parents=True, exist_ok=False)
+    (output / 'pid').write_text(str(os.getpid()))
     base = vm.DIST
     original = packaging.sha(base / 'system7.qcow2')
     stages = []
@@ -58,10 +60,10 @@ def capture(output):
         return tracing.decode(path)
 
     def release_move():
-        moves = driver.log().count('FINDER_DRAG_MOVE_COMMITTED\n')
+        moves = driver.log().count('FINDER_DRAG_TRANSFER_COMMITTED\n')
         ended = driver.log().count('FINDER_DRAG_ENDED moved\n')
         driver.button(False)
-        driver.wait('FINDER_DRAG_MOVE_COMMITTED\n', moves)
+        driver.wait('FINDER_DRAG_TRANSFER_COMMITTED\n', moves)
         driver.wait('FINDER_DRAG_ENDED moved\n', ended)
         time.sleep(.4)
 
@@ -105,24 +107,24 @@ def capture(output):
             ended = driver.log().count('FINDER_DRAG_ENDED rejected\n')
             driver.move(184, 106)
             driver.button(True)
-            driver.move(212, 146)
+            driver.move(120, 106)
             driver.key_state('alt', True)
             driver.button(False)
             driver.key_state('alt', False)
             driver.wait('FINDER_DRAG_ENDED rejected\n', ended)
-            snapshot('unsupported-copy-' + str(attempt))
-            selection_probe('unsupported-copy-' + str(attempt))
+            snapshot('incompatible-app-' + str(attempt))
+            selection_probe('incompatible-app-' + str(attempt))
         # The duplicate already in Z Conflict makes these moves fail only after
         # legal negotiation. The modal alert must not swallow session cleanup.
         for attempt in range(2):
-            failed = driver.log().count('FINDER_ACTION_FAILED status=-11')
+            failed = driver.log().count('AlreadyExists (-11)')
             ended = driver.log().count('FINDER_DRAG_ENDED rejected\n')
             dismissed = driver.log().count('FINDER_ALERT_DISMISSED\n')
             driver.move(184, 106)
             driver.button(True)
-            driver.move(56, 158)
+            driver.move(376, 106)  # The sixth 64px cell fits on the first row.
             driver.button(False)
-            driver.wait('FINDER_ACTION_FAILED status=-11', failed)
+            driver.wait('AlreadyExists (-11)', failed)
             driver.wait('FINDER_DRAG_ENDED rejected\n', ended)
             snapshot('failed-drop-' + str(attempt))
             if attempt == 0:

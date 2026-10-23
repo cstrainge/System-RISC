@@ -247,7 +247,9 @@ pub(crate) fn request(owner: u64, call: &mut FileResourceCall, name: &str, outpu
                     fork:      0,
                     capacity:  output.len(),
                     cursor:    DirectoryScanCursor::default(),
-                    resource:  Some((call.key, call.offset)) };
+                    resource:  Some((call.key, call.offset)),
+                    metadata:  None,
+                    when:      0 };
     match claim(owner, thread, key, name)
     {
         Ok(Some(flight)) => return deliver(call, output, super::advance(flight)),

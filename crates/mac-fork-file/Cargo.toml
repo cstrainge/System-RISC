@@ -5,4 +5,5 @@ edition.workspace = true
 publish.workspace = true
 [dependencies]
 mac-hfs-b.workspace = true
+mac-filesystem-interface.workspace = true
 sha2 = { version = "0.10", default-features = false }

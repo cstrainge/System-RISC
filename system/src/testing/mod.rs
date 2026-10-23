@@ -15,7 +15,9 @@ struct Session
     drag_notices:  std::vec::Vec<crate::toolbox::drag::Notice>,
     standard_file: crate::toolbox::standard_file::Manager,
     scroll_boxes:  crate::toolbox::controls::scrollbox::Manager,
-    controls:      crate::toolbox::controls::objects::Manager,
+    // Definitions can query immutable font services while the Control Manager
+    // is borrowed. Keep that manager's mutable borrow narrower than Session.
+    controls:      RefCell<crate::toolbox::controls::objects::Manager>,
     crashes:       crate::toolbox::crashes::Manager,
     events:        crate::toolbox::events::EventManager,
     scrap:         crate::toolbox::scrap::Manager,
@@ -502,13 +504,18 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
             };
             if call.operation >= mac_abi::controls::CREATE_STANDARD {
                 return SESSION.with(|slot| {
-                    let mut session = slot.borrow_mut();
-                    let manager = &mut session.as_mut().unwrap().controls;
+                    let session = slot.borrow();
+                    let Some(session) = session.as_ref() else { return NOT_SUPPORTED as i64; };
+                    let Ok(mut manager) = session.controls.try_borrow_mut() else { return SERVICE_BUSY as i64; };
                     let owner = files::current_owner();
                     let result = (|| {
-                        let entry = if manager.definition(call, owner)? == 0 {
-                            crate::test_cdef::standard_control_definition
-                        } else { crate::test_scrollbar::scrollbar_definition };
+                        let entry = match manager.definition(call, owner)? {
+                            0 => crate::test_cdef::standard_control_definition,
+                            1 => crate::test_scrollbar::scrollbar_definition,
+                            mac_abi::controls::CDEF_PROGRESS_BAR => crate::test_progress_bar::progress_bar_definition,
+                            mac_abi::controls::CDEF_STATIC_TEXT => crate::test_static_text::static_text_definition,
+                            _ => return Err(NOT_FOUND)
+                        };
                         manager.request(owner, call, entry, host_gate).map(|_| ())
                     })();
                     result.map_or_else(|e| e as i64, |_| 0)
@@ -518,7 +525,13 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                                                        pointer,
                                                        size,
                                                        |id| {
-                                                           match id {0=>Ok(crate::test_cdef::standard_control_definition),1=>Ok(crate::test_scrollbar::scrollbar_definition),_=>Err(NOT_FOUND)}
+                                                           match id {
+                                                               0 => Ok(crate::test_cdef::standard_control_definition),
+                                                               1 => Ok(crate::test_scrollbar::scrollbar_definition),
+                                                               mac_abi::controls::CDEF_PROGRESS_BAR => Ok(crate::test_progress_bar::progress_bar_definition),
+                                                               mac_abi::controls::CDEF_STATIC_TEXT => Ok(crate::test_static_text::static_text_definition),
+                                                               _ => Err(NOT_FOUND)
+                                                           }
                                                        },
                                                        host_gate)
         },

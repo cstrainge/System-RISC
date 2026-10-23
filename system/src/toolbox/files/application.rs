@@ -60,6 +60,7 @@ pub(crate) fn read_selected(owner: u64, volume: u32, cnid: u32, selection: Selec
     else
     {
         let (catalog, resources) = crate::kernel::with_files(|m| {
+                                       m.validate_transfer_read(owner, volume, cnid)?;
                                        m.application_resources_selected(volume, cnid, selection)
                                    }).map_err(|e| e.status())??;
         Box::try_new(Loaded { catalog,

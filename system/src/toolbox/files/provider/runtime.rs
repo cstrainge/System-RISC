@@ -1,40 +1,6 @@
 //! Park/replay boundary for owned filesystem operations. No app pointer, Files
 //! guard or native I/O stack handoff survives a provider callback or wait.
 #![forbid(unsafe_code)]
-pub(crate) fn abandon_document_io(owner: u64, thread: u64, volume: u32, cnid: u32,
-                                  application: bool)
-                                  -> bool
-{
-    let mut flights = FLIGHTS.lock();
-    let Some(flight) = flights.iter_mut().find(|flight| {
-                                             flight.owner == owner
-                                             && flight.thread == thread
-                                             && flight.key.volume == volume
-                                             && flight.key.cnid == cnid
-                                             && if application
-                                             {
-                                                 flight.key.record == Record::Application
-                                             }
-                                             else
-                                             {
-                                                 flight.key.record == Record::File
-                                                 && flight.key.operation == CATALOG
-                                             }
-                                         })
-    else
-    {
-        return false;
-    };
-    flight.abandon();
-    REAP.store(true, Ordering::Release);
-    true
-}
-pub(crate) fn current_io_pending() -> bool
-{
-    let thread = crate::context::current_thread().0;
-    FLIGHTS.lock().iter().any(|flight| flight.thread == thread && !flight.abandoned)
-}
-
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -51,7 +17,15 @@ mod startup;
 pub(crate) use startup::mount_startup_exports;
 mod resources;
 mod application;
+mod metadata;
+mod streams;
+mod groups;
+mod background;
+pub(in crate::toolbox::files) mod transfer;
 pub(crate) use application::{pending as application_pending, request as request_application};
+pub(crate) use groups::request as request_group;
+pub(crate) use metadata::{pending as metadata_pending, request as request_metadata};
+pub(crate) use streams::request as request_stream;
 mod writes;
 pub(in crate::toolbox::files::provider) use forks::request_fork_cleanup;
 pub(crate) use resources::request as request_resource;
@@ -61,7 +35,9 @@ pub(in crate::toolbox::files::provider) use writes::request_write_cleanup;
 const MAX_WAITERS: usize = crate::toolbox::handles::Kind::Threads.capacity();
 const MAX_FLIGHTS: usize = MAX_WAITERS
                            + super::super::MAX_OPEN_FILES
-                           + crate::toolbox::handles::Kind::FileWrites.capacity();
+                           + crate::toolbox::handles::Kind::FileWrites.capacity()
+                           + crate::toolbox::handles::Kind::FileStreams.capacity()
+                           + crate::toolbox::handles::Kind::FileGroups.capacity();
 static FLIGHTS: Spinlock<Vec<Flight>> = Spinlock::new(Vec::new());
 static REAP: AtomicBool = AtomicBool::new(false);
 static FORK_CLEANUP: AtomicBool = AtomicBool::new(false);
@@ -73,7 +49,10 @@ enum Record
     Scan,
     Write,
     Resource,
-    Application
+    Application,
+    Metadata,
+    Stream,
+    Group
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key
@@ -87,7 +66,9 @@ struct Key
     fork:      u32,
     capacity:  usize,
     cursor:    DirectoryScanCursor,
-    resource:  Option<(ResourceKey, usize)>
+    resource:  Option<(ResourceKey, usize)>,
+    when:      u64,
+    metadata:  Option<[u8; 64]>
 }
 enum Step
 {
@@ -105,6 +86,9 @@ enum Step
     Write(writes::State),
     Resource(Box<resources::State>),
     Application(Box<application::State>),
+    Metadata(metadata::State),
+    Stream(streams::State),
+    Group(groups::State),
     Scan(DirectoryScanCursor),
     Allocation
     {
@@ -204,9 +188,54 @@ enum Reply
     },
     Unmounted,
     NoHandler,
-    Application(Box<super::super::application::Loaded>)
+    Group
+    {
+        handle:   u32,
+        progress: fs::IconMoveProgress
+    },
+    Application(Box<super::super::application::Loaded>),
+    Stream
+    {
+        handle:    u32,
+        completed: bool,
+        entry:     CatalogInfo,
+        bytes:     Vec<u8>
+    }
 }
 
+pub(crate) fn abandon_document_io(owner: u64, thread: u64, volume: u32, cnid: u32,
+                                  application: bool)
+                                  -> bool
+{
+    let mut flights = FLIGHTS.lock();
+    let Some(flight) = flights.iter_mut().find(|flight| {
+                                             flight.owner == owner
+                                             && flight.thread == thread
+                                             && flight.key.volume == volume
+                                             && flight.key.cnid == cnid
+                                             && if application
+                                             {
+                                                 flight.key.record == Record::Application
+                                             }
+                                             else
+                                             {
+                                                 flight.key.record == Record::File
+                                                 && flight.key.operation == CATALOG
+                                             }
+                                         })
+    else
+    {
+        return false;
+    };
+    flight.abandon();
+    REAP.store(true, Ordering::Release);
+    true
+}
+pub(crate) fn current_io_pending() -> bool
+{
+    let thread = crate::context::current_thread().0;
+    FLIGHTS.lock().iter().any(|flight| flight.thread == thread && !flight.abandoned)
+}
 fn files<T>(call: impl FnOnce(&mut super::Manager) -> Result<T, Status>) -> Result<T, Status>
 {
     crate::kernel::with_files(call).map_err(crate::state::AccessError::status)?
@@ -237,10 +266,21 @@ pub(in crate::toolbox::files) fn submit_args(provider: u32, op: Operation, args:
         | Operation::BeginReplace => fs::MAX_METADATA_BYTES,
         Operation::Scan => 4 + fs::MAX_METADATA_BYTES,
         Operation::FinishWrite => fs::MAX_WRITE_RECEIPT_BYTES,
+        Operation::SetMetadata | Operation::Rename | Operation::Move | Operation::Remove =>
+        {
+            4 + fs::MAX_METADATA_BYTES
+        }
         Operation::AbortWrite => fs::MAX_ABORT_RECEIPT_BYTES,
         Operation::Open => 16,
         Operation::CheckDirectory => 33,
-        Operation::Read => usize::try_from(args.length).map_err(|_| BAD_ARGUMENT)?,
+        Operation::BeginIconMoves | Operation::StepIconMoves | Operation::AbortIconMoves =>
+        {
+            fs::ICON_MOVE_PROGRESS_BYTES
+        }
+        Operation::Read | Operation::ReadWrite =>
+        {
+            usize::try_from(args.length).map_err(|_| BAD_ARGUMENT)?
+        }
         _ => 0
     };
     crate::drivers::submit_background_to(provider,
@@ -355,6 +395,9 @@ fn advance(mut flight: Flight) -> Progress
         Step::Write(_) => writes::advance(flight, result, never_sent),
         Step::Resource(_) => resources::advance(flight, result),
         Step::Application(_) => application::advance(flight, result, never_sent),
+        Step::Metadata(_) => metadata::advance(flight, result, never_sent),
+        Step::Stream(_) => streams::advance(flight, result, never_sent),
+        Step::Group(_) => groups::advance(flight, result, never_sent),
         Step::Scan(cursor) =>
         {
             let result = result.and_then(|bytes| super::scan::reply(cursor, &bytes));
@@ -530,7 +573,11 @@ fn reply(call: &mut FileCall, output: &mut [u8], result: Result<Reply, Status>) 
             call.length = resource;
             OK
         }
-        Ok(Reply::Scan(_) | Reply::Resource(_) | Reply::Application(_)) => BAD_ABI,
+        Ok(Reply::Scan(_)
+           | Reply::Resource(_)
+           | Reply::Application(_)
+           | Reply::Stream { .. }
+           | Reply::Group { .. }) => BAD_ABI,
         Ok(Reply::Bytes(bytes)) =>
         {
             call.length = bytes.len() as u64;
@@ -657,7 +704,9 @@ pub(crate) fn request_scan(owner: u64, call: &mut FileScanCall) -> Status
                     fork:      0,
                     capacity:  0,
                     cursor:    call.cursor,
-                    resource:  None };
+                    resource:  None,
+                    metadata:  None,
+                    when:      0 };
     match claim(owner, thread, key, "")
     {
         Ok(Some(flight)) =>
@@ -710,7 +759,7 @@ pub(crate) fn request_scan(owner: u64, call: &mut FileScanCall) -> Status
 pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut [u8]) -> Status
 {
     // Replay identity includes resident-derived paths as well as app strings.
-    let name = if call.operation == TRASH_DIRECTORY && call.index == 0 { "Trash" } else { name };
+    let name = if call.operation == TRASH_DIRECTORY { "Trash" } else { name };
     let thread = crate::context::current_thread().0;
     if thread <= 1
     {
@@ -725,7 +774,16 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
                     fork:      call.fork,
                     capacity:  output.len(),
                     cursor:    DirectoryScanCursor::default(),
-                    resource:  None };
+                    resource:  None,
+                    metadata:  None,
+                    when:      if matches!(call.operation, NEW_FOLDER | TRASH_DIRECTORY)
+                    {
+                        call.position
+                    }
+                    else
+                    {
+                        0
+                    } };
     match claim(owner, thread, key, name)
     {
         Ok(Some(flight)) =>
@@ -747,7 +805,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
     {
         return writes::folder(owner, thread, key, call, name);
     }
-    if call.operation == TRASH_DIRECTORY && call.index == 0
+    if call.operation == TRASH_DIRECTORY
     {
         return paths::start(owner, thread, key, call, name);
     }
@@ -924,6 +982,19 @@ pub(crate) fn abandon_thread(thread: u64)
 }
 pub(crate) fn pump()
 {
+    transfer::pump();
+    if super::super::groups::needs_cleanup()
+    {
+        groups::pump_cleanup();
+    }
+    if super::super::streams::needs_cleanup()
+    {
+        streams::pump_cleanup();
+        let _ = files(|manager| {
+            manager.pump_stream_cleanup();
+            Ok(())
+        });
+    }
     super::super::watch::pump();
     forks::pump_cleanup();
     writes::pump_cleanup();

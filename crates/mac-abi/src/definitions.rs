@@ -70,7 +70,8 @@ pub struct ControlDefinitionState
     pub minimum:      i16,
     pub maximum:      i16,
     pub reserved:     i16,
-    pub font:         crate::quickdraw::FontSelection
+    pub font:         crate::quickdraw::FontSelection,
+    pub progress:     crate::controls::ProgressRange
 }
 impl Default for ControlDefinitionState
 {
@@ -85,7 +86,8 @@ impl Default for ControlDefinitionState
                minimum:      0,
                maximum:      1,
                reserved:     0,
-               font:         Default::default() }
+               font:         Default::default(),
+               progress:     Default::default() }
     }
 }
 impl ControlDefinitionState

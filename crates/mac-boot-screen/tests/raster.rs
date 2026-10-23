@@ -1,44 +1,18 @@
-use mac_boot_screen::{HAPPY, PROGRESS, Panel, Raster};
+use mac_boot_screen::{HAPPY, PROGRESS, Raster};
 #[test]
-fn progress_changes_only_its_new_pixels_and_no_change_does_no_work()
+fn welcome_panel_leaves_progress_to_the_control_manager()
 {
     let mut pixels = vec![0x123456; 640 * 480];
-    let mut panel = Panel::begin(&mut Raster::new(&mut pixels, 640, 480).unwrap(), 7, HAPPY);
+    mac_boot_screen::draw_panel(&mut Raster::new(&mut pixels, 640, 480).unwrap(), HAPPY);
     assert_eq!(pixels[0], 0x878787);
     assert_eq!(pixels[1], 0xc0c0c0);
-    let before = pixels.clone();
-    assert!(panel.advance(&mut Raster::new(&mut pixels, 640, 480).unwrap(), 0).is_none());
-    assert_eq!(pixels, before);
-    for stage in 1..=7
+    for y in PROGRESS.top..PROGRESS.bottom
     {
-        let before = pixels.clone();
-        let damage =
-            panel.advance(&mut Raster::new(&mut pixels, 640, 480).unwrap(), stage).unwrap();
-        assert!(damage.left > PROGRESS.left
-                && damage.right < PROGRESS.right
-                && damage.top > PROGRESS.top
-                && damage.bottom < PROGRESS.bottom);
-        let mut changed = 0;
-        for y in 0..480
+        for x in PROGRESS.left..PROGRESS.right
         {
-            for x in 0..640
-            {
-                if pixels[y * 640 + x] != before[y * 640 + x]
-                {
-                    changed += 1;
-                    assert!(x >= damage.left as usize
-                            && x < damage.right as usize
-                            && y >= damage.top as usize
-                            && y < damage.bottom as usize);
-                }
-            }
+            assert_eq!(pixels[y as usize * 640 + x as usize], 0xffffff);
         }
-        assert!(changed > 0);
-        let before = pixels.clone();
-        assert!(panel.advance(&mut Raster::new(&mut pixels, 640, 480).unwrap(), stage).is_none());
-        assert_eq!(pixels, before);
     }
-    assert!(panel.advance(&mut Raster::new(&mut pixels, 640, 480).unwrap(), 255).is_none());
 }
 #[test]
 fn pattern_handles_small_surfaces_and_icon_mask_preserves_its_surroundings()

@@ -18,11 +18,30 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> i32
     };
     let _ = system.log("DESKTOP_READY: public host filesystem fixture\n");
     let gate = unsafe { (*services).trap };
-    match cases::check(&system, gate).and_then(|()| cases::check_legacy_writer(&system, gate))
+    let result = if cfg!(any(feature = "disconnect-source", feature = "disconnect-destination"))
+    {
+        cases::check_disconnect(&system, cfg!(feature = "disconnect-source"))
+    }
+    else if cfg!(feature = "metadata-restore")
+    {
+        cases::check_metadata_restored(&system)
+    }
+    else
+    {
+        cases::check(&system, gate).and_then(|()| cases::check_legacy_writer(&system, gate))
+    };
+    match result
     {
         Ok(()) =>
         {
-            let _ = system.log("HOST_FILESYSTEM_PASS\n");
+            let _ = system.log(if cfg!(feature = "metadata-restore")
+                               {
+                                   "HOST_METADATA_RESTORE_PASS\n"
+                               }
+                               else
+                               {
+                                   "HOST_FILESYSTEM_PASS\n"
+                               });
             0
         }
         Err(error) =>

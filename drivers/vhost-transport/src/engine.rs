@@ -6,8 +6,10 @@ use mac_driver::{Completion, Error, Phase, Request, Result};
 use mac_host_protocol::{self as wire, Arguments, Operation, Receiver};
 pub const FRAGMENT: usize = 4096;
 pub const MAX_PACKET: usize = wire::HEADER_BYTES + wire::MAX_PAYLOAD;
+pub const STALL_MICROSECONDS: u64 = 5_000_000;
 pub trait Channel
 {
+    fn monotonic_microseconds(&self) -> u64;
     /// Progress control notifications and reclaim bounded TX completions.
     /// False means initial connection is not ready; a lost established
     /// connection is an error and poisons this incarnation.
@@ -37,12 +39,13 @@ impl Default for Buffers
 }
 pub struct Engine
 {
-    tx_len:    usize,
-    tx_sent:   usize,
-    ticket:    u32,
-    operation: u32,
-    receiver:  Option<Receiver>,
-    poisoned:  bool
+    tx_len:        usize,
+    tx_sent:       usize,
+    ticket:        u32,
+    operation:     u32,
+    receiver:      Option<Receiver>,
+    poisoned:      bool,
+    last_progress: u64
 }
 impl Default for Engine
 {
@@ -55,12 +58,13 @@ impl Engine
 {
     pub const fn new() -> Self
     {
-        Self { tx_len:    0,
-               tx_sent:   0,
-               ticket:    0,
-               operation: 0,
-               receiver:  None,
-               poisoned:  false }
+        Self { tx_len:        0,
+               tx_sent:       0,
+               ticket:        0,
+               operation:     0,
+               receiver:      None,
+               poisoned:      false,
+               last_progress: 0 }
     }
 
     pub fn request(&mut self, channel: &mut impl Channel, request: Request<'_>, output: &mut [u8],
@@ -123,6 +127,7 @@ impl Engine
             self.tx_len = wire::HEADER_BYTES + arguments.payload.len();
             self.tx_sent = 0;
             self.ticket = request.ticket;
+            self.last_progress = channel.monotonic_microseconds();
             self.operation = request.operation;
             self.receiver = Some(Receiver::new(request.ticket, operation));
         }
@@ -133,6 +138,14 @@ impl Engine
                || !request.input.is_empty()
             {
                 return Err(Error(NOT_FOUND));
+            }
+            // A virtconsole peer can disappear without a PORT_OPEN edge.
+            // Bound every admitted packet by progress, including cancellation.
+            // Never reuse this incarnation after an unknown partial reply.
+            if channel.monotonic_microseconds().saturating_sub(self.last_progress)
+               >= STALL_MICROSECONDS
+            {
+                return Err(Error(IO_ERROR));
             }
             if !channel.poll()?
             {
@@ -165,6 +178,10 @@ impl Engine
                 return Err(Error(BAD_ABI));
             }
             self.tx_sent += count;
+            if count != 0
+            {
+                self.last_progress = channel.monotonic_microseconds();
+            }
             if count == 0
             {
                 break;
@@ -179,6 +196,7 @@ impl Engine
                 break;
             }
             let bytes = fragment.get(..count).ok_or(Error(BAD_ABI))?;
+            self.last_progress = channel.monotonic_microseconds();
             let receiver = self.receiver.as_mut().ok_or(Error(BAD_ABI))?;
             if receiver.feed(bytes, &mut buffers.payload).map_err(|_| Error(BAD_ABI))? != count
             {

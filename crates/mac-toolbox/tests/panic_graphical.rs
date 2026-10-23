@@ -52,7 +52,7 @@ fn application_panics_show_complete_diagnostics_and_leave_the_desktop_usable()
     assert_eq!(capture["owned_vm_exited"], true);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:", "SYSTEM_ALLOCATION_FAILED:",
-                    "PANIC_TEST_ERROR", "TEXTEDIT_EXERCISER_ERROR", "PROCESS_ACTION_FAILED"]
+                    "PANIC_TEST_ERROR", "TEXT_EDIT_ERROR", "PROCESS_ACTION_FAILED"]
     {
         assert!(!serial.contains(failure), "unexpected {failure}:\n{serial}");
     }

@@ -101,3 +101,18 @@ resource fork. It exercises the complete 64 KiB history wrap, distance 65,536,
 length boundaries 64/65/1,088 and maximum match length 32,832.
 `method13-bad-crc-v5.sit` changes only the declared data checksum; its resource
 fork and catalog checksums remain valid, allowing recovery to be tested.
+
+
+## Archive-in-archive ownership vectors
+
+`archive-in-archive-stored.sit` and `archive-in-archive-rle.sit` contain one
+`Inner.sit` document (type/creator `SIT!`), whose data fork is the independently
+produced `nested-v1.sit` above. The small Python writer
+`generate_archive_in_archive.py` emits classic headers, independent CRC16 and
+literal RLE90 escapes. Run it directly to reproduce both files. These are
+project-owned synthetic wrappers, not captures from an original Macintosh.
+
+They exercise the actual resident backing-fork broker recursively calling the
+same StuffIt driver: outer mount, inner mount, forward/backward reads through
+both compressed layers, active-lease eject refusal and ordered teardown. Merely
+browsing nested folders in one archive does not establish this behavior.

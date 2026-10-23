@@ -112,11 +112,19 @@ impl Manager
            }
            else if call.operation == CREATE_STANDARD
            {
-               0
+               super::definition_id(&Spec::from_call(call).call(DRAW_STANDARD))?
            }
            else
            {
-               i16::from(self.get(call.id, owner)?.scrollbar)
+               let o = self.get(call.id, owner)?;
+               super::definition_id(&o.spec.call(if o.scrollbar
+                                                 {
+                                                     DRAW_SCROLLBAR
+                                                 }
+                                                 else
+                                                 {
+                                                     DRAW_STANDARD
+                                                 }))?
            })
     }
 
@@ -331,6 +339,13 @@ impl Manager
             let mut state = o.spec.call(if o.scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD });
             let mut drawing = super::prepare(&mut state, entry, gate)?.ok_or(BAD_ARGUMENT)?;
             drawing.id = call.id;
+            if changed
+               && operation == CONFIGURE_OBJECT
+               && previous.0.bounds == o.spec.standard.bounds
+               && previous.2 == o.spec.procedure
+            {
+                drawing.change_from(previous.0)?;
+            }
             Ok(Some(drawing))
         }
         else

@@ -1,6 +1,6 @@
-# Standard CDEF 0
+# Buttons, Checkboxes and Radio Buttons CDEF
 
-The native resource implements push buttons, checkboxes and radio buttons (procedures 0/1/2), plus their use-window-font procedures 8/9/10. Unique rendering and hit behavior live in `src/main.rs`; the resident Control Manager handles resource resolution, validation and retained replay.
+`CDEF_BUTTONS` is System resource `CDEF 0`, named **Buttons, Checkboxes and Radio Buttons**. The `native-buttons-cdef` package in `definitions/buttons` implements push buttons, checkboxes and radio buttons (procedures 0/1/2), plus their use-window-font procedures 8/9/10. Unique rendering and hit behavior live in `src/main.rs`; the resident Control Manager handles resource resolution, validation and retained replay.
 
 Original System 7.6.1 CDEF 0 is 1,350 bytes, SHA256 `b647566a3fe540ae1e2477e6c3ced3d3a33cfffc131fcd8fbfa22c5774cc0dde`. Its disassembly and captured states are under `working/control-tracking-reference` and `results/control-tracking-reference`. The reconstruction follows the original variation mask, rounded-button corner size, 12×12 checkbox/radio geometry, odd-value mark test, full-rectangle hit test, and multiline title baseline formula. The bounded radio masks encode glyph geometry only; buttons, captions and placement remain dynamic.
 

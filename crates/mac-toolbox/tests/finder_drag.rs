@@ -21,6 +21,49 @@ impl Drop for Media
         }
     }
 }
+#[test]
+#[ignore = "requires current private image, QEMU and real host exports"]
+fn finder_transfers_external_applications_and_documents_with_drop_time_policy()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let output =
+        root.join("results/system7").join(format!("filesystem-workflows-{}", std::process::id()));
+    let result = Command::new("python3").arg(root.join("System7/scripts/\
+                                                        capture_filesystem_workflows.py"))
+                                        .arg("--output")
+                                        .arg(&output)
+                                        .output()
+                                        .unwrap();
+    assert!(result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr));
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(report["original_before"], report["original_after"]);
+    assert_eq!(fs::read(output.join("native-cursor.rsrc")).unwrap(),
+               fs::read(output.join("original-cursor.rsrc")).unwrap(),
+               "both-fork application copy/move changed resources");
+    assert_eq!(fs::read(output.join("exported/children/Note.txt copy/data")).unwrap(),
+               b"External document\n");
+    assert_eq!(fs::read(output.join("exported/children/Trash/children/Note.txt/data")).unwrap(),
+               b"External document\n");
+    assert!(!output.join("Writable/Note.txt").exists());
+    assert!(!output.join("Writable/Cursor Test").exists());
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    assert_eq!(serial.matches("FINDER_DRAG_TRANSFER_COMMITTED\n").count(), 5, "{serial}");
+    assert_eq!(serial.matches("FINDER_DRAG_ENDED copied\n").count(), 3, "{serial}");
+    assert_eq!(serial.matches("FINDER_DRAG_ENDED moved\n").count(), 4, "{serial}");
+    assert_eq!(serial.matches("FINDER_DRAG_ENDED rejected\n").count(), 3, "{serial}");
+    assert_eq!(serial.matches("FINDER_DRAG_VOLUME_UNMOUNTED\n").count(), 2, "{serial}");
+    assert_eq!(serial.matches("TEXT_EDIT_DOCUMENT_OPEN\n").count(), 1, "{serial}");
+    assert!(serial.contains("CURSOR_TEST_READY\n"), "{serial}");
+    for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:", "SYSTEM_ALLOCATION_FAILED:",
+                    "FINDER_ACTION_FAILED", "FINDER_ERROR", "TEXT_EDIT_ERROR"]
+    {
+        assert!(!serial.contains(failure), "{serial}");
+    }
+}
 fn catalog(path: &Path) -> BTreeMap<String, CatalogInfo>
 {
     mac_system::testing::with_file_disk(path, true, Default::default(), |services| {
@@ -55,7 +98,7 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
     let report: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
     assert_eq!(report["original_before"], report["original_after"]);
-    for scenario in ["unsupported-copy-0", "unsupported-copy-1", "failed-drop-0", "failed-drop-1"]
+    for scenario in ["incompatible-app-0", "incompatible-app-1", "failed-drop-0", "failed-drop-1"]
     {
         for selected in ["panic", "cursor", "quickdraw"]
         {
@@ -161,7 +204,7 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
                         Point { h: 64,
                                 v: 0 }
                     }
-                    "ResEdit" =>
+                    "Res Edit" =>
                     {
                         Point { h: 192,
                                 v: 0 }
@@ -186,10 +229,14 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
         }
     }
     let serial = fs::read_to_string(output.join("boot-1.log")).unwrap();
-    assert_eq!(serial.matches("FINDER_DRAG_MOVE_COMMITTED\n").count(), 2, "{serial}");
+    assert_eq!(serial.matches("FINDER_DRAG_TRANSFER_COMMITTED\n").count(), 2, "{serial}");
     assert_eq!(serial.matches("FINDER_DRAG_ENDED moved\n").count(), 2, "{serial}");
-    assert_eq!(serial.matches("FINDER_ACTION_FAILED status=-11").count(), 2, "{serial}");
-    assert_eq!(serial.matches("FINDER_ACTION_FAILED ").count(), 2, "{serial}");
+    assert_eq!(serial.matches("AlreadyExists (-11)").count(), 2, "{serial}");
+    assert_eq!(serial.matches("Could not transfer \"QuickDraw Test\": an item with that name \
+                               already exists")
+                     .count(),
+               2,
+               "{serial}");
     assert_eq!(serial.matches("FINDER_DRAG_ENDED rejected\n").count(), 5, "{serial}");
     assert_eq!(serial.matches("FINDER_ALERT_DISMISSED\n").count(), 2, "{serial}");
     for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:"]

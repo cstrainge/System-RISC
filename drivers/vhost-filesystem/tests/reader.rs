@@ -356,6 +356,7 @@ fn native_writer_creates_both_forks_replaces_atomically_and_keeps_unrelated_dire
                                            data_length: 3,
                                            resource_length: 2,
                                            preserve_resources: false,
+                                           properties: None,
                                            when: when + 1 })).unwrap();
     run(filesystem.write_chunk(volume, replacement, Fork::Data, b"new")).unwrap();
     run(filesystem.write_chunk(volume, replacement, Fork::Resource, b"rs")).unwrap();
@@ -502,10 +503,14 @@ fn cleanup_failure_after_publication_keeps_actual_result_and_does_not_repeat_com
     assert_eq!(run(fs.finish_write(volume, token)).unwrap(), id);
     let actual = &fs.transport().commits;
     assert_eq!(&actual[..commits.len()], commits);
-    // The failure closed the updated volume record before the nested parent's
-    // update could run. Retry finishes that remaining record exactly once; it
-    // must not republish the file, reserve an ID or repeat the volume update.
-    assert_eq!(&actual[commits.len()..], &[mac_fork_file::DIRECTORY_RECORD.as_bytes().to_vec()]);
+    // Identity annotations and parent/volume dates are publication obligations
+    // too. Retry may finish those, but must never republish the user file.
+    assert_eq!(actual.iter().filter(|name| name.as_slice() == b"Published").count(), 1);
+    let suffix = &actual[commits.len()..];
+    for (at, name) in suffix.iter().enumerate()
+    {
+        assert!(!suffix[..at].contains(name), "cleanup repeated a metadata publication");
+    }
     assert_eq!(fs.cached_node(volume, parent).unwrap().metadata.modified, 30);
     run(fs.unmount(volume)).unwrap();
     let physical = Volume::open(&temp.0).unwrap();
@@ -539,14 +544,20 @@ fn abort_after_publication_reports_actual_metadata_without_a_second_commit()
     fs.transport().fail_next = Some(Operation::Close);
     assert_eq!(serve(&mut fs, O::FinishWrite, a).unwrap_err().cause,
                Cause::Host(mac_host_protocol::status::IO));
-    let commits = fs.transport().calls.iter().filter(|&&op| op == Operation::Commit).count();
+    let commits =
+        fs.transport().commits.iter().filter(|name| name.as_slice() == b"Published abort").count();
     let out = serve(&mut fs, O::AbortWrite, a).unwrap();
     let receipt = wire::AbortReceipt::decode(&out).unwrap().0.unwrap();
     assert_eq!(receipt.file.id, id);
     assert_eq!(receipt.file.name, "Published abort");
     assert_eq!(receipt.file.modified, 55);
     assert_eq!(receipt.volume.root.modified, 55);
-    assert_eq!(fs.transport().calls.iter().filter(|&&op| op == Operation::Commit).count(), commits);
+    assert_eq!(fs.transport()
+                 .commits
+                 .iter()
+                 .filter(|name| name.as_slice() == b"Published abort")
+                 .count(),
+               commits);
     serve(&mut fs,
           O::Unmount,
           A { token: 0,
@@ -562,11 +573,11 @@ fn casefold_collisions_invalid_names_and_read_only_writes_do_not_reserve_catalog
     use vhost_filesystem::Create;
     let (temp, _, _, _) = seeded();
     let physical = Volume::open(&temp.0).unwrap();
-    let initial = physical.root().unwrap().metadata.next_catalog_id;
     let mut fs = Filesystem::new(Host::new(&temp, true));
     let mut volumes = Table::new(ObjectKind::Volumes);
     let volume = volumes.insert(()).unwrap();
     run(fs.mount(volume, 0)).unwrap();
+    let initial = physical.root().unwrap().metadata.next_catalog_id;
     let parent = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
     let mut writes = Table::new(ObjectKind::FileWrites);
     let token = writes.insert(()).unwrap();
@@ -1107,6 +1118,11 @@ fn metadata_failures_retry_the_consumed_child_instead_of_skipping_it()
         let mut volumes = Table::new(ObjectKind::Volumes);
         let volume = volumes.insert(()).unwrap();
         run(filesystem.mount(volume, 0)).unwrap();
+        let directory_baseline = filesystem.transport()
+                                           .calls
+                                           .iter()
+                                           .filter(|&&op| op == Operation::OpenDirectory)
+                                           .count();
         filesystem.transport().fail_next = Some(failure);
         assert_eq!(run(filesystem.scan(volume, 2)).unwrap_err().cause,
                    Cause::Host(mac_host_protocol::status::IO));
@@ -1120,7 +1136,7 @@ fn metadata_failures_retry_the_consumed_child_instead_of_skipping_it()
                              .iter()
                              .filter(|&&op| op == Operation::OpenDirectory)
                              .count(),
-                   1,
+                   directory_baseline + 1,
                    "retry reopened an owned directory");
         assert_eq!(filesystem.transport()
                              .calls
@@ -1318,5 +1334,430 @@ fn plain_open_binds_catalog_metadata_to_the_exact_snapshot_revision()
     run(fs.open(volume, id, token)).unwrap();
     assert_eq!(run(fs.read(volume, token, Fork::Data, 0, 3)).unwrap(), b"new");
     run(fs.close_file(volume, token)).unwrap();
+    run(fs.unmount(volume)).unwrap();
+}
+
+#[test]
+fn small_metadata_edits_preserve_plain_host_bytes_and_identity_across_rename_and_reboot()
+{
+    use mac_filesystem_interface::MetadataPatch;
+    let temp = Temp::new();
+    Volume::initialize(&temp.0, "Metadata").unwrap();
+    std::fs::write(temp.0.join("plain.txt"), b"original host bytes").unwrap();
+    std::fs::create_dir(temp.0.join("raw folder")).unwrap();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let original = run(fs.lookup(volume, 2, "plain.txt")).unwrap().metadata.clone();
+    let metadata_when = fs.info(volume).unwrap().metadata.modified;
+    let mut writes = Table::new(ObjectKind::FileWrites);
+    let token = writes.insert(()).unwrap();
+    let mut patch = MetadataPatch { comment: Some("native café 🦀"),
+                                    ..Default::default() };
+    patch.finder_mask[8] = 1;
+    patch.finder_info[8] = 1;
+    patch.finder_mask[10..14].fill(255);
+    patch.finder_info[10..14].copy_from_slice(&[0, 20, 0, 30]);
+    fs.transport().trace.clear();
+    assert!(run(fs.begin_metadata(volume, original.catalog_id, token, patch, metadata_when)).unwrap());
+    assert_eq!(fs.cached_node(volume, original.catalog_id).unwrap().metadata.comment, "");
+    assert_eq!(run(fs.write_chunk(volume, token, Fork::Data, b"no")).unwrap_err().cause,
+               Cause::Invalid);
+    run(fs.finish_write(volume, token)).unwrap();
+    assert_eq!(std::fs::read(temp.0.join("plain.txt")).unwrap(), b"original host bytes");
+    let saved = fs.cached_node(volume, original.catalog_id).unwrap().metadata.clone();
+    assert_eq!(saved.comment, "native café 🦀");
+    assert_eq!(saved.modified, original.modified);
+    assert_eq!(saved.created, original.created);
+    assert_eq!(&saved.finder_info[..8], &[0; 8]);
+    assert_eq!(&saved.finder_info[10..14], &[0, 20, 0, 30]);
+    assert_eq!(fs.transport()
+                 .trace
+                 .iter()
+                 .filter(|t| t.0 == Operation::Write)
+                 .map(|t| t.3)
+                 .sum::<usize>(),
+               mac_fork_file::annotation::BYTES);
+    let calls = fs.transport().calls.len();
+    assert!(!run(fs.begin_metadata(volume, original.catalog_id, token, patch, metadata_when)).unwrap());
+    assert_eq!(fs.transport().calls.len(), calls, "no-change edit performed host I/O");
+    let raw_folder = run(fs.lookup(volume, 2, "raw folder")).unwrap().metadata.catalog_id;
+    assert!(run(fs.begin_metadata(volume,
+                                  raw_folder,
+                                  token,
+                                  MetadataPatch { comment: Some("folder state"),
+                                                  ..Default::default() },
+                                  metadata_when)).unwrap());
+    run(fs.finish_write(volume, token)).unwrap();
+    run(fs.unmount(volume)).unwrap();
+    drop(fs);
+    std::fs::rename(temp.0.join("plain.txt"), temp.0.join("host renamed.txt")).unwrap();
+    let mut fs = Filesystem::new(Host::new(&temp, false));
+    let next = volumes.insert(()).unwrap();
+    run(fs.mount(next, 0)).unwrap();
+    let restored = run(fs.lookup(next, 2, "host renamed.txt")).unwrap().metadata.clone();
+    assert_eq!(restored.catalog_id, original.catalog_id);
+    assert_eq!(restored.comment, saved.comment);
+    assert_eq!(restored.finder_info, saved.finder_info);
+    assert_eq!(run(fs.lookup(next, 2, "raw folder")).unwrap().metadata.catalog_id, raw_folder);
+    assert_eq!(fs.cached_node(next, raw_folder).unwrap().metadata.comment, "folder state");
+    assert_eq!(run(fs.begin_metadata(next, restored.catalog_id, token, patch, metadata_when)).unwrap_err().cause,
+               Cause::ReadOnly);
+    run(fs.unmount(next)).unwrap();
+}
+
+#[test]
+fn publishing_a_recursive_tree_keeps_destination_and_descendant_revision_caches_valid()
+{
+    use mac_filesystem_interface::{FileProperties, MetadataPatch};
+    use vhost_filesystem::Create;
+    let (temp, _, _, _) = seeded();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let mut marks = Table::new(ObjectKind::FileWrites);
+    let token = marks.insert(()).unwrap();
+    let mkdir = |fs: &mut Filesystem<Host>, parent, name| {
+        let id = run(fs.begin_directory(Create { volume,
+                                                 parent,
+                                                 token,
+                                                 properties: FileProperties::fresh(name, 42),
+                                                 data_length: 0,
+                                                 resource_length: 0,
+                                                 when: 42 })).unwrap();
+        run(fs.finish_write(volume, token)).unwrap();
+        id
+    };
+    let target = mkdir(&mut fs, 2, "Target");
+    let stage = mkdir(&mut fs, 2, ".System RISC transfer test");
+    let root = mkdir(&mut fs, stage, "Source");
+    let child = mkdir(&mut fs, root, "Child");
+    for (parent, name) in [(child, "Data"), (root, "Empty")]
+    {
+        run(fs.begin_create(Create { volume,
+                                     parent,
+                                     token,
+                                     properties: FileProperties::fresh(name, 42),
+                                     data_length: 0,
+                                     resource_length: 0,
+                                     when: 42 })).unwrap();
+        run(fs.finish_write(volume, token)).unwrap();
+    }
+    for id in [child, root]
+    {
+        assert!(run(fs.begin_metadata(volume,
+                                      id,
+                                      token,
+                                      MetadataPatch { modified: Some(12),
+                                                      comment: Some("Copied"),
+                                                      ..Default::default() },
+                                      43)).unwrap());
+        run(fs.finish_write(volume, token)).unwrap();
+    }
+    assert!(run(fs.begin_rename(volume, root, target, "Source", token, 44)).unwrap());
+    run(fs.finish_write(volume, token)).unwrap();
+    for id in [root]
+    {
+        assert!(run(fs.begin_metadata(volume,
+                                      id,
+                                      token,
+                                      MetadataPatch { modified: Some(11),
+                                                      ..Default::default() },
+                                      44)).unwrap());
+        run(fs.finish_write(volume, token)).unwrap();
+    }
+    run(fs.begin_remove(volume, stage, token, 44)).unwrap();
+    run(fs.finish_write(volume, token)).unwrap();
+    assert_eq!(run(fs.lookup(volume, target, "Source")).unwrap().metadata.catalog_id, root);
+    assert_eq!(run(fs.lookup(volume, root, "Child")).unwrap().metadata.catalog_id, child);
+    assert_eq!(run(fs.lookup(volume, child, "Data")).unwrap().metadata.name, "Data");
+    std::fs::write(temp.0.join("Target/Source/Child/Data"), b"changed externally").unwrap();
+    assert_eq!(run(fs.scan(volume, child)).unwrap_err().cause,
+               Cause::Stale,
+               "moving a directory may not suppress real changes to its children");
+    run(fs.unmount(volume)).unwrap();
+}
+
+#[test]
+fn root_view_state_and_explicit_date_restoration_keep_exact_metadata_receipts()
+{
+    use mac_filesystem_interface::MetadataPatch;
+    let (temp, _, _, _) = seeded();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let original = fs.info(volume).unwrap().metadata.clone();
+    let mut writes = Table::new(ObjectKind::FileWrites);
+    let token = writes.insert(()).unwrap();
+    let when = original.modified + 1_000_000;
+    let mut view = MetadataPatch::default();
+    view.finder_mask[..8].fill(255);
+    view.finder_info[..8].copy_from_slice(&[0, 40, 0, 60, 1, 40, 1, 80]);
+    assert!(run(fs.begin_metadata(volume, 2, token, view, when)).unwrap());
+    let confirmed = fs.cached_node(volume, 2).unwrap().metadata.clone();
+    run(fs.finish_write(volume, token)).unwrap();
+    let saved = fs.cached_node(volume, 2).unwrap().metadata.clone();
+    assert_eq!(saved.modified, original.modified);
+    assert_eq!(&saved.finder_info[..8], &view.finder_info[..8]);
+    assert_eq!(saved.revision, confirmed.revision + 1);
+    assert_eq!(fs.info(volume).unwrap().metadata, saved);
+    // Transfer rollback supplies the old date explicitly. The operation's own
+    // timestamp must not overwrite the restoration during volume publication.
+    let restored_date = original.modified - 1;
+    assert!(run(fs.begin_metadata(volume,
+                                  2,
+                                  token,
+                                  MetadataPatch { modified: Some(restored_date),
+                                                  ..Default::default() },
+                                  when)).unwrap());
+    run(fs.finish_write(volume, token)).unwrap();
+    assert_eq!(fs.info(volume).unwrap().metadata.modified, restored_date);
+    run(fs.unmount(volume)).unwrap();
+    let remount = volumes.insert(()).unwrap();
+    run(fs.mount(remount, 0)).unwrap();
+    assert_eq!(fs.info(remount).unwrap().metadata.modified, restored_date);
+    assert_eq!(&fs.info(remount).unwrap().metadata.finder_info[..8], &view.finder_info[..8]);
+    run(fs.unmount(remount)).unwrap();
+}
+
+#[test]
+fn wrapped_file_metadata_never_reads_or_rewrites_forks_and_direct_folder_records_persist()
+{
+    use mac_filesystem_interface::MetadataPatch;
+    let (temp, file, _, _) = seeded();
+    let before = std::fs::read(temp.0.join("Tools/Café")).unwrap();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let folder = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
+    run(fs.lookup(volume, folder, "Café")).unwrap();
+    let metadata_when = fs.info(volume).unwrap().metadata.modified;
+    let mut writes = Table::new(ObjectKind::FileWrites);
+    let token = writes.insert(()).unwrap();
+    fs.transport().trace.clear();
+    assert!(run(fs.begin_metadata(volume,
+                                  file,
+                                  token,
+                                  MetadataPatch { comment: Some("resource app"),
+                                                  ..Default::default() },
+                                  metadata_when)).unwrap());
+    run(fs.finish_write(volume, token)).unwrap();
+    assert!(fs.transport()
+              .trace
+              .iter()
+              .filter(|t| t.0 == Operation::Read)
+              .all(|t| t.2 < 1024 && t.3 <= 1024));
+    assert_eq!(std::fs::read(temp.0.join("Tools/Café")).unwrap(), before);
+    assert!(run(fs.begin_metadata(volume,
+                                  folder,
+                                  token,
+                                  MetadataPatch { comment: Some("native directory"),
+                                                  ..Default::default() },
+                                  metadata_when)).unwrap());
+    run(fs.finish_write(volume, token)).unwrap();
+    assert_eq!(run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id, folder);
+    assert_eq!(run(fs.lookup(volume, folder, "Café")).unwrap().metadata.catalog_id, file);
+    assert!(run(fs.begin_metadata(volume,
+                                  2,
+                                  token,
+                                  MetadataPatch { comment: Some("volume root"),
+                                                  ..Default::default() },
+                                  metadata_when)).unwrap());
+    run(fs.finish_write(volume, token)).unwrap();
+    run(fs.unmount(volume)).unwrap();
+    let next = volumes.insert(()).unwrap();
+    run(fs.mount(next, 0)).unwrap();
+    assert_eq!(fs.info(next).unwrap().metadata.comment, "volume root");
+    assert_eq!(run(fs.lookup(next, 2, "Tools")).unwrap().metadata.comment, "native directory");
+    assert_eq!(run(fs.lookup(next, folder, "Café")).unwrap().metadata.comment, "resource app");
+    assert_eq!(run(fs.begin_metadata(next,
+                                     u32::MAX,
+                                     token,
+                                     MetadataPatch { comment: Some("missing"),
+                                                     ..Default::default() },
+                                     metadata_when)).unwrap_err()
+                                                    .cause,
+               Cause::NotFound);
+    run(fs.unmount(next)).unwrap();
+}
+
+#[test]
+fn metadata_failure_and_cleanup_retry_preserve_actual_publication_and_source_snapshots()
+{
+    use mac_filesystem_interface::MetadataPatch;
+    let temp = Temp::new();
+    Volume::initialize(&temp.0, "Recovery").unwrap();
+    std::fs::write(temp.0.join("raw"), b"unchanged").unwrap();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let node = run(fs.lookup(volume, 2, "raw")).unwrap().metadata.catalog_id;
+    let when = fs.info(volume).unwrap().metadata.modified;
+    let mut writes = Table::new(ObjectKind::FileWrites);
+    let token = writes.insert(()).unwrap();
+    let patch = MetadataPatch { comment: Some("committed"),
+                                ..Default::default() };
+    assert!(run(fs.begin_metadata(volume, node, token, patch, when)).unwrap());
+    fs.transport().fail_next = Some(Operation::Flush);
+    assert_eq!(run(fs.finish_write(volume, token)).unwrap_err().cause,
+               Cause::Host(mac_host_protocol::status::IO));
+    assert_eq!(fs.cached_node(volume, node).unwrap().metadata.comment, "");
+    assert!(!run(fs.abort_write(volume, token)).unwrap());
+    assert!(run(fs.begin_metadata(volume, node, token, patch, when)).unwrap());
+    let mut marks = Table::new(ObjectKind::Files);
+    let mark = marks.insert(()).unwrap();
+    run(fs.open(volume, node, mark)).unwrap();
+    fs.transport().fail_next = Some(Operation::Close);
+    assert_eq!(run(fs.finish_write(volume, token)).unwrap_err().cause,
+               Cause::Host(mac_host_protocol::status::IO));
+    assert_eq!(fs.cached_node(volume, node).unwrap().metadata.comment, "committed");
+    let commits = fs.transport().commits.len();
+    run(fs.finish_write(volume, token)).unwrap();
+    assert_eq!(fs.transport().commits.len(), commits, "cleanup replay republished metadata");
+    assert_eq!(run(fs.read(volume, mark, Fork::Data, 0, 9)).unwrap(), b"unchanged");
+    run(fs.close_file(volume, mark)).unwrap();
+    assert_eq!(std::fs::read(temp.0.join("raw")).unwrap(), b"unchanged");
+    run(fs.unmount(volume)).unwrap();
+}
+
+#[test]
+fn plain_catalog_identity_is_durable_without_saving_finder_metadata()
+{
+    let temp = Temp::new();
+    Volume::initialize(&temp.0, "Durable plain identities").unwrap();
+    std::fs::write(temp.0.join("Original"), b"host bytes").unwrap();
+    std::fs::create_dir(temp.0.join("Host Folder")).unwrap();
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let volume = volumes.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let modified = fs.info(volume).unwrap().metadata.modified;
+    let file = run(fs.lookup(volume, 2, "Original")).unwrap().metadata.catalog_id;
+    let folder = run(fs.lookup(volume, 2, "Host Folder")).unwrap().metadata.catalog_id;
+    assert_ne!(file, folder);
+    assert_eq!(fs.info(volume).unwrap().metadata.modified,
+               modified,
+               "identity bookkeeping must not change the volume's logical date");
+    run(fs.unmount(volume)).unwrap();
+    drop(fs);
+    std::fs::rename(temp.0.join("Original"), temp.0.join("Renamed by host")).unwrap();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let next = volumes.insert(()).unwrap();
+    run(fs.mount(next, 0)).unwrap();
+    assert_eq!(run(fs.lookup(next, 2, "Renamed by host")).unwrap().metadata.catalog_id, file);
+    assert_eq!(run(fs.lookup(next, 2, "Host Folder")).unwrap().metadata.catalog_id, folder);
+    assert_eq!(std::fs::read(temp.0.join("Renamed by host")).unwrap(), b"host bytes");
+    run(fs.unmount(next)).unwrap();
+    drop(fs);
+    // Keep the original incarnation pinned: recreating the path must get a new
+    // identity even on filesystems that aggressively recycle inode numbers.
+    let _old_pin = std::fs::File::open(temp.0.join("Renamed by host")).unwrap();
+    std::fs::remove_file(temp.0.join("Renamed by host")).unwrap();
+    std::fs::write(temp.0.join("Renamed by host"), b"a different file").unwrap();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let next = volumes.insert(()).unwrap();
+    run(fs.mount(next, 0)).unwrap();
+    let replacement = run(fs.lookup(next, 2, "Renamed by host")).unwrap().metadata.catalog_id;
+    assert_ne!(replacement, file, "reusing a path must never reuse its old catalog identity");
+    assert_eq!(fs.cached_node(next, file).unwrap_err().cause, Cause::NotFound);
+    run(fs.unmount(next)).unwrap();
+}
+
+#[test]
+fn failed_plain_identity_persistence_is_reported_and_can_retry()
+{
+    let temp = Temp::new();
+    Volume::initialize(&temp.0, "Identity failure").unwrap();
+    std::fs::write(temp.0.join("Raw"), b"untouched").unwrap();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    fs.transport().fail_next = Some(Operation::Flush);
+    let error = run(fs.lookup(volume, 2, "Raw")).unwrap_err();
+    assert_eq!(error.cause, Cause::Host(mac_host_protocol::status::IO));
+    assert!(error.to_string().contains("Host"), "persistence cause must survive: {error}");
+    let id = run(fs.lookup(volume, 2, "Raw")).unwrap().metadata.catalog_id;
+    assert_eq!(std::fs::read(temp.0.join("Raw")).unwrap(), b"untouched");
+    run(fs.unmount(volume)).unwrap();
+    drop(fs);
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let next = volumes.insert(()).unwrap();
+    run(fs.mount(next, 0)).unwrap();
+    assert_eq!(run(fs.lookup(next, 2, "Raw")).unwrap().metadata.catalog_id, id);
+    run(fs.unmount(next)).unwrap();
+}
+
+#[test]
+fn imported_containers_and_copied_directory_markers_get_distinct_durable_catalog_ids()
+{
+    let (temp, original, _, _) = seeded();
+    std::fs::copy(temp.0.join("Tools/Café"), temp.0.join("Copied File")).unwrap();
+    std::fs::create_dir(temp.0.join("Copied Tools")).unwrap();
+    std::fs::copy(temp.0.join("Tools").join(mac_fork_file::DIRECTORY_RECORD),
+                  temp.0.join("Copied Tools").join(mac_fork_file::DIRECTORY_RECORD)).unwrap();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let folder = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
+    let copy_folder = run(fs.lookup(volume, 2, "Copied Tools")).unwrap().metadata.catalog_id;
+    let copy = run(fs.lookup(volume, 2, "Copied File")).unwrap().metadata.catalog_id;
+    assert_ne!(folder, copy_folder);
+    assert_ne!(original, copy);
+    assert_eq!(run(fs.lookup(volume, folder, "Café")).unwrap().metadata.catalog_id, original);
+    let name = fs.cached_node(volume, copy).unwrap().metadata.name.clone();
+    assert_eq!(name, "Copied File");
+    run(fs.unmount(volume)).unwrap();
+    drop(fs);
+    std::fs::rename(temp.0.join("Copied Tools"), temp.0.join("Renamed Copy")).unwrap();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let next = volumes.insert(()).unwrap();
+    run(fs.mount(next, 0)).unwrap();
+    assert_eq!(run(fs.lookup(next, 2, "Renamed Copy")).unwrap().metadata.catalog_id, copy_folder);
+    assert_eq!(run(fs.lookup(next, 2, "Copied File")).unwrap().metadata.catalog_id, copy);
+    run(fs.unmount(next)).unwrap();
+}
+
+#[test]
+fn removal_releases_owned_receipts_rejects_nonempty_folders_and_preserves_cancelled_sources()
+{
+    let (temp, file, _, _) = seeded();
+    let mut fs = Filesystem::new(Host::new(&temp, true));
+    let mut volumes = Table::new(ObjectKind::Volumes);
+    let volume = volumes.insert(()).unwrap();
+    run(fs.mount(volume, 0)).unwrap();
+    let folder = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
+    let mut writes = Table::new(ObjectKind::FileWrites);
+    let token = writes.insert(()).unwrap();
+    let when = fs.info(volume).unwrap().metadata.modified + 100;
+    let error = run(fs.begin_remove(volume, folder, token, when)).unwrap_err();
+    assert_eq!(error.cause, Cause::NotEmpty);
+    assert!(error.to_string().contains("NotEmpty"), "{error}");
+    assert_eq!(run(fs.begin_remove(volume, 2, token, when)).unwrap_err().cause, Cause::Protected);
+    run(fs.begin_remove(volume, file, token, when)).unwrap();
+    assert!(!run(fs.abort_write(volume, token)).unwrap());
+    assert!(temp.0.join("Tools/Café").is_file());
+    run(fs.begin_remove(volume, file, token, when)).unwrap();
+    fs.transport().fail_next = Some(Operation::CommitRemove);
+    assert_eq!(run(fs.finish_write(volume, token)).unwrap_err().cause,
+               Cause::Host(mac_host_protocol::status::IO));
+    assert!(!run(fs.abort_write(volume, token)).unwrap());
+    assert!(temp.0.join("Tools/Café").is_file());
+    // Cancellation acknowledges the restored incarnation/revision. A second
+    // operation must work immediately, without a caller-forced refresh.
+    run(fs.lookup(volume, folder, "Café")).unwrap();
+    run(fs.begin_remove(volume, file, token, when)).unwrap();
+    run(fs.finish_write(volume, token)).unwrap();
+    assert_eq!(fs.cached_node(volume, file).unwrap_err().cause, Cause::NotFound);
+    assert!(!temp.0.join("Tools/Café").exists());
+    run(fs.begin_remove(volume, folder, token, when)).unwrap();
+    run(fs.finish_write(volume, token)).unwrap();
+    assert!(!temp.0.join("Tools").exists());
     run(fs.unmount(volume)).unwrap();
 }

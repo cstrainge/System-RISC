@@ -33,6 +33,7 @@ pub(super) fn status(error: MutationError) -> Status
         MutationError::Invalid => BAD_ARGUMENT,
         MutationError::ReadOnly => READ_ONLY,
         MutationError::NotFound => NOT_FOUND,
+        MutationError::NotEmpty => DIRECTORY_NOT_EMPTY,
         MutationError::Exists => ALREADY_EXISTS,
         MutationError::Protected => ACCESS_DENIED,
         MutationError::Busy => SERVICE_BUSY,
@@ -59,10 +60,8 @@ impl Manager
             {
                 return Err(NO_MEMORY);
             }
-            if call.expected_cnid != 0
-               && self.document_pins
-                      .iter()
-                      .any(|(_, volume, id)| *volume == call.volume && *id == call.expected_cnid)
+            self.validate_transfer_mutation(owner, call.volume)?;
+            if call.expected_cnid != 0 && self.file_pinned(call.volume, call.expected_cnid)
             {
                 return Err(SERVICE_BUSY);
             }
@@ -153,7 +152,8 @@ impl Manager
                 }
                 let pending = self.writes.remove(call.handle).ok_or(NOT_FOUND)?;
                 let mut protected = Vec::new();
-                protected.try_reserve_exact(MAX_OPEN_FILES).map_err(|_| NO_MEMORY)?;
+                protected.try_reserve_exact(MAX_OPEN_FILES + self.streams.len())
+                         .map_err(|_| NO_MEMORY)?;
                 for (_, file) in self.handles.iter()
                 {
                     if file.volume == pending.volume
@@ -161,6 +161,11 @@ impl Manager
                         protected.push(file.id);
                     }
                 }
+                protected.extend(self.streams
+                                     .iter()
+                                     .filter(|(_, mark)| mark.volume == pending.volume)
+                                     .map(|(_, mark)| mark.expected)
+                                     .filter(|id| *id != 0));
                 let mounted = self.mounted(pending.volume)?;
                 if mounted.poisoned
                 {

@@ -66,9 +66,9 @@ fn physical(extents: &[Extent], index: u64) -> Option<u32>
 }
 impl<D: WritableBlockDevice> Transaction<'_, '_, D>
 {
-    fn replace_fork(&mut self, entry: &mut Entry, kind: ForkKind, old: &[Extent], new: &[Extent],
-                    length: u64)
-                    -> Result<()>
+    pub(super) fn replace_fork(&mut self, entry: &mut Entry, kind: ForkKind, old: &[Extent],
+                               new: &[Extent], length: u64)
+                               -> Result<()>
     {
         let mut logical = 0;
         for (i, e) in old.iter().enumerate()
@@ -100,7 +100,7 @@ impl<D: WritableBlockDevice> Transaction<'_, '_, D>
         self.entry(entry)
     }
 
-    fn free_range(&mut self, extents: &[Extent], from: u64, to: u64) -> Result<()>
+    pub(super) fn free_range(&mut self, extents: &[Extent], from: u64, to: u64) -> Result<()>
     {
         let mut position = 0;
         for e in extents

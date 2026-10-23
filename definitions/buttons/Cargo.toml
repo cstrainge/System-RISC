@@ -1,0 +1,20 @@
+[package]
+name = "native-buttons-cdef"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+[features]
+guest = []
+
+[[bin]]
+name = "CDEF_BUTTONS"
+required-features = ["guest"]
+path = "src/main.rs"
+test = false
+bench = false
+[dependencies]
+mac-abi.workspace = true
+mac-traps.workspace = true
+toolbox-quickdraw = { path = "../../toolbox/quickdraw" }
+[build-dependencies]
+mac-build.workspace = true

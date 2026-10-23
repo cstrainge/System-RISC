@@ -107,7 +107,8 @@ impl super::super::runtime::Desktop
                                                                                .0,
                                        0)?;
         }
-        if matches!(call.operation, ACCEPT | READ | ACKNOWLEDGE | ABANDON) && call.receiver == 0
+        if matches!(call.operation, ACCEPT | READ | ACKNOWLEDGE | ABANDON | CANCEL_RECEIVE)
+           && call.receiver == 0
         {
             call.receiver = self.drag.receiver_at(call.window).ok_or(NOT_FOUND)?;
         }

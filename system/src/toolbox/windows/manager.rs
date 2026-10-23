@@ -197,7 +197,8 @@ impl Window
 
 /// A union boundary can occur only on a constituent rectangle's perimeter.
 /// Keep the original neighbour predicate so shared/overlapping edges disappear.
-fn drag_mask(mask: &mut [u32], width: usize, height: usize, pieces: &[Rect], dx: i16, dy: i16)
+fn drag_mask(mask: &mut [u32], width: usize, height: usize, pieces: &[Rect], dx: i16, dy: i16,
+             mask_top: usize)
 {
     let contains = |x: i32, y: i32| {
         let x = x - i32::from(dx);
@@ -212,7 +213,7 @@ fn drag_mask(mask: &mut [u32], width: usize, height: usize, pieces: &[Rect], dx:
     let mut mark = |x: i32, y: i32| {
         if x >= 0
            && x < width as i32
-           && y >= 21
+           && y >= 21.max(mask_top) as i32
            && y < height as i32
            && contains(x, y)
            && (!contains(x - 1, y)
@@ -220,7 +221,7 @@ fn drag_mask(mask: &mut [u32], width: usize, height: usize, pieces: &[Rect], dx:
                || !contains(x, y - 1)
                || !contains(x, y + 1))
         {
-            mask[y as usize * width + x as usize] = 0;
+            mask[(y as usize - mask_top) * width + x as usize] = 0;
         }
     };
     for piece in pieces.iter().filter(|piece| !piece.is_empty())
@@ -234,7 +235,7 @@ fn drag_mask(mask: &mut [u32], width: usize, height: usize, pieces: &[Rect], dx:
             mark(x, top);
             mark(x, bottom - 1);
         }
-        for y in top.max(21)..bottom.min(height as i32)
+        for y in top.max(21.max(mask_top) as i32)..bottom.min(height as i32)
         {
             mark(left, y);
             mark(right - 1, y);
@@ -1239,6 +1240,11 @@ impl WindowManager
     /// Grow geometry belongs to the loaded definition, not to the manager.
     fn draw_tracking(&self, canvas: &mut Canvas, scratch: Option<&mut [u32]>)
     {
+        self.draw_tracking_at(canvas, scratch, 21.min(canvas.height));
+    }
+
+    fn draw_tracking_at(&self, canvas: &mut Canvas, scratch: Option<&mut [u32]>, mask_top: usize)
+    {
         let Some(tracking @ (Tracking::Grow { .. }
                  | Tracking::Drag { preview: Some(_),
                                    .. })) = self.tracking
@@ -1246,7 +1252,12 @@ impl WindowManager
         {
             return;
         };
-        let count = canvas.width * canvas.height;
+        let mask_height = canvas.height - mask_top;
+        if mask_height == 0
+        {
+            return;
+        }
+        let count = canvas.width * mask_height;
         let mut owned = alloc::vec::Vec::new();
         let mask = if let Some(scratch) = scratch.filter(|scratch| scratch.len() >= count)
         {
@@ -1273,7 +1284,8 @@ impl WindowManager
                 {
                     return;
                 };
-                let mut target = Canvas::new(mask, canvas.width, canvas.height);
+                let mut target = Canvas::new(mask, canvas.width, mask_height);
+                target.set_origin(0, -(mask_top as i16));
                 let mut surface = Surface::from_canvas(&mut target);
                 if window.call(definition::GROW, (&preview as *const Rect) as i64, &mut surface) < 0
                 {
@@ -1292,7 +1304,13 @@ impl WindowManager
                 };
                 let dx = preview.left - bounds.left;
                 let dy = preview.top - bounds.top;
-                drag_mask(mask, canvas.width, canvas.height, window.structure_pieces(), dx, dy);
+                drag_mask(mask,
+                          canvas.width,
+                          canvas.height,
+                          window.structure_pieces(),
+                          dx,
+                          dy,
+                          mask_top);
             }
             _ => return
         }
@@ -1303,7 +1321,7 @@ impl WindowManager
             for x in 0..canvas.width
             {
                 let index = y * canvas.width + x;
-                if mask[index] != 0xffffff && (x + y) & 1 == 1
+                if mask[(y - mask_top) * canvas.width + x] != 0xffffff && (x + y) & 1 == 1
                 {
                     canvas.pixels[index] = indexed_tracking_xor(canvas.pixels[index]);
                 }
@@ -1570,7 +1588,7 @@ mod tests
                         }
                     }
                 }
-                drag_mask(&mut actual, 96, 80, pieces, dx, dy);
+                drag_mask(&mut actual, 96, 80, pieces, dx, dy, 0);
                 assert_eq!(actual, expected, "translated structure {pieces:?} by {dx},{dy}");
             }
         }
@@ -1605,6 +1623,41 @@ mod tests
                                  Some(&mut scratch),
                                  paint);
             assert_eq!(owned, supplied);
+        }
+    }
+
+    #[test]
+    fn cropped_tracking_scratch_is_pixel_identical_to_the_full_surface()
+    {
+        let (mut wm, _, window, _) = make();
+        let bounds = wm.window(window).unwrap().bounds;
+        let mut preview = bounds;
+        preview.offset(-35, 11);
+        for height in [21, 80, 480]
+        {
+            for tracking in [Tracking::Drag { window,
+                                              start: Point::default(),
+                                              bounds,
+                                              preview: Some(preview),
+                                              activate: true },
+                             Tracking::Grow { window,
+                                              start: Point::default(),
+                                              bounds,
+                                              preview }]
+            {
+                wm.tracking = Some(tracking);
+                let initial: alloc::vec::Vec<_> =
+                    (0..640 * height).map(|i| (i as u32 * 31) & 0xffffff).collect();
+                let mut full = initial.clone();
+                let mut cropped = initial.clone();
+                wm.draw_tracking_at(&mut Canvas::new(&mut full, 640, height), None, 0);
+                let mut scratch = vec![0x123456; 640 * (height - 21)];
+                wm.draw_tracking(&mut Canvas::new(&mut cropped, 640, height), Some(&mut scratch));
+                assert_eq!(cropped, full, "tracking changed at height {height}");
+                assert_eq!(cropped[..640 * 21],
+                           initial[..640 * 21],
+                           "tracking painted the menu band");
+            }
         }
     }
 

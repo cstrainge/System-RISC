@@ -27,12 +27,19 @@ impl<R: Rpc> Filesystem<R>
             2 => Kind::Directory,
             _ => return Err(Cause::Invalid.into())
         };
+        let (id, annotation) =
+            self.catalog_identity(volume, reply.header.object, dates.identity).await?;
+        let record = annotation.as_ref().map(forks::annotation::Annotation::decode).transpose()?;
         let mut metadata = Metadata::new(kind,
-                                         reply.header.object,
+                                         id,
                                          self.info(volume)?.metadata.volume,
                                          core::str::from_utf8(name).map_err(|_| Cause::Invalid)?,
                                          dates.created)?;
         metadata.modified = dates.modified;
+        if let Some(record) = record
+        {
+            annotations::apply(&mut metadata, record)?;
+        }
         let layout =
             Layout::new(&metadata, if kind == Kind::File { reply.header.offset } else { 0 }, 0)?;
         let key = mac_hfs_b::names::comparison(&metadata.name).map_err(|_| Cause::Invalid)?;
@@ -102,13 +109,14 @@ impl<R: Rpc> Filesystem<R>
                 let mut physical = buffer(name.len())?;
                 physical.copy_from_slice(name);
                 let key = mac_hfs_b::names::comparison(&metadata.name).map_err(|_| Cause::Invalid)?;
-                Ok(Node { parent: 0,
-                          metadata,
-                          layout,
-                          key,
-                          host_name: physical,
-                          plain: false,
-                          source: None })
+                let node = Node { parent: 0,
+                                  metadata,
+                                  layout,
+                                  key,
+                                  host_name: physical,
+                                  plain: false,
+                                  source: None };
+                self.decorate_file(volume, handle, node).await
             }.await;
         self.cleanup(handle, result).await
     }

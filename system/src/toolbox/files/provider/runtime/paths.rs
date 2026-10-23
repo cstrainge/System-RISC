@@ -58,6 +58,32 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
                 match result.and_then(|bytes| super::super::catalog(volume, &bytes, node, parent))
                 {
                     Ok(entry) => entry,
+                    Err(NOT_FOUND)
+                        if flight.key.operation == TRASH_DIRECTORY
+                           && flight.key.index == 1
+                           && node.is_none()
+                           && parent == Some(ROOT_ID)
+                           && at == flight.input.len() =>
+                    {
+                        // Find before reserving a mutation: an existing Trash
+                        // remains readable even on an immutable export. Only a
+                        // missing directory enters the ordinary owned writer.
+                        if let Err(error) = files(|m| m.end_provider_read(volume))
+                        {
+                            return Progress::Done(Err(error));
+                        }
+                        let call = FileCall { operation: TRASH_DIRECTORY,
+                                              volume,
+                                              index: 1,
+                                              position: flight.key.when,
+                                              ..Default::default() };
+                        return match writes::folder_flight(flight.owner, flight.thread, flight.key,
+                                                           &call, "Trash")
+                        {
+                            Ok(flight) => Progress::Pending(flight),
+                            Err(error) => Progress::Done(Err(error))
+                        };
+                    }
                     Err(error) => return finish_read(volume, Err(error))
                 };
             while let Some((next, component)) = super::super::path::component(&flight.input, at)
@@ -169,21 +195,31 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
 }
 pub(super) fn start(owner: u64, thread: u64, key: Key, call: &FileCall, name: &str) -> Status
 {
+    match begin(owner, thread, key, call, name)
+    {
+        Ok(flight) => waiting(flight),
+        Err(error) => error
+    }
+}
+
+pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &FileCall, name: &str)
+                    -> Result<Flight, Status>
+{
     if name.len() > super::super::super::MAX_PATH || name.contains('\0')
     {
-        return BAD_ARGUMENT;
+        return Err(BAD_ARGUMENT);
     }
     let mut input = String::new();
     if input.try_reserve_exact(name.len()).is_err()
     {
-        return NO_MEMORY;
+        return Err(NO_MEMORY);
     }
     input.push_str(name);
     let volume = call.volume;
     let provider = match files(|manager| manager.begin_provider_read(volume))
     {
         Ok(provider) => provider,
-        Err(error) => return error
+        Err(error) => return Err(error)
     };
     let node = if call.cnid == 0 || call.operation == LOOKUP && name.starts_with('/')
     {
@@ -217,16 +253,16 @@ pub(super) fn start(owner: u64, thread: u64, key: Key, call: &FileCall, name: &s
         Err(error) =>
         {
             let _ = files(|manager| manager.end_provider_read(volume));
-            return error;
+            return Err(error);
         }
     };
-    waiting(Flight { thread,
-                     owner,
-                     key,
-                     provider,
-                     step,
-                     job,
-                     abandoned: false,
-                     input,
-                     path })
+    Ok(Flight { thread,
+                owner,
+                key,
+                provider,
+                step,
+                job,
+                abandoned: false,
+                input,
+                path })
 }

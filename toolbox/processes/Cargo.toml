@@ -6,4 +6,5 @@ publish.workspace=true
 [dependencies]
 mac-abi.workspace=true
 mac-traps.workspace=true
+toolbox-drag = { path = "../drag" }
 toolbox-files = { path = "../files" }

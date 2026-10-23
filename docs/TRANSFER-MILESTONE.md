@@ -1,9 +1,10 @@
 # Complete external-volume workflows
 
-Authorized 2026-10-21: implement targets 1–6, push verified milestones, then
+Authorized 2026-10-21: implement targets 1–6, then
 review the root resource-editor and resources.json specifications together with
 extension-driver-system-spec.md. Do not mark either mount driver complete while
-its required contracts remain missing.
+its required contracts remain missing. On 2026-10-22 the user superseded the
+earlier push instruction: commit the filesystem milestone locally; do not push.
 
 ## Acceptance targets
 
@@ -25,33 +26,129 @@ its required contracts remain missing.
    Drop opens file references in that exact application file/instance without
    moving source files; incompatible sets reject during negotiation.
 
+Volume-to-Trash eject is also required (2026-10-22): unmount writable host and
+read-only archive volumes, preserve their contents, save writable folder state,
+close their Finder windows only after acknowledged teardown, and reject startup
+or busy mounts without disturbing windows/selection. Eject has separate native
+Drag Toolbox intent; it is never a recursive move of a root into Trash.
+
 ## Current findings
 
-- Native application loading now collects resources through owned provider I/O
-  outside desktop state, with public native/Pascal and actual Finder gates below.
-  Associated-document dispatch and application document drops remain open.
-- Existing archive acceptance uses an imported classic-v1 container. The actual
-  raw host file transfer/aldussuperpaint3.5.sit has a StuffIt-5 banner, and the
-  live desktop reported Io (-9). Add actual-format/raw-host coverage; the v1
-  gate does not establish this user's mount workflow.
-- Finder currently negotiates Move only and refuses cross-volume receives.
-  Provider atomic icon moves are deliberately rejected; neither copy nor full
-  provider mutation functionality is complete.
-- Resource-defined document dispatch and application drag targets are still
-  required; the driver-owned archive open path alone is not a document workflow.
+2026-10-22: all six targets have implementations and passing focused acceptance.
+The canonical run passed the host, build, boot and filesystem matrix, then
+stopped in Res Edit with resident heap exhaustion (6,912-byte allocation;
+51,376 bytes free, largest hole 3,584). The user deferred Res Edit to its planned
+rewrite. The remaining canonical groups pass in separate private captures after
+the regression fixes below; this is not a claim that the entire canonical suite
+is green. The continuation sections
+below retain historical findings that have since been resolved.
+
+- Native public-SDK host acceptance passes recursive transfers in both
+  directions, both forks, property edits, namespace operations, readonly
+  refusal, cancellation with date restoration, RAII Drop, real app-exit cleanup,
+  Trash/Put Away/Empty, immediate retry and cold-boot identity/metadata retention.
+- Physical Finder acceptance passes external application launch, compatible
+  document drops, incompatible/readonly negotiation, drop-time modifiers,
+  file-to-Trash, host RW/RO eject and startup eject refusal. Separate physical
+  archive eject verifies the source archive's digest remains unchanged.
+- StuffIt public-SDK acceptance passes the supported classic/5 codecs, nested
+  mounts and recursive two-fork archive copies to native/writable host volumes.
+- Both native disconnect directions pass. Cleanup ownership remains resident
+  while healthy native storage and subsequent transfers remain usable. The
+  transport poisons an incarnation after five seconds without packet progress,
+  including when virtconsole supplies no close notification.
+- Finder recovery/placement acceptance passes named collision alerts, immediate
+  selection recovery, group moves, Escape, saved positions and cold boot. Its
+  drag-motion trace asserts no file/font calls or unrelated scene repaint.
+- Rust library documentation has regenerated under `docs/api`.
+
+## Verification record (2026-10-22)
+
+- Canonical run: 538 host tests, allocated >4 GiB public-SDK fork, optimized
+  installation, boot and disk integrity, compiled architecture boundaries,
+  six native host-module cases and ten StuffIt cases pass. The large-fork
+  fixture uses sparse zero elision, not 4 GiB of physical host allocation.
+- Remaining guest groups pass separately: menus, persistent Trash, native writes,
+  deferred close, editable Get Info, events, clipboard, TextEdit pixels/documents/
+  navigation, process ownership/preemption, app switching/icons, retained updates,
+  latency, cursors/busy watch, app panic recovery, selection/scrolling, Transfer
+  incident recovery, remote Get Info and physical Finder drags.
+- Final fixes preserve desktop selection across modal dialogs, avoid virtual
+  Trash position writes, and allow pointer tracking alongside automatic layout
+  persistence. New storage menu commands wait for that owned background group.
+  The synchronous icon-move SDK convenience now uses the same group protocol on
+  native and provider volumes; 56 focused SDK cases pass after consolidation.
+- The application-menu pixel fixture derives the right-aligned popup edge from
+  its actual frame; Text Edit's shorter name legitimately changes menu width.
+  Get Info fixtures preserve icon positions across rename, and wait for bounded
+  folder patches instead of requiring obsolete full redraws.
+- Res Edit's System allocation failure remains open, with heap/register/frame
+  evidence in `results/system7/resedit-ui-1341735` outside this repository. Its
+  test is retained. One earlier run exceeded the virtio FLUSH deadline; isolated
+  rerun and the subsequent combined storage matrix pass unchanged. No uncertain
+  write retry or deadline extension was introduced.
+
+Logs outside Git: `results/system7/filesystem-canonical-final-3.log`,
+`filesystem-final5-*.log`, `filesystem-application-ui-final.log`,
+`filesystem-final4-get_info_ui.log`, `filesystem-final3-{clipboard,typing,
+ cursor_graphical,panic_graphical}.log`, `filesystem-sync-layout-sdk.log`,
+`filesystem-boundaries-commit.log`; earlier focused logs cover both endpoint
+ disconnects, archive eject and recursive transfers. This is named workflow
+ coverage, not exhaustive hardware fault injection or full classic Toolbox
+ compatibility. Provider-volume eject is covered; startup eject is refused and
+ nonstartup block-device eject remains unsupported.
+
+The follow-on specification review is recorded in
+[RESOURCE-EDITOR-PLAN.md](RESOURCE-EDITOR-PLAN.md). The rewrite itself is deferred;
+Text Edit performance and display-option work is next, in its own commit.
 
 ## Milestones
 
-- [ ] Real external opens, document delivery and archive-format regression.
-- [ ] Complete provider mutation contracts and persistence.
-- [ ] Transfer engine and Finder copy/move/cancellation UI.
-- [ ] Application drag targets and complete end-to-end acceptance matrix.
-- [ ] Review resedit-editors-spec.md, resources-json-spec.md and
+- [x] Real external opens, document delivery and archive-format regression.
+- [x] Complete provider mutation contracts and persistence.
+- [x] Transfer engine and Finder copy/move/cancellation UI.
+- [x] Application drag targets and complete end-to-end acceptance matrix.
+- [x] Review resedit-editors-spec.md, resources-json-spec.md and
       extension-driver-system-spec.md; record their combined follow-on design.
 
 Use private optimized guests, preserve the visible VM, retain reports outside
 Git and prune obsolete media at every check boundary. Passing smaller gates
 closes only the named milestone, never the whole driver contract.
+
+## Historical implementation batch (superseded by current findings)
+
+At the user's request, finish the remaining implementation before running the
+combined verification pass. This was the implementation-stage gate; see Current findings for subsequent
+verification. The latest user instruction is to commit verified filesystem work
+without pushing. Progress reports are also appended to the
+workspace-root `status.txt` (outside this repository).
+
+The pending tree adds field-selective provider metadata transactions, optional
+identity-keyed annotations, mixed plain/container host-tool export, delayed
+Finder folder-state persistence, and an owned rename/move publication protocol.
+The rename intent retains the actual publication independently of a directory
+sync failure; cancellation must query it before reporting an unpublished result.
+
+Read-only folders permit presentation-only icon rearrangement. Native Drag
+Manager `IconLayout` intent is distinct from a filesystem folder target and binds
+the entire offered reference set to its original volume/parent. Finder retains
+those positions in memory for the mount session, paints only old/new item bounds,
+and writes no archive metadata. Cross-folder/cross-volume writes into immutable
+media remain rejected. This is view state, not a writable filesystem capability.
+
+The same batch replaces `mac-formats::Error` prose classification with typed
+budget/allocation, missing, translation-required and malformed causes. Details
+remain verbatim diagnostics. The allocation-free `mac-code-resource` wire error
+remains separate; its adapter preserves reader causes and classifies the codec's
+own structural failures as malformed without inspecting their messages.
+Public-SDK process fixtures now contain deferred acceptance assertions for
+oversized/corrupt resource forks and missing/legacy WDEF rejection with immediate
+valid-window retry. The focused format/Resource Manager subset passed before the user reiterated the implementation-first instruction. The broad workspace attempt did not complete (generated linker output exhausted disk space). Final native/canonical verification remains deferred; obsolete debug outputs were removed to recover space.
+
+All six targets stay open: complete namespace/delete and provider identity
+contracts, bounded recursive transfers, rollback/cancellation and managed copy
+UI, document associations/application targets, the full unhappy-path matrix and
+panic recovery still require implementation and/or final verification.
 
 ## Failure and recovery gates
 
@@ -273,3 +370,253 @@ a whole: associated documents and the full mutation/transfer/application-drop
 contracts remain required. The immutable image-cache budget and supported RV64
 relocations remain the existing platform limits; arbitrary live code replacement
 and general legacy executable translation are not established by these tests.
+
+
+### Streaming transfer substrate (current unverified implementation)
+
+Native HFS-B and provider-backed fork writers now have a size-distinct native
+service and RAII SDK owner. Both forks stream in bounded chunks; staged data can
+be read back before publication. HFS-B publishes fork ownership and metadata
+atomically, preserves replacement CNIDs, and reclaims old payload incrementally.
+Exclusive boot recovery uses the same bounded reclamation. FileStreams uses the
+shared generation facility, with separate application ownership and exit cleanup.
+The provider path retains owned continuations across waits, confirms prospective
+metadata and actual publication receipts, and drains failed/cancelled operations.
+Host wire/HDIR and FSYS contracts are now v3 and require rebuilding all producers.
+These are transfer prerequisites, not completion of recursive copy/move or any
+of the six acceptance targets. No behavioral or guest verification has run for
+this streaming implementation.
+
+### Managed copy presentation and group moves (current unverified implementation)
+
+Finder's resource-based copy-window controller uses the original 7.6.1 fvew8751
+bounds, font policy and STR#8750 wording. It owns Static Text, Progress Bar and
+Stop controls; filename fitting runs only when the current filename changes.
+The progress CDEF computes exact fill damage and skips subpixel changes. The
+boot panel uses that same loaded managed control; its separate renderer has
+been removed. Original live colours/pattern and interactions remain a deferred
+pixel-comparison gate. The controller is connected to stepped folder-to-folder
+catalog moves; recursive fork-copy integration remains open.
+
+FileGroups adds shared generation-tagged resident ownership and a stepped
+IconMoveGroup SDK guard. The native block path uses its existing atomic catalog
+move; provider continuations use Begin/Step/AbortIconMoves, carry owned rows,
+preserve committed outcomes and quarantine unacknowledged cleanup. Exit/drop
+cleanup remains resident-owned. Provider reply progress is now typed and checked.
+Finder's same-volume move admission/receive path now uses that provider group
+route. It retains an owned payload, an allocation-free file-reference future
+and the storage guard across ordinary event-loop turns. There is no nested
+event consumer. Automatic icon-position saves likewise step between normal
+events, update only their submitted cached identities, and schedule no repaint
+for persistence alone. The old synchronous convenience API remains block-only;
+it is no longer used by Finder's drag/automatic-position paths.
+
+Escape/Stop during receive is a cancellation request, not a terminal result.
+The Drag Manager releases physical input after mouse-up, retains the receiver
+through acknowledged storage cleanup and reports a racing commit truthfully.
+Closing a receiver window retains its cleanup capability; a dead receiver uses
+resident owner-exit cleanup. CancelRequested uses native OsEvent prefix0x0e,
+distinct from process-file0x0c and geometry0x0d. Group moves now capture affected
+directory modification dates and restore them after row undo, with volume dates
+last. Parent host snapshots refresh after our own namespace changes. Busy folder
+state saves defer; a closed window retains a bounded pending save.
+
+These features still await their combined behavioral verification. The user’s
+subsequent build/boot failures authorized targeted optimized builds, private
+boot diagnostics and focused menu/control/clipping checks; those repairs do not
+establish completion of the transfer implementation. The implementation-first
+instruction still defers the broad suite and API-document generation until the
+remaining feature code is complete. All six acceptance targets remain
+open. Retain the original-runtime comparison and unhappy-path matrix as final
+acceptance, including whole-batch cancellation after per-file publication.
+
+The original progress drawing routine is now traced (Finder CODE174:0x36e),
+including its64-bit copy counters, growing frame and colour/mono paths. Native
+ABI11 carries full-width progress counters to avoid intermediate percentage
+rounding; all manifests and fixture expectations have been updated together.
+Format1 code-resource envelopes remain unchanged. The shared progress presentation now uses the requested fixed black frame,
+pale-blue remaining area and dark-grey completed prefix; zero progress has no
+minimum marker. It does not present two moving ranges. Only the changed fill
+strip is damaged, including return to Preparing. Original running-copy scheduling
+and interaction comparisons remain deferred.
+
+
+### Verified startup repair, 2026-10-22
+
+The reported allocation failure was stack corruption: menu parsing overwrote
+Finder's allocator free-list metadata, and window visibility clipping used a
+32 KiB quadratic scratch array. Parse allocated menu state in place; sweep
+clipped rectangle bands with linear bounded scratch instead. The resident fix
+and an immediate fatal-allocation launcher diagnostic are committed/pushed as
+982ecb5. These fixes do not increase the System heap or application stack.
+
+Driver manifests and both filesystem fixtures now declare the current HDIR/FSYS
+v3 contracts in the working implementation; stale v2 declarations caused the
+observed StuffIt BAD_ABI and Host Filesystem ACCESS_DENIED rejections.
+An optimized private guest reaches Finder's desktop with all three drivers
+loaded and a real host-directory export mounted. Focused SDK tests cover five
+menu cases and four managed-control/native-capture cases; thirteen Window
+Manager tests include exact occlusion at the 32-window limit. Captured native
+boot stages pass Rust pixel assertions for the requested progress presentation.
+The complete six-target workflow suite remains deferred and all six boxes stay
+open. Source/capture logs are under results/system7/boot-repair outside Git.
+
+### Identity and document-declaration continuation (not yet verified)
+
+Plain writable host objects now persist a qualified incarnation/catalog-ID
+annotation before catalog exposure, without saving user metadata or rewriting
+forks. Private provisional bindings can adopt a cooperating writer's committed
+identity; durable/exposed bindings cannot silently change. Published host write
+cleanup must reassert parent-directory durability before retiring its receipt.
+Deferred component tests cover reboot, host rename, path deletion/recreation,
+and first-bind persistence failure/retry. Container-copy adoption/retirement,
+namespace deletion and full transfer integration remain open.
+
+The shared formats crate now decodes/encodes classic Translation Manager open
+resources and mac-build has the resources.json open_types payload. Apple
+develop18 (June1994), printed p87, confirms the signature/zero/count/FourCC
+layout and that opening support is separate from supplied document icons.
+Application admission, queued document delivery and Finder target integration
+remain required; declaration encoding alone closes none of the six targets.
+
+
+## Implementation continuation: identity, removals and nested sources (unverified)
+
+Guest and Linux fork tooling now distinguish embedded source-container IDs from
+qualified physical-object bindings. Newly created files/folders persist bindings
+before returning them; imported/copied containers receive distinct catalog IDs.
+Identity-only annotations have revision zero and an empty patch, so adoption does
+not invent a metadata edit. Deliberate replacement transfers the logical ID and
+retires the old physical binding. Native directory markers are projected through
+the directory incarnation; directory edits use small annotations, with physical
+names remaining authoritative. Plain files remain ordinary host bytes.
+
+The writable driver now implements owned removal admission/finish/abort over
+host quarantine/commit receipts. File and empty-directory removal is routed
+through the public SDK and resident write ownership; nonempty directories return
+the typed DirectoryNotEmpty cause. Retry retains actual publication state,
+acknowledged cancellation refreshes restored source revisions, and parent logical
+dates are preserved. Full copied properties/comments publish atomically through
+the SDK on HFS-B and host providers, including explicit historical dates and
+backup epoch zero. Canonical guest cases cover both paths and failed edits.
+
+StuffIt source changes multiplex up to 32 independent requests instead of
+serializing a pending mount against its own backing read. Each open decoder
+remains exclusive; pending mount capacity is reserved before lower I/O. The
+resident mount admission now consults the generic SERIALIZED offer flag rather
+than unconditionally rejecting same-provider sources. New reproducible stored/RLE
+wrappers exercise archive-in-archive mounts, backward reads, source leases and
+ordered teardown through the public SDK. These assertions are written, not run.
+
+No new compile/test run, commit or push has been made for this continuation.
+All six acceptance targets remain open. The shared recursive transfer engine,
+whole-batch rollback/source-quarantine integration, Finder copy/cross-volume
+wiring, resource-based document delivery/application targets and final acceptance
+matrix remain work; these primitives do not establish a finished driver contract.
+Host removal receipts now also persist two checksummed phase slots before
+namespace mutation/irreversible commit. Encountering private leftovers triggers
+identity-checked recovery; normal browsing adds no recovery scan. New deferred
+cases cover prepared/quarantined/committing/removed phases, a torn slot, live
+journal locks, collisions and subsequent retry. Actual process-kill/guest
+verification remains part of the combined acceptance pass.
+
+
+## Transfer coordinator construction (in progress, not wired/verified)
+
+The pending source now separates foreground parking from owned operation starts
+for metadata, fork streams, namespace groups, paths and reads. The background
+adapter can reuse those continuations without parking Finder's event loop and
+without retaining app buffers or a manager guard. This is construction for the
+resident recursive transfer coordinator, not a second filesystem implementation.
+
+The size-distinct FileTransferCall, shared FileTransfers generation namespace
+and thin SDK RAII owner/progress/error vocabulary are added. The resident owner,
+planner/copy/verify/quarantine/publication/rollback driver, ABI pointer dispatch,
+idle/app-exit lifecycle and Finder wiring still need implementation. The new
+public transfer entry point is not yet functional. Final delivery must not ship
+an unimplemented entry point or close any acceptance target on these pieces.
+
+The coordinator will stage/verify both forks under an invisible destination
+transaction folder, keep a rollback ledger through root publication, quarantine
+move sources before the irreversible barrier, and reclaim sources/temporary
+folders in bounded steps. Apply copied folder metadata in postorder. Mask lock
+and name-lock bits on provisional copies until commit so rollback can remove
+its own objects. Same-volume moves retain the existing native/provider group
+fast path. Global Trash resolves to each source volume's own Trash and always
+moves. Pending I/O and progress rendering must remain independent of input.
+
+Before the final combined build, audit/bump the host/HDIR/FSYS required-contract
+versions together so old generated companions/packages are rejected clearly;
+new mandatory removal capabilities must not accidentally accept an old writable
+provider that advertises the earlier contract. Rebuild all native artifacts.
+
+
+## Resident transfer and Finder wiring source pass (unverified)
+
+The pending continuation now wires the FileTransferCall boundary into the
+resident shared handle table, scheduler pump and app-exit abandonment. The
+coordinator owns bounded planning, two-fork copy/readback verification, hidden
+staging, source quarantine, grouped publication and reverse-order rollback.
+Cancellation and the irreversible commit barrier share one resident guard.
+Temporary guard failures retain the boxed state; cleanup failures retain the
+ledger and leases, with bounded retries and distinct primary/cleanup statuses.
+Private directories receive invisible Finder metadata in their creation commit.
+Rollback restores affected parent and volume dates through a private primitive.
+
+Finder's receiver now uses the transfer SDK for copy/cross-volume move and
+per-source-volume Trash. Its managed copy window follows progress through
+coalesced native notifications rather than a hot idle loop; Stop/Escape retain
+the drag payload until an actual terminal receipt. Readonly folder rearrangement
+remains presentation-only. Watch notices for leased volumes coalesce until the
+transfer settles, avoiding provisional-layout churn. The existing provider
+MoveToTrash/PutAway calls have a bridge onto the same owner and trap replay
+wake path. No classic 68k adapter was changed.
+
+The new canonical transfer_cases module contains deferred public SDK assertions
+for recursive native-to-host copies and host-to-native moves, both forks,
+properties/comments, same-volume identity, forced-copy naming, readonly and
+cycle/collision refusals, cancellation/date restoration/retry and stale/foreign
+transfer IDs. These are source assertions only, not passing acceptance evidence.
+
+Still unfinished: provider Trash usage and recursive Empty Trash; complete
+source/read protection and recovery UI; application document delivery/type
+contracts and application icon targets; archive-to-writable transfer and the
+full fault/disconnect/RAII/Finder matrix; combined build/native/visual/performance
+verification; contract-version regeneration and docs/api generation. Review of
+the resource-editor/extension specs remains after all six acceptance targets.
+No build/test, commit or push was run for this continuation.
+
+## Verified Text Edit / JSON preferences preview, 2026-10-22
+
+Text Edit replaces the TextEdit Exerciser with owned plain-text document windows,
+System Open/Save As/Save Changes dialogs, CR/LF/CRLF preservation, font and size
+menus, Monaco12 defaults and atomic versioned font preferences. ResEdit's user
+visible/installed name is Res Edit. Preference documents use native JSON/TEDT
+metadata and extensionless names: File Types and Text Edit Preferences. Editing
+an existing JSON document retains its type. Native application declarations accept
+TEXT and JSON. The original reference app and earlier System RISC artifacts need
+no compatibility path.
+
+The real Finder workflow exposed a native File record-size collision: data saves
+and transfer calls were both464 bytes and native dispatch routed saves to the
+transfer family. ABI11 gives transfers472 bytes and compile-time checks require
+all File request families to remain size-distinct. Every native producer and
+fixture is rebuilt together. Immediate edit+Save now stops keyboard batching at
+raw Command-key boundaries so the preceding edit publishes its menu policy
+before the queued shortcut resolves.
+
+Standard/application menu drawing and hover borrow resident boxed records rather
+than copying the25KiB ABI state onto nested application stacks. Optimized present
+stack reservation fell from52272 to2640 bytes; ordinary menu hover from25856 to80.
+No heap or thread stack budget was increased. Allocation-failure diagnostics now
+include allocator headroom. These changes accompany the preview checks; this is
+not a completed general stack isolation mechanism.
+
+Verification: optimized image build and HFS-B fork/metadata/blessing checks;
+18 focused TextEdit/menu/codec host tests,21 ABI/format unit tests; canonical
+physical Finder JSON open/edit/immediate-save/type-preservation/font-persistence
+test; real MDEF tracking/keyboard/cancellation/original-pixel gate. Transport
+checks preserve the base installation and remove their private disks/ROMs.
+The JSON test is included in cargo xtask check's private guest sequence. The
+complete six-target driver/transfer acceptance matrix remains open, and this
+preview does not authorize committing the unverified larger implementation batch.

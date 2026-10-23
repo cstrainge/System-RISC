@@ -6,7 +6,7 @@ publish.workspace = true
 [features]
 guest = []
 [[bin]]
-name = "SCROLLBAR"
+name = "CDEF_SCROLL_BAR"
 required-features = ["guest"]
 path = "src/main.rs"
 test = false

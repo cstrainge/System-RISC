@@ -4,26 +4,16 @@
 mod resource;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod application;
-#[cfg(target_arch = "riscv64")]
-pub(crate) fn current_io_pending() -> bool
-{
-    provider::runtime::current_io_pending()
-}
-
-#[cfg(target_arch = "riscv64")]
-pub(crate) fn abandon_document_io(owner: u64, thread: u64, volume: u32, cnid: u32,
-                                  application: bool)
-                                  -> bool
-{
-    provider::runtime::abandon_document_io(owner, thread, volume, cnid, application)
-}
-
-
 use alloc::{string::String, vec::Vec};
 
 mod scan;
+mod properties;
 mod watch;
 mod cache;
+mod streams;
+mod groups;
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+mod stream_native;
 mod provider;
 #[cfg(feature = "test-support")]
 pub(crate) use provider::Source as TestProviderSource;
@@ -38,6 +28,33 @@ pub use mac_formats::macbinary::MacFile;
 pub(crate) use provider::runtime::{abandon_thread as abandon_provider_thread,
                                    mount_startup_exports, pump as pump_provider_operations,
                                    request_resource};
+
+/// Owned transfer compatibility calls use the same trap replay boundary as
+/// driver jobs, with IDs classified by the central namespace registry.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn transfer_io_pending(thread: u64, handle: u32) -> Result<bool, Status>
+{
+    provider::runtime::transfer::bridge::pending(thread, handle)
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn abandon_transfer_waiter(thread: u64, handle: u32)
+{
+    provider::runtime::transfer::bridge::abandon_waiter(thread, handle)
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn current_io_pending() -> bool
+{
+    provider::runtime::current_io_pending()
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn abandon_document_io(owner: u64, thread: u64, volume: u32, cnid: u32,
+                                  application: bool)
+                                  -> bool
+{
+    provider::runtime::abandon_document_io(owner, thread, volume, cnid, application)
+}
 
 pub const MAX_DISKS: u32 = 32;
 pub const MAX_VOLUMES: usize = crate::toolbox::handles::Kind::Volumes.capacity();
@@ -241,12 +258,24 @@ impl FileFork
         matches!(self, Self::Provider(fork) if fork.orphaned)
     }
 }
+struct ExecutablePin
+{
+    owner:  u64,
+    volume: u32,
+    id:     u32
+}
 pub struct Manager
 {
+    executables:          Vec<ExecutablePin>,
+    document_pins:        Vec<(u32, u32, u32)>,
     volumes:              Table<Mounted>,
     handles:              Table<OpenFile>,
     writes:               Table<write::Pending>,
-    document_pins:        Vec<(u32, u32, u32)>,
+    streams:              Table<streams::Stream>,
+    groups:               Table<groups::Group>,
+    #[cfg(target_arch = "riscv64")]
+    transfers:            Table<provider::runtime::transfer::Entry>,
+    stream_cleanup:       bool,
     watches:              Table<watch::Watch>,
     pub rejected_volumes: u32
 }
@@ -254,12 +283,18 @@ impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { volumes:          Table::new(Kind::Volumes),
-               handles:          Table::new(Kind::Files),
-               writes:           Table::new(Kind::FileWrites),
-               document_pins:    Vec::new(),
-               watches:          Table::new(Kind::FileWatches),
-               rejected_volumes: 0 }
+        Self { document_pins:                             Vec::new(),
+               executables:                               Vec::new(),
+               volumes:                                   Table::new(Kind::Volumes),
+               handles:                                   Table::new(Kind::Files),
+               writes:                                    Table::new(Kind::FileWrites),
+               streams:                                   Table::new(Kind::FileStreams),
+               groups:                                    Table::new(Kind::FileGroups),
+               #[cfg(target_arch = "riscv64")]
+               transfers:                                 Table::new(Kind::FileTransfers),
+               stream_cleanup:                            false,
+               watches:                                   Table::new(Kind::FileWatches),
+               rejected_volumes:                          0 }
     }
 }
 fn io<T>(result: mac_hfs::Result<T>) -> Result<T, Status>
@@ -326,11 +361,31 @@ fn required(entry: Option<CatalogEntry>) -> Result<CatalogEntry, Status>
 }
 impl Manager
 {
-    pub(crate) fn pin_document(&mut self, _owner: u64, batch: u32, volume: u32, id: u32)
+    /// Transfer leases serialize mutations, not reads, across every involved
+    /// mount. This makes rollback dates and source snapshots attributable to
+    /// the transaction instead of overwriting an unrelated app's later edit.
+    fn validate_transfer_mutation(&self, owner: u64, volume: u32) -> Result<(), Status>
+    {
+        #[cfg(target_arch = "riscv64")]
+        if self.transfers
+               .iter()
+               .any(|(handle, entry)| entry.uses(volume) && !entry.permits(handle, owner))
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let _ = (owner, volume);
+        Ok(())
+    }
+
+    pub(crate) fn pin_document(&mut self, owner: u64, batch: u32, volume: u32, id: u32)
                                -> Result<(), Status>
     {
         self.read_provider(volume)?;
+        self.validate_transfer_read(owner, volume, id)?;
         if self.writes.iter().any(|(_, write)| write.volume == volume && write.expected_cnid == id)
+           || self.streams
+                  .iter()
+                  .any(|(_, stream)| stream.volume == volume && stream.expected == id)
         {
             return Err(SERVICE_BUSY);
         }
@@ -345,6 +400,49 @@ impl Manager
     pub(crate) fn unpin_documents(&mut self, batch: u32)
     {
         self.document_pins.retain(|(id, _, _)| *id != batch);
+    }
+
+    fn file_pinned(&self, volume: u32, id: u32) -> bool
+    {
+        self.executables.iter().any(|pin| pin.volume == volume && pin.id == id)
+        || self.document_pins.iter().any(|(_, mount, file)| *mount == volume && *file == id)
+    }
+
+    fn validate_transfer_read(&self, owner: u64, volume: u32, id: u32) -> Result<(), Status>
+    {
+        #[cfg(target_arch = "riscv64")]
+        if self.transfers
+               .iter()
+               .any(|(handle, entry)| entry.protects_read(handle, owner, volume, id))
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let _ = (owner, volume, id);
+        Ok(())
+    }
+
+    /// Process IDs come from the shared process table. This is a reverse
+    /// reference, not a second identity scheme or an open-fork handle.
+    pub(crate) fn pin_executable(&mut self, owner: u64, volume: u32, id: u32)
+                                 -> Result<(), Status>
+    {
+        self.validate_transfer_read(owner, volume, id)?;
+        if self.writes.iter().any(|(_, write)| write.volume == volume && write.expected_cnid == id)
+           || self.streams
+                  .iter()
+                  .any(|(_, stream)| stream.volume == volume && stream.expected == id)
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if self.executables.iter().any(|pin| pin.owner == owner)
+        {
+            return Err(BAD_ABI);
+        }
+        self.executables.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        self.executables.push(ExecutablePin { owner,
+                                              volume,
+                                              id });
+        Ok(())
     }
 
     /// Discover all valid classic HFS partitions on each firmware device.
@@ -392,6 +490,30 @@ impl Manager
                 {
                     return Err(NO_MEMORY);
                 }
+                let mut recovery_failed = false;
+                if info.read_only == 0
+                   && storage.write_sector.is_some()
+                   && storage.flush_disk.is_some()
+                   && volume.attributes & 0x8080 == 0
+                {
+                    // Exclusive startup: no application can own a stream yet.
+                    // Every step reclaims at most 64 KiB and commits a valid
+                    // reachable catalog, so another interruption is retryable.
+                    let when = volume.modified;
+                    loop
+                    {
+                        match volume.recover_stream_step(when)
+                        {
+                            Ok(true) => (),
+                            Ok(false) => break,
+                            Err(_) =>
+                            {
+                                recovery_failed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
                 let mut summary =
                     VolumeInfo { id: 0,
                                  disk: index,
@@ -410,6 +532,7 @@ impl Manager
                                  blessed_folder: volume.blessed_id,
                                  attributes: volume.attributes,
                                  read_only: u16::from(info.read_only != 0
+                                                      || recovery_failed
                                                       || storage.write_sector.is_none()
                                                       || storage.flush_disk.is_none()
                                                       || volume.attributes & 0x8080 != 0),
@@ -427,7 +550,7 @@ impl Manager
                                                               cache: Default::default() },
                                              partition,
                                              info: summary,
-                                             poisoned: false,
+                                             poisoned: recovery_failed,
                                              scanner: volume.catalog_scanner().ok(),
                                              catalog_revision: scan::next_revision()? };
                 result.volumes
@@ -564,6 +687,11 @@ impl Manager
 
     fn open(&mut self, owner: u64, volume: u32, id: u32, kind: u32) -> Result<(u32, u64), Status>
     {
+        self.validate_transfer_read(owner, volume, id)?;
+        if self.streams.iter().any(|(_, mark)| mark.volume == volume && mark.expected == id)
+        {
+            return Err(SERVICE_BUSY);
+        }
         let mut entry = self.entry(volume, id)?;
         if entry.directory
         {
@@ -591,6 +719,10 @@ impl Manager
                 -> Result<(), Status>
     {
         let when = call.position;
+        if call.operation == REMOVE && self.file_pinned(call.volume, call.cnid)
+        {
+            return Err(SERVICE_BUSY);
+        }
         if matches!(call.operation, TRASH_DIRECTORY | SET_LOCKED | SET_STATIONERY) && call.index > 1
         {
             return Err(BAD_ARGUMENT);
@@ -606,11 +738,49 @@ impl Manager
         {
             return Err(BAD_ARGUMENT);
         }
+        if call.operation == REMOVE && (call.cnid <= ROOT_ID || call.index != 0 || call.fork != 0)
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if call.operation == SET_FOLDER_STATE
+        {
+            let info = call.entry.finder_info;
+            let bounds = Rect::from_be_bytes(info[..8].try_into().unwrap());
+            if call.cnid < ROOT_ID
+               || call.index != 0
+               || call.fork != 0
+               || bounds.right <= bounds.left
+               || bounds.bottom <= bounds.top
+               || info[8..14].iter().chain(info[20..].iter()).any(|b| *b != 0)
+            {
+                return Err(BAD_ARGUMENT);
+            }
+        }
+        if call.operation == SET_PROPERTIES
+        {
+            properties::validate(call, name)?;
+        }
         let name = name.as_bytes();
         let mut protected = Vec::new();
-        if call.operation != SET_ICON_LOCATION
+        if !matches!(call.operation, SET_ICON_LOCATION | SET_FOLDER_STATE)
         {
-            protected.try_reserve_exact(MAX_OPEN_FILES).map_err(|_| NO_MEMORY)?;
+            protected.try_reserve_exact(MAX_OPEN_FILES
+                                        + self.writes.len()
+                                        + self.streams.len()
+                                        + self.executables.len()
+                                        + self.document_pins.len())
+                     .map_err(|_| NO_MEMORY)?;
+            if matches!(call.operation, EMPTY_TRASH | REMOVE)
+            {
+                protected.extend(self.document_pins
+                                     .iter()
+                                     .filter(|(_, volume, _)| *volume == call.volume)
+                                     .map(|(_, _, id)| *id));
+                protected.extend(self.executables
+                                     .iter()
+                                     .filter(|pin| pin.volume == call.volume)
+                                     .map(|pin| pin.id));
+            }
             for (_, file) in self.handles.iter()
             {
                 if file.volume == call.volume
@@ -618,15 +788,18 @@ impl Manager
                     protected.push(file.id);
                 }
             }
-            if self.document_pins.iter().any(|(_, volume, _)| *volume == call.volume)
-            {
-                return Err(SERVICE_BUSY);
-            }
             for (_, pending) in self.writes.iter()
             {
                 if pending.volume == call.volume && pending.expected_cnid != 0
                 {
                     protected.push(pending.expected_cnid);
+                }
+            }
+            for (_, pending) in self.streams.iter()
+            {
+                if pending.volume == call.volume && pending.expected != 0
+                {
+                    protected.push(pending.expected);
                 }
             }
         }
@@ -637,7 +810,7 @@ impl Manager
             {
                 NEW_FOLDER => Some(if call.cnid == 0 { ROOT_ID } else { call.cnid }),
                 TRASH_DIRECTORY => Some(ROOT_ID),
-                EMPTY_TRASH | SET_ICON_LOCATION => None,
+                EMPTY_TRASH | SET_ICON_LOCATION | SET_FOLDER_STATE => None,
                 _ => Some(self.entry(call.volume, call.cnid)?.parent)
             }
         }
@@ -650,7 +823,9 @@ impl Manager
         {
             return Err(ROLLBACK_FAILED);
         }
-        if matches!(call.operation, SET_ICON_LOCATION | MOVE_INTO) && mounted.info.read_only != 0
+        if matches!(call.operation,
+                    SET_ICON_LOCATION | SET_FOLDER_STATE | MOVE_INTO | SET_PROPERTIES | REMOVE)
+           && mounted.info.read_only != 0
         {
             return Err(READ_ONLY);
         }
@@ -682,6 +857,20 @@ impl Manager
                 Ok(None)
             }),
             SET_COMMENT => volume.set_comment(call.cnid, name, when, &protected).map(|()| None),
+            SET_PROPERTIES => {
+                let value = &call.entry;
+                volume.set_properties(call.cnid, mac_filesystem::Properties {
+                    flags: value.flags, finder_info: value.finder_info,
+                    created: mac_hfs_b::time::Timestamp(value.created),
+                    modified: mac_hfs_b::time::Timestamp(value.modified),
+                    backup: (value.backup_present != 0).then_some(mac_hfs_b::time::Timestamp(value.backup)),
+                    comment: core::str::from_utf8(name).map_err(|_| BAD_ARGUMENT)?,
+                }, when, &protected).map(|(entry, changed)| {
+                    if !changed { changes_catalog = false; mounted.catalog_revision = previous_revision; }
+                    Some(entry)
+                })
+            }
+            REMOVE => volume.remove(call.cnid, when, &protected).map(|()| None),
             RENAME => volume.rename(call.cnid, name, when, &protected).map(Some),
             MOVE_INTO =>
             {
@@ -706,6 +895,12 @@ impl Manager
                         changes_catalog = false;
                         mounted.catalog_revision = previous_revision;
                     }
+                    Some(entry)
+                })
+            }
+            SET_FOLDER_STATE => {
+                volume.set_folder_state(call.cnid, call.entry.finder_info, when).map(|(entry, changed)| {
+                    if !changed { changes_catalog = false; mounted.catalog_revision = previous_revision; }
                     Some(entry)
                 })
             }
@@ -776,6 +971,7 @@ impl Manager
                     MutationError::Invalid => BAD_ARGUMENT,
                     MutationError::ReadOnly => READ_ONLY,
                     MutationError::NotFound => NOT_FOUND,
+                    MutationError::NotEmpty => DIRECTORY_NOT_EMPTY,
                     MutationError::Exists => ALREADY_EXISTS,
                     MutationError::Protected => ACCESS_DENIED,
                     MutationError::Busy => SERVICE_BUSY,
@@ -801,8 +997,42 @@ impl Manager
     /// marks. Slot generations survive cleanup so old IDs cannot alias reuse.
     pub fn close_all(&mut self, owner: u64) -> usize
     {
+        self.executables.retain(|pin| pin.owner != owner);
         self.close_watches(owner);
+        #[cfg(target_arch = "riscv64")]
+        provider::runtime::transfer::abandon(self, owner);
+        for stream in self.streams.values_mut().filter(|stream| stream.owner == owner)
+        {
+            stream.abandoned = true;
+            self.stream_cleanup = true;
+            streams::request_cleanup();
+        }
         let mut count = 0;
+        for group in self.groups.values_mut().filter(|group| group.owner == owner)
+        {
+            group.abandoned = true;
+            if group.provider.is_some()
+            {
+                groups::request_cleanup();
+            }
+        }
+        loop
+        {
+            let id = self.groups.iter().find_map(|(id, group)| {
+                                           (group.owner == owner
+                                            && group.provider.is_none()
+                                            && !group.quarantined)
+                                                                  .then_some(id)
+                                       });
+            let Some(id) = id
+            else
+            {
+                break;
+            };
+            // Native groups have no side effects until their atomic step.
+            self.groups.remove(id);
+            count += 1;
+        }
         loop
         {
             let id =
@@ -850,12 +1080,6 @@ impl Manager
     pub fn request_owned(&mut self, owner: u64, call: &mut FileCall, name: &str, output: &mut [u8])
                          -> Result<(), Status>
     {
-        if call.operation == EMPTY_TRASH
-           && self.document_pins.iter().any(|(_, volume, _)| *volume == call.volume)
-        {
-            return Err(SERVICE_BUSY);
-        }
-
         call.transferred = 0;
         if matches!(call.operation, WATCH_DIRECTORY | POLL_WATCH | DISPOSE_WATCH)
         {
@@ -869,15 +1093,19 @@ impl Manager
                     | EMPTY_TRASH
                     | TRASH_USAGE
                     | RENAME
+                    | REMOVE
+                    | SET_PROPERTIES
                     | SET_LOCKED
                     | SET_STATIONERY
                     | SET_ICON_LOCATION
+                    | SET_FOLDER_STATE
                     | MOVE_INTO
                     | COMMENT
                     | SET_COMMENT)
         {
             if scan::writes_catalog(call.operation, call.index)
             {
+                self.validate_transfer_mutation(owner, call.volume)?;
                 self.validate_provider_mutation(call.volume)?;
             }
             return self.mutation(call, name, output);

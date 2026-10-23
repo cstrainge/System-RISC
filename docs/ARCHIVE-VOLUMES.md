@@ -11,7 +11,7 @@ remain outstanding. The precise format/codec matrix is in
 ## Mount and application behavior
 
 The driver's `FASS 0` resource registers the file-code association, local icon
-family and mount action. The separate `File Types.json` preference maps untyped
+family and mount action. The separate `File Types` preference maps untyped
 `.sit` names to their type/creator codes. Double-clicking in Finder
 requests generic document opening through the public File/Volume Manager service;
 Finder contains no archive matcher or decoder. An absent driver registers nothing.

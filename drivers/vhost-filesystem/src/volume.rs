@@ -8,6 +8,11 @@ use crate::{Cause, Reply, Result, Rpc,
 mod write;
 mod scan;
 mod plain;
+mod identity;
+mod annotations;
+mod namespace;
+mod removal;
+mod groups;
 pub use write::{Create, Replace};
 const ROOT: u32 = 2;
 const MAX_MOUNTS: usize = 16;
@@ -108,7 +113,7 @@ pub struct MountInfo
 }
 impl MountInfo
 {
-    fn try_clone(&self) -> Result<Self>
+    pub(crate) fn try_clone(&self) -> Result<Self>
     {
         Ok(Self { metadata: self.metadata.try_clone()?,
                   ..*self })
@@ -116,7 +121,7 @@ impl MountInfo
 }
 impl Node
 {
-    fn try_clone(&self) -> Result<Self>
+    pub(crate) fn try_clone(&self) -> Result<Self>
     {
         let mut key = String::new();
         key.try_reserve_exact(self.key.len()).map_err(|_| Cause::NoMemory)?;
@@ -162,12 +167,17 @@ impl Directory
 }
 struct Mount
 {
-    root:        u32,
-    ejecting:    bool,
-    invalidated: bool,
-    info:        MountInfo,
-    nodes:       Index<Node>,
-    directories: Index<Directory>
+    root:          u32,
+    root_identity: Option<wire::ObjectIdentity>,
+    ejecting:      bool,
+    invalidated:   bool,
+    info:          MountInfo,
+    nodes:         Index<Node>,
+    directories:   Index<Directory>,
+    bindings:      Vec<identity::Binding>,
+    plain_next:    u32,
+    plain_limit:   u32,
+    annotations:   annotations::Directory
 }
 struct Open
 {
@@ -193,7 +203,9 @@ pub struct Filesystem<R: Rpc>
     exports:       u32,
     mounts:        Index<Mount>,
     files:         Index<Open>,
-    writes:        Index<write::Pending>
+    writes:        Index<write::Pending>,
+    groups:        Index<groups::Group>,
+    batch_lock:    Option<(u32, u32)>
 }
 impl<R: Rpc> Filesystem<R>
 {
@@ -207,7 +219,9 @@ impl<R: Rpc> Filesystem<R>
                exports: 0,
                mounts: Index::new(MAX_MOUNTS),
                files: Index::new(MAX_OPEN),
-               writes: Index::new(8) }
+               writes: Index::new(8),
+               groups: Index::new(8),
+               batch_lock: None }
     }
 
     pub(crate) fn quiescent(&self) -> bool
@@ -216,6 +230,7 @@ impl<R: Rpc> Filesystem<R>
         && self.mounts.entries.is_empty()
         && self.files.entries.is_empty()
         && self.writes.entries.is_empty()
+        && self.groups.entries.is_empty()
     }
 
     pub(crate) fn has_write(&self, volume: u32, token: u32) -> bool
@@ -246,8 +261,10 @@ impl<R: Rpc> Filesystem<R>
                                  | Op::OpenDirectory
                                  | Op::OpenRead
                                  | Op::ListBegin
+                                 | Op::BeginRename
                                  | Op::BeginWrite
-                                 | Op::OpenLock);
+                                 | Op::OpenLock
+                                 | Op::BeginRemove);
         let allocates = allocates || operation == Op::PublishDirectory;
         if object != 0 && !self.caps.iter().any(|cap| cap.id == object && cap.owner == self.owner)
         {
@@ -452,12 +469,31 @@ impl<R: Rpc> Filesystem<R>
             Ok(value) => value,
             Err(error) => return self.cleanup(root, Err(error)).await
         };
+        let described = match self.call(Op::DescribeObject, root, 0, 0, &[]).await
+        {
+            Ok(reply) => wire::Description::decode(&reply.body).map_err(|_| Cause::Invalid),
+            Err(error) => return self.cleanup(root, Err(error)).await
+        };
+        let root_identity = match described
+        {
+            Ok(description) => description.identity,
+            Err(error) => return self.cleanup(root, Err(error.into())).await
+        };
+        if !info.read_only && root_identity.is_none()
+        {
+            return self.cleanup(root, Err(Cause::Unsupported.into())).await;
+        }
         let mut mounted = Mount { root,
+                                  root_identity,
                                   ejecting: false,
                                   invalidated: false,
                                   info: cached,
                                   nodes: Index::new(MAX_NODES),
-                                  directories: Index::new(MAX_DIRECTORIES) };
+                                  directories: Index::new(MAX_DIRECTORIES),
+                                  bindings: Vec::new(),
+                                  plain_next: 0,
+                                  plain_limit: 0,
+                                  annotations: annotations::Directory::Unknown };
         if let Err(error) =
             mounted.nodes
                    .insert(ROOT, node)
@@ -469,7 +505,25 @@ impl<R: Rpc> Filesystem<R>
         {
             return self.cleanup(root, Err(error)).await;
         }
-        Ok(info)
+        if !info.read_only
+        {
+            // Reserve before any directory enumeration starts: publishing the
+            // counter during a scan would invalidate that scan's host snapshot.
+            let lock = self.writer_lock(volume).await?;
+            let reserved = self.update_root(volume, None, MAX_NODES as u32).await;
+            let released = self.release_writer(lock).await;
+            let first = reserved?;
+            released?;
+            self.create_annotation_directory(volume).await?;
+            let root = self.mounts.get(volume).unwrap().root;
+            let revision = self.directory_revision(root).await?;
+            self.mounts.get_mut(volume).unwrap().directories.get_mut(ROOT).unwrap().revision =
+                Some(revision);
+            let mount = self.mounts.get_mut(volume).unwrap();
+            mount.plain_next = first;
+            mount.plain_limit = first + MAX_NODES as u32;
+        }
+        self.info(volume)?.try_clone()
     }
 
     pub fn info(&self, volume: u32) -> Result<&MountInfo>
@@ -508,6 +562,14 @@ impl<R: Rpc> Filesystem<R>
         {
             return Err(Cause::Stale.into());
         }
+        if self.writes.entries.iter().any(|(_, p)| {
+                                         p.volume == volume
+                                         && p.cnid == node
+                                         && (p.published && !p.identity_bound || p.removing)
+                                     })
+        {
+            return Err(Cause::Busy.into());
+        }
         let cached = mount.nodes.get(node).ok_or(Cause::NotFound)?;
         if cached.metadata.kind != Kind::File
         {
@@ -523,10 +585,12 @@ impl<R: Rpc> Filesystem<R>
         }
         else
         {
-            self.open_record(parent, &name).await?
+            self.open_file_record(volume, parent, &name).await?
         };
         if opened.metadata != self.cached_node(volume, node)?.metadata
-           || opened.source != self.cached_node(volume, node)?.source
+           || self.cached_node(volume, node)?
+                  .source
+                  .is_some_and(|source| opened.source != Some(source))
         {
             return self.cleanup(handle, Err(Cause::Stale.into())).await;
         }
@@ -639,6 +703,7 @@ impl<R: Rpc> Filesystem<R>
         self.owner = volume;
         if self.files.entries.iter().any(|(_, file)| file.volume == volume)
            || self.writes.entries.iter().any(|(_, pending)| pending.volume == volume)
+           || self.group_busy(volume)
         {
             return Err(Cause::Busy.into());
         }
@@ -655,9 +720,11 @@ impl<R: Rpc> Filesystem<R>
 
     fn referenced(&self, id: u32) -> bool
     {
-        self.mounts.entries.iter().any(|(_,mount)|mount.root==id || mount.directories.entries.iter().any(|(_,directory)|directory.handle==id || directory.enumeration==Some(id) || directory.pending.as_ref().is_some_and(|child|child.directory==Some(id))))
+        self.mounts.entries.iter().any(|(_,mount)|mount.root==id || mount.annotations.references(id) || mount.directories.entries.iter().any(|(_,directory)|directory.handle==id || directory.enumeration==Some(id) || directory.pending.as_ref().is_some_and(|child|child.directory==Some(id))))
             || self.files.entries.iter().any(|(_,file)|file.handle==id)
             || self.writes.entries.iter().any(|(_,pending)|pending.references(id))
+            || self.groups.entries.iter().any(|(_,group)|group.lock==id)
+            || self.batch_lock.is_some_and(|(_,lock)|lock==id)
     }
 
     /// Release acquired capabilities not handed to a durable object owner,
@@ -698,6 +765,7 @@ impl<R: Rpc> Filesystem<R>
     {
         self.owner = volume;
         if self.writes.entries.iter().any(|(_, pending)| pending.volume == volume)
+           || self.group_busy(volume)
         {
             return Err(Cause::Busy.into());
         }
@@ -748,6 +816,7 @@ impl<R: Rpc> Filesystem<R>
         let mount = self.mounts.get_mut(volume).unwrap();
         mount.nodes = nodes;
         mount.directories = directories;
+        mount.annotations = annotations::Directory::Unknown;
         mount.info = info;
         mount.invalidated = false;
         Ok(())

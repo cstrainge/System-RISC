@@ -88,7 +88,19 @@ fn viewer_event(system: &System<'_>, viewer: &mut clipboard::Viewer, event: Even
                 -> Result<bool, mac_toolbox::Error>
 {
     let event = mac_toolbox::Event::from(event);
-    viewer.event(system, &event, system.events().locate(&event)?)
+    // Only physical pointer events need coordinate resolution. The synthetic
+    // unrelated Activate below intentionally has no live window capability.
+    let position = if matches!(event, mac_toolbox::Event::MouseDown { .. }
+                                    | mac_toolbox::Event::MouseUp { .. }
+                                    | mac_toolbox::Event::Idle { .. })
+    {
+        system.events().locate(&event)?
+    }
+    else
+    {
+        mac_toolbox::PointerPosition::default()
+    };
+    viewer.event(system, &event, position)
 }
 fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
 {

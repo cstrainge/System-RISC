@@ -320,6 +320,11 @@ fn run(system: &System<'_>) -> Result<(), Error>
         // Input wakes WaitNextEvent on pointer motion. Only region transitions
         // issue a cursor request, so idle polling never restarts animation.
         if !event.input().modifiers.button_down()
+           && matches!(event,
+                       Event::Idle { .. }
+                       | Event::MouseDown { .. }
+                       | Event::MouseUp { .. }
+                       | Event::Activate { .. })
         {
             let next = if active
             {

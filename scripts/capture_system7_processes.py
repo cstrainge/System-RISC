@@ -45,6 +45,8 @@ def capture(output):
     fs.mkdir('/Applications', exist_ok=True)
     for package, _ in children:
         fs.import_macbinary(package, '/Applications')
+    for name in ['Budget App', 'Corrupt App']:
+        fs.import_macbinary(output / 'package' / (name + '.bin'), '/Applications')
     fs.mkdir('/Copies')
     fs.import_macbinary(children[0][0], '/Copies')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),

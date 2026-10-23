@@ -8,6 +8,8 @@ use crate::{copy,
             *};
 mod writes;
 mod moves;
+mod stream;
+pub use stream::{STAGING_DIRECTORY, StagedFile, StreamAbort, StreamProperties, StreamSpec};
 pub use writes::DataSave;
 mod check;
 pub use check::CheckReport;
@@ -29,7 +31,7 @@ impl Default for Budget
                extents:        4096 }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry
 {
     pub id:          u32,
@@ -746,6 +748,15 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
     pub fn create(&mut self, parent: u32, name: &str, directory: bool, when: Timestamp)
                   -> Result<Entry>
     {
+        self.create_with_finder_info(parent, name, directory, [0; 32], when)
+    }
+
+    /// Initial Finder metadata belongs to the same catalog publication. In
+    /// particular a private staging directory must never be briefly visible.
+    pub fn create_with_finder_info(&mut self, parent: u32, name: &str, directory: bool,
+                                   finder_info: [u8; 32], when: Timestamp)
+                                   -> Result<Entry>
+    {
         let name = names::normalize(name)?;
         match self.lookup(parent, &name)
         {
@@ -755,6 +766,10 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
             Err(e) => return Err(e)
         }
         let mut folder = self.entry(parent)?;
+        if !folder.directory
+        {
+            return Err(Error::Invalid);
+        }
         if folder.flags & 1 != 0
         {
             return Err(Error::Protected);
@@ -768,7 +783,7 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
                         created: when,
                         modified: when,
                         backup: None,
-                        finder_info: [0; 32],
+                        finder_info,
                         data: Fork::default(),
                         resources: Fork::default() };
         let mut tx = self.transaction()?;
@@ -815,6 +830,73 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         tx.header.modified = when.0;
         tx.commit()?;
         Ok(e)
+    }
+
+    /// Restore only an owned transaction's affected folder date. A separate
+    /// volume date restores the header without conflating it with root metadata.
+    /// The resident coordinator serializes competing mutations while undoing.
+    pub fn restore_modified(&mut self, id: u32, modified: Timestamp,
+                            volume_modified: Option<Timestamp>)
+                            -> Result<Entry>
+    {
+        let mut entry = self.entry(id)?;
+        if entry.modified == modified
+           && volume_modified.is_none_or(|date| date.0 == self.header.modified)
+        {
+            return Ok(entry);
+        }
+        entry.modified = modified;
+        let mut tx = self.transaction()?;
+        tx.entry(&entry)?;
+        if let Some(date) = volume_modified
+        {
+            tx.header.modified = date.0;
+        }
+        tx.commit()?;
+        Ok(entry)
+    }
+
+    /// Publish complete copied object properties in one metadata transaction.
+    /// Folder contents and both fork extents remain untouched.
+    pub fn set_properties(&mut self, id: u32, properties: StreamProperties<'_>, when: Timestamp)
+                          -> Result<(Entry, bool)>
+    {
+        if properties.comment.len() > 255
+        {
+            return Err(Error::Invalid);
+        }
+        let mut entry = self.entry(id)?;
+        let comment = self.comment(id)?;
+        if entry.flags == properties.flags
+           && entry.finder_info == properties.finder_info
+           && entry.created == properties.created
+           && entry.modified == properties.modified
+           && entry.backup == properties.backup
+           && comment == properties.comment
+        {
+            return Ok((entry, false));
+        }
+        let unlocking = properties.flags == entry.flags & !1
+                        && entry.finder_info == properties.finder_info
+                        && entry.created == properties.created
+                        && entry.modified == properties.modified
+                        && entry.backup == properties.backup
+                        && comment == properties.comment;
+        if entry.flags & 1 != 0 && !unlocking
+        {
+            return Err(Error::Protected);
+        }
+        entry.flags = properties.flags;
+        entry.finder_info = properties.finder_info;
+        entry.created = properties.created;
+        entry.modified = properties.modified;
+        entry.backup = properties.backup;
+        let mut tx = self.transaction()?;
+        tx.entry(&entry)?;
+        tx.put(2, &attr_key(id, 0), properties.comment.as_bytes())?;
+        tx.header.modified = when.0;
+        tx.commit()?;
+        Ok((entry, true))
     }
 
     pub fn set_comment(&mut self, id: u32, comment: &str, when: Timestamp) -> Result<()>
@@ -956,8 +1038,14 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         {
             MoveOrigin::Keep =>
             {}
-            MoveOrigin::Save => tx.put(2, &attr_key(id, 1), &saved_origin)?,
-            MoveOrigin::Clear => tx.remove(2, &attr_key(id, 1))?
+            MoveOrigin::Save =>
+            {
+                tx.put(2, &attr_key(id, 1), &saved_origin)?;
+            }
+            MoveOrigin::Clear =>
+            {
+                tx.remove(2, &attr_key(id, 1))?;
+            }
         }
         tx.remove(0, &old_key)?;
         tx.put(0, &name_key(parent, &e.name)?, &id.to_be_bytes())?;

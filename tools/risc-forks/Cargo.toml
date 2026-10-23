@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 [dependencies]
+risc-host = { path = "../risc-host" }
+mac-object-table.workspace = true
 mac-fork-file = { path = "../../crates/mac-fork-file" }
 mac-hfs-b.workspace = true
 mac-formats.workspace = true

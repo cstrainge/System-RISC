@@ -28,15 +28,17 @@ fn independent_applications_use_timer_preemption_and_private_toolbox_state()
     let command = report["launch"].as_array().unwrap();
     assert!(command.windows(2).any(|args| args[0] == "-smp" && args[1] == "1"),
             "preemption must be demonstrated on one hart");
-    for marker in ["TRAPS_READY: resident ecall dispatcher ABI=8",
+    for marker in ["TRAPS_READY: resident ecall dispatcher ABI=11",
                    "PROCESS_INVALID_LAUNCH_PASS",
+                   "FORMAT_ERROR_STATUS_PASS budget=no-memory corrupt=corrupt-data \
+                    missing=not-found translation=translation-required retry=passed",
                    "PROCESS_PASCAL_PASS cases=5",
                    "PROCESS_PREEMPTION_PASS",
                    "PROCESS_GENERATIONS_PASS native=passed legacy=passed foreign=passed \
                     reused=passed",
                    "PROCESS_FILE_IDENTITIES_PASS copies=2 concurrent=passed statics=private \
                     rename=passed move=passed foreground=passed exit=passed",
-                   "PROCESS_USERSPACE_PASS preemption=passed launch=passed invalid=3 \
+                   "PROCESS_USERSPACE_PASS preemption=passed launch=passed invalid=5 \
                     relaunch=passed windows=passed resources=passed memory=passed events=passed \
                     focus=passed hide=passed appmenu=passed"]
     {
@@ -68,7 +70,7 @@ fn independent_applications_use_timer_preemption_and_private_toolbox_state()
     {
         assert_eq!(serial.matches(marker).count(), 2, "missing multiwindow scenario {marker}");
     }
-    let acceptance = serde_json::json!({"status":"passed","acceptance":"mac-toolbox/tests/process_cases.rs plus process_pascal_cases.rs and conformance/application_menu.rs","single_hart_timer_preemption":true,"worker_launches":4,"concurrent_copies":2,"identical_copy_filenames":"passed","relocated_statics_and_pointers":"passed","file_identity_rename_and_move":"passed","invalid_launches":3,"generation_tagged_process_ids":"passed","stale_native_and_legacy_ids_after_slot_reuse":"passed","pascal_conversion_cases":5,"caller_posted_foreign_window_events":12,"atomic_activation_cases":10,"background_creation_cases":4,"background_selection_cases":4,"background_desktop_cases":6,"multiwindow_exit_cases":4,"resource_and_memory_partitions":"passed","window_ownership":"passed","private_and_physical_events":"passed","hide_focus_and_exit":"passed","capture":report,"limits":["validated RV64 relocation types only","one OS thread per app","shared address space; no MMU process isolation claim","bounded worker window/handle exit cleanup exercised four times","native UTF8 process services, no 68k Process Manager adapter"]});
+    let acceptance = serde_json::json!({"status":"passed","acceptance":"mac-toolbox/tests/process_cases.rs plus process_pascal_cases.rs and conformance/application_menu.rs","single_hart_timer_preemption":true,"worker_launches":4,"concurrent_copies":2,"identical_copy_filenames":"passed","relocated_statics_and_pointers":"passed","file_identity_rename_and_move":"passed","invalid_launches":5,"typed_format_status_cases":4,"generation_tagged_process_ids":"passed","stale_native_and_legacy_ids_after_slot_reuse":"passed","pascal_conversion_cases":5,"caller_posted_foreign_window_events":12,"atomic_activation_cases":10,"background_creation_cases":4,"background_selection_cases":4,"background_desktop_cases":6,"multiwindow_exit_cases":4,"resource_and_memory_partitions":"passed","window_ownership":"passed","private_and_physical_events":"passed","hide_focus_and_exit":"passed","capture":report,"limits":["validated RV64 relocation types only","one OS thread per app","shared address space; no MMU process isolation claim","bounded worker window/handle exit cleanup exercised four times","native UTF8 process services, no 68k Process Manager adapter"]});
     fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join("results/system7/process-checks.json"),
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();

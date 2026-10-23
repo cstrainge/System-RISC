@@ -134,6 +134,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         update_menus(system, &browser, &info)?;
     }
     system.log("DESKTOP_READY: Finder and native Window Manager\n")?;
+    let mut deferred_command = None;
     loop
     {
         if alerts.window() == WindowId(0)
@@ -146,27 +147,79 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             }
             let _ = try_action(system, &mut alerts, associations.advance(system))?;
         }
-        let (event, position) = system.wait_positioned(mac_toolbox::events::EventMask::ALL,
-                                                       if info.pending()
-                                                          || browser.pending()
-                                                          || (associations.pending()
-                                                              && alerts.window() == WindowId(0))
-                                                       {
-                                                           0
-                                                       }
-                                                       else
-                                                       {
-                                                           30
-                                                       })?
-                                      .into_parts();
+        let completed = match dragging.advance(system, &mut browser)
+        {
+            Ok(completed) => completed,
+            Err(error) =>
+            {
+                if let Some(failure) = dragging.take_failure()
+                {
+                    alerts.transfer_error(system, failure)?;
+                }
+                else
+                {
+                    let _ = try_action::<()>(system, &mut alerts, Err(error))?;
+                }
+                false
+            }
+        };
+        if let Some(recovery) = dragging.take_recovery()
+        {
+            alerts.transfer_recovery(system, recovery)?;
+        }
+        if completed
+        {
+            let _ = try_action(system, &mut alerts, watches.poll(system, &mut browser))?;
+            if alerts.window() == WindowId(0)
+            {
+                update_menus(system, &browser, &info)?;
+            }
+        }
+        if deferred_command.is_some() && dragging.saving_positions()
+        {
+            system.events().next(events::EventMask::from_bits_retain(0))?;
+            continue;
+        }
+        let (event, position) = if let Some(input) = deferred_command.take()
+        {
+            input
+        }
+        else
+        {
+            system.wait_positioned(mac_toolbox::events::EventMask::ALL,
+                                   if info.pending()
+                                      || browser.pending()
+                                      || dragging.runnable()
+                                      || dragging.positions_pending(&browser)
+                                      || (associations.pending() && alerts.window() == WindowId(0))
+                                   {
+                                       0
+                                   }
+                                   else
+                                   {
+                                       30
+                                   })?
+                  .into_parts()
+        };
+        // Finish our owned background mutation before another storage command.
+        // Pointer tracking remains live while that transaction is in flight.
+        if dragging.saving_positions() && matches!(event, Event::MenuCommand { .. })
+        {
+            deferred_command = Some((event, position));
+            continue;
+        }
         alerts.set_context(&event);
+        if dragging.ui_event(system, &event, position)
+        {
+            continue;
+        }
         if let Event::WindowGeometryChanged { window,
                                               .. } = event
         {
             let _ = try_action(system, &mut alerts, browser.geometry_changed(system, window))?;
             continue;
         }
-        if matches!(event, Event::Activate { .. })
+        if matches!(event, Event::Activate { .. }) && alerts.window() == WindowId(0)
         {
             browser.activate(&event);
             let _ = try_action(system, &mut alerts, browser.sync_desktop_activation(system))?;
@@ -233,7 +286,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         }
         if matches!(event,Event::Other{kind:events::classic::EventKind::OsEvent,message,..} if message & 0xff00_0000==0x0200_0000)
         {
-            browser.prune(system)?;
+            let _ = try_action(system, &mut alerts, browser.prune(system))?;
         }
         if browser.marquee_tracking()
            && matches!(event, Event::Idle { .. } | Event::MouseUp { .. } | Event::KeyDown { .. })
@@ -247,6 +300,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         }
         if matches!(event, Event::Idle { .. })
         {
+            let _ = try_action(system, &mut alerts, browser.save_folder_states(system))?;
             let before = (browser.can_select_all(), browser.can_new_folder(system));
             let _ = try_action(system, &mut alerts, watches.poll(system, &mut browser))?;
             let _ = try_action(system, &mut alerts, browser.advance_cache(system))?;
@@ -412,7 +466,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                     if let Ok(front) = system.window(WindowId(0))
                     {
                         system.close_window(front.id)?;
-                        browser.prune(system)?;
+                        let _ = try_action(system, &mut alerts, browser.prune(system))?;
                     }
                 }
                 else if key == 'n'

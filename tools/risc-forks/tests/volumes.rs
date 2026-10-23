@@ -118,22 +118,32 @@ fn nested_folders_keep_real_names_and_reserved_names_fail_before_publication()
     assert_eq!(volume.check().unwrap(), 3);
 }
 #[test]
-fn copied_container_ids_and_unwrapped_files_are_reported_as_conflicts()
+fn copied_containers_are_adopted_without_aliasing_and_plain_files_stay_visible()
 {
     let (temp, volume) = volume();
-    let entry =
-        volume.create("/", "Original", Kind::File, &mut Slice(b"hello"), &mut Slice(&[]), None)
-              .unwrap();
+    let entry = volume.create("/",
+                              "Original",
+                              Kind::File,
+                              &mut Slice(b"hello"),
+                              &mut Slice(b"resource fork"),
+                              None)
+                      .unwrap();
     volume.create("/", "Folder", Kind::Directory, &mut Slice(&[]), &mut Slice(&[]), None).unwrap();
-    let folder = volume.resolve("/Folder").unwrap();
     let root = temp.0.join("share");
-    let destination =
-        root.join(folder.path.parent().unwrap()).join(entry.path.file_name().unwrap());
-    fs::copy(root.join(&entry.path), destination).unwrap();
-    assert!(volume.check().unwrap_err().to_string().contains("duplicate catalog"));
+    fs::copy(root.join(&entry.path), root.join("Folder/Copy")).unwrap();
     fs::write(root.join("unwrapped.txt"), b"do not hide me").unwrap();
-    assert!(volume.children("/").is_err());
+    let copy = volume.resolve("/Folder/Copy").unwrap();
+    assert_ne!(copy.metadata.catalog_id, entry.metadata.catalog_id);
+    assert_ne!(copy.metadata.identity, entry.metadata.identity);
+    assert_eq!(copy.metadata.name, "Copy");
+    assert_eq!(volume.check().unwrap(), 5);
+    let exported = temp.0.join("copy");
+    volume.export("/Folder/Copy", &exported).unwrap();
+    assert_eq!(fs::read(exported.join("data")).unwrap(), b"hello");
+    assert_eq!(fs::read(exported.join("resources")).unwrap(), b"resource fork");
+    assert!(volume.children("/").unwrap().iter().any(|e| e.metadata.name == "unwrapped.txt"));
 }
+
 #[test]
 fn a_snapshot_reports_external_in_place_edits_instead_of_mixing_revisions()
 {
@@ -260,4 +270,38 @@ fn a_bulk_import_preserves_every_sibling_and_retains_collision_validation()
     let other = Volume::initialize(&temp.0.join("other"), "Other").unwrap();
     assert!(other.import("/", &directory).is_err());
     other.check().unwrap();
+}
+
+#[test]
+fn created_container_bindings_survive_reopen_and_host_rename_for_files_and_folders()
+{
+    let (temp, volume) = volume();
+    let file = volume.create("/",
+                             "Before",
+                             Kind::File,
+                             &mut Slice(b"data"),
+                             &mut Slice(b"resources"),
+                             None)
+                     .unwrap();
+    let directory = volume.create("/",
+                                  "Folder Before",
+                                  Kind::Directory,
+                                  &mut Slice(&[]),
+                                  &mut Slice(&[]),
+                                  None)
+                          .unwrap();
+    fs::rename(temp.0.join("share/Before"), temp.0.join("share/After")).unwrap();
+    fs::rename(temp.0.join("share/Folder Before"), temp.0.join("share/Folder After")).unwrap();
+    drop(volume);
+    let volume = Volume::open(&temp.0.join("share")).unwrap();
+    assert_eq!(volume.resolve("/After").unwrap().metadata.catalog_id, file.metadata.catalog_id);
+    assert_eq!(volume.resolve("/Folder After").unwrap().metadata.catalog_id,
+               directory.metadata.catalog_id);
+    // Copying the metadata marker is an import, not a transfer of identity.
+    fs::create_dir(temp.0.join("share/Copied Folder")).unwrap();
+    fs::copy(temp.0.join("share/Folder After").join(mac_fork_file::DIRECTORY_RECORD),
+             temp.0.join("share/Copied Folder").join(mac_fork_file::DIRECTORY_RECORD)).unwrap();
+    let copy = volume.resolve("/Copied Folder").unwrap();
+    assert_ne!(copy.metadata.catalog_id, directory.metadata.catalog_id);
+    assert_eq!(copy.metadata.name, "Copied Folder");
 }

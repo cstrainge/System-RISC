@@ -38,7 +38,7 @@ pub(super) struct Node
 /// Exact source incarnation on supported Unix filesystems. Birth time is kept
 /// at nanosecond resolution, independent of the editable guest creation date.
 /// A live pin still supplies the stronger within-session no-reuse guarantee.
-fn object_identity(metadata: &Metadata) -> Result<Option<wire::ObjectIdentity>>
+pub fn object_identity(metadata: &Metadata) -> Result<Option<wire::ObjectIdentity>>
 {
     #[cfg(unix)]
     {
@@ -83,7 +83,7 @@ fn object_identity(metadata: &Metadata) -> Result<Option<wire::ObjectIdentity>>
         Ok(None)
     }
 }
-fn date(time: std::time::SystemTime) -> Result<u64>
+pub fn date(time: std::time::SystemTime) -> Result<u64>
 {
     use std::time::UNIX_EPOCH;
     let (s, us) = match time.duration_since(UNIX_EPOCH)
@@ -126,8 +126,45 @@ impl Session
         {
             return Err(Failure(status::STALE));
         }
+        self.describe_pin(directory.export, pin, reply)
+    }
+
+    pub(super) fn describe_object(&mut self, object: u32, reply: &mut Header) -> Result<Vec<u8>>
+    {
+        let (export, pin) = if let Ok(directory) = self.directory(object)
+        {
+            (directory.export, directory.root.open(".")?.into_std())
+        }
+        else if let Some(file) = self.files.get(object).filter(|f| f.owner == self.id)
+        {
+            match &file.value
+            {
+                FileObject::Read(snapshot) =>
+                {
+                    snapshot.validate()?;
+                    (snapshot.export, snapshot.file.try_clone()?)
+                }
+                FileObject::Lock { export,
+                                   file,
+                                   .. } => (*export, file.try_clone()?)
+            }
+        }
+        else if let Some(stage) = self.transactions.get(object).filter(|t| t.owner == self.id)
+        {
+            (stage.directory.export, stage.file.try_clone()?)
+        }
+        else
+        {
+            return Err(Failure(status::STALE));
+        };
+        self.describe_pin(export, pin, reply)
+    }
+
+    fn describe_pin(&mut self, export: usize, pin: File, reply: &mut Header) -> Result<Vec<u8>>
+    {
+        let metadata = pin.metadata()?;
         let identity = object_identity(&metadata)?;
-        let key = Key::new(directory.export, &metadata, identity)?;
+        let key = Key::new(export, &metadata, identity)?;
         // Index physical keys without statting every previously pinned object.
         // The shared table remains authoritative; a cache hit validates its pin.
         let id = match self.node_index.binary_search_by_key(&key, |entry| entry.0)
@@ -137,8 +174,7 @@ impl Session
                 let id = self.node_index[at].1;
                 let node = self.nodes.get(id).ok_or(Failure(status::STALE))?;
                 let pinned = node.pin.metadata()?;
-                if node.key != key
-                   || Key::new(directory.export, &pinned, object_identity(&pinned)?)? != key
+                if node.key != key || Key::new(export, &pinned, object_identity(&pinned)?)? != key
                 {
                     return Err(Failure(status::STALE));
                 }

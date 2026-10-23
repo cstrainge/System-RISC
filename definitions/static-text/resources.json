@@ -1,0 +1,11 @@
+{
+  "name": "CDEF_STATIC_TEXT",
+  "file_type": "rsrc",
+  "creator": "MACS",
+  "role": "code_resource",
+  "abi_version": 11,
+  "load_base": "0x82500000",
+  "load_limit": "0x82600000",
+  "description": "Static Text control definition",
+  "resources": []
+}

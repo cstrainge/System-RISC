@@ -93,7 +93,14 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
             // Replaying an already successful mutation would duplicate it.
             // Treat a violated adapter contract as an ABI failure and abandon
             // delivery while cancellation safely drains the owned request.
-            crate::drivers::abandon_deferred_job(thread.identity().thread.0, job);
+            if crate::toolbox::handles::Kind::FileTransfers.contains_wire_id(job)
+            {
+                crate::toolbox::files::abandon_transfer_waiter(thread.identity().thread.0, job);
+            }
+            else
+            {
+                crate::drivers::abandon_deferred_job(thread.identity().thread.0, job);
+            }
             frame.registers[8] = BAD_ABI as usize;
             frame.pc = frame.pc.wrapping_add(4);
             return frame;

@@ -5,15 +5,23 @@ impl Manager
 {
     /// Cheap admission for the atomic operation used by folder-target drags.
     /// A writable mount alone is not proof that its move path is implemented.
-    /// Provider moves must join this gate when their transactional path lands.
+    /// Writable provider contracts include the stepped group apply/undo path.
     pub(crate) fn supports_icon_moves(&self, volume: u32) -> Result<bool, Status>
     {
         let mounted = self.volumes.get(volume).ok_or(NOT_FOUND)?;
         mounted.info().ok_or(NOT_FOUND)?;
-        Ok(matches!(mounted, Mounted::Block(block) if block.info.read_only == 0 && !block.poisoned))
+        Ok(match mounted
+        {
+            Mounted::Block(block) => block.info.read_only == 0 && !block.poisoned,
+            Mounted::Provider(provider) =>
+            {
+                provider.phase == provider::Phase::Live
+                && provider.info.is_some_and(|info| info.read_only == 0)
+            }
+        })
     }
 
-    pub(super) fn move_icons(&mut self, call: &mut IconMoveCall, rows: &[IconMove])
+    pub(super) fn move_icons(&mut self, owner: u64, call: &mut IconMoveCall, rows: &[IconMove])
                              -> Result<(), Status>
     {
         if call.operation != MOVE_ICONS || rows.len() > 1024
@@ -21,9 +29,11 @@ impl Manager
             return Err(BAD_ARGUMENT);
         }
         call.changed = 0;
+        self.validate_transfer_mutation(owner, call.volume)?;
         self.validate_provider_mutation(call.volume)?;
         let mut protected = Vec::new();
-        protected.try_reserve(MAX_OPEN_FILES + self.writes.len()).map_err(|_| NO_MEMORY)?;
+        protected.try_reserve(MAX_OPEN_FILES + self.writes.len() + self.streams.len())
+                 .map_err(|_| NO_MEMORY)?;
         for (_, file) in self.handles.iter().filter(|(_, f)| f.volume == call.volume)
         {
             protected.push(file.id);
@@ -33,6 +43,11 @@ impl Manager
         {
             protected.push(file.expected_cnid);
         }
+        protected.extend(self.streams
+                             .iter()
+                             .filter(|(_, mark)| mark.volume == call.volume)
+                             .map(|(_, mark)| mark.expected)
+                             .filter(|id| *id != 0));
         let mounted = self.mounted(call.volume)?;
         if mounted.poisoned
         {

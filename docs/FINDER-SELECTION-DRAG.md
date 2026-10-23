@@ -257,9 +257,24 @@ all caption lines; neither wrapping nor measurement happens on pointer paths.
 
 ### 4.7 Finder transfer window
 
+Implementation batch (unverified): the resource-based `copy_window` controller
+now uses the original Finder7.6.1 fvew8751 geometry and STR#8750 messages,
+projected into cpUI8751. It owns managed Static Text/Progress Bar/Stop controls;
+Stop/Escape latches whole-operation cancellation and remains visible until the
+transfer owner acknowledges cleanup. The unverified same-volume group-move
+path now owns it across normal Finder events; recursive copy integration is
+still open. Automatic position saves also advance through stepped groups.
+The original labels, bounds and font policy are recorded in
+`provenance/finder-copy-window.json`; the renderer now follows the traced original CODE174 frame, colour and
+monochrome paths; live interaction/pixel parity remains deferred. New definitions are
+`definitions/progress-bar` (`CDEF_PROGRESS_BAR`, resource -32760, “Progress Bar”)
+and `definitions/static-text` (`CDEF_STATIC_TEXT`, resource -32759, “Static Text”).
+The System boot panel now uses the same managed Progress Bar and loaded CDEF;
+the old bootstrap-only bar implementation has been removed.
+
 - File/folder copies and cross-volume moves show a resource-based Finder copy
   window using the classic **managed progress-bar control** and **managed static
-  text controls**, with a managed Cancel button. If a control is missing, add
+  text controls**, with the original managed Stop button. If a control is missing, add
   its CDEF and resident/public Control Manager support; no Finder-local imitation.
 - Show the operation, current item and meaningful completed/total progress.
   Discover totals with bounded background work; do not block input or invent a

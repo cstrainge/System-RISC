@@ -2,6 +2,52 @@
 //! require their separate gate; this checks their native transport prerequisite.
 #![cfg(not(target_arch = "riscv64"))]
 use std::{fs, path::PathBuf, process::Command};
+
+#[test]
+#[ignore = "requires optimized private image, QEMU and disconnectable host companion"]
+fn disconnecting_either_transfer_endpoint_preserves_unrelated_native_storage()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    for endpoint in ["source", "destination"]
+    {
+        let output = root.join("results/system7")
+                         .join(format!("transfer-disconnect-{endpoint}-{}", std::process::id()));
+        let result = Command::new("python3").arg(root.join("System7/scripts/\
+                                                            capture_host_filesystem.py"))
+                                            .arg("--output")
+                                            .arg(&output)
+                                            .arg("--disconnect")
+                                            .arg(endpoint)
+                                            .output()
+                                            .unwrap();
+        assert!(result.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr));
+        let capture: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+        assert_eq!(capture["original_before"], capture["original_after"]);
+        assert_eq!(capture["termination"], "guest-outcome", "{capture}");
+        let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+        assert!(serial.contains("TRANSFER_DISCONNECT_READY\n"), "{serial}");
+        assert!(serial.contains("TRANSFER_DISCONNECT_FAILURE status=")
+                && serial.lines().any(|line| {
+                                     line.starts_with("TRANSFER_DISCONNECT_FAILURE ")
+                                     && line.contains(" detail=")
+                                 }),
+                "{serial}");
+        assert!(serial.contains("TRANSFER_DISCONNECT_PASS cleanup=owned native-storage=usable \
+                                 retry=passed\n")
+                && serial.contains("HOST_FILESYSTEM_PASS\n"),
+                "{serial}");
+        for failure in
+            ["HOST_FILESYSTEM_FAIL", "SYSTEM_PANIC:", "SYSTEM_TRAP:", "SYSTEM_ALLOCATION_FAILED:"]
+        {
+            assert!(!serial.contains(failure), "{serial}");
+        }
+    }
+}
+
 #[test]
 #[ignore = "requires optimized private image, QEMU and real host exports"]
 fn finder_double_click_launches_and_relaunches_an_external_application()
@@ -153,7 +199,66 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
                2,
                "{serial}");
     assert!(serial.contains("HOST_FS_EXIT_WORKER_READY"), "{serial}");
-    assert_eq!(serial.matches("HOST_FS_EXTERNAL_APPLICATION_PASS\n").count(), 2, "{serial}");
+    assert!(serial.contains("HOST_FS_METADATA_PASS native=passed legacy=passed protected=passed \
+                             retry=passed"),
+            "{serial}");
+    assert!(serial.contains("HOST_FS_METADATA_PROTECTED status=-12 error=AccessDenied \
+                             detail=item is protected or locked"),
+            "{serial}");
+    assert!(serial.contains("FILE_TRANSFER_PASS forks=passed recursive=passed directions=passed \
+                             identity=passed readonly=passed cancellation=passed stale=passed"),
+            "{serial}");
+    assert!(serial.contains("FILE_TRANSFER_DROP_PASS cleanup=passed retry=passed"), "{serial}");
+    assert!(serial.contains("FILE_TRANSFER_EXIT_PASS cleanup=passed retry=passed"), "{serial}");
+    assert!(serial.contains("FILE_TRANSFER_TRASH_PASS recursive=passed put-away=passed \
+                             empty=passed retry=passed"),
+            "{serial}");
+    let reboot = &capture["reboot"];
+    assert_eq!(reboot["termination"], "guest-outcome");
+    assert_ne!(reboot["first_pid"], reboot["second_pid"]);
+    let restored = fs::read_to_string(output.join("restore-vm/serial.log")).unwrap();
+    assert!(restored.contains("HOST_METADATA_RESTORE_PASS"), "{restored}");
+    assert!(!restored.contains("HOST_FILESYSTEM_FAIL")
+            && !restored.contains("SYSTEM_PANIC:")
+            && !restored.contains("SYSTEM_TRAP:"),
+            "{restored}");
+    let snapshot = |text: &str| {
+        text.lines()
+            .find(|line| line.starts_with("HOST_FS_METADATA_SNAPSHOT "))
+            .unwrap_or_else(|| panic!("missing native metadata snapshot: {text}"))
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert_eq!(snapshot(&serial),
+               snapshot(&restored),
+               "cold boot changed catalog identities or dates");
+    assert_eq!(serial.matches("FILE_PROPERTIES_PASS atomic=passed no-change=passed \
+                               locked=passed retry=passed")
+                     .count(),
+               2,
+               "{serial}");
+    assert!(serial.contains("FILE_PROPERTIES_LOCKED status=-12 error=AccessDenied detail=item \
+                             is protected or locked"),
+            "{serial}");
+    assert!(serial.contains("FILE_PROPERTIES_INVALID status=-2 error=BadArgument detail=invalid \
+                             argument"),
+            "{serial}");
+    assert!(serial.contains("HOST_FS_REMOVE_PASS native=passed legacy=passed readonly=passed \
+                             retry=passed"),
+            "{serial}");
+    assert!(serial.contains("HOST_FS_REMOVE_NONEMPTY status=-15 error=DirectoryNotEmpty \
+                             detail=directory is not empty"),
+            "{serial}");
+    assert!(serial.contains("HOST_FS_REMOVE_READ_ONLY status=-10 error=ReadOnly detail=volume \
+                             is read-only"),
+            "{serial}");
+    assert!(serial.contains("HOST_FS_TRASH_CREATE_PASS native=passed legacy=passed \
+                             readonly=passed"),
+            "{serial}");
+    assert!(serial.contains("HOST_FS_TRASH_READ_ONLY status=-10 error=ReadOnly"), "{serial}");
+    assert_eq!(serial.matches("HOST_FS_EXTERNAL_APPLICATION_PASS\n").count(), 3, "{serial}");
     for marker in ["HOST_FS_EXTERNAL_APPLICATION_READY_RW",
                    "HOST_FS_EXTERNAL_APPLICATION_READY_RO",
                    "HOST_FS_EXTERNAL_APPLICATION_EXIT_RO",
@@ -177,7 +282,8 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
         "plain_entries":"raw host files with empty resource forks, raw directories, independent extension classification, directory creation inside a raw host directory and nested file publication, case-collision refusal, read-only directory-creation rejection",
         "watches":"coalesced nonblocking directory watches; actual host-created arrivals on writable and read-only exports; readback after automatic cache invalidation; owner exit with a forgotten watch; local ownership and forced-slot-reuse checks in file_ownership",
         "external_applications":"writable and read-only provider native launches, private application resources, same-file activation without a duplicate process, damaged fork rejection with useful text, immediate valid launch after failure and acknowledged cleanup on exit",
-        "not_covered":"metadata/rename/move/delete mutations, replacing raw host data, full two-fork copying, classic notification trap compatibility, file-specific watches, exit during arbitrary pending I/O, disconnect and sustained-I/O responsiveness", "capture":capture});
+        "transfer_and_mutation_acceptance":"native and provider property edits; empty/nonempty/readonly removal; recursive two-fork host-to-native move and native-to-host copy; identity-preserving moves; forced same-folder copy names; cycles/collisions/readonly refusal; partial-copy cancellation with exact date restoration; RAII Drop and actual app-exit cleanup followed by retry; recursive Trash/Put Away/Empty; cold-boot identity and metadata restoration",
+        "not_covered":"classic notification trap compatibility, file-specific watches, exhaustive failure injection at every provider phase and sustained-I/O latency; disconnect and actual Finder gestures have separate native gates", "capture":capture});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     fs::write(root.join("results/system7/host-filesystem-mount-checks.json"),
               serde_json::to_vec_pretty(&report).unwrap()).unwrap();

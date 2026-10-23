@@ -25,6 +25,10 @@ fn classic_archives_mount_read_forks_copy_out_and_reject_corruption_and_stale_id
     assert_eq!(capture["termination"], "guest-outcome");
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert!(serial.contains("STUFFIT_PASS"), "{serial}");
+    assert_eq!(serial.matches("STUFFIT_RECURSIVE_TRANSFER_PASS ").count(), 2, "{serial}");
+    assert!(serial.contains("STUFFIT_ARCHIVE_IN_ARCHIVE_USERSPACE_PASS wrappers=stored,rle \
+                             backward=passed teardown=passed"),
+            "{serial}");
     assert!(serial.contains("RETAINED_UPDATE_USERSPACE_PASS"), "{serial}");
     assert!(serial.contains("STUFFIT_CLASSIC2_USERSPACE_PASS"), "{serial}");
     assert_eq!(serial.matches("STUFFIT_V5_USERSPACE_PASS bad_crc=false").count(), 4, "{serial}");
@@ -42,11 +46,45 @@ fn classic_archives_mount_read_forks_copy_out_and_reject_corruption_and_stale_id
         assert!(!serial.contains(failure), "{serial}");
     }
     let report = serde_json::json!({"status":"passed","public_sdk":"production FSYS DRVR and resident FORK service; block-backed and writable/read-only host-backed sources; driver-declared file-code and untyped extension dispatch; 16/32 pixel icon rendering with bounded destinations and unclaimed file fallback; classic nested archive, case-insensitive Unicode lookup, actual archive root name, read-only capabilities, repeated mount, distinct copied sources, large reads, backward seek, EOF, independent public source position, busy unmount, source replacement exclusion, data copy-out, both nonempty forks, corruption reported on final full read, invalid archive cleanup, forced mounted-volume reuse and stale rejection, acknowledged teardown followed by immediate host source replacement",
-        "not_covered":"full two-fork copy transaction, original Macintosh producer/runtime comparisons, guest cancellation during deferred source reads; real Finder double-click has a separate test in this gate",
+        "recursive_transfer":"archive trees copied through the public SDK to native and writable host destinations, preserving both forks and logical metadata; readonly Move rejected with immediate Copy retry",
+        "not_covered":"original Macintosh producer/runtime comparisons and guest cancellation during deferred source reads; real Finder double-click and eject have separate tests in this gate",
         "capture":capture});
     fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     fs::write(root.join("results/system7/stuffit-checks.json"),
               serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+}
+
+#[test]
+#[ignore = "requires optimized private image and real Finder volume gestures"]
+fn readonly_archive_volume_dropped_on_trash_unmounts_without_modifying_the_archive()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let output = root.join("results/system7").join(format!("stuffit-eject-{}", std::process::id()));
+    let result = Command::new("python3").arg(root.join("System7/scripts/capture_stuffit.py"))
+                                        .arg("--output")
+                                        .arg(&output)
+                                        .arg("--finder")
+                                        .arg("--eject")
+                                        .output()
+                                        .unwrap();
+    assert!(result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr));
+    let eject: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("eject.json")).unwrap()).unwrap();
+    assert_eq!(eject["source_before"], eject["source_after"]);
+    let capture: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(capture["original_before"], capture["original_after"]);
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    assert_eq!(serial.matches("FINDER_DRAG_VOLUME_UNMOUNTED\n").count(), 1, "{serial}");
+    assert_eq!(serial.matches("FINDER_DRAG_ENDED moved\n").count(), 1, "{serial}");
+    for failure in ["FINDER_ERROR", "FINDER_ACTION_FAILED", "SYSTEM_PANIC:", "SYSTEM_TRAP:",
+                    "SYSTEM_ALLOCATION_FAILED:"]
+    {
+        assert!(!serial.contains(failure), "{serial}");
+    }
 }
 
 #[test]
@@ -291,6 +329,9 @@ fn user_supplied_stuffit5_reference_verifies_all_nine_forks_through_public_sdk()
     assert_eq!(capture["original_before"], capture["original_after"]);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert!(serial.contains("STUFFIT_PASS"), "{serial}");
+    assert!(serial.contains("STUFFIT_ARCHIVE_IN_ARCHIVE_USERSPACE_PASS wrappers=stored,rle \
+                             backward=passed teardown=passed"),
+            "{serial}");
     assert_eq!(serial.matches("STUFFIT_REFERENCE_USERSPACE_PASS forks=9").count(), 2, "{serial}");
     for failure in ["STUFFIT_FAIL", "MODULE_REJECTED", "SYSTEM_PANIC:", "SYSTEM_TRAP:"]
     {

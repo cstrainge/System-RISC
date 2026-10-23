@@ -60,6 +60,60 @@ pub(crate) fn validate_target(files: &mut crate::toolbox::files::Manager,
                                         volume: call.volume,
                                         ..Default::default() };
     files.request(&mut request, "", &mut [])?;
+    if call.flags & TARGET_EJECT != 0
+    {
+        if call.parent != files::ROOT_ID
+           || call.flags & (TARGET_TRASH | TARGET_ICON_LAYOUT | TARGET_APPLICATION | ACCEPT_COPY)
+              != 0
+           || call.flags & ACCEPT_MOVE == 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let result = if request.volume_info.startup != 0
+        {
+            Err(ACCESS_DENIED)
+        }
+        else
+        {
+            files.check_provider_unmount(call.volume).map_err(|e| {
+                                                         if e == BAD_ARGUMENT
+                                                         {
+                                                             NOT_SUPPORTED
+                                                         }
+                                                         else
+                                                         {
+                                                             e
+                                                         }
+                                                     })
+        };
+        if let Err(error) = result
+        {
+            call.flags = 0;
+            call.error = error;
+        }
+        return Ok(());
+    }
+    if call.flags & TARGET_APPLICATION != 0
+    {
+        if call.parent <= files::ROOT_ID
+           || call.flags & (TARGET_TRASH | TARGET_ICON_LAYOUT | ACCEPT_MOVE) != 0
+           || call.flags & ACCEPT_COPY == 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        return Ok(()); // Opening documents never writes the application's mount.
+    }
+    if call.flags & TARGET_ICON_LAYOUT != 0
+    {
+        if call.parent < files::ROOT_ID
+           || call.flags & (TARGET_TRASH | ACCEPT_COPY) != 0
+           || call.flags & ACCEPT_MOVE == 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        // The Drag Manager verifies the frozen file-reference source folder.
+        return Ok(());
+    }
     if request.volume_info.read_only != 0
     {
         call.flags = 0;
@@ -73,12 +127,6 @@ pub(crate) fn validate_target(files: &mut crate::toolbox::files::Manager,
             call.flags = 0;
             call.error = NOT_SUPPORTED;
         }
-    }
-    else if call.flags & ACCEPT_MOVE != 0
-    {
-        // This primitive preserves catalog identity within one volume. Moving
-        // across volumes needs the separate staged copy/verify/delete service.
-        call.flags |= SAME_VOLUME_MOVE;
     }
     Ok(())
 }

@@ -75,6 +75,9 @@ impl Fetch
                 self.filled += n;
                 Ok(self.filled == self.bytes.len())
             }
+            // Contended admission owns no lower ticket. Retry unchanged on a
+            // later callback; cancellation above needs no phantom cleanup.
+            Err(Error(mac_abi::SERVICE_BUSY)) if self.ticket == 0 && !cancelling => Ok(false),
             Err(error) if self.ticket == 0 => Err(self.forced.unwrap_or(error)),
             result =>
             {

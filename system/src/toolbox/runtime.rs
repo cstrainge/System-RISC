@@ -34,7 +34,7 @@ mod local;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
-    drag:                             super::drag::Manager,
+    pub(in crate::toolbox) drag:      super::drag::Manager,
     standard_file:                    super::standard_file::Manager,
     scroll_boxes:                     super::controls::scrollbox::Manager,
     controls:                         super::controls::objects::Manager,
@@ -891,6 +891,7 @@ impl Desktop
                 return Err(BAD_ARGUMENT);
             }
             let bounds = drawing.bounds();
+            let damage = drawing.damage();
             let used = self.retained_bytes();
             let size = drawing.storage();
             let content = self.content_mut(window)?;
@@ -928,10 +929,14 @@ impl Desktop
             {
                 self.content_changed_rect(window, old);
             }
-            self.content_changed_rect(window, bounds);
+            for damage in damage.into_iter().filter(|r| !r.is_empty())
+            {
+                self.content_changed_rect(window, damage);
+            }
             // A control state change commits its own pixels before returning.
             // Full window updates remain private until EndUpdate.
-            if !self.pending_content.iter().any(|c| c.id.0 == window)
+            if damage.iter().any(|r| !r.is_empty())
+               && !self.pending_content.iter().any(|c| c.id.0 == window)
             {
                 self.present();
             }

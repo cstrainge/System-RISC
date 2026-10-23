@@ -116,8 +116,17 @@ fn begin(flight: Flight, mut state: State) -> Progress
         let result = (|| {
             let name = core::str::from_utf8(&plan.name).map_err(|_| BAD_ABI)?;
             let mut props = fs::FileProperties::fresh(name, plan.when);
-            props.finder_info[..4].copy_from_slice(&plan.file_type);
-            props.finder_info[4..8].copy_from_slice(&plan.creator);
+            props.finder_info = plan.finder_info;
+            if !plan.directory
+            {
+                props.finder_info[..4].copy_from_slice(&plan.file_type);
+                props.finder_info[4..8].copy_from_slice(&plan.creator);
+            }
+            if flight.key.operation == TRASH_DIRECTORY
+            {
+                // Match the native volume's named, protected Trash folder.
+                props.finder_info[8..10].copy_from_slice(&0x1000u16.to_be_bytes());
+            }
             let mut bytes = Vec::new();
             let count = fs::PROPERTIES_BYTES + name.len();
             bytes.try_reserve_exact(count).map_err(|_| NO_MEMORY)?;
@@ -161,6 +170,20 @@ fn write_next(flight: Flight, mut state: State) -> Progress
         queued(flight, state, Operation::WriteChunk, job)
     }
 }
+pub(super) fn acknowledge_abort(handle: u32, bytes: &[u8]) -> Result<Option<CatalogInfo>, Status>
+{
+    if files(|m| m.write_is_removal(handle))?
+    {
+        let receipt = fs::RemovalReceipt::decode(bytes).map_err(|_| BAD_ABI)?;
+        files(|m| m.publish_provider_removal(handle, receipt))
+    }
+    else
+    {
+        let receipt = fs::MetadataAbortReceipt::decode(bytes).map_err(|_| BAD_ABI)?;
+        receipt.0.map(|r| files(|m| m.publish_provider_write(handle, r))).transpose()
+    }
+}
+
 pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never_sent: bool)
                       -> Progress
 {
@@ -171,10 +194,9 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
     };
     if state.stage == Stage::Abort
     {
-        let outcome = match result {
-            Ok(bytes) => fs::AbortReceipt::decode(&bytes).map_err(|_|BAD_ABI).and_then(|receipt| {
-                receipt.0.map(|receipt|files(|manager|manager.publish_provider_write(state.handle,receipt))).transpose()
-            }),
+        let outcome = match result
+        {
+            Ok(bytes) => acknowledge_abort(state.handle, &bytes),
             Err(NOT_FOUND) if !state.may_publish => Ok(None),
             Err(error) => Err(error)
         };
@@ -264,6 +286,16 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
         }
         Stage::Lookup =>
         {
+            if flight.key.operation == TRASH_DIRECTORY
+               && let Ok(bytes) = &result
+            {
+                let existing = super::super::catalog(state.volume, bytes, None, Some(ROOT_ID))
+                    .and_then(|entry| if entry.is_directory() { Ok(entry) }
+                                      else { Err(ALREADY_EXISTS) });
+                // A concurrent creator may have won after the initial lookup.
+                // No write request was sent, so retire only our local mark.
+                return terminal(state, existing.map(Reply::Entry));
+            }
             let expected = state.plan.as_ref().unwrap().expected;
             let checked = match result
             {
@@ -322,23 +354,32 @@ fn key(operation: u32, handle: u32, volume: u32) -> Key
           fork: 0,
           capacity: 0,
           cursor: DirectoryScanCursor::default(),
-          resource: None }
+          resource: None,
+          metadata: None,
+          when: 0 }
 }
 pub(super) fn folder(owner: u64, thread: u64, key: Key, call: &FileCall, name: &str) -> Status
 {
-    let mut input = String::new();
-    if input.try_reserve_exact(name.len()).is_err()
+    match folder_flight(owner, thread, key, call, name)
     {
-        return NO_MEMORY;
+        Ok(flight) => waiting(flight),
+        Err(error) => error
     }
+}
+
+pub(super) fn folder_flight(owner: u64, thread: u64, key: Key, call: &FileCall, name: &str)
+                            -> Result<Flight, Status>
+{
+    let mut input = String::new();
+    input.try_reserve_exact(name.len()).map_err(|_| NO_MEMORY)?;
     input.push_str(name);
-    let plan = match files(|m| {
-              m.reserve_provider_directory(owner, call.volume, call.cnid, name, call.position)
-          })
+    let parent = if call.operation == TRASH_DIRECTORY { ROOT_ID } else { call.cnid };
+    let mut plan =
+        files(|m| m.reserve_provider_directory(owner, call.volume, parent, name, call.position))?;
+    if call.operation == super::super::super::properties::CREATE_PRIVATE_DIRECTORY
     {
-        Ok(plan) => plan,
-        Err(error) => return error
-    };
+        plan.finder_info[8..10].copy_from_slice(&0x4000u16.to_be_bytes());
+    }
     let job = match submit_args(plan.provider,
                                 Operation::Catalog,
                                 Arguments { volume: plan.volume,
@@ -349,25 +390,25 @@ pub(super) fn folder(owner: u64, thread: u64, key: Key, call: &FileCall, name: &
         Err(error) =>
         {
             let _ = retire(plan.handle);
-            return error;
+            return Err(error);
         }
     };
-    waiting(Flight { owner,
-                     thread,
-                     key,
-                     provider: plan.provider,
-                     job,
-                     abandoned: false,
-                     input,
-                     path: None,
-                     step: Step::Write(State { handle:      plan.handle,
-                                               volume:      plan.volume,
-                                               stage:       Stage::Parent,
-                                               written:     0,
-                                               remote:      false,
-                                               may_publish: false,
-                                               error:       OK,
-                                               plan:        Some(plan) }) })
+    Ok(Flight { owner,
+                thread,
+                key,
+                provider: plan.provider,
+                job,
+                abandoned: false,
+                input,
+                path: None,
+                step: Step::Write(State { handle:      plan.handle,
+                                          volume:      plan.volume,
+                                          stage:       Stage::Parent,
+                                          written:     0,
+                                          remote:      false,
+                                          may_publish: false,
+                                          error:       OK,
+                                          plan:        Some(plan) }) })
 }
 pub(in crate::toolbox::files) fn request(owner: u64, call: &mut DataWriteCall) -> Status
 {

@@ -70,7 +70,7 @@ def capture(output, corrupt=False):
             driver.wait('FINDER_FOLDER_CHANGED ', previous)
             vm.qmp('screendump', {'filename': str(output / 'refreshed.ppm')}, endpoint)
             front=int(driver.state()['front'])
-            marker=f'FINDER_FOLDER_READY window={front}\n'
+            marker=f'FINDER_FOLDER_CHANGED window={front}\n'
             ready=driver.log().count(marker)
             driver.key('n', ('ctrl',))
             driver.wait('FINDER_NEW_FOLDER ')
@@ -87,7 +87,7 @@ def capture(output, corrupt=False):
                 rapid_closed.append(identity)
                 driver.wait(f'FINDER_FOLDER_READY window={identity}\n')
                 if level<2:
-                    marker=f'FINDER_FOLDER_READY window={identity}\n'
+                    marker=f'FINDER_FOLDER_CHANGED window={identity}\n'
                     ready=driver.log().count(marker)
                     created=driver.log().count('FINDER_NEW_FOLDER ')
                     driver.key('n',('ctrl',))

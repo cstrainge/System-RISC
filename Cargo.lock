@@ -401,6 +401,7 @@ dependencies = [
 name = "mac-fork-file"
 version = "0.1.0"
 dependencies = [
+ "mac-filesystem-interface",
  "mac-hfs-b",
  "sha2",
 ]
@@ -469,6 +470,7 @@ dependencies = [
  "mac-filesystem-interface",
  "mac-formats",
  "mac-hfs",
+ "mac-hfs-b",
  "mac-module",
  "mac-object-table",
  "mac-toolbox",
@@ -563,7 +565,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "native-cdef"
+name = "native-buttons-cdef"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
@@ -583,7 +585,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-progress-bar-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-traps",
+ "toolbox-quickdraw",
+]
+
+[[package]]
 name = "native-scrollbar-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-traps",
+ "toolbox-quickdraw",
+]
+
+[[package]]
+name = "native-static-text-cdef"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
@@ -682,6 +704,8 @@ dependencies = [
  "mac-fork-file",
  "mac-formats",
  "mac-hfs-b",
+ "mac-object-table",
+ "risc-host",
  "serde_json",
 ]
 
@@ -953,6 +977,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-traps",
+ "toolbox-drag",
  "toolbox-files",
 ]
 

@@ -541,6 +541,7 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
         require(files.mount_file(startup, archive.id) == Err(Error::NotSupported))?;
         return icons(system, false);
     }
+    check_archive_in_archive(system, startup)?;
     system.log("STUFFIT_STAGE associations-and-icons\n")?;
     icons(system, true)?;
     system.log("STUFFIT_STAGE create\n")?;
@@ -791,6 +792,7 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
         require(file.seek(SeekFrom::Start(8187))? == 8187)?;
         require(file.read(&mut bytes)? == 5 && bytes[..5] == [251, 252, 253, 254, 255])?;
         file.close()?;
+        check_recursive_transfer(system, mount.id, startup, host.id, host.read_only)?;
         files.unmount(mount.id)?;
         let again = files.mount_file(host.id, archive.id)?.id;
         require(again != mount.id)?;
@@ -812,4 +814,160 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
         files.unmount(host.id)?;
     }
     Ok(())
+}
+
+fn check_recursive_transfer(system: &System<'_>, archive: VolumeId, startup: VolumeId,
+                            host: VolumeId, read_only: bool)
+                            -> Result<(), Error>
+{
+    use mac_toolbox::{events::EventMask, files::*};
+    let files = system.files();
+    let source = files.lookup(archive, ROOT_ID, "Top")?;
+    let target = files.new_folder(startup,
+                                  ROOT_ID,
+                                  if read_only { "Archive Copy RO" } else { "Archive Copy RW" })?;
+    let spec = |volume, parent, mode| {
+        TransferSpec { mode,
+                       destination: TransferDestination::Folder { volume,
+                                                                  parent } }
+    };
+    let input = TransferSource::new(archive, source.id, ROOT_ID);
+    let run = |spec| -> core::result::Result<(), Error> {
+        let mut transfer = files.begin_transfer(spec, &[input])?;
+        for _ in 0..10000
+        {
+            let progress = transfer.step().map_err(|e| e.cause)?;
+            if progress.finished()
+            {
+                return require(progress.phase == TransferPhase::Committed);
+            }
+            system.events().wait_event(EventMask::ALL, 1)?;
+        }
+        Err(Error::ServiceBusy)
+    };
+    let denied = run(spec(startup, target.id, TransferMode::Move));
+    require(denied == Err(Error::ReadOnly))?;
+    require(files.lookup(startup, target.id, "Top") == Err(Error::NotFound))?;
+    run(spec(startup, target.id, TransferMode::Copy))?;
+    compare_tree(system, &source, &files.lookup(startup, target.id, "Top")?, 0)?;
+    if !read_only
+    {
+        let destination = files.new_folder(host, ROOT_ID, "Archive Copy")?;
+        run(spec(host, destination.id, TransferMode::Copy))?;
+        compare_tree(system, &source, &files.lookup(host, destination.id, "Top")?, 0)?;
+    }
+    system.log("STUFFIT_RECURSIVE_TRANSFER_PASS both-forks=passed metadata=passed readonly=passed \
+                retry=passed\n")
+}
+
+#[inline(never)]
+fn compare_tree(system: &System<'_>, source: &CatalogInfo, destination: &CatalogInfo, depth: usize)
+                -> Result<(), Error>
+{
+    require(depth < 16
+            && source.name() == destination.name()
+            && source.kind == destination.kind
+            && source.data_length == destination.data_length
+            && source.resource_length == destination.resource_length
+            && source.created == destination.created
+            && source.modified == destination.modified
+            && source.finder_info == destination.finder_info)?;
+    let files = system.files();
+    if source.is_directory()
+    {
+        let mut cursor = mac_toolbox::files::DirectoryCursor::default();
+        loop
+        {
+            match files.scan_directory(source.volume, source.id, &mut cursor)?
+            {
+                mac_toolbox::files::ScanStep::Entry { catalog: child,
+                                                      .. } =>
+                {
+                    let copied = files.lookup(destination.volume, destination.id, child.name())?;
+                    compare_tree(system, &child, &copied, depth + 1)?;
+                }
+                mac_toolbox::files::ScanStep::Done => break,
+                mac_toolbox::files::ScanStep::Pending =>
+                {
+                    system.events().wait_event(mac_toolbox::events::EventMask::ALL, 1)?;
+                }
+            }
+        }
+    }
+    else
+    {
+        for fork in [Fork::Data, Fork::Resource]
+        {
+            let mut original = files.open(source.volume, source.id, fork)?;
+            let mut copied = files.open(destination.volume, destination.id, fork)?;
+            let mut a = [0; 4096];
+            let mut b = [0; 4096];
+            loop
+            {
+                let count = original.read(&mut a)?;
+                let mut at = 0;
+                while at < count
+                {
+                    let n = copied.read(&mut b[at..count])?;
+                    require(n != 0)?;
+                    at += n;
+                }
+                require(a[..count] == b[..count])?;
+                if count == 0
+                {
+                    require(copied.read(&mut b)? == 0)?;
+                    break;
+                }
+            }
+            original.close()?;
+            copied.close()?;
+        }
+    }
+    Ok(())
+}
+
+fn check_archive_in_archive(system: &System<'_>, startup: VolumeId) -> Result<(), Error>
+{
+    const STORED: &[u8] =
+        include_bytes!("../../mac-sit/tests/fixtures/archive-in-archive-stored.sit");
+    const RLE: &[u8] = include_bytes!("../../mac-sit/tests/fixtures/archive-in-archive-rle.sit");
+    let files = system.files();
+    for (name, bytes) in [("Outer stored.sit", STORED), ("Outer RLE.sit", RLE)]
+    {
+        let source = create(system, startup, name, bytes)?;
+        let outer = files.open_item(startup, source.id)?.ok_or(Error::BadAbi)?;
+        let inner_source = files.lookup(outer.id, ROOT_ID, "Inner.sit")?;
+        require(inner_source.file_type == (*b"SIT!").into())?;
+        let inner = files.open_item(outer.id, inner_source.id)?.ok_or(Error::BadAbi)?;
+        require(inner.read_only && inner.name() == "Inner.sit")?;
+        require(files.mount_file(outer.id, inner_source.id)?.id == inner.id)?;
+        require(files.unmount(outer.id) == Err(Error::ServiceBusy))?;
+        let pattern = files.lookup(inner.id, ROOT_ID, "Top/Sub/Pattern")?;
+        let mut file = files.open(inner.id, pattern.id, Fork::Data)?;
+        let mut output = [0; 4096];
+        for offset in [0, 4096, 7, 8000, 19]
+        {
+            file.seek(SeekFrom::Start(offset))?;
+            let n = file.read(&mut output)?;
+            require(n == (8192 - offset as usize).min(output.len()))?;
+            for (i, byte) in output[..n].iter().enumerate()
+            {
+                require(*byte == (offset as usize + i) as u8)?;
+            }
+        }
+        require(files.unmount(inner.id) == Err(Error::ServiceBusy))?;
+        file.close()?;
+        files.unmount(inner.id)?;
+        require(files.catalog(inner.id, ROOT_ID) == Err(Error::NotFound))?;
+        // Failure must not poison the still-mounted outer volume or its source.
+        let mut source_file = files.open(outer.id, inner_source.id, Fork::Data)?;
+        let mut header = [0; 22];
+        require(source_file.read(&mut header)? == header.len())?;
+        require(header.as_slice() == &NESTED[..22])?;
+        source_file.close()?;
+        files.unmount(outer.id)?;
+        files.remove(startup, source.id)?;
+    }
+    system.log("STUFFIT_ARCHIVE_IN_ARCHIVE_USERSPACE_PASS wrappers=stored,rle backward=passed \
+                teardown=passed\n")
 }

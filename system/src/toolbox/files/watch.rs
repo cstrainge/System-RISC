@@ -6,17 +6,18 @@ use super::*;
 #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
 pub(super) struct Watch
 {
-    owner:       u64,
-    volume:      u32,
-    directory:   u32,
-    changed:     bool,
-    revision:    u64,
-    dead:        bool,
-    pending:     bool,
-    next_due:    u64,
-    fingerprint: Option<[u8; 32]>,
-    error:       Option<Status>,
-    last_error:  Option<Status>
+    owner:             u64,
+    volume:            u32,
+    directory:         u32,
+    changed:           bool,
+    revision:          u64,
+    deferred_revision: Option<u64>,
+    dead:              bool,
+    pending:           bool,
+    next_due:          u64,
+    fingerprint:       Option<[u8; 32]>,
+    error:             Option<Status>,
+    last_error:        Option<Status>
 }
 impl Manager
 {
@@ -65,6 +66,7 @@ impl Manager
                                                   directory: call.cnid,
                                                   changed: false,
                                                   revision: scan::next_revision()?,
+                                                  deferred_revision: None,
                                                   dead: false,
                                                   pending: false,
                                                   next_due: 0,
@@ -111,20 +113,92 @@ impl Manager
         }
     }
 
+    fn transfer_holds_notices(&self, volume: u32) -> bool
+    {
+        #[cfg(target_arch = "riscv64")]
+        {
+            self.transfers.iter().any(|(_, entry)| entry.holds_notices(volume))
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            let _ = volume;
+            false
+        }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(super) fn release_transfer_notices(&mut self)
+    {
+        let transfers = &self.transfers;
+        for watch in self.watches.values_mut()
+        {
+            if watch.deferred_revision.is_some()
+               && !transfers.iter().any(|(_, entry)| entry.holds_notices(watch.volume))
+            {
+                watch.changed = true;
+                watch.revision = watch.deferred_revision.take().unwrap();
+                watch.fingerprint = None;
+            }
+        }
+    }
+
     pub(super) fn notify_directory(&mut self, volume: u32, directory: u32) -> Result<(), Status>
     {
         let revision = scan::next_revision()?;
+        self.notify_directory_at(volume, directory, revision);
+        Ok(())
+    }
+
+    pub(super) fn notify_directory_at(&mut self, volume: u32, directory: u32, revision: u64)
+    {
+        let held = self.transfer_holds_notices(volume);
         for watch in self.watches.values_mut()
         {
             if !watch.dead
                && watch.volume == volume
                && (directory == 0 || watch.directory == directory)
             {
-                watch.changed = true;
-                watch.revision = revision;
+                if held
+                {
+                    watch.deferred_revision = Some(revision);
+                }
+                else
+                {
+                    watch.changed = true;
+                    watch.revision = revision;
+                }
             }
         }
-        Ok(())
+    }
+
+    /// A transaction reserves this revision before its first side effect. One
+    /// sorted parent set visits the bounded watch table once, without allocation
+    /// or a fallible counter increment after publication.
+    pub(super) fn notify_group_at(&mut self, volume: u32, group: u32, revision: u64)
+    {
+        let held = self.transfer_holds_notices(volume);
+        let Some(mark) = self.groups.get(group)
+        else
+        {
+            return;
+        };
+        for watch in self.watches.values_mut()
+        {
+            if !watch.dead
+               && watch.volume == volume
+               && mark.parents.binary_search(&watch.directory).is_ok()
+            {
+                if held
+                {
+                    watch.deferred_revision = Some(revision);
+                }
+                else
+                {
+                    watch.changed = true;
+                    watch.revision = revision;
+                }
+            }
+        }
     }
 
     pub(super) fn close_watches(&mut self, owner: u64)
@@ -198,7 +272,9 @@ mod background
         fn next_probe(&mut self, now: u64) -> Result<Option<(u32, u32, u32, u32)>, Status>
         {
             let next = self.watches.iter().find_map(|(id,w)| {
-                if w.dead || w.pending || w.next_due > now { return None; }
+                if w.dead || w.pending || w.next_due > now || self.transfer_holds_notices(w.volume)
+                    || self.groups.iter().any(|(_, group)| group.volume == w.volume)
+                { return None; }
                 let Mounted::Provider(m) = self.volumes.get(w.volume)? else { return None; };
                 (m.changes && m.phase == provider::Phase::Live).then_some((id,w.volume,w.directory))
             });
@@ -226,6 +302,7 @@ mod background
                                    Ok((bytes[0] != 0,
                                        <[u8; 32]>::try_from(&bytes[1..]).map_err(|_| BAD_ABI)?))
                                });
+            let held = self.transfer_holds_notices(volume);
             let w = self.watches.get_mut(id).ok_or(NOT_FOUND)?;
             w.pending = false;
             if w.dead
@@ -242,8 +319,16 @@ mod background
                     w.last_error = None;
                     if changed
                     {
-                        w.changed = true;
-                        w.revision = scan::next_revision()?;
+                        let revision = scan::next_revision()?;
+                        if held
+                        {
+                            w.deferred_revision = Some(revision);
+                        }
+                        else
+                        {
+                            w.changed = true;
+                            w.revision = revision;
+                        }
                         self.provider_mount(volume)?.revision = scan::next_revision()?;
                     }
                 }

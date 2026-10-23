@@ -24,6 +24,7 @@ mac-toolbox = { path = "../../.." }
 mac-abi = { path = "../../../../mac-abi" }
 
 [target.'cfg(not(target_arch = "riscv64"))'.dependencies]
+mac-formats = { path = "../../../../mac-formats" }
 mac-build = { path = "../../../../../tools/mac-build" }
 
 [build-dependencies]

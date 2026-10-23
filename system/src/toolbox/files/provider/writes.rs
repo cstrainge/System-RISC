@@ -15,7 +15,8 @@ pub(in crate::toolbox::files) struct State
     provider:  u32,
     phase:     Phase,
     orphaned:  bool,
-    confirmed: Option<CatalogInfo>
+    confirmed: Option<CatalogInfo>,
+    metadata:  Option<u32>
 }
 impl State
 {
@@ -31,25 +32,126 @@ impl State
 }
 pub(in crate::toolbox::files) struct Plan
 {
-    pub provider:  u32,
-    pub volume:    u32,
-    pub handle:    u32,
-    pub parent:    u32,
-    pub expected:  u32,
-    pub file_type: [u8; 4],
-    pub creator:   [u8; 4],
-    pub when:      u64,
-    pub name:      Vec<u8>,
-    pub data:      Vec<u8>,
-    pub directory: bool
+    pub provider:    u32,
+    pub volume:      u32,
+    pub handle:      u32,
+    pub parent:      u32,
+    pub expected:    u32,
+    pub file_type:   [u8; 4],
+    pub creator:     [u8; 4],
+    pub when:        u64,
+    pub name:        Vec<u8>,
+    pub data:        Vec<u8>,
+    pub directory:   bool,
+    pub finder_info: [u8; 32]
 }
 impl Manager
 {
+    pub(in crate::toolbox::files) fn reserve_provider_metadata(&mut self, owner: u64,
+                                                               call: &FileCall)
+                                                               -> Result<(u32, u32), Status>
+    {
+        self.validate_transfer_mutation(owner, call.volume)?;
+        if call.operation == REMOVE && self.file_pinned(call.volume, call.cnid)
+        {
+            return Err(SERVICE_BUSY);
+        }
+        self.validate_provider_mutation(call.volume)?;
+        if self.streams
+               .iter()
+               .any(|(_, mark)| mark.volume == call.volume && mark.expected == call.cnid)
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let provider = self.read_provider(call.volume)?.ok_or(BAD_ARGUMENT)?;
+        if call.cnid < ROOT_ID
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if !matches!(call.operation, SET_ICON_LOCATION | SET_FOLDER_STATE)
+           && self.handles
+                  .iter()
+                  .any(|(_, file)| file.volume == call.volume && file.id == call.cnid)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if self.writes
+               .iter()
+               .any(|(_, mark)| mark.volume == call.volume && mark.expected_cnid == call.cnid)
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let handle =
+            self.writes
+                .insert(Pending { owner,
+                                  volume: call.volume,
+                                  parent: if call.operation == MOVE_INTO
+                                  {
+                                      call.index
+                                  }
+                                  else
+                                  {
+                                      0
+                                  },
+                                  expected_cnid: call.cnid,
+                                  file_type: [0; 4],
+                                  creator: [0; 4],
+                                  when: call.position,
+                                  name: Vec::new(),
+                                  comparison: Vec::new(),
+                                  length: 0,
+                                  data: Vec::new(),
+                                  directory: false,
+                                  provider: Some(State { provider,
+                                                         phase: Phase::Running,
+                                                         orphaned: false,
+                                                         confirmed: None,
+                                                         metadata: Some(call.operation) }) })
+                .map_err(|_| NO_MEMORY)?;
+        Ok((provider, handle))
+    }
+
+    pub(in crate::toolbox::files) fn confirm_provider_metadata(&mut self, handle: u32,
+                                                               bytes: &[u8], name: &str)
+                                                               -> Result<CatalogInfo, Status>
+    {
+        let mark = self.writes.get_mut(handle).ok_or(NOT_FOUND)?;
+        let entry = catalog(mark.volume, bytes, Some(mark.expected_cnid), None)?;
+        let state = mark.provider.as_mut().ok_or(BAD_ARGUMENT)?;
+        let operation = state.metadata.ok_or(BAD_ARGUMENT)?;
+        if matches!(operation, SET_LOCKED | SET_STATIONERY) && entry.is_directory()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if operation == SET_FOLDER_STATE && !entry.is_directory()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if operation == SET_COMMENT && entry.id == ROOT_ID
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if operation == MOVE_INTO && entry.parent != mark.parent
+        {
+            return Err(BAD_ABI);
+        }
+        if operation == RENAME
+           && entry.name().as_bytes()
+              != mac_filesystem::Format::HfsB.prepare_name(name).map_err(|_| BAD_ARGUMENT)?.0
+        {
+            return Err(BAD_ABI);
+        }
+        mark.parent = entry.parent;
+        state.confirmed = Some(entry);
+        Ok(entry)
+    }
+
     pub(in crate::toolbox::files) fn reserve_provider_directory(&mut self, owner: u64,
                                                                 volume: u32, parent: u32,
                                                                 name: &str, when: u64)
                                                                 -> Result<Plan, Status>
     {
+        self.validate_transfer_mutation(owner, volume)?;
         self.validate_provider_mutation(volume)?;
         let provider = self.read_provider(volume)?.ok_or(BAD_ARGUMENT)?;
         let mut call = DataWriteCall { volume,
@@ -74,6 +176,11 @@ impl Manager
                                                             provider: u32)
                                                             -> Result<(), Status>
     {
+        self.validate_transfer_mutation(owner, call.volume)?;
+        if call.expected_cnid != 0 && self.file_pinned(call.volume, call.expected_cnid)
+        {
+            return Err(SERVICE_BUSY);
+        }
         fs::FileProperties::fresh(name, call.when).validate().map_err(|_| BAD_ARGUMENT)?;
         let (file_type, creator) =
             super::super::types::classify(name, call.file_type, call.creator);
@@ -104,7 +211,8 @@ impl Manager
                                             provider: Some(State { provider,
                                                                    phase: Phase::Staged,
                                                                    orphaned: false,
-                                                                   confirmed: None }) })
+                                                                   confirmed: None,
+                                                                   metadata: None }) })
                           .map_err(|_| NO_MEMORY)?;
         Ok(())
     }
@@ -154,7 +262,8 @@ impl Manager
                   when: mark.when,
                   name: core::mem::take(&mut mark.name),
                   data: core::mem::take(&mut mark.data),
-                  directory: mark.directory })
+                  directory: mark.directory,
+                  finder_info: [0; 32] })
     }
 
     pub(in crate::toolbox::files) fn confirm_provider_write(&mut self, handle: u32, bytes: &[u8])
@@ -236,7 +345,8 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         let entry = catalog_metadata(mark.volume, receipt.file, None, Some(mark.parent))?;
-        if state.confirmed != Some(entry)
+        let expected = state.confirmed.ok_or(BAD_ABI)?;
+        if expected != entry
         {
             return Err(BAD_ABI);
         }
@@ -255,6 +365,46 @@ impl Manager
         mounted.revision = revision;
         self.writes.remove(handle).ok_or(NOT_FOUND)?;
         Ok(entry)
+    }
+
+    pub(in crate::toolbox::files) fn write_is_removal(&self, handle: u32) -> Result<bool, Status>
+    {
+        let mark = self.writes.get(handle).ok_or(NOT_FOUND)?;
+        Ok(mark.provider.as_ref().ok_or(BAD_ARGUMENT)?.metadata == Some(REMOVE))
+    }
+
+    pub(in crate::toolbox::files) fn publish_provider_removal(
+        &mut self, handle: u32, receipt: fs::RemovalReceipt<'_>)
+        -> Result<Option<CatalogInfo>, Status>
+    {
+        let mark = self.writes.get(handle).ok_or(NOT_FOUND)?;
+        let state = mark.provider.as_ref().ok_or(BAD_ARGUMENT)?;
+        if state.metadata != Some(REMOVE) || state.phase != Phase::Running
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let volume = mark.volume;
+        let entry = state.confirmed;
+        if !receipt.removed
+        {
+            return Ok(None);
+        }
+        let entry = entry.ok_or(BAD_ABI)?;
+        let info = volume_info(volume, receipt.volume);
+        let revision = super::super::scan::next_revision()?;
+        let mounted = self.provider_mount(volume)?;
+        let prior = mounted.info.ok_or(BAD_ABI)?;
+        if info.filesystem != prior.filesystem
+           || info.filesystem_version != prior.filesystem_version
+        {
+            return Err(BAD_ABI);
+        }
+        mounted.info = Some(info);
+        mounted.revision = revision;
+        mounted.changes = true;
+        self.notify_directory(volume, entry.parent)?;
+        self.writes.remove(handle).ok_or(NOT_FOUND)?;
+        Ok(Some(entry))
     }
 
     pub(in crate::toolbox::files) fn retire_provider_write(&mut self, handle: u32)

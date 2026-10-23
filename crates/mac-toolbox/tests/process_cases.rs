@@ -275,6 +275,44 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
                 "invalid launch was accepted")?;
         require(processes.count()? == 1, "invalid launch leaked a process")?;
     }
+    // Real format -> resident loader -> trap -> public SDK, with no code
+    // execution for rejected inputs and immediate Window Manager reuse.
+    for (name, expected, description) in
+        [("Applications/Budget App", mac_toolbox::Error::NoMemory, "out of memory"),
+         ("Applications/Corrupt App", mac_toolbox::Error::CorruptData, "damaged or malformed")]
+    {
+        let app = system.files().lookup(volume, Cnid::ROOT, name)?;
+        let error = processes.launch(volume, app.id).expect_err("invalid resource app launched");
+        require(error == expected, "application format cause changed at trap boundary")?;
+        let mut message = crate::LogBuffer::new();
+        {
+            use core::fmt::Write;
+            let _ = write!(message, "{error}");
+        }
+        require(message.text().contains(description),
+                "application format error has no useful explanation")?;
+        require(processes.count()? == 1, "format rejection leaked a process")?;
+    }
+    for (procedure, expected, description) in
+        [(2000i16 * 16, mac_toolbox::Error::NotFound, "not found"),
+         (1999i16 * 16, mac_toolbox::Error::TranslationRequired, "translation")]
+    {
+        let error=system.windows().create(WindowSpec::new(Rect::new(80,90,220,160),"Invalid Definition")
+            .procedure(procedure)).expect_err("unloadable WDEF was invoked");
+        require(error == expected, "native CODE loader lost typed format cause")?;
+        let mut message = crate::LogBuffer::new();
+        {
+            use core::fmt::Write;
+            let _ = write!(message, "{error}");
+        }
+        require(message.text().contains(description), "CODE rejection has no useful explanation")?;
+        let retry =
+            system.windows()
+                  .create(WindowSpec::new(Rect::new(80, 90, 220, 160), "Retry After Rejection"))?;
+        system.close_window(retry)?;
+    }
+    system.log("FORMAT_ERROR_STATUS_PASS budget=no-memory corrupt=corrupt-data \
+                missing=not-found translation=translation-required retry=passed\n")?;
     system.log("PROCESS_INVALID_LAUNCH_PASS\n")?;
     let spinner =
         system.files().lookup(volume, mac_toolbox::Cnid(2), "Applications/ProcessSpinner")?;
@@ -490,7 +528,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
     handle.dispose()?;
     system.windows().close(own_front)?;
     system.windows().close(own_window)?;
-    system.log("PROCESS_USERSPACE_PASS preemption=passed launch=passed invalid=3 \
+    system.log("PROCESS_USERSPACE_PASS preemption=passed launch=passed invalid=5 \
                 relaunch=passed windows=passed resources=passed memory=passed events=passed \
                 focus=passed hide=passed appmenu=passed\n")?;
     Ok(())

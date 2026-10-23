@@ -279,7 +279,15 @@ pub fn wait_io(job: u32) -> Result<bool, mac_abi::Status>
                           .and_then(Option::as_mut)
                           .filter(|thread| thread.live)
                           .ok_or(mac_abi::WRONG_THREAD)?;
-    if !crate::drivers::job_pending(u64::from(thread.id), job)?
+    let pending = if crate::toolbox::handles::Kind::FileTransfers.contains_wire_id(job)
+    {
+        crate::toolbox::files::transfer_io_pending(u64::from(thread.id), job)?
+    }
+    else
+    {
+        crate::drivers::job_pending(u64::from(thread.id), job)?
+    };
+    if !pending
     {
         return Ok(false);
     }

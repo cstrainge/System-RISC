@@ -13,9 +13,14 @@ impl<'a> AbortReceipt<'a>
 {
     pub fn encode(&self, output: &mut [u8]) -> Result<usize, Error>
     {
+        self.encode_inner(output, false)
+    }
+
+    fn encode_inner(&self, output: &mut [u8], allow_root: bool) -> Result<usize, Error>
+    {
         let count = if let Some(receipt) = self.0
         {
-            receipt.validate()?;
+            receipt.validate(allow_root)?;
             receipt.encoded_len() + 4
         }
         else
@@ -25,13 +30,18 @@ impl<'a> AbortReceipt<'a>
         let out = output.get_mut(..count).ok_or(Error::Length)?;
         if let Some(receipt) = self.0
         {
-            receipt.encode(&mut out[4..])?;
+            receipt.encode_inner(&mut out[4..], allow_root)?;
         }
         put32(out, 0, u32::from(self.0.is_some()));
         Ok(count)
     }
 
     pub fn decode(bytes: &'a [u8]) -> Result<Self, Error>
+    {
+        Self::decode_inner(bytes, false)
+    }
+
+    fn decode_inner(bytes: &'a [u8], allow_root: bool) -> Result<Self, Error>
     {
         if bytes.len() < 4
         {
@@ -40,7 +50,7 @@ impl<'a> AbortReceipt<'a>
         match get32(bytes, 0)
         {
             0 if bytes.len() == 4 => Ok(Self(None)),
-            1 => Ok(Self(Some(WriteReceipt::decode(&bytes[4..])?))),
+            1 => Ok(Self(Some(WriteReceipt::decode_inner(&bytes[4..], allow_root)?))),
             _ => Err(Error::Invalid)
         }
     }
@@ -53,12 +63,12 @@ pub struct WriteReceipt<'a>
 }
 impl<'a> WriteReceipt<'a>
 {
-    fn validate(&self) -> Result<(), Error>
+    fn validate(&self, allow_root: bool) -> Result<(), Error>
     {
         self.file.validate()?;
         self.volume.validate()?;
         // A transaction may publish a file or folder, never the volume root.
-        if self.file.id == 2
+        if self.file.id == 2 && (!allow_root || self.file != self.volume.root)
         {
             return Err(Error::Invalid);
         }
@@ -79,7 +89,12 @@ impl<'a> WriteReceipt<'a>
 
     pub fn encode(&self, output: &mut [u8]) -> Result<usize, Error>
     {
-        self.validate()?;
+        self.encode_inner(output, false)
+    }
+
+    fn encode_inner(&self, output: &mut [u8], allow_root: bool) -> Result<usize, Error>
+    {
+        self.validate(allow_root)?;
         let file = METADATA_BYTES + self.file.name.len() + self.file.comment.len();
         let volume = MOUNT_BYTES
                      + METADATA_BYTES
@@ -98,6 +113,11 @@ impl<'a> WriteReceipt<'a>
     }
 
     pub fn decode(bytes: &'a [u8]) -> Result<Self, Error>
+    {
+        Self::decode_inner(bytes, false)
+    }
+
+    fn decode_inner(bytes: &'a [u8], allow_root: bool) -> Result<Self, Error>
     {
         if bytes.len() < WRITE_RECEIPT_BYTES || bytes.len() > MAX_WRITE_RECEIPT_BYTES
         {
@@ -121,7 +141,77 @@ impl<'a> WriteReceipt<'a>
         let value = Self { file:   Metadata::decode(bytes.get(WRITE_RECEIPT_BYTES..split)
                                                          .ok_or(Error::Length)?)?,
                            volume: Mount::decode(bytes.get(split..).ok_or(Error::Length)?)? };
-        value.validate()?;
+        value.validate(allow_root)?;
         Ok(value)
+    }
+}
+
+/// Metadata edits may target the root, provided its result exactly matches the
+/// accompanying mount root. Creation/data-write receipts retain their root ban.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MetadataReceipt<'a>(pub WriteReceipt<'a>);
+impl<'a> MetadataReceipt<'a>
+{
+    pub fn encode(&self, output: &mut [u8]) -> Result<usize, Error>
+    {
+        self.0.encode_inner(output, true)
+    }
+
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, Error>
+    {
+        WriteReceipt::decode_inner(bytes, true).map(Self)
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MetadataAbortReceipt<'a>(pub Option<WriteReceipt<'a>>);
+impl<'a> MetadataAbortReceipt<'a>
+{
+    pub fn encode(&self, output: &mut [u8]) -> Result<usize, Error>
+    {
+        AbortReceipt(self.0).encode_inner(output, true)
+    }
+
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, Error>
+    {
+        AbortReceipt::decode_inner(bytes, true).map(|a| Self(a.0))
+    }
+}
+
+/// A removal receipt cannot refer to the now absent catalog entry. It carries
+/// the actual committed flag and the resulting volume metadata instead.
+pub const MAX_REMOVAL_RECEIPT_BYTES: usize = 4 + MAX_MOUNT_BYTES;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemovalReceipt<'a>
+{
+    pub removed: bool,
+    pub volume:  Mount<'a>
+}
+impl<'a> RemovalReceipt<'a>
+{
+    pub fn encode(&self, output: &mut [u8]) -> Result<usize, Error>
+    {
+        if output.len() < 4
+        {
+            return Err(Error::Length);
+        }
+        let count = self.volume.encode(&mut output[4..])?;
+        put32(output, 0, u32::from(self.removed));
+        Ok(4 + count)
+    }
+
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, Error>
+    {
+        if bytes.len() < 4 || bytes.len() > MAX_REMOVAL_RECEIPT_BYTES
+        {
+            return Err(Error::Length);
+        }
+        let removed = match get32(bytes, 0)
+        {
+            0 => false,
+            1 => true,
+            _ => return Err(Error::Invalid)
+        };
+        Ok(Self { removed,
+                  volume: Mount::decode(&bytes[4..])? })
     }
 }

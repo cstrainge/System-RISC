@@ -247,6 +247,22 @@ fn published_receipts_preserve_actual_file_and_volume_and_reject_malformed_envel
                                      ..value };
     assert_eq!(invalid.encode(&mut untouched), Err(Error::Invalid));
     assert_eq!(untouched, [0xa5; fs::MAX_WRITE_RECEIPT_BYTES]);
+    let metadata = fs::MetadataReceipt(invalid);
+    let mut root_bytes = [0; fs::MAX_WRITE_RECEIPT_BYTES];
+    let root_length = metadata.encode(&mut root_bytes).unwrap();
+    assert_eq!(fs::MetadataReceipt::decode(&root_bytes[..root_length]), Ok(metadata));
+    assert_eq!(fs::WriteReceipt::decode(&root_bytes[..root_length]), Err(Error::Invalid));
+    let inconsistent = fs::MetadataReceipt(fs::WriteReceipt { file: Metadata { modified:
+                                                                                   root.modified + 1,
+                                                                               ..root },
+                                                              ..invalid });
+    assert_eq!(inconsistent.encode(&mut untouched), Err(Error::Invalid));
+    assert_eq!(untouched, [0xa5; fs::MAX_WRITE_RECEIPT_BYTES]);
+    let aborted = fs::MetadataAbortReceipt(Some(invalid));
+    let mut abort_bytes = [0; fs::MAX_ABORT_RECEIPT_BYTES];
+    let abort_length = aborted.encode(&mut abort_bytes).unwrap();
+    assert_eq!(fs::MetadataAbortReceipt::decode(&abort_bytes[..abort_length]), Ok(aborted));
+    assert_eq!(fs::AbortReceipt::decode(&abort_bytes[..abort_length]), Err(Error::Invalid));
     assert_eq!(value.encode(&mut untouched[..n - 1]), Err(Error::Length));
     assert_eq!(untouched, [0xa5; fs::MAX_WRITE_RECEIPT_BYTES]);
     assert_eq!(fs::WriteReceipt { volume: Mount { capacity: Some((1, 2)),

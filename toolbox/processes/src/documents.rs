@@ -32,6 +32,13 @@ impl<'a> Processes<'a>
         self.begin_document_open_impl(application, 0)
     }
 
+    pub fn begin_document_drop(self, application: DocumentRef,
+                               offer: &toolbox_drag::TrackingOffer<'_>)
+                               -> Result<DocumentOpen<'a>>
+    {
+        self.begin_document_open_impl(application, offer.id().0)
+    }
+
     fn begin_document_open_impl(self, application: DocumentRef, drag: u32)
                                 -> Result<DocumentOpen<'a>>
     {
@@ -90,6 +97,21 @@ impl DocumentOpen<'_>
     pub fn id(&self) -> DocumentBatchId
     {
         self.id
+    }
+
+    pub fn accepts_drop(&self, offer: &toolbox_drag::TrackingOffer<'_>) -> Result<bool>
+    {
+        let mut call = DocumentCall { operation: DOCUMENT_ACCEPTS_DRAG,
+                                      handle: self.id.0,
+                                      drag: offer.id().0,
+                                      ..Default::default() };
+        self.client.document(&mut call)?;
+        match call.present
+        {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(mac_traps::Error::BadAbi)
+        }
     }
 
     pub fn accepts(&self, file_type: mac_traps::TypeCode) -> Result<bool>

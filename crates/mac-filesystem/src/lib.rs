@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 
 pub use mac_block::{BlockDevice, Error, Partition, Result, WritableBlockDevice};
 pub use mac_hfs::{MutationError, MutationResult};
+pub use mac_hfs_b::StreamProperties as Properties;
 use mac_hfs_b::{Budget, ForkKind, time::Timestamp};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format
@@ -404,6 +405,7 @@ fn mutation_error(e: mac_hfs_b::Error) -> MutationError
     }
 }
 mod mutation;
+pub mod stream;
 mod trash;
 pub mod scan;
 pub struct DataSave<'a>

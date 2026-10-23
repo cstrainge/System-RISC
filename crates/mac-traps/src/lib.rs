@@ -524,6 +524,24 @@ impl Client<'_>
 }
 impl SurfaceConnection<'_>
 {
+    pub fn selected_font_metrics(&mut self, selection: quickdraw::FontSelection)
+                                 -> Result<quickdraw::FontMetrics>
+    {
+        let mut call = font_call(quickdraw::FONT_METRICS,
+                                 (0, self.surface),
+                                 selection,
+                                 "",
+                                 0,
+                                 Point::default(),
+                                 0);
+        status(unsafe {
+            (self.gate)(FONT,
+                        (&mut call as *mut quickdraw::FontCall).cast(),
+                        core::mem::size_of::<quickdraw::FontCall>())
+        })?;
+        Ok(call.metrics)
+    }
+
     pub fn graphics(&mut self, state: &mut quickdraw::PortState, command: GraphicsCommand<'_>)
                     -> Result<()>
     {
@@ -975,6 +993,30 @@ impl Client<'_>
 
 impl Client<'_>
 {
+    pub fn fork_write(self, call: &mut mac_abi::files::ForkWriteCall, name: &str, comment: &str,
+                      data: &[u8], output: &mut [u8])
+                      -> Result<()>
+    {
+        call.name = name.as_ptr();
+        call.name_length = name.len();
+        call.comment = comment.as_ptr();
+        call.comment_length = comment.len();
+        call.data = data.as_ptr();
+        call.count = data.len();
+        call.output = output.as_mut_ptr();
+        call.capacity = output.len();
+        let result = status(self.invoke(FILE, call));
+        call.name = core::ptr::null();
+        call.name_length = 0;
+        call.comment = core::ptr::null();
+        call.comment_length = 0;
+        call.data = core::ptr::null();
+        call.count = 0;
+        call.output = core::ptr::null_mut();
+        call.capacity = 0;
+        result
+    }
+
     pub fn data_write(self, call: &mut mac_abi::files::DataWriteCall, name: &str, data: &[u8])
                       -> Result<()>
     {

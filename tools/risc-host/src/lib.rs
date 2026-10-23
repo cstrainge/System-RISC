@@ -12,7 +12,11 @@ use mac_host_protocol::{self as wire, Header, Operation as Op, status};
 use mac_object_table::{Kind, Table};
 use sha2::{Digest, Sha256};
 mod nodes;
+pub use nodes::{date as mac_date, object_identity};
 mod changes;
+mod namespace;
+mod removal;
+pub use removal::recover_removals_in;
 
 pub type Result<T> = core::result::Result<T, Failure>;
 #[derive(Debug)]
@@ -25,6 +29,11 @@ impl From<io::Error> for Failure
              {
                  io::ErrorKind::NotFound => status::NOT_FOUND,
                  io::ErrorKind::AlreadyExists => status::CONFLICT,
+                 io::ErrorKind::DirectoryNotEmpty => status::NOT_EMPTY,
+                 io::ErrorKind::PermissionDenied => status::DENIED,
+                 io::ErrorKind::ReadOnlyFilesystem => status::READ_ONLY,
+                 io::ErrorKind::StorageFull => status::FULL,
+                 io::ErrorKind::OutOfMemory => status::LIMIT,
                  io::ErrorKind::WouldBlock => status::BUSY,
                  io::ErrorKind::Unsupported => status::UNSUPPORTED,
                  _ => status::IO
@@ -101,6 +110,18 @@ fn fingerprint(metadata: &Metadata) -> Result<[u8; 32]>
         digest.update(time.subsec_nanos().to_le_bytes());
     }
     Ok(digest.finalize().into())
+}
+fn same_object(left: &Metadata, right: &Metadata) -> Result<bool>
+{
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(left.dev() == right.dev() && left.ino() == right.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(fingerprint(left)? == fingerprint(right)?)
+    }
 }
 fn regular(directory: &Dir, name: &str) -> Result<File>
 {
@@ -208,7 +229,7 @@ impl Directory
 {
     fn new(root: Arc<Dir>, export: usize, owner: u32) -> Result<Self>
     {
-        let changes = Arc::new(changes::Changes::new(&root)?);
+        let changes = changes::Changes::shared(root.clone())?;
         Ok(Self { root,
                   export,
                   owner,
@@ -219,7 +240,7 @@ impl Directory
     {
         let generation = self.changes.generation()?;
         let mut digest = Sha256::new();
-        digest.update(fingerprint(&self.root.open(".")?.into_std().metadata()?)?);
+        digest.update(self.changes.identity());
         digest.update(generation.to_le_bytes());
         Ok(digest.finalize().into())
     }
@@ -228,7 +249,8 @@ struct Enumeration
 {
     directory: Directory,
     entries:   ReadDir,
-    revision:  [u8; 32]
+    revision:  [u8; 32],
+    recovery:  Option<String>
 }
 enum DirectoryObject
 {
@@ -276,16 +298,71 @@ struct Transaction
     file:            File,
     dirty:           bool,
     publication:     Option<String>,
-    directory_stage: Option<String>
+    directory_stage: Option<String>,
+    cleaned:         bool
+}
+impl Transaction
+{
+    fn cleanup(&self) -> Result<()>
+    {
+        let root = &self.directory.root;
+        if self.publication.is_none()
+           && let Some(name) = &self.directory_stage
+        {
+            let stage = match root.open_dir(name)
+            {
+                Ok(stage) => Some(stage),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.into())
+            };
+            if let Some(stage) = stage
+            {
+                // A prepared directory contains only this transaction's record.
+                // Refuse unexpected host additions instead of remove_dir_all.
+                let mut entries = stage.entries()?;
+                if let Some(entry) = entries.next()
+                {
+                    let entry = entry?;
+                    if entries.next().transpose()?.is_some() || !entry.file_type()?.is_file()
+                    {
+                        return Err(Failure(status::CONFLICT));
+                    }
+                    let file = stage.open(entry.file_name())?.into_std();
+                    if !same_object(&file.metadata()?, &self.file.metadata()?)?
+                    {
+                        return Err(Failure(status::CONFLICT));
+                    }
+                    stage.remove_file(entry.file_name())?;
+                }
+                root.remove_dir(name)?;
+            }
+        }
+        // Plain unpublished stages and leftover hard links after publication
+        // have the same pinned file. A colliding foreign object is never removed.
+        match root.open(&self.name)
+        {
+            Ok(file) =>
+            {
+                if !same_object(&file.into_std().metadata()?, &self.file.metadata()?)?
+                {
+                    return Err(Failure(status::CONFLICT));
+                }
+                root.remove_file(&self.name)?;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.into())
+        }
+        sync(root)?;
+        Ok(())
+    }
 }
 impl Drop for Transaction
 {
     fn drop(&mut self)
     {
-        let _ = self.directory.root.remove_file(&self.name);
-        if let Some(name) = &self.directory_stage
+        if !self.cleaned
         {
-            let _ = self.directory.root.remove_dir_all(name);
+            let _ = self.cleanup();
         }
     }
 }
@@ -301,8 +378,23 @@ pub struct Session
     directories:  Table<DirectoryObject>,
     files:        Table<OwnedFile>,
     transactions: Table<Transaction>,
+    renames:      Table<namespace::Rename>,
+    removals:     Table<removal::Removal>,
     nodes:        Table<nodes::Node>,
     node_index:   Vec<(nodes::Key, u32)>
+}
+impl Drop for Session
+{
+    fn drop(&mut self)
+    {
+        // Restore quarantined sources before this connection's root writer
+        // leases are released by field destruction. Journals retain failed
+        // cleanup for explicit recovery instead of silently losing ownership.
+        for receipt in self.removals.values_mut()
+        {
+            receipt.disconnect();
+        }
+    }
 }
 impl Session
 {
@@ -321,6 +413,8 @@ impl Session
                   directories: Table::new(Kind::HostDirectories),
                   files: Table::new(Kind::HostFiles),
                   transactions: Table::new(Kind::HostTransactions),
+                  renames: Table::new(Kind::HostTransactions),
+                  removals: Table::new(Kind::HostTransactions),
                   nodes: Table::new(Kind::HostNodes),
                   node_index: Vec::new() })
     }
@@ -427,11 +521,26 @@ impl Session
                                        | Op::Remove
                                        | Op::OpenLock);
         let permits_payload =
-            permits_payload || matches!(req.operation, Op::Describe | Op::PublishDirectory);
-        let permits_offset =
-            matches!(req.operation, Op::Export | Op::Read | Op::Write | Op::SetLength | Op::Rename);
-        let permits_value =
-            matches!(req.operation, Op::Read | Op::Commit | Op::Rename | Op::Remove | Op::Lock);
+            permits_payload
+            || matches!(req.operation,
+                        Op::Describe | Op::PublishDirectory | Op::BeginRename | Op::BeginRemove);
+        let permits_offset = matches!(req.operation,
+                                      Op::Export
+                                      | Op::Read
+                                      | Op::ReadWrite
+                                      | Op::Write
+                                      | Op::SetLength
+                                      | Op::Rename
+                                      | Op::BeginRename);
+        let permits_value = matches!(req.operation,
+                                     Op::Read
+                                     | Op::ReadWrite
+                                     | Op::Commit
+                                     | Op::Rename
+                                     | Op::Remove
+                                     | Op::Lock
+                                     | Op::BeginRename
+                                     | Op::BeginRemove);
         if !permits_payload && !payload.is_empty()
            || !permits_offset && req.offset != 0
            || !permits_value && req.value != 0
@@ -473,10 +582,12 @@ impl Session
                 let directory = self.directory(req.object)?;
                 let revision = directory.revision()?;
                 let entries = directory.root.entries()?;
-                reply.object = self.directories
-                                   .insert(DirectoryObject::Enumerate(Enumeration { directory,
-                                                                                    entries,
-                                                                                    revision }))?;
+                reply.object =
+                    self.directories
+                        .insert(DirectoryObject::Enumerate(Enumeration { directory,
+                                                                         entries,
+                                                                         revision,
+                                                                         recovery: None }))?;
             }
             Op::ListNext =>
             {
@@ -487,6 +598,22 @@ impl Session
                 };
                 if enumeration.revision != enumeration.directory.revision()?
                 {
+                    return Err(Failure(status::STALE));
+                }
+                if enumeration.recovery.is_some()
+                {
+                    let writable = self.exports
+                                       .get(enumeration.directory.export)
+                                       .is_some_and(|export| export.writable);
+                    if !writable
+                    {
+                        return Err(Failure(status::UNAVAILABLE));
+                    }
+                    if !recover_removals_in(&enumeration.directory.root)?
+                    {
+                        return Err(Failure(status::CORRUPT));
+                    }
+                    enumeration.recovery = None;
                     return Err(Failure(status::STALE));
                 }
                 // Skip only this connection's live stages, never crash leftovers.
@@ -503,6 +630,28 @@ impl Session
                     if self.transactions.iter().any(|(_, t)| t.name == name || t.directory_stage.as_deref() == Some(name))
                     {
                         continue;
+                    }
+                    if self.removals.iter().any(|(_, receipt)| receipt.private_name(name))
+                    {
+                        continue;
+                    }
+                    if name.starts_with(".system-risc-delete-")
+                       || name.starts_with(".system-risc-stage-")
+                    {
+                        enumeration.recovery = Some(name.to_owned());
+                        let writable = self.exports
+                                           .get(enumeration.directory.export)
+                                           .is_some_and(|export| export.writable);
+                        if !writable
+                        {
+                            return Err(Failure(status::UNAVAILABLE));
+                        }
+                        if !recover_removals_in(&enumeration.directory.root)?
+                        {
+                            return Err(Failure(status::CORRUPT));
+                        }
+                        enumeration.recovery = None;
+                        return Err(Failure(status::STALE));
                     }
                     wire::component(name.as_bytes())?;
                     let kind = entry.file_type()?;
@@ -574,7 +723,19 @@ impl Session
                 }
                 else if self.transactions.get(req.object).is_some_and(|t| t.owner == self.id)
                 {
-                    self.transactions.remove(req.object);
+                    self.close_transaction(req.object)?;
+                }
+                else if self.removals.get(req.object).is_some_and(|r| r.owner == self.id)
+                {
+                    self.close_removal(req.object)?;
+                }
+                else if self.renames.get(req.object).is_some_and(|r| r.owner == self.id)
+                {
+                    if self.rename_state(req.object)?
+                    {
+                        self.finish_rename(req.object)?;
+                    }
+                    self.renames.remove(req.object);
                 }
                 else
                 {
@@ -598,8 +759,31 @@ impl Session
                                                 file,
                                                 dirty: true,
                                                 publication: None,
-                                                directory_stage: None };
+                                                directory_stage: None,
+                                                cleaned: false };
                 reply.object = self.transactions.insert(transaction)?;
+            }
+            Op::ReadWrite =>
+            {
+                if req.value as usize > wire::MAX_PAYLOAD
+                {
+                    return Err(Failure(status::LIMIT));
+                }
+                let transaction = self.transaction(req.object)?;
+                if transaction.publication.is_some()
+                {
+                    return Err(Failure(status::CONFLICT));
+                }
+                let length = transaction.file.metadata()?.len();
+                if req.offset > length
+                {
+                    return Err(Failure(status::INVALID));
+                }
+                let count = (length - req.offset).min(u64::from(req.value)) as usize;
+                let mut bytes = vec![0; count];
+                transaction.file.seek(SeekFrom::Start(req.offset))?;
+                transaction.file.read_exact(&mut bytes)?;
+                return Ok(bytes);
             }
             Op::Write =>
             {
@@ -650,6 +834,44 @@ impl Session
                 directory.root.create_dir(wire::component(payload)?)?;
                 sync(&directory.root)?;
             }
+            Op::BeginRemove =>
+            {
+                reply.object = self.begin_remove(req.object, req.value, payload)?;
+            }
+            Op::QuarantineRemove =>
+            {
+                self.quarantine_remove(req.object)?;
+            }
+            Op::CommitRemove =>
+            {
+                self.commit_remove(req.object)?;
+            }
+            Op::AbortRemove =>
+            {
+                reply.value = u32::from(self.abort_remove(req.object)?);
+            }
+            Op::RemoveState =>
+            {
+                reply.value = self.removal_state(req.object)?;
+            }
+            Op::BeginRename =>
+            {
+                reply.object =
+                    self.begin_rename(req.object,
+                                      u32::try_from(req.offset).map_err(|_| {
+                                                                   Failure(status::INVALID)
+                                                               })?,
+                                      req.value,
+                                      payload)?;
+            }
+            Op::FinishRename =>
+            {
+                self.finish_rename(req.object)?;
+            }
+            Op::RenameState =>
+            {
+                reply.value = u32::from(self.rename_state(req.object)?);
+            }
             Op::Rename =>
             {
                 let from = self.directory(req.object)?;
@@ -692,6 +914,12 @@ impl Session
                     directory.root.remove_file(name)?;
                 }
                 sync(&directory.root)?;
+            }
+            Op::NotifyDirectory =>
+            {
+                let directory = self.directory(req.object)?;
+                self.writable(directory.export)?;
+                directory.changes.notify()?;
             }
             Op::SyncDirectory =>
             {
@@ -780,6 +1008,7 @@ impl Session
                 reply.value = 2;
                 return Ok(directory.revision()?.to_vec());
             }
+            Op::DescribeObject => return self.describe_object(req.object, reply),
             Op::Describe => return self.describe(req.object, wire::component(payload)?, reply),
             Op::PublishDirectory =>
             {
@@ -866,6 +1095,20 @@ impl Session
         Ok(())
     }
 
+    /// A normal acknowledgement must prove cleanup; Drop is reserved for a
+    /// lost connection. Never discard a published receipt after failed fsync.
+    fn close_transaction(&mut self, id: u32) -> Result<()>
+    {
+        self.transactions
+            .get(id)
+            .filter(|t| t.owner == self.id)
+            .ok_or(Failure(status::STALE))?
+            .cleanup()?;
+        self.transactions.get_mut(id).unwrap().cleaned = true;
+        self.transactions.remove(id);
+        Ok(())
+    }
+
     fn commit(&mut self, id: u32, name: &str, expected: u32) -> Result<()>
     {
         if self.transaction(id)?.directory_stage.is_some()
@@ -916,6 +1159,7 @@ impl Session
             Err(e) => return Err(e.into())
         }
         sync(&directory.root)?;
+        self.transactions.get_mut(id).unwrap().cleaned = true;
         self.transactions.remove(id);
         Ok(())
     }
@@ -982,6 +1226,7 @@ impl Session
             self.directories.remove(capability);
             return Err(error);
         }
+        self.transactions.get_mut(id).unwrap().cleaned = true;
         self.transactions.remove(id);
         Ok(capability)
     }

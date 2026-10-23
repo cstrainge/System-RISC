@@ -2,13 +2,13 @@
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::{Point, Rect, WindowId, drag as wire};
-use mac_traps::{Client, Cnid, Error as ToolboxError, VolumeId};
+use mac_traps::{Client, Cnid, Error as ToolboxError, TypeCode, VolumeId};
 mod promise;
 mod wake;
 pub use promise::{NoPromises, Promises, WithPromise};
 mod offer;
-pub use offer::{DragEvent, DragOutcome, DropAction, DropActions, DropPayload, FlavorInfo, Flavors,
-                Item, Response, TakeFuture, Target, TrackPhase, TrackingOffer};
+pub use offer::{DragEvent, DragOutcome, DropAction, DropActions, DropPayload, FileTakeFuture,
+                FlavorInfo, Flavors, Item, Response, TakeFuture, Target, TrackPhase, TrackingOffer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FlavorType([u8; 4]);
@@ -30,6 +30,7 @@ pub const FILE_REFERENCE: FlavorType = FlavorType::new(*b"fref");
 pub enum DragError
 {
     NoSession,
+    Cancelled,
     FlavorUnavailable
     {
         flavor: FlavorType
@@ -50,6 +51,7 @@ impl From<ToolboxError> for DragError
         match error
         {
             ToolboxError::NotFound => Self::NoSession,
+            ToolboxError::Cancelled => Self::Cancelled,
             ToolboxError::WrongThread => Self::WrongThread,
             other => Self::Unknown(other.status())
         }
@@ -118,12 +120,14 @@ impl<'a> Flavor<'a>
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileItem
 {
-    pub volume: VolumeId,
-    pub id:     Cnid,
+    pub volume:    VolumeId,
+    pub id:        Cnid,
     /// Parent captured with the source snapshot; moves validate it atomically.
-    pub parent: Cnid,
-    pub origin: Point,
-    pub bounds: Rect
+    pub parent:    Cnid,
+    pub origin:    Point,
+    pub bounds:    Rect,
+    pub file_type: TypeCode,
+    pub directory: bool
 }
 pub const fn file_item(volume: VolumeId, id: Cnid, parent: Cnid, origin: Point, bounds: Rect)
                        -> FileItem
@@ -132,10 +136,18 @@ pub const fn file_item(volume: VolumeId, id: Cnid, parent: Cnid, origin: Point, 
                id,
                parent,
                origin,
-               bounds }
+               bounds,
+               file_type: TypeCode::ZERO,
+               directory: false }
 }
 impl FileItem
 {
+    pub const fn with_type(mut self, file_type: TypeCode) -> Self
+    {
+        self.file_type = file_type;
+        self
+    }
+
     fn encode(self) -> [u8; wire::FILE_ITEM_BYTES]
     {
         let mut bytes = [0; wire::FILE_ITEM_BYTES];
@@ -145,21 +157,27 @@ impl FileItem
         bytes[12..14].copy_from_slice(&self.origin.h.to_le_bytes());
         bytes[14..16].copy_from_slice(&self.origin.v.to_le_bytes());
         bytes[16..24].copy_from_slice(&self.bounds.to_be_bytes());
+        bytes[24..28].copy_from_slice(&self.file_type.bytes());
+        bytes[28..32].copy_from_slice(&u32::from(self.directory).to_le_bytes());
         bytes
     }
 
     fn decode(bytes: &[u8]) -> Result<Self>
     {
         if bytes.len() != wire::FILE_ITEM_BYTES
+           || bytes.get(28..32)
+                   .is_none_or(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) > 1)
         {
             return Err(DragError::Unknown(mac_abi::BAD_ABI));
         }
-        Ok(Self { volume: VolumeId(u32::from_le_bytes(bytes[..4].try_into().unwrap())),
-                  id:     Cnid(u32::from_le_bytes(bytes[4..8].try_into().unwrap())),
-                  parent: Cnid(u32::from_le_bytes(bytes[8..12].try_into().unwrap())),
-                  origin: Point { h: i16::from_le_bytes(bytes[12..14].try_into().unwrap()),
-                                  v: i16::from_le_bytes(bytes[14..16].try_into().unwrap()) },
-                  bounds: Rect::from_be_bytes(bytes[16..24].try_into().unwrap()) })
+        Ok(Self { volume:    VolumeId(u32::from_le_bytes(bytes[..4].try_into().unwrap())),
+                  id:        Cnid(u32::from_le_bytes(bytes[4..8].try_into().unwrap())),
+                  parent:    Cnid(u32::from_le_bytes(bytes[8..12].try_into().unwrap())),
+                  origin:    Point { h: i16::from_le_bytes(bytes[12..14].try_into().unwrap()),
+                                     v: i16::from_le_bytes(bytes[14..16].try_into().unwrap()) },
+                  bounds:    Rect::from_be_bytes(bytes[16..24].try_into().unwrap()),
+                  file_type: TypeCode::new(bytes[24..28].try_into().unwrap()),
+                  directory: bytes[28] != 0 })
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,7 +203,8 @@ pub struct Drag<'a, P: Promises = NoPromises>
     anchor:   Point,
     outline:  Rect,
     promises: P,
-    armed:    bool
+    armed:    bool,
+    failed:   Option<DragError>
 }
 impl<'a> Drag<'a>
 {
@@ -202,7 +221,8 @@ impl<'a> Drag<'a>
                   anchor,
                   outline,
                   promises: NoPromises,
-                  armed: true })
+                  armed: true,
+                  failed: None })
     }
 }
 impl<'a, P: Promises> Drag<'a, P>
@@ -229,22 +249,53 @@ impl<'a, P: Promises> Drag<'a, P>
 
     pub fn items(&mut self, items: impl IntoIterator<Item = FileItem>) -> Result<()>
     {
-        let mut bytes = [0u8; wire::FILE_ITEM_BYTES * wire::MAX_ITEMS];
+        if let Some(error) = self.failed
+        {
+            return Err(error);
+        }
+        let result = self.items_bounded(items);
+        if let Err(error) = result
+        {
+            self.failed = Some(error);
+        }
+        result
+    }
+
+    fn items_bounded(&mut self, items: impl IntoIterator<Item = FileItem>) -> Result<()>
+    {
+        // Drafts are private until Begin. Bound stack use independently of a
+        // thousand-item selection; any failure poisons the entire builder.
+        const BATCH: usize = 64;
+        let mut bytes = [0u8; wire::FILE_ITEM_BYTES * BATCH];
         let mut count = 0;
         for item in items
         {
-            if count == wire::MAX_ITEMS
+            if self.item as usize + count == wire::MAX_ITEMS
             {
                 return Err(DragError::Unknown(mac_abi::NO_MEMORY));
             }
-            bytes[count * wire::FILE_ITEM_BYTES..(count + 1) * wire::FILE_ITEM_BYTES].copy_from_slice(&item.encode());
+            bytes[count*wire::FILE_ITEM_BYTES..(count+1)*wire::FILE_ITEM_BYTES].copy_from_slice(&item.encode());
             count += 1;
+            if count == BATCH
+            {
+                self.append_items(&bytes, count)?;
+                count = 0;
+            }
         }
+        if count != 0
+        {
+            self.append_items(&bytes[..count * wire::FILE_ITEM_BYTES], count)?;
+        }
+        Ok(())
+    }
+
+    fn append_items(&mut self, bytes: &[u8], count: usize) -> Result<()>
+    {
         self.route.call(wire::Call { operation: wire::FILE_ITEMS,
                                       ..Default::default() },
-                         &bytes[..count * wire::FILE_ITEM_BYTES],
+                         bytes,
                          &mut [])?;
-        self.item = count as u32;
+        self.item += count as u32;
         Ok(())
     }
 
@@ -283,11 +334,16 @@ impl<'a, P: Promises> Drag<'a, P>
                   anchor: self.anchor,
                   outline: self.outline,
                   promises,
-                  armed: true })
+                  armed: true,
+                  failed: self.failed })
     }
 
     pub fn begin(mut self) -> Result<DragSession<'a, P>>
     {
+        if let Some(error) = self.failed
+        {
+            return Err(error);
+        }
         self.route.call(wire::Call { operation: wire::BEGIN,
                                       point: self.anchor,
                                       bounds: self.outline,

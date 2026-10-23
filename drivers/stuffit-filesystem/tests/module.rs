@@ -12,7 +12,7 @@ struct Lower
 {
     sources: Table<Vec<u8>>,
     tickets: Table<()>,
-    flight:  Option<(u32, u64, usize)>,
+    flights: std::collections::BTreeMap<u32, (u32, u64, usize)>,
     trace:   Vec<Phase>,
     cancels: usize
 }
@@ -39,14 +39,14 @@ impl Sources for Memory
         if phase == Phase::Start
         {
             assert_eq!(*ticket, 0);
-            assert!(state.flight.is_none());
+
             assert!(state.sources.get(source).is_some());
             *ticket = state.tickets.insert(()).unwrap();
-            state.flight = Some((source, offset, out.len()));
+            state.flights.insert(*ticket, (source, offset, out.len()));
             return Ok(Completion::Pending);
         }
         assert!(state.tickets.get(*ticket).is_some());
-        assert_eq!(state.flight, Some((source, offset, out.len())));
+        assert_eq!(state.flights.get(ticket), Some(&(source, offset, out.len())));
         if phase == Phase::Cancel
         {
             state.cancels += 1;
@@ -54,7 +54,7 @@ impl Sources for Memory
             {
                 return Ok(Completion::Pending);
             }
-            state.flight = None;
+            state.flights.remove(ticket);
             state.tickets.remove(*ticket).unwrap();
             *ticket = 0;
             return Err(Error(mac_abi::OPERATION_CANCELLED));
@@ -63,7 +63,7 @@ impl Sources for Memory
         let at = offset as usize;
         let count = out.len().min(37).min(data.len().saturating_sub(at));
         out[..count].copy_from_slice(&data[at..at + count]);
-        state.flight = None;
+        state.flights.remove(ticket);
         state.tickets.remove(*ticket).unwrap();
         *ticket = 0;
         Ok(Completion::Complete(count))
@@ -108,7 +108,7 @@ impl Harness
         let lower = Memory(Arc::new(Mutex::new(Lower { sources,
                                                        tickets:
                                                            Table::new(Kind::DriverRequests),
-                                                       flight: None,
+                                                       flights: Default::default(),
                                                        trace: Vec::new(),
                                                        cancels: 0 })));
         let service = Service::new();
@@ -325,7 +325,6 @@ fn corrupted_payload_fails_on_the_last_full_read_and_readonly_mutations_are_reje
                Operation::AbortWrite,
                Operation::Rename,
                Operation::Move,
-               Operation::MakeDirectory,
                Operation::Remove,
                Operation::SetMetadata]
     {
@@ -354,18 +353,18 @@ fn cancellation_drains_the_live_lower_ticket_before_releasing_state()
                           if i == 0 { &input } else { &[] },
                           &mut vec![0; fs::MAX_REPLY]),
                    Ok(Completion::Pending));
-        if h.lower.0.lock().unwrap().flight.is_some()
+        if !h.lower.0.lock().unwrap().flights.is_empty()
         {
             break;
         }
     }
-    assert!(h.lower.0.lock().unwrap().flight.is_some());
+    assert!(!h.lower.0.lock().unwrap().flights.is_empty());
     assert_eq!(h.step(ticket, Operation::Mount, Phase::Cancel, &[], &mut vec![0; fs::MAX_REPLY]),
                Ok(Completion::Pending));
-    assert!(h.lower.0.lock().unwrap().flight.is_some());
+    assert!(!h.lower.0.lock().unwrap().flights.is_empty());
     assert_eq!(h.finish(ticket, Operation::Mount, Phase::Cancel, &[]),
                Err(Error(mac_abi::OPERATION_CANCELLED)));
-    assert!(h.lower.0.lock().unwrap().flight.is_none());
+    assert!(h.lower.0.lock().unwrap().flights.is_empty());
     assert_eq!(h.execute(Operation::Catalog,
                          Arguments { volume,
                                      node: 2,
@@ -387,7 +386,7 @@ fn cancellation_drains_the_live_lower_ticket_before_releasing_state()
                           if i == 0 { &input } else { &[] },
                           &mut vec![0; fs::MAX_REPLY]),
                    Ok(Completion::Pending));
-        if h.lower.0.lock().unwrap().flight.is_some()
+        if !h.lower.0.lock().unwrap().flights.is_empty()
         {
             break;
         }
@@ -472,7 +471,7 @@ fn stuffit5_reads_both_arsenic_forks_and_reports_verified_crc_failures()
               Arguments { volume,
                           ..Default::default() })
      .unwrap();
-    assert!(h.lower.0.lock().unwrap().flight.is_none());
+    assert!(h.lower.0.lock().unwrap().flights.is_empty());
 }
 #[test]
 fn cancelling_arsenic_cpu_work_discards_provisional_state_and_allows_immediate_retry()
@@ -497,7 +496,7 @@ fn cancelling_arsenic_cpu_work_discards_provisional_state_and_allows_immediate_r
                           &mut vec![0; 34384]),
                    Ok(Completion::Pending));
         let lower = h.lower.0.lock().unwrap();
-        if step > 0 && lower.flight.is_none() && lower.trace.len() == before
+        if step > 0 && lower.flights.is_empty() && lower.trace.len() == before
         {
             cpu_steps += 1;
         }
@@ -514,7 +513,7 @@ fn cancelling_arsenic_cpu_work_discards_provisional_state_and_allows_immediate_r
     assert_eq!(h.finish(ticket, Operation::Read, Phase::Cancel, &[]),
                Err(Error(mac_abi::OPERATION_CANCELLED)));
     h.requests.remove(ticket).unwrap();
-    assert!(h.lower.0.lock().unwrap().flight.is_none());
+    assert!(h.lower.0.lock().unwrap().flights.is_empty());
     assert_eq!(h.read(volume, token, 0, 34380, 4).unwrap(), [252, 253, 254, 255]);
 }
 
@@ -566,7 +565,7 @@ fn method13_deferred_reads_seek_and_recover_from_bad_fork_checksums()
                   Arguments { volume,
                               ..Default::default() })
          .unwrap();
-        assert!(h.lower.0.lock().unwrap().flight.is_none());
+        assert!(h.lower.0.lock().unwrap().flights.is_empty());
         assert_eq!(h.service.quiesce(), Ok(()));
     }
 }
@@ -592,16 +591,73 @@ fn cancelling_method13_input_releases_the_lower_request_before_retry()
                           if step == 0 { &input } else { &[] },
                           &mut [0; 969]),
                    Ok(Completion::Pending));
-        if h.lower.0.lock().unwrap().flight.is_some()
+        if !h.lower.0.lock().unwrap().flights.is_empty()
         {
             break;
         }
     }
-    assert!(h.lower.0.lock().unwrap().flight.is_some());
+    assert!(!h.lower.0.lock().unwrap().flights.is_empty());
     assert_eq!(h.finish(ticket, Operation::Read, Phase::Cancel, &[]),
                Err(Error(mac_abi::OPERATION_CANCELLED)));
     h.requests.remove(ticket).unwrap();
-    assert!(h.lower.0.lock().unwrap().flight.is_none());
+    assert!(h.lower.0.lock().unwrap().flights.is_empty());
     assert_eq!(h.read(volume, token, 0, 99965, 4).unwrap(),
                (99965..99969).map(|i| i as u8).collect::<Vec<_>>());
+}
+
+#[test]
+fn independent_requests_progress_while_another_read_waits_and_one_decoder_stays_exclusive()
+{
+    let mut h = Harness::new(NESTED);
+    let volume = h.mount();
+    let pattern = h.open(volume, 18);
+    let cafe = h.open(volume, 19);
+    let ticket = h.requests.insert(()).unwrap();
+    let input = Harness::bytes(Arguments { volume,
+                                           token: pattern,
+                                           length: 8192,
+                                           ..Default::default() });
+    let mut out = vec![0; fs::MAX_REPLY];
+    for at in 0..30
+    {
+        assert_eq!(h.step(ticket,
+                          Operation::Read,
+                          if at == 0 { Phase::Start } else { Phase::Poll },
+                          if at == 0 { &input } else { &[] },
+                          &mut out),
+                   Ok(Completion::Pending));
+        if !h.lower.0.lock().unwrap().flights.is_empty()
+        {
+            break;
+        }
+    }
+    assert!(!h.lower.0.lock().unwrap().flights.is_empty());
+    let metadata = h.execute(Operation::Catalog,
+                             Arguments { volume,
+                                         node: 19,
+                                         ..Default::default() })
+                    .unwrap();
+    assert_eq!(Metadata::decode(&metadata).unwrap().name, "Café");
+    assert_eq!(h.execute(Operation::Close,
+                         Arguments { volume,
+                                     token: pattern,
+                                     ..Default::default() }),
+               Err(Error(mac_abi::SERVICE_BUSY)));
+    assert_eq!(h.read(volume, pattern, 0, 0, 1), Err(Error(mac_abi::SERVICE_BUSY)));
+    let expected = b"Native MacRoman name\r";
+    let mut text = Vec::new();
+    while text.len() < expected.len()
+    {
+        let part = h.read(volume, cafe, 0, text.len() as u64, (expected.len() - text.len()) as u64)
+                    .unwrap();
+        assert!(!part.is_empty(), "independent reader reached EOF before its declared length");
+        text.extend_from_slice(&part);
+    }
+    assert_eq!(text, expected);
+    let data = h.finish(ticket, Operation::Read, Phase::Poll, &[]).unwrap();
+    assert_eq!(data.len(), 8192);
+    assert!(data.iter().enumerate().all(|(i, byte)| *byte == i as u8));
+    h.requests.remove(ticket).unwrap();
+    assert!(h.lower.0.lock().unwrap().flights.is_empty());
+    assert_eq!(h.read(volume, pattern, 0, 0, 3).unwrap(), [0, 1, 2]);
 }

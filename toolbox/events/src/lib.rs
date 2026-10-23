@@ -63,6 +63,7 @@ impl<'a> Events<'a>
                        | mac_abi::drag::DROP_EVENT
                        | mac_abi::drag::PROMISE_EVENT
                        | mac_abi::drag::DATA_READY_EVENT
+                       | mac_abi::drag::CANCEL_REQUESTED_EVENT
                        | mac_abi::drag::FINISHED_EVENT)
         {
             return Err(mac_traps::Error::BadArgument);
@@ -253,6 +254,7 @@ impl<'a> Events<'a>
             // This compatibility pump serves drag-data futures. Ordinary input
             // and timeout nulls are dispatch work, never data readiness.
             ready = matches!(event, Event::Drag { offer: toolbox_drag::DragEvent::DataReady
+                | toolbox_drag::DragEvent::CancelRequested
                 | toolbox_drag::DragEvent::Ended { .. }
                 | toolbox_drag::DragEvent::Tracking(toolbox_drag::TrackingOffer { phase: toolbox_drag::TrackPhase::Left, .. }), .. });
             dispatch(event).map_err(toolbox_drag::DragError::from)?;

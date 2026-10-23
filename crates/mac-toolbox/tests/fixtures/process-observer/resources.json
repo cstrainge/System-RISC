@@ -16,6 +16,15 @@
         "format": "pstring",
         "text": "process-observer"
       }
+    },
+    {
+      "type": "WDEF",
+      "id": 1999,
+      "symbol": "TRANSLATION_REQUIRED_WDEF",
+      "payload": {
+        "format": "hex",
+        "hex": "4e75"
+      }
     }
   ]
 }

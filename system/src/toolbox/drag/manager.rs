@@ -28,43 +28,59 @@ struct Item
 }
 struct Session
 {
-    owner:            u64,
-    source:           u32,
-    thread:           u64,
-    detached:         bool,
-    action:           u32,
-    destination:      u32,
-    allowed_actions:  u32,
-    file_volume:      Option<u32>,
-    mixed_volumes:    bool,
-    trash:            bool,
-    source_read_only: bool,
-    anchor:           Point,
-    point:            Point,
-    modifiers:        u16,
-    down_modifiers:   u16,
-    up_modifiers:     u16,
-    phase:            u32,
-    outcome:          u32,
-    error:            Status,
-    receiver:         Option<u32>,
-    accepted:         bool,
-    responded:        bool,
-    released:         bool,
-    items:            Vec<Item>,
-    common:           u32,
-    started:          bool,
-    bytes:            usize,
-    bounds:           Option<Rect>,
-    return_start:     Point,
-    return_tick:      u32,
-    return_step:      u32
+    owner:               u64,
+    source:              u32,
+    thread:              u64,
+    detached:            bool,
+    action:              u32,
+    destination:         u32,
+    allowed_actions:     u32,
+    file_volume:         Option<u32>,
+    mixed_volumes:       bool,
+    trash:               bool,
+    source_read_only:    bool,
+    file_folder:         Option<(u32, u32)>,
+    icon_layout:         bool,
+    application:         bool,
+    eject:               bool,
+    volume_root:         Option<u32>,
+    file_types:          Vec<[u8; 4]>,
+    file_types_complete: bool,
+    folders:             bool,
+    anchor:              Point,
+    point:               Point,
+    modifiers:           u16,
+    down_modifiers:      u16,
+    up_modifiers:        u16,
+    phase:               u32,
+    outcome:             u32,
+    error:               Status,
+    receiver:            Option<u32>,
+    accepted:            bool,
+    responded:           bool,
+    released:            bool,
+    cancel_requested:    bool,
+    items:               Vec<Item>,
+    common:              u32,
+    started:             bool,
+    bytes:               usize,
+    bounds:              Option<Rect>,
+    return_start:        Point,
+    return_tick:         u32,
+    return_step:         u32
 }
 impl Session
 {
     fn resolved_action(&self) -> u32
     {
-        if self.trash || self.modifiers & mac_abi::events::CMD_KEY != 0
+        if self.application
+        {
+            COPY
+        }
+        else if self.eject
+                  || self.icon_layout
+                  || self.trash
+                  || self.modifiers & mac_abi::events::CMD_KEY != 0
         {
             MOVE
         }
@@ -84,7 +100,7 @@ impl Session
     fn action_error(&self) -> Option<Status>
     {
         let action = self.resolved_action();
-        if action == MOVE && self.source_read_only
+        if action == MOVE && self.source_read_only && !self.icon_layout && !self.eject
         {
             Some(READ_ONLY)
         }
@@ -106,9 +122,10 @@ impl Session
 }
 struct Receiver
 {
-    owner:  u64,
-    window: u32,
-    thread: u64
+    owner:   u64,
+    window:  u32,
+    thread:  u64,
+    closing: bool
 }
 #[derive(Clone, Copy)]
 pub struct Notice
@@ -198,8 +215,8 @@ impl Manager
 
     fn readable(&self, id: u32, owner: u64) -> Result<&Session, Status>
     {
-        let session = self.sessions.get(id).filter(|s| !s.detached).ok_or(NOT_FOUND)?;
-        if session.owner != owner
+        let session = self.sessions.get(id).ok_or(NOT_FOUND)?;
+        if (session.owner != owner || session.detached)
            && !session.receiver
                       .and_then(|id| self.receivers.get(id))
                       .is_some_and(|r| r.owner == owner)
@@ -209,9 +226,28 @@ impl Manager
         Ok(session)
     }
 
+    pub(crate) fn offer_live(&self, owner: u64, drag: u32) -> Result<(), Status>
+    {
+        if self.readable(drag, owner)?.phase != TRACKING { Err(ACCESS_DENIED) } else { Ok(()) }
+    }
+
+    pub(crate) fn accepts_documents(&self, owner: u64, drag: u32, types: &[[u8; 4]])
+                                    -> Result<bool, Status>
+    {
+        let session = self.readable(drag, owner)?;
+        if session.phase != TRACKING
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(session.file_types_complete
+           && !session.folders
+           && !session.file_types.is_empty()
+           && session.file_types.iter().all(|kind| types.binary_search(kind).is_ok()))
+    }
+
     fn receiver(&self, id: u32, receiver: u32, owner: u64) -> Result<(), Status>
     {
-        let session = self.sessions.get(id).filter(|s| !s.detached).ok_or(NOT_FOUND)?;
+        let session = self.sessions.get(id).ok_or(NOT_FOUND)?;
         let registration = self.receivers.get(receiver).ok_or(NOT_FOUND)?;
         if registration.owner != owner
         {
@@ -233,7 +269,7 @@ impl Manager
     {
         let session = self.sessions.get(self.active?)?;
         let bounds = session.bounds?;
-        if !matches!(session.phase, TRACKING | DROPPING | RETURNING)
+        if !matches!(session.phase, TRACKING | RETURNING)
         {
             return None;
         }
@@ -249,7 +285,11 @@ impl Manager
 
     pub fn is_tracking(&self) -> bool
     {
-        self.active.is_some()
+        // A receiver may have a progress window after mouse-up. Deliver its
+        // Stop clicks and ordinary window events through the normal UI path.
+        self.active
+            .and_then(|id| self.sessions.get(id))
+            .is_some_and(|s| matches!(s.phase, ARMED | TRACKING | RETURNING))
     }
 
     pub fn ensure_receiver(&mut self, owner: u64, thread: u64, window: u32) -> Result<(), Status>
@@ -269,7 +309,8 @@ impl Manager
         self.receivers
             .insert(Receiver { owner,
                                thread,
-                               window })
+                               window,
+                               closing: false })
             .map_err(|_| NO_MEMORY)?;
         Ok(())
     }
@@ -306,8 +347,8 @@ impl Manager
     {
         self.set_highlight(None);
         let old = self.sessions.get_mut(id).unwrap().receiver.take();
-        if let Some((owner, window)) =
-            old.and_then(|r| self.receivers.get(r)).map(|r| (r.owner, r.window))
+        if let Some((receiver_id, owner, window, closing)) =
+            old.and_then(|id| self.receivers.get(id).map(|r| (id, r.owner, r.window, r.closing)))
         {
             // A pending take must wake when its receiver capability is revoked,
             // including source exit/cancellation before a promise is fulfilled.
@@ -323,6 +364,10 @@ impl Manager
                 self.notice(owner, DATA_READY_EVENT, window, id, when);
             }
             self.notice(owner, LEFT_EVENT, window, id, when);
+            if closing
+            {
+                self.receivers.remove(receiver_id);
+            }
         }
         let session = self.sessions.get_mut(id).unwrap();
         session.accepted = false;
@@ -377,6 +422,7 @@ impl Manager
                 return;
             }
             session.phase = DROPPING;
+            self.set_highlight(None);
             self.notice(owner, DROP_EVENT, window, id, when);
         }
         else
@@ -478,7 +524,19 @@ impl Manager
         {
             return false;
         };
-        if self.sessions.get(id).unwrap().phase != RETURNING
+        let session = self.sessions.get_mut(id).unwrap();
+        if session.phase == DROPPING
+        {
+            if !session.cancel_requested
+            {
+                session.cancel_requested = true;
+                if let Some(receiver) = session.receiver.and_then(|r| self.receivers.get(r))
+                {
+                    self.notice(receiver.owner, CANCEL_REQUESTED_EVENT, receiver.window, id, when);
+                }
+            }
+        }
+        else if session.phase != RETURNING
         {
             self.return_to_source(id, CANCELLED, OK, when);
         }
@@ -513,7 +571,7 @@ impl Manager
     pub fn forget_window(&mut self, window: u32, when: u32)
     {
         if let Some(active) = self.active
-           && self.sessions.get(active).is_some_and(|s| s.source == window)
+           && self.sessions.get(active).is_some_and(|s| s.source == window && s.phase != DROPPING)
         {
             self.return_to_source(active, CANCELLED, OK, when);
         }
@@ -522,6 +580,15 @@ impl Manager
             if let Some(active) = self.active
                && self.sessions.get(active).unwrap().receiver == Some(id)
             {
+                if self.sessions.get(active).unwrap().phase == DROPPING
+                {
+                    // Closing a receiver's window cannot invalidate its live
+                    // cleanup capability. The app drains even after the window
+                    // disappears; leave() retires the closing registration.
+                    self.receivers.get_mut(id).unwrap().closing = true;
+                    self.escape(when);
+                    return;
+                }
                 self.return_to_source(active, REJECTED, NOT_FOUND, when);
             }
             self.receivers.remove(id);
@@ -530,6 +597,17 @@ impl Manager
 
     pub fn close_owner(&mut self, owner: u64, when: u32)
     {
+        // A dead receiver cannot acknowledge. Its File Manager owners have
+        // independent exit cleanup; retire drag feedback/registration now.
+        if let Some(active) = self.active
+           && self.sessions
+                  .get(active)
+                  .and_then(|s| s.receiver)
+                  .and_then(|r| self.receivers.get(r))
+                  .is_some_and(|r| r.owner == owner)
+        {
+            self.return_to_source(active, REJECTED, OPERATION_CANCELLED, when);
+        }
         loop
         {
             let id = self.sessions.iter().find_map(|(id, s)| (s.owner == owner).then_some(id));
@@ -596,6 +674,14 @@ impl Manager
                                                 mixed_volumes: false,
                                                 trash: false,
                                                 source_read_only: false,
+                                                file_folder: None,
+                                                icon_layout: false,
+                                                application: false,
+                                                eject: false,
+                                                volume_root: None,
+                                                file_types: Vec::new(),
+                                                file_types_complete: false,
+                                                folders: false,
                                                 anchor: call.point,
                                                 point: call.point,
                                                 modifiers: call.flags as u16,
@@ -608,6 +694,7 @@ impl Manager
                                                 accepted: false,
                                                 responded: false,
                                                 released: false,
+                                                cancel_requested: false,
                                                 items: Vec::new(),
                                                 common: 0,
                                                 started: false,
@@ -646,6 +733,80 @@ impl Manager
                         session.file_volume = Some(volume);
                     }
                 }
+                session.file_types.clear();
+                session.volume_root =
+                    if let [item] = session.items.as_slice()
+                       && let Some(flavor) = item.flavors.iter().find(|f| {
+                                                                    f.kind == *b"fref"
+                                                                    && f.state == 0
+                                                                    && f.bytes.len()
+                                                                       == FILE_ITEM_BYTES
+                                                                })
+                       && u32::from_le_bytes(flavor.bytes[4..8].try_into().unwrap())
+                          == mac_abi::files::ROOT_ID
+                       && u32::from_le_bytes(flavor.bytes[28..32].try_into().unwrap()) == 1
+                    {
+                        Some(u32::from_le_bytes(flavor.bytes[..4].try_into().unwrap()))
+                    }
+                    else
+                    {
+                        None
+                    };
+                session.folders = false;
+                session.file_types_complete = true;
+                session.file_types.try_reserve(session.items.len()).map_err(|_| NO_MEMORY)?;
+                for item in &session.items
+                {
+                    let flavor = item.flavors.iter().find(|flavor| {
+                                                        flavor.kind == *b"fref"
+                                                        && flavor.state == 0
+                                                        && flavor.bytes.len() == FILE_ITEM_BYTES
+                                                    });
+                    if let Some(flavor) = flavor
+                    {
+                        let flags = u32::from_le_bytes(flavor.bytes[28..32].try_into().unwrap());
+                        if flags > 1
+                        {
+                            return Err(BAD_ARGUMENT);
+                        }
+                        session.folders |= flags != 0;
+                        let kind = flavor.bytes[24..28].try_into().unwrap();
+                        if let Err(at) = session.file_types.binary_search(&kind)
+                        {
+                            session.file_types.insert(at, kind);
+                        }
+                    }
+                    else
+                    {
+                        session.file_types_complete = false;
+                    }
+                }
+                session.file_folder = session.items
+                                             .iter()
+                                             .try_fold(None, |previous, item| {
+                                                 let flavor = item.flavors
+                                                                  .iter()
+                                                                  .find(|f| {
+                                                                      f.kind == *b"fref"
+                                                                      && f.state == 0
+                                                                      && f.bytes.len()
+                                                                         == FILE_ITEM_BYTES
+                                                                  })
+                                                                  .ok_or(())?;
+                                                 let folder =
+                                   (u32::from_le_bytes(flavor.bytes[..4].try_into().unwrap()),
+                                    u32::from_le_bytes(flavor.bytes[8..12].try_into().unwrap()));
+                                                 if previous.is_some_and(|old| old != folder)
+                                                 {
+                                                     Err(())
+                                                 }
+                                                 else
+                                                 {
+                                                     Ok(Some(folder))
+                                                 }
+                                             })
+                                             .ok()
+                                             .flatten();
                 session.common =
                     u32::from(session.items
                                      .iter()
@@ -655,7 +816,8 @@ impl Manager
                                                           .iter()
                                                           .any(|f| f.kind == *b"TEXT")
                                                      }))
-                       << 1);
+                       << 1)
+                    | (u32::from(session.volume_root.is_some()) << 2);
                 self.active = Some(call.id);
             }
             DISPOSE =>
@@ -679,7 +841,15 @@ impl Manager
                 call.flags =
                     u32::from(session.down_modifiers) | (u32::from(session.up_modifiers) << 16);
                 call.info = Info { phase:     session.phase,
-                                   outcome:   session.outcome,
+                                   outcome:   if session.cancel_requested
+                                                 && session.phase == DROPPING
+                                   {
+                                       CANCELLED
+                                   }
+                                   else
+                                   {
+                                       session.outcome
+                                   },
                                    items:     session.items.len() as u32,
                                    receiver:  session.receiver.unwrap_or(0),
                                    window:    session.receiver
@@ -698,24 +868,39 @@ impl Manager
                     self.escape(when);
                 }
             }
+            CANCEL_RECEIVE =>
+            {
+                self.receiver(call.id, call.receiver, owner)?;
+                if self.sessions.get(call.id).unwrap().phase != DROPPING
+                {
+                    return Err(ACCESS_DENIED);
+                }
+                if self.active == Some(call.id)
+                {
+                    self.escape(when);
+                }
+            }
             FILE_ITEMS =>
             {
                 self.owner(call.id, owner)?;
                 let session = self.sessions.get_mut(call.id).unwrap();
-                if session.phase != DRAFT
-                   || !session.items.is_empty()
-                   || input.len() % FILE_ITEM_BYTES != 0
+                if session.phase != DRAFT || input.len() % FILE_ITEM_BYTES != 0
                 {
                     return Err(BAD_ARGUMENT);
                 }
                 let count = input.len() / FILE_ITEM_BYTES;
-                if count == 0 || count > MAX_ITEMS
+                if count == 0
+                   || count > MAX_ITEMS - session.items.len()
+                   || input.len() > MAX_BYTES - session.bytes
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                // Allocate the whole immutable group before publishing any item.
+                // Each private draft append is atomic; no receiver can observe
+                // this group until its owner successfully calls Begin.
                 let mut items = Vec::new();
                 items.try_reserve_exact(count).map_err(|_| NO_MEMORY)?;
+                let first = session.items.len();
+                session.items.try_reserve(count).map_err(|_| NO_MEMORY)?;
                 for (index, bytes) in input.chunks_exact(FILE_ITEM_BYTES).enumerate()
                 {
                     let bounds = Rect::from_be_bytes(bytes[16..24].try_into().unwrap());
@@ -730,12 +915,12 @@ impl Manager
                                           declared:       FILE_ITEM_BYTES,
                                           error:          OK,
                                           bytes:          copied(bytes)? });
-                    items.push(Item { id: index as u32 + 1,
+                    items.push(Item { id: (first + index) as u32 + 1,
                                       flavors,
                                       bounds });
                 }
-                session.items = items;
-                session.bytes = input.len();
+                session.items.extend(items);
+                session.bytes += input.len();
             }
             ADD_ITEM | OFFER =>
             {
@@ -803,7 +988,15 @@ impl Manager
             ACCEPT =>
             {
                 self.receiver(call.id, call.receiver, owner)?;
-                if call.flags & !(1 | TARGET_TRASH | ACCEPT_COPY | ACCEPT_MOVE | SAME_VOLUME_MOVE)
+                if call.flags
+                   & !(1
+                       | TARGET_TRASH
+                       | TARGET_ICON_LAYOUT
+                       | TARGET_APPLICATION
+                       | TARGET_EJECT
+                       | ACCEPT_COPY
+                       | ACCEPT_MOVE
+                       | SAME_VOLUME_MOVE)
                    != 0
                    || call.flags & 1 != 0 && call.flags & (ACCEPT_COPY | ACCEPT_MOVE) == 0
                    || call.flags & 1 == 0 && call.flags != 0
@@ -821,6 +1014,39 @@ impl Manager
                 {
                     return Ok(());
                 }
+                let layout = call.flags & TARGET_ICON_LAYOUT != 0;
+                if layout
+                   && (call.flags & (TARGET_TRASH | ACCEPT_COPY) != 0
+                       || call.flags & ACCEPT_MOVE == 0
+                       || session.file_folder != Some((call.volume, call.parent)))
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                let application = call.flags & TARGET_APPLICATION != 0;
+                if application
+                   && (call.parent <= mac_abi::files::ROOT_ID
+                       || call.volume == 0
+                       || call.flags
+                          & (TARGET_TRASH | TARGET_ICON_LAYOUT | TARGET_EJECT | ACCEPT_MOVE)
+                          != 0
+                       || call.flags & ACCEPT_COPY == 0)
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                session.application = application;
+                let eject = call.flags & TARGET_EJECT != 0;
+                if eject
+                   && (session.volume_root != Some(call.volume)
+                       || call.parent != mac_abi::files::ROOT_ID
+                       || call.flags
+                          & (TARGET_TRASH | TARGET_ICON_LAYOUT | TARGET_APPLICATION | ACCEPT_COPY)
+                          != 0
+                       || call.flags & ACCEPT_MOVE == 0)
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                session.eject = eject;
+                session.icon_layout = layout;
                 session.allowed_actions =
                     call.flags & (ACCEPT_COPY | ACCEPT_MOVE | SAME_VOLUME_MOVE);
                 session.destination = call.volume;
@@ -842,6 +1068,33 @@ impl Manager
                 {
                     self.drop_at_receiver(call.id, when);
                 }
+            }
+            FILE_ITEM_METADATA =>
+            {
+                let session = self.readable(call.id, owner)?;
+                if session.phase != TRACKING
+                {
+                    return Err(ACCESS_DENIED);
+                }
+                let item = session.items.get(call.index as usize).ok_or(NOT_FOUND)?;
+                let flavor = item.flavors
+                                 .iter()
+                                 .find(|flavor| flavor.kind == *b"fref")
+                                 .ok_or(FLAVOR_UNAVAILABLE)?;
+                if flavor.state != 0
+                {
+                    return Err(FLAVOR_UNAVAILABLE);
+                }
+                if flavor.bytes.len() != FILE_ITEM_BYTES
+                {
+                    return Err(BAD_ABI);
+                }
+                if output.len() < FILE_ITEM_BYTES
+                {
+                    return Err(NO_MEMORY);
+                }
+                output[..FILE_ITEM_BYTES].copy_from_slice(&flavor.bytes);
+                call.transferred = FILE_ITEM_BYTES;
             }
             ITEM_AT | FLAVOR_AT =>
             {
@@ -875,6 +1128,10 @@ impl Manager
                 if session.phase != DROPPING
                 {
                     return Err(ACCESS_DENIED);
+                }
+                if session.cancel_requested
+                {
+                    return Err(OPERATION_CANCELLED);
                 }
                 let sender = session.owner == owner;
                 let item = session.items.iter_mut().find(|i| i.id == call.item).ok_or(NOT_FOUND)?;
@@ -929,6 +1186,10 @@ impl Manager
                 if session.phase != DROPPING
                 {
                     return Err(ACCESS_DENIED);
+                }
+                if session.cancel_requested
+                {
+                    return Err(NOT_FOUND);
                 }
                 let (item, flavor) = session.items
                                             .iter_mut()
@@ -1010,7 +1271,11 @@ impl Manager
                 }
                 if call.flags == 0
                 {
-                    self.return_to_source(call.id, REJECTED, call.error, when);
+                    let cancelled = self.sessions.get(call.id).unwrap().cancel_requested;
+                    self.return_to_source(call.id,
+                                          if cancelled { CANCELLED } else { REJECTED },
+                                          call.error,
+                                          when);
                 }
                 else
                 {

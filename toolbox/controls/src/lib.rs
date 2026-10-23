@@ -7,12 +7,17 @@ pub use mac_abi::{Point, Rect, WindowId, controls::ScrollbarState,
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandardKind
 {
-    Button             = 0,
-    Checkbox           = 1,
-    Radio              = 2,
-    WindowFontButton   = 8,
-    WindowFontCheckbox = 9,
-    WindowFontRadio    = 10
+    Button                = 0,
+    Checkbox              = 1,
+    Radio                 = 2,
+    WindowFontButton      = 8,
+    WindowFontCheckbox    = 9,
+    WindowFontRadio       = 10,
+    /// Prefer the typed ProgressBar owner for byte counts and unknown totals.
+    ProgressBar           = mac_abi::controls::PROGRESS_BAR_PROCEDURE,
+    MonochromeProgressBar = mac_abi::controls::MONOCHROME_PROGRESS_BAR_PROCEDURE,
+    /// Prefer the typed StaticText owner for UTF-8 text and justification.
+    StaticText            = mac_abi::controls::STATIC_TEXT_PROCEDURE
 }
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,3 +173,5 @@ pub mod scrollbox;
 pub use scrollbox::{ScrollBox, ScrollBoxId, ScrollBoxRef, ScrollBoxSpec};
 pub mod objects;
 pub use objects::{Control, ControlId, ControlInfo, ControlRef};
+mod passive;
+pub use passive::{Progress, ProgressBar, ProgressStyle, StaticText, TextAlignment};

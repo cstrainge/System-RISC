@@ -36,7 +36,7 @@ def trace_snapshot(output, endpoint, serial, prefix):
     (output / (prefix + '-trace.json')).write_text(json.dumps(decode(path), indent=2))
 
 
-def capture(output, without_driver=False, finder=False, finder_error=False, archive=None, reference=None, browse_reference=False):
+def capture(output, without_driver=False, finder=False, finder_error=False, archive=None, reference=None, browse_reference=False, eject=False):
     if archive is not None and not finder:
         raise ValueError('--archive requires --finder')
     output.mkdir(parents=True, exist_ok=False)
@@ -152,6 +152,21 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
                 driver.wait_state(lambda s: s['windows'] == '4')
                 time.sleep(.15)
                 vm.qmp('screendump', {'filename': str(output / 'archive-contents.ppm')}, endpoint)
+            if eject:
+                source_before = digest(exports[0] / 'Examples.sit')
+                driver.move(600, 200)
+                driver.button(True)
+                driver.move(596, 320)
+                driver.move(592, 436)
+                driver.key_state('alt', True)
+                driver.button(False)
+                driver.key_state('alt', False)
+                driver.wait('FINDER_DRAG_VOLUME_UNMOUNTED\n')
+                driver.wait('FINDER_DRAG_ENDED moved\n')
+                driver.wait_state(lambda s: s['windows'] == '2')
+                vm.qmp('screendump', {'filename': str(output / 'archive-ejected.ppm')}, endpoint)
+                (output / 'eject.json').write_text(json.dumps({'source_before': source_before,
+                    'source_after': digest(exports[0] / 'Examples.sit')}, indent=2) + '\n')
             termination = 'finder-opened-archive'
         deadline = time.monotonic() + 60
         while not finder and time.monotonic() < deadline:
@@ -199,10 +214,11 @@ if __name__ == '__main__':
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--without-driver', action='store_true')
     parser.add_argument('--finder', action='store_true')
+    parser.add_argument('--eject', action='store_true')
     parser.add_argument('--finder-error', action='store_true')
     parser.add_argument('--archive', type=Path, help='Raw archive for a real Finder open')
     parser.add_argument('--reference', type=Path, help='SuperPaint reference for native fork verification')
     parser.add_argument('--browse-reference', action='store_true', help='open the visible SuperPaint folder in real Finder')
     args = parser.parse_args()
     capture(args.output.resolve(), args.without_driver, args.finder or args.finder_error,
-            args.finder_error, args.archive, args.reference, args.browse_reference)
+            args.finder_error, args.archive, args.reference, args.browse_reference, args.eject)

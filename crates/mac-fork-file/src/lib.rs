@@ -6,6 +6,7 @@ extern crate alloc;
 mod header;
 mod stream;
 mod record;
+pub mod annotation;
 use alloc::string::String;
 
 pub use header::{ForkLayout, Header, Layout};
@@ -24,7 +25,7 @@ pub const DIRECTORY_RECORD: &str = ".system-risc-directory";
 pub const UNICODE_VERSION: u32 = mac_hfs_b::names::UNICODE_VERSION;
 /// Portable user-visible host component. Reserve provider bookkeeping and the
 /// Win32 device/character namespace even when the broker runs on Linux/WSL.
-/// https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+/// <https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file>
 pub fn host_component(name: &str) -> Result<()>
 {
     if name.is_empty()
@@ -78,7 +79,21 @@ impl core::fmt::Display for Error
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
     {
-        write!(f, "{self:?}")
+        f.write_str(match self
+                    {
+                        Self::Invalid => "invalid native fork metadata or request",
+                        Self::Version =>
+                        {
+                            "unsupported native fork/annotation format; recreate the export with \
+                             the current tools and reimport its files"
+                        }
+                        Self::Corrupt => "damaged native fork metadata, annotation or checksum",
+                        Self::Range => "native fork offset, size or revision is out of range",
+                        Self::Io => "native fork storage I/O failed",
+                        Self::NoMemory => "native fork allocation budget exhausted",
+                        Self::Stale => "native fork source changed; refresh and retry",
+                        Self::Incomplete => "native fork transaction is incomplete"
+                    })
     }
 }
 impl core::error::Error for Error

@@ -10,7 +10,11 @@ const MTIME: usize = 0x0200bff8;
 struct Pixels([u32; PIXELS]);
 static mut FRAMEBUFFER: Pixels = Pixels([0; PIXELS]);
 static mut BACKBUFFER: Pixels = Pixels([0; PIXELS]);
-static mut TRACKING_MASK: Pixels = Pixels([0; PIXELS]);
+// Window tracking never paints the menu bar's first 21 rows.
+const TRACKING_PIXELS: usize = WIDTH * (HEIGHT - 21);
+#[repr(C, align(4096))]
+struct TrackingPixels([u32; TRACKING_PIXELS]);
+static mut TRACKING_MASK: TrackingPixels = TrackingPixels([0; TRACKING_PIXELS]);
 static TRACKING_BORROWED: AtomicBool = AtomicBool::new(false);
 
 /// Scratch belongs to the serialized compositor and cannot escape this call.
@@ -34,7 +38,8 @@ pub fn with_tracking_mask<R>(call: impl FnOnce(Option<&mut [u32]>) -> R) -> R
     // The guard excludes all other borrows until the closure returns, the
     // storage is initialized/aligned, and its lifetime cannot escape R.
     call(Some(unsafe {
-             core::slice::from_raw_parts_mut(addr_of_mut!(TRACKING_MASK).cast::<u32>(), PIXELS)
+             core::slice::from_raw_parts_mut(addr_of_mut!(TRACKING_MASK).cast::<u32>(),
+                                             TRACKING_PIXELS)
          }))
 }
 

@@ -9,6 +9,7 @@ mod forks;
 mod path;
 mod scan;
 pub(super) mod writes;
+pub(super) mod streams;
 pub(super) use forks::Open;
 #[cfg(target_arch = "riscv64")]
 pub(super) mod runtime;
@@ -125,6 +126,10 @@ impl Manager
         {
             Phase::Quarantined => Err(ROLLBACK_FAILED),
             Phase::Mounting | Phase::Unmounting => Err(SERVICE_BUSY),
+            Phase::Live if self.groups.iter().any(|(_, group)| group.volume == id) =>
+            {
+                Err(SERVICE_BUSY)
+            }
             Phase::Live if mounted.info.is_some_and(|info| info.read_only != 0) => Err(READ_ONLY),
             Phase::Live => Ok(())
         }
@@ -215,8 +220,26 @@ impl Manager
 
     pub(crate) fn begin_provider_unmount(&mut self, id: u32) -> Result<u32, Status>
     {
-        if self.handles.iter().any(|(_, file)| file.volume == id)
+        self.check_provider_unmount(id)?;
+        let mounted = self.provider_mount(id)?;
+        mounted.phase = Phase::Unmounting;
+        Ok(mounted.provider)
+    }
+
+    /// Read-only admission for drag feedback; actual unmount revalidates it.
+    pub(crate) fn check_provider_unmount(&mut self, id: u32) -> Result<(), Status>
+    {
+        #[cfg(target_arch = "riscv64")]
+        if self.transfers.iter().any(|(_, entry)| entry.uses(id))
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if self.document_pins.iter().any(|(_, volume, _)| *volume == id)
+           || self.executables.iter().any(|pin| pin.volume == id)
+           || self.handles.iter().any(|(_, file)| file.volume == id)
            || self.writes.iter().any(|(_, write)| write.volume == id)
+           || self.streams.iter().any(|(_, stream)| stream.volume == id)
+           || self.groups.iter().any(|(_, group)| group.volume == id)
         {
             return Err(SERVICE_BUSY);
         }
@@ -229,8 +252,7 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        mounted.phase = Phase::Unmounting;
-        Ok(mounted.provider)
+        Ok(())
     }
 
     /// Resolve only resident identities here; provider callbacks run after the

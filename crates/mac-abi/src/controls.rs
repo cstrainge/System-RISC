@@ -21,6 +21,35 @@ pub const ACTION: u32 = 8;
 pub const CHANGED: u32 = 16;
 /// Native CDEF state validation before retained drawing; no surface required.
 pub const VALIDATE_DEFINITION: i16 = 5;
+/// Native-only passive control procedures. These are not classic procIDs.
+pub const PROGRESS_BAR_PROCEDURE: i16 = i16::MIN;
+pub const STATIC_TEXT_PROCEDURE: i16 = i16::MIN + 1;
+pub const MONOCHROME_PROGRESS_BAR_PROCEDURE: i16 = i16::MIN + 2;
+pub const CDEF_PROGRESS_BAR: i16 = -32760;
+pub const CDEF_STATIC_TEXT: i16 = -32759;
+/// Ask a passive CDEF for the exact changed pixels between two states.
+pub const CHANGE_BOUNDS_DEFINITION: i16 = 6;
+/// Full-precision passive progress state. Scalar button/scroll values are not
+/// used as a lossy intermediate representation of file-byte counters.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProgressRange
+{
+    pub completed:   u64,
+    pub in_progress: u64,
+    pub total:       u64,
+    /// Zero is an unknown denominator (all counts zero); one is determinate.
+    pub determinate: u32,
+    pub reserved:    u32
+}
+#[repr(C)]
+pub struct ControlChange
+{
+    pub before: crate::definitions::ControlDefinitionState,
+    pub after:  crate::definitions::ControlDefinitionState,
+    /// Empty means the new state produces the same pixels.
+    pub damage: [Rect; 2]
+}
 pub const BUTTON_PART: i16 = 10;
 pub const CHECKBOX_PART: i16 = 11;
 pub const SCROLL_UP: i16 = 20;

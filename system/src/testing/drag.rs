@@ -36,6 +36,7 @@ pub(super) fn request(s: &mut Session, call: &mut mac_abi::drag::Call, input: &[
                 mac_abi::drag::ACCEPT
                 | mac_abi::drag::READ
                 | mac_abi::drag::ACKNOWLEDGE
+                | mac_abi::drag::CANCEL_RECEIVE
                 | mac_abi::drag::ABANDON)
        && call.receiver == 0
     {
@@ -108,13 +109,18 @@ pub fn highlight() -> Option<(u32, Rect)>
 /// resident capability state, so a driver callback is neither needed nor legal.
 pub fn provider_volume(read_only: bool) -> VolumeId
 {
+    provider_volume_for_export(read_only, 1)
+}
+pub fn provider_volume_for_export(read_only: bool, export: u64) -> VolumeId
+{
     use mac_filesystem_interface as fs;
     SESSION.with(|slot| {
         let mut slot = slot.borrow_mut();
         let files = &mut slot.as_mut().unwrap().files;
-        let id = files.reserve_provider_mount(1,
-                                              crate::toolbox::files::TestProviderSource::Export(1))
-                      .unwrap();
+        let id =
+            files.reserve_provider_mount(1,
+                                         crate::toolbox::files::TestProviderSource::Export(export))
+                 .unwrap();
         let descriptor = fs::Mount { capabilities:       fs::READ
                                                          | if read_only { 0 } else { fs::WRITE },
                                      filesystem:         *b"TEST",

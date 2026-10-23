@@ -186,10 +186,20 @@ fn prepare(owner: u64, call: &FileCall, capacity: usize)
 pub(super) fn start(owner: u64, thread: u64, key: Key, call: &mut FileCall, output: &mut [u8])
                     -> Status
 {
-    let (provider, action, operation, args) = match prepare(owner, call, output.len())
+    match begin(owner, thread, key, call, output.len())
+    {
+        Progress::Pending(flight) => waiting(flight),
+        Progress::Done(result) => reply(call, output, result)
+    }
+}
+
+pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &FileCall, capacity: usize)
+                    -> Progress
+{
+    let (provider, action, operation, args) = match prepare(owner, call, capacity)
     {
         Ok(prepared) => prepared,
-        Err(error) => return error
+        Err(error) => return Progress::Done(Err(error))
     };
     if let Action::Read { handle,
                           offset,
@@ -197,7 +207,7 @@ pub(super) fn start(owner: u64, thread: u64, key: Key, call: &mut FileCall, outp
     {
         let result = files(|manager| manager.finish_provider_file_read(handle, offset, 0, Some(0)))
             .map(|(position, length)| Reply::Read { bytes: Vec::new(), position, length });
-        return reply(call, output, result);
+        return Progress::Done(result);
     }
     let job = match submit_args(provider, operation, args)
     {
@@ -222,19 +232,20 @@ pub(super) fn start(owner: u64, thread: u64, key: Key, call: &mut FileCall, outp
                 Action::Close { handle } => quarantine(handle),
                 Action::Cleanup { .. } => ()
             }
-            return error;
+            return Progress::Done(Err(error));
         }
     };
-    waiting(Flight { thread,
-                     owner,
-                     key,
-                     provider,
-                     step: Step::File(action),
-                     job,
-                     abandoned: false,
-                     input: String::new(),
-                     path: None })
+    Progress::Pending(Flight { thread,
+                               owner,
+                               key,
+                               provider,
+                               step: Step::File(action),
+                               job,
+                               abandoned: false,
+                               input: String::new(),
+                               path: None })
 }
+
 pub(super) fn pump_cleanup()
 {
     if !FORK_CLEANUP.load(Ordering::Acquire)
@@ -292,7 +303,9 @@ pub(super) fn pump_cleanup()
                             fork: 0,
                             capacity: 0,
                             cursor: DirectoryScanCursor::default(),
-                            resource: None };
+                            resource: None,
+                            metadata: None,
+                            when: 0 };
             let step = Step::File(Action::Cleanup { handle,
                                                     error: OPERATION_CANCELLED });
             FLIGHTS.lock().push(Flight { thread: 0,

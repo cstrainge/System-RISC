@@ -88,12 +88,12 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     let first_editor_log = serial.split("PROCESS_EXIT app=").next().unwrap();
     let editor_id = process_trace::launched(first_editor_log, "Text Edit").0;
     for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:", "SYSTEM_ALLOCATION_FAILED:", "FINDER_ERROR:",
-                    "TEXTEDIT_EXERCISER_ERROR", "QUICKDRAW_TEST_ERROR", "PROCESS_ACTION_FAILED",
+                    "TEXT_EDIT_ERROR", "QUICKDRAW_TEST_ERROR", "PROCESS_ACTION_FAILED",
                     "APPLICATION_MENU_FAILED"]
     {
         assert!(!serial.contains(failure), "unexpected {failure}:\n{serial}");
     }
-    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=8"));
+    assert!(serial.contains("TRAPS_READY: resident ecall dispatcher ABI=11"));
     let snapshots = report["snapshots"].as_array().unwrap();
     let observation = |name: &str| snapshots.iter().find(|value| value["name"] == name).unwrap();
     let image = |name: &str| frame(&output.join(observation(name)["frame"].as_str().unwrap()));
@@ -143,10 +143,19 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
                icon(&root, "QuickDraw Test", 128, 32),
                "exiting application retained its running icon");
     let popup = image("three-app-menu");
+    // The right-aligned popup sizes to its current resource titles. Renaming
+    // TextEdit Exerciser to Text Edit legitimately changes its left edge.
+    let popup_left = (400..630).find(|&x| {
+                                   (21..137).all(|y| {
+                                                popup[(y * 640 + x) * 3..(y * 640 + x) * 3 + 3]
+                                                == [0, 0, 0]
+                                            })
+                               })
+                               .expect("application menu left border");
     for (package, id, top) in
         [("System", 3, 85), ("QuickDraw Test", 128, 103), ("Text Edit", 128, 121)]
     {
-        assert_eq!(region(&popup, 475, top, 491, top + 16),
+        assert_eq!(region(&popup, popup_left + 17, top, popup_left + 33, top + 16),
                    icon(&root, package, id, 16),
                    "application menu used the wrong icon for {package}");
     }
@@ -235,7 +244,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
             "application switching lost editor contents/selection or keyboard routing");
     assert!(prefix("textedit-quit").contains(&format!("PROCESS_EXIT app={editor_id}\n")));
     assert!(prefix("quickdraw-quit").contains(&format!("PROCESS_EXIT app={quickdraw_id}\n")));
-    assert_eq!(prefix("textedit-relaunched").matches("TEXTEDIT_EXERCISER_READY\n").count(), 2);
+    assert_eq!(prefix("textedit-relaunched").matches("TEXT_EDIT_READY\n").count(), 2);
     let original = process_trace::launched(&prefix("textedit-quit"), "Text Edit");
     let relaunched = process_trace::launched(&prefix("textedit-relaunched-input"), "Text Edit");
     assert!(original.0 != relaunched.0 && original.1 != relaunched.1,

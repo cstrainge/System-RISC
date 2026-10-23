@@ -162,6 +162,48 @@ impl<'a> Alerts<'a>
         Ok(())
     }
 
+    pub fn transfer_error(&mut self, system: &System<'a>, failure: files::TransferFailure)
+                          -> Result<(), Error>
+    {
+        let mut body = crate::browser::Text::<1024>::default();
+        write!(&mut body,"{failure}\r{:?} ({})",failure.cause,failure.cause.status()).map_err(|_|Error::BadArgument)?;
+        system.log(body.as_str())?;
+        self.alert =
+            Some(system.dialogs().alert_owned(resources::APPLICATION, 2001, body.as_str())?);
+        self.empty = false;
+        self.modal_menus(system, false)
+    }
+
+    pub fn transfer_recovery(&mut self, system: &System<'a>, recovery: files::TransferRecovery)
+                             -> Result<(), Error>
+    {
+        let mut body = crate::browser::Text::<1024>::default();
+        if let Some(item) = recovery.current
+        {
+            write!(&mut body, "{}\r", item.name()).map_err(|_| Error::BadArgument)?;
+        }
+        if let Some(original) = recovery.original
+        {
+            write!(&mut body, "{original}\r").map_err(|_| Error::BadArgument)?;
+        }
+        let mut bytes = [0; 256];
+        let advice = system.resources().application().string(if recovery.committed
+                                                              {
+                                                                  2006
+                                                              }
+                                                              else
+                                                              {
+                                                                  2005
+                                                              },
+                                                              &mut bytes)?;
+        write!(&mut body, "{}\r{advice}", recovery.error).map_err(|_| Error::BadArgument)?;
+        system.log(body.as_str())?;
+        self.alert =
+            Some(system.dialogs().alert_owned(resources::APPLICATION, 2001, body.as_str())?);
+        self.empty = false;
+        self.modal_menus(system, false)
+    }
+
     pub fn set_context(&mut self, event: &Event<'a>)
     {
         if self.alert.is_none()
@@ -196,8 +238,17 @@ impl<'a> Alerts<'a>
             }
             else if let Some(after) = remaining.strip_prefix("^2")
             {
-                body.write_str(crate::browser::disk_size_text(usage.allocated_bytes).as_str())
-                    .map_err(|_| Error::BadArgument)?;
+                if let Some(bytes) = usage.allocated_bytes
+                {
+                    body.write_str(crate::browser::disk_size_text(bytes).as_str())
+                        .map_err(|_| Error::BadArgument)?;
+                }
+                else
+                {
+                    let mut bytes = [0; 64];
+                    let unknown = system.resources().application().string(20022, &mut bytes)?;
+                    body.write_str(unknown).map_err(|_| Error::BadArgument)?;
+                }
                 remaining = after;
             }
             else

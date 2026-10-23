@@ -4,78 +4,103 @@
 #[cfg(feature = "event-trace")]
 mod enabled
 {
+    use alloc::vec::Vec;
+
     use spinning_top::Spinlock;
     const APPS: usize = 16;
     const SERVICES: usize = 64;
     const RECORDS: usize = 8192;
-    #[repr(C)]
+    const APP_OFFSET: usize = 6;
+    const SERVICE_OFFSET: usize = APP_OFFSET + APPS;
+    const COUNTER_OFFSET: usize = SERVICE_OFFSET + APPS * SERVICES * 4;
+    const RECORD_OFFSET: usize = COUNTER_OFFSET + APPS * 16;
+    const WORDS: usize = RECORD_OFFSET + RECORDS * 8;
+    // Preserve the contiguous version2 capture wire layout without reserving
+    // another half MiB outside the resident heap, or constructing it on a stack.
     struct Trace
     {
-        header:   [u64; 6],
-        apps:     [u64; APPS],
-        services: [[[u64; 4]; SERVICES]; APPS],
-        counters: [[u64; 16]; APPS],
-        records:  [[u64; 8]; RECORDS]
+        words: Vec<u64>
     }
-    static TRACE: Spinlock<Trace> = Spinlock::new(Trace { header:   [0x5253435954524143, 2, 0,
-                                                                     RECORDS as u64, APPS as u64,
-                                                                     SERVICES as u64],
-                                                          apps:     [0; APPS],
-                                                          services: [[[0; 4]; SERVICES]; APPS],
-                                                          counters: [[0; 16]; APPS],
-                                                          records:  [[0; 8]; RECORDS] });
+    static TRACE: Spinlock<Option<Trace>> = Spinlock::new(None);
     pub fn initialize()
     {
-        let data = TRACE.lock();
-        serial!("EVENT_TRACE address={} bytes={} version=2",
-                core::ptr::from_ref(&*data) as usize,
-                core::mem::size_of::<Trace>());
+        let mut words = Vec::new();
+        if words.try_reserve_exact(WORDS).is_err()
+        {
+            serial!("EVENT_TRACE_UNAVAILABLE: diagnostic allocation failed");
+            return;
+        }
+        words.resize(WORDS, 0);
+        words[..APP_OFFSET].copy_from_slice(&[0x5253435954524143, 2, 0, RECORDS as u64,
+                                              APPS as u64, SERVICES as u64]);
+        let data = Trace { words };
+        let address = data.words.as_ptr() as usize;
+        *TRACE.lock() = Some(data);
+        serial!("EVENT_TRACE address={} bytes={} version=2", address, WORDS * 8);
     }
-    // Diagnostics are opt-in. Assign a bounded row once per observed identity;
-    // retain full generation-tagged IDs in both the map and the event ring.
-    // If the map fills, ring records remain exact; no unrelated IDs are merged.
+    // Full generation-tagged identities, cumulative counters and the original
+    // 8192-record ring remain intact. Exhausting the map never merges owners.
     fn slot(data: &mut Trace, app: u64) -> Option<usize>
     {
         if app == 0
         {
             return Some(0);
         }
-        if let Some(index) = data.apps.iter().position(|id| *id == app)
+        let apps = &mut data.words[APP_OFFSET..SERVICE_OFFSET];
+        if let Some(index) = apps.iter().position(|id| *id == app)
         {
             return Some(index);
         }
-        let index = data.apps.iter().enumerate().skip(1).find(|(_, id)| **id == 0)?.0;
-        data.apps[index] = app;
+        let index = apps.iter().enumerate().skip(1).find(|(_, id)| **id == 0)?.0;
+        apps[index] = app;
         Some(index)
     }
     pub fn record(code: u64, app: u64, a: u64, b: u64, c: u64, d: u64)
     {
-        let mut data = TRACE.lock();
-        if let Some(index) = slot(&mut data, app)
+        let mut guard = TRACE.lock();
+        let Some(data) = guard.as_mut()
+        else
         {
-            data.counters[index][code as usize] += 1;
+            return;
+        };
+        if let Some(index) = slot(data, app)
+        {
+            data.words[COUNTER_OFFSET + index * 16 + code as usize] += 1;
         }
         if matches!(code, super::NULL | super::POLL | super::PRESENT)
         {
             return;
         }
-        let seq = data.header[2];
-        data.records[seq as usize % RECORDS] =
-            [seq, crate::platform::ticks(), code, app, a, b, c, d];
-        data.header[2] = seq + 1;
+        let seq = data.words[2];
+        let at = RECORD_OFFSET + (seq as usize % RECORDS) * 8;
+        data.words[at..at + 8].copy_from_slice(&[seq,
+                                                 crate::platform::ticks(),
+                                                 code,
+                                                 app,
+                                                 a,
+                                                 b,
+                                                 c,
+                                                 d]);
+        data.words[2] = seq + 1;
     }
     pub fn service(app: u64, number: u32, depth: usize, elapsed: u64)
     {
-        let mut data = TRACE.lock();
-        let Some(slot) = slot(&mut data, app)
+        let mut guard = TRACE.lock();
+        let Some(data) = guard.as_mut()
         else
         {
             return;
         };
-        let row = &mut data.services[slot][number as usize & (SERVICES - 1)];
-        let index = if depth == 1 { 0 } else { 2 };
-        row[index] += 1;
-        row[index + 1] += elapsed;
+        let Some(slot) = slot(data, app)
+        else
+        {
+            return;
+        };
+        let at = SERVICE_OFFSET
+                 + (slot * SERVICES + (number as usize & (SERVICES - 1))) * 4
+                 + if depth == 1 { 0 } else { 2 };
+        data.words[at] += 1;
+        data.words[at + 1] += elapsed;
     }
 }
 #[cfg(feature = "event-trace")]

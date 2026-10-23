@@ -82,8 +82,10 @@ impl Workspace
             if matches!(*package,
                         "mac-system"
                         | "native-wdef"
-                        | "native-cdef"
+                        | "native-buttons-cdef"
                         | "native-scrollbar-cdef"
+                        | "native-progress-bar-cdef"
+                        | "native-static-text-cdef"
                         | "native-mdef")
                || matches!(*package, "vhost-transport" | "vhost-filesystem" | "stuffit-filesystem")
             {
@@ -99,10 +101,14 @@ impl Workspace
 
     fn build(&self) -> Result<Vec<Value>>
     {
-        self.guest_build(&["native-wdef", "native-cdef", "native-scrollbar-cdef", "native-mdef"])?;
+        self.guest_build(&["native-wdef", "native-buttons-cdef", "native-scrollbar-cdef",
+                           "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef"])?;
         self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "cursor-test",
                            "panic-test", "resedit", "bootrom", "vhost-transport",
                            "vhost-filesystem", "stuffit-filesystem"])?;
+        // Keep userspace's allocation-free serde graph independent of the
+        // resident System's alloc-enabled serde. Cargo feature unification
+        // across the kernel and an app must not impose a userspace heap.
         self.guest_build(&["text-edit"])?;
         boot::package_rom(self)?;
         let mut reports = Vec::new();
@@ -148,8 +154,11 @@ impl Workspace
 
     fn private_guest_test(&self, name: &str) -> Result<()>
     {
+        // Guest cases measure UI timing and package feature variants into a
+        // shared compiler profile. Keep these captures isolated; ordinary host
+        // unit tests above retain Cargo's parallel execution.
         let checked = run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test",
-                                             name, "--", "--ignored"]));
+                                             name, "--", "--ignored", "--test-threads=1"]));
         let cleaned = run(self.command("python3")
                               .current_dir(&self.repo)
                               .arg("System7/scripts/prune_system7_images.py"));
@@ -173,7 +182,7 @@ impl Workspace
                                "--exclude", "cursor-test", "--exclude", "panic-test",
                                "--exclude", "resedit", "--exclude", "abi-smoke", "--exclude",
                                "bootrom", "--exclude", "native-wdef", "--exclude",
-                               "native-cdef", "--exclude", "native-mdef"]))?;
+                               "native-buttons-cdef", "--exclude", "native-mdef"]))?;
         // The large-fork fixture writes every logical block through the shared
         // core, then verifies 64-bit File Manager transport through the SDK.
         run(self.cargo().args(["test", "--locked", "--release", "-p", "mac-toolbox", "--test",
@@ -193,8 +202,8 @@ impl Workspace
             self.private_guest_test(test)?;
         }
         for test in ["dates", "boot_ui", "resedit", "menus", "finder_trash", "file_writes_guest",
-                     "text_edit_documents", "deferred_close", "get_info_ui", "events", "clipboard",
-                     "textedit_graphical", "typing", "processes", "application_ui",
+                     "deferred_close", "get_info_ui", "events", "clipboard", "textedit_graphical",
+                     "text_edit_documents", "typing", "processes", "application_ui",
                      "retained_update", "event_latency", "cursor_graphical", "busy_cursor",
                      "panic_graphical", "finder_selection", "transfer_incident", "remote_get_info",
                      "finder_drag"]

@@ -216,12 +216,14 @@ fn checkpoint(system: &System<'_>, stage: &str) -> Result<(), Error>
 }
 fn fill(system: &System<'_>, browser: &mut Browser) -> Result<(), Error>
 {
+    let mut background = crate::browser::dragging::Controller::default();
     for _ in 0..20000
     {
-        if !browser.pending()
+        if !browser.pending() && !background.positions_pending(browser)
         {
             return Ok(());
         }
+        background.advance_positions(system, browser)?;
         browser.advance_cache(system)?;
         let event = system.next_event(EventMask::ALL)?;
         if matches!(event, Event::Activate { .. })

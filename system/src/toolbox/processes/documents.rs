@@ -31,6 +31,7 @@ pub(super) struct Batch
     sequence:    u64,
     owner:       u64,
     application: (u32, u32),
+    drag:        Option<u32>,
     types:       Vec<[u8; 4]>,
     documents:   Vec<CatalogInfo>,
     phase:       Phase,
@@ -192,7 +193,7 @@ fn dispose(manager: &mut super::Manager, owner: u64, handle: u32, preparing: boo
 }
 pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
 {
-    if call.reserved != [0; 2] || call.operation > DOCUMENT_FINISH || call.drag != 0
+    if call.reserved != [0; 2] || call.operation > DOCUMENT_ACCEPTS_DRAG
     {
         return BAD_ARGUMENT;
     }
@@ -212,12 +213,17 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                 if call.handle == 0
                 {
                     call.handle = desktop(|d| {
+                        if call.drag != 0
+                        {
+                            d.drag.offer_live(owner, call.drag)?;
+                        }
                         d.processes
                          .documents
                          .insert(Batch { sequence: 0,
                                          owner,
                                          application: (call.application_volume,
                                                        call.application_cnid),
+                                         drag: (call.drag != 0).then_some(call.drag),
                                          types: Vec::new(),
                                          documents: Vec::new(),
                                          phase: Phase::Probing,
@@ -337,6 +343,17 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                     Ok(())
                 })?;
             }
+            DOCUMENT_ACCEPTS_DRAG =>
+            {
+                call.present = desktop(|d| {
+                    let batch = owned(&mut d.processes, owner, call.handle)?;
+                    if batch.phase != Phase::Preparing
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    d.drag.accepts_documents(owner, call.drag, &batch.types).map(u32::from)
+                })?;
+            }
             DOCUMENT_ACCEPTS =>
             {
                 call.present = desktop(|d| {
@@ -404,6 +421,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                     batch.sequence = sequence;
                     batch.owner = launch.info.id;
                     batch.phase = Phase::Queued;
+                    batch.drag = None;
                     batch.pending = None;
                     if let Err(error) = d.notify_document_batch(launch.info.id, call.handle)
                     {
@@ -565,4 +583,16 @@ pub(crate) fn pump()
         }
         Ok(())
     });
+}
+
+pub(in crate::toolbox) fn cancel_drag(manager: &mut super::Manager, drag: u32)
+{
+    for batch in manager.documents.values_mut()
+    {
+        if batch.drag == Some(drag) && matches!(batch.phase, Phase::Probing | Phase::Preparing)
+        {
+            batch.abandoned = true;
+            CLEANUP.store(true, Ordering::Release);
+        }
+    }
 }

@@ -92,6 +92,17 @@ pub(crate) fn provider_module(interface: u32) -> Result<u32, Status>
            .map_err(crate::state::AccessError::status)?
 }
 
+/// Class-neutral admission policy: a provider that serializes all outstanding
+/// requests cannot also serve a backing dependency of its own pending request.
+pub(crate) fn provider_serialized(interface: u32) -> Result<bool, Status>
+{
+    RUNTIME.with(|runtime| {
+               let provider = runtime.registry.interface(interface).map_err(status)?;
+               Ok(provider.offer.flags & mac_module::Offer::SERIALIZED != 0)
+           })
+           .map_err(crate::state::AccessError::status)?
+}
+
 /// Only the admitted module's pinned load reservation can be offered for DMA.
 /// The bus adapter still checks device ownership and maps it for that device.
 pub(crate) fn owns_memory(module: u32, base: u64, length: u64) -> Result<(), Status>

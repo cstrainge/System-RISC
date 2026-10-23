@@ -2,6 +2,12 @@
 #![cfg(target_arch = "riscv64")]
 //! Canonical native mount assertions, compiled into the private userspace app.
 use mac_toolbox::{Error, System, VolumeId, files::Filesystem};
+#[path = "transfer_cases.rs"]
+mod transfer_cases;
+pub fn check_disconnect(system: &System<'_>, source: bool) -> Result<(), Error>
+{
+    transfer_cases::check_disconnect(system, source)
+}
 fn require(value: bool) -> Result<(), Error>
 {
     if value { Ok(()) } else { Err(Error::BadAbi) }
@@ -63,7 +69,7 @@ fn check_legacy_resources(system: &System<'_>, gate: mac_toolbox::abi::TrapGate)
     system.log("HOST_FS_STAGE legacy-resources\n")?;
     let files = system.files();
     let volume = files.mount_host_export(1)?.id;
-    let entry = files.lookup(volume, mac_toolbox::files::ROOT_ID, "ResEdit")?;
+    let entry = files.lookup(volume, mac_toolbox::files::ROOT_ID, "Res Edit")?;
     let mut file = FileCall { operation: OPEN,
                               volume: volume.0,
                               cnid: entry.id.0,
@@ -242,10 +248,17 @@ pub fn check(system: &System<'_>, gate: mac_toolbox::abi::TrapGate) -> Result<()
     system.log("HOST_FS_STAGE native-write\n")?;
     check_writes(system, writable.id, forks.id)?;
     system.log("HOST_FS_STAGE plain-host-entries-and-folders\n")?;
-    check_plain(system, writable.id, true)?;
-    check_plain(system, read_only.id, false)?;
+    check_plain(system, writable.id, true, gate)?;
+    check_plain(system, read_only.id, false, gate)?;
     require(files.scan_directory(writable.id, mac_toolbox::files::ROOT_ID, &mut prior_scan)
             == Err(Error::ScanStale))?;
+    system.log("HOST_FS_STAGE native-properties\n")?;
+    check_object_properties(system, files.volume_at(0)?.id)?;
+    system.log("HOST_FS_STAGE provider-properties\n")?;
+    check_object_properties(system, writable.id)?;
+    check_removal(system, writable.id, read_only.id, gate)?;
+    check_trash_directory(system, writable.id, read_only.id, gate)?;
+    transfer_cases::check(system, files.volume_at(0)?.id, writable.id, read_only.id, gate)?;
     system.log("HOST_FS_STAGE unmount-and-reuse\n")?;
     check_external_application(system, read_only.id, "Host Exit Worker", false, gate)?;
     check_exit_cleanup(system, writable.id, gate)?;
@@ -273,9 +286,9 @@ fn check_resources(system: &System<'_>, volume: VolumeId) -> Result<(), Error>
 {
     use mac_toolbox::{ResourceKey, TypeCode, files::ROOT_ID};
     let files = system.files();
-    let entry = files.lookup(volume, ROOT_ID, "ResEdit")?;
+    let entry = files.lookup(volume, ROOT_ID, "Res Edit")?;
     let startup = files.volume_at(0)?.id;
-    let original = files.lookup(startup, ROOT_ID, "/Applications/ResEdit")?;
+    let original = files.lookup(startup, ROOT_ID, "/Applications/Res Edit")?;
     let expected = system.resources().open_file(startup, original.id)?;
     let mut actual = system.resources().open_file(volume, entry.id)?;
     require(files.unmount(volume) == Err(Error::ServiceBusy))?;
@@ -819,7 +832,162 @@ fn check_exit_cleanup(system: &System<'_>, volume: VolumeId, gate: mac_toolbox::
     Err(Error::ServiceBusy)
 }
 
-fn check_plain(system: &System<'_>, volume: VolumeId, writable: bool) -> Result<(), Error>
+fn check_metadata(system: &System<'_>, volume: VolumeId,
+                  original: mac_toolbox::files::CatalogInfo,
+                  folder: mac_toolbox::files::CatalogInfo, gate: mac_toolbox::abi::TrapGate)
+                  -> Result<(), Error>
+{
+    use mac_toolbox::{Point, Timestamp,
+                      files::{Fork, ROOT_ID}};
+    let files = system.files();
+    let when = Timestamp::from_mac_microseconds(3_875_171_696_987_654);
+    files.set_comment_at(volume, original.id, "Native metadata: café 🦀", when)?;
+    expect_comment(system, volume, original.id, "Native metadata: café 🦀")?;
+    require(files.volume(volume)?.modified == when)?;
+    let mut reader = files.open(volume, original.id, Fork::Data)?;
+    let point = Point { h: 123,
+                        v: 45 };
+    require(files.set_icon_location_at(volume, original.id, Some(point), when)?
+                 .saved_icon_location()
+            == Some(point))?;
+    require(files.set_comment_at(volume, original.id, "blocked", when)
+            == Err(Error::AccessDenied))?;
+    let mut data = [0; 16];
+    require(reader.read(&mut data)? == 10 && &data[..10] == b"host data\n")?;
+    reader.close()?;
+    let locked = files.set_locked_at(volume, original.id, true, when)?;
+    require(locked.is_locked())?;
+    // Finder placement remains available even when the file's data is locked.
+    require(files.set_icon_location_at(volume,
+                                       original.id,
+                                       Some(Point { h: 124,
+                                                    v: 45 }),
+                                       when)?
+                 .is_locked())?;
+    let error =
+        files.set_comment_at(volume, original.id, "blocked", when).err().ok_or(Error::BadAbi)?;
+    require(error == Error::AccessDenied)?;
+    crate::diagnostics::error(system, "HOST_FS_METADATA_PROTECTED", error);
+    require(!files.set_locked_at(volume, original.id, false, when)?.is_locked())?;
+    require(files.set_stationery_at(volume, original.id, true, when)?.is_stationery())?;
+    require(!files.set_stationery_at(volume, original.id, false, when)?.is_stationery())?;
+    let current = files.catalog(volume, original.id)?;
+    require(current.created == original.created
+            && current.modified == original.modified
+            && current.file_type == original.file_type
+            && current.creator == original.creator
+            && current.data_length == original.data_length
+            && current.resource_length == 0)?;
+    files.set_comment_at(volume, folder.id, "Raw folder metadata", when)?;
+    expect_comment(system, volume, folder.id, "Raw folder metadata")?;
+    require(files.set_locked_at(volume, folder.id, true, when) == Err(Error::BadArgument))?;
+    let native = files.lookup(volume, ROOT_ID, "Tools")?;
+    files.set_comment_at(volume, native.id, "Native folder metadata", when)?;
+    expect_comment(system, volume, native.id, "Native folder metadata")?;
+    let forked = files.lookup(volume, native.id, "Forks")?;
+    files.set_comment_at(volume, forked.id, "Both forks retained", when)?;
+    expect_comment(system, volume, forked.id, "Both forks retained")?;
+    require(files.catalog(volume, forked.id)?.resource_length == forked.resource_length)?;
+    // The original Pascal trap reaches the same transaction, preserving native
+    // UTF-8 storage and converting MacRoman only at this boundary.
+    let comment = b"\x0bLegacy Caf\x8e";
+    let mut call =
+        mac_toolbox::abi::files::FileCall { operation: mac_toolbox::abi::files::SET_COMMENT,
+                                            volume: volume.0,
+                                            cnid: original.id.0,
+                                            position: when.mac_microseconds().unwrap(),
+                                            name: comment.as_ptr(),
+                                            name_length: comment.len(),
+                                            ..Default::default() };
+    // SAFETY: live exclusive request and bounded readable Pascal comment.
+    let status = unsafe {
+        gate(mac_toolbox::abi::traps::PSTRING_FILE,
+             core::ptr::from_mut(&mut call).cast(),
+             core::mem::size_of_val(&call))
+    };
+    if status != 0
+    {
+        return Err(Error::from_status(status as i32));
+    }
+    expect_comment(system, volume, original.id, "Legacy Café")?;
+    metadata_snapshot(system, &current, &folder, &forked)?;
+    system.log("HOST_FS_METADATA_PASS native=passed legacy=passed protected=passed \
+                retry=passed\n")?;
+    Ok(())
+}
+
+fn metadata_snapshot(system: &System<'_>, file: &mac_toolbox::files::CatalogInfo,
+                     folder: &mac_toolbox::files::CatalogInfo,
+                     native: &mac_toolbox::files::CatalogInfo)
+                     -> Result<(), Error>
+{
+    use core::fmt::Write;
+    struct Text
+    {
+        bytes:  [u8; 256],
+        length: usize
+    }
+    impl core::fmt::Write for Text
+    {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result
+        {
+            let end = self.length.checked_add(text.len()).ok_or(core::fmt::Error)?;
+            self.bytes
+                .get_mut(self.length..end)
+                .ok_or(core::fmt::Error)?
+                .copy_from_slice(text.as_bytes());
+            self.length = end;
+            Ok(())
+        }
+    }
+    let mut text = Text { bytes:  [0; 256],
+                          length: 0 };
+    writeln!(&mut text,
+             "HOST_FS_METADATA_SNAPSHOT file={} folder={} native={} created={} modified={} \
+              native_created={} native_modified={}",
+             file.id,
+             folder.id,
+             native.id,
+             file.created.mac_microseconds().ok_or(Error::BadArgument)?,
+             file.modified.mac_microseconds().ok_or(Error::BadArgument)?,
+             native.created.mac_microseconds().ok_or(Error::BadArgument)?,
+             native.modified.mac_microseconds().ok_or(Error::BadArgument)?).map_err(|_| {
+                                                                               Error::NoMemory
+                                                                           })?;
+    system.log(core::str::from_utf8(&text.bytes[..text.length]).map_err(|_| Error::BadArgument)?)
+}
+
+pub fn check_metadata_restored(system: &System<'_>) -> Result<(), Error>
+{
+    use mac_toolbox::{Point,
+                      files::{Fork, ROOT_ID}};
+    let files = system.files();
+    let volume = files.volume_at(1)?.id;
+    let file = files.lookup(volume, ROOT_ID, "Host File.txt")?;
+    let folder = files.lookup(volume, ROOT_ID, "Host Folder")?;
+    let tools = files.lookup(volume, ROOT_ID, "Tools")?;
+    let native = files.lookup(volume, tools.id, "Forks")?;
+    expect_comment(system, volume, file.id, "Legacy Café")?;
+    expect_comment(system, volume, folder.id, "Raw folder metadata")?;
+    expect_comment(system, volume, tools.id, "Native folder metadata")?;
+    expect_comment(system, volume, native.id, "Both forks retained")?;
+    require(file.saved_icon_location()
+            == Some(Point { h: 124,
+                            v: 45 })
+            && !file.is_locked()
+            && !file.is_stationery())?;
+    let mut data = files.open(volume, file.id, Fork::Data)?;
+    let mut bytes = [0; 16];
+    require(data.read(&mut bytes)? == 10 && &bytes[..10] == b"host data\n")?;
+    data.close()?;
+    require(files.catalog(mac_toolbox::VolumeId(volume.0 ^ 0x1000_0000), file.id)
+            == Err(Error::NotFound))?;
+    metadata_snapshot(system, &file, &folder, &native)
+}
+
+fn check_plain(system: &System<'_>, volume: VolumeId, writable: bool,
+               gate: mac_toolbox::abi::TrapGate)
+               -> Result<(), Error>
 {
     use mac_toolbox::files::{DataFileSpec, Fork, ROOT_ID};
     let files = system.files();
@@ -868,6 +1036,10 @@ fn check_plain(system: &System<'_>, volume: VolumeId, writable: bool) -> Result<
     else
     {
         require(files.new_folder(volume, folder.id, "Refused") == Err(Error::ReadOnly))?;
+    }
+    if writable
+    {
+        check_metadata(system, volume, file, folder, gate)?;
     }
     let snapshot = files.lookup(volume, ROOT_ID, "Snapshot.txt")?;
     system.log(if writable
@@ -927,4 +1099,153 @@ fn check_plain(system: &System<'_>, volume: VolumeId, writable: bool) -> Result<
     watch.close()?;
     system.log("HOST_FS_WATCH_PASS\n")?;
     Ok(())
+}
+
+
+fn check_trash_directory(system: &System<'_>, writable: VolumeId, read_only: VolumeId,
+                         gate: mac_toolbox::abi::TrapGate)
+                         -> Result<(), Error>
+{
+    use mac_toolbox::abi::{files::{FileCall, TRASH_DIRECTORY},
+                           traps::PSTRING_FILE};
+    let files = system.files();
+    let error = files.trash_directory(read_only, true).err().ok_or(Error::BadAbi)?;
+    require(error == Error::ReadOnly)?;
+    crate::diagnostics::error(system, "HOST_FS_TRASH_READ_ONLY", error);
+    require(files.trash_directory(read_only, false) == Err(Error::NotFound))?;
+    let trash = files.trash_directory(writable, true)?;
+    require(trash.is_directory()
+            && trash.name() == "Trash"
+            && trash.parent == mac_toolbox::files::ROOT_ID
+            && trash.child_count == Some(0))?;
+    let date = files.volume(writable)?.modified;
+    require(files.trash_directory(writable, true)?.id == trash.id)?;
+    require(files.trash_directory(writable, false)?.id == trash.id)?;
+    require(files.volume(writable)?.modified == date)?;
+    let mut legacy = FileCall { operation: TRASH_DIRECTORY,
+                                volume: writable.0,
+                                index: 1,
+                                ..Default::default() };
+    let status = unsafe {
+        gate(PSTRING_FILE, core::ptr::from_mut(&mut legacy).cast(), core::mem::size_of_val(&legacy))
+    };
+    require(status == 0
+            && legacy.entry.id == trash.id.0
+            && legacy.entry.name_length == 6
+            && &legacy.entry.name[..6] == b"\x05Trash")?;
+    require(files.volume(writable)?.modified == date)?;
+    system.log("HOST_FS_TRASH_CREATE_PASS native=passed legacy=passed readonly=passed\n")
+}
+
+fn check_removal(system: &System<'_>, writable: VolumeId, readonly: VolumeId,
+                 gate: mac_toolbox::abi::TrapGate)
+                 -> Result<(), Error>
+{
+    use mac_toolbox::{abi::{files::*, traps::PSTRING_FILE},
+                      files::{DataFileSpec, ROOT_ID}};
+    let files = system.files();
+    let folder = files.new_folder(writable, ROOT_ID, "Removal Acceptance")?;
+    let mut writer = files.create_data(DataFileSpec { volume:    writable,
+                                                      parent:    folder.id,
+                                                      name:      "Document",
+                                                      replacing: None,
+                                                      file_type: (*b"TEXT").into(),
+                                                      creator:   (*b"TEST").into() },
+                                       0)?;
+    let file = writer.finish()?;
+    let error = files.remove(writable, folder.id).err().ok_or(Error::BadAbi)?;
+    require(error == Error::DirectoryNotEmpty)?;
+    crate::diagnostics::error(system, "HOST_FS_REMOVE_NONEMPTY", error);
+    require(files.lookup(writable, folder.id, "Document")?.id == file.id)?;
+    let ro_file = files.lookup(readonly, ROOT_ID, "Host File.txt")?;
+    let error = files.remove(readonly, ro_file.id).err().ok_or(Error::BadAbi)?;
+    require(error == Error::ReadOnly)?;
+    crate::diagnostics::error(system, "HOST_FS_REMOVE_READ_ONLY", error);
+    files.remove(writable, file.id)?;
+    require(files.catalog(writable, file.id) == Err(Error::NotFound))?;
+    require(files.lookup(writable, folder.id, "Document") == Err(Error::NotFound))?;
+    let mut writer = files.create_data(DataFileSpec { volume:    writable,
+                                                      parent:    folder.id,
+                                                      name:      "Document",
+                                                      replacing: None,
+                                                      file_type: (*b"TEXT").into(),
+                                                      creator:   (*b"TEST").into() },
+                                       0)?;
+    let replacement = writer.finish()?;
+    require(replacement.id != file.id)?;
+    require(files.catalog(writable, file.id) == Err(Error::NotFound))?;
+    let mut call = FileCall { operation: REMOVE,
+                              volume: writable.0,
+                              cnid: replacement.id.0,
+                              position: system.client()
+                                              .now()?
+                                              .mac_microseconds()
+                                              .ok_or(Error::BadArgument)?,
+                              ..Default::default() };
+    let result = unsafe {
+        gate(PSTRING_FILE, core::ptr::from_mut(&mut call).cast(), core::mem::size_of_val(&call))
+    };
+    require(result == 0)?;
+    files.remove(writable, folder.id)?;
+    let folder = files.new_folder(writable, ROOT_ID, "Removal Acceptance")?;
+    files.remove(writable, folder.id)?;
+    system.log("HOST_FS_REMOVE_PASS native=passed legacy=passed readonly=passed retry=passed\n")
+}
+
+fn check_object_properties(system: &System<'_>, volume: VolumeId) -> Result<(), Error>
+{
+    use mac_toolbox::{abi::dates::Timestamp,
+                      files::{CatalogFlags, ForkMetadata, ROOT_ID}};
+    let files = system.files();
+    system.log("FILE_PROPERTIES_STAGE create ")?;
+    system.log(files.volume(volume)?.name())?;
+    system.log("\n")?;
+    let folder = files.new_folder(volume, ROOT_ID, "Full Properties Acceptance")?;
+    let mut metadata = ForkMetadata::from_catalog(&folder, "All properties café 🦀");
+    metadata.created = Timestamp::from_mac_microseconds(3_875_171_696_123_456);
+    metadata.modified = Timestamp::from_mac_microseconds(3_875_171_700_654_321);
+    metadata.backup = Some(Timestamp::from_mac_microseconds(0));
+    metadata.finder_info[..8].copy_from_slice(&[0, 40, 0, 30, 1, 40, 1, 90]);
+    metadata.finder_info[14..20].copy_from_slice(&[0, 1, 0, 7, 0, 9]);
+    system.log("FILE_PROPERTIES_STAGE set\n")?;
+    let saved = files.set_properties(volume, folder.id, metadata)?;
+    require(saved.id == folder.id
+            && saved.parent == folder.parent
+            && saved.name() == folder.name())?;
+    require(saved.created == metadata.created
+            && saved.modified == metadata.modified
+            && saved.backup == metadata.backup
+            && saved.finder_info == metadata.finder_info)?;
+    expect_comment(system, volume, folder.id, metadata.comment)?;
+    let date = files.volume(volume)?.modified;
+    system.log("FILE_PROPERTIES_STAGE no-change\n")?;
+    require(files.set_properties(volume, folder.id, metadata)? == saved)?;
+    require(files.volume(volume)?.modified == date)?;
+    let mut locked = metadata;
+    locked.attributes = CatalogFlags::LOCKED;
+    system.log("FILE_PROPERTIES_STAGE lock\n")?;
+    files.set_properties(volume, folder.id, locked)?;
+    let mut rejected = locked;
+    rejected.comment = "Must not overwrite";
+    let error = files.set_properties(volume, folder.id, rejected).err().ok_or(Error::BadAbi)?;
+    require(error == Error::AccessDenied)?;
+    crate::diagnostics::error(system, "FILE_PROPERTIES_LOCKED", error);
+    expect_comment(system, volume, folder.id, metadata.comment)?;
+    // Full-property unlock is valid only when every other property agrees.
+    files.set_properties(volume, folder.id, metadata)?;
+    let mut invalid = metadata;
+    invalid.comment = "x"; // malformed backup presence is checked at raw boundary below.
+    let mut call = mac_toolbox::abi::files::FileCall {
+        operation: mac_toolbox::abi::files::SET_PROPERTIES,
+        volume: volume.0, cnid: folder.id.0,
+        entry: mac_toolbox::abi::files::CatalogInfo { backup_present: 0, backup: 1,
+            ..Default::default() }, ..Default::default()
+    };
+    let error =
+        system.client().file(&mut call, invalid.comment, &mut []).err().ok_or(Error::BadAbi)?;
+    require(error == Error::BadArgument)?;
+    crate::diagnostics::error(system, "FILE_PROPERTIES_INVALID", error);
+    require(files.catalog(volume, folder.id)?.modified == metadata.modified)?;
+    files.remove(volume, folder.id)?;
+    system.log("FILE_PROPERTIES_PASS atomic=passed no-change=passed locked=passed retry=passed\n")
 }
