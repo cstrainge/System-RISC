@@ -4,6 +4,7 @@ pub mod manifest;
 pub mod module;
 pub mod package;
 pub mod paths;
+pub mod platform;
 
 use std::{env, fs, path::Path};
 
@@ -19,11 +20,8 @@ pub fn error(message: impl Into<String>) -> Box<dyn std::error::Error>
 /// for resource IDs, the ABI descriptor, and the linker memory reservation.
 pub fn build_guest() -> Result<()>
 {
-    if env::var("TARGET")? != "riscv64imac-unknown-none-elf"
-    {
-        return Err(error("guest binaries require --target riscv64imac-unknown-none-elf; use \
-                          cargo xtask build"));
-    }
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
+    platform::validate_guest(&env::var("TARGET")?, &env::var("CARGO_CFG_TARGET_FEATURE")?)?;
     let root = env::var("CARGO_MANIFEST_DIR")?;
     let path = Path::new(&root).join("resources.json");
     let manifest = Manifest::read(&path)?;

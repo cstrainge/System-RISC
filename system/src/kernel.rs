@@ -259,7 +259,7 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     let module_arena = crate::machine::memory::module_arena(ram_end).map_err(|_| {
                            mac_formats::Error::Malformed("module RAM reservation unavailable")
                        })?;
-    crate::drivers::initialize(module_arena,mac_module::Target::RV64IMAC).map_err(|_|mac_formats::Error::Malformed("module runtime initialization failed"))?;
+    crate::drivers::initialize(module_arena,crate::machine::MODULE_TARGET).map_err(|_|mac_formats::Error::Malformed("module runtime initialization failed"))?;
     crate::machine::driver_devices::initialize().map_err(|_| {
                                                     mac_formats::Error::Malformed("device service \
                                                                                    initialization \

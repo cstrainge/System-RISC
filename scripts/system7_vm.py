@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build and boot the System7 disk desktop through its read-only flash ROM and private working disk."""
+from system7_platform import cpu_model
 import argparse
 import hashlib
 import json
@@ -33,7 +34,7 @@ def build():
 
 
 def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
-           qmp_port=4447, host_bridge=None, expected_exports=None):
+           qmp_port=4447, host_bridge=None, expected_exports=None, vector_bits=None):
     """Launch a private disk copy. Tests default to read-only and fresh copies.
 
     Persistent desktop starts retain their writable copy while the build is unchanged.
@@ -90,7 +91,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     serial = state / 'serial.log'
     serial.write_text('')
     identity = str(uuid.uuid4())
-    args = [executable, '-uuid', identity, '-name', 'System RISC - Finder', '-machine', 'virt', '-cpu', 'rv64',
+    args = [executable, '-uuid', identity, '-name', 'System RISC - Finder', '-machine', 'virt', '-cpu', cpu_model(vector_bits),
             '-m', '128M', '-smp', '1', '-bios', 'none',
             '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + host_path(state / 'bootrom.bin'),
             '-drive', 'if=none,id=startup,format=qcow2,readonly=' + ('off' if writable else 'on') + ',file=' + host_path(disk),
@@ -141,7 +142,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                         raise RuntimeError('Requested host volumes did not all mount:\n' + log)
                 qmp('query-status', endpoint=endpoint)
                 return process, endpoint
-            if any(marker in log for marker in ['BOOT_NO_SYSTEM:', 'BOOT_TRAP:', 'BOOT_PANIC:',
+            if any(marker in log for marker in ['BOOT_NO_SYSTEM:', 'BOOT_TRAP:', 'BOOT_PANIC:', 'BOOT_UNSUPPORTED_ISA:',
                                                'SYSTEM_PANIC:', 'SYSTEM_TRAP:', 'SYSTEM_ALLOCATION_FAILED:']):
                 raise RuntimeError('System RISC startup failed:\n' + log)
             time.sleep(.05)

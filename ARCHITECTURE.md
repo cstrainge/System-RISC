@@ -53,11 +53,41 @@ resource-service contracts may assume RV64 registers or a universal 4 KiB page.
 Use one validated layout input for Rust and linker output when paging becomes
 live; keep pointer access and CPU instructions behind narrow audited boundaries.
 
+## Native ISA floor
+
+The current platform is **RVA23S64 hardware**, compiling the complete RVA23U64
+instruction profile. `platforms/riscv64.json` selects that profile and the QEMU
+CPU; both Linux and native Windows launchers use it. The installed Rust target
+name `riscv64imac-unknown-none-elf` selects the **LP64 calling convention**, not
+the generated ISA: `+rva23u64` enables the whole mandatory profile. Build-time
+validation compares the compiler's complete profile expansion against actual
+Cargo features, rejecting narrowed or broadened ISA overrides. Existing LP64
+resource/transport conventions and development ABI 1 remain unchanged.
+
+The early platform entry checks major ISA families and enables FP/vector state
+before compiler-generated Rust. It gives a UART refusal on a weaker CPU without
+entering Rust. The platform's remaining Z-extension guarantees come from the
+selected RVA23 profile, not a claim that misa enumerates every requirement.
+RISC-V trap entry preserves all 32 FP and 32 vector registers, fcsr, vl, vtype,
+vstart and vcsr. This is an **eager correctness bridge**: storage scales with
+hardware vlenb, including nested traps, and it never runs heap allocation while
+saving state. Per-thread domain storage and dirty/lazy policy migrate later.
+Trap frames still reside on the current thread stack until the separate System-
+stack/page/privilege stage; this is no isolation or lazy-save completion claim.
+The new shared page pool is still disconnected from traps/interrupts until its
+architecture invocation wrapper closes the carried IRQ/preemption-lock gate.
+
+See [LLVM RISC-V profiles](https://llvm.org/docs/RISCVUsage.html) and the
+[ratified RVA23 source](https://github.com/riscv/riscv-profiles/blob/main/src/rva23-profile.adoc)
+for profile semantics; local architecture admission and register sentinels are
+required in addition to compiler support.
+
 ## Native application execution
 
 Finder and disk-loaded native applications run on separate OS-scheduled threads.
 The one-hart RV64 scheduler uses CLINT timer preemption, independent 256 KiB
-stacks and full integer-register frames, with a maximum of eight concurrent
+stacks and complete integer/FP/vector trap state (VLEN-scaled vector storage),
+with a maximum of eight concurrent
 application threads including Finder. Application progress does not depend on
 `WaitNextEvent` or cooperative yield calls. Kernel traps execute with interrupts
 masked; blocking queues, native worker-thread APIs and multi-hart execution are

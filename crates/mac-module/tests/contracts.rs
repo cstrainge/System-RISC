@@ -11,7 +11,7 @@ fn spec<'a>() -> Spec<'a>
 {
     Spec { kind:         PackageKind::Driver,
            kernel_abi:   7,
-           target:       Target::RV64IMAC,
+           target:       Target::RVA23U64,
            identity:     *b"test-module-uuid",
            code_id:      0,
            code_digest:  [0x73; 32],
@@ -37,7 +37,7 @@ fn policy<'a>() -> Policy<'a>
     Policy { directory:  PackageKind::Driver,
              file_type:  *b"DRVR",
              kernel_abi: 7,
-             target:     Target::RV64IMAC,
+             target:     Target::RVA23U64,
              max_heap:   65536,
              max_stack:  65536,
              services:   &[],
@@ -158,10 +158,10 @@ fn admission_checks_exact_services_dependencies_and_target_before_entry()
     admission.providers = core::slice::from_ref(&provider);
     admission.target.architecture = Target::X86_64;
     assert_eq!(admission.validate(contract), Err(Error::Target));
-    admission.target = Target::RV64IMAC;
+    admission.target = Target::RVA23U64;
     admission.target.features &= !Target::RV_A;
     assert_eq!(admission.validate(contract), Err(Error::Target));
-    admission.target = Target::RV64IMAC;
+    admission.target = Target::RVA23U64;
     admission.directory = PackageKind::Extension;
     assert_eq!(admission.validate(contract), Err(Error::WrongLocation));
 }

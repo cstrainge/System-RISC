@@ -218,6 +218,16 @@ subject process, allocation/zone account and stacked resource scope. A module
 callback on an app control cannot conflate them. Current process arrays and
 thread context are inspected migration inputs, not architecture to preserve.
 
+## ISA-floor stage
+
+The §13.2 first stage enables the complete compiler profile, with early platform
+admission and FP/vector preservation in the RISC-V machine adapter. Register
+state backing scales with discovered VLEN. Eager save is the correctness bridge
+until per-thread domain backing/dirty policy lands; this is not the later lazy-
+state or System-stack milestone. The LP64 transport ABI and development ABI 1
+remain unchanged. Pool IRQ-safe invocation is still a mandatory pre-use gate.
+See [architecture](../ARCHITECTURE.md#native-isa-floor).
+
 ## Migration and gates
 
 Keep §13.2 stages explicit: ISA floor; facility/manager migration; owner walk and

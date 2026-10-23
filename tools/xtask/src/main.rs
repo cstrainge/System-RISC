@@ -104,6 +104,7 @@ impl Workspace
         {
             command.args(["--features", "text-edit/input-trace"]);
         }
+        mac_build::platform::configure(&mut command);
         run(&mut command)
     }
 

@@ -46,7 +46,16 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
     let stderr = out.join("qemu.log");
     File::create(&serial)?;
     let mut command = Command::new("qemu-system-riscv64");
-    command.args(["-machine", "virt", "-cpu", "rv64", "-m", "128M", "-smp", "1", "-bios", "none",
+    command.args(["-machine",
+                  "virt",
+                  "-cpu",
+                  mac_build::platform::current().qemu_cpu.as_str(),
+                  "-m",
+                  "128M",
+                  "-smp",
+                  "1",
+                  "-bios",
+                  "none",
                   "-kernel"])
            .arg(&kernel)
            .args(["-display", "none", "-monitor", "none", "-nic", "none", "-serial"])

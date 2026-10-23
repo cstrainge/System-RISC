@@ -93,6 +93,15 @@ pub fn spawn(app: u64, image: usize, entry: usize) -> Result<u64, mac_abi::Statu
 {
     let mut scheduler = SCHEDULER.lock();
     let slot = scheduler.threads.iter().position(|t| t.is_none()).ok_or(mac_abi::NO_MEMORY)?;
+    let context_bytes = super::traps::frame_reservation_bytes();
+    if context_bytes >= STACK_WORDS * core::mem::size_of::<u128>()
+    {
+        serial!("PROCESS_CONTEXT_REFUSED: {} bytes of CPU state do not fit the configured {} \
+                 byte thread stack",
+                context_bytes,
+                STACK_WORDS * core::mem::size_of::<u128>());
+        return Err(mac_abi::NO_MEMORY);
+    }
     let mut storage = alloc::vec::Vec::<u128>::new();
     storage.try_reserve_exact(STACK_WORDS).map_err(|_| mac_abi::NO_MEMORY)?;
     storage.resize(STACK_WORDS, 0);
@@ -101,7 +110,7 @@ pub fn spawn(app: u64, image: usize, entry: usize) -> Result<u64, mac_abi::Statu
     let frame = (top - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
     let mut initial = TrapFrame::default();
     initial.pc = app_start as *const () as usize;
-    initial.status = 0x1880;
+    initial.status = super::traps::INITIAL_STATUS;
     initial.registers[8] = entry;
     // gp is not initialized by our freestanding executables; rustc uses PC-relative addressing.
     unsafe {
@@ -153,7 +162,7 @@ pub fn start() -> !
     let idle_frame = (top - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
     let mut initial = TrapFrame::default();
     initial.pc = idle as *const () as usize;
-    initial.status = 0x1880;
+    initial.status = super::traps::INITIAL_STATUS;
     unsafe {
         idle_frame.write(initial);
     }

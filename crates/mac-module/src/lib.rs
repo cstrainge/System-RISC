@@ -85,13 +85,18 @@ impl Target
     pub const BIG: u8 = 2;
     pub const C_ABI: u32 = 1;
     pub const LITTLE: u8 = 1;
+    /// Complete mandatory profile, including V/F/D/B and its Z extensions.
+    pub const PROFILE_RVA23U64: u64 = 1 << 4;
     pub const RISCV64: u16 = 1;
-    pub const RV64IMAC: Self =
-        Self { architecture: Self::RISCV64,
-               pointer_bits: 64,
-               endian:       Self::LITTLE,
-               convention:   Self::C_ABI,
-               features:     Self::RV_I | Self::RV_M | Self::RV_A | Self::RV_C };
+    pub const RVA23U64: Self = Self { architecture: Self::RISCV64,
+                                      pointer_bits: 64,
+                                      endian:       Self::LITTLE,
+                                      convention:   Self::C_ABI,
+                                      features:     Self::RV_I
+                                                    | Self::RV_M
+                                                    | Self::RV_A
+                                                    | Self::RV_C
+                                                    | Self::PROFILE_RVA23U64 };
     pub const RV_A: u64 = 4;
     pub const RV_C: u64 = 8;
     pub const RV_I: u64 = 1;

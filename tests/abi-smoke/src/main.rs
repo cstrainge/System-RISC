@@ -17,15 +17,20 @@ include!(concat!(env!("OUT_DIR"), "/entries.rs"));
 #[path = "../../../crates/mac-toolbox/tests/conformance/mod.rs"]
 mod conformance;
 
-global_asm!(
-            r#"
+global_asm!(concat!(
+    include_str!("../../../platforms/riscv64-entry.S"),
+    r#"
     .section .text.entry
+    .option push
+    .option norvc
     .global _start
 _start:
     csrw mie, zero
     la sp, __stack_top
     la t0, trap
     csrw mtvec, t0
+    call __system_risc_enable_isa
+    .option pop
     la t0, __bss_start
     la t1, __bss_end
 1:  bgeu t0, t1, 2f
@@ -39,7 +44,7 @@ _start:
 trap:
     j failed
 "#
-);
+));
 
 unsafe extern "C" fn log(bytes: *const u8, length: usize) -> Status
 {

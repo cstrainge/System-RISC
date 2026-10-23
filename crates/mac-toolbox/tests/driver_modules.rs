@@ -242,7 +242,7 @@ fn budget_package(heap_bytes: u32, stack_bytes: u32, reservation: u64) -> Vec<re
     code.extend_from_slice(b"RLC1\0\0\0\0");
     let spec = mac_module::Spec { kind: mac_module::PackageKind::Driver,
                                   kernel_abi: native::ABI_VERSION,
-                                  target: mac_module::Target::RV64IMAC,
+                                  target: mac_module::Target::RVA23U64,
                                   identity: [0x73; 16],
                                   code_id: 0,
                                   code_digest: [0x73; 32],

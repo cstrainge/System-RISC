@@ -1,0 +1,5 @@
+{
+  "rust_target": "riscv64imac-unknown-none-elf",
+  "llvm_profile": "rva23u64",
+  "qemu_cpu": "rva23s64"
+}

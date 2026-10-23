@@ -15,3 +15,6 @@ mac-abi.workspace = true
 mac-traps.workspace = true
 mac-toolbox.workspace = true
 toolbox-quickdraw = { path = "../../toolbox/quickdraw" }
+
+[build-dependencies]
+mac-build.workspace = true

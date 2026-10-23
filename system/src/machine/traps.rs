@@ -4,13 +4,20 @@ use core::arch::{asm, global_asm};
 use mac_abi::{traps::*, *};
 
 use crate::toolbox;
-global_asm!(include_str!("traps.S"));
+global_asm!(include_str!("traps.S"),
+    frame_bytes=const core::mem::size_of::<TrapFrame>(),
+    fp=const core::mem::offset_of!(TrapFrame,floating),
+    fcsr=const core::mem::offset_of!(TrapFrame,fcsr),
+    vl=const core::mem::offset_of!(TrapFrame,vl),
+    vtype=const core::mem::offset_of!(TrapFrame,vtype),
+    vstart=const core::mem::offset_of!(TrapFrame,vstart),
+    vcsr=const core::mem::offset_of!(TrapFrame,vcsr));
 unsafe extern "C" {
     fn __system_trap_vector();
     pub(crate) fn __system_trap_gateway(number: u32, request: *mut (), size: usize) -> i64;
 }
 pub(crate) use __system_trap_gateway as gateway;
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Default)]
 pub(crate) struct TrapFrame
 {
@@ -18,7 +25,28 @@ pub(crate) struct TrapFrame
     pub pc:        usize,
     pub status:    usize,
     cause:         usize,
-    value:         usize
+    value:         usize,
+    floating:      [u64; 32],
+    fcsr:          usize,
+    vl:            usize,
+    vtype:         usize,
+    vstart:        usize,
+    vcsr:          usize
+}
+// Integer offsets remain the assembly gate contract. The extended offsets and
+// fixed frame size are generated above from this one Rust representation.
+const _: () = assert!(core::mem::offset_of!(TrapFrame, pc) == 240
+                      && core::mem::offset_of!(TrapFrame, status) == 248);
+pub(crate) const INITIAL_STATUS: usize = 0x1880 | 0x6600;
+/// Eager bridge for the ISA-floor stage; backing scales with discovered VLEN.
+/// Per-thread domain backing and dirty/lazy save policy migrate with the model.
+pub(crate) fn frame_reservation_bytes() -> usize
+{
+    let bytes: usize;
+    unsafe {
+        asm!("csrr {},vlenb",out(reg)bytes,options(nomem,nostack));
+    }
+    core::mem::size_of::<TrapFrame>() + 32 * bytes
 }
 
 pub(crate) fn install()

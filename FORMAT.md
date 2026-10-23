@@ -80,7 +80,9 @@ instruction fetch (`fence.i`), and enters
 initialized data and relocated pointers survive. System uses its fixed board
 reservation; applications and definitions are independently relocatable.
 
-The build still links RV64IMAC ELF64 System V `ET_EXEC` binaries, validates them
+The build links RVA23U64-profile RV64 ELF64 System V `ET_EXEC` binaries using
+the LP64 calling convention (the Rust target name remains
+`riscv64imac-unknown-none-elf`, with full `+rva23u64`). It validates them
 with `elf::decode`, and extracts only initialized PT_LOAD bytes. Dynamic linking,
 interpreters, TLS, unsupported machine/ABI flags, bad alignment and overlapping
 ELF segments fail packaging. Link relaxation remains disabled. Full debug ELFs
@@ -612,7 +614,7 @@ classic resource fork remains big-endian):
 | 26 | 1 | pointer width in bits |
 | 27 | 1 | endian: 1 little, 2 big |
 | 28 | 4 | calling convention, 1 C ABI |
-| 32 | 8 | required ISA features; RV64 bits 0..3 are I/M/A/C |
+| 32 | 8 | required ISA features; RV64 bits 0..3 are I/M/A/C; bit 4 requires the complete RVA23U64 profile (including V/F/D/B and mandatory Z extensions). Current module mask is 31 |
 | 40 | 16 | nonzero module identity |
 | 56 | 4 | native entry resource type, matching package kind |
 | 60 | 2 | signed entry resource ID |

@@ -5,6 +5,7 @@ Canonical contract assertions execute in Rust userspace on RV64. Python supplies
 only build/package/clone/boot/input/frame/serial transport and artifact identities.
 """
 from hfs_b_tool import Image as NativeImage
+from system7_platform import guest_env
 import argparse
 import json
 import os
@@ -20,7 +21,7 @@ def child(output, fixture, binary):
     target = vm.build_dir() / 'fixtures' / fixture
     subprocess.run(['cargo', 'build', '--manifest-path', str(manifest), '--locked',
                     '--release', '--target', 'riscv64imac-unknown-none-elf',
-                    '--bin', binary, '--target-dir', str(target)], cwd=vm.ROOT, check=True)
+                    '--bin', binary, '--target-dir', str(target)], cwd=vm.ROOT, env=guest_env(), check=True)
     elf = target / 'riscv64imac-unknown-none-elf/release' / binary
     package = output / fixture
     subprocess.run(['cargo', 'run', '--manifest-path', str(manifest), '--locked',
@@ -29,7 +30,7 @@ def child(output, fixture, binary):
     return package / (binary + '.bin'), elf
 
 
-def capture(output):
+def capture(output, frontend='headless', vector_bits=None):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
@@ -52,7 +53,7 @@ def capture(output):
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)
     vm.DIST = private
-    process, endpoint = vm.launch(output / 'vm', writable=True)
+    process, endpoint = vm.launch(output / 'vm', frontend, writable=True, qmp_port=4457, vector_bits=vector_bits)
     serial = output / 'vm/serial.log'
     actions = []
 
@@ -107,4 +108,7 @@ def capture(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True)
-    capture(parser.parse_args().output)
+    parser.add_argument('--frontend', choices=['headless', 'native-headless'], default='headless')
+    parser.add_argument('--vector-bits', type=int)
+    args = parser.parse_args()
+    capture(args.output, args.frontend, args.vector_bits)

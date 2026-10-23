@@ -23,9 +23,12 @@ use mac_formats::{native::{Descriptor, Role, image},
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
 
-global_asm!(
-            r#"
+global_asm!(concat!(
+    include_str!("../../platforms/riscv64-entry.S"),
+    r#"
     .section .text.entry
+    .option push
+    .option norvc
     .global _start
 _start:
     csrr t0, mhartid
@@ -35,6 +38,8 @@ _start:
     la sp, __stack_top
     la t0, trap
     csrw mtvec, t0
+    call __system_risc_enable_isa
+    .option pop
     la t0, __data_load
     la t1, __data_start
     la t2, __data_end
@@ -62,7 +67,7 @@ trap:
     call fatal_trap
     j parked
 "#
-);
+));
 
 struct Serial;
 impl Write for Serial

@@ -6,6 +6,7 @@ ROM/System graphically (headless display), and retain serial/outcome evidence.
 Rust owns every compatibility assertion and the acceptance marker.
 """
 from hfs_b_tool import Image as NativeImage
+from system7_platform import guest_env
 import argparse
 import hashlib
 import json
@@ -33,7 +34,7 @@ def private_disk(output, fixture_name='conformance', *, features=()):
                  '--bin', 'Finder', '--target-dir', str(target)]
     if features:
         arguments.extend(['--features', ','.join(features)])
-    subprocess.run(arguments, cwd=vm.ROOT, check=True)
+    subprocess.run(arguments, cwd=vm.ROOT, env=guest_env(), check=True)
     binary = target / 'riscv64imac-unknown-none-elf/release/Finder'
     packaged = output / 'package'
     subprocess.run(['cargo', 'run', '--manifest-path', str(manifest), '--locked',

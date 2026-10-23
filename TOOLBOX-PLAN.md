@@ -19,7 +19,7 @@ not establish that an API exists in the installed reference system.
 | Aspect | Original reference profile | Initial native profile |
 | --- | --- | --- |
 | System | Installed English/Roman System 7.6.1 and its actual extension/resource inventory, identified by retained hashes | Independently built Rust System and Finder, current versioned native service ABI |
-| Machine | Existing isolated QEMU `q800`, `m68040`, 128 MiB, pinned Quadra-650 ROM; exact launch command in `working/quickdraw-reference/command.json` | QEMU `virt`, RV64IMAC, one hart, 128 MiB; the actual platform backends and capability bits |
+| Machine | Existing isolated QEMU `q800`, `m68040`, 128 MiB, pinned Quadra-650 ROM; exact launch command in `working/quickdraw-reference/command.json` | QEMU `virt`, RVA23S64 / LP64, one hart, 128 MiB; the actual platform backends and capability bits |
 | Display | One 640×480 indexed-eight-bit screen with captured CLUT/gamma projection; separate original 32-bit GWorld cases where appropriate | One 640×480 RGB32 framebuffer; explicit original-device presentation profile where required, not an assumed gamma formula |
 | Input/text | Pinned US keyboard map, Roman script/Mac Roman resources and original installed fonts; record VM/extensions, original mouse/event semantics | Virtio keyboard and absolute tablet, Mac event codes; host Ctrl-to-Command mapping is a documented host adapter |
 | Storage | Disposable clone of the reference HFS disk; record blessing, Finder metadata, forks and installed resource files | Mounted classic HFS, native read/write/flush callbacks and a generated 500 MiB boot image; bounded transactional catalog/Trash writes, with general fork writes still absent |

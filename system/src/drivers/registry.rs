@@ -645,7 +645,7 @@ mod tests
     {
         let spec = Spec { kind: PackageKind::Driver,
                           kernel_abi: mac_abi::ABI_VERSION,
-                          target: Target::RV64IMAC,
+                          target: Target::RVA23U64,
                           identity,
                           code_id: 0,
                           code_digest: [0; 32],
@@ -672,7 +672,7 @@ mod tests
         use mac_module::file_handlers::{Action, Rule};
         let bytes = metadata(*b"test-module-uuid", &[OFFER], &[]);
         let rule = Rule::new(*b"SIT!", Action::MountFilesystem, 128).unwrap();
-        let mut registry = Registry::new(Target::RV64IMAC);
+        let mut registry = Registry::new(Target::RVA23U64);
         let first = stage(&mut registry, &bytes);
         registry.install_file_handlers(first, alloc::vec![rule]).unwrap();
         assert_eq!(registry.file_handler(*b"SIT!"), None);
@@ -700,7 +700,7 @@ mod tests
     fn initialization_is_hidden_and_rollback_never_reuses_ids()
     {
         let bytes = metadata(*b"test-module-uuid", &[OFFER], &[]);
-        let mut registry = Registry::new(Target::RV64IMAC);
+        let mut registry = Registry::new(Target::RVA23U64);
         let stale = stage(&mut registry, &bytes);
         assert_eq!(registry.find(OFFER.class, 1).count(), 0);
         assert_eq!(registry.stage(Contract::decode(&bytes).unwrap(),
@@ -722,7 +722,7 @@ mod tests
     fn request_reuse_foreign_completions_and_quiesce_are_checked()
     {
         let bytes = metadata(*b"test-module-uuid", &[OFFER], &[]);
-        let mut registry = Registry::new(Target::RV64IMAC);
+        let mut registry = Registry::new(Target::RVA23U64);
         let module = stage(&mut registry, &bytes);
         registry.commit(module).unwrap();
         let (interface, _) = registry.find(OFFER.class, 1).next().unwrap();
@@ -755,7 +755,7 @@ mod tests
                                        ..OFFER }],
                              &[]);
         let other = metadata(*b"other-module-id!", &[OFFER], &[]);
-        let mut registry = Registry::new(Target::RV64IMAC);
+        let mut registry = Registry::new(Target::RVA23U64);
         let provider = stage(&mut registry, &bytes);
         let dep = mac_module::Dependency { module:   *b"test-module-uuid",
                                            class:    OFFER.class,
@@ -787,7 +787,7 @@ mod tests
     fn failed_initialization_retains_pending_dependency_ownership_until_cancellation()
     {
         let bytes = metadata(*b"test-module-uuid", &[OFFER], &[]);
-        let mut registry = Registry::new(Target::RV64IMAC);
+        let mut registry = Registry::new(Target::RVA23U64);
         let provider = stage(&mut registry, &bytes);
         registry.commit(provider).unwrap();
         let (interface, _) = registry.find(OFFER.class, 1).next().unwrap();
@@ -813,8 +813,8 @@ mod tests
     fn separate_registries_cannot_alias_live_or_retired_driver_ids()
     {
         let bytes = metadata(*b"test-module-uuid", &[OFFER], &[]);
-        let mut first = Registry::new(Target::RV64IMAC);
-        let mut second = Registry::new(Target::RV64IMAC);
+        let mut first = Registry::new(Target::RVA23U64);
+        let mut second = Registry::new(Target::RVA23U64);
         let a = stage(&mut first, &bytes);
         let b = stage(&mut second, &bytes);
         assert_ne!(a, b);
@@ -834,7 +834,7 @@ mod tests
     #[test]
     fn kernel_selection_distinguishes_missing_capabilities_from_stale_contracts()
     {
-        let mut registry = Registry::new(Target::RV64IMAC);
+        let mut registry = Registry::new(Target::RVA23U64);
         assert_eq!(registry.select(OFFER.class, 2, 1), Ok(None));
         let old = Offer { flags: Offer::KERNEL_ONLY,
                           capabilities: 1,
@@ -868,7 +868,7 @@ mod tests
                                 version:  1,
                                 optional: false };
         let bytes = metadata_with_requirements(*b"consumer-module!", &[], &[], &[service], &[]);
-        let mut registry = Registry::new(Target::RV64IMAC);
+        let mut registry = Registry::new(Target::RVA23U64);
         assert!(matches!(registry.stage(Contract::decode(&bytes).unwrap(),
                                         PackageKind::Driver,
                                         *b"DRVR"),
@@ -899,7 +899,7 @@ mod tests
                                                 value: [3; 16],
                                                 mask:  [255; 16] };
         let bytes = metadata_with_requirements(*b"consumer-module!", &[], &[], &[], &[matcher]);
-        let mut registry = Registry::new(Target::RV64IMAC);
+        let mut registry = Registry::new(Target::RVA23U64);
         let module = stage(&mut registry, &bytes);
         assert_eq!(registry.device_allowed(module, matcher.bus, matcher.value), Ok(()));
         assert_eq!(registry.device_allowed(module, matcher.bus, [4; 16]), Err(Error::Access));

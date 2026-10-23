@@ -1,6 +1,6 @@
 # System RISC boot ROM
 
-Native RV64IMAC firmware for QEMU `virt`, executing from a read-only parallel
+Native RVA23 firmware (LP64 ABI) for QEMU `virt`, executing from a read-only parallel
 flash bank at **0x20000000**. QEMU's reset stub transfers control directly to
 our firmware. There is no OpenSBI, Linux, `-kernel`, or host extraction of
 System code in this boot path.

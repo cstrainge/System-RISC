@@ -163,10 +163,13 @@ pub fn declaration(path: &Path, manifest: &Manifest) -> Result<Vec<u8>>
         return Err(error("cannot obtain module compiler provenance"));
     }
     let rustc = String::from_utf8(rustc.stdout)?;
-    let provenance = format!("rv64imac; {}", rustc.trim());
+    let provenance = format!("{}; profile={}; ABI=LP64; {}",
+                             crate::platform::current().rust_target,
+                             crate::platform::current().llvm_profile,
+                             rustc.trim());
     let spec = Spec { kind,
                       kernel_abi: mac_formats::native::ABI_VERSION,
-                      target: Target::RV64IMAC,
+                      target: Target::RVA23U64,
                       identity: id(&declared.identity)?,
                       code_id: 0,
                       code_digest: [0; 32],

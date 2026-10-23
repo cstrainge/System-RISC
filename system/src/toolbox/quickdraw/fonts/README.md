@@ -35,7 +35,7 @@ The parser and rasterizer preserve the Canvas origin and clip.
 The implementation uses the safe, `no_std` configurations of
 [ttf-parser](https://docs.rs/ttf-parser/0.25.1/ttf_parser/struct.Face.html) and
 [Skrifa](https://github.com/googlefonts/fontations/tree/main/skrifa), with `libm`
-for soft-float RV64IMAC. Macintosh cmap interpretation follows Apple's
+for the current RV64 LP64 calling convention (RVA23 instruction profile). Macintosh cmap interpretation follows Apple's
 [TrueType reference](https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6cmap.html).
 
 ## Planned installed and modern fonts

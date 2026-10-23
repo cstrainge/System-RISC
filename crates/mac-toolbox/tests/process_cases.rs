@@ -8,10 +8,13 @@ use mac_toolbox::{Cnid, ProcessId, Rect, System, VolumeId, WindowId,
                   processes::ProcessInfo,
                   windows::WindowSpec};
 
+#[path = "riscv_context_cases.rs"]
+mod architecture_context;
 #[derive(Debug)]
 pub enum Failure
 {
     Contract(&'static str),
+    Architecture(architecture_context::Failure),
     Service(i32)
 }
 impl From<mac_toolbox::Error> for Failure
@@ -314,6 +317,8 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
     system.log("FORMAT_ERROR_STATUS_PASS budget=no-memory corrupt=corrupt-data \
                 missing=not-found translation=translation-required retry=passed\n")?;
     system.log("PROCESS_INVALID_LAUNCH_PASS\n")?;
+    architecture_context::probe(0, 0x1111_1111_1111_1111, false).map_err(Failure::Architecture)?;
+    system.log("RVA23_PROBE_BASELINE_PASS\n")?;
     let spinner =
         system.files().lookup(volume, mac_toolbox::Cnid(2), "Applications/ProcessSpinner")?;
     let busy = processes.launch(volume, spinner.id)?;
@@ -324,6 +329,15 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
     require(processes.current()?.id == me.id && processes.current()?.thread == me.thread,
             "scheduler did not restore observer identity")?;
     system.log("PROCESS_OBSERVER_PROGRESS_DURING_SPIN\n")?;
+    let bytes=architecture_context::probe(100_000,0xa5a5_a5a5_a5a5_a5a5,true).map_err(Failure::Architecture)?;
+    let mut diagnostic = crate::LogBuffer::new();
+    {
+        use core::fmt::Write;
+        let _ = writeln!(diagnostic,
+                         "RVA23_CONTEXT_PASS actor=observer fp=32 vector=32 csr=5 bitmanip=3 \
+                          ecalls=passed vlenb={bytes}");
+    }
+    system.log(diagnostic.text())?;
     wait(system, || Ok(find(system, busy.id)?.is_none()))?;
     require(processes.count()? == 1, "returned spinner was not reaped")?;
     system.log("PROCESS_PREEMPTION_PASS\n")?;
@@ -701,10 +715,17 @@ pub fn spinner(system: &System<'_>, clock: impl Fn() -> u64) -> Result<()>
     resource(system, "process-spinner")?;
     system.log("PROCESS_SPIN_STARTED\n")?;
     let start = clock();
-    while clock().wrapping_sub(start) < 30_000_000
+    let bytes=architecture_context::probe(30_000_000,0x5a5a_5a5a_5a5a_5a5a,false).map_err(Failure::Architecture)?;
+    require(clock().wrapping_sub(start) >= 30_000_000,
+            "CPU-context hold did not span the no-trap preemption interval")?;
+    let mut diagnostic = crate::LogBuffer::new();
     {
-        core::hint::spin_loop();
+        use core::fmt::Write;
+        let _ = writeln!(diagnostic,
+                         "RVA23_CONTEXT_PASS actor=spinner fp=32 vector=32 csr=5 bitmanip=3 \
+                          preemption=passed vlenb={bytes}");
     }
+    system.log(diagnostic.text())?;
     system.log("PROCESS_SPIN_FINISHED\n")?;
     Ok(())
 }

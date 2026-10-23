@@ -1,4 +1,4 @@
-//! Strict build-time ELF64 little-endian RV64IMAC extraction; never executes code.
+//! Strict build-time ELF64 little-endian RV64 LP64 extraction; never executes code.
 pub mod relocation;
 use alloc::vec::Vec;
 
@@ -53,8 +53,8 @@ pub fn decode(bytes: &[u8], load_base: u64, load_limit: u64) -> Result<Image>
     let flags = u32le(bytes, 48)?;
     if flags & !1 != 0
     {
-        return Err(Error::Malformed("unsupported RISC-V ABI flags (requires soft-float \
-                                     RV64IMAC)"));
+        return Err(Error::Malformed("unsupported RISC-V ABI flags (requires the LP64 calling convention; \
+                                     rebuild with the System RISC guest profile)"));
     }
     if u16le(bytes, 52)? != 64 || u16le(bytes, 54)? != 56
     {

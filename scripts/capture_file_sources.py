@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Private file-source DRVR + public SDK app transport; Rust owns assertions."""
+from system7_platform import guest_env
 import argparse
 import hashlib
 import json
@@ -23,7 +24,7 @@ def capture(output):
         manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
         subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
                         '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin', binary,
-                        '--target-dir', str(target)], check=True)
+                        '--target-dir', str(target)], env=guest_env(), check=True)
         subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
                         '--bin', 'package', '--target-dir', str(vm.build_dir() / 'host'), '--',
                         str(target / 'riscv64imac-unknown-none-elf/release' / binary),

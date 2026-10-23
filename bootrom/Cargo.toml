@@ -17,3 +17,6 @@ mac-formats.workspace = true
 mac-hfs.workspace = true
 mac-filesystem.workspace = true
 linked_list_allocator = "0.10"
+
+[build-dependencies]
+mac-build.workspace = true

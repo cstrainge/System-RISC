@@ -115,7 +115,7 @@ based packaging does not require shared Rust dylibs or a stable Rust binary ABI.
   Audit rustc target/cfg selection as well as std backend dispatch; a target JSON
   alone is insufficient. Follow the Rust project's
   [custom-target guidance](https://doc.rust-lang.org/rustc/targets/custom.html).
-- Match RV64IMAC/soft-float calling conventions, pointer/atomic widths, stack
+- Match the current RV64 LP64 calling convention and RVA23 instruction profile, pointer/atomic widths, stack
   alignment, relocation/code model and linker entry. Inventory required float/
   math and memory builtins without introducing an accidental libc dependency.
   Host build scripts and proc macros still execute on the host target.

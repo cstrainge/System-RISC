@@ -15,7 +15,8 @@ native worker-thread API can expose additional OS threads explicitly.
 The first native implementation now schedules Finder and separately loaded APPLs
 on one RV64 hart. CLINT timer interrupts preempt application code independently
 of Toolbox calls. Up to eight application threads have independent 256 KiB stacks,
-saved register frames and trusted AppId/ThreadId contexts. Kernel traps mask
+saved integer/FP/vector frames (vector storage scales with hardware VLEN) and
+trusted AppId/ThreadId contexts. Kernel traps mask
 interrupts, including nested definition calls, so allocator and manager guards
 cannot be preempted by another application on this hart. Native event waits now
 block the actual application thread, with a separate idle WFI context and 500 us

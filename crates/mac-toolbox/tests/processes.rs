@@ -28,19 +28,21 @@ fn independent_applications_use_timer_preemption_and_private_toolbox_state()
     let command = report["launch"].as_array().unwrap();
     assert!(command.windows(2).any(|args| args[0] == "-smp" && args[1] == "1"),
             "preemption must be demonstrated on one hart");
-    for marker in ["TRAPS_READY: resident ecall dispatcher ABI=1",
-                   "PROCESS_INVALID_LAUNCH_PASS",
-                   "FORMAT_ERROR_STATUS_PASS budget=no-memory corrupt=corrupt-data \
-                    missing=not-found translation=translation-required retry=passed",
-                   "PROCESS_PASCAL_PASS cases=5",
-                   "PROCESS_PREEMPTION_PASS",
-                   "PROCESS_GENERATIONS_PASS native=passed legacy=passed foreign=passed \
-                    reused=passed",
-                   "PROCESS_FILE_IDENTITIES_PASS copies=2 concurrent=passed statics=private \
-                    rename=passed move=passed foreground=passed exit=passed",
-                   "PROCESS_USERSPACE_PASS preemption=passed launch=passed invalid=5 \
-                    relaunch=passed windows=passed resources=passed memory=passed events=passed \
-                    focus=passed hide=passed appmenu=passed"]
+    for marker in
+        ["TRAPS_READY: resident ecall dispatcher ABI=1",
+         "PROCESS_INVALID_LAUNCH_PASS",
+         "FORMAT_ERROR_STATUS_PASS budget=no-memory corrupt=corrupt-data missing=not-found \
+          translation=translation-required retry=passed",
+         "PROCESS_PASCAL_PASS cases=5",
+         "PROCESS_PREEMPTION_PASS",
+         "RVA23_CONTEXT_PASS actor=observer fp=32 vector=32 csr=5 bitmanip=3 ecalls=passed",
+         "RVA23_CONTEXT_PASS actor=spinner fp=32 vector=32 csr=5 bitmanip=3 preemption=passed",
+         "PROCESS_GENERATIONS_PASS native=passed legacy=passed foreign=passed reused=passed",
+         "PROCESS_FILE_IDENTITIES_PASS copies=2 concurrent=passed statics=private rename=passed \
+          move=passed foreground=passed exit=passed",
+         "PROCESS_USERSPACE_PASS preemption=passed launch=passed invalid=5 relaunch=passed \
+          windows=passed resources=passed memory=passed events=passed focus=passed hide=passed \
+          appmenu=passed"]
     {
         assert!(serial.contains(marker), "missing {marker}:\n{serial}");
     }

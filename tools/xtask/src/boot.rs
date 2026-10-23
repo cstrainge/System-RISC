@@ -42,7 +42,16 @@ pub fn disk_format(path: &Path) -> Result<&'static str>
 fn command(workspace: &Workspace, disks: &[(&Path, &str)]) -> Command
 {
     let mut command = Command::new("qemu-system-riscv64");
-    command.args(["-machine", "virt", "-cpu", "rv64", "-m", "128M", "-smp", "1", "-bios", "none",
+    command.args(["-machine",
+                  "virt",
+                  "-cpu",
+                  mac_build::platform::current().qemu_cpu.as_str(),
+                  "-m",
+                  "128M",
+                  "-smp",
+                  "1",
+                  "-bios",
+                  "none",
                   "-drive"])
            .arg(format!("if=pflash,unit=0,format=raw,readonly=on,file={}",
                         workspace.build.join("dist/bootrom.bin").display()))

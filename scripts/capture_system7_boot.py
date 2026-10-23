@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Private boot/display transport. Rust owns pixel and SDK acceptance."""
+from system7_platform import CPU
 import argparse
 import json
 from pathlib import Path
@@ -21,7 +22,7 @@ def capture(output):
             shutil.copyfile(vm.DIST / 'system7.qcow2', state / 'system7.qcow2')
         endpoint = {'transport': 'unix', 'path': str(state / 'qmp.sock')}
         serial = state / 'serial.log'
-        args = ['qemu-system-riscv64', '-machine', 'virt', '-cpu', 'rv64', '-m', '128M',
+        args = ['qemu-system-riscv64', '-machine', 'virt', '-cpu', CPU, '-m', '128M',
                 '-smp', '1', '-bios', 'none', '-drive',
                 f'if=pflash,unit=0,format=raw,readonly=on,file={state}/bootrom.bin',
                 '-global', 'virtio-mmio.force-legacy=false', '-device', 'ramfb',
