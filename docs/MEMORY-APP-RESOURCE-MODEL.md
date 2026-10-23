@@ -1,6 +1,6 @@
 # Memory, application and resource model: first-cut design
 
-Status: §13.1 structures for review, 2026-10-23. This is **not the live
+Status: §13.1 accepted by Chloe, 2026-10-23; proceeding with §13.2. This is **not the live
 allocator/process migration**. The current System allocator, handle wire
 format, page mode, scheduler and applications are unchanged. Source contract:
 workspace `memory-app-resource-model-spec.md`; companion inputs are
@@ -142,7 +142,7 @@ usage, including Res Edit and a 200 MB Text Edit document, before enabling.
 | Application heap growth minimum | 16 KiB / 64 KiB / 2 MiB | Rounded up to target geometry; bounded by selected process budget |
 | Per-thread fixed stack | 64 KiB / 256 KiB / 8 MiB | Static per thread, charged app account, freed after switch-away |
 | Designated per-control space | 1 MiB / 16 MiB / 128 MiB | A sub-budget of process kernel account, never independently guaranteed physical memory |
-| TE2 owned threshold | Tunable 0–100%, ruled default 40% | Strictly below threshold owns; at/above uses view; input is designated control space |
+| TE2 owned threshold | Tunable 0–100%, default 40%, bounded by a tunable **~3.2 MiB default ceiling** | Ratified 2026-10-23 calibration: owns strictly below both limits; at either limit uses view. The ceiling is 3,355,443 bytes (3.2 MiB rounded down), even if control space grows |
 | Process/thread/handle counts | Grow until account or memory refusal | No fixed-eight or guessed high replacement constant |
 
 Selected values must satisfy cross-profile constraints: reserve <= fixed heap,
@@ -197,14 +197,21 @@ ratification after measurement; no magic emergency buffer sizes are chosen now.
 | ID | Evidence / conflict | Proposed handling; no silent resolution |
 |---|---|---|
 | M-D01 | `bootrom/src/main.rs` reports fixed 128 MiB; BootInfo has no reservation list; §3.1 assumes both discovery and reservations exist | Add discovered RAM plus borrowed/shared reservation transport before enabling pool; metadata storage itself must be reserved |
-| M-D02 | §3.5 globally maps module region supervisor-only into roots; §6.2 says definitions are not mapped in application address spaces | Read as **not user-accessible**, unless strict kernel-only mappings are intended; review before page activation |
+| M-D02 | Module mapping wording was ambiguous | **Resolved, Chloe 2026-10-23.** Each process owns its address space/page tables, including its own module/kernel mapping entries. Only immutable code frames are shared; writable state belongs to module-domain pages. No app-owned state in the module region. All module mappings are supervisor-only, entered by System under module context |
 | M-D03 | §3.7 places dynamic processes on page layer; §13.2 enables dynamic capacity earlier | Migrate dynamic metadata on current backing first if useful, but page-backed domain enforcement waits for page activation; do not claim isolation or memory-scale acceptance early |
-| M-D04 | New spec's module-death containment vs P6/P13 trusted privileged fault policy | Domain cleanup contains controlled failures; arbitrary privileged writes/panics remain System-fatal until an actual recovery/isolation contract is proven |
+| M-D04 | Resource containment vs privileged-fault containment | **Accepted as written, Chloe 2026-10-23.** The walk provides resource containment. No claim to contain arbitrary privileged faults without a proven recovery contract |
 | M-D05 | Typed OOM rule vs infallible Rust allocation and current halt handler | Fallible-growth audit and reserve-backed failure reporting are prerequisites; do not replace halt with unsafe stack escape |
 | M-D06 | New refcounted/drop-on-last image vs fixed eight never-evicted `Once` cache | Replace cache with facility-owned image/pin aliases; shared RO and private RW mapping, not relocation into another hardcoded slot |
 | M-D07 | Module allocator forwarding vs current `drivers/vhost-filesystem` and `drivers/stuffit-filesystem` private global heaps (`mac-driver-alloc` calls the module global allocator) | New invocation adapter forwards explicit allocation context; migrate module implementations together, not by mixing heaps/free functions |
 | M-D08 | Port/copy definition protocol vs current raw surface/DefinitionCall ABI | Introduce host-owned port operations and bounded copies/managed buffers; remove raw app pointer access before privilege gate |
-| M-D09 | Synchronous participant shape brief vs queued/deadline participants in extension spec §5.5 | Design uses synchronous participants as latest brief requires; no implementation until review of the superseded asynchronous rule |
+| M-D09 | Synchronous participant shape brief vs queued/deadline participants in extension spec §5.5 | **Ratified, Chloe 2026-10-23.** Synchronous participants stand; the earlier queued/deadline rule is superseded. Observers remain queued on their own execution context |
+
+Chloe accepted M-D01, M-D03, M-D06, M-D07 and M-D08 as migration work as
+classified above and authorized §13.2 staging on 2026-10-23. The remaining
+profile/layout proposals are not blanket-ratified by accepting the structures.
+Pool IRQ/preemption safety is carried debt: close it in the architecture
+invocation wrapper **before any pool serves traps or interrupts**. Host-thread
+stress alone cannot close that gate.
 
 Execution identity has **four independent parts**: executor/fault domain,
 subject process, allocation/zone account and stacked resource scope. A module

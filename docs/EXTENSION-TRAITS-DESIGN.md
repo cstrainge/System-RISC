@@ -257,7 +257,7 @@ Finder uses the Toolbox facade; the hook does not import private System managers
 
 | ID | Conflict | Proposed handling |
 |---|---|---|
-| T-D01 | Older §5.5 defers participant replies/defaults; new brief requires synchronous participants | Use the newer brief's synchronous algorithm; queued rights are observers/services, not disguised participants |
+| T-D01 | Older §5.5 defers participant replies/defaults; new brief requires synchronous participants | **Ratified, Chloe 2026-10-23:** synchronous participants; the old queued/deadline/default-on-expiry rule is superseded. Queued rights are observers/services |
 | T-D02 | Older §5.2 queues all extension code and bans host-stack callbacks | Synchronous participants and bounded SCHD calls are explicit exceptions needed by newer brief; observer deliveries remain queued. Review invocation-stack/fault mechanism before implementation |
 | T-D03 | Brief promises fault containment; landed panic-abort privileged modules are System-fatal | Typed/endpoint failures containable; arbitrary kernel panic/write is not. Stronger invocation gate remains an acceptance blocker, not a claim supplied by RAII alone |
 | T-D04 | Registry described as holding module dyn objects/vtables; independent binaries have no stable Rust trait-object ABI | Registry holds host-owned dyn adapters over generated checked ABI; same semantic trait, no Rust-vtable wire contract |
@@ -271,7 +271,7 @@ Finder uses the Toolbox facade; the hook does not import private System managers
 |---|---|
 | Coarse dyn + object safety | Concrete request methods, host wrappers; compile-check dyn use per published revision, benchmark boundaries |
 | Unmixable chain kinds | Distinct participant Decision vs observer `()`/mailbox surface, distinct registration rights; test observer cannot obtain reply capability |
-| Failure containment | Transactional plans, generation pin/validation, cancellation and quarantine; **T-D03 substrate proof outstanding** |
+| Failure containment | Transactional plans, generation pin/validation, cancellation and quarantine; resource containment ratified; **T-D03 privileged-fault recovery proof outstanding** |
 | Generation scope | Central owner ledger, per-use checks, retirement cache drain; race retirement against each chain/request phase |
 | Enumeration | Registry records include owner/order/rights/outcome, no orphan hidden callback registry |
 | One outcome vocabulary | Common report schema above; lifetime state kept separate |

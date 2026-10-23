@@ -97,6 +97,16 @@ native service namespace and never occupy classic-owned traps. General trap
 patching is not the native extension interface. OS consumers validate the same
 service contract whether reached through native or legacy adapters.
 
+The 2026-10-23 first-cut review ratifies **synchronous participants**. The earlier
+workspace extension spec §5.5 rule using queued participant replies, deadlines
+and default-on-expiry is **superseded**. A participant runs synchronously in
+deterministic order, returns a validated transform/veto, and a failure fails the
+request with an informative typed cause. Observers remain read-only and queued
+to their own thread/context; they have no veto/reply path. See the
+[trait design](EXTENSION-TRAITS-DESIGN.md) for the algorithm. This ruling does not
+claim arbitrary privileged-fault recovery; controlled resource cleanup and
+System-fatal native memory corruption remain distinct.
+
 Specify execution context for every callback: boot initialization, preemptible
 kernel work, or narrowly bounded interrupt-safe work. General work must not run
 inside the current globally interrupt-masked trap path. Worker/blocking support

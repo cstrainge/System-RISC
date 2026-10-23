@@ -104,6 +104,11 @@ Performance bar: the code must not do unnecessary work. Full recomputation is th
   cleanup and restart. A resident System panic shows diagnostic details and a
   Restart button through a minimal panic-safe input/drawing path; it does not
   attempt to continue running normal services.
+- The memory/app/resource first cut was accepted on 2026-10-23. Follow
+  docs/MEMORY-APP-RESOURCE-MODEL.md and its staged migration. Shared pool locks
+  are not yet interrupt-safe: the architecture invocation wrapper must establish
+  IRQ/preemption safety before a pool serves trap or interrupt paths. Do not
+  mistake host-thread concurrency tests for that proof.
 - Use the supplied rustfmt.toml. Run checks appropriate to the change and report
   actual coverage and remaining gaps. A passing subset is not full Toolbox or
   original 68k application compatibility.

@@ -186,22 +186,45 @@ pub enum StorageMode
 #[derive(Clone, Copy, Debug)]
 pub struct StoragePolicy
 {
-    percent: u8
+    percent:             u8,
+    owned_ceiling_bytes: u64
 }
 impl StoragePolicy
 {
-    /// The spec's ruled default, kept in named policy rather than control code.
-    pub const RULED_DEFAULT: Self = Self { percent: 40 };
+    /// Chloe's 2026-10-23 first-cut review ratified an approximately 3.2 MiB
+    /// default ceiling, independent of growth in the designated control space.
+    /// Both limits stay tunable; this is policy, not a control allocation cap.
+    pub const RULED_DEFAULT: Self = Self { percent:             40,
+                                           owned_ceiling_bytes: 32 * 1024 * 1024 / 10 };
 
-    pub fn new(percent: u8) -> Result<Self, ModelError>
+    pub fn new(percent: u8, owned_ceiling_bytes: u64) -> Result<Self, ModelError>
     {
-        if percent > 100 { Err(ModelError::InvalidPercentage) } else { Ok(Self { percent }) }
+        if percent > 100
+        {
+            Err(ModelError::InvalidPercentage)
+        }
+        else
+        {
+            Ok(Self { percent,
+                      owned_ceiling_bytes })
+        }
+    }
+
+    pub const fn percent(self) -> u8
+    {
+        self.percent
+    }
+
+    pub const fn owned_ceiling_bytes(self) -> u64
+    {
+        self.owned_ceiling_bytes
     }
 
     pub fn mode(self, document_bytes: u64, designated_control_space: u64) -> StorageMode
     {
-        if (document_bytes as u128) * 100
-           < (designated_control_space as u128) * self.percent as u128
+        if document_bytes < self.owned_ceiling_bytes
+           && (document_bytes as u128) * 100
+              < (designated_control_space as u128) * self.percent as u128
         {
             StorageMode::Owned
         }
@@ -239,7 +262,19 @@ mod tests
         assert_eq!(StoragePolicy::RULED_DEFAULT.mode(399, 1000), StorageMode::Owned);
         assert_eq!(StoragePolicy::RULED_DEFAULT.mode(400, 1000), StorageMode::View);
         assert_eq!(StoragePolicy::RULED_DEFAULT.mode(u64::MAX, u64::MAX), StorageMode::View);
-        assert!(matches!(StoragePolicy::new(101), Err(ModelError::InvalidPercentage)));
+        assert!(matches!(StoragePolicy::new(101, u64::MAX), Err(ModelError::InvalidPercentage)));
+        let default = StoragePolicy::RULED_DEFAULT;
+        assert_eq!(default.owned_ceiling_bytes(), 3_355_443);
+        for space in [16 * 1024 * 1024, 32 * 1024 * 1024, u64::MAX]
+        {
+            assert_eq!(default.mode(default.owned_ceiling_bytes() - 1, space), StorageMode::Owned);
+            assert_eq!(default.mode(default.owned_ceiling_bytes(), space), StorageMode::View);
+        }
+        assert_eq!(StoragePolicy::new(40, 8 * 1024 * 1024).unwrap()
+                                                          .mode(6 * 1024 * 1024, 32 * 1024 * 1024),
+                   StorageMode::Owned);
+        assert_eq!(default.mode(40, 100), StorageMode::View);
+        assert_eq!(StoragePolicy::new(40, 0).unwrap().mode(0, 100), StorageMode::View);
         assert!(alloc::format!("{}", ModelError::MetadataAllocation).contains("allocation \
                                                                                refused"));
     }
