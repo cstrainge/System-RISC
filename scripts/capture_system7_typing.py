@@ -136,8 +136,8 @@ def capture(output, windows_headless=False):
         ]:
             step(name, lambda k=key, m=modifiers: chord(k, m))
         vm.qmp('screendump', {'filename': str(output / 'finder.ppm')}, endpoint)
-        chord('w', ['ctrl'])
-        wait(f"PROCESS_EXIT app={driver.app_id('TextEdit Exerciser')}\n")
+        driver.discard_text_edit()
+        wait(f"PROCESS_EXIT app={driver.app_id('Text Edit')}\n")
         report = {'original_before': before,
                   'original_after': {name: packaging.sha(original / name) for name in before},
                   'fixture_elf_sha256': packaging.sha(binary),

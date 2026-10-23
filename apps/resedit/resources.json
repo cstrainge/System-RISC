@@ -1,10 +1,10 @@
 {
-  "name": "ResEdit",
+  "name": "Res Edit",
   "binary_name": "ResEdit",
   "file_type": "APPL",
   "creator": "RSED",
   "role": "application",
-  "abi_version": 8,
+  "abi_version": 11,
   "load_base": "0x86800000",
   "load_limit": "0x87000000",
   "description": "System RISC read-only resource browser",
@@ -61,7 +61,7 @@
       "symbol": "PRODUCT_NAME",
       "payload": {
         "format": "pstring",
-        "text": "ResEdit"
+        "text": "Res Edit"
       }
     },
     {
@@ -342,6 +342,53 @@
       "payload": {
         "format": "hex",
         "hex": "0030000c01cc0274000001000100000000000000"
+      }
+    },
+    {
+      "type": "open",
+      "id": 128,
+      "symbol": "OPEN_TYPES",
+      "name": "Accepted document types",
+      "payload": {
+        "format": "open_types",
+        "signature": "RSED",
+        "types": [
+          "APPL",
+          "FNDR",
+          "zsys",
+          "DRVR",
+          "INIT",
+          "cdev",
+          "CDEF",
+          "WDEF",
+          "MDEF",
+          "PACK",
+          "RSRC",
+          "TEXT",
+          "BINA",
+          "SIT!",
+          "\u0000\u0000\u0000\u0000"
+        ]
+      }
+    },
+    {
+      "type": "ALRT",
+      "id": 2001,
+      "symbol": "ERROR_ALRT",
+      "name": "Document error ALRT",
+      "payload": {
+        "format": "hex",
+        "hex": "0000000000b401b007d14444300a"
+      }
+    },
+    {
+      "type": "DITL",
+      "id": 2001,
+      "symbol": "ERROR_DITL",
+      "name": "Document error DITL",
+      "payload": {
+        "format": "hex",
+        "hex": "0002000000000094016000a801a004024f4b00000000000c0014002c0034a002000200000000000c004a008801a088025e30"
       }
     }
   ]

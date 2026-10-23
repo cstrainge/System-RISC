@@ -12,12 +12,12 @@ use mac_formats::{Error, Result,
 pub fn read_startup(name: &str) -> Result<Vec<Resource>>
 {
     crate::kernel::with_files(|files| files.startup_resources(name)).map_err(|_| {
-                                                                        Error("startup filesystem \
+                                                                        Error::Malformed("startup filesystem \
                                                                                service is \
                                                                                unavailable")
                                                                     })?
                                                                     .map_err(|_| {
-                                                                        Error("startup resource \
+                                                                        Error::Malformed("startup resource \
                                                                                loading failed")
                                                                     })
 }
@@ -26,16 +26,16 @@ fn application_parts(resources: &[Resource]) -> Result<(Descriptor, &[u8], image
 {
     let descriptor = resources.iter()
                               .find(|r| r.kind == *b"NABI" && r.id == 0)
-                              .ok_or(Error("application ABI resource is missing"))?;
+                              .ok_or(Error::Missing("application ABI resource is missing"))?;
     let descriptor = Descriptor::decode(&descriptor.data)?;
     if descriptor.role != Role::Application
        || !application_region(descriptor.load_base, descriptor.load_limit)
     {
-        return Err(Error("application reservation overlaps resident images"));
+        return Err(Error::Malformed("application reservation overlaps resident images"));
     }
     let code = resources.iter()
                         .find(|r| r.kind == *b"RV64" && r.id == 0)
-                        .ok_or(Error("application executable resource is missing"))?;
+                        .ok_or(Error::Missing("application executable resource is missing"))?;
     let image = image::decode(&code.data, &descriptor)?;
     Ok((descriptor, &code.data, image))
 }
@@ -53,14 +53,15 @@ pub fn application_at(resources: &[Resource], destination: u64) -> Result<usize>
 {
     let (descriptor, bytes, _) = application_parts(resources)?;
     let extent = descriptor.load_limit - descriptor.load_base;
-    let end = destination.checked_add(extent).ok_or(Error("application destination overflow"))?;
+    let end = destination.checked_add(extent)
+                         .ok_or(Error::Malformed("application destination overflow"))?;
     if destination & 4095 != 0 || !application_region(destination, end)
     {
-        return Err(Error("application destination overlaps resident images"));
+        return Err(Error::Malformed("application destination overlaps resident images"));
     }
     let table = resources.iter()
                          .find(|r| r.kind == *b"RLOC" && r.id == 0)
-                         .ok_or(Error("native relocation metadata is missing"))?;
+                         .ok_or(Error::Missing("native relocation metadata is missing"))?;
     load(&descriptor, bytes, Some(&table.data), destination)
 }
 
@@ -101,11 +102,13 @@ impl Definitions
 
     pub fn resolve(&mut self, kind: [u8; 4], id: i16) -> Result<DefinitionEntry>
     {
-        let manager = crate::kernel::resources().ok_or(Error("resource catalog is missing"))?;
-        let (scope, resource) = manager.get(mac_abi::resources::CHAIN,
-                                            mac_abi::ResourceKey { kind,
-                                                                   id })
-                                       .map_err(|_| Error("definition resource is missing"))?;
+        let manager =
+            crate::kernel::resources().ok_or(Error::Missing("resource catalog is missing"))?;
+        let (scope, resource) =
+            manager.get(mac_abi::resources::CHAIN,
+                        mac_abi::ResourceKey { kind,
+                                               id })
+                   .map_err(|_| Error::Missing("definition resource is missing"))?;
         let origin = if scope == mac_abi::resources::APPLICATION
         {
             crate::context::current_thread_context().identity().app.0 as u32
@@ -124,7 +127,7 @@ impl Definitions
         let extent = d.load_limit - d.load_base;
         if extent > 0x1000000 || extent & 4095 != 0 || d.load_base & 4095 != 0
         {
-            return Err(Error("invalid code resource reservation"));
+            return Err(Error::Malformed("invalid code resource reservation"));
         }
         // Definition resources are independently relocatable modules. Allocate
         // top-down rather than depending on their build-time preferred addresses.
@@ -133,7 +136,7 @@ impl Definitions
         {
             if base < 0x82000000
             {
-                return Err(Error("code resource address space exhausted"));
+                return Err(Error::BudgetExceeded("code resource address space exhausted"));
             }
             let overlap = self.bindings.iter().find(|b| base < b.limit && b.base < base + extent);
             let Some(other) = overlap
@@ -141,8 +144,9 @@ impl Definitions
             {
                 break;
             };
-            base =
-                other.base.checked_sub(extent).ok_or(Error("code resource placement overflow"))?;
+            base = other.base
+                        .checked_sub(extent)
+                        .ok_or(Error::Malformed("code resource placement overflow"))?;
         }
         let address = load(d, &code.code, Some(&code.relocations), base)?;
         let entry: DefinitionEntry = unsafe { core::mem::transmute(address) };
@@ -165,17 +169,12 @@ impl Definitions
 
 pub fn status(error: Error) -> Status
 {
-    if error.0.contains("translation")
+    match error
     {
-        mac_abi::TRANSLATION_REQUIRED
-    }
-    else if error.0.contains("missing")
-    {
-        NOT_FOUND
-    }
-    else
-    {
-        BAD_ARGUMENT
+        Error::BudgetExceeded(_) | Error::AllocationFailed(_) => mac_abi::NO_MEMORY,
+        Error::Missing(_) => NOT_FOUND,
+        Error::TranslationRequired(_) => mac_abi::TRANSLATION_REQUIRED,
+        Error::Malformed(_) => BAD_ARGUMENT
     }
 }
 
@@ -188,11 +187,11 @@ pub fn reservation(resources: &[Resource]) -> Result<(u64, u64)>
 {
     let resource = resources.iter()
                             .find(|r| r.kind == *b"NABI" && r.id == 0)
-                            .ok_or(Error("application ABI resource is missing"))?;
+                            .ok_or(Error::Missing("application ABI resource is missing"))?;
     let d = Descriptor::decode(&resource.data)?;
     if d.role != Role::Application || !application_region(d.load_base, d.load_limit)
     {
-        return Err(Error("application reservation overlaps resident images"));
+        return Err(Error::Malformed("application reservation overlaps resident images"));
     }
     Ok((d.load_base, d.load_limit))
 }

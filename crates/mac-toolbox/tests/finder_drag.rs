@@ -166,7 +166,7 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
                         Point { h: 192,
                                 v: 0 }
                     }
-                    "TextEdit Exerciser" =>
+                    "Text Edit" =>
                     {
                         Point { h: 256,
                                 v: 0 }

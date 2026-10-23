@@ -79,12 +79,12 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
                                  attributes,
                                  data });
     }
-    let descriptor = mac_formats::native::Descriptor { role:
-                                                           mac_formats::native::Role::CodeResource,
-                                                       abi_version: 8,
-                                                       load_base:   0x82000000,
-                                                       load_limit:  0x82100000,
-                                                       entry:       0x82000000 };
+    let descriptor =
+        mac_formats::native::Descriptor { role:        mac_formats::native::Role::CodeResource,
+                                          abi_version: mac_formats::native::ABI_VERSION,
+                                          load_base:   0x82000000,
+                                          load_limit:  0x82100000,
+                                          entry:       0x82000000 };
     let native =
         mac_formats::native::image::encode(&descriptor, [(0, 5, [0x82, 0x80].as_slice())]).unwrap();
     let mut envelope = descriptor.encode().unwrap().to_vec();
@@ -164,7 +164,7 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
                 else {format!("{:08x} {}",0x86800000u64+u64::from(row/2)*6+if row%2==0 {0}else{4},if row%2==0 {"li a0,1"}else{"ret"})}
             }).collect();assert_eq!(actual,expected,"row {start}");
         }
-        let mut loader=Vec::new();code::loader(&a,&source,|line|loader.push(line.to_owned()));assert_eq!(loader.len(),code::HEADER_ROWS as usize);assert!(loader[0].contains("RV64"));assert_eq!(loader[2],"NABI: format 1 role 2 ABI 8");assert_eq!(loader[3],"Load base: 0x86800000");assert_eq!(loader[4],"Load limit: 0x87000000");assert!(loader[5].starts_with("RLOC: 1 patches"));
+        let mut loader=Vec::new();code::loader(&a,&source,|line|loader.push(line.to_owned()));assert_eq!(loader.len(),code::HEADER_ROWS as usize);assert!(loader[0].contains("RV64"));assert_eq!(loader[2],"NABI: format 1 role 2 ABI 11");assert_eq!(loader[3],"Load base: 0x86800000");assert_eq!(loader[4],"Load limit: 0x87000000");assert!(loader[5].starts_with("RLOC: 1 patches"));
         let mut records=Vec::new();code::relocations(a.get(ResourceKey{kind:mac_toolbox::TypeCode::new(*b"RLOC"),id:0}).unwrap().info.length,1,1,|at,out|a.read(ResourceKey{kind:mac_toolbox::TypeCode::new(*b"RLOC"),id:0},at,out),|line|records.push(line.to_owned())).unwrap();assert_eq!(records,["+00000020  64-bit pointer"]);
         assert!(code::Index::build(3,&source.descriptor,|at,out|a.read(ResourceKey{kind:mac_toolbox::TypeCode::new(*b"CODE"),id:i16::MIN},at,out)).is_err());
         for &(kind,_) in mac_code_resource::code_types::STANDARD_CODE_TYPES {
@@ -289,7 +289,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
     assert!(serial.contains(&format!("RESEDIT_OPEN volume={volume} ")));
     assert!(serial.contains("QD_DEMO_READY page=2 transfer\n"));
     assert!(serial.contains(&format!("PROCESS_EXIT app={}\n",
-                                     process_trace::launched(&serial, "ResEdit").0)));
+                                     process_trace::launched(&serial, "Res Edit").0)));
     assert_eq!(fs::read(output.join("native-resources.json")).unwrap(),
                fs::read(output.join("resources.json")).unwrap(),
                "native Save must preserve the lossless archive exactly");
@@ -409,8 +409,8 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
     for (frame_name, package, scope, id, row, top) in
         [("system-open", "Panic Test", mac_abi::resources::APPLICATION, 128, 1, 114),
          ("system-open", "QuickDraw Test", mac_abi::resources::APPLICATION, 128, 2, 114),
-         ("system-open", "ResEdit", mac_abi::resources::APPLICATION, 128, 3, 114),
-         ("system-open", "TextEdit Exerciser", mac_abi::resources::APPLICATION, 128, 4, 114),
+         ("system-open", "Res Edit", mac_abi::resources::APPLICATION, 128, 3, 114),
+         ("system-open", "Text Edit", mac_abi::resources::APPLICATION, 128, 4, 114),
          ("system-save-as", "System", mac_abi::resources::SYSTEM, -4000, 3, 110)]
     {
         let mut expected = vec![0xffffffu32; 16 * 16];
@@ -728,7 +728,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         assert!(actual == expected, "{package} native instructions must use Monaco");
     }
     let icon_provenance:serde_json::Value=serde_json::from_slice(&fs::read(root.join("System7/apps/resedit/assets/provenance.json")).unwrap()).unwrap();
-    let fork = fs::read(mac_build::paths::dist_dir(&root).join("ResEdit.rsrc")).unwrap();
+    let fork = fs::read(mac_build::paths::dist_dir(&root).join("Res Edit.rsrc")).unwrap();
     mac_system::testing::with_resource_forks(&resource::encode(&[]).unwrap(), &fork, |services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
         assert!(system.resources()
@@ -807,7 +807,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
 fn sample_descriptor() -> mac_formats::native::Descriptor
 {
     mac_formats::native::Descriptor { role:        mac_formats::native::Role::Application,
-                                      abi_version: 8,
+                                      abi_version: mac_formats::native::ABI_VERSION,
                                       load_base:   0x86800000,
                                       load_limit:  0x87000000,
                                       entry:       0x86800000 }

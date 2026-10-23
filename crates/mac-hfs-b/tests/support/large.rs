@@ -20,7 +20,7 @@ impl BlockDevice for Sparse
     {
         if sector >= self.sectors
         {
-            return Err(mac_block::Error("bounds"));
+            return Err(mac_block::Error::Malformed("bounds"));
         }
         *out = self.data.get(&sector).copied().unwrap_or([0; 512]);
         Ok(())
@@ -37,7 +37,7 @@ impl WritableBlockDevice for Sparse
     {
         if sector >= self.sectors
         {
-            return Err(mac_block::Error("bounds"));
+            return Err(mac_block::Error::Malformed("bounds"));
         }
         self.written += 512;
         if input.iter().all(|&b| b == 0)

@@ -74,7 +74,7 @@ fn application_panics_show_complete_diagnostics_and_leave_the_desktop_usable()
         assert!(serial.contains(&format!("CRASH_REPORT_DISMISSED app={id}\n")));
         assert!(serial.contains(&format!("PROCESS_EXIT app={id}\n")));
     }
-    let editor = process_trace::launched(&serial, "TextEdit Exerciser").0;
+    let editor = process_trace::launched(&serial, "Text Edit").0;
     assert!(serial.contains(&format!("PROCESS_EXIT app={editor}\n")));
     for report in reports
     {

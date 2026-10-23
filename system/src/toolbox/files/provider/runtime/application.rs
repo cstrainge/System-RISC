@@ -1,7 +1,7 @@
 //! Composite application load, parked/replayed on owned provider jobs. A private
 //! generation-tagged fork mark stays reserved until Close is acknowledged.
 #![forbid(unsafe_code)]
-use mac_formats::resource::{loader::Loader, stream::Budget};
+use mac_formats::resource::loader::Loader;
 
 use super::{super::super::application::Loaded, *};
 
@@ -14,13 +14,14 @@ enum Stage
 }
 pub(super) struct State
 {
-    stage:   Stage,
-    volume:  u32,
-    handle:  u32,
-    catalog: Option<CatalogInfo>,
-    loader:  Option<Loader>,
-    reading: bool,
-    outcome: Option<Result<Box<Loaded>, Status>>
+    selection: super::super::super::application::Selection,
+    stage:     Stage,
+    volume:    u32,
+    handle:    u32,
+    catalog:   Option<CatalogInfo>,
+    loader:    Option<Loader>,
+    reading:   bool,
+    outcome:   Option<Result<Box<Loaded>, Status>>
 }
 impl State
 {
@@ -153,7 +154,7 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
                 let _ = files(|m| m.begin_resource_inspection(flight.owner, state.handle))?;
                 state.reading = true;
                 state.loader =
-                    Some(Loader::new(length, Budget::default()).map_err(resources_format_status)?);
+                    Some(Loader::selected(length,state.selection.budget(),state.selection.includes()).map_err(resources_format_status)?);
                 state.stage = Stage::Read;
                 read(flight.provider, &state).map(Some)
             }
@@ -212,7 +213,9 @@ fn deliver(progress: Progress) -> Result<Box<Loaded>, Status>
         Progress::Done(_) => Err(BAD_ABI)
     }
 }
-pub(crate) fn request(owner: u64, volume: u32, cnid: u32) -> Result<Box<Loaded>, Status>
+pub(crate) fn request(owner: u64, volume: u32, cnid: u32,
+                      selection: super::super::super::application::Selection)
+                      -> Result<Box<Loaded>, Status>
 {
     let thread = crate::context::current_thread().0;
     if thread <= 1
@@ -220,7 +223,14 @@ pub(crate) fn request(owner: u64, volume: u32, cnid: u32) -> Result<Box<Loaded>,
         return Err(WRONG_THREAD);
     }
     let key = Key { record: Record::Application,
-                    operation: mac_abi::processes::LAUNCH,
+                    operation: if selection == super::super::super::application::Selection::All
+                    {
+                        mac_abi::processes::LAUNCH
+                    }
+                    else
+                    {
+                        u32::MAX
+                    },
                     volume,
                     cnid,
                     index: 0,
@@ -234,7 +244,8 @@ pub(crate) fn request(owner: u64, volume: u32, cnid: u32) -> Result<Box<Loaded>,
         return deliver(super::advance(flight));
     }
     // Allocate all state before reserving the fork mark or submitting any work.
-    let mut state = Box::try_new(State { stage: Stage::Catalog,
+    let mut state = Box::try_new(State { selection,
+                                         stage: Stage::Catalog,
                                          volume,
                                          handle: 0,
                                          catalog: None,

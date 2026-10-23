@@ -12,6 +12,9 @@ use core::sync::atomic::{AtomicU16, Ordering};
 static EDITOR_GENERATIONS: [AtomicU16; mac_abi::textedit::MAX_EDITORS] =
     [const { AtomicU16::new(0) }; mac_abi::textedit::MAX_EDITORS];
 static MENU_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
+// Bootstrap and desktop Control Managers share this namespace. Neither a
+// second table nor dropping the early panel may reissue its live/stale IDs.
+static CONTROL_GENERATIONS: [AtomicU16; 256] = [const { AtomicU16::new(0) }; 256];
 
 static MODULE_GENERATIONS: [AtomicU16; 32] = [const { AtomicU16::new(0) }; 32];
 static DRIVER_INTERFACE_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
@@ -24,6 +27,10 @@ static HOST_SESSION_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) };
 
 static DEVICE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
 static PROCESS_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
+static FILE_STREAM_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
+static DOCUMENT_BATCH_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
+static FILE_TRANSFER_GENERATIONS: [AtomicU16; 4] = [const { AtomicU16::new(0) }; 4];
+static FILE_GROUP_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static THREAD_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static JOB_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DMA_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
@@ -74,7 +81,11 @@ pub enum Kind
     FileWatches,
     Drags,
     DragReceivers,
-    Processes
+    Processes,
+    FileStreams,
+    FileGroups,
+    FileTransfers,
+    DocumentBatches
 }
 impl Kind
 {
@@ -82,6 +93,10 @@ impl Kind
     {
         match self
         {
+            Self::DocumentBatches => 16,
+            Self::FileTransfers => 4,
+            Self::FileGroups => 8,
+            Self::FileStreams => 8,
             Self::Processes => 8,
             Self::Drags => 32,
             Self::DragReceivers => 64,
@@ -115,6 +130,19 @@ impl Kind
     {
         match self
         {
+            Self::DocumentBatches =>
+            {
+                Self::FileTransfers.first_slot() + Self::FileTransfers.capacity() as u32
+            }
+            Self::FileTransfers =>
+            {
+                Self::FileGroups.first_slot() + Self::FileGroups.capacity() as u32
+            }
+            Self::FileGroups =>
+            {
+                Self::FileStreams.first_slot() + Self::FileStreams.capacity() as u32
+            }
+            Self::FileStreams => Self::Processes.first_slot() + Self::Processes.capacity() as u32,
             Self::Processes =>
             {
                 Self::DragReceivers.first_slot() + Self::DragReceivers.capacity() as u32
@@ -175,10 +203,25 @@ impl Kind
         }
     }
 
+    /// Classify an opaque wire ID's namespace, without asserting it is live.
+    /// The owning table must still validate its full generation and owner.
+    pub const fn contains_wire_id(self, id: u32) -> bool
+    {
+        let slot = id & 0xffff;
+        id >> 16 != 0
+        && slot >= self.first_slot()
+        && slot < self.first_slot() + self.capacity() as u32
+    }
+
     fn shared_generation(self, index: usize) -> Option<&'static AtomicU16>
     {
         match self
         {
+            Self::Controls => CONTROL_GENERATIONS.get(index),
+            Self::DocumentBatches => DOCUMENT_BATCH_GENERATIONS.get(index),
+            Self::FileTransfers => FILE_TRANSFER_GENERATIONS.get(index),
+            Self::FileGroups => FILE_GROUP_GENERATIONS.get(index),
+            Self::FileStreams => FILE_STREAM_GENERATIONS.get(index),
             Self::Processes => PROCESS_GENERATIONS.get(index),
             Self::Drags => DRAG_GENERATIONS.get(index),
             Self::DragReceivers => DRAG_RECEIVER_GENERATIONS.get(index),
@@ -212,7 +255,11 @@ impl Kind
             | Self::StandardFiles
             | Self::ScrollBoxes
             | Self::Controls => u16::MAX,
-            Self::Processes
+            Self::DocumentBatches
+            | Self::FileTransfers
+            | Self::FileGroups
+            | Self::FileStreams
+            | Self::Processes
             | Self::Threads
             | Self::Drags
             | Self::DragReceivers

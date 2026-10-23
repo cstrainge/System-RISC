@@ -32,15 +32,23 @@ pub struct Loader
     map:       Vec<u8>,
     index:     Option<Index>,
     resources: Vec<Resource>,
-    payload:   usize
+    payload:   usize,
+    select:    fn([u8; 4], i16) -> bool
 }
 impl Loader
 {
     pub fn new(length: u64, budget: Budget) -> Result<Self>
     {
+        Self::selected(length, budget, |_, _| true)
+    }
+
+    /// Metadata consumers select payloads before any payload length/read or
+    /// allocation. The complete map is still validated with the same budgets.
+    pub fn selected(length: u64, budget: Budget, select: fn([u8; 4], i16) -> bool) -> Result<Self>
+    {
         if length < 16
         {
-            return Err(Error("truncated resource header"));
+            return Err(Error::Malformed("truncated resource header"));
         }
         Ok(Self { length,
                   budget,
@@ -48,7 +56,8 @@ impl Loader
                   map: Vec::new(),
                   index: None,
                   resources: Vec::new(),
-                  payload: 0 })
+                  payload: 0,
+                  select })
     }
 
     /// The next exact positioned read. `None` means loading is complete.
@@ -74,16 +83,18 @@ impl Loader
         }
     }
 
-    fn next(&mut self, number: usize)
+    fn next(&mut self, mut number: usize)
     {
-        self.stage = if self.index.as_ref().is_some_and(|i| i.entry(number).is_some())
+        while let Some(entry) = self.index.as_ref().and_then(|index| index.entry(number))
         {
-            Stage::Length(number)
+            if (self.select)(entry.kind, entry.id)
+            {
+                self.stage = Stage::Length(number);
+                return;
+            }
+            number += 1;
         }
-        else
-        {
-            Stage::Done
-        };
+        self.stage = Stage::Done;
     }
 
     /// Supply one complete requested range. Storage failures are reported by the
@@ -92,7 +103,7 @@ impl Loader
     {
         if self.request().is_none_or(|(_, count)| count != bytes.len())
         {
-            return Err(Error("resource storage read length mismatch"));
+            return Err(Error::Malformed("resource storage read length mismatch"));
         }
         match self.stage
         {
@@ -102,10 +113,10 @@ impl Loader
                     MapLayout::decode(bytes.try_into().unwrap(), self.length, self.budget)?;
                 self.map
                     .try_reserve_exact(layout.map_length())
-                    .map_err(|_| Error("resource allocation failed"))?;
+                    .map_err(|_| Error::AllocationFailed("resource allocation failed"))?;
                 if layout.map_length() == 0
                 {
-                    return Err(Error("truncated resource map"));
+                    return Err(Error::Malformed("truncated resource map"));
                 }
                 self.stage = Stage::Map(layout);
             }
@@ -121,29 +132,32 @@ impl Loader
             Stage::Length(number) =>
             {
                 let length = u32::from_be_bytes(bytes.try_into().unwrap());
-                let index = self.index.as_mut().ok_or(Error("missing resource map"))?;
+                let index = self.index.as_mut().ok_or(Error::Malformed("missing resource map"))?;
                 index.record_length(number, length)?;
-                let entry = index.entry(number).ok_or(Error("unknown resource entry"))?;
+                let entry =
+                    index.entry(number).ok_or(Error::Malformed("unknown resource entry"))?;
                 let total = self.payload
                                 .checked_add(length as usize)
-                                .ok_or(Error("resource payload exceeds budget"))?;
+                                .ok_or(Error::BudgetExceeded("resource payload exceeds budget"))?;
                 if total > self.budget.payload_bytes
                 {
-                    return Err(Error("resource payload exceeds budget"));
+                    return Err(Error::BudgetExceeded("resource payload exceeds budget"));
                 }
                 let name = entry.name
                                 .map(|bytes| {
                                     let mut name = Vec::new();
                                     name.try_reserve_exact(bytes.len())
-                                        .map_err(|_| Error("resource allocation failed"))?;
+                                        .map_err(|_| Error::AllocationFailed("resource allocation failed"))?;
                                     name.extend_from_slice(bytes);
-                                    Ok(name)
+                                    Ok::<_,Error>(name)
                                 })
                                 .transpose()?;
                 let mut data = Vec::new();
                 data.try_reserve_exact(length as usize)
-                    .map_err(|_| Error("resource allocation failed"))?;
-                self.resources.try_reserve(1).map_err(|_| Error("resource allocation failed"))?;
+                    .map_err(|_| Error::AllocationFailed("resource allocation failed"))?;
+                self.resources
+                    .try_reserve(1)
+                    .map_err(|_| Error::AllocationFailed("resource allocation failed"))?;
                 self.resources.push(Resource { kind: entry.kind,
                                                id: entry.id,
                                                attributes: entry.attributes,
@@ -166,15 +180,17 @@ impl Loader
                           length,
                           .. } =>
             {
-                let data =
-                    &mut self.resources.last_mut().ok_or(Error("missing resource payload"))?.data;
+                let data = &mut self.resources
+                                    .last_mut()
+                                    .ok_or(Error::Malformed("missing resource payload"))?
+                                    .data;
                 data.extend_from_slice(bytes);
                 if data.len() == length
                 {
                     self.next(number + 1);
                 }
             }
-            Stage::Done => return Err(Error("resource loader already complete"))
+            Stage::Done => return Err(Error::Malformed("resource loader already complete"))
         }
         Ok(())
     }
@@ -183,7 +199,7 @@ impl Loader
     {
         if !matches!(self.stage, Stage::Done)
         {
-            return Err(Error("incomplete resource loading"));
+            return Err(Error::Malformed("incomplete resource loading"));
         }
         Ok(self.resources)
     }
@@ -226,9 +242,9 @@ mod tests
         assert_eq!(load(&bytes, Budget::default()).unwrap(), expected);
         let mut loader = Loader::new(bytes.len() as u64, Budget::default()).unwrap();
         assert_eq!(loader.received(&bytes[..15]),
-                   Err(Error("resource storage read length mismatch")));
+                   Err(Error::Malformed("resource storage read length mismatch")));
         assert_eq!(loader.request(), Some((0, 16)));
-        assert_eq!(loader.finish(), Err(Error("incomplete resource loading")));
+        assert_eq!(loader.finish(), Err(Error::Malformed("incomplete resource loading")));
     }
     #[test]
     fn large_maps_are_chunked_and_fork_padding_is_not_fetched()
@@ -262,16 +278,15 @@ mod tests
         assert_eq!(load(&bytes,
                         Budget { payload_bytes: 1,
                                  ..Budget::default() }),
-                   Err(Error("resource payload exceeds budget")));
-        assert!(load(&bytes,
-                     Budget { map_bytes: 1,
-                              ..Budget::default() }).unwrap_err()
-                                                    .0
-                                                    .contains("budget"));
+                   Err(Error::BudgetExceeded("resource payload exceeds budget")));
+        assert!(matches!(load(&bytes,
+                              Budget { map_bytes: 1,
+                                       ..Budget::default() }),
+                         Err(Error::BudgetExceeded(_))));
         let data = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
         bytes[data..data + 4].copy_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(load(&bytes, Budget::default()),
-                   Err(Error("resource payload outside data region")));
+                   Err(Error::Malformed("resource payload outside data region")));
         assert!(Loader::new(0, Budget::default()).is_err());
     }
 }

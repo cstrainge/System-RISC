@@ -225,7 +225,7 @@ TextEdit ahead of the Dialog Manager.
 
 The native loader, one-hart timer scheduler, per-app
 state routing, Process SDK and right-hand application menu now exist. QuickDraw
-Test and TextEdit Exerciser build as separate APPLs in `Applications`; Finder no
+Test and Text Edit build as separate APPLs in `Applications`; Finder no
 longer embeds their code. There are eight concurrent thread slots and eight
 cached image slots including Finder, explicit linked reservations, shared trusted
 M-mode memory and synchronous interrupt-masked kernel/I/O work. No blocking

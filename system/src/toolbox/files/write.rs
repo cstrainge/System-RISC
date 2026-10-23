@@ -59,6 +59,13 @@ impl Manager
             {
                 return Err(NO_MEMORY);
             }
+            if call.expected_cnid != 0
+               && self.document_pins
+                      .iter()
+                      .any(|(_, volume, id)| *volume == call.volume && *id == call.expected_cnid)
+            {
+                return Err(SERVICE_BUSY);
+            }
             self.validate_provider_mutation(call.volume)?;
             if let Some(provider) = self.read_provider(call.volume)?
             {

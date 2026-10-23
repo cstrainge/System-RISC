@@ -4,7 +4,7 @@
   "file_type": "INIT",
   "creator": "MACS",
   "role": "code_resource",
-  "abi_version": 8,
+  "abi_version": 11,
   "load_base": "0x82300000",
   "load_limit": "0x82400000",
   "description": "Native filesystem class/host transport acceptance fixture",

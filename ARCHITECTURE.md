@@ -48,7 +48,7 @@ separate future gates. See [THREADING.md](THREADING.md) for ownership and limits
 
 `toolbox-processes` exposes launch, enumeration, activation, hiding and exit through
 `System::processes()`. Finder opens APPL catalog entries through that service.
-[QuickDraw Test and TextEdit Exerciser](apps/README.md) are independent
+[QuickDraw Test and Text Edit](apps/README.md) are independent
 applications with resource forks, installed under `Applications`; their code is
 no longer part of Finder. Each app owns its resource-defined menus/windows and calls only the
 aggregate Toolbox facade. Closing its last window or choosing Quit returns from

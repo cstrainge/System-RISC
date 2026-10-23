@@ -26,8 +26,8 @@ APPLICATION_POINTS = {
     'Cursor Test': (56, 106),
     'Panic Test': (120, 106),
     'QuickDraw Test': (184, 106),
-    'ResEdit': (248, 106),
-    'TextEdit Exerciser': (312, 106),
+    'Res Edit': (248, 106),
+    'Text Edit': (312, 106),
     'Z QuickDraw Copy': (67, 158),
 }
 
@@ -54,6 +54,10 @@ class Driver:
         while time.monotonic() < deadline:
             current = self.state()
             if predicate(current):return current
+            log = self.log()
+            if any(marker in log for marker in ['SYSTEM_PANIC:', 'SYSTEM_TRAP:',
+                                                'SYSTEM_ALLOCATION_FAILED:']):
+                raise RuntimeError('Guest stopped while awaiting input:\n' + log[-5000:])
             time.sleep(.01)
         raise TimeoutError('Guest did not acknowledge input: ' + str(self.state()))
 
@@ -65,7 +69,7 @@ class Driver:
                 return text
             if any(failure in text for failure in ['SYSTEM_PANIC:', 'SYSTEM_TRAP:',
                                                    'SYSTEM_ALLOCATION_FAILED:',
-                                                   'TEXTEDIT_EXERCISER_ERROR',
+                                                   'TEXT_EDIT_ERROR',
                                                    'QUICKDRAW_TEST_ERROR']):
                 raise RuntimeError(text[-5000:])
             time.sleep(.01)
@@ -119,6 +123,13 @@ class Driver:
                                           'down': down}}])
         time.sleep(.06)
 
+    def discard_text_edit(self, quit=True):
+        """Physical File command followed by the resource-based Don't Save button."""
+        self.key('q' if quit else 'w', ('ctrl',))
+        time.sleep(.10)
+        # Centered 366x136 ALRT, Don't Save at local20,96..124,118.
+        self.click(193, 279)
+
     def menu(self, x, row_y, popup_x=None):
         self.move(x, 10)
         self.button(True)
@@ -135,8 +146,8 @@ def open_textedit(endpoint, serial):
     driver = Driver(endpoint, serial)
     driver.click(40, 95, double=True)
     driver.wait_folder_ready('Applications')
-    driver.application('TextEdit Exerciser')
-    driver.wait('TEXTEDIT_EXERCISER_READY\n')
+    driver.application('Text Edit')
+    driver.wait('TEXT_EDIT_READY\n')
     return driver
 
 
@@ -257,8 +268,8 @@ def capture(output, remap_icon=False, windows=False):
         frame('running-app-info')
         info = driver.log().count('FINDER_INFO_CLOSED ')
         driver.key('w', ('ctrl',));driver.wait('FINDER_INFO_CLOSED ', info)
-        driver.application('TextEdit Exerciser')
-        driver.wait('TEXTEDIT_EXERCISER_READY\n')
+        driver.application('Text Edit')
+        driver.wait('TEXT_EDIT_READY\n')
         driver.key('a', ('ctrl',))
         driver.key('a')
         driver.key('b')
@@ -282,9 +293,9 @@ def capture(output, remap_icon=False, windows=False):
         editor_key('home', ('ctrl',))
         activate(1, driver.app_id('QuickDraw Test'))
         frame('background-editor-before-click')
-        activate_count = driver.log().count(f"PROCESS_ACTIVE app={driver.app_id('TextEdit Exerciser')}\n")
+        activate_count = driver.log().count(f"PROCESS_ACTIVE app={driver.app_id('Text Edit')}\n")
         driver.click(610, 120)
-        driver.wait(f"PROCESS_ACTIVE app={driver.app_id('TextEdit Exerciser')}\n", activate_count)
+        driver.wait(f"PROCESS_ACTIVE app={driver.app_id('Text Edit')}\n", activate_count)
         editor_key('right')
         # Arrow probes expose the actual click result through the editor's
         # ordinary state report. The app emits no special testing-only service.
@@ -315,13 +326,13 @@ def capture(output, remap_icon=False, windows=False):
         driver.key('3')
         driver.wait('QD_DEMO_READY page=3 regions\n')
         frame('quickdraw-resumed')
-        activate(2, driver.app_id('TextEdit Exerciser'))
+        activate(2, driver.app_id('Text Edit'))
         driver.key('ret')
         driver.key('d')
         driver.wait('FINDER_TEXTEDIT_STATE length=5 selection=5..5\n')
         frame('textedit-resumed')
-        driver.menu(28, 60, popup_x=65)  # TextEdit's own File > Quit.
-        driver.wait(f"PROCESS_EXIT app={driver.app_id('TextEdit Exerciser')}\n")
+        driver.discard_text_edit()  # Actual Quit and the unsaved-document dialog.
+        driver.wait(f"PROCESS_EXIT app={driver.app_id('Text Edit')}\n")
         frame('textedit-quit')
         driver.menu(28, 60, popup_x=65)  # QuickDraw's own File > Quit.
         driver.wait(f"PROCESS_EXIT app={driver.app_id('QuickDraw Test')}\n")
@@ -330,17 +341,17 @@ def capture(output, remap_icon=False, windows=False):
         driver.click(320, 200)
         driver.wait('FINDER_CLICK_HANDLED\n', clicks)
         frame('closed-file-icons')
-        previous = driver.log().count('TEXTEDIT_EXERCISER_READY\n')
-        driver.application('TextEdit Exerciser')
-        driver.wait('TEXTEDIT_EXERCISER_READY\n', previous)
+        previous = driver.log().count('TEXT_EDIT_READY\n')
+        driver.application('Text Edit')
+        driver.wait('TEXT_EDIT_READY\n', previous)
         frame('textedit-relaunched')
         previous = driver.log().count('FINDER_TEXTEDIT_STATE length=1 selection=1..1\n')
         driver.key('a', ('ctrl',))
         driver.key('z')
         driver.wait('FINDER_TEXTEDIT_STATE length=1 selection=1..1\n', previous)
         frame('textedit-relaunched-input')
-        driver.menu(28, 60, popup_x=65)
-        driver.wait(f"PROCESS_EXIT app={driver.app_id('TextEdit Exerciser')}\n")
+        driver.discard_text_edit()
+        driver.wait(f"PROCESS_EXIT app={driver.app_id('Text Edit')}\n")
         driver.click(200, 36)  # Bring Finder's startup-volume window forward.
         driver.click(104, 95, double=True)
         driver.wait('name=Documents\n')

@@ -13,13 +13,15 @@ mod query;
 pub(crate) use query::{Need, prepare};
 pub(crate) fn format_status(error: mac_formats::Error) -> Status
 {
-    if error.0.contains("budget") || error.0.contains("allocation")
+    match error
     {
-        NO_MEMORY
-    }
-    else
-    {
-        BAD_ARGUMENT
+        mac_formats::Error::BudgetExceeded(_) | mac_formats::Error::AllocationFailed(_) =>
+        {
+            NO_MEMORY
+        }
+        mac_formats::Error::Missing(_) => NOT_FOUND,
+        mac_formats::Error::TranslationRequired(_) => TRANSLATION_REQUIRED,
+        mac_formats::Error::Malformed(_) => BAD_ARGUMENT
     }
 }
 fn read(files: &mut crate::toolbox::files::Manager, owner: u64, handle: u32, offset: u64,
@@ -197,4 +199,24 @@ unsafe fn checked(pointer: *mut (), size: usize,
         unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
     };
     invoke(call, name, output) as i64
+}
+
+#[cfg(test)]
+mod typed_error_tests
+{
+    use super::*;
+    #[test]
+    fn status_uses_cause_even_when_the_message_uses_misleading_vocabulary()
+    {
+        use mac_formats::Error;
+        for message in ["limit exceeded", "alloc failed", "absent entry",
+                        "allocation budget missing translation"]
+        {
+            assert_eq!(format_status(Error::BudgetExceeded(message)), NO_MEMORY);
+            assert_eq!(format_status(Error::AllocationFailed(message)), NO_MEMORY);
+            assert_eq!(format_status(Error::Missing(message)), NOT_FOUND);
+            assert_eq!(format_status(Error::TranslationRequired(message)), TRANSLATION_REQUIRED);
+            assert_eq!(format_status(Error::Malformed(message)), BAD_ARGUMENT);
+        }
+    }
 }

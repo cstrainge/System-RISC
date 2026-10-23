@@ -2,10 +2,31 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
-pub use mac_code_resource::image::*;
+pub use mac_code_resource::image::{EXECUTE, HEADER_SIZE, MAX_SEGMENTS, READ, RECORD_SIZE, Segment,
+                                   WRITE};
 
 use super::{Descriptor, FORMAT_VERSION};
 use crate::{Error, Result};
+
+/// Adapt the allocation-free wire inspector without discarding a typed error
+/// returned by its reader. Wire failures themselves are always malformed data.
+pub fn inspect(length: usize, descriptor: &Descriptor,
+               mut read: impl FnMut(usize, &mut [u8]) -> Result<()>, emit: impl FnMut(Segment))
+               -> Result<usize>
+{
+    let mut read_error = None;
+    let result = mac_code_resource::image::inspect(length,
+                                                   descriptor,
+                                                   |at, output| {
+                                                       read(at, output).map_err(|error| {
+                                                           read_error = Some(error);
+                                                           mac_code_resource::Error("native image \
+                                                                                     reader failed")
+                                                       })
+                                                   },
+                                                   emit);
+    result.map_err(|error| read_error.unwrap_or_else(|| error.into()))
+}
 #[derive(Debug)]
 pub struct Image
 {
@@ -24,7 +45,7 @@ pub fn decode(bytes: &[u8], descriptor: &Descriptor) -> Result<Image>
                       |segment| segments.push(segment))?;
     if end != bytes.len()
     {
-        return Err(Error("trailing data in RV64 segment resource"));
+        return Err(Error::Malformed("trailing data in RV64 segment resource"));
     }
     Ok(Image { segments })
 }
@@ -43,7 +64,7 @@ pub fn encode<'a>(descriptor: &Descriptor,
         {
             continue;
         }
-        count = count.checked_add(1).ok_or(Error("too many RV64 segments"))?;
+        count = count.checked_add(1).ok_or(Error::Malformed("too many RV64 segments"))?;
         result.extend_from_slice(&offset.to_be_bytes());
         result.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
         result.extend_from_slice(&flags.to_be_bytes());
@@ -57,11 +78,12 @@ impl Image
 {
     pub fn source(&self, address: u64, width: usize) -> Result<usize>
     {
-        let end = address.checked_add(width as u64).ok_or(Error("relocation address overflow"))?;
+        let end = address.checked_add(width as u64)
+                         .ok_or(Error::Malformed("relocation address overflow"))?;
         let segment = self.segments
                           .iter()
                           .find(|s| address >= s.offset && end <= s.offset + s.length as u64)
-                          .ok_or(Error("relocation outside initialized image"))?;
+                          .ok_or(Error::Malformed("relocation outside initialized image"))?;
         Ok(segment.data_offset + (address - segment.offset) as usize)
     }
 }
@@ -94,8 +116,9 @@ impl<'a> LoadPlan<'a>
     {
         let image = decode(bytes, descriptor)?;
         let extent = descriptor.load_limit - descriptor.load_base;
-        destination.checked_add(extent).ok_or(Error("native destination overflow"))?;
-        let length = usize::try_from(extent).map_err(|_| Error("native reservation overflow"))?;
+        destination.checked_add(extent).ok_or(Error::Malformed("native destination overflow"))?;
+        let length =
+            usize::try_from(extent).map_err(|_| Error::Malformed("native reservation overflow"))?;
         let patches = if let Some(table) = relocations
         {
             crate::relocation::patches(table,
@@ -120,18 +143,18 @@ impl<'a> LoadPlan<'a>
         {
             if descriptor.role != super::Role::System
             {
-                return Err(Error("native relocation metadata is missing"));
+                return Err(Error::Missing("native relocation metadata is missing"));
             }
             if destination != descriptor.load_base
             {
-                return Err(Error("System image must use its linked reservation"));
+                return Err(Error::Malformed("System image must use its linked reservation"));
             }
             Vec::new()
         };
         let entry = destination + (descriptor.entry - descriptor.load_base);
         if entry & 1 != 0
         {
-            return Err(Error("relocated entry is not instruction aligned"));
+            return Err(Error::Malformed("relocated entry is not instruction aligned"));
         }
         Ok(Self { bytes,
                   image,
@@ -145,7 +168,7 @@ impl<'a> LoadPlan<'a>
     {
         if output.len() != self.length
         {
-            return Err(Error("native destination has wrong length"));
+            return Err(Error::Malformed("native destination has wrong length"));
         }
         // Zero the reservation first: BSS, inter-segment holes and trailing bytes
         // stay zero without erasing initialized segments or relocated pointers.
@@ -176,7 +199,7 @@ mod tests
     fn descriptor() -> Descriptor
     {
         Descriptor { role:        super::super::Role::CodeResource,
-                     abi_version: 8,
+                     abi_version: super::super::ABI_VERSION,
                      load_base:   0x82000000,
                      load_limit:  0x82001000,
                      entry:       0x82000000 }
@@ -253,10 +276,9 @@ mod tests
     fn obsolete_elf_layouts_are_rejected_without_a_compatibility_path()
     {
         let (d, _, table) = fixture();
-        assert!(Descriptor::decode(&d.encode().unwrap()[..32]).unwrap_err()
-                                                              .0
-                                                              .contains("obsolete ELF-backed"));
-        assert!(decode(b"\x7fELF\x02\x01\x01\0", &d).unwrap_err().0.contains("ELF-backed"));
+        assert!(matches!(Descriptor::decode(&d.encode().unwrap()[..32]).map_err(Error::from),
+                         Err(Error::Malformed(_))));
+        assert!(matches!(decode(b"\x7fELF\x02\x01\x01\0", &d), Err(Error::Malformed(_))));
         let mut unsupported = d.encode().unwrap();
         unsupported[5] = 2;
         assert!(Descriptor::decode(&unsupported).is_err());

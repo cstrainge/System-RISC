@@ -336,6 +336,7 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
 {
     crate::drivers::pump_jobs();
     crate::toolbox::files::pump_provider_operations();
+    crate::toolbox::processes::documents::pump();
     crate::kernel::poll_waiting_events();
     let current = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();

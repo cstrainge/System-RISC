@@ -86,7 +86,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     let quickdraw_id = process_trace::launched(&serial, "QuickDraw Test").0;
     let first_editor_log = serial.split("PROCESS_EXIT app=").next().unwrap();
-    let editor_id = process_trace::launched(first_editor_log, "TextEdit Exerciser").0;
+    let editor_id = process_trace::launched(first_editor_log, "Text Edit").0;
     for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:", "SYSTEM_ALLOCATION_FAILED:", "FINDER_ERROR:",
                     "TEXTEDIT_EXERCISER_ERROR", "QUICKDRAW_TEST_ERROR", "PROCESS_ACTION_FAILED",
                     "APPLICATION_MENU_FAILED"]
@@ -113,7 +113,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
         serde_json::from_slice(&fs::read(output.join("icon-fixture.json")).unwrap()).unwrap();
     assert_eq!(fixture["icon_id"], 9433, "non-128 loaded-image icon fixture");
     let applications = image("applications-folder");
-    for (package, left, top) in [("QuickDraw Test", 168, 90), ("TextEdit Exerciser", 296, 90)]
+    for (package, left, top) in [("QuickDraw Test", 168, 90), ("Text Edit", 296, 90)]
     {
         assert_eq!(region(&applications, left, top, left + 32, top + 32),
                    icon(&root, package, 128, 32),
@@ -144,7 +144,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
                "exiting application retained its running icon");
     let popup = image("three-app-menu");
     for (package, id, top) in
-        [("System", 3, 85), ("QuickDraw Test", 128, 103), ("TextEdit Exerciser", 128, 121)]
+        [("System", 3, 85), ("QuickDraw Test", 128, 103), ("Text Edit", 128, 121)]
     {
         assert_eq!(region(&popup, 475, top, 491, top + 16),
                    icon(&root, package, id, 16),
@@ -152,7 +152,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     }
     for (frame, package, id) in [("finder-initial", "System", 3),
                                  ("quickdraw-launched", "QuickDraw Test", 128),
-                                 ("textedit-abc", "TextEdit Exerciser", 128)]
+                                 ("textedit-abc", "Text Edit", 128)]
     {
         assert_eq!(region(&image(frame), 610, 1, 626, 17),
                    icon(&root, package, id, 16),
@@ -236,9 +236,8 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     assert!(prefix("textedit-quit").contains(&format!("PROCESS_EXIT app={editor_id}\n")));
     assert!(prefix("quickdraw-quit").contains(&format!("PROCESS_EXIT app={quickdraw_id}\n")));
     assert_eq!(prefix("textedit-relaunched").matches("TEXTEDIT_EXERCISER_READY\n").count(), 2);
-    let original = process_trace::launched(&prefix("textedit-quit"), "TextEdit Exerciser");
-    let relaunched =
-        process_trace::launched(&prefix("textedit-relaunched-input"), "TextEdit Exerciser");
+    let original = process_trace::launched(&prefix("textedit-quit"), "Text Edit");
+    let relaunched = process_trace::launched(&prefix("textedit-relaunched-input"), "Text Edit");
     assert!(original.0 != relaunched.0 && original.1 != relaunched.1,
             "relaunch must create fresh application and thread identities");
     assert!(prefix("textedit-relaunched-input").contains("FINDER_TEXTEDIT_STATE length=1 \

@@ -329,3 +329,6 @@ pub enum SurfaceOperation
     FontMetrics = 5,
     DrawText    = 6
 }
+
+identity!(DocumentBatchId, u32);
+identity!(FileTransferId, u32);

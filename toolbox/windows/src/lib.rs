@@ -163,6 +163,16 @@ impl<'a> Windows<'a>
         Ok(self.client.window(BEGIN_UPDATE, request(id))?.bounds)
     }
 
+    /// Pair BeginUpdate/EndUpdate even when drawing exits through `?`.
+    pub fn update(self, id: WindowId) -> Result<WindowUpdate<'a>>
+    {
+        let bounds = self.begin_update(id)?;
+        Ok(WindowUpdate { windows: self,
+                          id,
+                          bounds,
+                          finished: false })
+    }
+
     pub fn end_update(self, id: WindowId) -> Result<()>
     {
         self.client.window(END_UPDATE, request(id)).map(|_| ())
@@ -219,6 +229,39 @@ pub struct Window<'a>
     client: Client<'a>,
     id:     WindowId,
     owned:  bool
+}
+
+#[must_use = "keep the update guard until drawing is complete"]
+pub struct WindowUpdate<'a>
+{
+    windows:  Windows<'a>,
+    id:       WindowId,
+    bounds:   Rect,
+    finished: bool
+}
+impl WindowUpdate<'_>
+{
+    pub fn bounds(&self) -> Rect
+    {
+        self.bounds
+    }
+
+    pub fn finish(mut self) -> Result<()>
+    {
+        self.windows.end_update(self.id)?;
+        self.finished = true;
+        Ok(())
+    }
+}
+impl Drop for WindowUpdate<'_>
+{
+    fn drop(&mut self)
+    {
+        if !self.finished
+        {
+            let _ = self.windows.end_update(self.id);
+        }
+    }
 }
 impl Window<'_>
 {

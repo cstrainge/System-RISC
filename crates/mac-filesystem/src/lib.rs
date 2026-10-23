@@ -35,7 +35,7 @@ impl Format
                 }
                 let mut display = Vec::new();
                 display.try_reserve_exact(name.len())
-                       .map_err(|_| Error("name allocation failed"))?;
+                       .map_err(|_| Error::AllocationFailed("name allocation failed"))?;
                 display.extend_from_slice(name.as_bytes());
                 Ok((display, key))
             }
@@ -66,15 +66,21 @@ impl Format
         }
     }
 }
-pub const INVALID_REQUEST: Error = Error("invalid filesystem request or name");
+pub const INVALID_REQUEST: Error = Error::Malformed("invalid filesystem request or name");
 fn native_error(e: mac_hfs_b::Error) -> Error
 {
     match e
     {
         mac_hfs_b::Error::Invalid => INVALID_REQUEST,
-        mac_hfs_b::Error::Incompatible => Error("incompatible HFS-B format; recreate volume"),
-        mac_hfs_b::Error::Dirty => Error("unclean HFS-B volume; check/recreate before mounting"),
-        _ => Error("HFS-B filesystem operation failed")
+        mac_hfs_b::Error::Incompatible =>
+        {
+            Error::Malformed("incompatible HFS-B format; recreate volume")
+        }
+        mac_hfs_b::Error::Dirty =>
+        {
+            Error::Malformed("unclean HFS-B volume; check/recreate before mounting")
+        }
+        _ => Error::Malformed("HFS-B filesystem operation failed")
     }
 }
 pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
@@ -82,7 +88,7 @@ pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
     let mut b = [0; 512];
     if disk.sector_count() < 3
     {
-        return Err(Error("disk is too small"));
+        return Err(Error::Malformed("disk is too small"));
     }
     disk.read_sector(2, &mut b)?;
     if &b[..2] == b"HB" || &b[..2] == b"BD"
@@ -96,7 +102,8 @@ pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
         let kind = entry.kind.split(|&b| b == 0).next().unwrap_or_default();
         if kind == b"Apple_HFS" || kind == b"System_RISC_HFS_B"
         {
-            out.try_reserve(1).map_err(|_| Error("partition allocation failed"))?;
+            out.try_reserve(1)
+               .map_err(|_| Error::AllocationFailed("partition allocation failed"))?;
             out.push(entry.range);
         }
     }
@@ -278,7 +285,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
 
     pub fn lookup(&mut self, parent: u32, name: &[u8]) -> Result<Option<CatalogEntry>>
     {
-        let name = core::str::from_utf8(name).map_err(|_| Error("invalid UTF-8 name"))?;
+        let name = core::str::from_utf8(name).map_err(|_| Error::Malformed("invalid UTF-8 name"))?;
         match &mut self.backend
         {
             Backend::Hfs(v) =>
@@ -315,17 +322,17 @@ impl<'a, D: BlockDevice> Volume<'a, D>
             {
                 v.read_fork(*id, *kind, offset, output).map_err(native_error)
             }
-            _ => Err(Error("foreign filesystem fork descriptor"))
+            _ => Err(Error::Malformed("foreign filesystem fork descriptor"))
         }
     }
 
     pub fn blessed_folder(&mut self) -> Result<CatalogEntry>
     {
-        let entry =
-            self.entry(self.blessed_id)?.ok_or(Error("blessed System Folder CNID is missing"))?;
+        let entry = self.entry(self.blessed_id)?
+                        .ok_or(Error::Malformed("blessed System Folder CNID is missing"))?;
         if !entry.directory || entry.id == 2
         {
-            return Err(Error("invalid blessed System Folder"));
+            return Err(Error::Malformed("invalid blessed System Folder"));
         }
         Ok(entry)
     }
@@ -333,16 +340,16 @@ impl<'a, D: BlockDevice> Volume<'a, D>
     pub fn find_file(&mut self, parent: u32, name: &[u8]) -> Result<File>
     {
         let mut e = self.lookup(parent, name)?
-                        .ok_or(Error("startup file is missing from blessed folder"))?;
+                        .ok_or(Error::Malformed("startup file is missing from blessed folder"))?;
         if e.directory
         {
-            return Err(Error("startup file is a directory"));
+            return Err(Error::Malformed("startup file is a directory"));
         }
         Ok(File { id:        e.id,
                   file_type: e.finder_info[..4].try_into().unwrap(),
                   creator:   e.finder_info[4..8].try_into().unwrap(),
-                  data:      e.data.take().ok_or(Error("missing data fork"))?,
-                  resources: e.resources.take().ok_or(Error("missing resource fork"))? })
+                  data:      e.data.take().ok_or(Error::Malformed("missing data fork"))?,
+                  resources: e.resources.take().ok_or(Error::Malformed("missing resource fork"))? })
     }
 
     fn refresh(&mut self)

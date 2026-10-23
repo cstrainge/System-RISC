@@ -4,6 +4,21 @@
 mod resource;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod application;
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn current_io_pending() -> bool
+{
+    provider::runtime::current_io_pending()
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn abandon_document_io(owner: u64, thread: u64, volume: u32, cnid: u32,
+                                  application: bool)
+                                  -> bool
+{
+    provider::runtime::abandon_document_io(owner, thread, volume, cnid, application)
+}
+
+
 use alloc::{string::String, vec::Vec};
 
 mod scan;
@@ -85,7 +100,7 @@ impl BlockDevice for Device
     {
         if sector >= self.info.sector_count
         {
-            return Err(mac_hfs::Error("sector outside device"));
+            return Err(mac_hfs::Error::Malformed("sector outside device"));
         }
         if self.cache.get(sector, output)
         {
@@ -105,7 +120,7 @@ impl BlockDevice for Device
         else
         {
             self.cache.clear();
-            Err(mac_hfs::Error("firmware sector read failed"))
+            Err(mac_hfs::Error::Malformed("firmware sector read failed"))
         }
     }
 }
@@ -122,11 +137,11 @@ impl WritableBlockDevice for Device
     {
         if self.is_read_only()
         {
-            return Err(mac_hfs::Error("device is read-only"));
+            return Err(mac_hfs::Error::Malformed("device is read-only"));
         }
         if sector >= self.info.sector_count
         {
-            return Err(mac_hfs::Error("sector outside device"));
+            return Err(mac_hfs::Error::Malformed("sector outside device"));
         }
         let status = unsafe {
             (self.storage.write_sector.unwrap())(self.storage.context,
@@ -144,14 +159,15 @@ impl WritableBlockDevice for Device
             // A reported failure may have written part of this sector. Never
             // hide it behind cached bytes during recovery or subsequent reads.
             self.cache.clear();
-            Err(mac_hfs::Error("firmware sector write failed"))
+            Err(mac_hfs::Error::Malformed("firmware sector write failed"))
         }
     }
 
     fn flush(&mut self) -> mac_hfs::Result<()>
     {
-        let callback =
-            self.storage.flush_disk.ok_or(mac_hfs::Error("device has no flush callback"))?;
+        let callback = self.storage
+                           .flush_disk
+                           .ok_or(mac_hfs::Error::Malformed("device has no flush callback"))?;
         let status = unsafe { callback(self.storage.context, self.index) };
         if status == OK
         {
@@ -160,7 +176,7 @@ impl WritableBlockDevice for Device
         else
         {
             self.cache.clear();
-            Err(mac_hfs::Error("firmware disk flush failed"))
+            Err(mac_hfs::Error::Malformed("firmware disk flush failed"))
         }
     }
 }
@@ -230,6 +246,7 @@ pub struct Manager
     volumes:              Table<Mounted>,
     handles:              Table<OpenFile>,
     writes:               Table<write::Pending>,
+    document_pins:        Vec<(u32, u32, u32)>,
     watches:              Table<watch::Watch>,
     pub rejected_volumes: u32
 }
@@ -240,6 +257,7 @@ impl Default for Manager
         Self { volumes:          Table::new(Kind::Volumes),
                handles:          Table::new(Kind::Files),
                writes:           Table::new(Kind::FileWrites),
+               document_pins:    Vec::new(),
                watches:          Table::new(Kind::FileWatches),
                rejected_volumes: 0 }
     }
@@ -308,6 +326,27 @@ fn required(entry: Option<CatalogEntry>) -> Result<CatalogEntry, Status>
 }
 impl Manager
 {
+    pub(crate) fn pin_document(&mut self, _owner: u64, batch: u32, volume: u32, id: u32)
+                               -> Result<(), Status>
+    {
+        self.read_provider(volume)?;
+        if self.writes.iter().any(|(_, write)| write.volume == volume && write.expected_cnid == id)
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if !self.document_pins.contains(&(batch, volume, id))
+        {
+            self.document_pins.try_reserve(1).map_err(|_| NO_MEMORY)?;
+            self.document_pins.push((batch, volume, id));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn unpin_documents(&mut self, batch: u32)
+    {
+        self.document_pins.retain(|(id, _, _)| *id != batch);
+    }
+
     /// Discover all valid classic HFS partitions on each firmware device.
     /// Non-HFS devices and malformed volumes are skipped; capacity overflow fails.
     pub fn new(storage: BootStorage) -> Result<Self, Status>
@@ -579,6 +618,10 @@ impl Manager
                     protected.push(file.id);
                 }
             }
+            if self.document_pins.iter().any(|(_, volume, _)| *volume == call.volume)
+            {
+                return Err(SERVICE_BUSY);
+            }
             for (_, pending) in self.writes.iter()
             {
                 if pending.volume == call.volume && pending.expected_cnid != 0
@@ -807,6 +850,12 @@ impl Manager
     pub fn request_owned(&mut self, owner: u64, call: &mut FileCall, name: &str, output: &mut [u8])
                          -> Result<(), Status>
     {
+        if call.operation == EMPTY_TRASH
+           && self.document_pins.iter().any(|(_, volume, _)| *volume == call.volume)
+        {
+            return Err(SERVICE_BUSY);
+        }
+
         call.transferred = 0;
         if matches!(call.operation, WATCH_DIRECTORY | POLL_WATCH | DISPOSE_WATCH)
         {

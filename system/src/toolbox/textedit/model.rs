@@ -82,7 +82,8 @@ impl Editor
 
     pub fn info(&self) -> EditorInfo
     {
-        self.info
+        EditorInfo { scroll_max: self.maximum_scroll(),
+                     ..self.info }
     }
 
     fn boundary(&self, index: u32) -> Result<usize, Status>
@@ -128,6 +129,12 @@ impl Editor
         {
             return Err(BAD_ARGUMENT);
         }
+        if &self.text[start..end] == input
+        {
+            let end = (start + input.len()) as u32;
+            return self.select(end, end);
+        }
+        let content_revision = self.info.content_revision.checked_add(1).ok_or(NO_MEMORY)?;
         let length = self.text.len() - (end - start) + input.len();
         if length > MAX_BYTES
         {
@@ -143,6 +150,7 @@ impl Editor
                                   - i32::from(self.info.dest.left),
                                   &self.font)?;
         self.text = text;
+        self.info.content_revision = content_revision;
         self.lines = lines;
         self.info.text_length = length as u32;
         self.info.line_count = self.lines.len() as u32;
@@ -231,7 +239,7 @@ impl Editor
         if self.lines.is_empty()
         {
             return Ok(Point { h: self.info.dest.left.saturating_add(1),
-                              v: self.info.dest.top.saturating_add(self.info.line_height) });
+                              v: clamp(self.origin_y() + i32::from(self.info.line_height)) });
         }
         let row = self.lines
                       .iter()
@@ -241,13 +249,12 @@ impl Editor
         let text = &self.text[line.start as usize..at];
         let text = if text.ends_with('\r') { "" } else { text };
         Ok(Point { h: clamp(i32::from(self.info.dest.left) + 1 + i32::from(self.font.width(text))),
-                   v: clamp(i32::from(self.info.dest.top)
-                            + (row as i32 + 1) * i32::from(self.info.line_height)) })
+                   v: clamp(self.origin_y() + (row as i32 + 1) * i32::from(self.info.line_height)) })
     }
 
     pub fn offset(&self, point: Point) -> u32
     {
-        let relative = i32::from(point.v) - i32::from(self.info.dest.top);
+        let relative = i32::from(point.v) - self.origin_y();
         if relative < 0
         {
             return 0;
@@ -340,10 +347,7 @@ impl Editor
         {
             return self.lines.len();
         }
-        self.lines
-            .iter()
-            .position(|line| at < line.end)
-            .unwrap_or(self.lines.len().saturating_sub(1))
+        self.lines.partition_point(|line| line.end <= at).min(self.lines.len().saturating_sub(1))
     }
 
     fn row_bounds(&self, row: usize) -> (u32, u32)
@@ -365,8 +369,7 @@ impl Editor
                          + 1
                          + i32::from(self.font.width(&self.text[start as usize
                                                                 ..at.clamp(start, end) as usize]))),
-                v: clamp(i32::from(self.info.dest.top)
-                         + (row as i32 + 1) * i32::from(self.info.line_height)) }
+                v: clamp(self.origin_y() + (row as i32 + 1) * i32::from(self.info.line_height)) }
     }
 
     fn native_offset(&self, row: usize, horizontal: i16) -> u32
@@ -494,6 +497,72 @@ impl Editor
         Ok(())
     }
 
+    pub(crate) fn origin_y(&self) -> i32
+    {
+        i32::from(self.info.dest.top) - self.info.scroll_y as i32
+    }
+
+    pub(crate) fn visible_lines(&self) -> core::ops::Range<usize>
+    {
+        let height = i32::from(self.info.line_height).max(1);
+        let start =
+            (i32::from(self.info.view.top) - self.origin_y()).div_euclid(height).max(0) as usize;
+        let end =
+            (i32::from(self.info.view.bottom) - self.origin_y() + height - 1).div_euclid(height)
+                                                                             .max(0)
+            as usize;
+        start.min(self.lines.len())..end.min(self.lines.len())
+    }
+
+    fn maximum_scroll(&self) -> u32
+    {
+        let rows =
+            self.lines.len() + usize::from(self.text.ends_with('\r') || self.lines.is_empty());
+        let content = rows as u32 * self.info.line_height as u32;
+        let viewport =
+            (i32::from(self.info.view.bottom) - i32::from(self.info.view.top)).max(1) as u32;
+        content.saturating_sub(viewport)
+    }
+
+    pub fn scroll_to(&mut self, pixels: u32)
+    {
+        let next = pixels.min(self.maximum_scroll());
+        if next != self.info.scroll_y
+        {
+            self.info.scroll_y = next;
+            self.info.revision = self.info.revision.wrapping_add(1);
+        }
+    }
+
+    pub fn reveal_selection(&mut self)
+    {
+        let focus = if self.anchor == self.info.selection_end
+        {
+            self.info.selection_start
+        }
+        else
+        {
+            self.info.selection_end
+        };
+        let row = self.affinity.unwrap_or_else(|| self.native_row(focus));
+        let top = self.origin_y() + row as i32 * i32::from(self.info.line_height);
+        let bottom = top + i32::from(self.info.line_height);
+        let delta = if top < i32::from(self.info.view.top)
+        {
+            top - i32::from(self.info.view.top)
+        }
+        else if bottom > i32::from(self.info.view.bottom)
+        {
+            bottom - i32::from(self.info.view.bottom)
+        }
+        else
+        {
+            0
+        };
+        self.scroll_to((i64::from(self.info.scroll_y) + i64::from(delta)).clamp(0, u32::MAX as i64)
+                       as u32);
+    }
+
     pub fn caret_rect(&self) -> Rect
     {
         let focus = if self.anchor == self.info.selection_end
@@ -520,7 +589,11 @@ impl Editor
         {
             return;
         }
-        for (row, line) in self.lines.iter().enumerate()
+        let visible = self.visible_lines();
+        for (row, line) in
+            self.lines[visible.clone()].iter()
+                                       .enumerate()
+                                       .map(|(row, line)| (row + visible.start, line))
         {
             if start >= line.end || end <= line.start
             {
@@ -543,7 +616,7 @@ impl Editor
                 + 1
                 + i32::from(self.font.width(&self.text[line.start as usize..b as usize]))
             };
-            let top = i32::from(self.info.dest.top) + row as i32 * i32::from(self.info.line_height);
+            let top = self.origin_y() + row as i32 * i32::from(self.info.line_height);
             emit(Rect::new(clamp(left),
                            clamp(top),
                            clamp(right),

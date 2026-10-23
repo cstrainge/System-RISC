@@ -44,28 +44,31 @@ pub fn decode(bytes: &[u8], load_base: u64, load_limit: u64) -> Result<Image>
     // contracts; this build-only marker is never copied into native resources.
     if &bytes[..7] != b"\x7fELF\x02\x01\x01" || !matches!(bytes[7], 0 | 3)
     {
-        return Err(Error("expected ELF64 little-endian static System V/GNU image"));
+        return Err(Error::Malformed("expected ELF64 little-endian static System V/GNU image"));
     }
     if u16le(bytes, 16)? != 2 || u16le(bytes, 18)? != 243 || u32le(bytes, 20)? != 1
     {
-        return Err(Error("expected fixed-address RISC-V executable"));
+        return Err(Error::Malformed("expected fixed-address RISC-V executable"));
     }
     let flags = u32le(bytes, 48)?;
     if flags & !1 != 0
     {
-        return Err(Error("unsupported RISC-V ABI flags (requires soft-float RV64IMAC)"));
+        return Err(Error::Malformed("unsupported RISC-V ABI flags (requires soft-float \
+                                     RV64IMAC)"));
     }
     if u16le(bytes, 52)? != 64 || u16le(bytes, 54)? != 56
     {
-        return Err(Error("invalid ELF header sizes"));
+        return Err(Error::Malformed("invalid ELF header sizes"));
     }
     let count = u16le(bytes, 56)? as usize;
     if count == 0 || count > 256 || load_base >= load_limit
     {
-        return Err(Error("invalid ELF program count or memory range"));
+        return Err(Error::Malformed("invalid ELF program count or memory range"));
     }
-    let start =
-        usize::try_from(u64le(bytes, 32)?).map_err(|_| Error("ELF program offset overflow"))?;
+    let start = usize::try_from(u64le(bytes, 32)?).map_err(|_| {
+                                                      Error::Malformed("ELF program offset \
+                                                                        overflow")
+                                                  })?;
     let headers = slice(bytes, start, count * 56)?;
     let entry = u64le(bytes, 24)?;
     let mut segments: Vec<Segment> = Vec::new();
@@ -74,7 +77,8 @@ pub fn decode(bytes: &[u8], load_base: u64, load_limit: u64) -> Result<Image>
         let kind = u32le(h, 0)?;
         if kind == 2 || kind == 3 || kind == 7
         {
-            return Err(Error("dynamic linking, interpreters and TLS are not supported"));
+            return Err(Error::Malformed("dynamic linking, interpreters and TLS are not \
+                                         supported"));
         }
         if kind != 1
         {
@@ -90,31 +94,37 @@ pub fn decode(bytes: &[u8], load_base: u64, load_limit: u64) -> Result<Image>
         {
             continue;
         }
-        let end = s.address.checked_add(s.memory_size).ok_or(Error("ELF memory size overflow"))?;
+        let end = s.address
+                   .checked_add(s.memory_size)
+                   .ok_or(Error::Malformed("ELF memory size overflow"))?;
         if u64le(h, 24)? != s.address
            || s.address < load_base
            || end > load_limit
            || s.file_size > s.memory_size
         {
-            return Err(Error("ELF segment outside reserved memory or invalid sizes"));
+            return Err(Error::Malformed("ELF segment outside reserved memory or invalid sizes"));
         }
         if s.flags & !7 != 0 || s.flags & 3 == 3
         {
-            return Err(Error("invalid or writable executable segment"));
+            return Err(Error::Malformed("invalid or writable executable segment"));
         }
         if s.alignment > 1
            && (!s.alignment.is_power_of_two() || s.address % s.alignment != s.offset % s.alignment)
         {
-            return Err(Error("invalid ELF segment alignment"));
+            return Err(Error::Malformed("invalid ELF segment alignment"));
         }
         slice(bytes,
-              usize::try_from(s.offset).map_err(|_| Error("ELF file offset overflow"))?,
-              usize::try_from(s.file_size).map_err(|_| Error("ELF file size overflow"))?)?;
+              usize::try_from(s.offset).map_err(|_| {
+                                           Error::Malformed("ELF file offset overflow")
+                                       })?,
+              usize::try_from(s.file_size).map_err(|_| {
+                                              Error::Malformed("ELF file size overflow")
+                                          })?)?;
         if segments
             .iter()
             .any(|other| s.address < other.address + other.memory_size && other.address < end)
         {
-            return Err(Error("overlapping ELF load segments"));
+            return Err(Error::Malformed("overlapping ELF load segments"));
         }
         segments.push(s);
     }
@@ -125,7 +135,7 @@ pub fn decode(bytes: &[u8], load_base: u64, load_limit: u64) -> Result<Image>
                               && entry < s.address + s.file_size
                           })
     {
-        return Err(Error("entry point is not in executable file data"));
+        return Err(Error::Malformed("entry point is not in executable file data"));
     }
     segments.sort_by_key(|s| s.address);
     Ok(Image { entry,

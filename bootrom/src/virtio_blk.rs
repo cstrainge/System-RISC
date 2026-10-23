@@ -142,18 +142,18 @@ impl Disk
                               failed: false };
         if disk.read(4) != 2
         {
-            return Err(Error("virtio block requires modern MMIO version 2"));
+            return Err(Error::Malformed("virtio block requires modern MMIO version 2"));
         }
         disk.write(0x70, 0);
         if disk.read(0x70) != 0
         {
-            return Err(Error("virtio block reset failed"));
+            return Err(Error::Malformed("virtio block reset failed"));
         }
         disk.write(0x70, 3);
         disk.write(0x14, 1);
         if disk.read(0x10) & 1 == 0
         {
-            return Err(Error("virtio block lacks VERSION_1"));
+            return Err(Error::Malformed("virtio block lacks VERSION_1"));
         }
         disk.write(0x14, 0);
         let features = disk.read(0x10);
@@ -167,12 +167,12 @@ impl Disk
         disk.write(0x70, 11);
         if disk.read(0x70) & 8 == 0
         {
-            return Err(Error("virtio block feature negotiation failed"));
+            return Err(Error::Malformed("virtio block feature negotiation failed"));
         }
         disk.write(0x30, 0);
         if disk.read(0x34) < N as u32 || disk.read(0x44) != 0
         {
-            return Err(Error("virtio block queue is unavailable"));
+            return Err(Error::Malformed("virtio block queue is unavailable"));
         }
         disk.write(0x38, N as u32);
         let q = &mut *disk.queue;
@@ -207,7 +207,7 @@ impl Disk
                 return Ok(disk);
             }
         }
-        Err(Error("virtio block capacity is unstable or empty"))
+        Err(Error::Malformed("virtio block capacity is unstable or empty"))
     }
 
     pub fn is_read_only(&self) -> bool
@@ -227,7 +227,7 @@ impl BlockDevice for Disk
     {
         if sector >= self.sectors
         {
-            return Err(Error("virtio read outside disk"));
+            return Err(Error::Malformed("virtio read outside disk"));
         }
         self.request(0, sector, None)?;
         for (index, byte) in output.iter_mut().enumerate()
@@ -269,14 +269,14 @@ impl Disk
                          now().wrapping_sub(start) / 10,
                          self.failed,
                          reason);
-        Error(reason)
+        Error::Malformed(reason)
     }
 
     fn request(&mut self, kind: u32, sector: u64, input: Option<&[u8; 512]>) -> Result<()>
     {
         if self.failed
         {
-            return Err(Error("virtio block queue is poisoned"));
+            return Err(Error::Malformed("virtio block queue is poisoned"));
         }
         let q = &mut *self.queue;
         q.request.kind = kind.to_le();
@@ -355,11 +355,11 @@ impl WritableBlockDevice for Disk
     {
         if WritableBlockDevice::is_read_only(self)
         {
-            return Err(Error("virtio block is read-only or lacks flush"));
+            return Err(Error::Malformed("virtio block is read-only or lacks flush"));
         }
         if sector >= self.sectors
         {
-            return Err(Error("virtio write outside disk"));
+            return Err(Error::Malformed("virtio write outside disk"));
         }
         self.request(1, sector, Some(input))
     }
@@ -368,7 +368,7 @@ impl WritableBlockDevice for Disk
     {
         if !self.flush_supported
         {
-            return Err(Error("virtio block lacks FLUSH"));
+            return Err(Error::Malformed("virtio block lacks FLUSH"));
         }
         self.request(4, 0, None)
     }

@@ -322,6 +322,8 @@ impl Manager
             OFFSET => call.index = editor.offset(call.point),
             POINT => call.point = editor.point(call.index)?,
             SCROLL => editor.scroll(call.delta)?,
+            SCROLL_TO => editor.scroll_to(call.index),
+            REVEAL_SELECTION => editor.reveal_selection(),
             ACTIVATE => editor.activate(call.index != 0),
             IDLE => editor.idle(call.ticks),
             CLICK => editor.click(call.point, call.index != 0)?,

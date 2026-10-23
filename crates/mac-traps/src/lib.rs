@@ -6,7 +6,8 @@ mod error;
 pub mod types;
 pub mod coordinates;
 pub use error::Error;
-pub use types::{Cnid, MenuId, ProcessId, ThreadId, TypeCode, VolumeId};
+pub use types::{Cnid, DocumentBatchId, FileTransferId, MenuId, ProcessId, ThreadId, TypeCode,
+                VolumeId};
 pub type Result<T> = core::result::Result<T, Error>;
 mod files;
 mod images;
@@ -951,6 +952,11 @@ impl Client<'_>
 
 impl Client<'_>
 {
+    pub fn document(self, call: &mut mac_abi::processes::DocumentCall) -> Result<()>
+    {
+        status(self.invoke(PROCESS, call))
+    }
+
     pub fn process(self, call: &mut mac_abi::processes::ProcessCall) -> Result<()>
     {
         status(self.invoke(PROCESS, call))

@@ -74,6 +74,10 @@ pub enum Payload
     {
         title: String, items: Vec<MenuItem>
     },
+    OpenTypes
+    {
+        signature: String, types: Vec<String>
+    },
     Hex
     {
         hex: String
@@ -546,6 +550,19 @@ impl Manifest
                                                   data:       commands });
                     }
                     out.push(0);
+                    out
+                }
+                Payload::OpenTypes { signature,
+                                     types } =>
+                {
+                    if definition.kind != "open"
+                    {
+                        return Err(error("open_types payload requires resource type open"));
+                    }
+                    let signature = fourcc(signature)?;
+                    let types = types.iter().map(|kind| fourcc(kind)).collect::<Result<Vec<_>>>()?;
+                    let mut out = vec![0; 8 + types.len() * 4];
+                    mac_formats::open_types::encode(signature, &types, &mut out)?;
                     out
                 }
                 Payload::Hex { hex } =>

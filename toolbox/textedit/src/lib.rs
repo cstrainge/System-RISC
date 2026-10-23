@@ -12,33 +12,39 @@ pub use mac_traps::{Client, Error, Result};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EditorInfo
 {
-    pub dest:            Rect,
-    pub view:            Rect,
-    pub selection_start: u32,
-    pub selection_end:   u32,
-    pub text_length:     u32,
-    pub line_count:      u32,
-    pub line_height:     i16,
-    pub ascent:          i16,
-    pub active:          bool,
-    pub caret_visible:   bool,
-    pub revision:        u32
+    pub dest:             Rect,
+    pub view:             Rect,
+    pub selection_start:  u32,
+    pub selection_end:    u32,
+    pub text_length:      u32,
+    pub line_count:       u32,
+    pub line_height:      i16,
+    pub ascent:           i16,
+    pub active:           bool,
+    pub caret_visible:    bool,
+    pub revision:         u32,
+    pub content_revision: u64,
+    pub scroll_y:         u32,
+    pub scroll_max:       u32
 }
 impl From<mac_abi::textedit::EditorInfo> for EditorInfo
 {
     fn from(info: mac_abi::textedit::EditorInfo) -> Self
     {
-        Self { dest:            info.dest,
-               view:            info.view,
-               selection_start: info.selection_start,
-               selection_end:   info.selection_end,
-               text_length:     info.text_length,
-               line_count:      info.line_count,
-               line_height:     info.line_height,
-               ascent:          info.ascent,
-               active:          info.active != 0,
-               caret_visible:   info.caret_visible != 0,
-               revision:        info.revision }
+        Self { dest:             info.dest,
+               view:             info.view,
+               selection_start:  info.selection_start,
+               selection_end:    info.selection_end,
+               text_length:      info.text_length,
+               line_count:       info.line_count,
+               line_height:      info.line_height,
+               ascent:           info.ascent,
+               active:           info.active != 0,
+               caret_visible:    info.caret_visible != 0,
+               revision:         info.revision,
+               content_revision: info.content_revision,
+               scroll_y:         info.scroll_y,
+               scroll_max:       info.scroll_max }
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -236,6 +242,30 @@ impl<'a> TextEdit<'a>
                                        operation: NAVIGATE,
                                        key: movement as u32,
                                        index: u32::from(extend),
+                                       ..Default::default() },
+                        "",
+                        &mut [])?
+               .info
+               .into())
+    }
+
+    /// Native scrolling keeps wide document offsets separate from classic rects.
+    pub fn scroll_to(self, id: EditorId, pixels: u32) -> Result<EditorInfo>
+    {
+        Ok(self.request(TextEditCall { operation: SCROLL_TO,
+                                       id,
+                                       index: pixels,
+                                       ..Default::default() },
+                        "",
+                        &mut [])?
+               .info
+               .into())
+    }
+
+    pub fn reveal_selection(self, id: EditorId) -> Result<EditorInfo>
+    {
+        Ok(self.request(TextEditCall { operation: REVEAL_SELECTION,
+                                       id,
                                        ..Default::default() },
                         "",
                         &mut [])?

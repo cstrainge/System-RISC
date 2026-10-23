@@ -53,6 +53,7 @@ struct Marquee
 #[derive(Default)]
 pub struct Browser
 {
+    document_open:    Option<CatalogInfo>,
     front:            WindowId,
     cache_job:        Option<usize>,
     startup_writable: bool,
@@ -311,6 +312,11 @@ fn folder_entry(system: &System<'_>, location: Location, mut index: u32)
 }
 impl Browser
 {
+    pub fn take_document_open(&mut self) -> Option<CatalogInfo>
+    {
+        self.document_open.take()
+    }
+
     pub fn marquee_tracking(&self) -> bool
     {
         self.marquee.is_some() || self.desktop.marquee.is_some()
@@ -838,6 +844,10 @@ impl Browser
             self.open(system,
                       Location { volume: mounted.id,
                                  folder: ROOT_ID })?;
+        }
+        else
+        {
+            self.document_open = Some(*entry);
         }
         Ok(())
     }

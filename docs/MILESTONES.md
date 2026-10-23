@@ -40,7 +40,7 @@ app inside Finder. App-local menus/events/dialogs/cursors/worlds/TextEdit and
 legacy state follow the trusted context; resources select the app's immutable
 image, memory uses a separate bounded zone and fork handles validate AppId.
 
-QuickDraw Test and TextEdit Exerciser are separate Cargo applications with their
+QuickDraw Test and Text Edit are separate Cargo applications with their
 own resource menus, window layouts, icons/bundles and generated versions. The
 image builder installs both in `Applications` and verifies fork/metadata
 roundtrips. Finder retains browsing, About and Clipboard; its Q shortcut launches
@@ -118,7 +118,7 @@ text, wrapping, selection, hit testing, editing and clipped drawing.
 - Native Copy/Cut/Paste uses the guarded System clipboard and stages fallible
   edits before publication. Original TextEdit's private scrap is separately
   observed and remains a classic-adapter gap.
-- Finder's resource-based Develop > TextEdit Exerciser uses WIND2003, resource
+- Finder's resource-based Develop > Text Edit uses WIND2003, resource
   strings, loaded WDEF0 and resident drawing. Its resizable window supports
   typing, mouse selection, caret blink and contextual Edit-menu commands.
 - Seven resident RV64 frames match all86,016 original pixels exactly, including

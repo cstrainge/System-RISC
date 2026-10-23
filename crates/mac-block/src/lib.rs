@@ -36,7 +36,7 @@ impl Partition
                   .checked_add(self.sectors)
                   .is_none_or(|end| end > disk.sector_count() || end > u64::MAX / 512)
         {
-            return Err(Error("volume range outside device"));
+            return Err(Error::Malformed("volume range outside device"));
         }
         Ok(())
     }

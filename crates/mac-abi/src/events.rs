@@ -12,6 +12,8 @@ pub const CONTROL_KEY: u16 = 4096;
 /// Native Window Manager notification after committed movement/resizing.
 /// The complete WindowId is in payload's low 32 bits, not in the message.
 pub const WINDOW_GEOMETRY_CHANGED: u32 = 0x0d00_0000;
+/// Coalesced native transfer progress; payload is a generation-tagged owner ID.
+pub const FILE_TRANSFER_CHANGED: u32 = 0x0f00_0000;
 
 /// Additive native event transport. Existing Event/EventCall layouts stay fixed.
 pub const POSITION_NEXT: u32 = 0;

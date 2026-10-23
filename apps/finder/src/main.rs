@@ -11,6 +11,7 @@ mod resources
 
 mod ui;
 mod clipboard;
+mod associations;
 mod menus;
 mod browser;
 mod cache;
@@ -88,6 +89,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     let mut browser = browser::Browser::default();
     let mut dragging = browser::dragging::Controller::default();
     let mut watches = watches::Controller::default();
+    let mut associations = associations::Controller::default();
     let mut info = get_info::Controller::default();
     let _menus = menus::install(system)?;
     let mut alerts = ui::Alerts::default();
@@ -134,10 +136,29 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     system.log("DESKTOP_READY: Finder and native Window Manager\n")?;
     loop
     {
-        let (event, position) =
-            system.wait_positioned(mac_toolbox::events::EventMask::ALL,
-                                   if info.pending() || browser.pending() { 0 } else { 30 })?
-                  .into_parts();
+        if alerts.window() == WindowId(0)
+        {
+            if let Some(document) = browser.take_document_open()
+            {
+                let _ = try_action(system,
+                                   &mut alerts,
+                                   associations.begin(system, browser.startup, document))?;
+            }
+            let _ = try_action(system, &mut alerts, associations.advance(system))?;
+        }
+        let (event, position) = system.wait_positioned(mac_toolbox::events::EventMask::ALL,
+                                                       if info.pending()
+                                                          || browser.pending()
+                                                          || (associations.pending()
+                                                              && alerts.window() == WindowId(0))
+                                                       {
+                                                           0
+                                                       }
+                                                       else
+                                                       {
+                                                           30
+                                                       })?
+                                      .into_parts();
         alerts.set_context(&event);
         if let Event::WindowGeometryChanged { window,
                                               .. } = event

@@ -104,7 +104,7 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     let mut volume = Volume::mount(disk, partition)?;
     if volume.format != mac_filesystem::Format::HfsB
     {
-        return Err(Error("native boot requires HFS-B; recreate System disk"));
+        return Err(Error::Malformed("native boot requires HFS-B; recreate System disk"));
     }
     serial!("HFS-B: volume '{}' at sector {}",
             core::str::from_utf8(&volume.name).unwrap_or("?"),
@@ -116,7 +116,7 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     let file = volume.find_file(folder.id, b"System")?;
     if file.file_type != *b"zsys"
     {
-        return Err(Error("startup file is not type zsys"));
+        return Err(Error::Malformed("startup file is not type zsys"));
     }
     let mut fork = file.resources;
     let resources =
@@ -133,27 +133,27 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
                                             }
                                             else
                                             {
-                                                Err(Error("short startup resource read"))
+                                                Err(Error::Malformed("short startup resource read"))
                                             }
                                         })?;
     let abi = resources.iter()
                        .find(|r| r.kind == *b"NABI" && r.id == 0)
-                       .ok_or(Error("System has no native ABI resource"))?;
+                       .ok_or(Error::Malformed("System has no native ABI resource"))?;
     let descriptor = Descriptor::decode(&abi.data)?;
     if descriptor.role != Role::System || descriptor.abi_version != mac_abi::ABI_VERSION
     {
-        return Err(Error("startup executable is not a compatible System"));
+        return Err(Error::Malformed("startup executable is not a compatible System"));
     }
     // Fixed QEMU virt/128 MiB board contract. Keep low 2 MiB for ROM state,
     // stack; firmware scratch occupies 0x87000000..0x87800000 and QEMU's
     // device tree occupies the high 2 MiB. Resource forks now include fonts.
     if descriptor.load_base < 0x80200000 || descriptor.load_limit > 0x87000000
     {
-        return Err(Error("System reservation overlaps firmware or exceeds usable RAM"));
+        return Err(Error::Malformed("System reservation overlaps firmware or exceeds usable RAM"));
     }
     let code = resources.into_iter()
                         .find(|r| r.kind == *b"RV64" && r.id == 0)
-                        .ok_or(Error("System has no RV64 executable resource"))?
+                        .ok_or(Error::Malformed("System has no RV64 executable resource"))?
                         .data;
     let image = image::decode(&code, &descriptor)?;
     // A bootable installation includes a compatible Finder. Validate its code
@@ -161,7 +161,7 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     let finder = volume.find_file(folder.id, b"Finder")?;
     if finder.file_type != *b"FNDR"
     {
-        return Err(Error("startup Finder does not have type FNDR"));
+        return Err(Error::Malformed("startup Finder does not have type FNDR"));
     }
     let mut fork = finder.resources;
     let finder =
@@ -178,13 +178,13 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
                                             }
                                             else
                                             {
-                                                Err(Error("short Finder resource read"))
+                                                Err(Error::Malformed("short Finder resource read"))
                                             }
                                         })?;
     let get = |kind| {
         finder.iter()
               .find(|r| r.kind == kind)
-              .ok_or(Error("startup Finder code metadata is missing"))
+              .ok_or(Error::Malformed("startup Finder code metadata is missing"))
     };
     let abi = Descriptor::decode(&get(*b"NABI")?.data)?;
     if abi.role != Role::Application
@@ -192,7 +192,7 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
        || abi.load_base != 0x81000000
        || abi.load_limit > 0x82000000
     {
-        return Err(Error("startup Finder is incompatible; rebuild System disk"));
+        return Err(Error::Malformed("startup Finder is incompatible; rebuild System disk"));
     }
     image::LoadPlan::new(&get(*b"RV64")?.data, &abi, Some(&get(*b"RLOC")?.data), abi.load_base)?;
     Ok(Startup { descriptor,
@@ -364,11 +364,11 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize, pa
                                                                             })
        || !address.is_multiple_of(core::mem::align_of::<SystemServices>() as u64)
     {
-        return Err(Error("System returned an invalid service table address"));
+        return Err(Error::Malformed("System returned an invalid service table address"));
     }
     if !unsafe { &*table.cast::<Header>() }.supports::<SystemServices>()
     {
-        return Err(Error("System returned an incompatible service table"));
+        return Err(Error::Malformed("System returned an incompatible service table"));
     }
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", address);
     Ok(())

@@ -2,7 +2,7 @@
 
 ## Current scheduler and batching
 
-Native Finder, QuickDraw Test and TextEdit Exerciser use scheduler-backed event
+Native Finder, QuickDraw Test and Text Edit use scheduler-backed event
 waits. The OS samples readiness every 500 us and prioritizes fresh foreground
 input. Nonblocking event reads return ready input before painting. TextEdit
 drains at most 128 consecutive keyboard events before applying their edits and
@@ -122,7 +122,7 @@ Rust owns acceptance in `crates/mac-toolbox/tests/typing.rs`; Python only packag
 private disks, injects keys and collects complete acknowledgements. The result
 is `../results/system7/typing-checks.json`. The private profiling guest forwards
 real resident requests through the supplied gate and includes the actual
-TextEdit Exerciser editor/menu/batch sources. Tests do not inject input into the user's visible VM.
+Text Edit editor/menu/batch sources. Tests do not inject input into the user's visible VM.
 
 To run the same canonical assertions using the installed Windows QEMU binary:
 

@@ -1,0 +1,326 @@
+{
+  "name": "Text Edit",
+  "binary_name": "TextEdit",
+  "file_type": "APPL",
+  "creator": "TEDT",
+  "role": "application",
+  "abi_version": 11,
+  "load_base": "0x84000000",
+  "load_limit": "0x85000000",
+  "description": "System RISC Text Edit",
+  "resources": [
+    {
+      "type": "MENU",
+      "id": 128,
+      "symbol": "FILE_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "File",
+        "items": [
+          {
+            "text": "New",
+            "command": "new ",
+            "enabled": true,
+            "key": "N"
+          },
+          {
+            "text": "Open...",
+            "command": "open",
+            "enabled": true,
+            "key": "O"
+          },
+          "-",
+          {
+            "text": "Close",
+            "command": "clos",
+            "enabled": true,
+            "key": "W"
+          },
+          {
+            "text": "Save",
+            "command": "save",
+            "enabled": true,
+            "key": "S"
+          },
+          {
+            "text": "Save As...",
+            "command": "svas",
+            "enabled": true
+          },
+          "-",
+          {
+            "text": "Quit",
+            "command": "quit",
+            "enabled": true,
+            "key": "Q"
+          }
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 129,
+      "symbol": "EDIT_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "Edit",
+        "items": [
+          {
+            "text": "Cut",
+            "command": "cut ",
+            "enabled": true,
+            "key": "X"
+          },
+          {
+            "text": "Copy",
+            "command": "copy",
+            "enabled": true,
+            "key": "C"
+          },
+          {
+            "text": "Paste",
+            "command": "past",
+            "enabled": true,
+            "key": "V"
+          },
+          {
+            "text": "Clear",
+            "command": "cler",
+            "enabled": true
+          },
+          "-",
+          {
+            "text": "Select All",
+            "command": "sela",
+            "enabled": true,
+            "key": "A"
+          }
+        ]
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 128,
+      "symbol": "PRODUCT_NAME",
+      "payload": {
+        "format": "pstring",
+        "text": "Text Edit"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 128,
+      "symbol": "APPLICATION_ICON",
+      "payload": {
+        "format": "file",
+        "path": "assets/application.icn"
+      }
+    },
+    {
+      "type": "BNDL",
+      "id": 128,
+      "symbol": "APPLICATION_BUNDLE",
+      "payload": {
+        "format": "hex",
+        "hex": "544544540000000149434e2300000000008046524546000000000080"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 128,
+      "symbol": "APPLICATION_REFERENCE",
+      "payload": {
+        "format": "hex",
+        "hex": "4150504c000000"
+      }
+    },
+    {
+      "type": "SIZE",
+      "id": -1,
+      "symbol": "MEMORY_REQUIREMENTS",
+      "payload": {
+        "format": "hex",
+        "hex": "00000010000000040000"
+      }
+    },
+    {
+      "type": "WIND",
+      "id": 2003,
+      "symbol": "TEXTEDIT_LAYOUT",
+      "payload": {
+        "format": "hex",
+        "hex": "005a0078019a0258000801000100000000000000"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 2000,
+      "symbol": "UI_TEXT",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Untitled",
+          "",
+          "Plain text",
+          "Save changes to “^0” before closing?",
+          "Save text as:",
+          "Text Edit Preferences",
+          "Preferences",
+          "Could not load Text Edit preferences.",
+          "Could not save Text Edit preferences."
+        ]
+      }
+    },
+    {
+      "type": "open",
+      "id": 128,
+      "symbol": "OPEN_TYPES",
+      "name": "Accepted document types",
+      "payload": {
+        "format": "open_types",
+        "signature": "TEDT",
+        "types": [
+          "TEXT",
+          "JSON"
+        ]
+      }
+    },
+    {
+      "type": "ALRT",
+      "id": 2001,
+      "symbol": "ERROR_ALRT",
+      "name": "Document error ALRT",
+      "payload": {
+        "format": "hex",
+        "hex": "0000000000b401b007d14444300a"
+      }
+    },
+    {
+      "type": "DITL",
+      "id": 2001,
+      "symbol": "ERROR_DITL",
+      "name": "Document error DITL",
+      "payload": {
+        "format": "hex",
+        "hex": "0002000000000094016000a801a004024f4b00000000000c0014002c0034a002000200000000000c004a008801a088025e30"
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 130,
+      "symbol": "FONT_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "Font",
+        "items": [
+          {
+            "text": "Chicago",
+            "command": "f000",
+            "enabled": true
+          },
+          {
+            "text": "New York",
+            "command": "f001",
+            "enabled": true
+          },
+          {
+            "text": "Geneva",
+            "command": "f002",
+            "enabled": true
+          },
+          {
+            "text": "Monaco",
+            "command": "f003",
+            "enabled": true
+          },
+          {
+            "text": "Palatino",
+            "command": "f004",
+            "enabled": true
+          },
+          {
+            "text": "Times",
+            "command": "f005",
+            "enabled": true
+          },
+          {
+            "text": "Helvetica",
+            "command": "f006",
+            "enabled": true
+          },
+          {
+            "text": "Courier",
+            "command": "f007",
+            "enabled": true
+          },
+          {
+            "text": "Symbol",
+            "command": "f008",
+            "enabled": true
+          }
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 131,
+      "symbol": "SIZE_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "Size",
+        "items": [
+          {
+            "text": "9",
+            "command": "s009",
+            "enabled": true
+          },
+          {
+            "text": "10",
+            "command": "s010",
+            "enabled": true
+          },
+          {
+            "text": "12",
+            "command": "s012",
+            "enabled": true
+          },
+          {
+            "text": "14",
+            "command": "s014",
+            "enabled": true
+          },
+          {
+            "text": "18",
+            "command": "s018",
+            "enabled": true
+          },
+          {
+            "text": "24",
+            "command": "s024",
+            "enabled": true
+          }
+        ]
+      }
+    },
+    {
+      "type": "DITL",
+      "id": 2002,
+      "symbol": "SAVE_CHANGES_ITEMS",
+      "name": "Save Changes items",
+      "payload": {
+        "format": "hex",
+        "hex": "0003000000000060010e0076015a04045361766500000000006000b600760102040643616e63656c00000000006000140076007c040a446f6ed57420536176650000000000120014004e015a882453617665206368616e67657320746f20d25e30d3206265666f726520636c6f73696e673f"
+      }
+    },
+    {
+      "type": "ALRT",
+      "id": 2002,
+      "symbol": "SAVE_CHANGES_ALERT",
+      "name": "Save Changes",
+      "payload": {
+        "format": "hex",
+        "hex": "000000000088016e07d24444300a"
+      }
+    }
+  ]
+}

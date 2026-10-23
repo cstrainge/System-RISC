@@ -2,7 +2,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-pub const ABI_VERSION: u32 = 8;
+pub const ABI_VERSION: u32 = 11;
 pub type Status = i32;
 pub const OK: Status = 0;
 pub const BAD_ABI: Status = -1;

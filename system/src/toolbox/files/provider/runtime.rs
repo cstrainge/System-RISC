@@ -1,6 +1,40 @@
 //! Park/replay boundary for owned filesystem operations. No app pointer, Files
 //! guard or native I/O stack handoff survives a provider callback or wait.
 #![forbid(unsafe_code)]
+pub(crate) fn abandon_document_io(owner: u64, thread: u64, volume: u32, cnid: u32,
+                                  application: bool)
+                                  -> bool
+{
+    let mut flights = FLIGHTS.lock();
+    let Some(flight) = flights.iter_mut().find(|flight| {
+                                             flight.owner == owner
+                                             && flight.thread == thread
+                                             && flight.key.volume == volume
+                                             && flight.key.cnid == cnid
+                                             && if application
+                                             {
+                                                 flight.key.record == Record::Application
+                                             }
+                                             else
+                                             {
+                                                 flight.key.record == Record::File
+                                                 && flight.key.operation == CATALOG
+                                             }
+                                         })
+    else
+    {
+        return false;
+    };
+    flight.abandon();
+    REAP.store(true, Ordering::Release);
+    true
+}
+pub(crate) fn current_io_pending() -> bool
+{
+    let thread = crate::context::current_thread().0;
+    FLIGHTS.lock().iter().any(|flight| flight.thread == thread && !flight.abandoned)
+}
+
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 

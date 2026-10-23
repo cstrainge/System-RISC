@@ -4,13 +4,15 @@ use crate::toolbox::quickdraw::{icons, icons_service};
 
 pub(super) fn application_format_status(error: mac_formats::Error) -> Status
 {
-    if error.0.contains("budget") || error.0.contains("allocation")
+    match error
     {
-        NO_MEMORY
-    }
-    else
-    {
-        CORRUPT_DATA
+        mac_formats::Error::BudgetExceeded(_) | mac_formats::Error::AllocationFailed(_) =>
+        {
+            NO_MEMORY
+        }
+        mac_formats::Error::Missing(_) => NOT_FOUND,
+        mac_formats::Error::TranslationRequired(_) => TRANSLATION_REQUIRED,
+        mac_formats::Error::Malformed(_) => CORRUPT_DATA
     }
 }
 
@@ -200,12 +202,23 @@ impl Manager
             })
     }
 
-    fn load_resources(volume: &mut Volume<'_, Device>, mut fork: Fork)
+    fn load_resources(volume: &mut Volume<'_, Device>, fork: Fork)
                       -> Result<Vec<mac_formats::resource::Resource>, Status>
     {
-        use mac_formats::resource::{loader::Loader, stream::Budget};
+        Self::load_selected_resources(volume,
+                                      fork,
+                                      |_, _| true,
+                                      mac_formats::resource::stream::Budget::default())
+    }
+
+    fn load_selected_resources(volume: &mut Volume<'_, Device>, mut fork: Fork,
+                               select: fn([u8; 4], i16) -> bool,
+                               budget: mac_formats::resource::stream::Budget)
+                               -> Result<Vec<mac_formats::resource::Resource>, Status>
+    {
+        use mac_formats::resource::loader::Loader;
         let mut loader =
-            Loader::new(fork.length, Budget::default()).map_err(application_format_status)?;
+            Loader::selected(fork.length, budget, select).map_err(application_format_status)?;
         while let Some((offset, count)) = loader.request()
         {
             let mut bytes = Vec::new();
@@ -233,6 +246,27 @@ impl Manager
                 }
                 let fork = e.resources.take().ok_or(NOT_FOUND)?;
                 Ok((info, Self::load_resources(v, fork)?))
+            })
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn application_resources_selected(
+        &mut self, volume: u32, cnid: u32, selection: super::application::Selection)
+        -> Result<(CatalogInfo, Vec<mac_formats::resource::Resource>), Status>
+    {
+        self.with_volume(volume, |v| {
+                let mut e = required(io(v.entry(cnid))?)?;
+                let info = metadata(volume, &e);
+                if info.kind != FILE || info.file_type != *b"APPL"
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                let fork = e.resources.take().ok_or(NOT_FOUND)?;
+                Ok((info,
+                    Self::load_selected_resources(v,
+                                                  fork,
+                                                  selection.includes(),
+                                                  selection.budget())?))
             })
     }
 
@@ -428,5 +462,26 @@ impl Manager
                                                                    }
                                                                })
             })
+    }
+}
+
+#[cfg(test)]
+mod typed_error_tests
+{
+    use super::*;
+    #[test]
+    fn status_uses_cause_even_when_the_message_uses_misleading_vocabulary()
+    {
+        use mac_formats::Error;
+        for message in ["limit exceeded", "alloc failed", "absent entry",
+                        "allocation budget missing translation"]
+        {
+            assert_eq!(application_format_status(Error::BudgetExceeded(message)), NO_MEMORY);
+            assert_eq!(application_format_status(Error::AllocationFailed(message)), NO_MEMORY);
+            assert_eq!(application_format_status(Error::Missing(message)), NOT_FOUND);
+            assert_eq!(application_format_status(Error::TranslationRequired(message)),
+                       TRANSLATION_REQUIRED);
+            assert_eq!(application_format_status(Error::Malformed(message)), CORRUPT_DATA);
+        }
     }
 }

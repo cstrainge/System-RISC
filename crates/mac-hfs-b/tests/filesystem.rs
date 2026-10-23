@@ -43,10 +43,10 @@ impl BlockDevice for Disk
     {
         let start = usize::try_from(sector).ok()
                                            .and_then(|n| n.checked_mul(512))
-                                           .ok_or(mac_block::Error("bounds"))?;
+                                           .ok_or(mac_block::Error::Malformed("bounds"))?;
         out.copy_from_slice(self.bytes
                                 .get(start..start + 512)
-                                .ok_or(mac_block::Error("bounds"))?);
+                                .ok_or(mac_block::Error::Malformed("bounds"))?);
         Ok(())
     }
 }
@@ -64,12 +64,12 @@ impl WritableBlockDevice for Disk
            || self.fail_at
                   .is_some_and(|n| self.writes == n || (self.fail_persistent && self.writes >= n))
         {
-            return Err(mac_block::Error("write injected"));
+            return Err(mac_block::Error::Malformed("write injected"));
         }
         let start = sector as usize * 512;
         self.bytes
             .get_mut(start..start + 512)
-            .ok_or(mac_block::Error("bounds"))?
+            .ok_or(mac_block::Error::Malformed("bounds"))?
             .copy_from_slice(input);
         Ok(())
     }
@@ -79,7 +79,7 @@ impl WritableBlockDevice for Disk
         self.flushes += 1;
         if self.fail_flush == Some(self.flushes)
         {
-            Err(mac_block::Error("flush injected"))
+            Err(mac_block::Error::Malformed("flush injected"))
         }
         else
         {

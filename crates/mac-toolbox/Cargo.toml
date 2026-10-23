@@ -26,6 +26,8 @@ toolbox-dialogs = { path = "../../toolbox/dialogs" }
 [target.'cfg(not(target_arch = "riscv64"))'.dev-dependencies]
 mac-system = { path = "../../system", features = ["test-support"] }
 serde_json.workspace = true
+serde = { version = "1.0", features = ["derive"] }
+serde-json-core = { version = "=0.6.0", default-features = false }
 mac-formats.workspace = true
 mac-module.workspace = true
 mac-code-resource = { path = "../mac-code-resource" }

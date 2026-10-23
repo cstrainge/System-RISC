@@ -65,7 +65,7 @@ impl ApplicationMenu
             resources.request(&mut call, "", &mut labels[index])?;
             lengths[index] = call.transferred;
         }
-        Ok(Self { state: Box::new(MenuDefinitionState::default()),
+        Ok(Self { state: crate::toolbox::menus::new_state()?,
                   actions: [None; MAX_ITEMS],
                   labels,
                   lengths,
@@ -79,17 +79,7 @@ impl ApplicationMenu
               surface: *mut Surface)
               -> i64
     {
-        let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
-                                        kind: MDEF,
-                                        id: 0,
-                                        variation: 0,
-                                        message,
-                                        reserved: 0,
-                                        param,
-                                        object: (state as *mut MenuDefinitionState).cast(),
-                                        surface,
-                                        gate: self.gate };
-        crate::toolbox::resources::definitions::invoke(self.definition, &mut call)
+        invoke(self.definition, self.gate, state, message, param, surface)
     }
 
     /// Publish a complete snapshot, preserving old state if input or sizing fails.
@@ -111,11 +101,11 @@ impl ApplicationMenu
             return Err(BAD_ARGUMENT);
         }
         let active = entries.iter().find(|entry| entry.id == foreground).ok_or(NOT_FOUND)?;
-        let mut state = MenuDefinitionState { menu_id: MENU_ID,
-                                              profile: APPLICATION_PROFILE,
-                                              title_icon: icon(active.icon),
-                                              item_count: (FIXED_ROWS + entries.len()) as u32,
-                                              ..Default::default() };
+        let mut state = crate::toolbox::menus::new_state()?;
+        state.menu_id = MENU_ID;
+        state.profile = APPLICATION_PROFILE;
+        state.title_icon = icon(active.icon);
+        state.item_count = (FIXED_ROWS + entries.len()) as u32;
         copy_text(&mut state.title, &mut state.title_length, active.name.as_bytes())?;
         let mut actions = [None; MAX_ITEMS];
         for (index, action) in
@@ -185,7 +175,7 @@ impl ApplicationMenu
         {
             return Err(status as Status);
         }
-        *self.state = state;
+        self.state = state;
         self.actions = actions;
         self.cancel();
         Ok(())
@@ -259,12 +249,12 @@ impl ApplicationMenu
         {
             return;
         }
-        let mut state = *self.state;
-        self.highlighted = self.invoke(&mut state,
-                                       HIT_ITEM,
-                                       (((point.v as u16 as u32) << 16) | point.h as u16 as u32)
-                                       as i64,
-                                       core::ptr::null_mut()) as i16;
+        self.highlighted = invoke(self.definition,
+                                  self.gate,
+                                  &mut self.state,
+                                  HIT_ITEM,
+                                  (((point.v as u16 as u32) << 16) | point.h as u16 as u32) as i64,
+                                  core::ptr::null_mut()) as i16;
     }
 
     pub fn release(&mut self, point: Point) -> Option<Action>
@@ -290,27 +280,25 @@ impl ApplicationMenu
         self.highlighted = 0;
     }
 
-    pub fn draw_bar(&self, canvas: &mut Canvas<'_>)
+    pub fn draw_bar(&mut self, canvas: &mut Canvas<'_>)
     {
-        let mut state = *self.state;
-        state.first = 0;
-        state.bar_selected = u32::from(self.tracking);
+        self.state.first = 0;
+        self.state.bar_selected = u32::from(self.tracking);
         canvas.reset_port();
         let mut surface = Surface::from_canvas(canvas);
-        self.invoke(&mut state, DRAW_BAR, 0, &mut surface);
+        invoke(self.definition, self.gate, &mut self.state, DRAW_BAR, 0, &mut surface);
     }
 
-    pub fn draw_popup(&self, canvas: &mut Canvas<'_>)
+    pub fn draw_popup(&mut self, canvas: &mut Canvas<'_>)
     {
         if !self.tracking
         {
             return;
         }
-        let mut state = *self.state;
-        state.highlighted = self.highlighted;
+        self.state.highlighted = self.highlighted;
         canvas.reset_port();
         let mut surface = Surface::from_canvas(canvas);
-        self.invoke(&mut state, DRAW_POPUP, 0, &mut surface);
+        invoke(self.definition, self.gate, &mut self.state, DRAW_POPUP, 0, &mut surface);
     }
 }
 
@@ -337,4 +325,21 @@ fn icon(icon: MenuIcon) -> MenuIcon
     {
         icon
     }
+}
+
+fn invoke(definition: DefinitionEntry, gate: TrapGate, state: &mut MenuDefinitionState,
+          message: i16, param: i64, surface: *mut Surface)
+          -> i64
+{
+    let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+                                    kind: MDEF,
+                                    id: 0,
+                                    variation: 0,
+                                    message,
+                                    reserved: 0,
+                                    param,
+                                    object: (state as *mut MenuDefinitionState).cast(),
+                                    surface,
+                                    gate };
+    crate::toolbox::resources::definitions::invoke(definition, &mut call)
 }

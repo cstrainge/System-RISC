@@ -1,17 +1,19 @@
 [package]
-name = "textedit-exerciser"
+name = "text-edit"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "TextEditExerciser"
+name = "TextEdit"
 path = "src/main.rs"
 test = false
 bench = false
 
 [dependencies]
 mac-toolbox.workspace = true
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde-json-core = { version = "=0.6.0", default-features = false }
 
 [build-dependencies]
 mac-build.workspace = true

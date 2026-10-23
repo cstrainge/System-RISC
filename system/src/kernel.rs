@@ -250,20 +250,19 @@ pub(crate) fn resources() -> Option<crate::toolbox::resources::manager::Manager<
 
 fn launch(info: &BootInfo) -> mac_formats::Result<()>
 {
-    let ram_end =
-        info.ram_base.checked_add(info.ram_size).ok_or(mac_formats::Error("RAM range overflow"))?;
-    let module_arena =
-        crate::machine::memory::module_arena(ram_end).map_err(|_| {
-                                                         mac_formats::Error("module RAM \
-                                                                             reservation \
-                                                                             unavailable")
-                                                     })?;
-    crate::drivers::initialize(module_arena,mac_module::Target::RV64IMAC).map_err(|_|mac_formats::Error("module runtime initialization failed"))?;
+    let ram_end = info.ram_base
+                      .checked_add(info.ram_size)
+                      .ok_or(mac_formats::Error::Malformed("RAM range overflow"))?;
+    let module_arena = crate::machine::memory::module_arena(ram_end).map_err(|_| {
+                           mac_formats::Error::Malformed("module RAM reservation unavailable")
+                       })?;
+    crate::drivers::initialize(module_arena,mac_module::Target::RV64IMAC).map_err(|_|mac_formats::Error::Malformed("module runtime initialization failed"))?;
     crate::machine::driver_devices::initialize().map_err(|_| {
-                                                    mac_formats::Error("device service \
-                                                                        initialization failed")
+                                                    mac_formats::Error::Malformed("device service \
+                                                                                   initialization \
+                                                                                   failed")
                                                 })?;
-    crate::drivers::file_sources::runtime::initialize().map_err(|_| mac_formats::Error("backing-file service initialization failed"))?;
+    crate::drivers::file_sources::runtime::initialize().map_err(|_| mac_formats::Error::Malformed("backing-file service initialization failed"))?;
     let mut system = crate::loader::read_startup("System")?;
     let finder = crate::loader::read_startup("Finder")?;
     let finder_entry = crate::loader::application(&finder)?;
@@ -282,7 +281,7 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     let mut boot_screen = crate::boot_screen::BootScreen::begin(&system, &fonts)?;
     if !crate::platform::setup_framebuffer()
     {
-        return Err(mac_formats::Error("RAM framebuffer is unavailable"));
+        return Err(mac_formats::Error::Malformed("RAM framebuffer is unavailable"));
     }
     serial!("BOOT_PANEL_READY stages=7");
     // Immutable publication is acquire/release synchronized by Once. Runtime
@@ -293,13 +292,16 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     boot_screen.completed(2);
     crate::toolbox::files::types::initialize().map_err(|status| {
                                                   serial!("FILE_TYPES_ERROR status={}", status);
-                                                  mac_formats::Error("File Types.json is invalid \
-                                                                      or unreadable")
+                                                  mac_formats::Error::Malformed("File Types is \
+                                                                                 invalid or \
+                                                                                 unreadable")
                                               })?;
     // Module-owned icon families resolve the System palettes at admission.
     // Publish immutable resource/font services before entering any driver;
     // exports still mount before Finder or another application can run.
-    crate::drivers::discover().map_err(|_| mac_formats::Error("module discovery failed"))?;
+    crate::drivers::discover().map_err(|_| {
+                                  mac_formats::Error::Malformed("module discovery failed")
+                              })?;
     if let Err(status) = crate::toolbox::files::mount_startup_exports()
     {
         serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
@@ -308,17 +310,18 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     boot_screen.completed(3);
     let runtime =
         crate::toolbox::runtime::Desktop::new(definitions).map_err(|_| {
-                                              mac_formats::Error("Toolbox initialization failed")
+                                              mac_formats::Error::Malformed("Toolbox initialization failed")
                                           })?;
     boot_screen.completed(4);
-    DESKTOP.publish(runtime).map_err(|_| mac_formats::Error("desktop already published"))?;
+    DESKTOP.publish(runtime)
+           .map_err(|_| mac_formats::Error::Malformed("desktop already published"))?;
     boot_screen.completed(5);
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", &SERVICES as *const SystemServices as usize);
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
-    let thread=crate::machine::scheduler::spawn(crate::context::finder_app().0,0,finder_entry).map_err(|_|mac_formats::Error("Finder thread creation failed"))?;
+    let thread=crate::machine::scheduler::spawn(crate::context::finder_app().0,0,finder_entry).map_err(|_|mac_formats::Error::Malformed("Finder thread creation failed"))?;
     boot_screen.completed(6);
     with_desktop(|desktop| desktop.started(crate::context::finder_app().0, thread)).map_err(|_| {
-                                                          mac_formats::Error("Finder context \
+                                                          mac_formats::Error::Malformed("Finder context \
                                                                               initialization \
                                                                               failed")
                                                       })?;

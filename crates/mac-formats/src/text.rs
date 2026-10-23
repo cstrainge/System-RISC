@@ -19,7 +19,7 @@ pub fn encode(text: &str) -> Result<Vec<u8>>
                 HIGH.iter()
                     .position(|&v| v == c)
                     .map(|i| i as u8 + 128)
-                    .ok_or(Error("text is not representable in Mac Roman"))
+                    .ok_or(Error::Malformed("text is not representable in Mac Roman"))
             }
         })
         .collect()
@@ -35,7 +35,7 @@ pub fn pstring(text: &str) -> Result<Vec<u8>>
     let bytes = encode(text)?;
     if bytes.len() > 255
     {
-        return Err(Error("Pascal string exceeds 255 bytes"));
+        return Err(Error::Malformed("Pascal string exceeds 255 bytes"));
     }
     let mut out = Vec::with_capacity(bytes.len() + 1);
     out.push(bytes.len() as u8);

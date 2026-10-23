@@ -69,10 +69,14 @@ impl super::Desktop
                                                                        BooleanOp::Intersection)
                                                                     }));
         let mut commands = Vec::new();
-        commands.try_reserve(editor.lines().len().min(512)).map_err(|_| NO_MEMORY)?;
-        for (index, line) in editor.lines().iter().enumerate()
+        let visible = editor.visible_lines();
+        commands.try_reserve(visible.len().min(512)).map_err(|_| NO_MEMORY)?;
+        for (index, line) in
+            editor.lines()[visible.clone()].iter()
+                                           .enumerate()
+                                           .map(|(index, line)| (index + visible.start, line))
         {
-            let top = i32::from(info.dest.top) + index as i32 * i32::from(info.line_height);
+            let top = editor.origin_y() + index as i32 * i32::from(info.line_height);
             if top >= i32::from(info.view.bottom)
                || top + i32::from(info.line_height) <= i32::from(info.view.top)
             {
@@ -82,7 +86,7 @@ impl super::Desktop
             {
                 return Err(NO_MEMORY);
             }
-            let y = i32::from(info.dest.top) + index as i32 * i32::from(info.line_height);
+            let y = editor.origin_y() + index as i32 * i32::from(info.line_height);
             let source = &editor.text()[line.start as usize..line.end as usize];
             let source = source.strip_suffix('\r').unwrap_or(source);
             let mut text = String::new();

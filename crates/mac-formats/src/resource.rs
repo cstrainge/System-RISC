@@ -27,17 +27,17 @@ pub fn encode(resources: &[Resource]) -> Result<Vec<u8>>
     {
         if !keys.insert((resource.kind, resource.id))
         {
-            return Err(Error("duplicate resource type and ID"));
+            return Err(Error::Malformed("duplicate resource type and ID"));
         }
         if resource.name.as_ref().is_some_and(|name| name.len() > 255)
         {
-            return Err(Error("resource name exceeds 255 bytes"));
+            return Err(Error::Malformed("resource name exceeds 255 bytes"));
         }
         groups.entry(resource.kind).or_default().push(resource);
     }
     if groups.len() > 65535
     {
-        return Err(Error("too many resource types"));
+        return Err(Error::Malformed("too many resource types"));
     }
     let mut data = Vec::new();
     let mut names = Vec::new();
@@ -50,27 +50,26 @@ pub fn encode(resources: &[Resource]) -> Result<Vec<u8>>
         group.sort_by_key(|resource| resource.id);
         if group.len() > 65535
         {
-            return Err(Error("too many resources of one type"));
+            return Err(Error::Malformed("too many resources of one type"));
         }
         types.extend_from_slice(&kind);
         types.extend_from_slice(&((group.len() - 1) as u16).to_be_bytes());
-        types.extend_from_slice(
-            &u16::try_from(refs_base + refs.len())
-                .map_err(|_| Error("resource reference offset exceeds 16 bits"))?
-                .to_be_bytes(),
-        );
+        types.extend_from_slice(&u16::try_from(refs_base + refs.len()).map_err(|_| {
+                                     Error::Malformed("resource reference offset exceeds 16 bits")
+                                 })?
+                                 .to_be_bytes());
         for resource in group
         {
             refs.extend_from_slice(&resource.id.to_be_bytes());
             let name_offset = if let Some(name) = &resource.name
             {
                 let offset = u16::try_from(names.len()).map_err(|_| {
-                                                           Error("resource name offset exceeds 16 \
-                                                                  bits")
+                                                           Error::Malformed("resource name offset \
+                                                                             exceeds 16 bits")
                                                        })?;
                 if offset == 65535
                 {
-                    return Err(Error("resource name offset is reserved"));
+                    return Err(Error::Malformed("resource name offset is reserved"));
                 }
                 names.push(name.len() as u8);
                 names.extend_from_slice(name);
@@ -83,23 +82,24 @@ pub fn encode(resources: &[Resource]) -> Result<Vec<u8>>
             refs.extend_from_slice(&name_offset.to_be_bytes());
             if data.len() >= 1 << 24
             {
-                return Err(Error("resource data offset exceeds 24 bits"));
+                return Err(Error::Malformed("resource data offset exceeds 24 bits"));
             }
             refs.push(resource.attributes);
             refs.extend_from_slice(&(data.len() as u32).to_be_bytes()[1..]);
             refs.extend_from_slice(&[0; 4]);
             data.extend_from_slice(&u32::try_from(resource.data.len()).map_err(|_| {
-                                                                          Error("resource exceeds \
+                                                                          Error::Malformed("resource exceeds \
                                                                                  32 bits")
                                                                       })?
                                                                       .to_be_bytes());
             data.extend_from_slice(&resource.data);
         }
     }
-    let names_offset = u16::try_from(28 + types.len() + refs.len()).map_err(|_| {
-                                                                       Error("resource map offset \
-                                                                              exceeds 16 bits")
-                                                                   })?;
+    let names_offset =
+        u16::try_from(28 + types.len() + refs.len()).map_err(|_| {
+                                                        Error::Malformed("resource map offset \
+                                                                          exceeds 16 bits")
+                                                    })?;
     let mut map = vec![0; 24];
     map.extend_from_slice(&28u16.to_be_bytes());
     map.extend_from_slice(&names_offset.to_be_bytes());
@@ -107,14 +107,18 @@ pub fn encode(resources: &[Resource]) -> Result<Vec<u8>>
     map.extend(refs);
     map.extend(names);
     let mut output = vec![0; 256];
-    let map_offset =
-        u32::try_from(256 + data.len()).map_err(|_| Error("resource file exceeds 32 bits"))?;
-    for (index, value) in
-        [256,
-         map_offset,
-         data.len() as u32,
-         u32::try_from(map.len()).map_err(|_| Error("resource map exceeds 32 bits"))?].iter()
-                                                                                      .enumerate()
+    let map_offset = u32::try_from(256 + data.len()).map_err(|_| {
+                                                        Error::Malformed("resource file exceeds \
+                                                                          32 bits")
+                                                    })?;
+    for (index, value) in [256,
+                           map_offset,
+                           data.len() as u32,
+                           u32::try_from(map.len()).map_err(|_| {
+                                                       Error::Malformed("resource map exceeds 32 \
+                                                                         bits")
+                                                   })?].iter()
+                                                       .enumerate()
     {
         output[index * 4..index * 4 + 4].copy_from_slice(&value.to_be_bytes());
     }

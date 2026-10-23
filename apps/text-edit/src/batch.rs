@@ -3,15 +3,15 @@ use core::fmt::Write;
 
 use mac_toolbox::*;
 
-use crate::{Text, editor, menus};
+use crate::{Text, editor};
 
 pub fn is_keyboard(kind: &Event) -> bool
 {
     matches!(kind, Event::KeyDown { .. } | Event::KeyUp { .. })
 }
 
-pub fn keyboard(system: &System<'_>, editor: &mut editor::Editor, first: Event)
-                -> Result<(), Error>
+pub fn keyboard<'a>(system: &System<'a>, editor: &mut editor::Editor<'a>, first: Event)
+                    -> Result<bool, Error>
 {
     let mut pending: [Event; 128] = core::array::from_fn(|_| Event::default());
     pending[0] = first;
@@ -21,11 +21,15 @@ pub fn keyboard(system: &System<'_>, editor: &mut editor::Editor, first: Event)
     // The fixed capacity bounds work even with a continuously active producer.
     while count < pending.len()
     {
-        // Command shortcuts already arrive as MenuCommand records from the
-        // Event Manager. Leave them queued for the normal main-loop dispatch.
+        // An enabled shortcut arrives as MenuCommand. If input was queued
+        // before this edit enables its command, it is still KeyDown: leave that
+        // boundary queued too. The main loop resolves it against the updated
+        // menu policy after applying the preceding text edits.
         match system.events().peek(mac_toolbox::events::EventMask::ALL)?
         {
-            Some(next) if next.is_keyboard() =>
+            Some(next)
+                if next.is_keyboard()
+                   && !next.input().modifiers.contains(events::Modifiers::COMMAND) =>
             {
                 pending[count] = system.next_event(mac_toolbox::events::EventMask::ALL)?;
                 count += 1;
@@ -45,11 +49,6 @@ pub fn keyboard(system: &System<'_>, editor: &mut editor::Editor, first: Event)
             keys += 1;
         }
     }
-    if keys != 0
-    {
-        // Menu enabled state belongs to the same final frame as the selection.
-        menus::update(system, editor)?;
-    }
     editor.flush_drawing(system)?;
     if keys != 0
     {
@@ -57,5 +56,5 @@ pub fn keyboard(system: &System<'_>, editor: &mut editor::Editor, first: Event)
         let _ = writeln!(&mut message, "TEXTEDIT_BATCH keys={keys}");
         system.log(message.as_str())?;
     }
-    Ok(())
+    Ok(keys != 0)
 }

@@ -55,8 +55,11 @@ impl<D: BlockDevice> Volume<'_, D>
     pub fn catalog_scanner(&mut self) -> Result<CatalogScanner>
     {
         let mut extents = Vec::new();
-        extents.try_reserve_exact(self.catalog.extents.len())
-               .map_err(|_| Error("catalog scan allocation failed"))?;
+        extents.try_reserve_exact(self.catalog.extents.len()).map_err(|_| {
+                                                                  Error::Malformed("catalog scan \
+                                                                                    allocation \
+                                                                                    failed")
+                                                              })?;
         extents.extend_from_slice(&self.catalog.extents);
         let fork = Fork { id: self.catalog.id,
                           kind: self.catalog.kind,
@@ -75,7 +78,7 @@ impl<D: BlockDevice> Volume<'_, D>
            || u64::from(total) * size as u64 > fork.length
            || first >= total
         {
-            return Err(Error("invalid incremental catalog geometry"));
+            return Err(Error::Malformed("invalid incremental catalog geometry"));
         }
         Ok(CatalogScanner { partition: self.partition,
                             allocation_start: self.allocation_start,
@@ -93,7 +96,7 @@ impl CatalogScanner
     {
         if offset.checked_add(output.len() as u64).is_none_or(|end| end > self.fork.length)
         {
-            return Err(Error("scan outside catalog fork"));
+            return Err(Error::Malformed("scan outside catalog fork"));
         }
         let mut skip = offset;
         let mut done = 0;
@@ -120,7 +123,7 @@ impl CatalogScanner
                 return Ok(());
             }
         }
-        Err(Error("catalog scan has missing extents"))
+        Err(Error::Malformed("catalog scan has missing extents"))
     }
 
     pub fn step(&self, disk: &mut impl BlockDevice, parent: u32, cursor: &mut Cursor)
@@ -177,19 +180,19 @@ impl CatalogScanner
         self.read(disk, u64::from(next.node) * self.node_size as u64, &mut buffer)?;
         if buffer[8] != 0xff || be32(&buffer, 4)? != next.previous
         {
-            return Err(Error("invalid incremental catalog leaf chain").into());
+            return Err(Error::Malformed("invalid incremental catalog leaf chain").into());
         }
         let forward = be32(&buffer, 0)?;
         if forward >= self.total
            || forward == next.node
            || (forward != 0 && forward == next.previous)
         {
-            return Err(Error("catalog scan leaf cycle or invalid link").into());
+            return Err(Error::Malformed("catalog scan leaf cycle or invalid link").into());
         }
         let count = usize::from(be16(&buffer, 10)?);
         let table = self.node_size
                         .checked_sub((count + 1) * 2)
-                        .ok_or(Error("invalid scan record count"))?;
+                        .ok_or(Error::Malformed("invalid scan record count"))?;
         if next.index as usize > count
         {
             return Err(ScanError::InvalidCursor);
@@ -197,7 +200,7 @@ impl CatalogScanner
         let mut start = usize::from(be16(&buffer, self.node_size - 2)?);
         if start < 14 || start > table
         {
-            return Err(Error("invalid scan record offset").into());
+            return Err(Error::Malformed("invalid scan record offset").into());
         }
         // Validate the complete offset table even when resuming in its middle.
         for index in 0..count
@@ -205,7 +208,7 @@ impl CatalogScanner
             let end = usize::from(be16(&buffer, self.node_size - (index + 2) * 2)?);
             if end <= start || end > table
             {
-                return Err(Error("invalid scan record bounds").into());
+                return Err(Error::Malformed("invalid scan record bounds").into());
             }
             start = end;
         }
@@ -234,7 +237,7 @@ impl CatalogScanner
                                || !physical.is_multiple_of(self.allocation_size)
                                || physical > self.allocation_bytes)
                         {
-                            return Err(Error("invalid scanned physical fork length").into());
+                            return Err(Error::Malformed("invalid scanned physical fork length").into());
                         }
                     }
                     *cursor = next;
@@ -254,7 +257,7 @@ impl CatalogScanner
             next.node = forward;
             next.index = 0;
             next.traversed =
-                next.traversed.checked_add(1).ok_or(Error("scan traversal overflow"))?;
+                next.traversed.checked_add(1).ok_or(Error::Malformed("scan traversal overflow"))?;
             if forward == 0
             {
                 next = Cursor { state: 2,

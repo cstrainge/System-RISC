@@ -14,8 +14,8 @@ pub use volume::{CatalogEntry, File, Folder, Fork, Volume,
 
 pub(crate) fn bytes(data: &[u8], offset: usize, length: usize) -> Result<&[u8]>
 {
-    data.get(offset..offset.checked_add(length).ok_or(Error("HFS offset overflow"))?)
-        .ok_or(Error("truncated HFS structure"))
+    data.get(offset..offset.checked_add(length).ok_or(Error::Malformed("HFS offset overflow"))?)
+        .ok_or(Error::Malformed("truncated HFS structure"))
 }
 pub(crate) fn be16(data: &[u8], offset: usize) -> Result<u16>
 {
@@ -29,10 +29,10 @@ pub(crate) fn be32(data: &[u8], offset: usize) -> Result<u32>
 /// An unpartitioned HFS volume, or Apple_HFS entries in a 512-byte APM.
 pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
 {
-    disk.sector_count().checked_mul(512).ok_or(Error("disk byte size overflow"))?;
+    disk.sector_count().checked_mul(512).ok_or(Error::Malformed("disk byte size overflow"))?;
     if disk.sector_count() < 3
     {
-        return Err(Error("disk is too small"));
+        return Err(Error::Malformed("disk is too small"));
     }
     let mut sector = [0; 512];
     disk.read_sector(2, &mut sector)?;
@@ -44,12 +44,12 @@ pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
     disk.read_sector(1, &mut sector)?;
     if &sector[..2] != b"PM"
     {
-        return Err(Error("no classic HFS volume or Apple partition map"));
+        return Err(Error::Malformed("no classic HFS volume or Apple partition map"));
     }
     let count = be32(&sector, 4)? as u64;
     if count == 0 || count > 128 || count >= disk.sector_count()
     {
-        return Err(Error("invalid Apple partition count"));
+        return Err(Error::Malformed("invalid Apple partition count"));
     }
     let mut result = Vec::new();
     for index in 1..=count
@@ -57,7 +57,7 @@ pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
         disk.read_sector(index, &mut sector)?;
         if &sector[..2] != b"PM" || be32(&sector, 4)? as u64 != count
         {
-            return Err(Error("invalid Apple partition entry"));
+            return Err(Error::Malformed("invalid Apple partition entry"));
         }
         let kind = &sector[48..80];
         if kind.split(|&b| b == 0).next() != Some(b"Apple_HFS".as_slice())
@@ -70,13 +70,14 @@ pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
            || start < count + 1
            || start.checked_add(sectors).is_none_or(|end| end > disk.sector_count())
         {
-            return Err(Error("HFS partition outside disk"));
+            return Err(Error::Malformed("HFS partition outside disk"));
         }
         let data_start = be32(&sector, 80)? as u64;
         let data_count = be32(&sector, 84)? as u64;
         let data_count = if data_count == 0
         {
-            sectors.checked_sub(data_start).ok_or(Error("invalid Apple partition data offset"))?
+            sectors.checked_sub(data_start)
+                   .ok_or(Error::Malformed("invalid Apple partition data offset"))?
         }
         else
         {
@@ -84,7 +85,7 @@ pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
         };
         if data_count < 3 || data_start.checked_add(data_count).is_none_or(|end| end > sectors)
         {
-            return Err(Error("Apple partition logical data outside partition"));
+            return Err(Error::Malformed("Apple partition logical data outside partition"));
         }
         result.push(Partition { start:   start + data_start,
                                 sectors: data_count });
@@ -94,10 +95,11 @@ pub fn partitions(disk: &mut impl BlockDevice) -> Result<Vec<Partition>>
 
 pub(crate) fn read_at(disk: &mut impl BlockDevice, offset: u64, output: &mut [u8]) -> Result<()>
 {
-    let limit = disk.sector_count().checked_mul(512).ok_or(Error("disk size overflow"))?;
+    let limit =
+        disk.sector_count().checked_mul(512).ok_or(Error::Malformed("disk size overflow"))?;
     if offset.checked_add(output.len() as u64).is_none_or(|end| end > limit)
     {
-        return Err(Error("disk read outside device"));
+        return Err(Error::Malformed("disk read outside device"));
     }
     let mut sector = [0; 512];
     let mut done = 0;

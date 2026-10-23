@@ -23,7 +23,7 @@ def main():
     visual=json.loads((ROOT/'provenance/system7-visual-resource-bundle.json').read_text())
     fonts=json.loads((ROOT/'provenance/system7-font-bundle.json').read_text())
     reports=[]
-    app_manifests={'QuickDraw Test':'apps/quickdraw-test', 'TextEdit Exerciser':'apps/textedit-exerciser', 'Cursor Test':'apps/cursor-test', 'Panic Test':'apps/panic-test', 'ResEdit':'apps/resedit'}
+    app_manifests={'QuickDraw Test':'apps/quickdraw-test', 'Text Edit':'apps/text-edit', 'Cursor Test':'apps/cursor-test', 'Panic Test':'apps/panic-test', 'Res Edit':'apps/resedit'}
     forks={}
     for name in ['System','Finder',*app_manifests]:
         path=dist_dir()/(name+'.rsrc');blob=path.read_bytes()
@@ -114,7 +114,7 @@ def main():
             'checked_payloads':checked})
     assert ('PICT',24000) in forks['QuickDraw Test'], 'PICT exercise belongs to QuickDraw Test'
     assert ('PNG ',128) in forks['QuickDraw Test'], 'PNG exercise belongs to QuickDraw Test'
-    assert ('WIND',2003) in forks['TextEdit Exerciser'], 'editor layout belongs to TextEdit Exerciser'
+    assert ('WIND',2003) in forks['Text Edit'], 'editor layout belongs to Text Edit'
     assert ('WIND',2003) in forks['Cursor Test'], 'cursor window layout belongs to Cursor Test'
     assert ('WIND',2003) in forks['Panic Test'], 'panic window layout belongs to Panic Test'
     for key in [('PICT',24000),('PNG ',128),('WIND',2003),('MENU',1257)]:

@@ -13,7 +13,7 @@ pub(crate) fn classify(name: &str, file_type: [u8; 4], creator: [u8; 4]) -> ([u8
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn initialize() -> Result<(), Status>
 {
-    let bytes=crate::kernel::with_files(|m|m.startup_preferences("File Types.json"))
+    let bytes=crate::kernel::with_files(|m|m.startup_preferences("File Types"))
         .map_err(crate::state::AccessError::status)??;
     let registry = Registry::decode(&bytes).map_err(|_| CORRUPT_DATA)?;
     *REGISTRY.lock() = Some(registry);

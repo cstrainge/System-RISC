@@ -314,7 +314,7 @@ original A-line adapter coverage are tracked separately.
 ## Artifacts
 
 Generated files live in `../build/system7/`, outside the source tree. Package
-names are `System`, `Finder`, `QuickDraw Test` and `TextEdit Exerciser`; names with
+names are `System`, `Finder`, `QuickDraw Test` and `Text Edit`; names with
 spaces remain intact in the artifact and HFS filenames:
 
 | File | Purpose |

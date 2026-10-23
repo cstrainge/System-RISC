@@ -33,7 +33,7 @@ pub fn crc16(bytes: &[u8]) -> u16
 
 fn padded(length: usize) -> Result<usize>
 {
-    Ok(length.checked_add(127).ok_or(Error("MacBinary size overflow"))? & !127)
+    Ok(length.checked_add(127).ok_or(Error::Malformed("MacBinary size overflow"))? & !127)
 }
 
 pub fn encode(file: &MacFile) -> Result<Vec<u8>>
@@ -43,7 +43,7 @@ pub fn encode(file: &MacFile) -> Result<Vec<u8>>
        || file.name.contains(&b':')
        || file.name.contains(&0)
     {
-        return Err(Error("invalid Macintosh filename"));
+        return Err(Error::Malformed("invalid Macintosh filename"));
     }
     let mut output = vec![0; 128];
     output[1] = file.name.len() as u8;
@@ -55,10 +55,9 @@ pub fn encode(file: &MacFile) -> Result<Vec<u8>>
     for (offset, length) in [(83, file.data.len()), (87, file.resources.len())]
     {
         output[offset..offset + 4].copy_from_slice(&u32::try_from(length).map_err(|_| {
-                                                                             Error("fork exceeds \
-                                                                                    32 bits")
-                                                                         })?
-                                                                         .to_be_bytes());
+                                                        Error::Malformed("fork exceeds 32 bits")
+                                                    })?
+                                                    .to_be_bytes());
     }
     output[91..95].copy_from_slice(&file.created.to_be_bytes());
     output[95..99].copy_from_slice(&file.modified.to_be_bytes());
@@ -79,31 +78,31 @@ pub fn decode(bytes: &[u8]) -> Result<MacFile>
     let h = slice(bytes, 0, 128)?;
     if h[0] != 0 || h[74] != 0 || h[82] != 0 || !(1..=63).contains(&h[1])
     {
-        return Err(Error("invalid MacBinary header"));
+        return Err(Error::Malformed("invalid MacBinary header"));
     }
     if h[122] >= 129
     {
         if h[123] > 129 || crc16(&h[..124]) != be16(h, 124)?
         {
-            return Err(Error("MacBinary version or CRC mismatch"));
+            return Err(Error::Malformed("MacBinary version or CRC mismatch"));
         }
     }
     else if h[101..126].iter().any(|&b| b != 0)
     {
-        return Err(Error("invalid original MacBinary header"));
+        return Err(Error::Malformed("invalid original MacBinary header"));
     }
     let data_length = be32(h, 83)? as usize;
     let rsrc_length = be32(h, 87)? as usize;
     let data_start = 128 + padded(be16(h, 120)? as usize)?;
-    let rsrc_start =
-        data_start.checked_add(padded(data_length)?).ok_or(Error("MacBinary size overflow"))?;
-    let expected_end =
-        rsrc_start.checked_add(padded(rsrc_length)?).ok_or(Error("MacBinary size overflow"))?;
+    let rsrc_start = data_start.checked_add(padded(data_length)?)
+                               .ok_or(Error::Malformed("MacBinary size overflow"))?;
+    let expected_end = rsrc_start.checked_add(padded(rsrc_length)?)
+                                 .ok_or(Error::Malformed("MacBinary size overflow"))?;
     slice(bytes, 0, expected_end)?;
     let name = slice(h, 2, h[1] as usize)?.to_vec();
     if name.contains(&b':') || name.contains(&0)
     {
-        return Err(Error("invalid Macintosh filename"));
+        return Err(Error::Malformed("invalid Macintosh filename"));
     }
     Ok(MacFile { name,
                  file_type: h[65..69].try_into().unwrap(),

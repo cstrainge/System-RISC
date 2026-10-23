@@ -27,7 +27,7 @@ impl CodeTranslator for NoTranslator
 {
     fn translate(&mut self, _: TranslationRequest<'_>) -> Result<Vec<u8>>
     {
-        Err(Error("68k code resource requires automatic translation"))
+        Err(Error::TranslationRequired("68k code resource requires automatic translation"))
     }
 }
 
@@ -87,7 +87,7 @@ impl CodeRegistry
                    -> Result<NativeCode>
     {
         let convention = self.convention(resource.kind, resource.id)
-                             .ok_or(Error("resource type is not declared executable"))?;
+                             .ok_or(Error::Malformed("resource type is not declared executable"))?;
         let translated;
         let payload = if resource.data.starts_with(b"RVN1")
         {
@@ -102,17 +102,17 @@ impl CodeRegistry
         };
         if payload.get(32..36) == Some(b"\x7fELF")
         {
-            return Err(Error("obsolete ELF-backed code envelope; rebuild the system"));
+            return Err(Error::Malformed("obsolete ELF-backed code envelope; rebuild the system"));
         }
         let size = crate::native::DESCRIPTOR_SIZE;
         if payload.len() < size
         {
-            return Err(Error("truncated native code resource"));
+            return Err(Error::Malformed("truncated native code resource"));
         }
         let descriptor = Descriptor::decode(&payload[..size])?;
         if descriptor.role != Role::CodeResource
         {
-            return Err(Error("native resource has the wrong executable role"));
+            return Err(Error::Malformed("native resource has the wrong executable role"));
         }
         let body = &payload[size..];
         let end = crate::native::image::inspect(body.len(),

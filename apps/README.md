@@ -22,7 +22,7 @@ allocation-free `mac-text` scalar table to decode raw MacRoman resource payloads
 | Application | Cargo package / executable | Initial memory reservation |
 | --- | --- | --- |
 | QuickDraw Test | `quickdraw-test` / `QuickDrawTest` | `0x83000000..0x84000000` |
-| TextEdit Exerciser | `textedit-exerciser` / `TextEditExerciser` | `0x84000000..0x85000000` |
+| Text Edit | `text-edit` / `TextEdit` | `0x84000000..0x85000000` |
 | Cursor Test | `cursor-test` / `CursorTest` | `0x85000000..0x86000000` |
 | Panic Test | `panic-test` / `PanicTest` | `0x86000000..0x86800000` |
 | ResEdit | `resedit` / `ResEdit` | `0x86800000..0x87000000` |
@@ -39,7 +39,7 @@ The manifests specify preferred link ranges. New packages also carry checked
 
 QuickDraw Test includes ten pages for shapes, transfer modes, regions, bitmaps,
 fonts, offscreen worlds, PICTs, icons, resources and PNGs. Use its Tests menu,
-number keys or tabs to change pages. TextEdit Exerciser retains the native
+number keys or tabs to change pages. Text Edit retains the native
 editor's selection, caret, clipboard, resize and keyboard navigation behavior.
 These applications return from their entry point on File > Quit, Ctrl-Q or closing
 their only window; System owns thread termination and remaining object cleanup.

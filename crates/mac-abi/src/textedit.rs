@@ -29,6 +29,9 @@ pub const SET_FONT: u32 = 23;
 /// Enable automatic I-beam hover independently of keyboard activation.
 /// Uses TextEditCall.index as a checked boolean (0/1).
 pub const SET_CURSOR_ENABLED: u32 = 24;
+/// Native wide vertical viewport origin, in pixels (TextEditCall.index).
+pub const SCROLL_TO: u32 = 25;
+pub const REVEAL_SELECTION: u32 = 26;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TextEditFontCall
@@ -78,17 +81,21 @@ pub struct EditorId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EditorInfo
 {
-    pub dest:            Rect,
-    pub view:            Rect,
-    pub selection_start: u32,
-    pub selection_end:   u32,
-    pub text_length:     u32,
-    pub line_count:      u32,
-    pub line_height:     i16,
-    pub ascent:          i16,
-    pub active:          u16,
-    pub caret_visible:   u16,
-    pub revision:        u32
+    pub dest:             Rect,
+    pub view:             Rect,
+    pub selection_start:  u32,
+    pub selection_end:    u32,
+    pub text_length:      u32,
+    pub line_count:       u32,
+    pub line_height:      i16,
+    pub ascent:           i16,
+    pub active:           u16,
+    pub caret_visible:    u16,
+    pub revision:         u32,
+    /// Changes only when text bytes change, never on selection, layout or blink.
+    pub content_revision: u64,
+    pub scroll_y:         u32,
+    pub scroll_max:       u32
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

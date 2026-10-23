@@ -36,7 +36,7 @@ impl Fork
             }
             else if start != 0
             {
-                return Err(Error("invalid empty HFS extent"));
+                return Err(Error::Malformed("invalid empty HFS extent"));
             }
         }
         Ok(Self { id,
@@ -116,23 +116,23 @@ impl<'a, D: BlockDevice> Volume<'a, D>
         partition.start
                  .checked_add(partition.sectors)
                  .and_then(|end| end.checked_mul(512))
-                 .ok_or(Error("HFS byte range overflow"))?;
+                 .ok_or(Error::Malformed("HFS byte range overflow"))?;
         if partition.sectors < 3
            || partition.start
                        .checked_add(partition.sectors)
                        .is_none_or(|end| end > disk.sector_count())
         {
-            return Err(Error("volume outside disk"));
+            return Err(Error::Malformed("volume outside disk"));
         }
         let mut mdb = [0; 512];
         disk.read_sector(partition.start + 2, &mut mdb)?;
         if &mdb[..2] != b"BD"
         {
-            return Err(Error("not a classic HFS volume"));
+            return Err(Error::Malformed("not a classic HFS volume"));
         }
         if be16(&mdb, 124)? == 0x482b
         {
-            return Err(Error("HFS+ wrappers are not supported"));
+            return Err(Error::Malformed("HFS+ wrappers are not supported"));
         }
         let allocation_size = be32(&mdb, 20)? as u64;
         let allocation_start = be16(&mdb, 28)? as u64 * 512;
@@ -143,12 +143,12 @@ impl<'a, D: BlockDevice> Volume<'a, D>
            || allocation_start < 1536
            || allocation_start + allocation_count * allocation_size > partition.sectors * 512
         {
-            return Err(Error("invalid HFS allocation geometry"));
+            return Err(Error::Malformed("invalid HFS allocation geometry"));
         }
         let length = mdb[36] as usize;
         if length == 0 || length > 27
         {
-            return Err(Error("invalid HFS volume name"));
+            return Err(Error::Malformed("invalid HFS volume name"));
         }
         let mut volume =
             Self { disk,
@@ -181,7 +181,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
             let end = extent.start as u64 + extent.count as u64;
             if end > self.allocation_count
             {
-                return Err(Error("HFS extent outside volume"));
+                return Err(Error::Malformed("HFS extent outside volume"));
             }
             if fork.extents[..index].iter().any(|other| {
                                                (extent.start as u64)
@@ -189,7 +189,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
                                                && (other.start as u64) < end
                                            })
             {
-                return Err(Error("overlapping HFS extents"));
+                return Err(Error::Malformed("overlapping HFS extents"));
             }
         }
         Ok(())
@@ -199,7 +199,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
     {
         if offset.checked_add(output.len() as u64).is_none_or(|end| end > fork.length)
         {
-            return Err(Error("read past HFS fork EOF"));
+            return Err(Error::Malformed("read past HFS fork EOF"));
         }
         let mut skip = offset;
         let mut done = 0;
@@ -224,7 +224,14 @@ impl<'a, D: BlockDevice> Volume<'a, D>
                 return Ok(());
             }
         }
-        if done == output.len() { Ok(()) } else { Err(Error("HFS fork requires missing extents")) }
+        if done == output.len()
+        {
+            Ok(())
+        }
+        else
+        {
+            Err(Error::Malformed("HFS fork requires missing extents"))
+        }
     }
 
     /// Scan the linked leaf nodes, with checked node boundaries and cycle bounds.
@@ -235,7 +242,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
         self.read_fork(fork, 0, &mut header)?;
         if header[8] != 1
         {
-            return Err(Error("invalid HFS B-tree header node"));
+            return Err(Error::Malformed("invalid HFS B-tree header node"));
         }
         let size = be16(&header, 32)? as usize;
         let total = be32(&header, 36)?;
@@ -244,7 +251,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
            || total == 0
            || total as u64 * size as u64 > fork.length
         {
-            return Err(Error("invalid HFS B-tree geometry"));
+            return Err(Error::Malformed("invalid HFS B-tree geometry"));
         }
         let mut current = be32(&header, 24)?;
         let mut previous = 0;
@@ -257,27 +264,27 @@ impl<'a, D: BlockDevice> Volume<'a, D>
             }
             if current >= total
             {
-                return Err(Error("HFS leaf outside B-tree"));
+                return Err(Error::Malformed("HFS leaf outside B-tree"));
             }
             self.read_fork(fork, current as u64 * size as u64, &mut buffer)?;
             if buffer[8] != 0xff || be32(&buffer, 4)? != previous
             {
-                return Err(Error("invalid HFS leaf chain"));
+                return Err(Error::Malformed("invalid HFS leaf chain"));
             }
             let count = be16(&buffer, 10)? as usize;
-            let table =
-                size.checked_sub((count + 1) * 2).ok_or(Error("invalid HFS node record count"))?;
+            let table = size.checked_sub((count + 1) * 2)
+                            .ok_or(Error::Malformed("invalid HFS node record count"))?;
             let mut start = be16(&buffer, size - 2)? as usize;
             if start < 14 || start > table
             {
-                return Err(Error("invalid HFS record offset"));
+                return Err(Error::Malformed("invalid HFS record offset"));
             }
             for index in 0..count
             {
                 let end = be16(&buffer, size - (index + 2) * 2)? as usize;
                 if end <= start || end > table
                 {
-                    return Err(Error("invalid HFS record bounds"));
+                    return Err(Error::Malformed("invalid HFS record bounds"));
                 }
                 if let Some(result) = find(&buffer[start..end])?
                 {
@@ -288,7 +295,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
             previous = current;
             current = be32(&buffer, 0)?;
         }
-        Err(Error("HFS leaf chain cycle or scan limit exceeded"))
+        Err(Error::Malformed("HFS leaf chain cycle or scan limit exceeded"))
     }
 
     fn resolve_extents(&mut self, fork: &mut Fork) -> Result<()>
@@ -297,15 +304,17 @@ impl<'a, D: BlockDevice> Volume<'a, D>
         {
             if fork.id == 3 || fork.extents.len() > 1024
             {
-                return Err(Error("unsupported extents-overflow tree growth"));
+                return Err(Error::Malformed("unsupported extents-overflow tree growth"));
             }
             let overflow = self.overflow.clone();
-            let next =
-                u16::try_from(fork.blocks()).map_err(|_| Error("HFS allocation index overflow"))?;
+            let next = u16::try_from(fork.blocks()).map_err(|_| {
+                                                       Error::Malformed("HFS allocation index \
+                                                                         overflow")
+                                                   })?;
             let record = self.find_record(&overflow, |record| {
                                  if record.first() != Some(&7)
                                  {
-                                     return Err(Error("invalid HFS extent key"));
+                                     return Err(Error::Malformed("invalid HFS extent key"));
                                  }
                                  bytes(record, 0, 20)?;
                                  if record[1] == fork.kind
@@ -319,11 +328,11 @@ impl<'a, D: BlockDevice> Volume<'a, D>
                                      Ok(None)
                                  }
                              })?
-                             .ok_or(Error("missing HFS overflow extent record"))?;
+                             .ok_or(Error::Malformed("missing HFS overflow extent record"))?;
             let extension = Fork::new(fork.id, fork.kind, 0, &record)?;
             if extension.extents.is_empty()
             {
-                return Err(Error("empty HFS overflow extent record"));
+                return Err(Error::Malformed("empty HFS overflow extent record"));
             }
             fork.extents.extend(extension.extents);
             self.validate_extents(fork)?;
@@ -358,7 +367,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
                    || !physical.is_multiple_of(self.allocation_size)
                    || physical > self.allocation_bytes)
             {
-                return Err(Error("invalid HFS physical fork length"));
+                return Err(Error::Malformed("invalid HFS physical fork length"));
             }
         }
         Ok(Some((entry.data_allocated, entry.resource_allocated)))
@@ -398,7 +407,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
     {
         if offset > fork.length
         {
-            return Err(Error("read past HFS fork EOF"));
+            return Err(Error::Malformed("read past HFS fork EOF"));
         }
         self.validate_extents(fork)?;
         self.resolve_extents(fork)?;
@@ -411,7 +420,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
     {
         if self.blessed_id < 2
         {
-            return Err(Error("volume has no blessed System Folder"));
+            return Err(Error::Malformed("volume has no blessed System Folder"));
         }
         let id = self.blessed_id;
         let catalog = self.catalog.clone();
@@ -428,7 +437,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
                     Ok(None)
                 }
             })?
-            .ok_or(Error("blessed System Folder CNID is missing"))
+            .ok_or(Error::Malformed("blessed System Folder CNID is missing"))
     }
 
     pub fn find_file(&mut self, parent_id: u32, name: &[u8]) -> Result<File>
@@ -455,7 +464,7 @@ impl<'a, D: BlockDevice> Volume<'a, D>
                                                                    be32(data, 36)?,
                                                                    bytes(data, 86, 12)?)? }))
                            })?
-                           .ok_or(Error("startup file is missing from blessed folder"))?;
+                           .ok_or(Error::Malformed("startup file is missing from blessed folder"))?;
         self.validate_extents(&file.data)?;
         self.validate_extents(&file.resources)?;
         self.resolve_extents(&mut file.resources)?;
@@ -464,11 +473,13 @@ impl<'a, D: BlockDevice> Volume<'a, D>
 
     pub fn read_resources(&mut self, file: &File, maximum: usize) -> Result<Vec<u8>>
     {
-        let size =
-            usize::try_from(file.resources.length).map_err(|_| Error("resource fork too large"))?;
+        let size = usize::try_from(file.resources.length).map_err(|_| {
+                                                             Error::Malformed("resource fork too \
+                                                                               large")
+                                                         })?;
         if size == 0 || size > maximum
         {
-            return Err(Error("startup resource fork is empty or too large"));
+            return Err(Error::Malformed("startup resource fork is empty or too large"));
         }
         let mut data = vec![0; size];
         self.read_fork(&file.resources, 0, &mut data)?;
@@ -478,28 +489,30 @@ impl<'a, D: BlockDevice> Volume<'a, D>
 
 fn catalog_record(record: &[u8]) -> Result<(u32, &[u8], &[u8])>
 {
-    let key = *record.first().ok_or(Error("empty HFS catalog record"))? as usize;
+    let key = *record.first().ok_or(Error::Malformed("empty HFS catalog record"))? as usize;
     if !(6..=37).contains(&key)
     {
-        return Err(Error("invalid HFS catalog key length"));
+        return Err(Error::Malformed("invalid HFS catalog key length"));
     }
     let name_length = *bytes(record, 6, 1)?.first().unwrap() as usize;
     if name_length > 31 || key < name_length + 6 || key > name_length + 7
     {
-        return Err(Error("invalid HFS catalog name"));
+        return Err(Error::Malformed("invalid HFS catalog name"));
     }
     let data_start = (key + 2) & !1;
     Ok((be32(record, 2)?,
         bytes(record, 7, name_length)?,
         bytes(record,
               data_start,
-              record.len().checked_sub(data_start).ok_or(Error("truncated HFS catalog key"))?)?))
+              record.len()
+                    .checked_sub(data_start)
+                    .ok_or(Error::Malformed("truncated HFS catalog key"))?)?))
 }
 
 fn parse_entry(record: &[u8]) -> Result<Option<CatalogEntry>>
 {
     let (parent, name, data) = catalog_record(record)?;
-    let kind = *data.first().ok_or(Error("empty HFS catalog data"))?;
+    let kind = *data.first().ok_or(Error::Malformed("empty HFS catalog data"))?;
     let (id, flags, info, dates, child_count, forks) = match kind
     {
         1 =>
@@ -519,7 +532,7 @@ fn parse_entry(record: &[u8]) -> Result<Option<CatalogEntry>>
                    Fork::new(be32(data, 20)?, 0xff, be32(data, 36)?, bytes(data, 86, 12)?)?)))
         }
         3 | 4 => return Ok(None),
-        _ => return Err(Error("unknown HFS catalog record kind"))
+        _ => return Err(Error::Malformed("unknown HFS catalog record kind"))
     };
     let (data_fork, resource_fork) = match forks
     {

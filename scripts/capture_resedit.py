@@ -109,7 +109,7 @@ def capture(output):
         driver.application('QuickDraw Test');driver.wait('QUICKDRAW_TEST_READY\n')
         driver.menu(618,93,popup_x=580);driver.wait(f"PROCESS_ACTIVE app={driver.app_id('Finder')}\n")
         frame('finder-icons')
-        driver.application('ResEdit');driver.wait('RESEDIT_READY\n');frame('picker')
+        driver.application('Res Edit');driver.wait('RESEDIT_READY\n');frame('picker')
         open_dialog();frame('system-open')
         pick('QuickDraw Test');opened('QuickDraw Test');frame('running-app-open')
         for kind in [b'ICN#',b'MENU',b'STR ',b'STR#',b'vers',b'RV64',b'NABI',b'RLOC']:
@@ -148,9 +148,9 @@ def capture(output):
         active=f"PROCESS_ACTIVE app={driver.app_id('QuickDraw Test')}\n";previous=driver.log().count(active)
         driver.menu(618,111,popup_x=580);driver.wait(active,previous)
         driver.key('2');driver.wait('QD_DEMO_READY page=2 transfer\n');frame('running-app-still-usable')
-        active=f"PROCESS_ACTIVE app={driver.app_id('ResEdit')}\n";previous=driver.log().count(active)
+        active=f"PROCESS_ACTIVE app={driver.app_id('Res Edit')}\n";previous=driver.log().count(active)
         driver.menu(618,129,popup_x=580);driver.wait(active,previous)
-        driver.key('q',('ctrl',));driver.wait(f"PROCESS_EXIT app={driver.app_id('ResEdit')}\n");frame('resedit-closed')
+        driver.key('q',('ctrl',));driver.wait(f"PROCESS_EXIT app={driver.app_id('Res Edit')}\n");frame('resedit-closed')
     except Exception:
         if process.poll() is None:
             capture_failure(output,driver,vm.DIST)

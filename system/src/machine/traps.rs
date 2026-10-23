@@ -278,6 +278,11 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                                                                          error.status()
                                                                      }) as i64
         }
+        PROCESS if size == size_of::<mac_abi::processes::DocumentCall>() =>
+        {
+            let call = read_request!(mac_abi::processes::DocumentCall);
+            toolbox::processes::documents::request(crate::context::current_thread_context().identity().app.0,call) as i64
+        }
         PROCESS =>
         {
             let call = read_request!(mac_abi::processes::ProcessCall);

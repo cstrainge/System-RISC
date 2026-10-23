@@ -16,26 +16,27 @@ pub fn apple_partitions(disk: &mut impl BlockDevice) -> Result<Vec<ApplePartitio
     let mut b = [0; 512];
     if disk.sector_count() < 3
     {
-        return Err(Error("disk is too small"));
+        return Err(Error::Malformed("disk is too small"));
     }
     disk.read_sector(1, &mut b)?;
     if &b[..2] != b"PM"
     {
-        return Err(Error("no Apple partition map"));
+        return Err(Error::Malformed("no Apple partition map"));
     }
     let count = u64::from(long(&b, 4));
     if count == 0 || count > 128 || count >= disk.sector_count()
     {
-        return Err(Error("invalid Apple partition count"));
+        return Err(Error::Malformed("invalid Apple partition count"));
     }
     let mut out: Vec<ApplePartition> = Vec::new();
-    out.try_reserve_exact(count as usize).map_err(|_| Error("partition allocation failed"))?;
+    out.try_reserve_exact(count as usize)
+       .map_err(|_| Error::Malformed("partition allocation failed"))?;
     for index in 1..=count
     {
         disk.read_sector(index, &mut b)?;
         if &b[..2] != b"PM" || u64::from(long(&b, 4)) != count
         {
-            return Err(Error("invalid Apple partition entry"));
+            return Err(Error::Malformed("invalid Apple partition entry"));
         }
         let start = u64::from(long(&b, 8));
         let sectors = u64::from(long(&b, 12));
@@ -52,13 +53,13 @@ pub fn apple_partitions(disk: &mut impl BlockDevice) -> Result<Vec<ApplePartitio
         if start < count + 1
            || start.checked_add(sectors).is_none_or(|end| end > disk.sector_count())
         {
-            return Err(Error("partition outside device"));
+            return Err(Error::Malformed("partition outside device"));
         }
         let offset = u64::from(long(&b, 80));
         let length = u64::from(long(&b, 84));
         let length = if length == 0
         {
-            sectors.checked_sub(offset).ok_or(Error("invalid partition data offset"))?
+            sectors.checked_sub(offset).ok_or(Error::Malformed("invalid partition data offset"))?
         }
         else
         {
@@ -66,7 +67,7 @@ pub fn apple_partitions(disk: &mut impl BlockDevice) -> Result<Vec<ApplePartitio
         };
         if length == 0 || offset.checked_add(length).is_none_or(|end| end > sectors)
         {
-            return Err(Error("partition logical data outside partition"));
+            return Err(Error::Malformed("partition logical data outside partition"));
         }
         let range = Partition { start:   start + offset,
                                 sectors: length };
@@ -76,7 +77,7 @@ pub fn apple_partitions(disk: &mut impl BlockDevice) -> Result<Vec<ApplePartitio
                          && p.range.start < range.start + range.sectors
                      })
         {
-            return Err(Error("overlapping Apple partition data"));
+            return Err(Error::Malformed("overlapping Apple partition data"));
         }
         out.push(ApplePartition { range,
                                   kind });
@@ -101,7 +102,7 @@ mod tests
 
         fn read_sector(&mut self, sector: u64, out: &mut [u8; 512]) -> Result<()>
         {
-            *out = *self.0.get(sector as usize).ok_or(Error("bounds"))?;
+            *out = *self.0.get(sector as usize).ok_or(Error::Malformed("bounds"))?;
             Ok(())
         }
     }
@@ -129,7 +130,7 @@ mod tests
         for start in [8, 128]
         {
             assert!(matches!(apple_partitions(&mut image(start)),
-                             Err(Error("overlapping Apple partition data"))));
+                             Err(Error::Malformed("overlapping Apple partition data"))));
         }
     }
 }

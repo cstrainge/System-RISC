@@ -4,7 +4,7 @@
   "file_type": "FNDR",
   "creator": "MACS",
   "role": "application",
-  "abi_version": 8,
+  "abi_version": 11,
   "load_base": "0x81000000",
   "load_limit": "0x82000000",
   "description": "Actual native TextEdit app typing performance through public SDK",
@@ -18,10 +18,34 @@
         "title": "File",
         "items": [
           {
-            "text": "Close Window",
+            "text": "New",
+            "command": "new ",
+            "enabled": true,
+            "key": "N"
+          },
+          {
+            "text": "Open...",
+            "command": "open",
+            "enabled": true,
+            "key": "O"
+          },
+          "-",
+          {
+            "text": "Close",
             "command": "clos",
             "enabled": true,
             "key": "W"
+          },
+          {
+            "text": "Save",
+            "command": "save",
+            "enabled": true,
+            "key": "S"
+          },
+          {
+            "text": "Save As...",
+            "command": "svas",
+            "enabled": true
           },
           "-",
           {
@@ -75,12 +99,109 @@
       }
     },
     {
+      "type": "MENU",
+      "id": 130,
+      "symbol": "FONT_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "Font",
+        "items": [
+          {
+            "text": "Chicago",
+            "command": "f000",
+            "enabled": true
+          },
+          {
+            "text": "New York",
+            "command": "f001",
+            "enabled": true
+          },
+          {
+            "text": "Geneva",
+            "command": "f002",
+            "enabled": true
+          },
+          {
+            "text": "Monaco",
+            "command": "f003",
+            "enabled": true
+          },
+          {
+            "text": "Palatino",
+            "command": "f004",
+            "enabled": true
+          },
+          {
+            "text": "Times",
+            "command": "f005",
+            "enabled": true
+          },
+          {
+            "text": "Helvetica",
+            "command": "f006",
+            "enabled": true
+          },
+          {
+            "text": "Courier",
+            "command": "f007",
+            "enabled": true
+          },
+          {
+            "text": "Symbol",
+            "command": "f008",
+            "enabled": true
+          }
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 131,
+      "symbol": "SIZE_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "Size",
+        "items": [
+          {
+            "text": "9",
+            "command": "s009",
+            "enabled": true
+          },
+          {
+            "text": "10",
+            "command": "s010",
+            "enabled": true
+          },
+          {
+            "text": "12",
+            "command": "s012",
+            "enabled": true
+          },
+          {
+            "text": "14",
+            "command": "s014",
+            "enabled": true
+          },
+          {
+            "text": "18",
+            "command": "s018",
+            "enabled": true
+          },
+          {
+            "text": "24",
+            "command": "s024",
+            "enabled": true
+          }
+        ]
+      }
+    },
+    {
       "type": "STR ",
       "id": 128,
       "symbol": "PRODUCT_NAME",
       "payload": {
         "format": "pstring",
-        "text": "TextEdit Exerciser"
+        "text": "Text Edit"
       }
     },
     {
@@ -89,7 +210,7 @@
       "symbol": "APPLICATION_ICON",
       "payload": {
         "format": "file",
-        "path": "../../../../../apps/textedit-exerciser/assets/application.icn"
+        "path": "../../../../../apps/text-edit/assets/application.icn"
       }
     },
     {
@@ -135,7 +256,7 @@
       "payload": {
         "format": "strings",
         "strings": [
-          "TextEdit Exerciser",
+          "Text Edit",
           "TextEdit runs inside System.\rSelect text, type, or use Edit to cut, copy and paste.\rThis window uses the public Rust Toolbox API.",
           "Chicago 12  \u2022  Drag to select  \u2022  Ctrl-X / C / V / A"
         ]

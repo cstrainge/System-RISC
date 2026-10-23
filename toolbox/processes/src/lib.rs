@@ -1,6 +1,8 @@
 //! Native process clients. The resident scheduler owns execution and lifecycle.
 #![no_std]
 #![forbid(unsafe_code)]
+mod documents;
+pub use documents::{DocumentBatch, DocumentBatchId, DocumentOpen, DocumentRef};
 use mac_traps::types::InlineText;
 pub use mac_traps::{Cnid, ProcessId, ThreadId, VolumeId};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-//! Standalone native editor exercising the resident TextEdit implementation.
+//! Text Edit: resource-based native document editing through the public Toolbox.
 #![no_std]
 #![no_main]
 
@@ -6,6 +6,10 @@
 use mac_toolbox::*;
 
 mod editor;
+mod preferences;
+mod font_choices;
+mod encoding;
+mod documents;
 mod batch;
 mod resources
 {
@@ -19,42 +23,15 @@ use ui::{Text, text};
 fn run(system: &System<'_>) -> Result<(), Error>
 {
     let _menus = menus::install(system)?;
-    let mut editor = editor::Editor::default();
-    editor.open(system)?;
-    menus::update(system, &editor)?;
-    system.log("TEXTEDIT_EXERCISER_READY\n")?;
+    let mut application = documents::Application::new(system)?;
+    system.log("TEXT_EDIT_READY\n")?;
     loop
     {
         let (event, position) =
             system.wait_positioned(mac_toolbox::events::EventMask::ALL, 30)?.into_parts();
-        if let Some(selection) = system.menus().selection(&event)?
-        {
-            if [u32::from_be_bytes(*b"clos"), u32::from_be_bytes(*b"quit")].contains(&selection.command)
-            {
-                editor.close(system)?;
-                return Ok(());
-            }
-            editor.command(system, selection.command, event.input().when)?;
-            menus::update(system, &editor)?;
-            continue;
-        }
-        if batch::is_keyboard(&event)
-        {
-            batch::keyboard(system, &mut editor, event)?;
-            if editor.window == WindowId(0)
-            {
-                return Ok(());
-            }
-            continue;
-        }
-        editor.event(system, &event, position)?;
-        if editor.window == WindowId(0)
+        if !application.event(system, event, position)?
         {
             return Ok(());
-        }
-        if !matches!(event, Event::Idle { .. }) && !matches!(event, Event::KeyUp { .. })
-        {
-            menus::update(system, &editor)?;
         }
     }
 }
@@ -83,7 +60,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
         Ok(()) => mac_toolbox::abi::OK,
         Err(status) =>
         {
-            let _ = system.log("TEXTEDIT_EXERCISER_ERROR\n");
+            let _ = system.log("TEXT_EDIT_ERROR\n");
             status.status()
         }
     }

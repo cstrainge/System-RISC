@@ -9,6 +9,7 @@ use mac_toolbox::{files::{CatalogInfo, ROOT_ID},
                   *};
 mod code;
 mod document;
+mod documents;
 mod preview;
 mod view;
 mod viewers;
@@ -617,171 +618,172 @@ fn save(system: &System<'_>, browser: &mut Browser<'_>, save_as: bool) -> Toolbo
     system.log(log.as_str())?;
     Ok(())
 }
+fn document_event<'a>(system: &System<'a>, document: &mut documents::Document<'a>,
+                      event: &Event<'a>, position: PointerPosition, command: Option<[u8; 4]>)
+                      -> ToolboxResult<()>
+{
+    let window = document.owner.id();
+    let browser = &mut document.browser;
+    let info = match system.windows().info(window)
+    {
+        Ok(info) => info,
+        Err(Error::NotFound) => return Ok(()),
+        Err(error) => return Err(error)
+    };
+    let exposed =
+        matches!(event, Event::Update { .. }) && event.window().unwrap_or_default() == window;
+    let geometry = matches!(event, Event::WindowGeometryChanged { .. })
+                   && event.window().unwrap_or_default() == window;
+    let mut redraw = (exposed || geometry)
+                     && browser.rendered_size
+                        != (info.bounds.right - info.bounds.left,
+                            info.bounds.bottom - info.bounds.top);
+    // Resident retained drawing restores exposure. Only a new document,
+    // changed view or new content size requires rebuilding its controls.
+    if exposed && !redraw
+    {
+        system.windows().validate(window)?;
+    }
+    if command == Some(*b"open")
+    {
+        let previous = browser.catalog.map(|item| (item.volume, item.id));
+        open_dialog(system, browser, window)?;
+        redraw = browser.catalog.map(|item| (item.volume, item.id)) != previous;
+    }
+    if command == Some(*b"save") || command == Some(*b"svas") || command == Some(*b"expr")
+    {
+        let previous_status = browser.status;
+        if let Err(error) = save(system, browser, command == Some(*b"svas"))
+        {
+            let mut log = Text::<128>::new();
+            let _ = writeln!(log, "RESEDIT_SAVE_ERROR status={}", error.status());
+            system.log(log.as_str())?;
+            browser.status = 13;
+            browser.draw_status(system, window)?;
+            return Err(error);
+        }
+        if browser.status != previous_status
+        {
+            browser.draw_status(system, window)?;
+        }
+    }
+    if command == Some(*b"host")
+    {
+        let previous_status = browser.status;
+        if let Err(error) = export(system, browser, window)
+        {
+            browser.status = 13;
+            browser.draw_status(system, window)?;
+            return Err(error);
+        }
+        if browser.status != previous_status
+        {
+            browser.draw_status(system, window)?;
+        }
+    }
+    if matches!(event, Event::KeyDown { .. })
+       && !event.input().modifiers.contains(mac_toolbox::events::Modifiers::COMMAND)
+    {
+        let bounds = system.windows().info(window)?.bounds;
+        let layout = Layout { width:  bounds.right - bounds.left,
+                              height: bounds.bottom - bounds.top };
+        if let (Some(file), Some(item)) = (browser.file.as_ref(), browser.selected)
+        {
+            browser.resource_view.key(system,
+                                       window,
+                                       file,
+                                       item,
+                                       Browser::resource_area(layout),
+                                       event.key().map_or(0, |key| key.code()))?;
+            browser.sync_preview()?;
+            browser.report(system, layout)?;
+        }
+        system.log("RESEDIT_DRAW_READY\n")?;
+        return Ok(());
+    }
+    if matches!(event, Event::MouseDown { .. }) && event.window().unwrap_or_default() == window
+    {
+        let bounds = system.windows().info(window)?.bounds;
+        let layout = Layout { width:  bounds.right - bounds.left,
+                              height: bounds.bottom - bounds.top };
+        let point = position.in_window(window)?.point()?;
+        if Browser::resource_area(layout).contains(point)
+        {
+            let changed = if let (Some(file), Some(item)) =
+                (browser.file.as_ref(), browser.selected)
+            {
+                browser.resource_view.mouse(system,
+                                             window,
+                                             file,
+                                             item,
+                                             Browser::resource_area(layout),
+                                             point)?
+            }
+            else
+            {
+                false
+            };
+            browser.sync_preview()?;
+            if changed
+            {
+                browser.draw(system, window)?;
+            }
+            else
+            {
+                browser.report(system, layout)?;
+                system.log("RESEDIT_DRAW_READY\n")?;
+            }
+            return Ok(());
+        }
+        if let Some(pane) =
+            [Pane::Types, Pane::Resources].into_iter()
+                                          .find(|p| layout.scrollbar(*p).contains(point))
+        {
+            browser.track_scrollbar(system, window, layout, pane, point)?;
+            return Ok(());
+        }
+        else if let Some(row) = layout.row_at(Pane::Types, point)
+        {
+            let index = browser.type_top + row;
+            if index < browser.type_count
+            {
+                browser.type_index = index;
+                browser.resource_index = 0;
+                browser.resource_top = 0;
+                browser.preview_top = 0;
+            }
+        }
+        else if let Some(row) = layout.row_at(Pane::Resources, point)
+        {
+            let index = browser.resource_top + row;
+            if index < browser.resource_count
+            {
+                browser.resource_index = index;
+                browser.preview_top = 0;
+            }
+        }
+        redraw = true;
+    }
+    if redraw
+    {
+        browser.draw(system, window)?;
+    }
+    Ok(())
+}
 fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
 {
     system.menus().clear()?;
     let _menu = system.menus().install_owned(resources::APPLICATION, 128)?;
-    let (bounds, procedure) = window_layout(system)?;
-    let mut title_buffer = [0; 128];
-    let title = system.resources().application().string(128, &mut title_buffer)?;
-    let mut owner = system.windows()
-                          .create_owned(windows::WindowSpec::new(bounds, title).procedure(procedure)
-                                                                               .minimum(600, 400))?;
-    let window = owner.id();
-    let mut browser = Browser::new(system, window)?;
-    browser.draw(system, window)?;
+    let mut application = documents::Application::empty();
+    application.initialize(system)?;
     system.log("RESEDIT_READY\n")?;
     loop
     {
         let (event, position) =
             system.events().wait_positioned(mac_toolbox::events::EventMask::ALL, 30)?.into_parts();
-        let info = match system.windows().info(window)
+        if !application.event(system, &event, position)?
         {
-            Ok(info) => info,
-            Err(Error::NotFound) => return Ok(()),
-            Err(error) => return Err(error)
-        };
-        let command = system.menus().selection(&event)?.map(|s| s.command.to_be_bytes());
-        if command.is_some_and(|value| value == *b"quit" || value == *b"clos")
-        {
-            owner.close()?;
             return Ok(());
-        }
-        let exposed =
-            matches!(event, Event::Update { .. }) && event.window().unwrap_or_default() == window;
-        let geometry = matches!(event, Event::WindowGeometryChanged { .. })
-                       && event.window().unwrap_or_default() == window;
-        let mut redraw = (exposed || geometry)
-                         && browser.rendered_size
-                            != (info.bounds.right - info.bounds.left,
-                                info.bounds.bottom - info.bounds.top);
-        // Resident retained drawing restores exposure. Only a new document,
-        // changed view or new content size requires rebuilding its controls.
-        if exposed && !redraw
-        {
-            system.windows().validate(window)?;
-        }
-        if command == Some(*b"open")
-        {
-            if open_dialog(system, &mut browser, window).is_err()
-            {
-                browser.status = 12;
-            }
-            redraw = true;
-        }
-        if command == Some(*b"save") || command == Some(*b"svas") || command == Some(*b"expr")
-        {
-            let previous_status = browser.status;
-            if let Err(error) = save(system, &mut browser, command == Some(*b"svas"))
-            {
-                let mut log = Text::<128>::new();
-                let _ = writeln!(log, "RESEDIT_SAVE_ERROR status={}", error.status());
-                system.log(log.as_str())?;
-                browser.status = 13;
-            }
-            if browser.status != previous_status
-            {
-                browser.draw_status(system, window)?;
-            }
-        }
-        if command == Some(*b"host")
-        {
-            let previous_status = browser.status;
-            if export(system, &mut browser, window).is_err()
-            {
-                browser.status = 13;
-            }
-            if browser.status != previous_status
-            {
-                browser.draw_status(system, window)?;
-            }
-        }
-        if matches!(event, Event::KeyDown { .. })
-           && !event.input().modifiers.contains(mac_toolbox::events::Modifiers::COMMAND)
-        {
-            let bounds = system.windows().info(window)?.bounds;
-            let layout = Layout { width:  bounds.right - bounds.left,
-                                  height: bounds.bottom - bounds.top };
-            if let (Some(file), Some(item)) = (browser.file.as_ref(), browser.selected)
-            {
-                browser.resource_view.key(system,
-                                           window,
-                                           file,
-                                           item,
-                                           Browser::resource_area(layout),
-                                           event.key().map_or(0, |key| key.code()))?;
-                browser.sync_preview()?;
-                browser.report(system, layout)?;
-            }
-            system.log("RESEDIT_DRAW_READY\n")?;
-            continue;
-        }
-        if matches!(event, Event::MouseDown { .. }) && event.window().unwrap_or_default() == window
-        {
-            let bounds = system.windows().info(window)?.bounds;
-            let layout = Layout { width:  bounds.right - bounds.left,
-                                  height: bounds.bottom - bounds.top };
-            let point = position.in_window(window)?.point()?;
-            if Browser::resource_area(layout).contains(point)
-            {
-                let changed = if let (Some(file), Some(item)) =
-                    (browser.file.as_ref(), browser.selected)
-                {
-                    browser.resource_view.mouse(system,
-                                                 window,
-                                                 file,
-                                                 item,
-                                                 Browser::resource_area(layout),
-                                                 point)?
-                }
-                else
-                {
-                    false
-                };
-                browser.sync_preview()?;
-                if changed
-                {
-                    browser.draw(system, window)?;
-                }
-                else
-                {
-                    browser.report(system, layout)?;
-                    system.log("RESEDIT_DRAW_READY\n")?;
-                }
-                continue;
-            }
-            if let Some(pane) =
-                [Pane::Types, Pane::Resources].into_iter()
-                                              .find(|p| layout.scrollbar(*p).contains(point))
-            {
-                browser.track_scrollbar(system, window, layout, pane, point)?;
-                continue;
-            }
-            else if let Some(row) = layout.row_at(Pane::Types, point)
-            {
-                let index = browser.type_top + row;
-                if index < browser.type_count
-                {
-                    browser.type_index = index;
-                    browser.resource_index = 0;
-                    browser.resource_top = 0;
-                    browser.preview_top = 0;
-                }
-            }
-            else if let Some(row) = layout.row_at(Pane::Resources, point)
-            {
-                let index = browser.resource_top + row;
-                if index < browser.resource_count
-                {
-                    browser.resource_index = index;
-                    browser.preview_top = 0;
-                }
-            }
-            redraw = true;
-        }
-        if redraw
-        {
-            browser.draw(system, window)?;
         }
     }
 }

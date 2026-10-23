@@ -39,17 +39,7 @@ impl Manager
             surface: *mut Surface)
             -> i64
     {
-        let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
-                                        kind: MDEF,
-                                        id: 0,
-                                        variation: 0,
-                                        message,
-                                        reserved: 0,
-                                        param,
-                                        object: (state as *mut MenuDefinitionState).cast(),
-                                        surface,
-                                        gate: self.gate };
-        crate::toolbox::resources::definitions::invoke(self.entry, &mut call)
+        invoke(self.entry, self.gate, state, message, param, surface)
     }
 
     fn measure(&self, state: &mut MenuDefinitionState) -> Result<(), Status>
@@ -99,7 +89,8 @@ impl Manager
                 let mut left = self.menus[index].state.title_bounds.left;
                 for menu in &self.menus[index + 1..]
                 {
-                    let mut state = Box::try_new(*menu.state).map_err(|_| NO_MEMORY)?;
+                    let mut state = new_state()?;
+                    state.as_mut().clone_from(menu.state.as_ref());
                     state.title_bounds.left = left;
                     self.measure(&mut state)?;
                     left = state.title_bounds.right;
@@ -283,15 +274,19 @@ impl Manager
             self.highlighted = 0;
             return;
         }
-        self.highlighted =
-            self.active.map_or(0, |index| {
-                           let mut state = *self.menus[index].state;
-                           self.call(&mut state,
-                                     HIT_ITEM,
-                                     (((point.v as u16 as u32) << 16) | point.h as u16 as u32)
-                                     as i64,
-                                     core::ptr::null_mut()) as i16
-                       });
+        self.highlighted = if let Some(index) = self.active
+        {
+            invoke(self.entry,
+                   self.gate,
+                   &mut self.menus[index].state,
+                   HIT_ITEM,
+                   (((point.v as u16 as u32) << 16) | point.h as u16 as u32) as i64,
+                   core::ptr::null_mut()) as i16
+        }
+        else
+        {
+            0
+        };
     }
 
     pub fn release(&mut self, point: Point) -> Option<Selection>
@@ -331,7 +326,7 @@ impl Manager
         self.menus.iter().enumerate().find_map(|(index,m)|m.state.items[..m.state.item_count as usize].iter().position(|item|item.key!=0&&item.key.eq_ignore_ascii_case(&key)&&item.enabled!=0&&item.separator==0).and_then(|item|self.selection(index,item as i16+1)))
     }
 
-    pub fn draw(&self, canvas: &mut Canvas)
+    pub fn draw(&mut self, canvas: &mut Canvas)
     {
         self.draw_bar(canvas);
         self.draw_popup(canvas);
@@ -342,36 +337,33 @@ impl Manager
         self.active.map(|index| self.menus[index].state.menu_id)
     }
 
-    pub fn draw_bar(&self, canvas: &mut Canvas)
+    pub fn draw_bar(&mut self, canvas: &mut Canvas)
     {
         canvas.reset_port();
         if self.menus.is_empty()
         {
-            let mut empty = MenuDefinitionState { first: 1,
-                                                  ..Default::default() };
-            let mut surface = Surface::from_canvas(canvas);
-            self.call(&mut empty, DRAW_BAR, 0, &mut surface);
+            draw_empty(self.entry, self.gate, canvas);
             return;
         }
-        for (index, menu) in self.menus.iter().enumerate()
+        for (index, menu) in self.menus.iter_mut().enumerate()
         {
-            let mut state = *menu.state;
+            let state = &mut menu.state;
             state.first = u32::from(index == 0);
             state.bar_selected = u32::from(self.active == Some(index));
             let mut surface = Surface::from_canvas(canvas);
-            self.call(&mut state, DRAW_BAR, 0, &mut surface);
+            invoke(self.entry, self.gate, state, DRAW_BAR, 0, &mut surface);
         }
     }
 
-    pub fn draw_popup(&self, canvas: &mut Canvas)
+    pub fn draw_popup(&mut self, canvas: &mut Canvas)
     {
         canvas.reset_port();
         if let Some(index) = self.active
         {
-            let mut state = *self.menus[index].state;
+            let state = &mut self.menus[index].state;
             state.highlighted = self.highlighted;
             let mut surface = Surface::from_canvas(canvas);
-            self.call(&mut state, DRAW_POPUP, 0, &mut surface);
+            invoke(self.entry, self.gate, state, DRAW_POPUP, 0, &mut surface);
         }
     }
 }
@@ -407,7 +399,7 @@ fn item_text(item: &mut MenuItemState, raw: &[u8]) -> Result<(), Status>
 // Keep the large ABI object off nested application/definition stack frames.
 // Allocate before parsing and fill it in place; allocation failure is a status.
 #[inline(never)]
-fn new_state() -> Result<Box<MenuDefinitionState>, Status>
+pub(in crate::toolbox) fn new_state() -> Result<Box<MenuDefinitionState>, Status>
 {
     Box::try_new(MenuDefinitionState::default()).map_err(|_| NO_MEMORY)
 }
@@ -482,4 +474,31 @@ fn parse_fmnu(bytes: &[u8], state: &mut MenuDefinitionState) -> Result<(), Statu
         state.item_count += 1;
     }
     Ok(())
+}
+
+// Empty bars need the definition's full ABI record too. Keep that rare temporary
+// out of the compositor and pointer-poll stack frames.
+#[inline(never)]
+fn draw_empty(entry: DefinitionEntry, gate: TrapGate, canvas: &mut Canvas)
+{
+    let mut state = MenuDefinitionState { first: 1,
+                                          ..Default::default() };
+    let mut surface = Surface::from_canvas(canvas);
+    invoke(entry, gate, &mut state, DRAW_BAR, 0, &mut surface);
+}
+fn invoke(entry: DefinitionEntry, gate: TrapGate, state: &mut MenuDefinitionState, message: i16,
+          param: i64, surface: *mut Surface)
+          -> i64
+{
+    let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+                                    kind: MDEF,
+                                    id: 0,
+                                    variation: 0,
+                                    message,
+                                    reserved: 0,
+                                    param,
+                                    object: (state as *mut MenuDefinitionState).cast(),
+                                    surface,
+                                    gate };
+    crate::toolbox::resources::definitions::invoke(entry, &mut call)
 }

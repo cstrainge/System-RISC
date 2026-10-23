@@ -40,6 +40,23 @@ impl EventManager
                dropped:   0 }
     }
 
+    /// Progress is advisory and coalesced by object, not by timer/input event.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn post_transfer(&mut self, event: Event)
+    {
+        if let Some(queued) =
+            self.queue[..self.len].iter_mut().find(|queued| {
+                                                 queued.kind == event.kind
+                                                 && queued.message == event.message
+                                                 && queued.payload == event.payload
+                                             })
+        {
+            *queued = event;
+            return;
+        }
+        self.post(event);
+    }
+
     pub fn post(&mut self, event: Event)
     {
         self.push(event, false);
@@ -102,10 +119,18 @@ impl EventManager
     {
         if self.len == self.queue.len()
         {
-            self.queue.copy_within(1..self.len, 0);
-            self.routed.copy_within(1..self.len, 0);
-            self.positions.copy_within(1..self.len, 0);
-            self.len -= 1;
+            // Owned progress/document notices are level notifications. Losing
+            // the only terminal wake would strand an otherwise finished owner.
+            let evict = self.queue[..self.len].iter()
+                                              .position(|queued| {
+                                                  !(queued.kind
+                                                    == mac_abi::events::EventKind::OsEvent
+                                                    && matches!(queued.message,
+                                                        mac_abi::events::FILE_TRANSFER_CHANGED
+                                                        | mac_abi::processes::DOCUMENT_AVAILABLE))
+                                              })
+                                              .unwrap_or(0);
+            self.remove(evict);
             self.dropped = self.dropped.saturating_add(1);
         }
         self.queue[self.len] = event;

@@ -78,12 +78,12 @@ impl BlockDevice for Image
     {
         if sector >= self.sectors
         {
-            return Err(mac_block::Error("host read outside device"));
+            return Err(mac_block::Error::Malformed("host read outside device"));
         }
         self.file
             .seek(SeekFrom::Start(sector * 512))
-            .map_err(|_| mac_block::Error("host image seek failed"))?;
-        self.file.read_exact(out).map_err(|_| mac_block::Error("host image read failed"))
+            .map_err(|_| mac_block::Error::Malformed("host image seek failed"))?;
+        self.file.read_exact(out).map_err(|_| mac_block::Error::Malformed("host image read failed"))
     }
 }
 impl WritableBlockDevice for Image
@@ -97,17 +97,19 @@ impl WritableBlockDevice for Image
     {
         if self.read_only || sector >= self.sectors
         {
-            return Err(mac_block::Error("host write unavailable/outside device"));
+            return Err(mac_block::Error::Malformed("host write unavailable/outside device"));
         }
         self.file
             .seek(SeekFrom::Start(sector * 512))
-            .map_err(|_| mac_block::Error("host image seek failed"))?;
-        self.file.write_all(input).map_err(|_| mac_block::Error("host image write failed"))
+            .map_err(|_| mac_block::Error::Malformed("host image seek failed"))?;
+        self.file
+            .write_all(input)
+            .map_err(|_| mac_block::Error::Malformed("host image write failed"))
     }
 
     fn flush(&mut self) -> mac_block::Result<()>
     {
-        self.file.sync_all().map_err(|_| mac_block::Error("host image flush failed"))
+        self.file.sync_all().map_err(|_| mac_block::Error::Malformed("host image flush failed"))
     }
 }
 pub fn now() -> HostResult<Timestamp>

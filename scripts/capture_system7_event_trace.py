@@ -176,8 +176,8 @@ def capture(output, windows=False):
         stage('idle-finder', lambda: None, 1)
         stage('open-folder', lambda: (driver.click(40, 95, double=True),
                                       driver.wait(' name=Applications\n')))
-        stage('launch-textedit', lambda: (driver.application('TextEdit Exerciser'),
-                                          driver.wait('TEXTEDIT_EXERCISER_READY\n')))
+        stage('launch-textedit', lambda: (driver.application('Text Edit'),
+                                          driver.wait('TEXT_EDIT_READY\n')))
         stage('idle-editor', lambda: None, 1)
         stage('select-all', lambda: key('a', ('ctrl',)))
         stage('single-key', lambda: key('x'), .15)
@@ -200,19 +200,19 @@ def capture(output, windows=False):
                                            driver.wait('QUICKDRAW_TEST_READY\n')))
         stage('idle-three-apps', lambda: None, 1)
         stage('same-app-quickdraw', lambda: activate(1, driver.app_id('QuickDraw Test')))
-        stage('switch-editor', lambda: activate(2, driver.app_id('TextEdit Exerciser')))
+        stage('switch-editor', lambda: activate(2, driver.app_id('Text Edit')))
         stage('typing-with-backgrounds', burst, .15)
         stage('menu-cancel', lambda: (driver.move(28, 10), driver.button(True),
                                       driver.move(350, 450), driver.button(False)))
         stage('hide-others', lambda: driver.menu(618, 44, popup_x=580))
         stage('show-all', lambda: driver.menu(618, 60, popup_x=580))
         stage('show-all-again', lambda: driver.menu(618, 60, popup_x=580))
-        stage('quit-editor', lambda: (driver.menu(28, 60, popup_x=65),
-                                      driver.wait(f"PROCESS_EXIT app={driver.app_id('TextEdit Exerciser')}\n")))
+        stage('quit-editor', lambda: (driver.discard_text_edit(),
+                                      driver.wait(f"PROCESS_EXIT app={driver.app_id('Text Edit')}\n")))
         stage('quit-quickdraw', lambda: (driver.menu(28, 60, popup_x=65),
                                          driver.wait(f"PROCESS_EXIT app={driver.app_id('QuickDraw Test')}\n")))
-        stage('relaunch-editor', lambda: (driver.application('TextEdit Exerciser'),
-                                          driver.wait('TEXTEDIT_EXERCISER_READY\n', 1)))
+        stage('relaunch-editor', lambda: (driver.application('Text Edit'),
+                                          driver.wait('TEXT_EDIT_READY\n', 1)))
         stage('relaunch-input', lambda: key('z'))
         stage('final-idle', lambda: None, 1)
     finally:

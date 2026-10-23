@@ -100,19 +100,20 @@ impl Workspace
     fn build(&self) -> Result<Vec<Value>>
     {
         self.guest_build(&["native-wdef", "native-cdef", "native-scrollbar-cdef", "native-mdef"])?;
-        self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "textedit-exerciser",
-                           "cursor-test", "panic-test", "resedit", "bootrom", "vhost-transport",
+        self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "cursor-test",
+                           "panic-test", "resedit", "bootrom", "vhost-transport",
                            "vhost-filesystem", "stuffit-filesystem"])?;
+        self.guest_build(&["text-edit"])?;
         boot::package_rom(self)?;
         let mut reports = Vec::new();
         for (directory, name, binary) in
             [("system", "System", "System"),
              ("apps/finder", "Finder", "Finder"),
              ("apps/quickdraw-test", "QuickDraw Test", "QuickDrawTest"),
-             ("apps/textedit-exerciser", "TextEdit Exerciser", "TextEditExerciser"),
+             ("apps/text-edit", "Text Edit", "TextEdit"),
              ("apps/cursor-test", "Cursor Test", "CursorTest"),
              ("apps/panic-test", "Panic Test", "PanicTest"),
-             ("apps/resedit", "ResEdit", "ResEdit"),
+             ("apps/resedit", "Res Edit", "ResEdit"),
              ("drivers/vhost-transport", "Host Transport", "HostTransport"),
              ("drivers/vhost-filesystem", "Host Filesystem", "HostFilesystem"),
              ("drivers/stuffit-filesystem", "StuffIt Filesystem", "StuffItFilesystem")]
@@ -168,10 +169,10 @@ impl Workspace
         run(self.cargo().args(["fmt", "--all", "--", "--check"]))?;
         docs::generate(self)?;
         run(self.cargo().args(["test", "--locked", "--workspace", "--exclude", "mac-finder",
-                               "--exclude", "quickdraw-test", "--exclude",
-                               "textedit-exerciser", "--exclude", "cursor-test", "--exclude",
-                               "panic-test", "--exclude", "resedit", "--exclude", "abi-smoke",
-                               "--exclude", "bootrom", "--exclude", "native-wdef", "--exclude",
+                               "--exclude", "quickdraw-test", "--exclude", "text-edit",
+                               "--exclude", "cursor-test", "--exclude", "panic-test",
+                               "--exclude", "resedit", "--exclude", "abi-smoke", "--exclude",
+                               "bootrom", "--exclude", "native-wdef", "--exclude",
                                "native-cdef", "--exclude", "native-mdef"]))?;
         // The large-fork fixture writes every logical block through the shared
         // core, then verifies 64-bit File Manager transport through the SDK.
@@ -192,10 +193,11 @@ impl Workspace
             self.private_guest_test(test)?;
         }
         for test in ["dates", "boot_ui", "resedit", "menus", "finder_trash", "file_writes_guest",
-                     "deferred_close", "get_info_ui", "events", "clipboard", "textedit_graphical",
-                     "typing", "processes", "application_ui", "retained_update", "event_latency",
-                     "cursor_graphical", "busy_cursor", "panic_graphical", "finder_selection",
-                     "transfer_incident", "remote_get_info", "finder_drag"]
+                     "text_edit_documents", "deferred_close", "get_info_ui", "events", "clipboard",
+                     "textedit_graphical", "typing", "processes", "application_ui",
+                     "retained_update", "event_latency", "cursor_graphical", "busy_cursor",
+                     "panic_graphical", "finder_selection", "transfer_incident", "remote_get_info",
+                     "finder_drag"]
         {
             self.private_guest_test(test)?;
         }

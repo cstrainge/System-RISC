@@ -1,6 +1,25 @@
 {
   "version": 1,
   "associations": [
-    { "extension": "sit", "file_type": "SIT!", "creator": "SIT!" }
+    {
+      "extension": "sit",
+      "file_type": "SIT!",
+      "creator": "SIT!"
+    },
+    {
+      "extension": "txt",
+      "file_type": "TEXT",
+      "creator": "TEDT"
+    },
+    {
+      "extension": "text",
+      "file_type": "TEXT",
+      "creator": "TEDT"
+    },
+    {
+      "extension": "json",
+      "file_type": "JSON",
+      "creator": "TEDT"
+    }
   ]
 }

@@ -83,7 +83,11 @@ pub fn image(workspace: &Workspace) -> Result<Value>
         let folder = volume.create(system, name, true, when)?.id;
         if name == "Preferences"
         {
-            let file = volume.create(folder, "File Types.json", false, when)?.id;
+            let file = volume.create(folder, "File Types", false, when)?.id;
+            let mut finder_info = [0; 32];
+            finder_info[..4].copy_from_slice(b"JSON");
+            finder_info[4..8].copy_from_slice(b"TEDT");
+            volume.set_finder_metadata(file, 0, finder_info, when)?;
             hfs_b::write_stream(&mut volume,
                                 file,
                                 mac_hfs_b::ForkKind::Data,
@@ -95,10 +99,10 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     for (parent, directory, name) in [(system, "System Folder", "System"),
                                       (system, "System Folder", "Finder"),
                                       (applications, "Applications", "QuickDraw Test"),
-                                      (applications, "Applications", "TextEdit Exerciser"),
+                                      (applications, "Applications", "Text Edit"),
                                       (applications, "Applications", "Cursor Test"),
                                       (applications, "Applications", "Panic Test"),
-                                      (applications, "Applications", "ResEdit"),
+                                      (applications, "Applications", "Res Edit"),
                                       (drivers, "System Folder/Drivers", "Host Transport"),
                                       (drivers, "System Folder/Drivers", "Host Filesystem"),
                                       (drivers, "System Folder/Drivers", "StuffIt Filesystem")]

@@ -130,6 +130,16 @@ pub enum Event<'a>
     {
         offer: toolbox_drag::DragEvent<'a>, input: Input
     },
+    /// One or more complete document sets await this application.
+    DocumentsAvailable
+    {
+        batch: mac_traps::DocumentBatchId, input: Input
+    },
+    /// Advisory wake for an owned transfer; query its validated SDK guard.
+    FileTransferChanged
+    {
+        transfer: mac_traps::FileTransferId, input: Input
+    },
     /// Exact application-file state changed, independent of foreground focus.
     ProcessFileChanged
     {
@@ -249,6 +259,18 @@ impl<'a> From<raw::Event> for Event<'a>
                                     item: event.message as u16,
                                     input }
             }
+            raw::EventKind::OsEvent if event.message == mac_abi::processes::DOCUMENT_AVAILABLE =>
+            {
+                Self::DocumentsAvailable { batch: mac_traps::DocumentBatchId(event.payload
+                                                                             as u32),
+                                           input }
+            }
+            raw::EventKind::OsEvent if event.message == raw::FILE_TRANSFER_CHANGED =>
+            {
+                Self::FileTransferChanged { transfer: mac_traps::FileTransferId(event.payload
+                                                                                as u32),
+                                            input }
+            }
             raw::EventKind::OsEvent if event.message == raw::WINDOW_GEOMETRY_CHANGED =>
             {
                 Self::WindowGeometryChanged { window: WindowId(event.payload as u32),
@@ -282,7 +304,11 @@ impl Event<'_>
     {
         match self
         {
-            Self::Drag { input,
+            Self::DocumentsAvailable { input,
+                                       .. }
+            | Self::FileTransferChanged { input,
+                                        .. }
+            | Self::Drag { input,
                          .. }
             | Self::ProcessFileChanged { input,
                                        .. }
@@ -340,6 +366,26 @@ impl Event<'_>
         let (kind, message) = match self
         {
             Self::Drag { .. } => unreachable!(),
+            Self::DocumentsAvailable { batch,
+                                       .. } =>
+            {
+                return raw::Event { kind:      raw::EventKind::OsEvent,
+                                    message:   mac_abi::processes::DOCUMENT_AVAILABLE,
+                                    payload:   u64::from(batch.0),
+                                    when:      input.when,
+                                    where_:    input.at,
+                                    modifiers: input.modifiers.bits() };
+            }
+            Self::FileTransferChanged { transfer,
+                                        .. } =>
+            {
+                return raw::Event { kind:      raw::EventKind::OsEvent,
+                                    message:   raw::FILE_TRANSFER_CHANGED,
+                                    payload:   u64::from(transfer.0),
+                                    when:      input.when,
+                                    where_:    input.at,
+                                    modifiers: input.modifiers.bits() };
+            }
             Self::WindowGeometryChanged { window,
                                           .. } =>
             {

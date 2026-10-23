@@ -34,7 +34,7 @@ fn finder_typing_avoids_disk_work_and_preserves_navigation_selection()
     assert_eq!(report["original_before"], report["original_after"]);
     let profile = fs::read_to_string(output.join("profile-vm/serial.log")).unwrap();
     assert!(!profile.contains("TYPING_PROFILE_FAIL"), "{profile}");
-    assert!(profile.contains("TRAPS_READY: resident ecall dispatcher ABI=8"));
+    assert!(profile.contains("TRAPS_READY: resident ecall dispatcher ABI=11"));
     let fields = profile.lines().find_map(|line| line.strip_prefix("TYPING_PROFILE ")).unwrap();
     let field = |name: &str| {
         fields.split_whitespace()
@@ -62,7 +62,7 @@ fn finder_typing_avoids_disk_work_and_preserves_navigation_selection()
     assert_eq!(states.last().unwrap(), &"FINDER_TEXTEDIT_STATE length=149 selection=149..149");
     assert_eq!(states.len(), 21, "each keyDown edits once; keyUp must not edit");
     assert!(profile.contains("TYPING_BATCH chars=20 text_match=1 updates=1 key_calls=20 \
-                              menu_calls=5 file_calls=0 ordered_boundary=1\n"),
+                              menu_calls=0 file_calls=0 ordered_boundary=1\n"),
             "{profile}");
     assert!(profile.contains("TYPING_BATCH_BOUND events=129 consumed=128 remaining=1 updates=0 \
                               key_calls=0\n"),
@@ -71,8 +71,8 @@ fn finder_typing_avoids_disk_work_and_preserves_navigation_selection()
             "{profile}");
     let finder = fs::read_to_string(output.join("finder-vm/serial.log")).unwrap();
     assert!(!finder.contains("FINDER_ACTION_FAILED"), "{finder}");
-    let (app, _) = process_trace::launched(&finder, "TextEdit Exerciser");
-    assert!(finder.contains("TEXTEDIT_EXERCISER_READY"));
+    let (app, _) = process_trace::launched(&finder, "Text Edit");
+    assert!(finder.contains("TEXT_EDIT_READY"));
     assert!(finder.contains(&format!("PROCESS_EXIT app={app}\n")),
             "Ctrl+W must close the editor application");
     assert!(!finder.lines().filter_map(|line| line.split("dropped=").nth(1)).any(|n| {

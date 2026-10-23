@@ -3,6 +3,7 @@
 
 use mac_abi::{processes::*, *};
 pub mod menu;
+pub(crate) mod documents;
 pub struct Process
 {
     pub info:  ProcessInfo,
@@ -11,8 +12,10 @@ pub struct Process
 }
 pub struct Manager
 {
-    entries: crate::toolbox::handles::Table<Process>,
-    stamp:   u64
+    entries:           crate::toolbox::handles::Table<Process>,
+    documents:         crate::toolbox::handles::Table<documents::Batch>,
+    document_sequence: u64,
+    stamp:             u64
 }
 impl Manager
 {
@@ -20,6 +23,7 @@ impl Manager
     {
         Self { entries:
                    crate::toolbox::handles::Table::new(crate::toolbox::handles::Kind::Processes),
+               documents:crate::toolbox::handles::Table::new(crate::toolbox::handles::Kind::DocumentBatches),document_sequence:0,
                stamp:   0 }
     }
 

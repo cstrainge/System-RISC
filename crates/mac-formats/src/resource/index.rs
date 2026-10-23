@@ -19,12 +19,12 @@ impl MapLayout
     {
         if fork_length < 16
         {
-            return Err(Error("truncated resource header"));
+            return Err(Error::Malformed("truncated resource header"));
         }
         let header = Header::decode(header, fork_length)?;
         if header.map_length > budget.map_bytes
         {
-            return Err(Error("resource map exceeds budget"));
+            return Err(Error::BudgetExceeded("resource map exceeds budget"));
         }
         Ok(Self { header,
                   resource_limit: budget.resources })
@@ -72,7 +72,8 @@ pub struct Index
 }
 fn reserve<T>(values: &mut Vec<T>, count: usize) -> Result<()>
 {
-    values.try_reserve_exact(count).map_err(|_| Error("resource allocation failed"))
+    values.try_reserve_exact(count)
+          .map_err(|_| Error::AllocationFailed("resource allocation failed"))
 }
 impl Index
 {
@@ -97,7 +98,7 @@ impl Index
     {
         if map.len() != layout.header.map_length
         {
-            return Err(Error("resource map length mismatch"));
+            return Err(Error::Malformed("resource map length mismatch"));
         }
         let entries = stream::locations(&map, layout.header.data_length, layout.resource_limit)?;
         let mut by_type = Vec::new();
@@ -124,7 +125,8 @@ impl Index
             }
             else
             {
-                types.try_reserve(1).map_err(|_| Error("resource allocation failed"))?;
+                types.try_reserve(1)
+                     .map_err(|_| Error::AllocationFailed("resource allocation failed"))?;
                 types.push(Type { kind,
                                   start: position,
                                   end: position + 1 });
@@ -211,14 +213,14 @@ impl Index
     /// entry cannot silently change the snapshot's interpretation.
     pub fn record_length(&mut self, number: usize, length: u32) -> Result<()>
     {
-        let entry = self.entry(number).ok_or(Error("unknown resource entry"))?;
+        let entry = self.entry(number).ok_or(Error::Malformed("unknown resource entry"))?;
         if entry.offset + 4 + u64::from(length) > entry.data_end
         {
-            return Err(Error("resource payload outside data region"));
+            return Err(Error::Malformed("resource payload outside data region"));
         }
         if entry.length.is_some_and(|prior| prior != length)
         {
-            return Err(Error("resource length changed within open fork"));
+            return Err(Error::Malformed("resource length changed within open fork"));
         }
         self.lengths[number] = Some(length);
         Ok(())
@@ -289,13 +291,13 @@ mod tests
         assert!(index.named(*b"STR ", "").is_some());
         assert_eq!(index.named(*b"CODE", "🦀"), None);
         assert_eq!(index.record_length(number, u32::MAX),
-                   Err(Error("resource payload outside data region")));
+                   Err(Error::Malformed("resource payload outside data region")));
         assert_eq!(index.entry(number).unwrap().length, None);
         index.record_length(number, 4).unwrap();
         index.record_length(number, 4).unwrap();
         assert_eq!(index.entry(number).unwrap().length, Some(4));
         assert_eq!(index.record_length(number, 3),
-                   Err(Error("resource length changed within open fork")));
+                   Err(Error::Malformed("resource length changed within open fork")));
         assert_eq!(index.entry(number).unwrap().length, Some(4));
     }
     #[test]

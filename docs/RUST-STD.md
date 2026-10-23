@@ -205,7 +205,7 @@ cannot turn kernel panic into recoverable app failure.
    output, timing and a Toolbox window using the same std binary. Add seeded
    collections after the pinned runtime's randomness gate is established.
    Make std the application-role default and migrate Finder, QuickDraw Test,
-   TextEdit Exerciser, Cursor Test, Panic Test and ResEdit to normal main without
+   Text Edit, Cursor Test, Panic Test and ResEdit to normal main without
    no_std/no_main/custom entry/panic macros. Their existing Toolbox workflows
    need not wait for std filesystem or networking support. Apply the same rule
    to future standalone native applications, including P6 control panels.

@@ -41,6 +41,28 @@ impl Saved
 }
 impl Desktop
 {
+    pub(crate) fn notify_document_batch(&mut self, owner: u64, handle: u32) -> Result<(), Status>
+    {
+        let event = Event { kind: EventKind::OsEvent,
+                            message: mac_abi::processes::DOCUMENT_AVAILABLE,
+                            payload: u64::from(handle),
+                            when: Self::when(),
+                            ..Default::default() };
+        if owner == self.owner
+        {
+            self.events.post_transfer(event);
+        }
+        else if let Some(local) = self.locals.iter_mut().find(|s| s.id == owner)
+        {
+            local.events.post_transfer(event);
+        }
+        else
+        {
+            return Err(NOT_FOUND);
+        }
+        Ok(())
+    }
+
     pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
     {
         let position = self.event_position(notice.event, notice.owner);
@@ -603,6 +625,7 @@ impl Desktop
                 {
                     self.refresh_app_menu();
                 }
+                super::super::processes::documents::close_owner(&mut self.processes, caller);
                 let _ = crate::kernel::with_files(|files| files.close_all(caller));
                 crate::kernel::release_memory();
                 crate::machine::scheduler::retire_current();

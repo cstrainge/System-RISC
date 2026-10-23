@@ -61,3 +61,36 @@ pub struct ProcessCall
     pub cnid:      u32,
     pub info:      ProcessInfo
 }
+
+/// Size-distinct native document delivery. Sender owns a preparing batch;
+/// Commit transfers it atomically to the exact application's incoming queue.
+pub const DOCUMENT_BEGIN: u32 = 0;
+pub const DOCUMENT_PUSH: u32 = 1;
+pub const DOCUMENT_COMMIT: u32 = 2;
+pub const DOCUMENT_ABORT: u32 = 3;
+pub const DOCUMENT_ACCEPTS: u32 = 4;
+pub const DOCUMENT_NEXT: u32 = 5;
+pub const DOCUMENT_AT: u32 = 6;
+pub const DOCUMENT_FINISH: u32 = 7;
+pub const DOCUMENT_ACCEPTS_DRAG: u32 = 8;
+pub const DOCUMENT_AVAILABLE: u32 = 0x1000_0000;
+pub const MAX_DOCUMENTS: usize = 1024;
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct DocumentCall
+{
+    pub drag:               u32,
+    pub operation:          u32,
+    pub handle:             u32,
+    pub application_volume: u32,
+    pub application_cnid:   u32,
+    pub volume:             u32,
+    pub cnid:               u32,
+    pub file_type:          [u8; 4],
+    pub index:              u32,
+    pub count:              u32,
+    pub present:            u32,
+    pub reserved:           [u32; 2],
+    pub entry:              crate::files::CatalogInfo,
+    pub process:            ProcessInfo
+}

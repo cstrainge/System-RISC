@@ -62,12 +62,12 @@ fn oversized_selection_fails_before_payload_read_and_storage_errors_propagate()
                                   out.copy_from_slice(&bytes[at as usize..at as usize + out.len()]);
                                   Ok(())
                               }).unwrap_err();
-    assert_eq!(error, Error("resource payload exceeds budget"));
+    assert_eq!(error, Error::BudgetExceeded("resource payload exceeds budget"));
     assert_eq!(read_selected(bytes.len() as u64,
                              Default::default(),
                              |_, _| true,
-                             |_, _| Err(Error("injected read"))).unwrap_err(),
-               Error("injected read"));
+                             |_, _| Err(Error::Malformed("injected read"))).unwrap_err(),
+               Error::Malformed("injected read"));
 }
 #[test]
 fn duplicate_unselected_type_is_rejected_by_both_decoders()

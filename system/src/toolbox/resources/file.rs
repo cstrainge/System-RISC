@@ -38,9 +38,14 @@ pub(crate) fn read_selected(length: u64, mut select: impl FnMut(ResourceKey) -> 
         |kind,id| select(ResourceKey {kind,id}),
         |offset,output| read(offset,output).map_err(|status| {
             io_error=Some(status);
-            mac_formats::Error("resource storage read failed")
+            mac_formats::Error::Malformed("resource storage read failed")
         }))
-        .map_err(|error| io_error.unwrap_or(if error.0.contains("budget") || error.0.contains("allocation") {NO_MEMORY} else {BAD_ARGUMENT}))
+        .map_err(|error| io_error.unwrap_or(match error {
+            mac_formats::Error::BudgetExceeded(_) | mac_formats::Error::AllocationFailed(_) => NO_MEMORY,
+            mac_formats::Error::Missing(_) => NOT_FOUND,
+            mac_formats::Error::TranslationRequired(_) => TRANSLATION_REQUIRED,
+            mac_formats::Error::Malformed(_) => BAD_ARGUMENT
+        }))
 }
 
 fn decode(data: &[u8]) -> Result<VersionInfo, Status>

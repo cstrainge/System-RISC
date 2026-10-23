@@ -1135,3 +1135,30 @@ GET_WINDOW returns current zoom state as 0/1 in `reserved`. The SDK exposes
 Finder derives its proposal from the complete cached icon-and-caption extent,
 chrome and minimum size, constrained to the usable screen. Zoom restoration also
 restores its user scroll origin. Manual resizing establishes a new user state.
+
+## Native document applications (ABI 11)
+
+All native applications, System and definitions rebuild together at ABI11.
+The Process gate accepts size-distinct DocumentCall records (1240 bytes on RV64)
+for Begin, Push, Commit, Abort, Accepts, Next, At and Finish. The drag prefix is
+reserved zero in this document-opening milestone. Whole-set preparation is owned
+by a shared generation-tagged batch; Commit transfers ownership to the exact
+application file/instance. File/volume pins last until Finish or owner cleanup.
+OsEvent0x10000000 announces an available batch and carries its full ID in payload.
+The Rust SDK owns preparation and reception with Drop guards.
+
+Opening declarations use classic Translation Manager `open` resources: creator
+FourCC, zero u16, count u16, then accepted FourCCs, all big-endian. Declaration
+probes validate the complete resource map but read only selected payloads under
+a64KiB budget, rather than loading executable resources.
+
+Native TextEdit snapshots add content_revision (u64, changed text only), scroll_y
+and scroll_max (u32 pixel offsets). ScrollTo and RevealSelection preserve the
+classic destination/view rectangles and visit only visible layout rows.
+
+Text Edit accepts TEXT and JSON. Preferences have Finder type JSON, creator TEDT
+and extensionless names: `System Folder/Preferences/File Types` and
+`System Folder/Preferences/Text Edit Preferences`. The latter is a strict JSON
+schema with version1, font_family and font_size; the default is Monaco12. Saving
+a JSON document retains JSON type. Plain-text saves preserve CR/LF/CRLF style and
+the existing resource fork.

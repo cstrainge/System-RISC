@@ -314,8 +314,10 @@ impl BlockDevice for HostDisk
 
     fn read_sector(&mut self, sector: u64, out: &mut [u8; 512]) -> mac_hfs::Result<()>
     {
-        self.0.seek(SeekFrom::Start(sector * 512)).map_err(|_| mac_hfs::Error("seek"))?;
-        self.0.read_exact(out).map_err(|_| mac_hfs::Error("read"))
+        self.0
+            .seek(SeekFrom::Start(sector * 512))
+            .map_err(|_| mac_hfs::Error::Malformed("seek"))?;
+        self.0.read_exact(out).map_err(|_| mac_hfs::Error::Malformed("read"))
     }
 }
 /// Optional actual image test; enabled explicitly so clean checkouts remain fixture driven.
