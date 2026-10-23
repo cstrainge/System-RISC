@@ -5,12 +5,14 @@ pub mod shared;
 pub mod menus;
 pub mod scrap;
 pub mod drag;
+pub mod inspection;
 use core::cell::RefCell;
 
 use mac_abi::{traps::*, *};
 
 struct Session
 {
+    inspection:    inspection::Domains,
     drag:          crate::toolbox::drag::Manager,
     drag_notices:  std::vec::Vec<crate::toolbox::drag::Notice>,
     standard_file: crate::toolbox::standard_file::Manager,
@@ -52,7 +54,8 @@ impl Default for Session
                                                              data: data.to_vec() });
         }
         let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources);
-        Self { drag: Default::default(),
+        Self { inspection: inspection::Domains::new(),
+               drag: Default::default(),
                drag_notices: std::vec::Vec::new(),
                controls: Default::default(),
                scroll_boxes: Default::default(),
@@ -124,6 +127,20 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
     }
     match number
     {
+        INSPECTION => SESSION.with(|session| {
+            let session = session.borrow();
+            let session = session.as_ref().unwrap();
+            match unsafe { request::<mac_abi::inspection::Call>(pointer, size) }
+            {
+                Ok(call) => crate::toolbox::inspection::request(&session.inspection, files::current_owner(), call) as i64,
+                Err(error) => error as i64
+            }
+        }),
+        THEME => match unsafe { request::<mac_abi::theme::Palette>(pointer, size) }
+        {
+            Ok(palette) => { *palette = crate::toolbox::theme::palette(); OK as i64 },
+            Err(error) => error as i64
+        },
         LOG =>
         {
             let call = match unsafe { request::<LogCall>(pointer, size) }

@@ -117,7 +117,7 @@ def check(args):
     assert not any(dep.startswith('toolbox-') for dep in normal_dependencies(by_name['mac-system'])), \
         'System must implement managers internally, without depending on public client bindings'
 
-    for name in ['mac-finder', 'quickdraw-test', 'text-edit', 'cursor-test', 'panic-test', 'resedit']:
+    for name in ['mac-finder', 'quickdraw-test', 'text-edit', 'cursor-test', 'panic-test', 'resedit', 'reactor']:
         direct = sorted(packages[dep['pkg']]['name'] for dep in nodes[by_name[name]]['deps']
                         if any(kind['kind'] is None for kind in dep['dep_kinds']))
         # Pure application helpers do not provide System services. Keep their
@@ -149,6 +149,7 @@ def check(args):
         ('cursor-test', 'CursorTest'),
         ('panic-test', 'PanicTest'),
         ('resedit', 'ResEdit'),
+        ('reactor', 'Reactor'),
         ('native-wdef', 'WDEF'),
         ('native-buttons-cdef', 'CDEF_BUTTONS'),
         ('native-scrollbar-cdef', 'CDEF_SCROLL_BAR'),

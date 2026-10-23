@@ -5,7 +5,7 @@
   "role": "application",
   "abi_version": 1,
   "load_base": "0x81000000",
-  "load_limit": "0x82000000",
+  "load_limit": "0x81800000",
   "description": "System RISC Finder",
   "resources": [
     {

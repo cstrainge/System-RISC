@@ -317,6 +317,17 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                                                                          error.status()
                                                                      }) as i64
         }
+        INSPECTION =>
+        {
+            let call = read_request!(mac_abi::inspection::Call);
+            toolbox::processes::inspection_request(call) as i64
+        }
+        THEME =>
+        {
+            let palette = read_request!(mac_abi::theme::Palette);
+            *palette = toolbox::theme::palette();
+            OK as i64
+        }
         PROCESS if size == size_of::<mac_abi::processes::DocumentCall>() =>
         {
             let call = read_request!(mac_abi::processes::DocumentCall);

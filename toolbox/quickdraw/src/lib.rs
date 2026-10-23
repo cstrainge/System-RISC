@@ -1,6 +1,7 @@
 //! QuickDraw client bindings; all rasterization and font data live in System.
 #![no_std]
 #![forbid(unsafe_code)]
+pub mod theme;
 pub mod graphics;
 pub mod desktop;
 pub mod fonts;

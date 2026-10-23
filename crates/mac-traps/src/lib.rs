@@ -44,6 +44,18 @@ impl Eq for Client<'_>
 }
 impl<'a> Client<'a>
 {
+    pub fn inspection(self, call: &mut mac_abi::inspection::Call) -> Result<()>
+    {
+        status(self.invoke(INSPECTION, call))
+    }
+
+    pub fn theme(self) -> Result<mac_abi::theme::Palette>
+    {
+        let mut palette = mac_abi::theme::Palette::default();
+        status(self.invoke(THEME, &mut palette))?;
+        Ok(palette)
+    }
+
     /// Explicit original A-line transport for translated 68k applications/tests.
     /// The checked System adapter reads only this guest-memory slice.
     pub fn classic(self, instruction: u16, registers: &mut ClassicRegisters, guest_base: u32,

@@ -2,6 +2,7 @@ mod disk;
 mod smoke;
 mod boot;
 mod docs;
+mod authority;
 
 use std::{env,
           ffi::OsStr,
@@ -113,7 +114,7 @@ impl Workspace
         self.guest_build(&["native-wdef", "native-buttons-cdef", "native-scrollbar-cdef",
                            "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef"])?;
         self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "cursor-test",
-                           "panic-test", "resedit", "bootrom", "vhost-transport",
+                           "panic-test", "resedit", "reactor", "bootrom", "vhost-transport",
                            "vhost-filesystem", "stuffit-filesystem"])?;
         // Keep userspace's allocation-free serde graph independent of the
         // resident System's alloc-enabled serde. Cargo feature unification
@@ -129,6 +130,7 @@ impl Workspace
              ("apps/cursor-test", "Cursor Test", "CursorTest"),
              ("apps/panic-test", "Panic Test", "PanicTest"),
              ("apps/resedit", "Res Edit", "ResEdit"),
+             ("apps/reactor", "Reactor", "Reactor"),
              ("drivers/vhost-transport", "Host Transport", "HostTransport"),
              ("drivers/vhost-filesystem", "Host Filesystem", "HostFilesystem"),
              ("drivers/stuffit-filesystem", "StuffIt Filesystem", "StuffItFilesystem")]
@@ -145,6 +147,7 @@ impl Workspace
                      report["resources"].as_array().unwrap().len());
             reports.push(report);
         }
+        authority::install(self, &mut reports)?;
         for (index, a) in reports.iter().enumerate()
         {
             for b in &reports[index + 1..]
@@ -189,9 +192,9 @@ impl Workspace
         run(self.cargo().args(["test", "--locked", "--workspace", "--exclude", "mac-finder",
                                "--exclude", "quickdraw-test", "--exclude", "text-edit",
                                "--exclude", "cursor-test", "--exclude", "panic-test",
-                               "--exclude", "resedit", "--exclude", "abi-smoke", "--exclude",
-                               "bootrom", "--exclude", "native-wdef", "--exclude",
-                               "native-buttons-cdef", "--exclude", "native-mdef"]))?;
+                               "--exclude", "resedit", "--exclude", "reactor", "--exclude",
+                               "abi-smoke", "--exclude", "bootrom", "--exclude", "native-wdef",
+                               "--exclude", "native-buttons-cdef", "--exclude", "native-mdef"]))?;
         // The large-fork fixture writes every logical block through the shared
         // core, then verifies 64-bit File Manager transport through the SDK.
         run(self.cargo().args(["test", "--locked", "--release", "-p", "mac-toolbox", "--test",
@@ -215,7 +218,7 @@ impl Workspace
                      "text_edit_documents", "textedit_display", "textedit_performance", "typing",
                      "processes", "application_ui", "retained_update", "event_latency",
                      "cursor_graphical", "busy_cursor", "panic_graphical", "finder_selection",
-                     "transfer_incident", "remote_get_info", "finder_drag"]
+                     "transfer_incident", "remote_get_info", "finder_drag", "reactor_ui"]
         {
             self.private_guest_test(test)?;
         }

@@ -6,11 +6,34 @@ use mac_abi::{processes::*, *};
 use crate::toolbox::handles::{Directory, DirectoryError, DomainKind, OwnerIndex};
 pub mod menu;
 pub(crate) mod documents;
+pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
+{
+    let caller = crate::context::current_thread_context().identity().app.0;
+    crate::kernel::with_desktop(|desktop| desktop.processes.inspect(caller, call))
+        .unwrap_or_else(|error| error.status())
+}
 pub struct Process
 {
     pub info:  ProcessInfo,
     pub image: usize,
     pub stamp: u64
+}
+impl crate::toolbox::inspection::Subject for Process
+{
+    fn label(&self) -> &str
+    {
+        self.info.name()
+    }
+
+    fn foreground(&self) -> bool
+    {
+        self.info.foreground != 0
+    }
+
+    fn authority(&self) -> u64
+    {
+        crate::kernel::image(self.image).map_or(0, |image| image.authority)
+    }
 }
 pub struct Manager
 {
@@ -21,6 +44,11 @@ pub struct Manager
 }
 impl Manager
 {
+    pub(crate) fn inspect(&self, caller: u64, call: &mut mac_abi::inspection::Call) -> Status
+    {
+        crate::toolbox::inspection::request(&self.entries, caller, call)
+    }
+
     pub fn new() -> Self
     {
         Self { entries: Directory::new(),

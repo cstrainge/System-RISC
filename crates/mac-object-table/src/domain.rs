@@ -339,6 +339,8 @@ pub struct DomainSlots
     cursor:        usize,
     live:          usize,
     retired_count: usize,
+    births:        u64,
+    deaths:        u64,
     accepting:     bool,
     drain_word:    usize
 }
@@ -363,6 +365,8 @@ impl DomainSlots
                   cursor: 0,
                   live: 0,
                   retired_count: 0,
+                  births: 0,
+                  deaths: 0,
                   accepting: true,
                   drain_word: 0 })
     }
@@ -449,6 +453,7 @@ impl DomainSlots
                     self.generations[slot] = generation.get();
                     self.occupied[word] |= 1 << (slot % 64);
                     self.live += 1;
+                    self.births = self.births.saturating_add(1);
                     self.drain_word = self.drain_word.min(word);
                     self.cursor = if slot + 1 == len { 0 } else { slot + 1 };
                     return Ok(ResourceKey { owner,
@@ -494,6 +499,7 @@ impl DomainSlots
         let mask = 1 << (key.slot % 64);
         self.occupied[key.slot / 64] &= !mask;
         self.live -= 1;
+        self.deaths = self.deaths.saturating_add(1);
         match self.generations[key.slot].checked_add(1)
         {
             Some(next) => self.generations[key.slot] = next,
@@ -558,6 +564,13 @@ impl DomainSlots
     {
         self.generations.len()
     }
+
+    /// Cumulative successful publications and invalidations. Counters saturate
+    /// rather than wrap; inspectors must report saturation instead of a rate.
+    pub fn counters(&self) -> (u64, u64)
+    {
+        (self.births, self.deaths)
+    }
 }
 /// Not Clone/Copy: one invalidation produces one dispatch ticket.
 pub struct ReleasedResource
@@ -577,7 +590,22 @@ pub struct OwnerIndex
 {
     owner:     DomainId,
     pools:     Vec<DomainSlots>,
-    accepting: bool
+    accepting: bool,
+    revision:  u64
+}
+
+/// One locked read of the authoritative ledger; no object-value scan or allocation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LedgerSummary
+{
+    pub revision:  u64,
+    pub kinds:     usize,
+    pub live:      usize,
+    pub retired:   usize,
+    pub slots:     usize,
+    pub births:    u64,
+    pub deaths:    u64,
+    pub accepting: bool
 }
 
 /// Shared owner directory. The ledger and payload cannot acquire different
@@ -586,7 +614,8 @@ pub struct OwnerIndex
 /// Removing a domain moves only directory metadata, never its resident objects.
 pub struct Directory<T, G: InvocationGate>
 {
-    entries: Vec<DomainEntry<T, G>>
+    entries:  Vec<DomainEntry<T, G>>,
+    revision: u64
 }
 
 pub struct DomainEntry<T, G: InvocationGate>
@@ -656,7 +685,8 @@ impl<T, G: InvocationGate> Directory<T, G>
 {
     pub const fn new() -> Self
     {
-        Self { entries: Vec::new() }
+        Self { entries:  Vec::new(),
+               revision: 1 }
     }
 
     pub fn len(&self) -> usize
@@ -682,6 +712,7 @@ impl<T, G: InvocationGate> Directory<T, G>
         self.entries.insert(at,
                             DomainEntry { ledger,
                                           value });
+        self.revision = self.revision.saturating_add(1);
         Ok(owner)
     }
 
@@ -708,6 +739,13 @@ impl<T, G: InvocationGate> Directory<T, G>
     pub fn iter(&self) -> impl Iterator<Item = &DomainEntry<T, G>>
     {
         self.entries.iter()
+    }
+
+    /// Membership epoch. Saturation invalidates inspection snapshots permanently;
+    /// it must never make a stale snapshot current again.
+    pub fn revision(&self) -> u64
+    {
+        self.revision
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T>
@@ -737,6 +775,7 @@ impl<T, G: InvocationGate> Directory<T, G>
     {
         let at = self.index(incarnation).ok_or(DirectoryError::NotFound { incarnation })?;
         self.entries[at].ledger.retire()?;
+        self.revision = self.revision.saturating_add(1);
         Ok(self.entries.remove(at).value)
     }
 }
@@ -779,6 +818,24 @@ impl fmt::Display for IndexError
 }
 impl OwnerIndex
 {
+    pub fn summary(&self) -> LedgerSummary
+    {
+        let mut result = LedgerSummary { revision: self.revision,
+                                         kinds: self.pools.len(),
+                                         accepting: self.accepting,
+                                         ..Default::default() };
+        for pool in &self.pools
+        {
+            result.live += pool.live();
+            result.retired += pool.retired();
+            result.slots += pool.storage_slots();
+            let (births, deaths) = pool.counters();
+            result.births = result.births.saturating_add(births);
+            result.deaths = result.deaths.saturating_add(deaths);
+        }
+        result
+    }
+
     /// Only this factory can create a domain's pools. Dropping an index never
     /// authorizes recreating its incarnation or resetting its generations.
     pub fn issue(kind: DomainKind) -> Result<Self, IndexError>
@@ -795,7 +852,8 @@ impl OwnerIndex
         let owner = DomainId::issue(kind).map_err(IndexError::Identity)?;
         Ok(Self { owner,
                   pools: Vec::new(),
-                  accepting: true })
+                  accepting: true,
+                  revision: 1 })
     }
 
     pub const fn owner(&self) -> DomainId
@@ -838,6 +896,7 @@ impl OwnerIndex
                                                            limit: None }
                                   })?;
         self.pools.push(pool);
+        self.revision = self.revision.saturating_add(1);
         Ok(())
     }
 
@@ -851,7 +910,9 @@ impl OwnerIndex
         self.pool_mut(kind)
             .ok_or(PoolError::UnregisteredKind { owner,
                                                  kind })?
-            .grow_to(slots)
+            .grow_to(slots)?;
+        self.revision = self.revision.saturating_add(1);
+        Ok(())
     }
 
     pub fn allocate(&mut self, kind: KindCode) -> Result<ResourceKey, PoolError>
@@ -861,10 +922,12 @@ impl OwnerIndex
             return Err(PoolError::Stopping { owner: self.owner });
         }
         let owner = self.owner;
-        self.pool_mut(kind)
-            .ok_or(PoolError::UnregisteredKind { owner,
-                                                 kind })?
-            .allocate(owner)
+        let key = self.pool_mut(kind)
+                      .ok_or(PoolError::UnregisteredKind { owner,
+                                                           kind })?
+                      .allocate(owner)?;
+        self.revision = self.revision.saturating_add(1);
+        Ok(key)
     }
 
     pub fn contains(&self, key: ResourceKey) -> bool
@@ -874,11 +937,18 @@ impl OwnerIndex
 
     pub fn invalidate(&mut self, key: ResourceKey) -> Result<ReleasedResource, PoolError>
     {
-        self.pool_mut(key.kind()).ok_or(PoolError::Stale { key })?.invalidate(key)
+        let released =
+            self.pool_mut(key.kind()).ok_or(PoolError::Stale { key })?.invalidate(key)?;
+        self.revision = self.revision.saturating_add(1);
+        Ok(released)
     }
 
     pub fn stop_admission(&mut self)
     {
+        if self.accepting
+        {
+            self.revision = self.revision.saturating_add(1);
+        }
         self.accepting = false;
         for pool in &mut self.pools
         {
@@ -906,7 +976,9 @@ impl OwnerIndex
     /// Kind dispatch is resolved by the caller after dropping its registry lock.
     pub fn invalidate_next(&mut self) -> Option<ReleasedResource>
     {
-        self.pools.iter_mut().find_map(DomainSlots::invalidate_next)
+        let released = self.pools.iter_mut().find_map(DomainSlots::invalidate_next)?;
+        self.revision = self.revision.saturating_add(1);
+        Some(released)
     }
 
     pub fn live(&self) -> usize
@@ -961,7 +1033,8 @@ mod tests
             OwnerIndex { owner:     DomainId { kind: DomainKind::Process,
                                                incarnation },
                          pools:     Vec::new(),
-                         accepting: true }
+                         accepting: true,
+                         revision:  1 }
         };
         let low = 7;
         let high = (1u64 << 40) | low;

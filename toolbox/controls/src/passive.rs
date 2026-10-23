@@ -97,6 +97,20 @@ pub struct StaticText<'a>
 }
 impl StaticText<'_>
 {
+    /// Move/resize the existing managed object; keep identity and text storage.
+    pub fn set_bounds(&mut self, bounds: Rect) -> Result<()>
+    {
+        if self.state.bounds == bounds
+        {
+            return Ok(());
+        }
+        let next = StandardState { bounds,
+                                   ..self.state };
+        self.control.control().configure(StandardKind::StaticText, next)?;
+        self.state = next;
+        Ok(())
+    }
+
     pub fn id(&self) -> super::ControlId
     {
         self.control.id()

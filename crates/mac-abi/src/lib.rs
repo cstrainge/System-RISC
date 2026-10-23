@@ -33,6 +33,8 @@ pub const STORAGE_UNAVAILABLE: Status = -19;
 pub const INVALID_NAME: Status = -20;
 
 pub mod archive;
+pub mod inspection;
+pub mod theme;
 
 pub mod crashes;
 pub mod dates;

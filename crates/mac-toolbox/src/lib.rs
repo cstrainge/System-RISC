@@ -13,6 +13,7 @@ pub use mac_traps::{Client, Cnid, Error, MenuId, ProcessId, Result as ToolboxRes
                     types::{ResourceKey, ResourceScope}};
 pub use toolbox_drag as drag;
 pub use toolbox_events::{Event, EventMask, Modifiers};
+pub use toolbox_inspection as inspection;
 pub mod panic;
 pub use toolbox_controls as controls;
 pub use toolbox_crashes as crashes;
@@ -37,6 +38,11 @@ pub struct System<'a>
 }
 impl<'a> System<'a>
 {
+    pub fn inspection(&self) -> inspection::Inspection<'a>
+    {
+        inspection::Inspection::new(self.client)
+    }
+
     /// # Safety
     /// The loader-provided table and its advertised callbacks must remain valid.
     pub unsafe fn from_raw(services: *const SystemServices) -> core::result::Result<Self, Error>

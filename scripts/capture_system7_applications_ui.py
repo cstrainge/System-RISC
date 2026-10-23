@@ -21,14 +21,15 @@ import system7_observer as observer
 
 
 # Fresh 404px Finder folder, resource-backed Geneva names and 64px icon cells.
-# Wide captions reserve cells; a copied fifth app wraps to the next row.
+# Wide captions reserve cells; installed apps continue on the second row.
 APPLICATION_POINTS = {
     'Cursor Test': (56, 106),
     'Panic Test': (120, 106),
     'QuickDraw Test': (184, 106),
-    'Res Edit': (248, 106),
-    'Text Edit': (312, 106),
-    'Z QuickDraw Copy': (67, 158),
+    'Reactor': (248, 106),
+    'Res Edit': (312, 106),
+    'Text Edit': (376, 106),
+    'Z QuickDraw Copy': (120, 158),
 }
 
 

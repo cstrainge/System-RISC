@@ -23,6 +23,20 @@ lists may be used before the view protocol lands, as the unified design permits;
 do not implement app-local stand-ins for the new controls. Unmigrated managers
 must not disappear into a misleading total of zero handles or zero leaks.
 
+The first installed slice is `apps/reactor`: a resizable owned window, managed
+domain/detail scroll boxes, a managed status text, resource menus/icon/layout,
+System panic reporting and the public `System::inspection()` API. Process
+membership changes coalesce advisory notices; foreground activation/Refresh
+obtains a fresh snapshot. No sampling timer runs in this slice. Selection changes
+only the old/new visible rows and detail pane; resizing configures the same owned
+objects. The palette comes from resident theme roles.
+
+Current coverage is deliberately partial: only process domains are enumerated,
+and their ledgers contain only migrated customers. System/bootstrap/module
+domains, per-kind/object detail, CPU/account/page/service data, Kill/Restart,
+journal, preferences and the four new native controls remain staged work. There
+is no claim of zero total handles, zero leaks or an armed emergency reserve.
+
 All reads go through a thin public `mac-toolbox` service. Exec chains (handlers in
 order, owners, claimed evidence and revisions), handler claims and kind mappings
 are ordinary public registry queries for every application; Reactor's Registered

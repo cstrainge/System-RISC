@@ -9,7 +9,7 @@ import select
 import subprocess
 import time
 
-from capture_system7_applications_ui import Driver
+from capture_system7_applications_ui import Driver, APPLICATION_POINTS
 import capture_system7_conformance as packaging
 from hfs_b_tool import Image
 import system7_vm as vm
@@ -115,7 +115,7 @@ def capture(output):
         frame('incompatible-app-selection')
         time.sleep(.6)  # A new gesture, outside the double-click interval.
         opened = driver.log().count('TEXT_EDIT_DOCUMENT_OPEN\n')
-        drag(note, (312, 106), 'copied')
+        drag(note, APPLICATION_POINTS['Text Edit'], 'copied')
         driver.wait('TEXT_EDIT_DOCUMENT_OPEN\n', opened)
         frame('application-document-drop')
         exited = driver.log().count('PROCESS_EXIT app=')

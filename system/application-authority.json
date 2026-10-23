@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "grants": [
+    { "package": "Reactor", "capabilities": ["inspect-domains"] }
+  ]
+}

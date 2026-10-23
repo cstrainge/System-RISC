@@ -5,8 +5,8 @@ use core::marker::PhantomData;
 
 use spinning_top::Spinlock;
 
-use crate::domain::{CapacityPolicy, DirectoryError, DomainId, KindCode, OwnerIndex, PoolError,
-                    ReleasedResource, ResourceKey};
+use crate::domain::{CapacityPolicy, DirectoryError, DomainId, KindCode, LedgerSummary, OwnerIndex,
+                    PoolError, ReleasedResource, ResourceKey};
 
 /// The resident adapter must mask local interrupts/preemption before calling
 /// the closure, and restore the previous state afterward, including nesting.
@@ -154,6 +154,11 @@ impl<G: InvocationGate> OwnerRef<G>
     pub fn live(&self) -> usize
     {
         self.access(|index| index.live())
+    }
+
+    pub fn summary(&self) -> LedgerSummary
+    {
+        self.access(|index| index.summary())
     }
 
     pub fn stop_admission(&self)

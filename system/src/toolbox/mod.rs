@@ -9,6 +9,8 @@ pub mod controls;
 pub mod resources;
 pub mod files;
 pub mod memory;
+pub(crate) mod inspection;
+pub(crate) mod theme;
 pub(crate) mod handles;
 pub mod menus;
 pub mod crashes;

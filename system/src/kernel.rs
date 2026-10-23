@@ -39,6 +39,7 @@ static FILES: OwnerState<crate::toolbox::files::Manager> =
     unsafe { OwnerState::new(crate::context::BOOT_THREAD, crate::context::current_thread) };
 pub(crate) struct AppImage
 {
+    pub authority: u64,
     pub resources: alloc::vec::Vec<mac_formats::resource::Resource>,
     pub volume:    u32,
     pub cnid:      u32,
@@ -102,9 +103,11 @@ pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [
     };
     let limit = base + extent;
     let slot = IMAGES.iter().position(|i| i.get().is_none()).ok_or(NO_MEMORY)?;
+    let authority = application_authority(&resources)?;
     crate::loader::application_at(&resources, base).map_err(crate::loader::status)?;
     IMAGES[slot].call_once(|| {
                     AppImage { resources,
+                               authority,
                                volume,
                                cnid,
                                creator,
@@ -113,6 +116,30 @@ pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [
                                limit }
                 });
     Ok(slot)
+}
+
+fn application_authority(resources: &[mac_formats::resource::Resource]) -> Result<u64, Status>
+{
+    let Some(files) = RESOURCE_FILES.get()
+    else
+    {
+        return Err(BAD_ABI);
+    };
+    policy_authority(&files.system, resources)
+}
+
+fn policy_authority(system: &[mac_formats::resource::Resource],
+                    resources: &[mac_formats::resource::Resource])
+                    -> Result<u64, Status>
+{
+    let Some(policy) =
+        system.iter().find(|r| r.kind == mac_formats::authority::RESOURCE_KIND && r.id == 0)
+    else
+    {
+        return Ok(0);
+    };
+    let identity = mac_formats::authority::image_digest(resources).map_err(crate::loader::status)?;
+    mac_formats::authority::granted(&policy.data, identity).map_err(crate::loader::status)
 }
 pub(crate) fn services() -> *const SystemServices
 {
@@ -269,8 +296,13 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     let finder = crate::loader::read_startup("Finder")?;
     let finder_entry = crate::loader::application(&finder)?;
     let (base, limit) = crate::loader::reservation(&finder)?;
+    let authority = policy_authority(&system, &finder).map_err(|_| {
+                        mac_formats::Error::Malformed("invalid application authority policy while \
+                                                       admitting Finder")
+                    })?;
     IMAGES[0].call_once(|| {
                  AppImage { resources: finder,
+                            authority,
                             volume: 0,
                             cnid: 0,
                             creator: *b"MACS",

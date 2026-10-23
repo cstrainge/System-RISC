@@ -5,6 +5,7 @@
 extern crate alloc;
 
 pub mod elf;
+pub mod authority;
 pub mod macbinary;
 pub mod native;
 pub mod module;

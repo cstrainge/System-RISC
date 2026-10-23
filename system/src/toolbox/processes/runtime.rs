@@ -367,6 +367,7 @@ impl Desktop
     /// Lifecycle changes notify file identity; Finder damages only that icon.
     fn notify_finder_file_state(&mut self, volume: u32, cnid: u32, running: bool)
     {
+        self.notify_inspectors();
         let event = Event { kind: EventKind::OsEvent,
                             message: FILE_STATE_EVENT | u32::from(running),
                             payload: u64::from(volume) | (u64::from(cnid) << 32),
@@ -380,6 +381,34 @@ impl Desktop
             self.locals.iter_mut().find(|local| local.id == crate::context::finder_app().0)
         {
             local.events.post(event);
+        }
+    }
+
+    /// One coalesced notice per membership change. No timers, subscriptions to
+    /// raw input, or per-inspector snapshot allocation. Background apps leave
+    /// the advisory notice queued until their next foreground refresh.
+    fn notify_inspectors(&mut self)
+    {
+        use crate::toolbox::inspection::Subject;
+        let event = Event { kind: EventKind::OsEvent,
+                            message: mac_abi::inspection::CHANGED_EVENT,
+                            when: Self::when(),
+                            ..Default::default() };
+        for process in self.processes.iter()
+        {
+            if process.authority() & mac_abi::inspection::INSPECT_DOMAINS == 0
+            {
+                continue;
+            }
+            if process.info.id == self.owner
+            {
+                self.events.post_transfer(event);
+            }
+            else if let Some(local) =
+                self.locals.iter_mut().find(|local| local.id == process.info.id)
+            {
+                local.events.post_transfer(event);
+            }
         }
     }
 

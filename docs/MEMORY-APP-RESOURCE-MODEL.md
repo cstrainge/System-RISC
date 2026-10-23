@@ -68,6 +68,16 @@ current 8 MiB backend or claiming the later page-backed/accounted heap stage.
 Trusted event routing also requeues directly into the fixed queue, avoiding a
 temporary heap allocation on every physical-input batch.
 
+The first Reactor slice now consumes the public inspection service. Directory
+membership and each atomic owner-ledger row have separate nonwrapping revisions;
+successful handle publications/invalidations update cumulative counters at their
+existing mutation points. Reads allocate nothing and never scan object values.
+Cross-domain detail is authorized by a generated System ACAP policy bound to
+canonical application resource digests; ordinary callers retain own-domain reads.
+The policy is not a gate on public chain/claim/mapping registry existence.
+Reactor explicitly reports process-only/partial-ledger coverage. See
+[Reactor staging](REACTOR.md) and [the policy wire format](../FORMAT.md#application-authority-policy-acap-0-development-abi-1).
+
 This is the start of §13.2/2, not completion: other managers do not yet insert
 their objects into process ledgers, and the EXIT/rollback cleanup lists and
 fixed-eight scheduler/heap/image storage still exist. The real process fixture

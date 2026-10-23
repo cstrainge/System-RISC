@@ -1,0 +1,144 @@
+{
+  "name": "Reactor",
+  "binary_name": "Reactor",
+  "file_type": "APPL",
+  "creator": "RACT",
+  "role": "application",
+  "abi_version": 1,
+  "load_base": "0x81800000",
+  "load_limit": "0x82000000",
+  "description": "System RISC lifetime and resource inspector",
+  "resources": [
+    {
+      "type": "MENU",
+      "id": 128,
+      "symbol": "FILE_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "File",
+        "items": [
+          {
+            "text": "Quit",
+            "command": "quit",
+            "key": "Q",
+            "enabled": true
+          }
+        ]
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 129,
+      "symbol": "VIEW_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "View",
+        "items": [
+          {
+            "text": "Refresh",
+            "command": "rfrs",
+            "key": "R",
+            "enabled": true
+          }
+        ]
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 128,
+      "symbol": "PRODUCT_NAME",
+      "payload": {
+        "format": "pstring",
+        "text": "Reactor"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 128,
+      "symbol": "APPLICATION_ICON32_MONO",
+      "payload": {
+        "format": "file",
+        "path": "assets/icon32-mono.bin"
+      }
+    },
+    {
+      "type": "ics#",
+      "id": 128,
+      "symbol": "APPLICATION_ICON16_MONO",
+      "payload": {
+        "format": "file",
+        "path": "assets/icon16-mono.bin"
+      }
+    },
+    {
+      "type": "icl8",
+      "id": 128,
+      "symbol": "APPLICATION_ICON32_COLOR",
+      "payload": {
+        "format": "file",
+        "path": "assets/icon32-color.bin"
+      }
+    },
+    {
+      "type": "ics8",
+      "id": 128,
+      "symbol": "APPLICATION_ICON16_COLOR",
+      "payload": {
+        "format": "file",
+        "path": "assets/icon16-color.bin"
+      }
+    },
+    {
+      "type": "BNDL",
+      "id": 128,
+      "symbol": "APPLICATION_BUNDLE",
+      "payload": {
+        "format": "hex",
+        "hex": "524143540000000149434e2300000000008046524546000000000080"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 128,
+      "symbol": "APPLICATION_REFERENCE",
+      "payload": {
+        "format": "hex",
+        "hex": "4150504c000000"
+      }
+    },
+    {
+      "type": "SIZE",
+      "id": -1,
+      "symbol": "MEMORY_REQUIREMENTS",
+      "payload": {
+        "format": "hex",
+        "hex": "00000010000000040000"
+      }
+    },
+    {
+      "type": "STR#",
+      "id": 2000,
+      "symbol": "UI_TEXT",
+      "payload": {
+        "format": "strings",
+        "strings": [
+          "Process domains; partial ledgers; reserve unavailable",
+          "Select a process domain.",
+          "Memory accounting is not live.",
+          "Module domains are not live.",
+          "Domains",
+          "Ledger snapshot"
+        ]
+      }
+    },
+    {
+      "type": "WIND",
+      "id": 2003,
+      "symbol": "WINDOW_LAYOUT",
+      "payload": {
+        "format": "hex",
+        "hex": "003e001801a00268000000010100000000000000"
+      }
+    }
+  ]
+}
