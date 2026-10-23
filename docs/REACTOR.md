@@ -1,5 +1,8 @@
 # Reactor and native data controls
 
+> All good systems have inspection ports, and using them should never be a
+> privileged or 'magic' act.
+
 Reactor is the ordinary native application that makes the memory/lifetime-model
 migration observable. Its source contract is the workspace document
 `reactor-and-toolbox-controls-unified.md` (2026-10-23), which supersedes its
@@ -20,13 +23,26 @@ lists may be used before the view protocol lands, as the unified design permits;
 do not implement app-local stand-ins for the new controls. Unmigrated managers
 must not disappear into a misleading total of zero handles or zero leaks.
 
-All reads go through a thin public `mac-toolbox` service. The System authenticates
-the caller; ordinary callers can inspect themselves. Cross-domain detail and
-termination require System-issued inspector authority through a general policy,
+All reads go through a thin public `mac-toolbox` service. Exec chains (handlers in
+order, owners, claimed evidence and revisions), handler claims and kind mappings
+are ordinary public registry queries for every application; Reactor's Registered
+view is their first customer. Their existence is not inspector-only information.
+Chain entries carry the source extension/bundle's user-visible name and read in
+execution order. Reactor renders those names as the chain; identities, source
+resource, generation, evidence and revisions belong in its details. The final
+resident entry has the visible name “System Native Handler”. Missing/invalid
+provider labels are informative registration refusals, not raw-ID UI fallbacks.
+The System authenticates the caller; ordinary callers can inspect themselves.
+Cross-domain detail and termination require System-issued inspector authority through a general policy,
 not an application-name exception, private debug trap or raw memory channel.
 Reactor is installed under Applications, with its own resources, icon, owned
 window and system-owned panic reporting. Geometry/view/sort preferences are
 versioned JSON. It remains no_std until the real std platform milestone is ready.
+
+The modular promise is that if the System cannot do something now, an extension
+should be able to make it happen. The fixed core stays small; capability gaps are
+extension-shaped. A feature requiring a core change to add is a design flag to
+raise, rather than the default plan.
 
 ## Controls and appearance
 
@@ -63,7 +79,7 @@ cannot be killed. Cleanup failures remain visible with their kind and pending
 resources; finishing a walk attempt is not proof of successful reclamation.
 
 The journal is System-owned, in-memory and never persisted. Its configurable
-initial capacity is awaiting the user's choice. Host export is deferred; it will
+initial capacity is 10,000 events (user ruling, 2026-10-23). Host export is deferred; it will
 project the same snapshots. An outline is deferred until Registered proves it
 needs one. Canonical tests stay in `crates/mac-toolbox/tests`, using the public
 SDK and real resident services; the app is also the visible acceptance surface.

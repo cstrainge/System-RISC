@@ -50,6 +50,34 @@ owned capabilities, not arbitrary pointers a provider may retain.
 
 ## Trait families
 
+Registrations accommodate bundle resources as first-class ledger-owned,
+generation-scoped, enumerable objects: dependency claims, handler claims, kind
+mappings, exec-chain participants and native trap handlers. Keep the source
+bundle generation/resource identity with the registered contract and owner;
+none gets a hidden callback or association side table.
+
+Exec-chain enumeration (handlers in order, owners, claimed evidence and
+revisions), handler claims and kind mappings are public introspection queries
+for every application. No inspector capability gates the existence of these
+registries. Inspector authority gates cross-domain detail and termination;
+publication is not permission to mutate registrations or invoke private services.
+Reactor's Registered view uses these same queries.
+Every chain entry includes the user-visible name of the extension/bundle it
+comes from. Enumeration preserves execution order and distinguishes that label
+from its identity/source resource/generation/revisions. Render the chain in
+those visible provider names, ending with “System Native Handler” for the
+resident default. Validate the provider label at registration; never force an
+application to infer a name from a FourCC, slot or callback address.
+
+What a file is, who handles it and how it launches are System determinations
+with typed refusals. Finder asks and presents. Launch keeps a chain position for
+the default native handler even while it is the only participant; callers do
+not bake a closed list of program kinds into Open/exec.
+
+If the System cannot do something now, an extension should be able to make it
+happen. The fixed core stays small; capability gaps are extension-shaped.
+Requiring a System change to add a capability is a design flag to raise.
+
 These names describe shapes, not finalized signatures. All receiver methods use
 `&self` or `&mut self`, concrete request/reply types and borrowed lifetimes;
 none returns `Self`, has a type-generic method or exposes an unconstrained
