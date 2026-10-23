@@ -366,13 +366,21 @@ threads and unresponsive-provider timeout recovery remain separate work.
 
 ## Native async/await runtimes
 
-Application identities use the shared `Processes` generation-tagged namespace,
-separate from scheduled thread IDs. Retiring an application removes its table
-entry; reusing its slot cannot accept an old ProcessId or another manager's ID.
-Finder's boot identity is issued by that same table and published explicitly;
+Application identities use the shared facility's full u64 process-domain
+incarnation, separate from scheduled thread IDs. The owner directory retains
+each process's authoritative ledger; retiring a process requires an empty ledger
+and its incarnation can never be reissued during that boot. Directory storage
+reuse cannot accept an old ProcessId or another manager's ID. Finder's boot
+identity is issued by that same facility and published explicitly;
 desktop access, drag registration, crash policy and lifecycle notifications do
 not assume that Finder is application 1. Native and Pascal conversion traps use
 these same resident lookups; this does not add a 68k Process Manager adapter.
+The application menu retains full-width identities in its resident actions;
+MDEF's u32 command is a row selector, not a truncated process ID. Window-owned
+resource resolution also retains the full process identity. The directory has
+no fixed-eight limit; scheduler stacks/contexts and other remaining fixed-eight
+storage still await their staged migration, so this alone does not admit more
+than eight running apps.
 
 Opt-in event tracing uses private snapshot format 2. Its six-word header is
 followed by 16 full application identities, then the existing service counters,

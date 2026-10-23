@@ -359,8 +359,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
                 "worker is not an independent OS thread")?;
         if let Some((id, thread)) = prior
         {
-            require(child.id.0 & 0xffff == id.0 & 0xffff,
-                    "relaunch did not force process slot reuse")?;
+            require(child.id.0 > id.0, "relaunch did not acquire a fresh process incarnation")?;
             let stale = processes.activate(id).expect_err("stale process aliased reused slot");
             reject_legacy(id)?;
             let mut detail = crate::LogBuffer::new();
@@ -536,8 +535,8 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
         memory(&handle, b"observer-owned memory")?;
         prior = Some((child.id, child.thread));
     }
-    system.log("PROCESS_GENERATIONS_PASS native=passed legacy=passed foreign=passed \
-                reused=passed\n")?;
+    system.log("PROCESS_INCARNATIONS_PASS native=passed legacy=passed foreign=passed \
+                relaunch=passed\n")?;
     copies(system, volume, worker.id, own_window)?;
     handle.dispose()?;
     system.windows().close(own_front)?;

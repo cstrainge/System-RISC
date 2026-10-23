@@ -394,13 +394,13 @@ impl Desktop
         let entries: Vec<_> = self.processes
                                   .iter()
                                   .map(|p| {
-                                      Entry { id:     p.info.id as u32,
+                                      Entry { id:     p.info.id,
                                               name:   p.info.name(),
                                               hidden: p.info.hidden != 0,
                                               icon:   Self::application_icon(p.image) }
                                   })
                                   .collect();
-        if let Err(status) = self.app_menu.refresh(&entries, self.foreground as u32)
+        if let Err(status) = self.app_menu.refresh(&entries, self.foreground)
         {
             serial!("APPLICATION_MENU_FAILED status={}", status);
         }
@@ -488,7 +488,7 @@ impl Desktop
     {
         let result = match action
         {
-            Action::Activate(id) => self.activate_process(u64::from(id)),
+            Action::Activate(id) => self.activate_process(id),
             Action::HideCurrent => self.hide_process(self.foreground),
             Action::HideOthers =>
             {
@@ -570,7 +570,7 @@ impl Desktop
                        .and_then(|r| r);
         if let Err(error) = pinned
         {
-            self.processes.remove(id);
+            self.processes.remove(id)?;
             return Err(error);
         }
         let thread = match crate::machine::scheduler::spawn(id, image, entry)
@@ -578,7 +578,7 @@ impl Desktop
             Ok(t) => t,
             Err(e) =>
             {
-                self.processes.remove(id);
+                self.processes.remove(id)?;
                 let _ = crate::kernel::with_files(|files| files.close_all(id));
                 return Err(e);
             }
@@ -655,7 +655,7 @@ impl Desktop
                 self.drag.close_owner(caller, Self::when());
                 self.drag_effects(feedback);
                 self.locals.retain(|s| s.id != caller);
-                self.processes.remove(caller);
+                self.processes.remove(caller)?;
                 self.notify_finder_file_state(file.volume, file.cnid, false);
                 if self.foreground == caller
                 {

@@ -233,22 +233,6 @@ impl Manager
         loader.finish().map_err(application_format_status)
     }
 
-    pub(crate) fn application_resources(
-        &mut self, volume: u32, cnid: u32)
-        -> Result<(CatalogInfo, Vec<mac_formats::resource::Resource>), Status>
-    {
-        self.with_volume(volume, |v| {
-                let mut e = required(io(v.entry(cnid))?)?;
-                let info = metadata(volume, &e);
-                if info.kind != FILE || info.file_type != *b"APPL"
-                {
-                    return Err(BAD_ARGUMENT);
-                }
-                let fork = e.resources.take().ok_or(NOT_FOUND)?;
-                Ok((info, Self::load_resources(v, fork)?))
-            })
-    }
-
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn application_resources_selected(
         &mut self, volume: u32, cnid: u32, selection: super::application::Selection)

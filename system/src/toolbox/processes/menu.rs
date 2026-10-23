@@ -17,7 +17,7 @@ pub const MAX_APPLICATIONS: usize = 21;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action
 {
-    Activate(u32),
+    Activate(u64),
     HideCurrent,
     HideOthers,
     ShowAll
@@ -27,7 +27,7 @@ pub enum Action
 #[derive(Clone, Copy)]
 pub struct Entry<'a>
 {
-    pub id:     u32,
+    pub id:     u64,
     pub name:   &'a str,
     pub hidden: bool,
     pub icon:   MenuIcon
@@ -85,7 +85,7 @@ impl ApplicationMenu
     /// Publish a complete snapshot, preserving old state if input or sizing fails.
     /// Applications appear alphabetically, as in the original Process Manager.
     /// A refresh cancels tracking so a release cannot select a stale row.
-    pub fn refresh(&mut self, entries: &[Entry<'_>], foreground: u32) -> Result<(), Status>
+    pub fn refresh(&mut self, entries: &[Entry<'_>], foreground: u64) -> Result<(), Status>
     {
         if entries.len() > MAX_APPLICATIONS
         {
@@ -108,20 +108,16 @@ impl ApplicationMenu
         state.item_count = (FIXED_ROWS + entries.len()) as u32;
         copy_text(&mut state.title, &mut state.title_length, active.name.as_bytes())?;
         let mut actions = [None; MAX_ITEMS];
-        for (index, action) in
-            [Action::HideCurrent, Action::HideOthers, Action::ShowAll].into_iter().enumerate()
+        for (index, (action, command)) in [(Action::HideCurrent, *b"hcur"),
+                                           (Action::HideOthers, *b"hoth"),
+                                           (Action::ShowAll, *b"sall")].into_iter()
+                                                                       .enumerate()
         {
             copy_text(&mut state.items[index].text,
                       &mut state.items[index].text_length,
                       &self.labels[index][..self.lengths[index]])?;
             actions[index] = Some(action);
-            state.items[index].command = match action
-            {
-                Action::HideCurrent => u32::from_be_bytes(*b"hcur"),
-                Action::HideOthers => u32::from_be_bytes(*b"hoth"),
-                Action::ShowAll => u32::from_be_bytes(*b"sall"),
-                Action::Activate(id) => id
-            };
+            state.items[index].command = u32::from_be_bytes(command);
         }
         let prefix = self.lengths[0];
         let length = prefix.checked_add(active.name.len()).ok_or(BAD_ARGUMENT)?;
@@ -165,7 +161,9 @@ impl ApplicationMenu
             // Original hidden apps retain normal Chicago text and dim the icon.
             state.items[row].icon.flags |= u16::from(entry.hidden);
             actions[row] = Some(Action::Activate(entry.id));
-            state.items[row].command = entry.id;
+            // MDEF reports a selected row; the resident action retains the full
+            // owner incarnation. A menu's u32 command field is not an app ID.
+            state.items[row].command = (row + 1) as u32;
         }
         let mut pixel = [0];
         let mut canvas = Canvas::new(&mut pixel, 1, 1);

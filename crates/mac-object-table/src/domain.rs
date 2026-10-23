@@ -577,6 +577,181 @@ pub struct OwnerIndex
     pools:     Vec<DomainSlots>,
     accepting: bool
 }
+
+/// Shared owner directory. The ledger and payload cannot acquire different
+/// identities: the directory derives its key exclusively from the owned index.
+/// Entries stay ordered by boot incarnation for logarithmic identity lookup.
+/// Removing a domain moves only directory metadata, never its resident objects.
+pub struct Directory<T>
+{
+    entries: Vec<DomainEntry<T>>
+}
+
+pub struct DomainEntry<T>
+{
+    ledger: OwnerIndex,
+    value:  T
+}
+impl<T> DomainEntry<T>
+{
+    pub const fn owner(&self) -> DomainId
+    {
+        self.ledger.owner()
+    }
+
+    pub const fn ledger(&self) -> &OwnerIndex
+    {
+        &self.ledger
+    }
+
+    pub const fn value(&self) -> &T
+    {
+        &self.value
+    }
+
+    pub fn value_mut(&mut self) -> &mut T
+    {
+        &mut self.value
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectoryError
+{
+    Storage
+    {
+        owner: DomainId
+    },
+    NotFound
+    {
+        incarnation: u64
+    },
+    LiveResources
+    {
+        owner: DomainId, live: usize
+    }
+}
+impl fmt::Display for DirectoryError
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Storage { owner } => write!(f, "owner-directory allocation refused for {owner}"),
+            Self::NotFound { incarnation } =>
+            {
+                write!(f, "lifetime domain incarnation {incarnation} not found")
+            }
+            Self::LiveResources { owner,
+                                  live } =>
+            {
+                write!(f, "cannot retire {owner}: {live} live ledger resources remain")
+            }
+        }
+    }
+}
+impl<T> Directory<T>
+{
+    pub const fn new() -> Self
+    {
+        Self { entries: Vec::new() }
+    }
+
+    pub fn len(&self) -> usize
+    {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool
+    {
+        self.entries.is_empty()
+    }
+
+    /// Consumes the sole owner index. Neither insertion nor payload mutation
+    /// allows the caller to substitute another owner's ledger afterward.
+    pub fn insert(&mut self, ledger: OwnerIndex, value: T) -> Result<DomainId, DirectoryError>
+    {
+        let owner = ledger.owner();
+        // OwnerIndex's issuer prohibits duplicate incarnations, including System.
+        let at =
+            self.entries.partition_point(|entry| entry.owner().incarnation() < owner.incarnation());
+        self.entries.try_reserve(1).map_err(|_| DirectoryError::Storage { owner })?;
+        self.entries.insert(at,
+                            DomainEntry { ledger,
+                                          value });
+        Ok(owner)
+    }
+
+    fn index(&self, incarnation: u64) -> Option<usize>
+    {
+        self.entries.binary_search_by_key(&incarnation, |entry| entry.owner().incarnation()).ok()
+    }
+
+    /// Native process IDs are the complete boot-unique incarnation, not a
+    /// truncated slot/generation projection. Managers still enforce caller policy.
+    pub fn get(&self, incarnation: u64) -> Option<&DomainEntry<T>>
+    {
+        self.entries.get(self.index(incarnation)?)
+    }
+
+    /// Mutable access is restricted to the payload: exposing &mut DomainEntry
+    /// would let callers swap owner indices and break ordering/identity.
+    pub fn get_mut(&mut self, incarnation: u64) -> Option<&mut T>
+    {
+        let at = self.index(incarnation)?;
+        self.entries.get_mut(at).map(DomainEntry::value_mut)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &DomainEntry<T>>
+    {
+        self.entries.iter()
+    }
+
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T>
+    {
+        self.entries.iter_mut().map(DomainEntry::value_mut)
+    }
+
+    pub fn stop_admission(&mut self, incarnation: u64) -> Result<(), DirectoryError>
+    {
+        let at = self.index(incarnation).ok_or(DirectoryError::NotFound { incarnation })?;
+        self.entries[at].ledger.stop_admission();
+        Ok(())
+    }
+
+    /// The invalidation ticket is dispatched after releasing the directory's
+    /// lock; cleanup may recursively invalidate other resources.
+    pub fn invalidate_next(&mut self, incarnation: u64)
+                           -> Result<Option<ReleasedResource>, DirectoryError>
+    {
+        let at = self.index(incarnation).ok_or(DirectoryError::NotFound { incarnation })?;
+        Ok(self.entries[at].ledger.invalidate_next())
+    }
+
+    /// Retirement is legal only after the common walk has emptied the ledger.
+    /// History disappears with this domain; its incarnation can never recur.
+    pub fn remove(&mut self, incarnation: u64) -> Result<T, DirectoryError>
+    {
+        let at = self.index(incarnation).ok_or(DirectoryError::NotFound { incarnation })?;
+        let entry = &mut self.entries[at];
+        let live = entry.ledger.live();
+        if live != 0
+        {
+            return Err(DirectoryError::LiveResources { owner: entry.owner(),
+                                                       live });
+        }
+        entry.ledger.stop_admission();
+        Ok(self.entries.remove(at).value)
+    }
+}
+impl<T> Default for Directory<T>
+{
+    fn default() -> Self
+    {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 pub enum IndexError
 {
@@ -706,6 +881,29 @@ impl OwnerIndex
 mod tests
 {
     use super::*;
+    #[test]
+    fn directory_does_not_truncate_wide_incarnations()
+    {
+        // Private-unit fixture only; no public identity-forging constructor or
+        // service trap. Exercise both sides of the u32 boundary without billions
+        // of launches or mutating the actual boot-wide issuer.
+        let ledger = |incarnation| {
+            OwnerIndex { owner:     DomainId { kind: DomainKind::Process,
+                                               incarnation },
+                         pools:     Vec::new(),
+                         accepting: true }
+        };
+        let low = 7;
+        let high = (1u64 << 40) | low;
+        let mut directory = Directory::new();
+        directory.insert(ledger(low), "low").unwrap();
+        directory.insert(ledger(high), "high").unwrap();
+        assert_eq!(directory.get(low).unwrap().value(), &"low");
+        assert_eq!(directory.get(high).unwrap().value(), &"high");
+        assert_eq!(directory.remove(high).unwrap(), "high");
+        assert!(directory.get(high).is_none());
+        assert_eq!(directory.get(low).unwrap().value(), &"low");
+    }
     #[test]
     fn scoped_reuse_rotation_and_retirement()
     {

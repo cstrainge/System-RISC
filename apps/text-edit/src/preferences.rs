@@ -56,13 +56,6 @@ impl Settings
                ..Self::default() }
     }
 
-    pub fn with_font(mut self, font: FontSelection) -> Self
-    {
-        self.font_family = font.family;
-        self.font_size = font.size;
-        self
-    }
-
     pub fn options(self) -> Result<textedit::DisplayOptions, Error>
     {
         let ruler = match (self.ruler_kind, self.ruler_value)

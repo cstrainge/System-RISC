@@ -1,8 +1,9 @@
 # Memory, application and resource model: first-cut design
 
-Status: §13.1 accepted by Chloe, 2026-10-23; proceeding with §13.2. This is **not the live
-allocator/process migration**. The current System allocator, handle wire
-format, page mode, scheduler and applications are unchanged. Source contract:
+Status: §13.1 accepted by Chloe, 2026-10-23; proceeding with §13.2. The complete
+RVA23 floor is live. Process identity/directory migration has begun; the live
+allocator, paging, owner-walk cleanup and scheduler-capacity migration remain
+pending. Source contract:
 workspace `memory-app-resource-model-spec.md`; companion inputs are
 `extension-traits-shape-brief.md`, `extension-driver-system-spec.md` and Xtra's
 workspace `codebase.md`. Those private inputs remain outside this repository;
@@ -28,9 +29,15 @@ as the §13.2 services migrate; it is deliberately not an unused System dependen
 | TE2 rope | `…/text.rs` | Immutable balanced chunk tree, byte/hard-break augmentation, shared snapshot roots, logarithmic chunk lookup; no edit/rebalance/control/file-provider migration yet |
 | Emergency kit | `…/emergency.rs` | Borrowed, checked requirement manifest and aligned size calculation; no failure path claims until backing kit is installed |
 
-The existing shared facility remains the sole active ID issuer. Its current
-u16-generation/one-based-slot wire layout is unchanged. The new internal key
-includes the domain incarnation; native/legacy projections are a later explicit
+The shared facility remains the sole active ID issuer. Process identity now
+uses its complete u64 domain incarnation and a growable owner directory, retaining
+the sole owner index beside the process payload. Directory lookup is binary
+search, and clients cannot mutate/swap a ledger through a payload reference.
+Retirement refuses a nonempty ledger; invalidation yields cleanup tickets for
+dispatch outside the lock. The old Processes namespace, capacity and shared
+generation array are removed. The other active kinds still use their existing
+u16-generation/one-based-slot wire layout. The new internal key includes the
+domain incarnation; native/legacy object projections are a later explicit
 migration. Legacy handles/refnums project through this same facility; never
 truncate a ResourceKey generation/incarnation into a smaller wire field. A
 projection must preserve its own generation history/retirement and resolve only
@@ -40,6 +47,14 @@ incarnation. No public mutable pool reference permits swapping another owner's
 pool into the index. Exhausted generations retire; metadata needing growth is
 reported separately from quota exhaustion. Allocation growth has no implicit
 initial size or hidden growth quantum.
+
+This is the start of §13.2/2, not completion: other managers do not yet insert
+their objects into process ledgers, and the EXIT/rollback cleanup lists and
+fixed-eight scheduler/heap/image storage still exist. The real process fixture
+checks native and Pascal stale IDs across relaunch, fresh incarnations, shared
+app-menu actions and full-width window resource ownership. The directory's
+greater-than-eight test is host metadata coverage, not a claim of greater-than-
+eight live applications or MMU isolation.
 
 `ReleasedResource` records invalidation-before-dispatch. It is not yet the live
 cleanup dispatcher or a proof of quiescence. Values/callbacks, alias pinning,

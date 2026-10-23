@@ -43,8 +43,7 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
                  Kind::HostNodes,
                  Kind::FileWatches,
                  Kind::Drags,
-                 Kind::DragReceivers,
-                 Kind::Processes];
+                 Kind::DragReceivers];
     let mut tables: Vec<_> = kinds.into_iter().map(Table::new).collect();
     let ids: Vec<_> = tables.iter_mut().map(|t| t.insert(1).unwrap()).collect();
     for (row, table) in tables.iter().enumerate()
@@ -93,9 +92,9 @@ fn distinct_host_sessions_cannot_accept_each_others_file_ids()
 }
 
 #[test]
-fn retired_process_and_thread_slots_cannot_alias_recreated_tables()
+fn retired_thread_slots_cannot_alias_recreated_tables()
 {
-    for kind in [Kind::Threads, Kind::Processes]
+    for kind in [Kind::Threads]
     {
         let mut threads = Table::new(kind);
         let retired = threads.insert("retired stack").unwrap();

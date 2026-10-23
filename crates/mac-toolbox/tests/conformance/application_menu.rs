@@ -64,10 +64,10 @@ pub fn snapshot(system: &System<'_>) -> Result<usize, Failure>
     for (index, entry) in entries.iter().enumerate()
     {
         let item = menus.item(MENU, index as u16 + 5)?;
-        require(u64::from(item.command) == (entry.id).0
+        require(item.command == index as u32 + 5
                 && item.enabled
                 && item.checked == (entry.foreground == true),
-                "captured alphabetic process rows and foreground mark")?;
+                "alphabetic process row selector and captured foreground mark")?;
     }
     require(menus.set_item_enabled(MENU, 1, !others_visible)
             == Err(mac_toolbox::Error::NotSupported),

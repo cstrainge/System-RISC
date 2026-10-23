@@ -50,7 +50,7 @@ pub struct Window
 {
     pub id:              WindowId,
     pub bounds:          Rect,
-    pub refcon:          u32,
+    pub owner:           u64,
     pub min_width:       i16,
     pub min_height:      i16,
     state:               WindowDefinitionState,
@@ -172,7 +172,7 @@ impl Window
         // The manager owns state, and a supplied entry must implement this native ABI.
         #[cfg(target_arch = "riscv64")]
         {
-            crate::kernel::with_resource_owner(u64::from(self.refcon), || {
+            crate::kernel::with_resource_owner(self.owner, || {
                 crate::toolbox::resources::definitions::invoke(self.entry, &mut call)
             })
         }
@@ -359,13 +359,13 @@ impl WindowManager
     }
 
     #[cfg(test)]
-    pub fn new_window(&mut self, bounds: Rect, title: &str, refcon: u32, minimum: (i16, i16),
+    pub fn new_window(&mut self, bounds: Rect, title: &str, owner: u64, minimum: (i16, i16),
                       events: &mut EventManager, when: u32)
                       -> Option<WindowId>
     {
         self.new_window_with_definition(bounds,
                                         title,
-                                        refcon,
+                                        owner,
                                         minimum,
                                         0,
                                         crate::test_wdef::standard_window_definition,
@@ -375,18 +375,18 @@ impl WindowManager
 
     /// The entry must satisfy the native WDEF ABI for this window's lifetime.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_window_with_definition(&mut self, bounds: Rect, title: &str, refcon: u32,
+    pub fn new_window_with_definition(&mut self, bounds: Rect, title: &str, owner: u64,
                                       minimum: (i16, i16), procedure: i16, entry: DefinitionEntry,
                                       events: &mut EventManager, when: u32)
                                       -> Option<WindowId>
     {
-        self.new_window_with_activation(bounds, title, refcon, minimum, procedure, entry, events,
+        self.new_window_with_activation(bounds, title, owner, minimum, procedure, entry, events,
                                         when, true)
     }
 
     /// Background application windows enter the z order without transient focus.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_window_with_activation(&mut self, bounds: Rect, title: &str, refcon: u32,
+    pub fn new_window_with_activation(&mut self, bounds: Rect, title: &str, owner: u64,
                                       minimum: (i16, i16), procedure: i16, entry: DefinitionEntry,
                                       events: &mut EventManager, when: u32, activate: bool)
                                       -> Option<WindowId>
@@ -410,7 +410,7 @@ impl WindowManager
         let previous = self.active;
         let mut window = Window { id: WindowId(0),
                                   bounds,
-                                  refcon,
+                                  owner,
                                   min_width,
                                   min_height,
                                   state: WindowDefinitionState::new(bounds, title),

@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 
 use mac_abi::{processes::*, *};
+
+use crate::toolbox::handles::{Directory, DirectoryError, DomainKind, OwnerIndex};
 pub mod menu;
 pub(crate) mod documents;
 pub struct Process
@@ -12,7 +14,7 @@ pub struct Process
 }
 pub struct Manager
 {
-    entries:           crate::toolbox::handles::Table<Process>,
+    entries:           Directory<Process>,
     documents:         crate::toolbox::handles::Table<documents::Batch>,
     document_sequence: u64,
     stamp:             u64
@@ -21,8 +23,7 @@ impl Manager
 {
     pub fn new() -> Self
     {
-        Self { entries:
-                   crate::toolbox::handles::Table::new(crate::toolbox::handles::Kind::Processes),
+        Self { entries: Directory::new(),
                documents:crate::toolbox::handles::Table::new(crate::toolbox::handles::Kind::DocumentBatches),document_sequence:0,
                stamp:   0 }
     }
@@ -34,7 +35,7 @@ impl Manager
 
     pub fn iter(&self) -> impl Iterator<Item = &Process>
     {
-        self.entries.iter().map(|(_, process)| process)
+        self.entries.iter().map(|entry| entry.value())
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Process>
@@ -53,23 +54,33 @@ impl Manager
         }
         info.name[..name.len()].copy_from_slice(name.as_bytes());
         info.name_length = name.len() as u32;
-        let id = self.entries
-                     .insert(Process { info,
-                                       image,
-                                       stamp: 0 })
-                     .map_err(|_| NO_MEMORY)?;
-        self.entries.get_mut(id).ok_or(NOT_FOUND)?.info.id = u64::from(id);
-        Ok(u64::from(id))
+        let ledger = OwnerIndex::issue(DomainKind::Process).map_err(|error| {
+                                                               serial!("PROCESS_DOMAIN_REFUSED: \
+                                                                        {error}");
+                                                               NO_MEMORY
+                                                           })?;
+        let id = ledger.owner().incarnation();
+        info.id = id;
+        self.entries
+            .insert(ledger,
+                    Process { info,
+                              image,
+                              stamp: 0 })
+            .map_err(|error| {
+                serial!("PROCESS_DOMAIN_REFUSED: {error}");
+                NO_MEMORY
+            })?;
+        Ok(id)
     }
 
     pub fn get(&self, id: u64) -> Result<&Process, Status>
     {
-        self.entries.get(u32::try_from(id).map_err(|_| NOT_FOUND)?).ok_or(NOT_FOUND)
+        self.entries.get(id).map(|entry| entry.value()).ok_or(NOT_FOUND)
     }
 
     pub fn get_mut(&mut self, id: u64) -> Result<&mut Process, Status>
     {
-        self.entries.get_mut(u32::try_from(id).map_err(|_| NOT_FOUND)?).ok_or(NOT_FOUND)
+        self.entries.get_mut(id).ok_or(NOT_FOUND)
     }
 
     pub fn activate(&mut self, id: u64) -> Result<(), Status>
@@ -97,12 +108,20 @@ impl Manager
             .map_or(crate::context::finder_app().0, |p| p.info.id)
     }
 
-    pub fn remove(&mut self, id: u64)
+    pub fn remove(&mut self, id: u64) -> Result<(), Status>
     {
-        if let Ok(id) = u32::try_from(id)
-        {
-            self.entries.remove(id);
-        }
+        self.entries.remove(id).map(|_| ()).map_err(|error| {
+                                               serial!("PROCESS_DOMAIN_RETIRE_REFUSED: {error}");
+                                               match error
+                                               {
+                                                   DirectoryError::NotFound { .. } => NOT_FOUND,
+                                                   DirectoryError::LiveResources { .. } =>
+                                                   {
+                                                       SERVICE_BUSY
+                                                   }
+                                                   DirectoryError::Storage { .. } => NO_MEMORY
+                                               }
+                                           })
     }
 
     pub fn snapshot(&self, id: u64) -> Result<ProcessInfo, Status>

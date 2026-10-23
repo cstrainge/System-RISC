@@ -415,7 +415,7 @@ impl Desktop
                 };
                 let Some(id) = self.windows.new_window_with_activation(request.bounds,
                                                                        title,
-                                                                       self.owner as u32,
+                                                                       self.owner,
                                                                        (request.minimum_width,
                                                                         request.minimum_height),
                                                                        request.procedure,
@@ -2060,35 +2060,35 @@ impl Desktop
             let cdef = self.cdef;
             platform::with_tracking_mask(|scratch| {
                 self.windows.draw_with_scratch(&mut canvas, scratch, |window, canvas| {
-                            let content = content.iter().find(|content| content.id == window.id);
-                            let replay = |canvas: &mut Canvas<'_>| {
-                                canvas.paint_rect(window.local_bounds(), WHITE);
-                                if let Some(content) = content
-                                {
-                                    crate::kernel::with_resource_owner(u64::from(window.refcon), || {
-                                        content.paint(canvas, fonts, |canvas, command| {
-                                            paint(canvas, command, cdef)
+                                let content =
+                                    content.iter().find(|content| content.id == window.id);
+                                let replay = |canvas: &mut Canvas<'_>| {
+                                    canvas.paint_rect(window.local_bounds(), WHITE);
+                                    if let Some(content) = content
+                                    {
+                                        crate::kernel::with_resource_owner(window.owner, || {
+                                            content.paint(canvas, fonts, |canvas, command| {
+                                                       paint(canvas, command, cdef)
+                                                   });
                                         });
-                                    });
-                                }
-                            };
-                            // Managed scroll boxes already retain their viewport rasters.
-                            // A second whole-window raster wastes heap and copies every frame.
-                            let has_viewports = content.is_some_and(|content| {
-                                content.iter_commands().any(|command| {
+                                    }
+                                };
+                                // Managed scroll boxes already retain their viewport rasters.
+                                // A second whole-window raster wastes heap and copies every frame.
+                                let has_viewports = content.is_some_and(|content| {
+                                                        content.iter_commands().any(|command| {
                                     matches!(command, RenderCommand::ScrollBox(_))
                                 })
-                            });
-                            if has_viewports
-                            {
-                                replay(canvas);
-                            }
-                            else
-                            {
-                                cache.paint(window.id.0, window.bounds, canvas, replay);
-                            }
-
-                        })
+                                                    });
+                                if has_viewports
+                                {
+                                    replay(canvas);
+                                }
+                                else
+                                {
+                                    cache.paint(window.id.0, window.bounds, canvas, replay);
+                                }
+                            })
             });
             self.menu_cache.paint(&mut canvas,
                                   (self.foreground,
@@ -2167,7 +2167,7 @@ impl Desktop
                             canvas.set_origin(window.bounds.left, window.bounds.top);
                             let replay=|canvas:&mut Canvas<'_>| {
                                 canvas.paint_rect(window.local_bounds(), WHITE);
-                                crate::kernel::with_resource_owner(u64::from(window.refcon), || {
+                                crate::kernel::with_resource_owner(window.owner, || {
                                     content.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef));
                                 });
                             };

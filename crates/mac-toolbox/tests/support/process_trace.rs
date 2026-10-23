@@ -1,7 +1,7 @@
 //! Validate captured scheduler identities without assuming the object table's
 //! namespace offsets, generation counters or application launch order.
 #[allow(dead_code)]
-pub fn launched(serial: &str, name: &str) -> (u64, u32)
+pub fn launched(serial: &str, name: &str) -> (u64, u64)
 {
     let (app, thread) = serial.lines()
                               .rev()
@@ -13,10 +13,10 @@ pub fn launched(serial: &str, name: &str) -> (u64, u32)
                                   {
                                       return None;
                                   }
-                                  Some((app.parse::<u64>().ok()?, thread.parse::<u32>().ok()?))
+                                  Some((app.parse::<u64>().ok()?, thread.parse::<u64>().ok()?))
                               })
                               .unwrap_or_else(|| panic!("{name} launch missing: {serial}"));
-    assert!(app >> 16 != 0 && app & 0xffff != 0 && thread >> 16 != 0 && thread & 0xffff != 0,
+    assert!(app != 0 && thread != 0,
             "invalid application/thread identity: app={app} thread={thread}");
     let prefix = format!("PROCESS_THREAD app={app} thread={thread} stack=");
     assert!(serial.lines().any(|line| line.starts_with(&prefix)),

@@ -26,7 +26,6 @@ static HOST_TRANSACTION_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0
 static HOST_SESSION_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
 
 static DEVICE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
-static PROCESS_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static FILE_STREAM_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static DOCUMENT_BATCH_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
 static FILE_TRANSFER_GENERATIONS: [AtomicU16; 4] = [const { AtomicU16::new(0) }; 4];
@@ -81,7 +80,6 @@ pub enum Kind
     FileWatches,
     Drags,
     DragReceivers,
-    Processes,
     FileStreams,
     FileGroups,
     FileTransfers,
@@ -97,7 +95,6 @@ impl Kind
             Self::FileTransfers => 4,
             Self::FileGroups => 8,
             Self::FileStreams => 8,
-            Self::Processes => 8,
             Self::Drags => 32,
             Self::DragReceivers => 64,
             Self::FileWatches => 64,
@@ -142,8 +139,7 @@ impl Kind
             {
                 Self::FileStreams.first_slot() + Self::FileStreams.capacity() as u32
             }
-            Self::FileStreams => Self::Processes.first_slot() + Self::Processes.capacity() as u32,
-            Self::Processes =>
+            Self::FileStreams =>
             {
                 Self::DragReceivers.first_slot() + Self::DragReceivers.capacity() as u32
             }
@@ -222,7 +218,6 @@ impl Kind
             Self::FileTransfers => FILE_TRANSFER_GENERATIONS.get(index),
             Self::FileGroups => FILE_GROUP_GENERATIONS.get(index),
             Self::FileStreams => FILE_STREAM_GENERATIONS.get(index),
-            Self::Processes => PROCESS_GENERATIONS.get(index),
             Self::Drags => DRAG_GENERATIONS.get(index),
             Self::DragReceivers => DRAG_RECEIVER_GENERATIONS.get(index),
             Self::FileWatches => FILE_WATCH_GENERATIONS.get(index),
@@ -259,7 +254,6 @@ impl Kind
             | Self::FileTransfers
             | Self::FileGroups
             | Self::FileStreams
-            | Self::Processes
             | Self::Threads
             | Self::Drags
             | Self::DragReceivers
