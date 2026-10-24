@@ -447,6 +447,10 @@ repaint or serial write appears in the first key's pre-routing interval; the
 cause is still under investigation. Keep all samples, do not discard the cold
 key or weaken the threshold, and do not call the latency baseline clean before
 page activation. These emulated samples are not a hard real-time guarantee.
+An event-queue tail-removal early-out now skips four empty array moves while
+retaining live-index validation. Existing queue and public event contracts pass.
+A subsequent fixed set measured first-key 1.010, 0.895 and 1.247 ms, so this
+bounded improvement does not close the cold-input qualification.
 
 Future Pi targets produce one whole-device image with a board boot partition
 (firmware and loader) and an HFS-B System RISC partition. The loader discovers

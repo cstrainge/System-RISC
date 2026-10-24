@@ -121,11 +121,16 @@ impl EventManager
 
     fn remove(&mut self, index: usize) -> Event
     {
-        let event = self.queue[index];
-        self.queue.copy_within(index + 1..self.len, index);
-        self.routed.copy_within(index + 1..self.len, index);
-        self.route_owners.copy_within(index + 1..self.len, index);
-        self.positions.copy_within(index + 1..self.len, index);
+        let event = self.queue[..self.len][index];
+        // A one-event queue and a tail removal have nothing to move. Keep
+        // that common input path out of four empty memmove operations.
+        if index + 1 < self.len
+        {
+            self.queue.copy_within(index + 1..self.len, index);
+            self.routed.copy_within(index + 1..self.len, index);
+            self.route_owners.copy_within(index + 1..self.len, index);
+            self.positions.copy_within(index + 1..self.len, index);
+        }
         self.len -= 1;
         event
     }
