@@ -95,7 +95,7 @@ def capture(output, probe=False, menus=False, profile=False, windows=False):
         # Let SDK scene commits following a release reach the compositor.
         time.sleep(.12)
         path = output / f'{name}.ppm'
-        vm.qmp('screendump', {'filename': vm.windows_path(path) if windows else str(path)}, endpoint)
+        vm.qmp('screendump', {'filename': str(path)}, endpoint)
         observations.append({'name': name, 'state': state(), 'frame': path.name})
 
     def save_backbuffer(name):
