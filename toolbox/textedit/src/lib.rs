@@ -5,7 +5,7 @@
 use mac_abi::textedit::*;
 pub use mac_abi::{Point, Rect, WindowId,
                   quickdraw::FontSelection,
-                  textedit::{CursorMovement, EditorId, MAX_BYTES, MAX_EDITORS}};
+                  textedit::{CursorMovement, EditorId, MAX_BYTES}};
 pub use mac_traps::{Client, Error, Result};
 
 /// Text-space ruler. The selected mode is retained across font changes.

@@ -225,6 +225,7 @@ fn options_dialog_uses_managed_controls_validates_and_persists_display_settings(
     let report: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
     assert_eq!(report["original_before"], report["original_after"]);
+    assert_eq!(report["initial_preferences"], "application defaults in private clone");
     for (name, selection) in [("forward", "0..3"),
                               ("reverse", "0..3"),
                               ("multiple-lines", "0..7"),

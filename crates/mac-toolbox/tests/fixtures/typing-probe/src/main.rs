@@ -106,7 +106,7 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
     let _menus = menus::install(system)?;
     let mut editor = editor::Editor::default();
     editor.new_document(system, "Typing Profile")?;
-    let id = textedit::EditorId(EDITOR.load(Ordering::Relaxed) as u32);
+    let id = textedit::EditorId(EDITOR.load(Ordering::Relaxed) as u64);
     let mut sample = [0; 768];
     let sample = text(system, 1, &mut sample)?;
     system.textedit().set_text(id, sample)?;
@@ -187,7 +187,7 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
 fn keyboard_batch<'a>(system: &System<'a>, editor: &mut editor::Editor<'a>)
                       -> Result<(), mac_toolbox::Error>
 {
-    let id = textedit::EditorId(EDITOR.load(Ordering::Relaxed) as u32);
+    let id = textedit::EditorId(EDITOR.load(Ordering::Relaxed) as u64);
     let before = system.textedit().info(id)?;
     let mut policy = menus::Policy::default();
     policy.update(system, Some(editor))?;

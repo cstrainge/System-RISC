@@ -732,6 +732,9 @@ pub fn worker(system: &System<'_>) -> Result<()>
                                                                         ..Default::default() })?;
     let mut announcement = [0; 64];
     standard_file_lifecycle(system)?;
+    let leaked_editor =
+        system.textedit().create_owned(Rect::new(0, 0, 100, 40), Rect::new(0, 0, 100, 40))?;
+    leaked_editor.editor().set_text("Registered worker editor")?;
     let leaked_world = system.quickdraw().new_gworld(8, 8)?;
     let leaked_menu =
         system.menus().install_owned(mac_toolbox::ResourceScope::Application, 2001)?;
@@ -800,7 +803,9 @@ pub fn worker(system: &System<'_>) -> Result<()>
                             (*b"MENU", 1),
                             (*b"MNST", 1),
                             (*b"MMBL", 1),
-                            (*b"MMST", 1)];
+                            (*b"MMST", 1),
+                            (*b"TEDT", 1),
+                            (*b"TESV", 1)];
             require(ledger.len() == expected.len() as u64,
                     "worker exit pool census missing a registered kind")?;
             for index in 0..ledger.len()
@@ -832,6 +837,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
             core::mem::forget(control);
             core::mem::forget(scroll_box);
             core::mem::forget(leaked_world);
+            core::mem::forget(leaked_editor);
             core::mem::forget(leaked_menu);
             return Ok(());
         }

@@ -408,15 +408,16 @@ not a claim of incremental row painting.
 
 ## Application-local namespaces
 
-Windows, controls, menus and offscreen worlds use opaque native IDs validated
-against full owner-ledger keys. Memory's existing 32-bit wire projects to that
+Windows, controls, menus, TextEdit editors and offscreen worlds use opaque native
+IDs validated against full owner-ledger keys. Memory's existing 32-bit wire projects to that
 same registered storage: MMBL owns each block, MMST owns the domain's arena,
 projection and MemErr state. Projection generations are boot-wide, rejecting
 foreign IDs and stale IDs after zone destruction. Memory no longer indexes a
 manager by scheduler slot; its EXIT cleanup hook is replaced by registered
-release callbacks. Remaining app-local managers (including TextEdit) retain their
-shared-facility projections pending their ledger migration. These service-level
-ownership checks are not MMU isolation.
+release callbacks. TextEdit's TEDT/TESV registrations own editor payloads and
+per-domain backing, with opaque u64 identities and fallible growth rather than
+the old fixed-64 table. Other managers remain staged for ledger migration. These
+service-level ownership checks are not MMU isolation.
 Per-app menus, events, dialogs, worlds, editor records and legacy compatibility
 state are disposed at exit; the system clipboard and immutable cached images
 remain system-owned. These are service-level ownership contracts in trusted

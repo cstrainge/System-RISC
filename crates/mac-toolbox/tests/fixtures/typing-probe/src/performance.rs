@@ -23,7 +23,7 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
                                                                                  size:   12,
                                                                                  face:   0 });
     editor.new_document(system, "Text Edit Performance")?;
-    let id = textedit::EditorId(EDITOR.load(Ordering::Relaxed) as u32);
+    let id = textedit::EditorId(EDITOR.load(Ordering::Relaxed) as u64);
     system.quickdraw().cursors().hide()?;
     system.log("DESKTOP_READY: actual Text Edit performance fixture\n")?;
     let mut bytes = [b'x'; 32_000];

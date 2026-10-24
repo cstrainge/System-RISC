@@ -419,16 +419,21 @@ pub fn editors(system: &System<'_>, gate: Option<mac_abi::TrapGate>) -> Result<(
     let te = system.textedit();
     let bounds = Rect::new(0, 0, 120, 60);
     let stale = te.create(bounds, bounds)?;
+    let before = registered_pool(system, *b"TEDT")?;
     te.dispose(stale)?;
     let replacement = te.create(bounds, bounds)?;
-    assert_eq!(stale.0 & 0xffff, replacement.0 & 0xffff, "force TextEdit slot reuse");
+    let after = registered_pool(system, *b"TEDT")?;
+    assert_eq!(before.slots, after.slots, "force TextEdit slot reuse");
+    assert_eq!(after.births, before.births + 1);
+    assert_eq!(after.deaths, before.deaths + 1);
+    assert!(stale.0 > u64::from(u32::MAX));
     assert_ne!(stale, replacement);
     // Use another live manager's real issued ID, not just an invalid integer.
     let mut raw = mac_abi::memory::MemoryCall { operation: mac_abi::memory::NEW_CLEAR,
                                                 size: 4,
                                                 ..Default::default() };
     system.client().memory(&mut raw, &[], &mut [])?;
-    for id in [stale, EditorId(raw.handle)]
+    for id in [stale, EditorId(u64::from(raw.handle))]
     {
         assert_eq!(te.info(id), Err(Error::NotFound));
         assert_eq!(te.set_text(id, "must not replace"), Err(Error::NotFound));
@@ -454,6 +459,19 @@ pub fn editors(system: &System<'_>, gate: Option<mac_abi::TrapGate>) -> Result<(
     te.dispose(replacement)?;
     raw.operation = mac_abi::memory::DISPOSE;
     system.client().memory(&mut raw, &[], &mut [])?;
+    let mut simultaneous: [Option<mac_toolbox::textedit::Editor<'_>>; 129] =
+        core::array::from_fn(|_| None);
+    for editor in &mut simultaneous
+    {
+        *editor = Some(te.create_owned(bounds, bounds)?);
+    }
+    assert_eq!(registered_pool(system, *b"TEDT")?.live, 129);
+    for editor in &mut simultaneous
+    {
+        drop(editor.take());
+    }
+    assert_eq!(registered_pool(system, *b"TEDT")?.live, 0);
+    system.log("TEXTEDIT_LEDGER_USERSPACE_PASS reuse=passed simultaneous=129 full_width=passed\n")?;
     Ok(())
 }
 

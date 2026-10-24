@@ -732,3 +732,47 @@ fourteen completed lifetimes require twelve walk callbacks, with no live/pending
 resources. Boundary checks and all 49 library docs pass. Evidence is in the private
 `memory-ledger-*` reports. This is not the entire model's acceptance campaign or
 closure of the separately recorded cold first-key latency gate.
+
+
+### TextEdit payload and saved-state migration
+
+TEDT owns editor contents, layout and cursor bindings; TESV owns the per-domain
+backing. A manager retains the actual directory OwnerRef through current/saved
+context swaps. Registered release resolves the ticket's owner, invalidates the
+same payload as explicit disposal and marks only cursor policy dirty when an
+editor disappears. Cursor geometry updates use a live-only mutable store iterator
+without allocating an ID list or holding an owner lock during mutation. No new
+window repaint path is introduced.
+
+Native EditorId is opaque u64. The old fixed-64 editor table and global u16
+editor-generation array are removed. Counts grow until fallible storage refusal;
+text contents still use the existing 32767-byte engine until stage-8 TE2 work.
+Canonical acceptance now verifies 129 simultaneous editors, ledger-slot reuse,
+full-width IDs, native/Pascal stale rejection, foreign-owner preservation,
+stopped-owner refusal and cleanup quarantine/retry with diagnostic causes. Native
+workers deliberately abandon an editor and backing as well: the expected complete
+walk now has sixteen lifetimes and fourteen dispatcher calls. Qualification
+passes: 59 facility tests (three compile-fail), four ABI foundation cases, 131
+System units (one gated), 224 SDK host cases (62 native gates), optimized image,
+native aggregate/process campaigns, original TextEdit pixels, real document and
+Options interactions, typing/caret performance, cursor sprites/hover, Reactor
+Room on Linux/Windows, native/classic headless ABI, boundaries and 49-library API
+docs. No completed TE2 or page-backed allocation claim is made.
+
+Two capture defects were corrected without changing their UI assertions: Options
+resets only its offline private clone to application defaults instead of assuming
+saved preferences are absent, and document navigation clicks the actual System
+Folder icon after wide labels reserve extra cells. Original-image hashes remain
+checked. Evidence, including initial capture failures and repaired runs, is in
+the private `textedit-ledger-*` reports. The cold first-key strict-latency gate
+remains separately open.
+
+
+Carried stage-3 cleanup gate: the current EXIT path removes Saved contexts before
+checking whether domain retirement succeeded. The store retains abandoned pending
+payloads/pins rather than falsely acknowledging them, but a removed manager is
+not an actionable retry path. Unified teardown must retain saved managers and
+other dependencies through an incomplete death barrier, provide controlled retry,
+and retire storage only after real quiescence. Passing normal native exit and
+host provider-refusal tests does not establish that remaining resident failure
+path. This is separate from M-D04's privileged-fault containment gate.

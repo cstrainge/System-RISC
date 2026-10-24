@@ -1607,3 +1607,17 @@ foreign caller. Coalesced OsEvent 0x11000000 advises process membership changes.
 distinct from the Window Manager geometry notification.
 THEME (0x10025) returns a resident role-palette snapshot; applications cache its
 revision rather than embedding palette choices.
+
+
+## Native TextEdit identities (development ABI 1)
+
+EditorId and all editor references are opaque u64 tokens from the shared owner
+store. TEDT registers editor payloads (including cursor geometry) and TESV owns
+the per-domain backing. The old 64-editor table and u16 editor generation array
+are removed; editor count grows until fallible backing admission fails. There is
+no public bit interpretation. Native and Pascal-string services validate the
+same live object; this does not introduce an original 68k TEHandle layout.
+Rebuild System, applications, definitions and fixtures together; the development
+ABI stays 1. Native font, edit and display request sizes remain distinct and are
+checked before borrowing. The existing 32767-byte text engine limit remains
+until the TE2 storage stage.

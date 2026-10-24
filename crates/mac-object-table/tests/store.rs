@@ -290,3 +290,23 @@ fn explicit_disposal_retains_the_matching_ticket_and_refuses_other_stores()
     assert_eq!(first.get(fresh), Some(&"replacement"));
     assert_eq!(second.get(other), Some(&"other kind"));
 }
+
+#[test]
+fn mutable_iteration_skips_invalidated_payloads_and_preserves_other_owners()
+{
+    let first = owner();
+    let second = owner();
+    let mut store = Store::new(KIND, CapacityPolicy::GrowableUntilMemory);
+    let dead = store.insert(&first, 10).unwrap();
+    let live = store.insert(&second, 20).unwrap();
+    let ticket = first.invalidate_next().unwrap();
+    for value in store.values_mut()
+    {
+        *value += 1;
+    }
+    assert_eq!(store.get(dead), None);
+    assert_eq!(store.get(live), Some(&21));
+    assert_eq!(store.releasing(&ticket), Some(&10), "invalidated payload was not mutated");
+    drop(store.release(ticket).unwrap());
+    assert_eq!((first.summary().live, first.summary().pending), (0, 0));
+}

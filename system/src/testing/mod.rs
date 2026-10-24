@@ -7,6 +7,7 @@ pub mod scrap;
 pub mod drag;
 pub mod inspection;
 mod worlds;
+mod textedit;
 use core::cell::RefCell;
 
 use mac_abi::{traps::*, *};
@@ -27,7 +28,7 @@ struct Session
     crashes:       crate::toolbox::crashes::Manager,
     events:        crate::toolbox::events::EventManager,
     scrap:         crate::toolbox::scrap::Manager,
-    textedit:      crate::toolbox::textedit::Manager,
+    textedit:      std::vec::Vec<(u64, crate::toolbox::textedit::Manager)>,
     cursors:       crate::toolbox::quickdraw::cursors::Cursors,
     started:       std::time::Instant,
     memory:        crate::toolbox::memory::Manager,
@@ -109,6 +110,10 @@ impl Default for Session
                               crate::toolbox::memory::lifetime::specification(true),
                               crate::toolbox::memory::lifetime::ReleaseStorage)
                     .unwrap();
+        registry.register(&registrar, crate::toolbox::textedit::lifetime::specification(false),
+            crate::toolbox::handles::cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseEditors)).unwrap();
+        registry.register(&registrar, crate::toolbox::textedit::lifetime::specification(true),
+            crate::toolbox::handles::cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseStorage)).unwrap();
         Self { worlds: crate::toolbox::quickdraw::worlds::Worlds::new((worlds, world_storage)).unwrap(),
                registry,
                menus: RefCell::new(std::vec::Vec::new()),
@@ -123,7 +128,7 @@ impl Default for Session
                crashes: Default::default(),
                events: crate::toolbox::events::EventManager::new(),
                scrap: Default::default(),
-               textedit: Default::default(),
+               textedit: std::vec::Vec::new(),
                cursors: Default::default(),
                started: std::time::Instant::now(),
                memory: crate::toolbox::memory::Manager::new((memory, memory_storage)).unwrap(),
@@ -358,27 +363,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        }
                    })
         }
-        TEXTEDIT => SESSION.with(|slot| {
-                        let Ok(mut session) = slot.try_borrow_mut()
-                        else
-                        {
-                            return SERVICE_BUSY as i64;
-                        };
-                        let Some(session) = session.as_mut()
-                        else
-                        {
-                            return NOT_SUPPORTED as i64;
-                        };
-                        unsafe {
-                            crate::toolbox::textedit::native::dispatch_with(number, pointer, size,
-                        |request| match request {
-                            crate::toolbox::textedit::native::Request::Edit(call, input, output) => crate::toolbox::textedit::clipboard::request(
-                                &mut session.textedit, &mut session.scrap, call, input, output, &session.fonts),
-                            crate::toolbox::textedit::native::Request::Display(call) => session.textedit.display_request(call),
-                            crate::toolbox::textedit::native::Request::Font(call) => session.textedit.font_request(call, &session.fonts)
-                        })
-                        }
-                    }),
+        TEXTEDIT => unsafe { textedit::dispatch(number, pointer, size) },
         POSITIONED_EVENT => SESSION.with(|slot| {
             let mut session = slot.borrow_mut();
             let s = session.as_mut().unwrap();

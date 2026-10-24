@@ -57,7 +57,8 @@ def capture(output):
 
         # Fresh Finder windows, using the ordinary resource-backed icon layout.
         driver.click(200, 36)
-        driver.click(168, 95, double=True)
+        # Fresh Finder layout reserves extra cells for the wide folder label.
+        driver.click(232, 95, double=True)
         driver.wait_folder_ready('System Folder')
         driver.click(390, 126, double=True)
         driver.wait_folder_ready('Preferences')

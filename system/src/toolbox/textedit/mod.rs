@@ -3,10 +3,11 @@
 #![deny(unsafe_code)]
 use mac_abi::{textedit::*, *};
 
-use crate::toolbox::{handles::{Kind, Table},
+use crate::toolbox::{handles::{KindLease, OwnerRef, Store},
                      quickdraw::{region::{BooleanOp, Region},
                                  service::Port}};
 mod layout;
+pub(crate) mod lifetime;
 mod model;
 pub mod clipboard;
 pub use model::Editor;
@@ -26,14 +27,8 @@ struct CursorBinding
 }
 pub struct Manager
 {
-    slots: Table<Slot>
-}
-impl Default for Manager
-{
-    fn default() -> Self
-    {
-        Self { slots: Table::new(Kind::TextEdit) }
-    }
+    slots: Store<Slot>,
+    owner: OwnerRef
 }
 pub struct PreparedEdit
 {
@@ -42,6 +37,27 @@ pub struct PreparedEdit
 }
 impl Manager
 {
+    pub(crate) fn new(kinds: (KindLease, KindLease), owner: OwnerRef) -> Result<Self, Status>
+    {
+        Ok(Self { slots: Store::owned(kinds.0, kinds.1).map_err(|_| BAD_ARGUMENT)?,
+                  owner })
+    }
+
+    pub(crate) fn release(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                          storage: bool)
+                          -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        if storage
+        {
+            self.slots.release_storage(ticket)
+        }
+        else
+        {
+            drop(self.slots.release(ticket)?);
+            Ok(())
+        }
+    }
+
     /// Register a successful draw's geometry and clip. Staged registrations stay
     /// private alongside retained drawing until their window's EndUpdate.
     pub fn bind_cursor(&mut self, id: EditorId, window: WindowId, port: Port, staged: bool)
@@ -293,17 +309,25 @@ impl Manager
     {
         if call.operation == CREATE
         {
+            if !self.owner.accepting()
+            {
+                return Err(SERVICE_BUSY);
+            }
             let editor = Editor::new(call.info.dest, call.info.view)?;
             call.id = EditorId(self.slots
-                                   .insert(Slot { editor,
+                                   .insert(&self.owner, Slot { editor,
                                                   cursor_enabled: true,
                                                   cursor: None,
                                                   pending_cursor: None })
-                                   .map_err(|_| NO_MEMORY)?);
+                                   .map_err(|error| match error {
+                                       mac_object_table::domain::PoolError::Stopping { .. }
+                                       | mac_object_table::domain::PoolError::RegistrationUnavailable { .. } => SERVICE_BUSY,
+                                       _ => NO_MEMORY
+                                   })?);
         }
         if call.operation == DISPOSE
         {
-            self.slots.remove(call.id.0).ok_or(NOT_FOUND)?;
+            drop(self.slots.remove(call.id.0).ok_or(NOT_FOUND)?);
             return Ok(());
         }
         if call.operation == SET_CURSOR_ENABLED

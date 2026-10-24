@@ -23,8 +23,10 @@ pub(super) struct Saved
 }
 impl Saved
 {
-    pub fn try_new(id: u64, mdef: DefinitionEntry) -> Result<Self, Status>
+    pub fn try_new(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionEntry)
+                   -> Result<Self, Status>
     {
+        let id = owner.owner().incarnation();
         Ok(Self { id,
                   crash: Default::default(),
                   dialogs: Default::default(),
@@ -35,7 +37,7 @@ impl Saved
                   cursors: Default::default(),
                   classic_font: Default::default(),
                   events: Box::try_new(EventManager::new()).map_err(|_| NO_MEMORY)?,
-                  textedit: Default::default() })
+                  textedit: crate::toolbox::textedit::Manager::new(crate::toolbox::handles::editor_kinds()?, owner)? })
     }
 }
 impl Desktop
@@ -566,7 +568,7 @@ impl Desktop
                                                catalog.file_type, resources)?;
         let entry = crate::kernel::reload_image(image)?;
         let id = self.processes.add(catalog.name(), call.volume, call.cnid, image)?;
-        let local = match Saved::try_new(id, self.mdef)
+        let local = match Saved::try_new(self.processes.ledger(id)?, self.mdef)
         {
             Ok(local) => local,
             Err(error) =>
@@ -742,5 +744,31 @@ impl crate::toolbox::memory::lifetime::MemoryHost for Desktop
                                                                                   error))
             }
         }
+    }
+}
+
+impl crate::toolbox::textedit::lifetime::EditorHost for Desktop
+{
+    fn release_editor(&mut self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
+                      -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        let owner = ticket.key().owner().incarnation();
+        let manager = if owner == self.owner
+        {
+            Some(&mut self.textedit)
+        }
+        else
+        {
+            self.locals.iter_mut().find(|local| local.id == owner).map(|local| &mut local.textedit)
+        };
+        let result = match manager {
+            Some(manager) => manager.release(ticket, storage),
+            None => Err(<mac_object_table::domain::CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket))
+        };
+        if result.is_ok() && !storage
+        {
+            self.cursor_dirty = true;
+        }
+        result
     }
 }

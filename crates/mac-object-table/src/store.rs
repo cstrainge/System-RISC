@@ -529,6 +529,20 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         self.owners.iter().flat_map(Values::iter)
     }
 
+    /// Borrow only live payloads. Validation finishes before the caller can
+    /// mutate a value; no owner lock or temporary identity array is retained.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T>
+    {
+        let admitting = self.registration.as_ref().is_none_or(|kind| kind.live());
+        self.owners.iter_mut().flat_map(move |values| {
+                                  let owner = &values.claim.owner;
+                                  values.slots.iter_mut().filter_map(move |slot| {
+                let entry = slot.as_mut()?;
+                (admitting && owner.contains(entry.key)).then_some(&mut entry.value)
+            })
+                              })
+    }
+
     /// Saved state is accessible only while its registered backing is live.
     /// Pending/quarantined backing stays retained exclusively for cleanup.
     pub fn state(&self, incarnation: u64) -> Option<&S>

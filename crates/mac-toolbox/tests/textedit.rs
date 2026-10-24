@@ -31,8 +31,7 @@ fn legacy_text_convenience_traps()
 fn native_limits_and_failed_paste_preserve_both_managers()
 {
     support::with_system(|system| {
-        use mac_toolbox::{Error,
-                          textedit::{MAX_BYTES, MAX_EDITORS}};
+        use mac_toolbox::{Error, textedit::MAX_BYTES};
         let te = system.textedit();
         let rect = mac_toolbox::Rect::new(0, 0, 100, 100);
         let id = te.create(rect, rect).unwrap();
@@ -49,8 +48,8 @@ fn native_limits_and_failed_paste_preserve_both_managers()
         assert_eq!(te.info(id).unwrap(), before);
         te.dispose(id).unwrap();
         assert_eq!(te.dispose(id), Err(Error::NotFound));
-        let ids: Vec<_> = (0..MAX_EDITORS).map(|_| te.create(rect, rect).unwrap()).collect();
-        assert_eq!(te.create(rect, rect), Err(Error::NoMemory));
+        let ids: Vec<_> = (0..129).map(|_| te.create(rect, rect).unwrap()).collect();
+        assert!(ids.iter().all(|id| id.0 > u64::from(u32::MAX)));
         for id in ids
         {
             te.dispose(id).unwrap();
@@ -238,5 +237,66 @@ fn native_editor_font_reflow_new_characters_paste_and_failure_are_consistent()
         assert_eq!(te.point(id, before.text_length).unwrap(), point);
         assert_eq!(te.text(id, &mut bytes).unwrap(), text);
         te.dispose(id).unwrap();
+    });
+}
+
+#[test]
+fn editor_wire_requests_remain_size_distinct()
+{
+    use mac_toolbox::abi::textedit::{EditorId, TextEditCall, TextEditDisplayCall, TextEditFontCall};
+    assert_eq!(core::mem::size_of::<EditorId>(), 8);
+    let sizes = [core::mem::size_of::<TextEditCall>(),
+                 core::mem::size_of::<TextEditFontCall>(),
+                 core::mem::size_of::<TextEditDisplayCall>()];
+    assert!(sizes.iter().enumerate().all(|(at, size)| !sizes[at + 1..].contains(size)),
+            "native request layouts collide: {sizes:?}");
+}
+
+#[test]
+fn foreign_and_stale_editors_cannot_mutate_other_applications_and_the_walk_retries()
+{
+    use mac_system::testing::{files::with_owner, inspection as fixture};
+    use mac_toolbox::{Error, Rect, inspection::Scope};
+    support::with_system(|system| {
+        let first = fixture::add("First editor owner", 0);
+        let second = fixture::add("Second editor owner", 0);
+        let rect = Rect::new(0, 0, 120, 60);
+        let stale = with_owner(first, || {
+            let editor = system.textedit().create_owned(rect, rect).unwrap();
+            editor.set_text("first owner's text").unwrap();
+            editor.into_id()
+        });
+        with_owner(second, || {
+            let editor = system.textedit().create_owned(rect, rect).unwrap();
+            editor.set_text("second owner's text").unwrap();
+            let error = system.textedit().set_text(stale, "corrupt").unwrap_err();
+            assert_eq!(error, Error::NotFound);
+            assert!(error.to_string().contains("not found"));
+            assert_eq!(system.textedit().dispose(stale), Err(Error::NotFound));
+            let mut text = [0; 64];
+            assert_eq!(editor.text(&mut text).unwrap(), "second owner's text");
+        });
+        with_owner(first, || {
+            let mut text = [0; 64];
+            assert_eq!(system.textedit().text(stale, &mut text).unwrap(), "first owner's text");
+            let membership = system.inspection().snapshot(Scope::Own).unwrap();
+            let before = membership.at(0).unwrap();
+            assert_eq!(before.live, 2);
+            let failure = fixture::walk_registered(first, true, false);
+            assert_eq!((failure.report.invalidated, failure.report.quarantined), (2, 2));
+            assert!(failure.failures.iter().any(|error| {
+                                               error.contains("TEDT")
+                                               && error.contains("no registered cleanup provider")
+                                           }));
+            assert_eq!(system.textedit().info(stale), Err(Error::NotFound));
+            let error = system.textedit().create(rect, rect).unwrap_err();
+            assert_eq!(error, Error::ServiceBusy);
+            assert!(error.to_string().contains("busy"));
+            let retry = fixture::walk_registered(first, false, true);
+            assert_eq!((retry.report.released, retry.report.quarantined), (2, 0));
+            let done = membership.at(0).unwrap();
+            assert_eq!((done.live, done.pending, done.quarantined), (0, 0, 0));
+            assert_eq!(done.deaths, before.deaths + 2);
+        });
     });
 }

@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import shutil
+import os
 import re
 import time
 from capture_system7_event_trace import decode, delta
@@ -16,9 +18,29 @@ import system7_vm as vm
 def capture(output):
     output=Path(output).resolve()
     output.mkdir(parents=True,exist_ok=False)
-    hashes={name:packaging.sha(vm.DIST/name) for name in ('system7.qcow2','System.rsrc','bootrom.bin')}
+    original=vm.DIST
+    hashes={name:packaging.sha(original/name) for name in ('system7.qcow2','System.rsrc','bootrom.bin')}
     process=None
+    raw=output/'volume.hfsb'
+    private=output/'dist'
     try:
+        # A normal rebuild deliberately retains saved preferences. This physical
+        # fixture needs application defaults for its measured text geometry;
+        # reset only the offline private clone, never the installed/user disk.
+        (output/'pid').write_text(str(os.getpid()))
+        private.mkdir()
+        subprocess.run(['qemu-img','convert','-f','qcow2','-O','raw','-S','4k',
+                        str(original/'system7.qcow2'),str(raw)],check=True)
+        image=Image(raw)
+        parent='/System Folder/Preferences'
+        entries=[json.loads(line) for line in image.run('list',parent).splitlines()]
+        if any(entry['name']=='Text Edit Preferences' for entry in entries):
+            image.remove(parent+'/Text Edit Preferences')
+        shutil.copyfile(original/'bootrom.bin',private/'bootrom.bin')
+        subprocess.run(['qemu-img','convert','-f','raw','-O','qcow2',str(raw),
+                        str(private/'system7.qcow2')],check=True)
+        raw.unlink()
+        vm.DIST=private
         process,endpoint=vm.launch(output/'vm','headless',writable=True)
         driver=Driver(endpoint,output/'vm/serial.log')
         driver.click(40,95,double=True)
@@ -140,19 +162,19 @@ def capture(output):
         driver.wait('FINDER_TEXTEDIT_READY\n',previous)
         reopened=driver.wait_state(lambda state: int(state['windows']) == documents)
         vm.qmp('quit',endpoint=endpoint);process.wait(timeout=10)
-        raw=output/'volume.hfsb'
         subprocess.run(['qemu-img','convert','-f','qcow2','-O','raw','-S','4k',str(output/'vm/system7.qcow2'),str(raw)],check=True)
         image=Image(raw)
         path='/System Folder/Preferences/Text Edit Preferences'
         metadata=image.stat(path)
         image.extract(path,output/'preferences.json')
-        report={'original_before':hashes,'original_after':{name:packaging.sha(vm.DIST/name) for name in hashes},'metadata':metadata,'drag_steps':drag_steps,'drag_trace':drag_trace,'editor_app':str(driver.app_id('Text Edit')),'window_menu':{'first':first_window,'second':second_window,'first_selected':first_selected['front'],'second_selected':second_selected['front'],'after_close':after_close['windows'],'remaining_selected':remaining['front'],'last_closed_windows':last_closed['windows'],'empty_menu_windows':empty_menu['windows'],'reopened_windows':reopened['windows']}}
+        report={'original_before':hashes,'original_after':{name:packaging.sha(original/name) for name in hashes},'initial_preferences':'application defaults in private clone','metadata':metadata,'drag_steps':drag_steps,'drag_trace':drag_trace,'editor_app':str(driver.app_id('Text Edit')),'window_menu':{'first':first_window,'second':second_window,'first_selected':first_selected['front'],'second_selected':second_selected['front'],'after_close':after_close['windows'],'remaining_selected':remaining['front'],'last_closed_windows':last_closed['windows'],'empty_menu_windows':empty_menu['windows'],'reopened_windows':reopened['windows']}}
         (output/'capture.json').write_text(json.dumps(report,indent=2)+'\n')
     finally:
+        vm.DIST=original
         if process is not None and process.poll() is None:
             vm.qmp('screendump',{'filename':str(output/'failure.ppm')},endpoint)
             vm.qmp('quit',endpoint=endpoint);process.wait(timeout=10)
-        for path in (output/'volume.hfsb',output/'vm/system7.qcow2',output/'vm/bootrom.bin'):
+        for path in (raw,output/'vm/system7.qcow2',output/'vm/bootrom.bin',private/'system7.qcow2',private/'bootrom.bin'):
             path.unlink(missing_ok=True)
 
 if __name__=='__main__':

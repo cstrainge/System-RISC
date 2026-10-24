@@ -303,14 +303,15 @@ RV64 pointers and a future x86 ABI have the same representation. Cross-target
 layout/codegen/boot/trap/context-switch tests are required before advertising a
 second architecture; a Rust compile target alone is insufficient.
 
-The shared handle facility allocates Memory and remaining app-local TextEdit
-projection generations across tables. Two live app contexts cannot mint the same
-projected ID; dropping a context does not reset history. Counter allocation is
-atomic and exhausted slots retire. Memory keeps its high16/low16 wire, with its
-payload and zone now in the registered owner store. Windows, controls, menus and
-offscreen worlds use full-width opaque tokens resolving to authenticated ledger
-keys. Native MenuId names a semantic menu property; MenuHandle identifies a live
-object. Owned menu references validate the latter on every call.
+The shared handle facility allocates Memory projection generations across
+tables. Two live app contexts cannot mint the same projected ID; dropping a
+context does not reset history. Counter allocation is atomic and exhausted slots
+retire. Memory keeps its high16/low16 wire, with payload and zone in the registered
+owner store. Windows, controls, menus, TextEdit editors and offscreen worlds use
+full-width opaque tokens resolving to authenticated ledger keys. TEDT/TESV own
+editor payloads and backing in the actual per-app context, including cleanup from
+saved contexts; no fixed editor count or private generation array remains.
+Native MenuId names a semantic menu property; MenuHandle identifies a live object. Owned menu references validate the latter on every call.
 
 The current native ThreadContext receives the directory's actual OwnerRef when
 its thread is spawned; its scalar AppId is derived from that authority. Traps can

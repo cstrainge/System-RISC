@@ -24,7 +24,7 @@ pub const PASTE: u32 = 20;
 pub const SET_RECTS: u32 = 21;
 /// Native cursor movement; `key` is CursorMovement and `index` is extend (0/1).
 pub const NAVIGATE: u32 = 22;
-/// Size-distinct native font request; the existing TextEditCall stays ABI-stable.
+/// Size-distinct native font request.
 pub const SET_FONT: u32 = 23;
 /// Enable automatic I-beam hover independently of keyboard activation.
 /// Uses TextEditCall.index as a checked boolean (0/1).
@@ -76,10 +76,10 @@ impl CursorMovement
     }
 }
 pub const MAX_BYTES: usize = 32767;
-pub const MAX_EDITORS: usize = 64;
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EditorId(pub u32);
+/// Opaque registered editor identity; zero is never a live editor.
+pub struct EditorId(pub u64);
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EditorInfo

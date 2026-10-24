@@ -322,7 +322,7 @@ impl Desktop
                   windows: WindowManager::with_kinds(super::handles::window_kinds()?, crate::machine::traps::gateway)?,
                   events: Box::new(EventManager::new()),
                   drag: Default::default(),
-                  textedit: Default::default(),
+                  textedit: super::textedit::Manager::new(super::handles::editor_kinds()?, processes.ledger(finder)?)?,
                   definitions,
                   content: Vec::new(),
                   pending_content: Vec::new(),
@@ -343,7 +343,7 @@ impl Desktop
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
                   presentations: 0,
                   compositions: 0,
-                  cdef,mdef,owner:finder,foreground:finder,locals:alloc::vec![local::Saved::try_new(finder,mdef)?],
+                  cdef,mdef,owner:finder,foreground:finder,locals:alloc::vec![local::Saved::try_new(processes.ledger(finder)?,mdef)?],
                   processes,
                   app_menu:super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,crate::kernel::resources().ok_or(NOT_SUPPORTED)?)? })
     }
