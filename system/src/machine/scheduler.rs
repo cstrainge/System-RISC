@@ -374,6 +374,10 @@ pub fn retire_current()
 /// identified by the actual scheduler context; it is never reclaimed here.
 pub(crate) fn reclaim_retired()
 {
+    if !RECLAIM_PENDING.load(Ordering::Acquire)
+    {
+        return;
+    }
     let current = CURRENT.load(Ordering::Relaxed);
     let mut reclaimed = false;
     if RECLAIM_PENDING.swap(false, Ordering::AcqRel)

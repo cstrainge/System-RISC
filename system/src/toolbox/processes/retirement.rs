@@ -1,4 +1,4 @@
-//! Reclamation is scheduled by a real thread-stack release, never by input.
+//! Reclamation follows actual stack/async-resource completion, never input.
 //! This gate covers resident ledgers and saved state. File/provider lifetime
 //! registration and their independent I/O barrier remain staged migration work.
 #![forbid(unsafe_code)]
@@ -11,9 +11,14 @@ pub(crate) fn thread_reclaimed()
     CHANGED.store(true, Ordering::Release);
 }
 
+pub(crate) fn resources_released()
+{
+    CHANGED.store(true, Ordering::Release);
+}
+
 pub(crate) fn pump()
 {
-    if !CHANGED.swap(false, Ordering::AcqRel)
+    if !CHANGED.load(Ordering::Acquire) || !CHANGED.swap(false, Ordering::AcqRel)
     {
         return;
     }

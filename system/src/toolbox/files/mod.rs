@@ -8,7 +8,7 @@ use alloc::{string::String, vec::Vec};
 
 mod scan;
 mod properties;
-mod watch;
+pub(crate) mod watch;
 mod cache;
 mod streams;
 mod groups;
@@ -276,7 +276,7 @@ pub struct Manager
     #[cfg(target_arch = "riscv64")]
     transfers:            Table<provider::runtime::transfer::Entry>,
     stream_cleanup:       bool,
-    watches:              Table<watch::Watch>,
+    watches:              watch::Watches,
     pub rejected_volumes: u32
 }
 impl Default for Manager
@@ -293,7 +293,7 @@ impl Default for Manager
                #[cfg(target_arch = "riscv64")]
                transfers:                                 Table::new(Kind::FileTransfers),
                stream_cleanup:                            false,
-               watches:                                   Table::new(Kind::FileWatches),
+               watches:                                   watch::Watches::new(),
                rejected_volumes:                          0 }
     }
 }
@@ -998,7 +998,6 @@ impl Manager
     pub fn close_all(&mut self, owner: u64) -> usize
     {
         self.executables.retain(|pin| pin.owner != owner);
-        self.close_watches(owner);
         #[cfg(target_arch = "riscv64")]
         provider::runtime::transfer::abandon(self, owner);
         for stream in self.streams.values_mut().filter(|stream| stream.owner == owner)
@@ -1083,7 +1082,9 @@ impl Manager
         call.transferred = 0;
         if matches!(call.operation, WATCH_DIRECTORY | POLL_WATCH | DISPOSE_WATCH)
         {
-            return self.watch_request(owner, call);
+            // Watch calls carry genuine owner authority through the checked
+            // trap boundary. A scalar alone cannot publish a ledger object.
+            return Err(ACCESS_DENIED);
         }
         if matches!(call.operation,
                     NEW_FOLDER

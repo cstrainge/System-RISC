@@ -67,6 +67,8 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
     assert!(serial.contains("MEMORY_LEDGER_USERSPACE_PASS projection=passed reuse=passed \
                              accounting=passed"),
             "missing native memory ledger acceptance: {serial}");
+    assert!(serial.contains("FILE_WATCH_USERSPACE_PASS reuse=64 classic=passed ledger=passed"),
+            "missing native/classic directory watch lifetime acceptance: {serial}");
     assert!(serial.contains("WINDOW_FRONT_INPUT_USERSPACE_PASS lifetime=passed focus=passed \
                              stale=passed"),
             "front-window input projections through real ECALL absent:\n{serial}");

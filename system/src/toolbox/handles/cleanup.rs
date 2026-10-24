@@ -9,6 +9,8 @@ pub(crate) enum Cause
     Facility(PoolError),
     #[cfg(target_arch = "riscv64")]
     MemoryManagerUnavailable(crate::state::AccessError),
+    #[cfg(target_arch = "riscv64")]
+    FileManagerUnavailable(crate::state::AccessError),
     WindowDefinitionDisposal
     {
         window:    u64,
@@ -29,6 +31,13 @@ impl core::fmt::Display for Cause
                 write!(f,
                        "Memory Manager cleanup could not enter its resident state ({error:?}); \
                         payload, backing and cleanup ticket remain retained for retry")
+            }
+            #[cfg(target_arch = "riscv64")]
+            Self::FileManagerUnavailable(error) =>
+            {
+                write!(f,
+                       "File Manager cleanup could not enter its resident state ({error:?}); \
+                        watch payload, backing and cleanup ticket remain retained for retry")
             }
             Self::WindowDefinitionDisposal { window,
                                              procedure,
@@ -54,6 +63,14 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn files_unavailable(ticket: ReleasedResource, error: crate::state::AccessError)
+                                    -> Self
+    {
+        Self { ticket,
+               cause: Cause::FileManagerUnavailable(error) }
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn memory_unavailable(ticket: ReleasedResource, error: crate::state::AccessError)
                                      -> Self

@@ -123,6 +123,61 @@ fn projection_admission_refusal_never_publishes_an_extra_payload()
 }
 
 #[test]
+fn pending_cleanup_reserves_the_wire_slot_and_refusal_preserves_every_other_object()
+{
+    let registrar = owner(DomainKind::Module);
+    let mut registry = Registry::new();
+    let (payload, backing) = kinds(&mut registry, &registrar);
+    let ledger = owner(DomainKind::Process);
+    let mut store = Store::new(Kind::FileWatches, payload, backing).unwrap();
+    let ids: Vec<_> =
+        (0..Kind::FileWatches.capacity()).map(|n| store.insert(&ledger, n).unwrap()).collect();
+    assert_eq!(store.get_with_owner(ids[0]), Some((ledger.owner(), &0)));
+    let guard = store.remove(ids[0]).unwrap();
+    assert_eq!(store.get(ids[0]), None);
+    assert_eq!(store.get_with_owner(ids[0]), None);
+    let before = ledger.summary();
+    let error = store.insert(&ledger, 999).unwrap_err();
+    assert!(matches!(error, Error::ProjectionExhausted));
+    assert!(error.to_string().contains("no reusable slot or backing memory"));
+    assert_eq!(ledger.summary(), before);
+    assert_eq!(store.iter().count(), ids.len() - 1);
+    assert_eq!(*guard, 0);
+    drop(guard);
+    let replacement = store.insert(&ledger, 999).unwrap();
+    assert_eq!(ids[0] & 0xffff, replacement & 0xffff);
+    assert_ne!(ids[0], replacement);
+    assert_eq!(store.get(ids[0]), None);
+    assert_eq!(store.get(replacement), Some(&999));
+    for &id in &ids[1..]
+    {
+        assert!(store.get(id).is_some());
+    }
+}
+
+#[test]
+fn cleanup_guard_outlives_its_manager_without_losing_the_pending_barrier()
+{
+    let registrar = owner(DomainKind::Module);
+    let mut registry = Registry::new();
+    let (payload, backing) = kinds(&mut registry, &registrar);
+    let ledger = owner(DomainKind::Process);
+    let mut store = Store::new(Kind::FileWatches, payload, backing).unwrap();
+    let id = store.insert(&ledger, String::from("provider probe")).unwrap();
+    ledger.stop_admission();
+    let payload = ledger.invalidate_next().unwrap();
+    let held = store.release(payload).unwrap();
+    let storage = ledger.invalidate_next().unwrap();
+    store.release_storage(storage).unwrap();
+    drop(store);
+    assert_eq!(&**held, "provider probe");
+    assert_eq!(held.wire(), id);
+    assert_eq!((ledger.summary().live, ledger.summary().pending), (0, 1));
+    drop(held);
+    assert_eq!((ledger.summary().live, ledger.summary().pending), (0, 0));
+}
+
+#[test]
 fn unscoped_wire_namespaces_cannot_construct_a_registered_projection()
 {
     let registrar = owner(DomainKind::Module);

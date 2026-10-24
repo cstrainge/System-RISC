@@ -156,6 +156,10 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                registry.register(&owner,crate::toolbox::dialogs::specification(false),crate::toolbox::dialogs::ReleaseAlerts).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::dialogs::specification(true),crate::toolbox::dialogs::ReleaseStorage).map_err(KindAccessError::Registry)?;
                                use crate::toolbox::drag::lifetime::{Registration, ReleaseKind};
+                               registry.register(&owner, crate::toolbox::files::watch::lifetime::specification(false),
+                                   crate::toolbox::files::watch::lifetime::ReleaseWatches).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::files::watch::lifetime::specification(true),
+                                   crate::toolbox::files::watch::lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
                                for kind in [Registration::Sessions, Registration::SessionStorage,
                                             Registration::Receivers, Registration::ReceiverStorage]
                                {
@@ -256,4 +260,11 @@ pub(crate) fn drag_kinds(
             (registry.get(KindCode(*b"DRCV"))?, registry.get(KindCode(*b"DRVS"))?)))
     }).map_err(|error| error.status())?
       .map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn file_watch_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"FWCH"))?, registry.get(KindCode(*b"FWST"))?)))
+        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }

@@ -25,6 +25,40 @@ pub fn with_owner<R>(owner: u64, run: impl FnOnce() -> R) -> R
     run()
 }
 
+/// Hold a real probe lease while public SDK calls invalidate its watch. Only
+/// transport completion is supplied by this trusted fixture; the production
+/// store, guard and ledger determine lifetime and slot reuse. Nested service
+/// scopes restore this session before the private RAII ACK runs on unwind.
+pub fn with_pending_watch_probe<R>(handle: u32, run: impl FnOnce() -> R)
+                                   -> Result<R, mac_abi::Status>
+{
+    let owner = super::inspection::caller_ledger(current_owner())?;
+    let lease = super::SESSION.with(|slot| {
+                                  slot.borrow_mut()
+                                      .as_mut()
+                                      .unwrap()
+                                      .files
+                                      .begin_fixture_probe(&owner, handle)
+                              })?;
+    struct Complete(crate::toolbox::files::watch::ProbeLease);
+    impl Drop for Complete
+    {
+        fn drop(&mut self)
+        {
+            super::SESSION.with(|slot| {
+                              slot.borrow_mut()
+                                  .as_mut()
+                                  .unwrap()
+                                  .files
+                                  .finish_fixture_probe(&self.0)
+                                  .expect("trusted provider fixture's unique acknowledgement");
+                          });
+        }
+    }
+    let _complete = Complete(lease);
+    Ok(run())
+}
+
 /// Invoke the same resident cleanup operation that native app exit invokes.
 pub fn close_owner(owner: u64) -> usize
 {

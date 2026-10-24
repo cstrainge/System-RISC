@@ -370,13 +370,50 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         FILE =>
         {
             let owner = crate::context::current_thread_context().identity().app.0;
+            let watch = if size == size_of::<files::FileCall>()
+            {
+                let call = read_request!(files::FileCall);
+                if matches!(call.operation,
+                            files::WATCH_DIRECTORY | files::POLL_WATCH | files::DISPOSE_WATCH)
+                {
+                    // Capture the actual ledger before firmware I/O selects the
+                    // bootstrap stack. Neither identity nor authority is on wire.
+                    let authority = match crate::context::current_owner()
+                    {
+                        Ok(owner) => owner,
+                        Err(status) => return status as i64
+                    };
+                    let kinds = if call.operation == files::WATCH_DIRECTORY
+                    {
+                        match toolbox::handles::file_watch_kinds()
+                        {
+                            Ok(kinds) => Some(kinds),
+                            Err(status) => return status as i64
+                        }
+                    }
+                    else
+                    {
+                        None
+                    };
+                    Some(toolbox::files::watch::Caller { owner: authority,
+                                                         kinds })
+                }
+                else
+                {
+                    None
+                }
+            }
+            else
+            {
+                None
+            };
             if let Some(result) =
                 unsafe { toolbox::files::native::dispatch_async(owner, pointer, size) }
             {
                 return result;
             }
             crate::kernel::with_files(|files| unsafe {
-                toolbox::files::native::dispatch_owned(files, owner, pointer, size)
+                toolbox::files::native::dispatch_owned(files, owner, pointer, size, watch.as_ref())
             }).unwrap_or_else(|error| error.status() as i64)
         }
         EVENTS =>

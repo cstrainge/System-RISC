@@ -12,6 +12,154 @@ use mac_system::testing::{files::{close_owner, with_owner},
 use mac_toolbox::{Error, System, abi::ACCESS_DENIED};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
+fn watch_pool(system: &System<'_>, kind: [u8; 4]) -> mac_toolbox::inspection::Pool
+{
+    let snapshot = system.inspection().snapshot(mac_toolbox::inspection::Scope::Own).unwrap();
+    let ledger = snapshot.ledger(0).unwrap();
+    (0..ledger.len()).map(|index| ledger.at(index).unwrap())
+                     .find(|pool| pool.kind == kind)
+                     .expect("registered directory watch pool")
+}
+
+fn watch_disk(run: impl FnOnce(&System<'_>))
+{
+    struct Temporary(PathBuf);
+    impl Drop for Temporary
+    {
+        fn drop(&mut self)
+        {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let path = Temporary(std::env::temp_dir().join(format!("watch-ledger-{}-{}.hfs",
+                                                           std::process::id(),
+                                                           NEXT.fetch_add(1, Ordering::Relaxed))));
+    fs::write(&path.0, disk()).unwrap();
+    mac_system::testing::with_file_disk(&path.0, false, Default::default(), |services| {
+        run(&unsafe { System::from_raw(services) }.unwrap());
+    }).unwrap();
+}
+
+#[test]
+fn pending_watch_disposal_invalidates_immediately_but_reserves_its_slot_until_ack()
+{
+    use mac_system::testing::files::with_pending_watch_probe;
+    watch_disk(|system| {
+        let files = system.files();
+        let volume = files.volume_at(0).unwrap().id;
+        let watches: Vec<_> =
+            (0..64).map(|_| files.watch_directory(volume, mac_toolbox::Cnid(ROOT_ID)).unwrap())
+                   .collect();
+        let mut iter = watches.into_iter();
+        let held = iter.next().unwrap();
+        let others: Vec<_> = iter.collect();
+        let stale = held.id();
+        with_pending_watch_probe(stale, || {
+            held.close().unwrap();
+            let mut call = FileCall { operation: POLL_WATCH,
+                                      handle: stale,
+                                      ..Default::default() };
+            assert_eq!(system.client().file(&mut call, "", &mut []), Err(Error::NotFound));
+            let pool = watch_pool(system, *b"FWCH");
+            assert_eq!((pool.live, pool.pending), (63, 1));
+            let error = files.watch_directory(volume, mac_toolbox::Cnid(ROOT_ID)).err().unwrap();
+            assert_eq!(error, Error::NoMemory);
+            assert!(error.to_string().contains("memory"));
+            assert_eq!(watch_pool(system, *b"FWCH"),
+                       pool,
+                       "refused publication changed the ledger");
+            for other in &others
+            {
+                assert_eq!(other.poll().unwrap(), None);
+            }
+        }).unwrap();
+        assert_eq!(watch_pool(system, *b"FWCH").pending, 0);
+        let replacement = files.watch_directory(volume, mac_toolbox::Cnid(ROOT_ID)).unwrap();
+        assert_eq!(stale & 0xffff, replacement.id() & 0xffff);
+        assert_ne!(stale, replacement.id());
+        let mut call = FileCall { operation: POLL_WATCH,
+                                  handle: stale,
+                                  ..Default::default() };
+        assert_eq!(system.client().file(&mut call, "", &mut []), Err(Error::NotFound));
+        assert_eq!(replacement.poll().unwrap(), None);
+        drop(others);
+    });
+}
+
+#[test]
+fn watch_ack_after_invalidation_completes_pending_or_later_quarantined_cleanup()
+{
+    use mac_system::testing::{files::with_pending_watch_probe, inspection as fixture};
+    for unavailable in [false, true]
+    {
+        watch_disk(|system| {
+            let files = system.files();
+            let volume = files.volume_at(0).unwrap().id;
+            let watch = files.watch_directory(volume, mac_toolbox::Cnid(ROOT_ID)).unwrap();
+            let snapshot =
+                system.inspection().snapshot(mac_toolbox::inspection::Scope::Own).unwrap();
+            let owner = snapshot.at(0).unwrap().incarnation;
+            with_pending_watch_probe(watch.id(), || {
+                let walked = fixture::walk_registered(owner, unavailable, false);
+                assert_eq!(walked.report.invalidated, 2);
+                assert_eq!(walked.report.quarantined, if unavailable { 2 } else { 0 });
+                if unavailable
+                {
+                    assert!(walked.failures[0].contains("no registered cleanup provider"));
+                }
+                assert_eq!(watch.poll(), Err(Error::NotFound));
+                let row = snapshot.at(0).unwrap();
+                assert!(!row.accepting);
+                assert!(row.pending > 0);
+                assert!(fixture::try_retire(owner).unwrap_err()
+                                                  .to_string()
+                                                  .contains("still pending"));
+                let error =
+                    files.watch_directory(volume, mac_toolbox::Cnid(ROOT_ID)).err().unwrap();
+                assert_eq!(error, Error::ServiceBusy);
+            }).unwrap();
+            if unavailable
+            {
+                assert_eq!(snapshot.at(0).unwrap().pending,
+                           2,
+                           "ACK must not invent cleanup callbacks");
+                let retry = fixture::walk_registered(owner, false, true);
+                assert!(retry.failures.is_empty());
+                assert_eq!(retry.report.released, 2);
+            }
+            let row = snapshot.at(0).unwrap();
+            assert_eq!((row.live, row.pending, row.quarantined), (0, 0, 0));
+            assert_eq!(row.deaths, row.births);
+            drop(watch);
+            fixture::try_retire(owner).unwrap();
+        });
+    }
+}
+
+#[test]
+fn provider_fixture_unwind_finishes_the_real_pending_watch_guard()
+{
+    use mac_system::testing::files::with_pending_watch_probe;
+    watch_disk(|system| {
+        let files = system.files();
+        let volume = files.volume_at(0).unwrap().id;
+        let watch = files.watch_directory(volume, mac_toolbox::Cnid(ROOT_ID)).unwrap();
+        let stale = watch.id();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_pending_watch_probe(stale, || {
+                watch.close().unwrap();
+                assert_eq!(watch_pool(system, *b"FWCH").pending, 1);
+                panic!("provider fixture transport interrupted");
+            }).unwrap();
+        }));
+        assert!(outcome.is_err());
+        assert_eq!(watch_pool(system, *b"FWCH").pending, 0);
+        let replacement = files.watch_directory(volume, mac_toolbox::Cnid(ROOT_ID)).unwrap();
+        assert_eq!(stale & 0xffff, replacement.id() & 0xffff);
+        assert_ne!(stale, replacement.id());
+    });
+}
+
 fn disk() -> Vec<u8>
 {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();

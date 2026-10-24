@@ -2,8 +2,8 @@
 
 Status: §13.1 accepted by Chloe, 2026-10-23; proceeding with §13.2. The complete
 RVA23 floor is live. Process identity/directory migration has begun; the live
-allocator, paging, owner-walk cleanup and scheduler-capacity migration remain
-pending. Source contract:
+allocator, paging, complete owner-walk cleanup and scheduler-capacity migration
+remain pending. Source contract:
 workspace `memory-app-resource-model-spec.md`; companion inputs are
 `extension-traits-shape-brief.md`, `extension-driver-system-spec.md` and Xtra's
 workspace `codebase.md`. Those private inputs remain outside this repository;
@@ -771,8 +771,8 @@ remains separately open.
 Stage-3 cleanup gate (updated by the retirement checkpoint slice below): EXIT
 used to remove Saved contexts before checking domain retirement. Saved managers
 now survive a refusal and outlive the retired thread's stack/context. One bounded
-retry occurs at a genuine stack-release checkpoint. A deliberate inspector retry
-action, unified launch rollback, all file/provider lifetime registrations and the
+retry occurs at a genuine stack-release checkpoint. Controlled retry through the ordinary teardown
+path, unified launch rollback, all file/provider lifetime registrations and the
 complete I/O death barrier remain required. Passing normal native exit and host
 provider-refusal tests does not establish those remaining resident failure paths.
 This is separate from M-D04's privileged-fault containment gate.
@@ -886,7 +886,8 @@ retire the process directory entry on the dying stack.
 
 The machine adapter counts retired-but-not-reclaimed thread records as users.
 Only a trap executing on another stack destroys their contexts/stacks. A real
-stack release schedules one resident reap checkpoint outside the scheduler lock.
+stack release schedules one resident reap checkpoint outside the scheduler lock;
+registered async-resource completion now schedules the same checkpoint too.
 Unchanged timer/input events neither scan dying domains nor retry callbacks;
 thread-stack scanning itself early-outs unless a retirement is pending. At the
 checkpoint, each stopping domain without a thread gets at most its initial
@@ -909,6 +910,48 @@ successful removal; native process campaigns assert stopped -> owner walk ->
 different-stack reclaim -> final retirement for every leaked-resource worker.
 This does not inject a privileged fault or establish every Saved-manager failure
 path in a running guest. File/document/provider lifetime registration, complete
-I/O quiescence, a deliberate inspector retry action, unified launch rollback and
+I/O quiescence, controlled retry through ordinary teardown, unified launch rollback and
 Finder restart remain stage-3 work. Physical images currently stay resident;
 this checkpoint does not authorize unmapping pages or unloading their code.
+
+
+## Directory watches join registered file lifetimes
+
+FWCH/FWST register directory watches and their per-domain backing with the
+System File Manager. The checked native/classic file boundary captures the real
+OwnerRef before the bootstrap I/O handoff; a scalar process number cannot create
+one of these objects. Provider-read-only watches remain valid no-op monitors.
+The old watch-specific process-exit hook is removed. Other file marks, transfers,
+document pins and volume/module lifetimes remain staged migrations; partial
+ledger coverage continues to say so.
+
+The shared projected store reserves both the native payload and its existing
+32-bit treaty slot until the linear removal guard is destroyed. Its projection
+index is shared with guards through an architecture-gated lock; payload cleanup
+never runs under that lock. This preserves the wire layout and generation
+history, including stale/foreign rejection, without acknowledging async work
+when an ordinary ID is invalidated.
+
+A provider probe carries a private owner/volume/directory/state lease. Its
+state is allocated once per monitored watch and reused; immutable/block-only
+watches need no probe allocation. A terminal ACK ends the provider read lease
+before releasing a retained watch guard. If metadata invalidation preceded a
+refused cleanup callback, ACK marks the retained state complete so the callback
+can finish on retry without resolving the invalid ordinary ID. Only that actual
+cleanup change schedules process reaping. File callbacks still run outside the
+owner-index lock.
+
+Probe-fault capacity is reserved before operation publication. An uncertain
+job or refused ACK retains its owned data/lease and quarantines its mount in a
+separate queue, allowing other mounts to progress. Lease completion preflights
+fallible work before mutation; malformed terminal data is a watch error, while
+uncertain completion never recycles a lifetime. Idle pumping early-outs before
+its locks until a real active probe or the next monitor deadline exists.
+
+Canonical public SDK cases cover a full projection namespace with pending
+disposal, forced reuse only after ACK, late ACK before/after failed provider
+resolution, stopped-owner refusal and transport-unwind RAII. The host fixture
+supplies transport acknowledgement; it does not prove privileged panic recovery
+under M-D04. Native conformance adds 64 reuse cycles through native and classic
+traps; process workers abandon FWCH/FWST with the other registered resources.
+Verification results belong in the milestone report after checks finish.

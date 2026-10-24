@@ -334,7 +334,7 @@ retains the process, its saved managers and image identity, and prevents writabl
 image reload for that file. Cleanup resolves resources from that retained image
 even after the subject has no scheduler thread; an unknown owner is refused
 instead of resolving Finder's resources. The full module invocation context,
-file/provider lifetime migration, explicit inspector retry and I/O death barrier
+file/provider lifetime migration, controlled teardown retry and I/O death barrier
 remain open; this checkpoint does not establish all of stage 3 or paging.
 
 The current native ThreadContext receives the directory's actual OwnerRef when

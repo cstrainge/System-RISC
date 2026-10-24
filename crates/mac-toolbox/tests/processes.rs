@@ -143,7 +143,9 @@ fn run(malformed: bool)
                              ("DRAG", 1),
                              ("DRST", 1),
                              ("DRCV", 3),
-                             ("DRVS", 1)]
+                             ("DRVS", 1),
+                             ("FWCH", 1),
+                             ("FWST", 1)]
         {
             assert!(serial.lines().any(|line| {
                                       line
@@ -155,11 +157,11 @@ fn run(malformed: bool)
         }
         assert!(serial.lines().any(|line| {
                                   line
-                                  == format!("OWNER_WALK app={app} invalidated=19 released=19 \
+                                  == format!("OWNER_WALK app={app} invalidated=21 released=21 \
                                               quarantined=0 live=0 pending=0 deferred=0 \
-                                              completed=27")
+                                              completed=29")
                               }),
-                "registered owner walk did not complete all twenty-seven leaked worker resources \
+                "registered owner walk did not complete all twenty-nine leaked worker resources \
                  for {app}:\n{serial}");
     }
     assert!(!serial.contains("OWNER_CLEANUP_QUARANTINED"),

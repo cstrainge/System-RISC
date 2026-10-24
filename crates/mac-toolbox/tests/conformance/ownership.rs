@@ -89,6 +89,7 @@ fn rejected_window(system: &System<'_>, id: WindowId, gate: mac_abi::TrapGate)
 /// real WDEF are available. Memory ownership also has host acceptance coverage.
 pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>
 {
+    file_watches(system, gate)?;
     super::worlds::malformed_targets(gate);
     let mut failure = mac_abi::definitions::DefinitionPanic::default();
     assert_eq!(unsafe {
@@ -233,6 +234,53 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
           .map_err(|error| Failure::Service(error.status()))?;
     system.log("OWNERSHIP_USERSPACE_PASS scope=40 early_returns=16 stale=passed transfer=passed\n")
           .map_err(|error| Failure::Service(error.status()))
+}
+
+fn file_watches(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>
+{
+    let files = system.files();
+    let volume = files.volume_at(0)?.id;
+    let mut previous = None;
+    for _ in 0..64
+    {
+        let watch = files.watch_directory(volume, mac_toolbox::Cnid::ROOT)?;
+        if let Some(old) = previous
+        {
+            assert_eq!(old & 0xffff, watch.id() & 0xffff, "force actual watch projection reuse");
+            assert_ne!(old, watch.id());
+            for operation in [mac_abi::files::POLL_WATCH, mac_abi::files::DISPOSE_WATCH]
+            {
+                let mut call = mac_abi::files::FileCall { operation,
+                                                          handle: old,
+                                                          ..Default::default() };
+                assert_eq!(system.client().file(&mut call, "", &mut []), Err(Error::NotFound));
+                assert_eq!(unsafe {
+                               gate(mac_abi::traps::PSTRING_FILE,
+                                    core::ptr::from_mut(&mut call).cast(),
+                                    core::mem::size_of_val(&call))
+                           },
+                           mac_abi::NOT_FOUND as i64);
+            }
+        }
+        let pool = registered_pool(system, *b"FWCH")?;
+        assert_eq!((pool.live, pool.pending), (1, 0));
+        let mut classic = mac_abi::files::FileCall { operation: mac_abi::files::POLL_WATCH,
+                                                     handle: watch.id(),
+                                                     ..Default::default() };
+        assert_eq!(unsafe {
+                       gate(mac_abi::traps::PSTRING_FILE,
+                            core::ptr::from_mut(&mut classic).cast(),
+                            core::mem::size_of_val(&classic))
+                   },
+                   mac_abi::OK as i64);
+        assert_eq!(classic.index, 0);
+        previous = Some(watch.id());
+        watch.close()?;
+    }
+    assert_eq!(registered_pool(system, *b"FWCH")?.live, 0);
+    assert_eq!(registered_pool(system, *b"FWST")?.live, 1);
+    system.log("FILE_WATCH_USERSPACE_PASS reuse=64 classic=passed ledger=passed\n")?;
+    Ok(())
 }
 
 /// Public input projections remain fresh across front-window lifetime changes.

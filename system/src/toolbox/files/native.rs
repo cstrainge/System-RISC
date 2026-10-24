@@ -453,9 +453,10 @@ unsafe fn dispatch_scan_async(owner: u64, pointer: *mut (), size: usize) -> i64
 }
 /// # Safety
 /// Request and nested buffers must be live exclusive borrows for their sizes.
-/// `owner` must be captured from trusted execution context before I/O handoff.
+/// `owner` and any watch authority must be captured from trusted execution
+/// context before I/O handoff; a scalar is insufficient for watch operations.
 pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, pointer: *mut (),
-                                    size: usize)
+                                    size: usize, watch: Option<&super::watch::Caller>)
                                     -> i64
 {
     if size == size_of::<files::IconGroupCall>()
@@ -524,7 +525,19 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
     {
         unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
     };
-    manager.request_owned(owner, call, name, output).map_or_else(|e| e, |()| OK) as i64
+    if matches!(call.operation, files::WATCH_DIRECTORY | files::POLL_WATCH | files::DISPOSE_WATCH)
+    {
+        let Some(caller) = watch
+        else
+        {
+            return ACCESS_DENIED as i64;
+        };
+        manager.watch_request(caller, call).map_or_else(i64::from, |()| OK as i64)
+    }
+    else
+    {
+        manager.request_owned(owner, call, name, output).map_or_else(|e| e, |()| OK) as i64
+    }
 }
 
 /// # Safety

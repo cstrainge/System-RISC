@@ -1,27 +1,299 @@
 //! Generation-checked watchers. Poll is a bounded RAM-only operation; provider
 //! probes own their jobs and volume leases until acknowledgement, even on exit.
 #![forbid(unsafe_code)]
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use mac_object_table::{domain::{CompletionError, ReleasedResource},
+                       projected};
+
 use super::*;
+use crate::toolbox::handles::{InvocationGate, KindLease, OwnerRef};
+pub(crate) mod lifetime;
+
+struct ProbeState
+{
+    owner:  OwnerRef,
+    active: AtomicBool
+}
+pub(crate) struct ProbeLease
+{
+    watch:     u32,
+    volume:    u32,
+    directory: u32,
+    state:     Arc<ProbeState>
+}
+impl Drop for ProbeLease
+{
+    fn drop(&mut self)
+    {
+        assert!(!self.state.active.load(Ordering::Acquire),
+                "directory probe lease dropped before terminal acknowledgement");
+    }
+}
+
+type Retiring = projected::Removed<Watch, InvocationGate>;
+fn projection_status(error: projected::Error) -> Status
+{
+    use mac_object_table::domain::PoolError;
+    match error
+    {
+        projected::Error::UnscopedProjection => BAD_ABI,
+        projected::Error::ProjectionExhausted => NO_MEMORY,
+        projected::Error::Pool(error) =>
+        {
+            match error
+            {
+                PoolError::Storage { .. }
+                | PoolError::IdentityExhausted
+                | PoolError::RegistrationUsesExhausted { .. }
+                | PoolError::GrowthRequired { .. }
+                | PoolError::GrowthLimit { .. }
+                | PoolError::Exhausted { .. } => NO_MEMORY,
+                PoolError::Stopping { .. } | PoolError::RegistrationUnavailable { .. } =>
+                {
+                    SERVICE_BUSY
+                }
+                PoolError::ForeignOwner { .. } => ACCESS_DENIED,
+                PoolError::Stale { .. } => NOT_FOUND,
+                PoolError::InvalidBoundReason
+                | PoolError::ValueStorageAttached { .. }
+                | PoolError::UnregisteredKind { .. }
+                | PoolError::SystemIndexAlreadyIssued
+                | PoolError::DuplicateKind { .. }
+                | PoolError::InvalidGrowth => BAD_ARGUMENT
+            }
+        }
+    }
+}
+pub(crate) struct Caller
+{
+    pub owner: OwnerRef,
+    pub kinds: Option<(KindLease, KindLease)>
+}
+pub(super) struct Watches
+{
+    objects:  Option<projected::Store<Watch, InvocationGate>>,
+    retiring: Vec<Retiring>
+}
+impl Watches
+{
+    pub(super) const fn new() -> Self
+    {
+        Self { objects:  None,
+               retiring: Vec::new() }
+    }
+
+    pub(super) fn prepare(&mut self, kinds: (KindLease, KindLease)) -> Result<(), Status>
+    {
+        if self.objects.is_none()
+        {
+            self.objects = Some(projected::Store::new(Kind::FileWatches, kinds.0, kinds.1)
+                .map_err(projection_status)?);
+        }
+        Ok(())
+    }
+
+    fn insert(&mut self, owner: &OwnerRef, watch: Watch) -> Result<u32, Status>
+    {
+        let live = self.iter().count();
+        let objects = self.objects.as_mut().ok_or(NOT_SUPPORTED)?;
+        // Reserve cleanup capacity before publication, never while the owner
+        // walk is retaining a provider probe's already-invalidated payload.
+        self.retiring.try_reserve(live + 1).map_err(|_| NO_MEMORY)?;
+        objects.insert(owner, watch).map_err(projection_status)
+    }
+
+    fn get_mut(&mut self, id: u32) -> Option<&mut Watch>
+    {
+        self.objects.as_mut()?.get_mut(id)
+    }
+
+    fn owner(&self, id: u32) -> Option<u64>
+    {
+        self.objects.as_ref()?.get_with_owner(id).map(|(owner, _)| owner.incarnation())
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (u32, &Watch)>
+    {
+        self.objects.iter().flat_map(|objects| objects.iter())
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Watch>
+    {
+        self.objects.iter_mut().flat_map(|objects| objects.values_mut())
+    }
+
+    fn retain(&mut self, guard: Retiring)
+    {
+        if guard.pending()
+        {
+            assert!(self.retiring.len() < self.retiring.capacity(),
+                    "watch cleanup was not reserved before publication");
+            self.retiring.push(guard);
+        }
+        else
+        {
+            drop(guard);
+        }
+    }
+
+    fn remove(&mut self, id: u32) -> Option<()>
+    {
+        let guard = self.objects.as_mut()?.remove(id)?;
+        self.retain(guard);
+        Some(())
+    }
+
+    fn release(&mut self, ticket: ReleasedResource, storage: bool) -> Result<(), CompletionError>
+    {
+        let Some(objects) = self.objects.as_mut()
+        else
+        {
+            return Err(<CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket));
+        };
+        if storage
+        {
+            return objects.release_storage(ticket);
+        }
+        let guard = objects.release(ticket)?;
+        self.retain(guard);
+        Ok(())
+    }
+
+    fn finish_released(&mut self, lease: &ProbeLease) -> bool
+    {
+        let Some(index) = self.retiring.iter().position(|guard| {
+                                                  guard.wire() == lease.watch
+            && guard.probe.as_ref().is_some_and(|state| Arc::ptr_eq(state, &lease.state))
+                                              })
+        else
+        {
+            return false;
+        };
+        drop(self.retiring.swap_remove(index));
+        true
+    }
+}
+impl Watches
+{
+    fn validate_lease<'a>(&'a self, lease: &ProbeLease) -> Result<Option<&'a Watch>, Status>
+    {
+        if !lease.state.active.load(Ordering::Acquire)
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let Some((owner, watch)) =
+            self.objects.as_ref().and_then(|objects| objects.get_with_owner(lease.watch))
+        else
+        {
+            return Ok(None);
+        };
+        if owner != lease.state.owner.owner()
+           || watch.volume != lease.volume
+           || watch.directory != lease.directory
+           || !watch.probe.as_ref().is_some_and(|state| Arc::ptr_eq(state, &lease.state))
+        {
+            return Err(BAD_ABI);
+        }
+        Ok(Some(watch))
+    }
+
+    fn acknowledge(&mut self, lease: &ProbeLease)
+    {
+        assert!(lease.state.active.swap(false, Ordering::AcqRel), "probe acknowledged twice");
+        if self.get_mut(lease.watch).is_none()
+        {
+            self.finish_released(lease);
+            #[cfg(target_arch = "riscv64")]
+            if !lease.state.owner.accepting()
+            {
+                crate::toolbox::processes::retirement::resources_released();
+            }
+        }
+    }
+}
+impl Drop for Watches
+{
+    fn drop(&mut self)
+    {
+        // Abandonment cannot acknowledge an external probe. A resident manager
+        // must stay owned through its death barrier; preserve a visible pending
+        // charge rather than recycling its lifetime if that contract is broken.
+        if !self.retiring.is_empty()
+        {
+            core::mem::forget(core::mem::take(&mut self.retiring));
+        }
+    }
+}
 
 #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
 pub(super) struct Watch
 {
-    owner:             u64,
     volume:            u32,
     directory:         u32,
     changed:           bool,
     revision:          u64,
     deferred_revision: Option<u64>,
-    dead:              bool,
-    pending:           bool,
+    probe:             Option<Arc<ProbeState>>,
     next_due:          u64,
     fingerprint:       Option<[u8; 32]>,
     error:             Option<Status>,
     last_error:        Option<Status>
 }
+impl Watch
+{
+    fn pending(&self) -> bool
+    {
+        self.probe.as_ref().is_some_and(|state| state.active.load(Ordering::Acquire))
+    }
+}
 impl Manager
 {
-    pub(super) fn watch_request(&mut self, owner: u64, call: &mut FileCall) -> Result<(), Status>
+    #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+    pub(crate) fn begin_fixture_probe(&mut self, owner: &OwnerRef, id: u32)
+                                      -> Result<ProbeLease, Status>
+    {
+        if self.watches.owner(id).ok_or(NOT_FOUND)? != owner.owner().incarnation()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let watch = self.watches.get_mut(id).ok_or(NOT_FOUND)?;
+        if watch.pending()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if watch.probe.is_none()
+        {
+            watch.probe =
+                Some(Arc::try_new(ProbeState { owner:  owner.clone(),
+                                               active: AtomicBool::new(false) }).map_err(|_| {
+                                                                                    NO_MEMORY
+                                                                                })?);
+        }
+        let state = watch.probe.as_ref().unwrap().clone();
+        state.active.store(true, Ordering::Release);
+        Ok(ProbeLease { watch: id,
+                        volume: watch.volume,
+                        directory: watch.directory,
+                        state })
+    }
+
+    #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+    pub(crate) fn finish_fixture_probe(&mut self, lease: &ProbeLease) -> Result<(), Status>
+    {
+        let _ = self.watches.validate_lease(lease)?;
+        self.watches.acknowledge(lease);
+        Ok(())
+    }
+
+    pub(crate) fn prepare_watches(&mut self, kinds: (KindLease, KindLease)) -> Result<(), Status>
+    {
+        self.watches.prepare(kinds)
+    }
+
+    pub(crate) fn watch_request(&mut self, caller: &Caller, call: &mut FileCall)
+                                -> Result<(), Status>
     {
         if call.index != 0
            || call.position != 0
@@ -39,11 +311,15 @@ impl Manager
         {
             WATCH_DIRECTORY =>
             {
+                if !caller.owner.accepting()
+                {
+                    return Err(SERVICE_BUSY);
+                }
                 if call.handle != 0 || call.cnid < ROOT_ID
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                match self.volumes.get(call.volume).ok_or(NOT_FOUND)?
+                let probes = match self.volumes.get(call.volume).ok_or(NOT_FOUND)?
                 {
                     Mounted::Block(_) =>
                     {
@@ -51,6 +327,7 @@ impl Manager
                         {
                             return Err(BAD_ARGUMENT);
                         }
+                        false
                     }
                     Mounted::Provider(m) =>
                     {
@@ -58,22 +335,29 @@ impl Manager
                         {
                             return Err(SERVICE_BUSY);
                         }
+                        m.changes
                     }
+                };
+                let probe = if probes
+                {
+                    Some(Arc::try_new(ProbeState { owner: caller.owner.clone(), active: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?)
                 }
-                call.handle = self.watches
-                                  .insert(Watch { owner,
-                                                  volume: call.volume,
-                                                  directory: call.cnid,
-                                                  changed: false,
-                                                  revision: scan::next_revision()?,
-                                                  deferred_revision: None,
-                                                  dead: false,
-                                                  pending: false,
-                                                  next_due: 0,
-                                                  fingerprint: None,
-                                                  error: None,
-                                                  last_error: None })
-                                  .map_err(|_| NO_MEMORY)?;
+                else
+                {
+                    None
+                };
+                self.prepare_watches(caller.kinds.clone().ok_or(NOT_SUPPORTED)?)?;
+                call.handle = self.watches.insert(&caller.owner,
+                                                   Watch { volume: call.volume,
+                                                           directory: call.cnid,
+                                                           changed: false,
+                                                           revision: scan::next_revision()?,
+                                                           deferred_revision: None,
+                                                           probe,
+                                                           next_due: 0,
+                                                           fingerprint: None,
+                                                           error: None,
+                                                           last_error: None })?;
                 #[cfg(target_arch = "riscv64")]
                 background::wake();
                 Ok(())
@@ -84,22 +368,18 @@ impl Manager
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                let watch =
-                    self.watches.get_mut(call.handle).filter(|w| !w.dead).ok_or(NOT_FOUND)?;
-                if watch.owner != owner
+                if self.watches.owner(call.handle).ok_or(NOT_FOUND)?
+                   != caller.owner.owner().incarnation()
                 {
                     return Err(ACCESS_DENIED);
                 }
                 if call.operation == DISPOSE_WATCH
                 {
-                    watch.dead = true;
-                    if !watch.pending
-                    {
-                        self.watches.remove(call.handle);
-                    }
+                    self.watches.remove(call.handle).ok_or(NOT_FOUND)?;
                 }
                 else
                 {
+                    let watch = self.watches.get_mut(call.handle).ok_or(NOT_FOUND)?;
                     if let Some(error) = watch.error.take()
                     {
                         return Err(error);
@@ -154,9 +434,7 @@ impl Manager
         let held = self.transfer_holds_notices(volume);
         for watch in self.watches.values_mut()
         {
-            if !watch.dead
-               && watch.volume == volume
-               && (directory == 0 || watch.directory == directory)
+            if watch.volume == volume && (directory == 0 || watch.directory == directory)
             {
                 if held
                 {
@@ -184,9 +462,7 @@ impl Manager
         };
         for watch in self.watches.values_mut()
         {
-            if !watch.dead
-               && watch.volume == volume
-               && mark.parents.binary_search(&watch.directory).is_ok()
+            if watch.volume == volume && mark.parents.binary_search(&watch.directory).is_ok()
             {
                 if held
                 {
@@ -200,26 +476,14 @@ impl Manager
             }
         }
     }
+}
 
-    pub(super) fn close_watches(&mut self, owner: u64)
+impl lifetime::WatchHost for Manager
+{
+    fn release_file_watch(&mut self, ticket: ReleasedResource, storage: bool)
+                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
-        for watch in self.watches.values_mut()
-        {
-            if watch.owner == owner
-            {
-                watch.dead = true;
-            }
-        }
-        loop
-        {
-            let next = self.watches.iter().find_map(|(id, w)| (w.dead && !w.pending).then_some(id));
-            let Some(id) = next
-            else
-            {
-                break;
-            };
-            self.watches.remove(id);
-        }
+        self.watches.release(ticket, storage).map_err(Into::into)
     }
 }
 
@@ -244,9 +508,8 @@ mod background
     }
     struct Probe
     {
-        watch:  u32,
-        volume: u32,
-        work:   Work
+        lease: ProbeLease,
+        work:  Work
     }
     static RUNNING: AtomicBool = AtomicBool::new(false);
     struct Running;
@@ -258,7 +521,24 @@ mod background
         }
     }
     static ACTIVE: Spinlock<Option<Probe>> = Spinlock::new(None);
+    static HAS_ACTIVE: AtomicBool = AtomicBool::new(false);
+    // Faults retain their job/ACK and volume lease without starving unrelated
+    // mounts. Capacity is reserved before starting each provider operation.
+    static FAULTED: Spinlock<Vec<Probe>> = Spinlock::new(Vec::new());
     static NEXT_CHECK: AtomicU64 = AtomicU64::new(0);
+    fn park(probe: Probe)
+    {
+        *ACTIVE.lock() = Some(probe);
+        HAS_ACTIVE.store(true, Ordering::Release);
+    }
+    fn retain_fault(probe: Probe)
+    {
+        let mut retained = FAULTED.lock();
+        assert!(retained.len() < retained.capacity(),
+                "probe fault capacity was not reserved before submission");
+        retained.push(probe);
+    }
+
     pub(super) fn wake()
     {
         NEXT_CHECK.store(0, Ordering::Release);
@@ -269,10 +549,10 @@ mod background
 
     impl Manager
     {
-        fn next_probe(&mut self, now: u64) -> Result<Option<(u32, u32, u32, u32)>, Status>
+        fn next_probe(&mut self, now: u64) -> Result<Option<(ProbeLease, u32)>, Status>
         {
             let next = self.watches.iter().find_map(|(id,w)| {
-                if w.dead || w.pending || w.next_due > now || self.transfer_holds_notices(w.volume)
+                if w.pending() || w.next_due > now || self.transfer_holds_notices(w.volume)
                     || self.groups.iter().any(|(_, group)| group.volume == w.volume)
                 { return None; }
                 let Mounted::Provider(m) = self.volumes.get(w.volume)? else { return None; };
@@ -283,17 +563,50 @@ mod background
             {
                 return Ok(None);
             };
-            let provider = self.begin_provider_read(volume)?;
-            let w = self.watches.get_mut(id).unwrap();
-            w.pending = true;
+            if FAULTED.lock().try_reserve(1).is_err()
+            {
+                let watch = self.watches.get_mut(id).ok_or(NOT_FOUND)?;
+                if watch.last_error != Some(NO_MEMORY)
+                {
+                    watch.error = Some(NO_MEMORY);
+                }
+                watch.last_error = Some(NO_MEMORY);
+                watch.next_due = now.saturating_add(INTERVAL);
+                return Err(NO_MEMORY);
+            }
+            let state =
+                self.watches.get_mut(id).ok_or(NOT_FOUND)?.probe.as_ref().ok_or(BAD_ABI)?.clone();
+            let provider = match self.begin_provider_read(volume)
+            {
+                Ok(provider) => provider,
+                Err(error) =>
+                {
+                    let watch = self.watches.get_mut(id).ok_or(NOT_FOUND)?;
+                    watch.next_due = now.saturating_add(INTERVAL);
+                    if error != SERVICE_BUSY
+                    {
+                        if watch.last_error != Some(error)
+                        {
+                            watch.error = Some(error);
+                        }
+                        watch.last_error = Some(error);
+                    }
+                    return Err(error);
+                }
+            };
+            state.active.store(true, Ordering::Release);
+            let w = self.watches.get_mut(id).expect("exclusively borrowed admitted watch");
             w.next_due = now.saturating_add(INTERVAL);
-            Ok(Some((id, provider, volume, directory)))
+            Ok(Some((ProbeLease { watch: id,
+                                  volume,
+                                  directory,
+                                  state },
+                     provider)))
         }
 
-        fn finish_probe(&mut self, id: u32, volume: u32, result: Result<&[u8], Status>)
+        fn finish_probe(&mut self, lease: &ProbeLease, result: Result<&[u8], Status>)
                         -> Result<(), Status>
         {
-            self.end_provider_read(volume)?;
             let result = result.and_then(|bytes| {
                                    if bytes.len() != 33 || bytes[0] > 1
                                    {
@@ -302,59 +615,88 @@ mod background
                                    Ok((bytes[0] != 0,
                                        <[u8; 32]>::try_from(&bytes[1..]).map_err(|_| BAD_ABI)?))
                                });
-            let held = self.transfer_holds_notices(volume);
-            let w = self.watches.get_mut(id).ok_or(NOT_FOUND)?;
-            w.pending = false;
-            if w.dead
+            let changed = self.watches.validate_lease(lease)?.is_some_and(|watch| {
+                matches!(result, Ok((reset, stamp)) if reset || watch.fingerprint.is_some_and(|previous| previous != stamp))
+            });
+            let held = changed && self.transfer_holds_notices(lease.volume);
+            // Every fallible preflight precedes lease completion and watch
+            // mutation. A refused acknowledgement can therefore stay retained.
+            let revisions =
+                if changed { Some((scan::next_revision()?, scan::next_revision()?)) } else { None };
+            self.provider_mount(lease.volume)?;
+            self.end_provider_read(lease.volume)?;
+            self.watches.acknowledge(lease);
+            let Some(watch) = self.watches.get_mut(lease.watch)
+            else
             {
-                self.watches.remove(id);
+                // Metadata may have been invalidated before its callback could
+                // enter Files. The retained state also lets that callback see
+                // the terminal ACK on a later retry, without an ordinary ID.
                 return Ok(());
-            }
+            };
             match result
             {
-                Ok((reset, stamp)) =>
+                Ok((_, stamp)) =>
                 {
-                    let changed = reset || w.fingerprint.is_some_and(|previous| previous != stamp);
-                    w.fingerprint = Some(stamp);
-                    w.last_error = None;
-                    if changed
+                    watch.fingerprint = Some(stamp);
+                    watch.last_error = None;
+                    if let Some((revision, mount_revision)) = revisions
                     {
-                        let revision = scan::next_revision()?;
                         if held
                         {
-                            w.deferred_revision = Some(revision);
+                            watch.deferred_revision = Some(revision);
                         }
                         else
                         {
-                            w.changed = true;
-                            w.revision = revision;
+                            watch.changed = true;
+                            watch.revision = revision;
                         }
-                        self.provider_mount(volume)?.revision = scan::next_revision()?;
+                        self.provider_mount(lease.volume)
+                            .expect("preflighted provider lease")
+                            .revision = mount_revision;
                     }
                 }
-                // Contention is normal when a foreground writer owns the provider.
                 Err(SERVICE_BUSY) => (),
                 Err(error) =>
                 {
-                    if w.last_error != Some(error)
+                    if watch.last_error != Some(error)
                     {
-                        w.error = Some(error);
+                        watch.error = Some(error);
                     }
-                    w.last_error = Some(error);
+                    watch.last_error = Some(error);
                 }
+            }
+            Ok(())
+        }
+
+        fn fail_probe(&mut self, lease: &ProbeLease) -> Result<(), Status>
+        {
+            self.quarantine_provider_mount(lease.volume)?;
+            if let Some(watch) = self.watches.get_mut(lease.watch)
+            {
+                if watch.last_error != Some(ROLLBACK_FAILED)
+                {
+                    watch.error = Some(ROLLBACK_FAILED);
+                }
+                watch.last_error = Some(ROLLBACK_FAILED);
             }
             Ok(())
         }
     }
     pub(crate) fn pump()
     {
+        let now = crate::platform::ticks();
+        if !HAS_ACTIVE.load(Ordering::Acquire) && now < NEXT_CHECK.load(Ordering::Acquire)
+        {
+            return;
+        }
         if RUNNING.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err()
         {
             return;
         }
         let _running = Running;
-        let now = crate::platform::ticks();
         let active = ACTIVE.lock().take();
+        HAS_ACTIVE.store(false, Ordering::Release);
         if active.is_none() && now < NEXT_CHECK.load(Ordering::Acquire)
         {
             return;
@@ -382,10 +724,14 @@ mod background
                         {
                             // No terminal acknowledgement: keep all ownership and
                             // quarantine the mount rather than recycling its IDs.
-                            let _ = crate::kernel::with_files(|m| {
-                                m.quarantine_provider_mount(probe.volume)
-                            });
-                            serial!("FILE_WATCH_JOB_ERROR status={}", error);
+                            let _ = crate::kernel::with_files(|m| m.fail_probe(&probe.lease));
+                            serial!("FILE_WATCH_JOB_ERROR owner={} watch={} volume={} \
+                                     directory={} status={error}; job and lifetime retained, \
+                                     mount quarantined",
+                                    probe.lease.state.owner.owner().incarnation(),
+                                    probe.lease.watch,
+                                    probe.lease.volume,
+                                    probe.lease.directory);
                             Work::Faulted { _job: job }
                         }
                     }
@@ -398,25 +744,41 @@ mod background
                 {
                     // Access contention must not discard a consumed job result.
                     // Keep those owned bytes until the manager accepts the ACK.
-                    if crate::kernel::with_files(|m| {
-                           m.finish_probe(probe.watch,
-                                          probe.volume,
-                                          result.as_deref().map_err(|error| *error))
-                       }).is_err()
+                    match crate::kernel::with_files(|m| {
+                              m.finish_probe(&probe.lease,
+                                             result.as_deref().map_err(|error| *error))
+                          })
                     {
-                        *ACTIVE.lock() = Some(probe);
-                        return;
+                        Ok(Ok(())) => (),
+                        Err(_) =>
+                        {
+                            park(probe);
+                            return;
+                        }
+                        Ok(Err(error)) =>
+                        {
+                            let _ = crate::kernel::with_files(|m| m.fail_probe(&probe.lease));
+                            serial!("FILE_WATCH_ACK_ERROR watch={} volume={} status={error}; \
+                                     acknowledgement and lifetime retained, mount quarantined",
+                                    probe.lease.watch,
+                                    probe.lease.volume);
+                            retain_fault(probe);
+                        }
                     }
                 }
-                Work::Polling(_) | Work::Faulted { .. } =>
+                Work::Polling(_) =>
                 {
-                    *ACTIVE.lock() = Some(probe);
+                    park(probe);
                     return;
+                }
+                Work::Faulted { .. } =>
+                {
+                    retain_fault(probe);
                 }
             }
         }
         let next = crate::kernel::with_files(|m| m.next_probe(now));
-        let Ok(Ok(Some((watch, provider, volume, node)))) = next
+        let Ok(Ok(Some((lease, provider)))) = next
         else
         {
             NEXT_CHECK.store(now.saturating_add(INTERVAL), Ordering::Release);
@@ -424,16 +786,15 @@ mod background
         };
         let work = match provider::runtime::submit_args(provider,
                                                         Operation::CheckDirectory,
-                                                        Arguments { volume,
-                                                                    node,
+                                                        Arguments { volume: lease.volume,
+                                                                    node: lease.directory,
                                                                     ..Default::default() })
         {
             Ok(job) => Work::Polling(job),
             Err(error) => Work::Complete(Err(error))
         };
-        *ACTIVE.lock() = Some(Probe { watch,
-                                      volume,
-                                      work });
+        park(Probe { lease,
+                     work });
     }
 }
 #[cfg(target_arch = "riscv64")]

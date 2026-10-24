@@ -1,9 +1,12 @@
 //! Existing 32-bit treaty namespaces projected onto registered owner storage.
 //! The projection is an index, never a second payload or ownership authority.
+use alloc::sync::Arc;
 use core::{fmt, ops::Deref};
 
+use spinning_top::Spinlock;
+
 use crate::{Kind, Table,
-            domain::{CompletionError, PoolError, ReleasedResource},
+            domain::{CompletionError, DomainId, PoolError, ReleasedResource},
             registry::KindLease,
             shared::{InvocationGate, OwnerRef},
             store};
@@ -51,9 +54,22 @@ struct Entry<T>
     wire:  u32,
     value: T
 }
+struct Projection
+{
+    entries: Spinlock<Table<u64>>
+}
+impl Projection
+{
+    fn access<G: InvocationGate, R>(&self, operation: impl FnOnce(&mut Table<u64>) -> R) -> R
+    {
+        // Guards can outlive their store. The architecture gate still encloses
+        // every access; no payload destructor or callback runs under this lock.
+        G::run(|| operation(&mut self.entries.lock()))
+    }
+}
 pub struct Store<T, G: InvocationGate>
 {
-    projection: Table<u64>,
+    projection: Arc<Projection>,
     values:     store::Store<Entry<T>, G>
 }
 impl<T, G: InvocationGate> Store<T, G>
@@ -66,7 +82,8 @@ impl<T, G: InvocationGate> Store<T, G>
         {
             return Err(Error::UnscopedProjection);
         }
-        Ok(Self { projection: Table::new(wire),
+        Ok(Self { projection: Arc::try_new(Projection { entries: Spinlock::new(Table::new(wire)) })
+                                  .map_err(|_| Error::ProjectionExhausted)?,
                   values:     store::Store::owned(payload, backing).map_err(Error::Pool)? })
     }
 
@@ -78,7 +95,9 @@ impl<T, G: InvocationGate> Store<T, G>
         }
         // No partially admitted object can be reached through an ordinary ID.
         // Generation history is consumed even when later publication refuses.
-        let wire = self.projection.insert(0).map_err(|_| Error::ProjectionExhausted)?;
+        let wire = self.projection
+                       .access::<G, _>(|index| index.insert(0))
+                       .map_err(|_| Error::ProjectionExhausted)?;
         let native = match self.values.insert(owner,
                                               Entry { wire,
                                                       value })
@@ -86,24 +105,35 @@ impl<T, G: InvocationGate> Store<T, G>
             Ok(id) => id,
             Err(error) =>
             {
-                self.projection.remove(wire);
+                self.projection.access::<G, _>(|index| index.remove(wire));
                 return Err(Error::Pool(error));
             }
         };
-        *self.projection.get_mut(wire).expect("exclusive provisional projection") = native;
+        self.projection.access::<G, _>(|index| {
+                           *index.get_mut(wire).expect("exclusive provisional projection") = native;
+                       });
         Ok(wire)
     }
 
     pub fn get(&self, wire: u32) -> Option<&T>
     {
-        let entry = self.values.get(*self.projection.get(wire)?)?;
+        let native = self.projection.access::<G, _>(|index| index.get(wire).copied())?;
+        let entry = self.values.get(native)?;
         (entry.wire == wire).then_some(&entry.value)
     }
 
     pub fn get_mut(&mut self, wire: u32) -> Option<&mut T>
     {
-        let entry = self.values.get_mut(*self.projection.get(wire)?)?;
+        let native = self.projection.access::<G, _>(|index| index.get(wire).copied())?;
+        let entry = self.values.get_mut(native)?;
         (entry.wire == wire).then_some(&mut entry.value)
+    }
+
+    pub fn get_with_owner(&self, wire: u32) -> Option<(DomainId, &T)>
+    {
+        let native = self.projection.access::<G, _>(|index| index.get(wire).copied())?;
+        let (owner, entry) = self.values.get_with_owner(native)?;
+        (entry.wire == wire).then_some((owner, &entry.value))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (u32, &T)>
@@ -111,18 +141,24 @@ impl<T, G: InvocationGate> Store<T, G>
         self.values.iter().map(|(_, entry)| (entry.wire, &entry.value))
     }
 
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T>
+    {
+        self.values.values_mut().map(|entry| &mut entry.value)
+    }
+
     pub fn remove(&mut self, wire: u32) -> Option<Removed<T, G>>
     {
-        let record = self.values.remove(*self.projection.get(wire)?)?;
-        self.projection.remove(record.wire);
-        Some(Removed(record))
+        let native = self.projection.access::<G, _>(|index| index.get(wire).copied())?;
+        let record = self.values.remove(native)?;
+        Some(Removed { record:     Some(record),
+                       projection: self.projection.clone() })
     }
 
     pub fn release(&mut self, ticket: ReleasedResource) -> Result<Removed<T, G>, CompletionError>
     {
         let record = self.values.release(ticket)?;
-        self.projection.remove(record.wire);
-        Ok(Removed(record))
+        Ok(Removed { record:     Some(record),
+                     projection: self.projection.clone() })
     }
 
     pub fn release_storage(&mut self, ticket: ReleasedResource) -> Result<(), CompletionError>
@@ -131,14 +167,19 @@ impl<T, G: InvocationGate> Store<T, G>
     }
 }
 
-/// Linear cleanup guard: the payload stays retained until its destructor runs.
+/// Linear cleanup guard: payload and projection slot stay retained until its
+/// destructor runs. An invalidated ordinary ID cannot access this payload.
 /// Like the native store's guard, this deliberately permits no owned extraction.
-pub struct Removed<T, G: InvocationGate>(store::Removed<Entry<T>, G>);
+pub struct Removed<T, G: InvocationGate>
+{
+    record:     Option<store::Removed<Entry<T>, G>>,
+    projection: Arc<Projection>
+}
 impl<T, G: InvocationGate> Removed<T, G>
 {
     pub fn wire(&self) -> u32
     {
-        self.0.wire
+        self.record.as_ref().expect("live projected removal guard").wire
     }
 }
 impl<T, G: InvocationGate> Deref for Removed<T, G>
@@ -147,6 +188,18 @@ impl<T, G: InvocationGate> Deref for Removed<T, G>
 
     fn deref(&self) -> &T
     {
-        &self.0.value
+        &self.record.as_ref().expect("live projected removal guard").value
+    }
+}
+impl<T, G: InvocationGate> Drop for Removed<T, G>
+{
+    fn drop(&mut self)
+    {
+        let record = self.record.take().expect("live projected removal guard");
+        let wire = record.wire;
+        // Drop payload and acknowledge native cleanup before releasing the
+        // treaty slot. A failed destructor must never make that slot reusable.
+        drop(record);
+        self.projection.access::<G, _>(|index| index.remove(wire));
     }
 }

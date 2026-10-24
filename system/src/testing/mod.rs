@@ -114,6 +114,14 @@ impl Default for Session
             crate::toolbox::handles::cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseEditors)).unwrap();
         registry.register(&registrar, crate::toolbox::textedit::lifetime::specification(true),
             crate::toolbox::handles::cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseStorage)).unwrap();
+        registry.register(&registrar,
+                          crate::toolbox::files::watch::lifetime::specification(false),
+                          crate::toolbox::files::watch::lifetime::ReleaseWatches)
+                .unwrap();
+        registry.register(&registrar,
+                          crate::toolbox::files::watch::lifetime::specification(true),
+                          crate::toolbox::files::watch::lifetime::ReleaseStorage)
+                .unwrap();
         use crate::toolbox::drag::lifetime::{Registration, ReleaseKind};
         for kind in [Registration::Sessions,
                      Registration::SessionStorage,
@@ -372,14 +380,33 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
         }
         FILE =>
         {
+            let watch_operation = if size == size_of::<mac_abi::files::FileCall>() {
+                match unsafe { request::<mac_abi::files::FileCall>(pointer, size) } {
+                    Ok(call) if matches!(call.operation, mac_abi::files::WATCH_DIRECTORY | mac_abi::files::POLL_WATCH | mac_abi::files::DISPOSE_WATCH) => Some(call.operation),
+                    Ok(_) => None,
+                    Err(status) => return status as i64
+                }
+            } else { None };
+            let authority = if watch_operation.is_some() {
+                match inspection::caller_ledger(files::current_owner()) {
+                    Ok(owner) => Some(owner), Err(status) => return status as i64
+                }
+            } else { None };
             SESSION.with(|slot| {
                        let mut session = slot.borrow_mut();
                        let session = session.as_mut().expect("session");
+                       let watch = authority.map(|owner| crate::toolbox::files::watch::Caller {
+                           owner,
+                           kinds: if watch_operation == Some(mac_abi::files::WATCH_DIRECTORY) {
+                               Some((session.registry.get(crate::toolbox::handles::KindCode(*b"FWCH")).unwrap(),
+                                     session.registry.get(crate::toolbox::handles::KindCode(*b"FWST")).unwrap()))
+                           } else { None }
+                       });
                        unsafe {
                            crate::toolbox::files::native::dispatch_owned(&mut session.files,
                                                                          files::current_owner(),
                                                                          pointer,
-                                                                         size)
+                                                                         size, watch.as_ref())
                        }
                    })
         }
@@ -971,5 +998,16 @@ impl crate::toolbox::memory::lifetime::MemoryHost for Session
                       -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
         self.memory.release(ticket, storage).map_err(Into::into)
+    }
+}
+
+impl crate::toolbox::files::watch::lifetime::WatchHost for Session
+{
+    fn release_file_watch(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                          storage: bool)
+                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        crate::toolbox::files::watch::lifetime::WatchHost::release_file_watch(&mut self.files,
+                                                                              ticket, storage)
     }
 }

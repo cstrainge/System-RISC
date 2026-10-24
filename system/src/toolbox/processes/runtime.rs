@@ -728,7 +728,7 @@ impl Desktop
             {
                 continue;
             };
-            // One bounded retry per genuine stack-release checkpoint. Failed
+            // One bounded retry per genuine reclamation checkpoint. Failed
             // tickets and saved managers survive; input/timer ticks do not
             // repeatedly retry a permanently refusing definition.
             if ledger.summary().quarantined != 0
@@ -792,6 +792,24 @@ impl Desktop
             // in this entry. No pending payload/provider pin is abandoned.
             self.locals.retain(|state| state.id != owner);
             serial!("PROCESS_EXIT app={owner}");
+        }
+    }
+}
+
+impl crate::toolbox::files::watch::lifetime::WatchHost for Desktop
+{
+    fn release_file_watch(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                          storage: bool)
+                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        let mut retained = Some(ticket);
+        match crate::kernel::with_files(|files| {
+            crate::toolbox::files::watch::lifetime::WatchHost::release_file_watch(files,
+                retained.take().expect("unique watch cleanup ticket"), storage)
+        }) {
+            Ok(result) => result,
+            Err(error) => Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(
+                retained.expect("unconsumed watch cleanup ticket"), error))
         }
     }
 }
