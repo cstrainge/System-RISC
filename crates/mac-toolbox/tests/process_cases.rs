@@ -635,6 +635,64 @@ fn copies(system: &System<'_>, volume: mac_toolbox::VolumeId, original: Cnid, pa
     Ok(())
 }
 
+fn standard_file_lifecycle(system: &System<'_>) -> Result<()>
+{
+    use mac_toolbox::standard_file::{Location, Progress, TypeFilter};
+    let location = Location { volume:    system.files().volume_at(0)?.id,
+                              directory: Cnid::ROOT };
+    let layout =
+        system.resources().system().get(mac_toolbox::ResourceKey::from_bytes(*b"DLOG", -6042))?;
+    if layout.size() == 0
+    {
+        for _ in 0..2
+        {
+            let error =
+                system.standard_file()
+                      .begin_get(location, TypeFilter::All)
+                      .err()
+                      .ok_or(Failure::Contract("malformed System DLOG unexpectedly opened"))?;
+            require(error == mac_toolbox::Error::BadArgument,
+                    "failed Open initialization stranded an active dialog instead of allowing \
+                     retry")?;
+            let mut log = crate::LogBuffer::new();
+            use core::fmt::Write;
+            let _ = writeln!(log, "PROCESS_STANDARD_FILE_REFUSAL DLOG -6042 error={error}");
+            system.log(log.text())?;
+        }
+        system.log("PROCESS_STANDARD_FILE_RAII_PASS mode=invalid-resource retry=passed\n")?;
+        return Ok(());
+    }
+    let open = system.standard_file().begin_get(location, TypeFilter::All)?;
+    require(matches!(open.poll()?, Progress::Pending),
+            "System Open dialog did not remain pending")?;
+    drop(open);
+    let save = system.standard_file().begin_put(location, "Save as:", "Worker document")?;
+    require(matches!(save.poll()?, Progress::Pending),
+            "System Save As dialog did not remain pending")?;
+    drop(save);
+    // Native wire requests are also public SDK calls. A malformed Dispose may
+    // not close a valid window before it is rejected.
+    use mac_toolbox::abi::standard_file as wire;
+    let mut call = wire::StandardFileCall { volume: location.volume.0,
+                                            directory: location.directory.0,
+                                            ..Default::default() };
+    system.client().standard_file(&mut call)?;
+    let window = system.windows().front()?.ok_or(Failure::Contract("Open window missing"))?;
+    call.operation = wire::DISPOSE;
+    call.reserved[0] = 1;
+    require(system.client().standard_file(&mut call) == Err(mac_toolbox::Error::BadArgument),
+            "malformed Dispose was accepted")?;
+    system.windows().info(window)?;
+    call.reserved = [0; 2];
+    call.operation = wire::POLL;
+    system.client().standard_file(&mut call)?;
+    require(call.state == wire::PENDING, "rejected Dispose changed dialog state")?;
+    call.operation = wire::DISPOSE;
+    system.client().standard_file(&mut call)?;
+    system.log("PROCESS_STANDARD_FILE_RAII_PASS mode=normal reserved=passed\n")?;
+    Ok(())
+}
+
 pub fn worker(system: &System<'_>) -> Result<()>
 {
     static ENTERED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -672,6 +730,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
                                                                         count: 20,
                                                                         ..Default::default() })?;
     let mut announcement = [0; 64];
+    standard_file_lifecycle(system)?;
     let parent_window = parse_window(system.scrap().text(&mut announcement)?, "process-observer-window:")
         .ok_or(Failure::Contract("observer window publication"))?;
     synthetic_private(system, parent_window, WORKER_SYNTHETIC)?;

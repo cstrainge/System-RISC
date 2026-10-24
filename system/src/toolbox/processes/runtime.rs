@@ -656,7 +656,6 @@ impl Desktop
                 }
                 let file = self.processes.snapshot(caller)?;
                 self.enter(caller);
-                self.standard_file.remove_owner(caller);
                 let ledger = self.processes.ledger(caller)?;
                 let walk = mac_object_table::walk::drain(self, &ledger,
                     |_, key| crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))

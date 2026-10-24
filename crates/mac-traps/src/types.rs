@@ -26,7 +26,7 @@ identity!(FileHandle, u32);
 identity!(FileWriteHandle, u32);
 identity!(ResourceFileHandle, u32);
 identity!(MemoryHandleId, u32);
-identity!(DialogId, u32);
+identity!(DialogId, u64);
 impl Cnid
 {
     pub const ROOT: Self = Self(mac_abi::files::ROOT_ID);

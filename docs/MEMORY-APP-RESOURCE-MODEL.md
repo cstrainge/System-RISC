@@ -263,6 +263,7 @@ ratification after measurement; no magic emergency buffer sizes are chosen now.
 | M-D08 | Port/copy definition protocol vs current raw surface/DefinitionCall ABI | Introduce host-owned port operations and bounded copies/managed buffers; remove raw app pointer access before privilege gate |
 | M-D09 | Synchronous participant shape brief vs queued/deadline participants in extension spec §5.5 | **Ratified, Chloe 2026-10-23.** Synchronous participants stand; the earlier queued/deadline rule is superseded. Observers remain queued on their own execution context |
 | M-D10 | Registered payload dispatch alone did not release empty per-owner value-array/cache backing | Closed for migrated stores: CSTA/SBST register backing lifetimes; the last child completes a deferred backing release, including after quarantine retry. The explicit control pruning hook is removed. Other manager saved-state slots and EXIT cleanup remain stage-2/3 migration work |
+| M-D11 | Hard-bound capacity reasons are currently resident `&'static str` values, while module-sourced policies and empty pool history must survive provider unload | Required before module registration admission: retain kernel-owned bounded reason data in pool history. Never cast module text to a static reference, leak a per-registration string, or leave history pointing into unloaded code. Current resident literals are valid; this is module-phase migration work |
 
 Chloe accepted M-D01, M-D03, M-D06, M-D07 and M-D08 as migration work as
 classified above and authorized §13.2 staging on 2026-10-23. The remaining
@@ -554,7 +555,21 @@ reported separately from completed releases; final pending counts govern
 retirement. No Control/Scroll Box Manager finish-owner hook remains (M-D10).
 Scroll boxes use full-width native IDs and fallible per-owner growth; the old
 96-entry table is removed. Raster usage totals change with allocations rather
-than being recomputed during presentation. Other managers, the rest
+than being recomputed during presentation.
+
+`Store::owned_state` also retains typed saved manager state under the backing's
+registered lifetime. Its fallible constructor and destructor run outside owner
+locks. Reads validate the backing/provider lifetime; an absent owner returns
+without a provider lock. Failed state destruction keeps its backing pending and
+provider pinned (host unwind evidence only, under M-D04).
+
+Standard File uses this state for its active-dialog index, avoiding per-event
+enumeration of completed dialogs. SFDL/SFST replace its old eight-entry table and
+EXIT cleanup line, with native u64 identities and per-owner fallible growth. An
+initialization guard owns the record through layout, window, font and drawing
+setup; every early refusal closes its temporary windows and disposes the record.
+Reserved request fields are validated before a Dispose can close anything.
+Other managers, the rest
 of the old EXIT roll call, module-owned KREG teardown and document aliases still
 require migration. Do not call this complete stage-3 cleanup or zero leaks across
 all Toolbox kinds. An abandoned busy registry retains its provider/root pending

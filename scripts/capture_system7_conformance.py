@@ -22,7 +22,7 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def private_disk(output, fixture_name='conformance', *, features=()):
+def private_disk(output, fixture_name='conformance', *, features=(), package_arguments=()):
     # Own the whole capture before its disk exists. The VM's pid is too late:
     # other fixtures may still be compiling while this prepared disk is live.
     (output / 'pid').write_text(str(os.getpid()))
@@ -39,7 +39,7 @@ def private_disk(output, fixture_name='conformance', *, features=()):
     packaged = output / 'package'
     subprocess.run(['cargo', 'run', '--manifest-path', str(manifest), '--locked',
                     '--bin', 'package', '--target-dir', str(target), '--', str(binary),
-                    str(packaged)], cwd=vm.ROOT, check=True)
+                    str(packaged), *map(str, package_arguments)], cwd=vm.ROOT, check=True)
     private = output / 'dist'
     private.mkdir()
     raw = private / 'conformance.raw'

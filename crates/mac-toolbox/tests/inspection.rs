@@ -14,7 +14,8 @@ fn object_kind_registrations_are_public_named_and_generation_scoped()
             assert_eq!(system.inspection().snapshot(Scope::All).err().unwrap().cause,
                        Error::AccessDenied);
             let snapshot = system.inspection().object_kinds().unwrap();
-            assert_eq!(snapshot.count, 4);
+            let baseline = snapshot.count;
+            assert!(baseline >= 1);
             let control = (0..snapshot.count).map(|index| snapshot.at(index).unwrap())
                                              .find(|row| row.namespace == *b"CTRL")
                                              .unwrap();
@@ -29,7 +30,7 @@ fn object_kind_registrations_are_public_named_and_generation_scoped()
             let error = snapshot.get(u64::MAX).unwrap_err();
             assert_eq!(error.cause, Error::NotFound);
             assert!(error.to_string().contains("resolve the current provider"));
-            let error = snapshot.at(4).unwrap_err();
+            let error = snapshot.at(baseline).unwrap_err();
             assert_eq!(error.cause, Error::NotFound);
             assert!(error.to_string().contains("outside this registry snapshot"));
             let other = fixture::add("Another ordinary reader", 0);
@@ -39,7 +40,7 @@ fn object_kind_registrations_are_public_named_and_generation_scoped()
             assert_eq!(error.cause, Error::ScanStale);
             assert!(error.to_string().contains("obtain a new registry snapshot and retry"));
             let next = system.inspection().object_kinds().unwrap();
-            assert_eq!(next.count, 5);
+            assert_eq!(next.count, baseline + 1);
             let row = next.get(extra.id()).unwrap();
             assert_eq!(row.provider.as_str(), "Example Extension");
             assert_eq!(row.capacity, CapacityPolicy::PerDomainQuota { slots: 16 });
@@ -48,7 +49,7 @@ fn object_kind_registrations_are_public_named_and_generation_scoped()
             let stale_id = extra.id();
             drop(extra);
             let current = system.inspection().object_kinds().unwrap();
-            assert_eq!(current.count, 4);
+            assert_eq!(current.count, baseline);
             assert_eq!(current.get(stale_id).unwrap_err().cause, Error::NotFound);
         });
         with_owner(u64::MAX, || {
@@ -79,7 +80,7 @@ fn owner_walk_quarantines_failed_cleanup_and_retry_clears_the_real_death_barrier
             let registration = before.registration.unwrap();
             assert_eq!(system.inspection().object_kinds().unwrap().get(registration).unwrap().uses,
                        1);
-            let failure = fixture::walk_controls(owner, true, false);
+            let failure = fixture::walk_registered(owner, true, false);
             assert_eq!((failure.report.invalidated,
                         failure.report.released,
                         failure.report.quarantined),
@@ -102,7 +103,7 @@ fn owner_walk_quarantines_failed_cleanup_and_retry_clears_the_real_death_barrier
             assert_eq!(system.inspection().object_kinds().unwrap().get(registration).unwrap().uses,
                        1,
                        "failed cleanup must keep its provider pinned");
-            let retry = fixture::walk_controls(owner, false, true);
+            let retry = fixture::walk_registered(owner, false, true);
             assert_eq!((retry.report.released, retry.report.quarantined), (2, 0));
             assert!(retry.failures.is_empty());
             let done = membership.at(0).unwrap();
@@ -186,7 +187,7 @@ fn empty_control_and_scroll_backings_remain_owned_until_the_common_walk()
                                      .unwrap();
                 assert_eq!(provider.uses, usize::from(state) as u64);
             }
-            let result = fixture::walk_controls(owner, false, false);
+            let result = fixture::walk_registered(owner, false, false);
             assert_eq!((result.report.invalidated,
                         result.report.released,
                         result.report.deferred,

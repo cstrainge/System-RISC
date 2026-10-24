@@ -76,6 +76,14 @@ impl Default for Session
                               crate::toolbox::controls::scrollbox::specification(true),
                               crate::toolbox::controls::scrollbox::ReleaseStorage)
                     .unwrap();
+        let dialogs = registry.register(&registrar,
+                                        crate::toolbox::standard_file::specification(false),
+                                        crate::toolbox::standard_file::ReleaseDialogs)
+                              .unwrap();
+        let dialog_storage = registry.register(&registrar,
+                                               crate::toolbox::standard_file::specification(true),
+                                               crate::toolbox::standard_file::ReleaseStorage)
+                                     .unwrap();
         Self { registry,
                inspection: inspection::Domains::new(),
                drag: Default::default(),
@@ -84,7 +92,7 @@ impl Default for Session
                    RefCell::new(crate::toolbox::controls::objects::Manager::new((controls,
                                                                                  storage)).unwrap()),
                scroll_boxes: crate::toolbox::controls::scrollbox::Manager::new((scroll_boxes, scroll_storage)).unwrap(),
-               standard_file: Default::default(),
+               standard_file: crate::toolbox::standard_file::Manager::new((dialogs, dialog_storage)).unwrap(),
                crashes: Default::default(),
                events: crate::toolbox::events::EventManager::new(),
                scrap: Default::default(),
@@ -113,6 +121,13 @@ impl crate::toolbox::controls::scrollbox::ScrollBoxHost for Session
     }
 }
 std::thread_local! {static SESSION:RefCell<Option<Session>>=const {RefCell::new(None)};}
+impl crate::toolbox::standard_file::FileDialogHost for Session
+{
+    fn file_dialogs(&mut self) -> &mut crate::toolbox::standard_file::Manager
+    {
+        &mut self.standard_file
+    }
+}
 struct Scope;
 impl Drop for Scope
 {
@@ -228,10 +243,13 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
             })
         }
         STANDARD_FILE => {
+            let ledger = match inspection::caller_ledger(files::current_owner()) {
+                Ok(ledger) => ledger, Err(status) => return status as i64
+            };
             let call = unsafe { request::<mac_abi::standard_file::StandardFileCall>(pointer,size) };
             match call { Err(e)=>e as i64, Ok(call)=>SESSION.with(|slot| {
                 let mut session=slot.borrow_mut();let session=session.as_mut().unwrap();
-                session.standard_file.request(files::current_owner(),call,&mut session.files).err().unwrap_or(OK) as i64
+                session.standard_file.request(&ledger,call,&mut session.files).err().unwrap_or(OK) as i64
             }) }
         }
         DIALOG =>
@@ -553,7 +571,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                    })
         }
         SCROLL_BOX => {
-            let ledger = match inspection::control_owner(files::current_owner()) {
+            let ledger = match inspection::caller_ledger(files::current_owner()) {
                 Ok(ledger) => ledger, Err(status) => return status as i64
             };
             unsafe {crate::toolbox::controls::scrollbox_native::dispatch(pointer,size,|call|SESSION.with(|slot|{
@@ -567,7 +585,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                 Ok(c) => c, Err(e) => return e as i64,
             };
             if call.operation >= mac_abi::controls::CREATE_STANDARD {
-                let ledger = match inspection::control_owner(files::current_owner()) {
+                let ledger = match inspection::caller_ledger(files::current_owner()) {
                     Ok(ledger) => ledger, Err(status) => return status as i64
                 };
                 return SESSION.with(|slot| {
@@ -862,19 +880,21 @@ pub mod files;
 pub fn standard_file_action(action: crate::toolbox::standard_file::Action, when: u32)
                             -> Result<(), Status>
 {
+    let owner = inspection::caller_ledger(files::current_owner())?.owner().incarnation();
     SESSION.with(|slot| {
                let mut s = slot.borrow_mut();
                let s = s.as_mut().unwrap();
-               let id = s.standard_file.active(files::current_owner()).ok_or(NOT_FOUND)?;
+               let id = s.standard_file.active(owner).ok_or(NOT_FOUND)?;
                s.standard_file.action(id, &mut s.files, action, when)
            })
 }
 pub fn standard_file_entries() -> std::vec::Vec<mac_abi::files::CatalogInfo>
 {
+    let owner = inspection::caller_ledger(files::current_owner()).unwrap().owner().incarnation();
     SESSION.with(|slot| {
                let s = slot.borrow();
                let s = s.as_ref().unwrap();
-               let id = s.standard_file.active(files::current_owner()).unwrap();
+               let id = s.standard_file.active(owner).unwrap();
                s.standard_file.get(id).unwrap().entries.clone()
            })
 }

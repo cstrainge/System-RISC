@@ -9,7 +9,7 @@ use mac_abi::{files::{self, CatalogInfo, FileCall, ROOT_ID},
               *};
 
 use crate::toolbox::{files::Manager as Files,
-                     handles::{Kind, Table},
+                     handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
                      textedit::Editor};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action
@@ -122,13 +122,71 @@ impl Dialog
 }
 pub struct Manager
 {
-    slots: Table<Dialog>
+    slots: Store<Dialog, ApplicationState>
 }
-impl Default for Manager
+struct ApplicationState
 {
-    fn default() -> Self
+    active: Option<u64>
+}
+pub(crate) fn specification(state: bool) -> mac_object_table::registry::Specification<'static>
+{
+    mac_object_table::registry::Specification { kind:     KindCode(if state
+                                                                   {
+                                                                       *b"SFST"
+                                                                   }
+                                                                   else
+                                                                   {
+                                                                       *b"SFDL"
+                                                                   }),
+                                                label:    if state
+                                                {
+                                                    "Standard File Package state"
+                                                }
+                                                else
+                                                {
+                                                    "Standard File dialogs"
+                                                },
+                                                provider: "System Standard File Package",
+                                                capacity: if state
+                                                {
+                                                    CapacityPolicy::HardBound { slots: 1, reason: "One Standard File backing state per domain" }
+                                                }
+                                                else
+                                                {
+                                                    CapacityPolicy::GrowableUntilMemory
+                                                },
+                                                source:
+                                                    mac_object_table::registry::Source::Resident }
+}
+pub(crate) trait FileDialogHost
+{
+    fn file_dialogs(&mut self) -> &mut Manager;
+}
+pub(crate) struct ReleaseDialogs;
+pub(crate) struct ReleaseStorage;
+impl<C: FileDialogHost> mac_object_table::registry::Release<C> for ReleaseDialogs
+{
+    fn release(&self, context: &mut C, ticket: mac_object_table::domain::ReleasedResource)
+               -> Result<(), mac_object_table::domain::CompletionError>
     {
-        Self { slots: Table::new(Kind::StandardFiles) }
+        context.file_dialogs().slots.release(ticket).map(drop)
+    }
+}
+impl<C: FileDialogHost> mac_object_table::registry::Release<C> for ReleaseStorage
+{
+    fn release(&self, context: &mut C, ticket: mac_object_table::domain::ReleasedResource)
+               -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        context.file_dialogs().slots.release_storage(ticket)
+    }
+}
+impl Manager
+{
+    pub(crate) fn new((objects, storage): (KindLease, KindLease)) -> Result<Self, Status>
+    {
+        Ok(Self { slots: Store::owned_state(objects, storage, |_| {
+                             Ok(ApplicationState { active: None })
+                         }).map_err(|_| BAD_ARGUMENT)? })
     }
 }
 fn file(files: &mut Files, operation: u32, volume: u32, cnid: u32, index: u32, name: &str)
@@ -163,40 +221,44 @@ fn inline(bytes: &[u8], length: u32) -> Result<&str, Status>
 }
 impl Manager
 {
-    pub fn get(&self, id: u32) -> Result<&Dialog, Status>
+    pub fn get(&self, id: u64) -> Result<&Dialog, Status>
     {
         self.slots.get(id).ok_or(NOT_FOUND)
     }
 
-    pub fn get_mut(&mut self, id: u32) -> Result<&mut Dialog, Status>
+    pub fn get_mut(&mut self, id: u64) -> Result<&mut Dialog, Status>
     {
         self.slots.get_mut(id).ok_or(NOT_FOUND)
     }
 
-    pub fn active(&self, owner: u64) -> Option<u32>
+    pub fn active(&self, owner: u64) -> Option<u64>
     {
-        self.slots.iter().find(|(_, d)| d.owner == owner && d.active()).map(|(id, _)| id)
+        self.slots.state(owner)?.active.filter(|id| self.slots.get(*id).is_some_and(Dialog::active))
     }
 
-    pub fn remove_owner(&mut self, owner: u64)
+    pub(crate) fn dispose(&mut self, owner: u64, id: u64) -> Result<(), Status>
     {
-        loop
+        let actual = self.slots.owner(id).ok_or(NOT_FOUND)?;
+        if actual.incarnation() != owner
         {
-            let id = self.slots.iter().find(|(_, d)| d.owner == owner).map(|(id, _)| id);
-            if let Some(id) = id
+            return Err(ACCESS_DENIED);
+        }
+        if let Some(saved) = self.slots.state_mut(owner)
+        {
+            if saved.active == Some(id)
             {
-                self.slots.remove(id);
-            }
-            else
-            {
-                break;
+                saved.active = None;
             }
         }
+        drop(self.slots.remove(id).ok_or(NOT_FOUND)?);
+        Ok(())
     }
 
-    pub fn request(&mut self, owner: u64, call: &mut StandardFileCall, files: &mut Files)
-                   -> Result<(), Status>
+    pub(crate) fn request(&mut self, ledger: &OwnerRef, call: &mut StandardFileCall,
+                          files: &mut Files)
+                          -> Result<(), Status>
     {
+        let owner = ledger.owner().incarnation();
         if call.reserved != [0; 2]
         {
             return Err(BAD_ARGUMENT);
@@ -213,7 +275,6 @@ impl Manager
             }
             let prompt = inline(&call.prompt, call.prompt_length)?;
             let name = inline(&call.name, call.name_length)?;
-            self.slots.reserve().map_err(|_| NO_MEMORY)?;
             let mut editor =
                 Editor::new(Rect::new(15, 157, 4111, 173), Rect::new(15, 157, 227, 173))?;
             editor.set_text(name)?;
@@ -270,19 +331,24 @@ impl Manager
                                  typed_at: 0,
                                  name_format };
             Self::load(&mut d, files)?;
-            call.handle = self.slots.insert(d).map_err(|_| NO_MEMORY)?;
+            call.handle = self.slots.insert(ledger, d).map_err(|error| {
+                                                           match error {
+                mac_object_table::domain::PoolError::RegistrationUnavailable { .. }
+                | mac_object_table::domain::PoolError::Stopping { .. } => SERVICE_BUSY,
+                _ => NO_MEMORY }
+                                                       })?;
+            self.slots.state_mut(owner).ok_or(SERVICE_BUSY)?.active = Some(call.handle);
         }
         else
         {
-            let d = self.get(call.handle)?;
-            if d.owner != owner
+            let actual = self.slots.owner(call.handle).ok_or(NOT_FOUND)?;
+            if actual.incarnation() != owner
             {
                 return Err(ACCESS_DENIED);
             }
             if call.operation == DISPOSE
             {
-                self.slots.remove(call.handle);
-                return Ok(());
+                return self.dispose(owner, call.handle);
             }
             if call.operation != POLL
             {
@@ -366,7 +432,7 @@ impl Manager
         Ok(())
     }
 
-    pub fn navigate_to(&mut self, id: u32, files: &mut Files, location: (u32, u32))
+    pub fn navigate_to(&mut self, id: u64, files: &mut Files, location: (u32, u32))
                        -> Result<(), Status>
     {
         let d = self.get_mut(id)?;
@@ -380,7 +446,7 @@ impl Manager
         Ok(())
     }
 
-    pub fn action(&mut self, id: u32, files: &mut Files, action: Action, when: u32)
+    pub fn action(&mut self, id: u64, files: &mut Files, action: Action, when: u32)
                   -> Result<(), Status>
     {
         let d = self.get_mut(id)?;

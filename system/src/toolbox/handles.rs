@@ -21,7 +21,7 @@ impl mac_object_table::shared::InvocationGate for InvocationGate
     }
 }
 pub(crate) type OwnerRef = mac_object_table::shared::OwnerRef<InvocationGate>;
-pub(crate) type Store<T> = mac_object_table::store::Store<T, InvocationGate>;
+pub(crate) type Store<T, S = ()> = mac_object_table::store::Store<T, InvocationGate, S>;
 pub(crate) type KindLease = mac_object_table::registry::KindLease<InvocationGate>;
 pub(crate) type Registry<C> = mac_object_table::registry::Registry<C, InvocationGate>;
 pub(crate) use mac_object_table::domain::{CapacityPolicy, KindCode};
@@ -119,6 +119,14 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                          crate::toolbox::controls::scrollbox::specification(true),
                                          crate::toolbox::controls::scrollbox::ReleaseStorage)
                                .map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,
+                                         crate::toolbox::standard_file::specification(false),
+                                         crate::toolbox::standard_file::ReleaseDialogs)
+                               .map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,
+                                         crate::toolbox::standard_file::specification(true),
+                                         crate::toolbox::standard_file::ReleaseStorage)
+                               .map_err(KindAccessError::Registry)?;
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
                            })?;
     Ok(InvocationGate::run(|| run(&registry.lock())))
@@ -135,6 +143,13 @@ pub(crate) fn controls_kinds() -> Result<(KindLease, KindLease), mac_abi::Status
 pub(crate) fn scroll_box_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"SBOX"))?, registry.get(KindCode(*b"SBST"))?)))
+        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn file_dialog_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"SFDL"))?, registry.get(KindCode(*b"SFST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 

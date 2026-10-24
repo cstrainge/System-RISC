@@ -7,6 +7,16 @@ fn main()
     use mac_formats::{macbinary::{self, MacFile},
                       resource::{self, Resource}};
     let output = std::path::Path::new(&args[2]);
+    if let Some(system) = args.get(3)
+    {
+        let mut file = macbinary::decode(&std::fs::read(system).expect("read current System package")).expect("decode current System package");
+        let mut resources = resource::decode(&file.resources).expect("decode current System resources");
+        resources.iter_mut().find(|resource| resource.kind == *b"DLOG" && resource.id == -6042)
+            .expect("System Open layout").data.clear();
+        file.resources = resource::encode(&resources).expect("encode malformed-layout System resources");
+        std::fs::write(output.join("Malformed System.bin"), macbinary::encode(&file).expect("encode private System package"))
+            .expect("write malformed-layout System package");
+    }
     let budget=resource::encode(&[Resource {kind:*b"DATA",id:1,name:None,attributes:0,
         data:vec![0;4*1024*1024+1]}]).expect("encode valid resource fork above application payload budget");
     for (name, resources) in [("Budget App", budget), ("Corrupt App", vec![0; 16])]

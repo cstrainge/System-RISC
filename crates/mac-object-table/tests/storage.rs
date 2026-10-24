@@ -209,3 +209,114 @@ fn refused_first_object_still_leaves_backing_owned_and_cleanable()
     store.release_storage(ticket).unwrap();
     assert_eq!((owner.summary().live, owner.summary().pending), (0, 0));
 }
+
+#[test]
+fn saved_state_is_scoped_cached_and_dies_with_its_registered_backing()
+{
+    use std::sync::{Arc,
+                    atomic::{AtomicUsize, Ordering}};
+    struct Saved
+    {
+        marker:   u8,
+        observer: Option<(OwnerRef<Gate>, Arc<AtomicUsize>)>
+    }
+    impl Drop for Saved
+    {
+        fn drop(&mut self)
+        {
+            if let Some((owner, dropped)) = &self.observer
+            {
+                assert!(owner.summary().pending > 0,
+                        "saved-state destruction must precede backing acknowledgment and run \
+                         outside the lock");
+                dropped.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+    let (registry, owner, _context) = setup();
+    let mut store = Store::<u8, Gate, Saved>::owned_state(registry.get(OBJECT).unwrap(),
+                                                          registry.get(STATE).unwrap(),
+                                                          |_| {
+                                                              Ok(Saved { marker:   7,
+                                                                         observer: None })
+                                                          }).unwrap();
+    assert!(store.state(owner.owner().incarnation()).is_none());
+    let id = store.insert(&owner, 42).unwrap();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let incarnation = owner.owner().incarnation();
+    let saved = store.state_mut(incarnation).unwrap();
+    saved.marker = 19;
+    saved.observer = Some((owner.clone(), dropped.clone()));
+    assert!(store.state(incarnation + 1).is_none());
+    drop(store.remove(id));
+    assert_eq!(store.state(incarnation).unwrap().marker, 19);
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+    let ticket = owner.invalidate_next().unwrap();
+    assert!(store.state(incarnation).is_none());
+    assert!(store.state_mut(incarnation).is_none());
+    store.release_storage(ticket).unwrap();
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(owner.summary().pending, 0);
+    store.insert(&owner, 43).unwrap();
+    assert_eq!(store.state(incarnation).unwrap().marker, 7, "reattachment constructs fresh state");
+    drop(registry);
+    assert!(store.state(incarnation).is_none(),
+            "abandoned registration cannot authorize state access");
+}
+
+#[test]
+fn saved_state_factory_refusal_does_not_publish_or_poison_a_domain()
+{
+    use mac_object_table::domain::PoolError;
+    let (registry, owner, _context) = setup();
+    let mut store = Store::<u8, Gate, ()>::owned_state(registry.get(OBJECT).unwrap(),
+                                                       registry.get(STATE).unwrap(),
+                                                       |owner| {
+                                                           Err(PoolError::Storage { owner,
+                                                                        kind: STATE,
+                                                                        used: 0,
+                                                                        requested_slots: 1,
+                                                                        limit: None })
+                                                       }).unwrap();
+    let error = store.insert(&owner, 42).unwrap_err();
+    assert!(matches!(error,
+                     PoolError::Storage { kind: STATE,
+                                          .. }));
+    assert!(error.to_string().contains("STAT"));
+    assert_eq!((owner.summary().live, owner.summary().pending), (0, 0));
+    drop(store);
+    let mut retry =
+        Store::owned(registry.get(OBJECT).unwrap(), registry.get(STATE).unwrap()).unwrap();
+    retry.insert(&owner, 43).unwrap();
+    assert_eq!(owner.summary().live, 2);
+}
+
+#[test]
+fn saved_state_panic_keeps_backing_pending_and_provider_pinned()
+{
+    struct Saved;
+    impl Drop for Saved
+    {
+        fn drop(&mut self)
+        {
+            panic!("saved-state destruction refused");
+        }
+    }
+    let (registry, owner, _context) = setup();
+    let mut store = Store::<u8, Gate, Saved>::owned_state(registry.get(OBJECT).unwrap(),
+                                                          registry.get(STATE).unwrap(),
+                                                          |_| Ok(Saved)).unwrap();
+    let id = store.insert(&owner, 42).unwrap();
+    drop(store.remove(id));
+    let ticket = owner.invalidate_next().unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                             store.release_storage(ticket).unwrap()
+                                         }));
+    assert!(panic.is_err());
+    assert_eq!(owner.summary().pending, 1);
+    assert!(store.state(owner.owner().incarnation()).is_none());
+    let row =
+        registry.by_id(registry.snapshot().unwrap().0, registry.get(STATE).unwrap().id()).unwrap();
+    assert_eq!(row.uses, 1, "failed destruction cannot unpin its provider");
+    // Host unwinding checks the resource barrier only, not native privileged recovery (M-D04).
+}

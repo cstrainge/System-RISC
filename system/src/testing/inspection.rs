@@ -98,7 +98,7 @@ pub struct WalkOutcome
 }
 /// Fault injection is only in provider resolution; publication, invalidation,
 /// quarantine, retry and destruction all use the real shared facility.
-pub fn walk_controls(owner: u64, provider_unavailable: bool, retry: bool) -> WalkOutcome
+pub fn walk_registered(owner: u64, provider_unavailable: bool, retry: bool) -> WalkOutcome
 {
     super::SESSION.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -187,7 +187,7 @@ pub fn begin_cleanup(owner: u64) -> Cleanup
 
 // Host tests may use arbitrary trusted scheduler labels (7, 8, …). Resolve them
 // to real facility-issued domains, never fabricate a DomainId from that label.
-pub(crate) fn control_owner(alias: u64)
+pub(crate) fn caller_ledger(alias: u64)
                             -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
 {
     super::SESSION.with(|session| {

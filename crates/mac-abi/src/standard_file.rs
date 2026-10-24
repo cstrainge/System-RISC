@@ -14,7 +14,7 @@ pub const MAX_TYPES: usize = 16;
 pub struct StandardFileCall
 {
     pub operation:     u32,
-    pub handle:        u32,
+    pub handle:        u64,
     pub mode:          u32,
     pub volume:        u32,
     pub directory:     u32,

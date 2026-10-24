@@ -30,19 +30,23 @@ def child(output, fixture, binary):
     return package / (binary + '.bin'), elf
 
 
-def capture(output, frontend='headless', vector_bits=None):
+def capture(output, frontend='headless', vector_bits=None, malformed_standard_file=False):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     before = {name: packaging.sha(original / name)
               for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
-    private, observer = packaging.private_disk(output, 'process-observer')
+    extra = (original / 'System.bin',) if malformed_standard_file else ()
+    private, observer = packaging.private_disk(output, 'process-observer', package_arguments=extra)
     children = [child(output, fixture, binary)
                 for fixture, binary in [('process-worker', 'ProcessWorker'),
                                         ('process-spinner', 'ProcessSpinner')]]
 
     raw = private / 'conformance.raw'
     fs = NativeImage(raw)
+    if malformed_standard_file:
+        fs.remove('/System Folder/System')
+        fs.import_macbinary(output / 'package' / 'Malformed System.bin', '/System Folder')
     fs.mkdir('/Applications', exist_ok=True)
     for package, _ in children:
         fs.import_macbinary(package, '/Applications')
@@ -83,6 +87,7 @@ def capture(output, frontend='headless', vector_bits=None):
         vm.qmp('screendump', {'filename': str(output / 'processes.ppm')}, endpoint)
         report = {'transport': 'private blessed disk -> System -> independent RV64 SDK apps -> ECALL',
                   'assertion_owner': 'mac-toolbox/tests/process_cases.rs',
+                  'malformed_standard_file': malformed_standard_file,
                   'termination': 'guest-outcome',
                   'original_before': before,
                   'original_after': {name: packaging.sha(original / name) for name in before},
@@ -110,5 +115,6 @@ if __name__ == '__main__':
     parser.add_argument('--output', required=True)
     parser.add_argument('--frontend', choices=['headless', 'native-headless'], default='headless')
     parser.add_argument('--vector-bits', type=int)
+    parser.add_argument('--malformed-standard-file', action='store_true')
     args = parser.parse_args()
-    capture(args.output, args.frontend, args.vector_bits)
+    capture(args.output, args.frontend, args.vector_bits, args.malformed_standard_file)

@@ -1889,6 +1889,8 @@ fn shared_file_dialog_and_writer_ids_reject_reused_and_foreign_slots()
     use mac_toolbox::Error;
     let fixture = Fixture::new();
     fixture.run(false, DiskFaults::default(), |system| {
+               let owner = mac_system::testing::inspection::add("Dialog owner", 0);
+               let foreign_owner = mac_system::testing::inspection::add("Foreign dialog owner", 0);
                let client = system.client();
                let parent = system.files()
                                   .lookup(system.files().volume_at(0).unwrap().id,
@@ -1902,61 +1904,139 @@ fn shared_file_dialog_and_writer_ids_reject_reused_and_foreign_slots()
                                                parent: parent.0,
                                                length: 1,
                                                ..Default::default() };
-               with_owner(11, || client.data_write(&mut write, "JSON", &[])).unwrap();
+               with_owner(owner, || client.data_write(&mut write, "JSON", &[])).unwrap();
                let old = write.handle;
                write.operation = APPEND_DATA_WRITE;
-               assert_eq!(with_owner(22, || client.data_write(&mut write, "", b"x")),
+               assert_eq!(with_owner(foreign_owner, || client.data_write(&mut write, "", b"x")),
                           Err(Error::AccessDenied));
                write.operation = ABORT_DATA_WRITE;
-               with_owner(11, || client.data_write(&mut write, "", &[])).unwrap();
+               with_owner(owner, || client.data_write(&mut write, "", &[])).unwrap();
                write = DataWriteCall { operation: BEGIN_DATA_WRITE,
                                        volume: (system.files().volume_at(0).unwrap().id).0,
                                        parent: parent.0,
                                        length: 1,
                                        ..Default::default() };
-               with_owner(11, || client.data_write(&mut write, "JSON", &[])).unwrap();
+               with_owner(owner, || client.data_write(&mut write, "JSON", &[])).unwrap();
                assert_eq!(old & 0xffff, write.handle & 0xffff);
                assert_ne!(old, write.handle);
                let mut stale = DataWriteCall { operation: APPEND_DATA_WRITE,
                                                handle: old,
                                                ..Default::default() };
-               assert_eq!(with_owner(11, || client.data_write(&mut stale, "", b"x")),
+               assert_eq!(with_owner(owner, || client.data_write(&mut stale, "", b"x")),
                           Err(Error::NotFound));
 
                let mut call =
                    sf::StandardFileCall { volume: (system.files().volume_at(0).unwrap().id).0,
                                           directory: parent.0,
                                           ..Default::default() };
-               with_owner(11, || client.standard_file(&mut call)).unwrap();
+               with_owner(owner, || client.standard_file(&mut call)).unwrap();
                let first = call.handle;
                call.operation = sf::POLL;
-               assert_eq!(with_owner(22, || client.standard_file(&mut call)),
+               assert_eq!(with_owner(foreign_owner, || client.standard_file(&mut call)),
                           Err(Error::AccessDenied));
                call.operation = sf::DISPOSE;
-               with_owner(11, || client.standard_file(&mut call)).unwrap();
+               with_owner(owner, || client.standard_file(&mut call)).unwrap();
                call = sf::StandardFileCall { volume: (system.files().volume_at(0).unwrap().id).0,
                                              directory: parent.0,
                                              ..Default::default() };
-               with_owner(11, || client.standard_file(&mut call)).unwrap();
-               assert_eq!(first & 0xffff, call.handle & 0xffff);
+               with_owner(owner, || client.standard_file(&mut call)).unwrap();
+               let pools = with_owner(owner, || {
+                   system.inspection()
+                         .snapshot(mac_toolbox::inspection::Scope::Own)
+                         .unwrap()
+                         .ledger(0)
+                         .unwrap()
+               });
+               let pool = with_owner(owner, || {
+                   (0..pools.len()).map(|index| pools.at(index).unwrap())
+                                   .find(|pool| pool.kind == *b"SFDL")
+                                   .unwrap()
+               });
+               assert_eq!((pool.live, pool.slots),
+                          (1, 1),
+                          "replacement must reuse the sole dialog slot");
+               assert!(first > u64::from(u32::MAX) && call.handle > u64::from(u32::MAX));
                assert_ne!(first, call.handle);
                let mut stale = sf::StandardFileCall { operation: sf::POLL,
                                                       handle: first,
                                                       ..Default::default() };
-               assert_eq!(with_owner(11, || client.standard_file(&mut stale)),
+               assert_eq!(with_owner(owner, || client.standard_file(&mut stale)),
                           Err(Error::NotFound));
-               stale.handle = write.handle;
-               assert_eq!(with_owner(11, || client.standard_file(&mut stale)),
+               stale.handle = u64::from(write.handle);
+               assert_eq!(with_owner(owner, || client.standard_file(&mut stale)),
                           Err(Error::NotFound));
                let mut foreign = FileCall { operation: TELL,
                                             handle: write.handle,
                                             ..Default::default() };
-               assert_eq!(with_owner(11, || client.file(&mut foreign, "", &mut [])),
+               assert_eq!(with_owner(owner, || client.file(&mut foreign, "", &mut [])),
                           Err(Error::NotFound));
                write.operation = ABORT_DATA_WRITE;
-               with_owner(11, || client.data_write(&mut write, "", &[])).unwrap();
+               with_owner(owner, || client.data_write(&mut write, "", &[])).unwrap();
                call.operation = sf::DISPOSE;
-               with_owner(11, || client.standard_file(&mut call)).unwrap();
+               with_owner(owner, || client.standard_file(&mut call)).unwrap();
+           });
+}
+
+#[test]
+fn completed_dialogs_do_not_block_or_dispose_a_new_active_dialog_and_state_walks()
+{
+    use mac_system::{testing::{files::with_owner, inspection as inspect,
+                               standard_file_action as action},
+                     toolbox::standard_file::Action};
+    use mac_toolbox::standard_file::{Location, Progress, TypeFilter};
+    let fixture = Fixture::new();
+    fixture.run(false, DiskFaults::default(), |system| {
+               let owner = inspect::add("Retained dialogs", 0);
+               let other = inspect::add("Independent dialog", 0);
+               let location = Location { volume:    system.files().volume_at(0).unwrap().id,
+                                         directory: mac_toolbox::Cnid::ROOT };
+               with_owner(owner, || {
+                   let mut completed = Vec::new();
+                   for tick in 0..12
+                   {
+                       let dialog =
+                           system.standard_file().begin_get(location, TypeFilter::All).unwrap();
+                       action(Action::Cancel, tick).unwrap();
+                       assert!(matches!(dialog.poll().unwrap(), Progress::Cancelled));
+                       completed.push(dialog);
+                   }
+                   let active =
+                       system.standard_file().begin_get(location, TypeFilter::All).unwrap();
+                   with_owner(other, || {
+                       let independent =
+                           system.standard_file().begin_get(location, TypeFilter::All).unwrap();
+                       assert!(matches!(independent.poll().unwrap(), Progress::Pending));
+                       drop(independent);
+                   });
+                   let error =
+                       system.standard_file().begin_get(location, TypeFilter::All).err().unwrap();
+                   assert_eq!(error, mac_toolbox::Error::ServiceBusy);
+                   assert!(error.to_string().contains("busy"));
+                   drop(completed);
+                   assert!(matches!(active.poll().unwrap(), Progress::Pending));
+                   action(Action::Cancel, 20).unwrap();
+                   assert!(matches!(active.poll().unwrap(), Progress::Cancelled),
+                           "disposing old dialogs must not clear the new active-dialog index");
+                   drop(active);
+                   let members =
+                       system.inspection().snapshot(mac_toolbox::inspection::Scope::Own).unwrap();
+                   let pools = members.ledger(0).unwrap();
+                   let dialogs = (0..pools.len()).map(|index| pools.at(index).unwrap())
+                                                 .find(|pool| pool.kind == *b"SFDL")
+                                                 .unwrap();
+                   assert_eq!((dialogs.live, dialogs.slots),
+                              (0, 16),
+                              "dialog capacity grows per owner beyond the old eight-entry table");
+                   let failed = inspect::walk_registered(owner, true, false);
+                   assert_eq!((failed.report.invalidated, failed.report.quarantined), (1, 1));
+                   assert!(failed.failures[0].contains("SFST")
+                           && failed.failures[0].contains("no registered cleanup provider"));
+                   let retry = inspect::walk_registered(owner, false, true);
+                   assert_eq!((retry.report.released, retry.report.quarantined), (1, 0));
+                   let final_state = members.at(0).unwrap();
+                   assert_eq!((final_state.live, final_state.pending, final_state.quarantined),
+                              (0, 0, 0));
+               });
            });
 }
 
@@ -1969,80 +2049,92 @@ fn legacy_standard_file_pascal_names_and_writer_share_native_validation()
     let fixture = Fixture::new();
     with_file_disk(&fixture.disk, false, DiskFaults::default(), |services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
-        let name = b"\x09Caf\x8e.json";
-        let mut dialog =
-            sf::StandardFileCall { mode: sf::PUT,
-                                   volume: (system.files().volume_at(0).unwrap().id).0,
-                                   directory: ROOT_ID,
-                                   name_length: name.len() as u32,
-                                   ..Default::default() };
-        dialog.name[..name.len()].copy_from_slice(name);
-        let invoke = |c: &mut sf::StandardFileCall| unsafe {
-            (services.trap)(traps::PSTRING_STANDARD_FILE,
-                            core::ptr::from_mut(c).cast(),
-                            size_of::<sf::StandardFileCall>())
-        };
-        assert_eq!(invoke(&mut dialog), 0);
-        action(A::Accept, 0).unwrap();
-        dialog.operation = sf::POLL;
-        assert_eq!(invoke(&mut dialog), 0);
-        assert_eq!(dialog.state, sf::ACCEPTED);
-        assert_eq!(&dialog.entry.name[..dialog.entry.name_length as usize], name);
-        dialog.operation = sf::DISPOSE;
-        assert_eq!(invoke(&mut dialog), 0);
-        let stale = dialog.handle;
-        let mut next = sf::StandardFileCall { volume:
-                                                  (system.files().volume_at(0).unwrap().id).0,
-                                              directory: ROOT_ID,
-                                              ..Default::default() };
-        system.client().standard_file(&mut next).unwrap();
-        assert_eq!(next.handle & 0xffff, stale & 0xffff);
-        dialog.operation = sf::POLL;
-        assert_eq!(invoke(&mut dialog), i64::from(mac_toolbox::abi::NOT_FOUND));
-        next.operation = sf::DISPOSE;
-        system.client().standard_file(&mut next).unwrap();
-        let mut w = DataWriteCall { operation: BEGIN_DATA_WRITE,
-                                    volume: (system.files().volume_at(0).unwrap().id).0,
-                                    parent: ROOT_ID,
-                                    name: name.as_ptr(),
-                                    name_length: name.len(),
-                                    length: 2,
-                                    when: WHEN.mac_microseconds().unwrap(),
-                                    file_type: *b"TEXT",
-                                    creator: *b"ttxt",
-                                    ..Default::default() };
-        let call = |c: &mut DataWriteCall| unsafe {
-            (services.trap)(traps::PSTRING_FILE,
-                            core::ptr::from_mut(c).cast(),
-                            size_of::<DataWriteCall>())
-        };
-        assert_eq!(with_owner(11, || call(&mut w)), 0);
-        let first = w.handle;
-        w.operation = APPEND_DATA_WRITE;
-        w.data = b"{}".as_ptr();
-        w.data_length = 2;
-        assert_eq!(with_owner(22, || call(&mut w)), i64::from(mac_toolbox::abi::ACCESS_DENIED));
-        assert_eq!(with_owner(11, || call(&mut w)), 0);
-        w.operation = COMMIT_DATA_WRITE;
-        assert_eq!(with_owner(11, || call(&mut w)), 0);
-        assert_eq!(&w.entry.name[..w.entry.name_length as usize], name);
-        assert_eq!(system.files()
-                         .lookup(system.files().volume_at(0).unwrap().id,
-                                 mac_toolbox::Cnid(ROOT_ID),
-                                 "Café.json")
-                         .unwrap()
-                         .id,
-                   mac_toolbox::Cnid(w.entry.id));
-        w.operation = BEGIN_DATA_WRITE;
-        w.expected_cnid = w.entry.id;
-        assert_eq!(with_owner(11, || call(&mut w)), 0);
-        assert_eq!(w.handle & 0xffff, first & 0xffff);
-        let mut old = DataWriteCall { operation: ABORT_DATA_WRITE,
-                                      handle: first,
-                                      ..Default::default() };
-        assert_eq!(with_owner(11, || call(&mut old)), i64::from(mac_toolbox::abi::NOT_FOUND));
-        w.operation = ABORT_DATA_WRITE;
-        assert_eq!(with_owner(11, || call(&mut w)), 0);
+        let owner = mac_system::testing::inspection::add("Legacy dialog owner", 0);
+        with_owner(owner, || {
+            let name = b"\x09Caf\x8e.json";
+            let mut dialog =
+                sf::StandardFileCall { mode: sf::PUT,
+                                       volume: (system.files().volume_at(0).unwrap().id).0,
+                                       directory: ROOT_ID,
+                                       name_length: name.len() as u32,
+                                       ..Default::default() };
+            dialog.name[..name.len()].copy_from_slice(name);
+            let invoke = |c: &mut sf::StandardFileCall| unsafe {
+                (services.trap)(traps::PSTRING_STANDARD_FILE,
+                                core::ptr::from_mut(c).cast(),
+                                size_of::<sf::StandardFileCall>())
+            };
+            assert_eq!(invoke(&mut dialog), 0);
+            action(A::Accept, 0).unwrap();
+            dialog.operation = sf::POLL;
+            assert_eq!(invoke(&mut dialog), 0);
+            assert_eq!(dialog.state, sf::ACCEPTED);
+            assert_eq!(&dialog.entry.name[..dialog.entry.name_length as usize], name);
+            dialog.operation = sf::DISPOSE;
+            assert_eq!(invoke(&mut dialog), 0);
+            let stale = dialog.handle;
+            let mut next =
+                sf::StandardFileCall { volume: (system.files().volume_at(0).unwrap().id).0,
+                                       directory: ROOT_ID,
+                                       ..Default::default() };
+            system.client().standard_file(&mut next).unwrap();
+            let pools = system.inspection()
+                              .snapshot(mac_toolbox::inspection::Scope::Own)
+                              .unwrap()
+                              .ledger(0)
+                              .unwrap();
+            let pool = (0..pools.len()).map(|index| pools.at(index).unwrap())
+                                       .find(|pool| pool.kind == *b"SFDL")
+                                       .unwrap();
+            assert_eq!((pool.live, pool.slots), (1, 1));
+            assert_ne!(next.handle, stale);
+            dialog.operation = sf::POLL;
+            assert_eq!(invoke(&mut dialog), i64::from(mac_toolbox::abi::NOT_FOUND));
+            next.operation = sf::DISPOSE;
+            system.client().standard_file(&mut next).unwrap();
+            let mut w = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                        volume: (system.files().volume_at(0).unwrap().id).0,
+                                        parent: ROOT_ID,
+                                        name: name.as_ptr(),
+                                        name_length: name.len(),
+                                        length: 2,
+                                        when: WHEN.mac_microseconds().unwrap(),
+                                        file_type: *b"TEXT",
+                                        creator: *b"ttxt",
+                                        ..Default::default() };
+            let call = |c: &mut DataWriteCall| unsafe {
+                (services.trap)(traps::PSTRING_FILE,
+                                core::ptr::from_mut(c).cast(),
+                                size_of::<DataWriteCall>())
+            };
+            assert_eq!(with_owner(11, || call(&mut w)), 0);
+            let first = w.handle;
+            w.operation = APPEND_DATA_WRITE;
+            w.data = b"{}".as_ptr();
+            w.data_length = 2;
+            assert_eq!(with_owner(22, || call(&mut w)), i64::from(mac_toolbox::abi::ACCESS_DENIED));
+            assert_eq!(with_owner(11, || call(&mut w)), 0);
+            w.operation = COMMIT_DATA_WRITE;
+            assert_eq!(with_owner(11, || call(&mut w)), 0);
+            assert_eq!(&w.entry.name[..w.entry.name_length as usize], name);
+            assert_eq!(system.files()
+                             .lookup(system.files().volume_at(0).unwrap().id,
+                                     mac_toolbox::Cnid(ROOT_ID),
+                                     "Café.json")
+                             .unwrap()
+                             .id,
+                       mac_toolbox::Cnid(w.entry.id));
+            w.operation = BEGIN_DATA_WRITE;
+            w.expected_cnid = w.entry.id;
+            assert_eq!(with_owner(11, || call(&mut w)), 0);
+            assert_eq!(w.handle & 0xffff, first & 0xffff);
+            let mut old = DataWriteCall { operation: ABORT_DATA_WRITE,
+                                          handle: first,
+                                          ..Default::default() };
+            assert_eq!(with_owner(11, || call(&mut old)), i64::from(mac_toolbox::abi::NOT_FOUND));
+            w.operation = ABORT_DATA_WRITE;
+            assert_eq!(with_owner(11, || call(&mut w)), 0);
+        });
     }).unwrap();
 }
 

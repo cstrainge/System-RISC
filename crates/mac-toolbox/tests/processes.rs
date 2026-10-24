@@ -5,15 +5,30 @@ use std::{fs, path::PathBuf, process::Command};
 #[ignore = "requires fresh cargo xtask image and QEMU"]
 fn independent_applications_use_timer_preemption_and_private_toolbox_state()
 {
+    run(false);
+}
+#[test]
+#[ignore = "requires fresh cargo xtask image and QEMU"]
+fn malformed_system_open_layout_is_rolled_back_and_repeated_requests_remain_usable()
+{
+    run(true);
+}
+fn run(malformed: bool)
+{
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
-    let output = root.join("results/system7").join(format!("processes-{}", std::process::id()));
-    let transport = Command::new("python3").arg(root.join("System7/scripts/\
-                                                           capture_system7_processes.py"))
-                                           .arg("--output")
-                                           .arg(&output)
-                                           .current_dir(&root)
-                                           .output()
-                                           .unwrap();
+    let suffix = if malformed { "-malformed-standard-file" } else { "" };
+    let output =
+        root.join("results/system7").join(format!("processes-{}{suffix}", std::process::id()));
+    let mut command = Command::new("python3");
+    command.arg(root.join("System7/scripts/capture_system7_processes.py"))
+           .arg("--output")
+           .arg(&output)
+           .current_dir(&root);
+    if malformed
+    {
+        command.arg("--malformed-standard-file");
+    }
+    let transport = command.output().unwrap();
     assert!(transport.status.success(),
             "process transport failed:\n{}\n{}",
             String::from_utf8_lossy(&transport.stdout),
@@ -24,6 +39,27 @@ fn independent_applications_use_timer_preemption_and_private_toolbox_state()
     assert_eq!(report["original_before"], report["original_after"], "base artifacts changed");
     assert_eq!(report["owned_vm_exited"], true, "private QEMU remained running");
     assert_eq!(report["termination"], "guest-outcome");
+    assert_eq!(report["malformed_standard_file"], malformed);
+    let marker = if malformed
+    {
+        "PROCESS_STANDARD_FILE_RAII_PASS mode=invalid-resource retry=passed"
+    }
+    else
+    {
+        "PROCESS_STANDARD_FILE_RAII_PASS mode=normal reserved=passed"
+    };
+    assert_eq!(serial.lines().filter(|line| *line == marker).count(),
+               4,
+               "all worker incarnations must verify the System-owned dialog lifetime: {serial}");
+    if malformed
+    {
+        assert_eq!(serial.lines()
+                         .filter(|line| {
+                             line.starts_with("PROCESS_STANDARD_FILE_REFUSAL DLOG -6042 error=")
+                         })
+                         .count(),
+                   8);
+    }
     assert!(!serial.contains("PROCESS_FAIL"), "canonical assertion failed:\n{serial}");
     let command = report["launch"].as_array().unwrap();
     assert!(command.windows(2).any(|args| args[0] == "-smp" && args[1] == "1"),
@@ -69,7 +105,7 @@ fn independent_applications_use_timer_preemption_and_private_toolbox_state()
     {
         assert!(serial.lines().any(|line| {
                                   line
-                                  == format!("OWNER_WALK app={app} invalidated=4 released=4 \
+                                  == format!("OWNER_WALK app={app} invalidated=5 released=5 \
                                               quarantined=0 live=0 pending=0 deferred=0")
                               }),
                 "registered owner walk did not reclaim the leaked worker control for \

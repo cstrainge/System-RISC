@@ -97,6 +97,13 @@ impl super::controls::scrollbox::ScrollBoxHost for Desktop
         &mut self.scroll_boxes
     }
 }
+impl super::standard_file::FileDialogHost for Desktop
+{
+    fn file_dialogs(&mut self) -> &mut super::standard_file::Manager
+    {
+        &mut self.standard_file
+    }
+}
 
 impl Desktop
 {
@@ -286,7 +293,7 @@ impl Desktop
         crate::context::set_finder_app(finder);
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
-                  standard_file: Default::default(),
+                  standard_file: super::standard_file::Manager::new(super::handles::file_dialog_kinds()?)?,
                   scroll_boxes: super::controls::scrollbox::Manager::new(super::handles::scroll_box_kinds()?)?,
                   controls: super::controls::objects::Manager::new(super::handles::controls_kinds()?)?,
                   dialogs: Default::default(),

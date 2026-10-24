@@ -325,7 +325,7 @@ fn scroll_box_capacity_is_per_owner_and_exceeds_the_removed_global_table()
         {
             with_owner(owner, || {
                 drop(views);
-                let result = mac_system::testing::inspection::walk_controls(owner, false, false);
+                let result = mac_system::testing::inspection::walk_registered(owner, false, false);
                 assert_eq!((result.report.invalidated,
                             result.report.released,
                             result.report.quarantined),

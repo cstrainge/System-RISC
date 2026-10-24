@@ -22,7 +22,6 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
                  Kind::Windows,
                  Kind::Files,
                  Kind::FileWrites,
-                 Kind::StandardFiles,
                  Kind::Volumes,
                  Kind::TextEdit,
                  Kind::Menus,

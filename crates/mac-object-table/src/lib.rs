@@ -55,7 +55,6 @@ pub enum Kind
     Windows,
     Files,
     FileWrites,
-    StandardFiles,
     Volumes,
     TextEdit,
     Menus,
@@ -112,7 +111,7 @@ impl Kind
             Self::Memory => 512,
             Self::Windows => 32,
             Self::Files => 64,
-            Self::FileWrites | Self::StandardFiles => 8
+            Self::FileWrites => 8
         }
     }
 
@@ -175,18 +174,11 @@ impl Kind
             }
             Self::Menus => Self::TextEdit.first_slot() + Self::TextEdit.capacity() as u32,
             Self::TextEdit => Self::Volumes.first_slot() + Self::Volumes.capacity() as u32,
-            Self::Volumes =>
-            {
-                Self::StandardFiles.first_slot() + Self::StandardFiles.capacity() as u32
-            }
+            Self::Volumes => Self::FileWrites.first_slot() + Self::FileWrites.capacity() as u32,
             Self::Memory => 1,
             Self::Windows => Self::Memory.capacity() as u32 + 1,
             Self::Files => Self::Windows.first_slot() + Self::Windows.capacity() as u32,
-            Self::FileWrites => Self::Files.first_slot() + Self::Files.capacity() as u32,
-            Self::StandardFiles =>
-            {
-                Self::FileWrites.first_slot() + Self::FileWrites.capacity() as u32
-            }
+            Self::FileWrites => Self::Files.first_slot() + Self::Files.capacity() as u32
         }
     }
 
@@ -234,7 +226,7 @@ impl Kind
     {
         match self
         {
-            Self::Memory | Self::Files | Self::FileWrites | Self::StandardFiles => u16::MAX,
+            Self::Memory | Self::Files | Self::FileWrites => u16::MAX,
             Self::DocumentBatches
             | Self::FileTransfers
             | Self::FileGroups

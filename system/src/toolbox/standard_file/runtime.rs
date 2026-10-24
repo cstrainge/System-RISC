@@ -60,80 +60,113 @@ fn label(index: u32) -> Result<String, Status>
     crate::kernel::resources().ok_or(NOT_SUPPORTED)?.request(&mut c, "", &mut bytes)?;
     Ok(String::from(core::str::from_utf8(&bytes[..c.transferred]).map_err(|_| BAD_ARGUMENT)?))
 }
+// Initialization owns the published record until every window/font/drawing
+// step succeeds. No early return can strand an active modal dialog.
+struct InitializingDialog<'a>
+{
+    desktop:   &'a mut super::Desktop,
+    handle:    u64,
+    failure:   Option<Status>,
+    committed: bool
+}
+impl Drop for InitializingDialog<'_>
+{
+    fn drop(&mut self)
+    {
+        if !self.committed
+        {
+            if let Err(status) = self.desktop.dispose_file_dialog(self.handle)
+            {
+                // The guard holds exclusive Desktop access, validated ownership
+                // and the just-published identity. Refusal is an internal lifetime
+                // invariant failure, not an ordinary malformed app request.
+                panic!("Standard File initialization rollback invariant failed: app={} handle={} \
+                        initialization={:?} cleanup={}",
+                       self.desktop.owner, self.handle, self.failure, status);
+            }
+        }
+    }
+}
 impl super::Desktop
 {
     pub fn standard_file_request(&mut self, call: &mut StandardFileCall) -> Result<(), Status>
     {
+        if call.reserved != [0; 2]
+        {
+            return Err(BAD_ARGUMENT);
+        }
         if call.operation == DISPOSE
         {
-            let d = self.standard_file.get(call.handle)?;
-            if d.owner != self.owner
-            {
-                return Err(ACCESS_DENIED);
-            }
-            let ids = [d.auxiliary, d.window];
-            for id in ids
-            {
-                if self.windows.window(id).is_some()
-                {
-                    checked(self.window(CLOSE_WINDOW, &mut request(id)))?;
-                }
-            }
+            return self.dispose_file_dialog(call.handle);
         }
-        crate::kernel::with_files(|files|self.standard_file.request(self.owner,call,files)).map_err(|e|e.status())??;
+        let ledger = self.processes.ledger(self.owner)?;
+        crate::kernel::with_files(|files| self.standard_file.request(&ledger, call, files))
+            .map_err(|error| error.status())??;
         if call.operation == BEGIN
         {
-            let l = layout(call.mode, Sheet::Main)?;
-            let height = l.bounds.bottom - l.bounds.top;
-            let mut w = request(WindowId(0));
-            let top = if call.mode == GET { 84 } else { 80 };
-            w.bounds = Rect::new(148, top, 492, top + height);
-            w.procedure = l.procedure;
-            if let Err(e) = checked(self.window(NEW_WINDOW, &mut w))
+            let mut guard = InitializingDialog { desktop:   self,
+                                                 handle:    call.handle,
+                                                 failure:   None,
+                                                 committed: false };
+            let result = guard.desktop.initialize_file_dialog(call);
+            match result
             {
-                let _ = crate::kernel::with_files(|f| {
-                    self.standard_file.request(self.owner,
-                                               &mut StandardFileCall { operation: DISPOSE,
-                                                                       handle: call.handle,
-                                                                       ..Default::default() },
-                                               f)
-                });
-                return Err(e);
+                Ok(()) => guard.committed = true,
+                Err(status) => guard.failure = Some(status)
             }
-            let d = self.standard_file.get_mut(call.handle)?;
-            d.window = WindowId(w.id);
-            d.editor
-             .set_font(FontSelection::default(), crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)?;
-            // Filename input is bounded to MacRoman HFS names. Prepare every
-            // accepted scalar once so later keys and changed default names use
-            // the resident font's actual advances, without per-key font work.
-            let mut filename_characters = String::new();
-            filename_characters.try_reserve(768).map_err(|_| NO_MEMORY)?;
-            for byte in 32..=255
-            {
-                filename_characters.push(mac_formats::text::character(byte));
-            }
-            d.editor.prepare_font_input(&filename_characters,
-                                         crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)?;
-            let mut clip = request(WindowId(w.id));
-            checked(self.window(SET_GROW_ICON_CLIP, &mut clip))?;
-            checked(self.window(SELECT_WINDOW, &mut w))?;
-            if let Err(status) = self.standard_file_draw(call.handle)
-            {
-                let _ = self.window(CLOSE_WINDOW, &mut request(WindowId(w.id)));
-                let _ = crate::kernel::with_files(|f| {
-                    self.standard_file.request(self.owner,
-                                               &mut StandardFileCall { operation: DISPOSE,
-                                                                       handle: call.handle,
-                                                                       ..Default::default() },
-                                               f)
-                });
-                serial!("STANDARD_FILE_FAILED app={} status={}", self.owner, status);
-                return Err(status);
-            }
-            serial!("STANDARD_FILE_BEGIN app={} handle={} mode={} window={}", self.owner,
-                    call.handle, call.mode, w.id);
+            return result;
         }
+        Ok(())
+    }
+
+    fn dispose_file_dialog(&mut self, handle: u64) -> Result<(), Status>
+    {
+        let dialog = self.standard_file.get(handle)?;
+        if dialog.owner != self.owner
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let windows = [dialog.auxiliary, dialog.window];
+        for window in windows
+        {
+            if self.windows.window(window).is_some()
+            {
+                checked(self.window(CLOSE_WINDOW, &mut request(window)))?;
+            }
+        }
+        self.standard_file.dispose(self.owner, handle)
+    }
+
+    fn initialize_file_dialog(&mut self, call: &StandardFileCall) -> Result<(), Status>
+    {
+        let l = layout(call.mode, Sheet::Main)?;
+        let height = l.bounds.bottom - l.bounds.top;
+        let mut w = request(WindowId(0));
+        let top = if call.mode == GET { 84 } else { 80 };
+        w.bounds = Rect::new(148, top, 492, top + height);
+        w.procedure = l.procedure;
+        checked(self.window(NEW_WINDOW, &mut w))?;
+        let d = self.standard_file.get_mut(call.handle)?;
+        d.window = WindowId(w.id);
+        d.editor
+         .set_font(FontSelection::default(), crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)?;
+        // Filename input is bounded to MacRoman HFS names. Prepare every
+        // accepted scalar once so later keys and changed default names use
+        // the resident font's actual advances, without per-key font work.
+        let mut filename_characters = String::new();
+        filename_characters.try_reserve(768).map_err(|_| NO_MEMORY)?;
+        for byte in 32..=255
+        {
+            filename_characters.push(mac_formats::text::character(byte));
+        }
+        d.editor
+         .prepare_font_input(&filename_characters, crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)?;
+        let mut clip = request(WindowId(w.id));
+        checked(self.window(SET_GROW_ICON_CLIP, &mut clip))?;
+        checked(self.window(SELECT_WINDOW, &mut w))?;
+        self.standard_file_draw(call.handle)?;
+        serial!("STANDARD_FILE_BEGIN app={} handle={} mode={} window={}", self.owner, call.handle,
+                call.mode, w.id);
         Ok(())
     }
 
@@ -240,7 +273,7 @@ impl super::Desktop
         Ok(())
     }
 
-    fn sf_sync_sheet(&mut self, id: u32) -> Result<(), Status>
+    fn sf_sync_sheet(&mut self, id: u64) -> Result<(), Status>
     {
         let d = self.standard_file.get(id)?;
         let sheet = d.sheet;
@@ -303,7 +336,7 @@ impl super::Desktop
         Ok(())
     }
 
-    fn standard_file_icon(&mut self, id: u32, entry: files::CatalogInfo, destination: Rect)
+    fn standard_file_icon(&mut self, id: u64, entry: files::CatalogInfo, destination: Rect)
                           -> Result<crate::toolbox::quickdraw::icons_service::Drawing, Status>
     {
         use crate::toolbox::quickdraw::icons_service::{self, Drawing};
@@ -382,7 +415,7 @@ impl super::Desktop
         Ok(drawing)
     }
 
-    fn standard_file_draw(&mut self, id: u32) -> Result<(), Status>
+    fn standard_file_draw(&mut self, id: u64) -> Result<(), Status>
     {
         let d = self.standard_file.get(id)?;
         let sheet = d.sheet;
@@ -712,7 +745,7 @@ impl super::Desktop
         result
     }
 
-    fn sf_action(&mut self, id: u32, action: Action, when: u32)
+    fn sf_action(&mut self, id: u64, action: Action, when: u32)
     {
         let now = crate::machine::clock::now().ok().and_then(|t| t.mac_seconds()).unwrap_or(0);
         let timestamp =

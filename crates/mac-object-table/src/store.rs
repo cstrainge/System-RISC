@@ -34,12 +34,37 @@ struct Entry<T>
     value:            T,
     registration_use: ManuallyDrop<Option<Use>>
 }
-struct Values<T, G: InvocationGate>
+struct Values<T, G: InvocationGate, S>
 {
     slots:   Vec<Option<Entry<T>>>,
     claim:   Arc<Claim<G>>,
     stored:  usize,
-    storage: Option<Storage<G>>
+    state:   Option<S>,
+    storage: ManuallyDrop<Option<Storage<G>>>
+}
+impl<T, G: InvocationGate, S> Values<T, G, S>
+{
+    fn iter(&self) -> impl Iterator<Item = (u64, &T)>
+    {
+        self.slots.iter().filter_map(|slot| {
+                             let entry = slot.as_ref()?;
+                             self.claim
+                                 .owner
+                                 .contains(entry.key)
+                                 .then_some((entry.id, &entry.value))
+                         })
+    }
+}
+impl<T, G: InvocationGate, S> Drop for Values<T, G, S>
+{
+    fn drop(&mut self)
+    {
+        drop(self.state.take());
+        let storage = core::mem::replace(&mut self.storage, ManuallyDrop::new(None));
+        drop(ManuallyDrop::into_inner(storage));
+        // Failed saved-state destruction cannot acknowledge its backing's
+        // ticket or release that provider pin. Native recovery remains M-D04.
+    }
 }
 
 // The backing is itself a registered resource. Its release may precede its
@@ -103,14 +128,15 @@ impl<G: InvocationGate> Drop for Storage<G>
 /// Growth is fallible and precedes publication. Prepared backing starts at one
 /// slot and doubles on demand; this is not a live-object quota. Per-owner history lives in the
 /// authoritative ledger even when an empty store is dropped and recreated.
-pub struct Store<T, G: InvocationGate>
+pub struct Store<T, G: InvocationGate, S = ()>
 {
     kind:                 KindCode,
     policy:               CapacityPolicy,
-    owners:               Vec<Values<T, G>>,
+    owners:               Vec<Values<T, G, S>>,
     ids:                  HashMap<u64, ResourceKey>,
     registration:         Option<KindLease<G>>,
-    storage_registration: Option<KindLease<G>>
+    storage_registration: Option<KindLease<G>>,
+    make_state:           fn(DomainId) -> Result<S, PoolError>
 }
 impl<T, G: InvocationGate> Store<T, G>
 {
@@ -121,7 +147,8 @@ impl<T, G: InvocationGate> Store<T, G>
                owners: Vec::new(),
                ids: HashMap::new(),
                registration: None,
-               storage_registration: None }
+               storage_registration: None,
+               make_state: |_| Ok(()) }
     }
 
     /// Resident stores bind policy and release identity to the registry's
@@ -140,6 +167,17 @@ impl<T, G: InvocationGate> Store<T, G>
     /// namespace, so bookkeeping never consumes the object's capacity policy.
     pub fn owned(registration: KindLease<G>, storage: KindLease<G>) -> Result<Self, PoolError>
     {
+        Self::owned_state(registration, storage, |_| Ok(()))
+    }
+}
+impl<T, G: InvocationGate, S> Store<T, G, S>
+{
+    /// The manager's saved per-owner state shares the backing's registered
+    /// lifetime. Its fallible factory and destructor run outside ledger locks.
+    pub fn owned_state(registration: KindLease<G>, storage: KindLease<G>,
+                       make_state: fn(DomainId) -> Result<S, PoolError>)
+                       -> Result<Self, PoolError>
+    {
         if registration.registration().code == storage.registration().code
         {
             return Err(PoolError::DuplicateKind { owner: registration.registration()
@@ -148,9 +186,14 @@ impl<T, G: InvocationGate> Store<T, G>
                                                                      .owner(),
                                                   kind:  registration.registration().code });
         }
-        let mut store = Self::registered(registration);
-        store.storage_registration = Some(storage);
-        Ok(store)
+        let spec = registration.registration();
+        Ok(Self { kind: spec.code,
+                  policy: spec.capacity,
+                  owners: Vec::new(),
+                  ids: HashMap::new(),
+                  registration: Some(registration),
+                  storage_registration: Some(storage),
+                  make_state })
     }
 
     fn owner_index(&self, owner: DomainId) -> Result<usize, usize>
@@ -185,13 +228,15 @@ impl<T, G: InvocationGate> Store<T, G>
         let mut values = Vec::new();
         values.try_reserve(slots).map_err(|_| error)?;
         values.resize_with(slots, || None);
+        let state = (self.make_state)(owner.owner())?;
         let storage =
             self.storage_registration.as_ref().map(|kind| Storage::new(owner, kind)).transpose()?;
         self.owners.insert(at,
                            Values { claim,
                                     slots: values,
                                     stored: 0,
-                                    storage });
+                                    state: Some(state),
+                                    storage: ManuallyDrop::new(storage) });
         Ok(at)
     }
 
@@ -317,7 +362,7 @@ impl<T, G: InvocationGate> Store<T, G>
         let key = ticket.key();
         if let Ok(at) = self.owner_index(key.owner())
         {
-            if let Some(state) = &mut self.owners[at].storage
+            if let Some(state) = &mut *self.owners[at].storage
             {
                 if state.key == key && state.released.is_none()
                 {
@@ -383,15 +428,45 @@ impl<T, G: InvocationGate> Store<T, G>
 
     pub fn iter(&self) -> impl Iterator<Item = (u64, &T)>
     {
-        self.owners.iter().flat_map(|values| {
-                              values.slots.iter().filter_map(|slot| {
-                                                     let entry = slot.as_ref()?;
-                                                     values.claim
-                                                           .owner
-                                                           .contains(entry.key)
-                                                           .then_some((entry.id, &entry.value))
-                                                 })
-                          })
+        self.owners.iter().flat_map(Values::iter)
+    }
+
+    /// Saved state is accessible only while its registered backing is live.
+    /// Pending/quarantined backing stays retained exclusively for cleanup.
+    pub fn state(&self, incarnation: u64) -> Option<&S>
+    {
+        let at =
+            self.owners
+                .binary_search_by_key(&incarnation, |values| {
+                    values.claim.owner.owner().incarnation()
+                })
+                .ok()?;
+        if !self.storage_registration.as_ref()?.live()
+        {
+            return None;
+        }
+        let values = &self.owners[at];
+        let storage = values.storage.as_ref()?;
+        values.claim.owner.contains(storage.key).then_some(())?;
+        values.state.as_ref()
+    }
+
+    pub fn state_mut(&mut self, incarnation: u64) -> Option<&mut S>
+    {
+        let at =
+            self.owners
+                .binary_search_by_key(&incarnation, |values| {
+                    values.claim.owner.owner().incarnation()
+                })
+                .ok()?;
+        if !self.storage_registration.as_ref()?.live()
+        {
+            return None;
+        }
+        let values = &mut self.owners[at];
+        let storage = values.storage.as_ref()?;
+        values.claim.owner.contains(storage.key).then_some(())?;
+        values.state.as_mut()
     }
 
     /// No temporary ID vector and no allocation proportional to object count.
@@ -438,7 +513,7 @@ impl<T, G: InvocationGate> Store<T, G>
         }
     }
 }
-impl<T, G: InvocationGate> Drop for Store<T, G>
+impl<T, G: InvocationGate, S> Drop for Store<T, G, S>
 {
     fn drop(&mut self)
     {

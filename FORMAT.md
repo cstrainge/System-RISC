@@ -559,6 +559,13 @@ Quarantined payloads retain both backing and provider pins for retry. The walk
 reports callbacks accepted with a pending ticket as deferred; the final ledger
 pending count, not callback success, remains the death barrier.
 
+Standard File follows the same native identity contract: `StandardFileCall.handle`
+and `DialogId` are u64 tokens in SFDL. SFST owns the package's per-domain backing
+and saved active-dialog index. Completed dialogs may remain owned while a new
+dialog is active; disposing an older one cannot clear the newer index. Native
+and Pascal-string requests share these identities and validation. This does not
+alter original 68k Standard File contracts.
+
 All native definitions, System, apps and fixtures rebuild together at ABI 1.
 The global 256-slot Control table and its shared generation array are removed.
 

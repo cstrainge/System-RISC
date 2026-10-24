@@ -32,8 +32,8 @@ only the old/new visible rows and detail pane; resizing configures the same owne
 objects. The palette comes from resident theme roles.
 
 Current coverage is deliberately partial: only process domains are enumerated,
-and their ledgers contain migrated controls, scroll boxes and their backing
-state. Pool details include readable release providers from the public kind
+and their ledgers contain migrated controls, scroll boxes, Standard File dialogs
+and their backing/saved state. Pool details include readable release providers from the public kind
 registry. System/bootstrap/module domains, individual object detail,
 CPU/account/page/service data, Kill/Restart,
 journal, preferences and the four new native controls remain staged work. There
