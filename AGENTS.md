@@ -116,6 +116,10 @@ Performance bar: the code must not do unnecessary work. Full recomputation is th
 - Do not retain dead code or superseded implementations. Remove unused
   placeholders instead of suppressing dead-code warnings; introduce executable
   pieces with their consumers as the staged model becomes resident.
+- Public documentation must explain its contracts and remaining gates without
+  referring readers to private workspace handoff specs or conversations. Keep
+  that communication outside the OS repository; archive completed work in the
+  workspace's private `completed/` directory.
 
 ## Resident panic discipline
 

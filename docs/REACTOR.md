@@ -4,9 +4,9 @@
 > privileged or 'magic' act.
 
 Reactor Room is the ordinary native application that makes the memory/lifetime-model
-migration observable. Its source contract is the workspace document
-`reactor-and-toolbox-controls-unified.md` (2026-10-23), which supersedes its
-three earlier design notes. This document records integration, not completion.
+migration observable. The stages below describe its public service contracts
+and remaining integration work; the application ships incrementally with those
+services.
 
 ## Stage integration
 

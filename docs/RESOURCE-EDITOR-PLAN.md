@@ -1,12 +1,11 @@
 # Resource formats and editor follow-on plan
 
-2026-10-22. Follow-on review of the workspace resource specifications against
-the current implementation. Implementation is deferred to the planned Res Edit
-rewrite; Text Edit performance fixes take priority after the filesystem commit.
+2026-10-22. Resource authoring and editor architecture against the current
+implementation. Implementation is deferred to the planned Res Edit rewrite.
 This document records dependencies and contradictions, not an implemented SPI.
 
-Sources: resedit-editors-spec.md; resources-json-spec.md;
-extension-driver-system-spec.md; System7/docs/RESEDIT.md; current Res Edit code.
+Related architecture: [Res Edit](RESEDIT.md) and
+[extension composition](EXTENSION-TRAITS-DESIGN.md).
 
 ## Agreed direction
 
@@ -34,13 +33,13 @@ extension-driver-system-spec.md; System7/docs/RESEDIT.md; current Res Edit code.
    thread-scoped nested host guards and pinned package generations first.
 2. Current module lifetimes are boot-pinned. Res Edit needs session-owned pins
    and callback draining, not arbitrary unloading of trusted kernel drivers.
-3. Unreleased builds still break/rebuild together (AGENTS). D-01/D-02 describe
-   future published-contract stability; no publication point exists yet, so do
+3. Unreleased builds still break/rebuild together (AGENTS). Published contracts
+   will require independent revision stability; no publication point exists yet, so do
    not add old-project revision wrappers as part of this work.
 4. An in-process editor panic terminates Res Edit. Unsaved committed document
    bytes do not survive process termination solely because the host owned them.
-   Section 3.7(2) must be narrowed; staged on-disk saves survive, RAM needs a
-   separate journal/service to survive. Default spec excludes an autosave journal.
+   Staged on-disk saves survive; RAM needs a separate journal/service to survive.
+   The initial editor design excludes an autosave journal.
 5. EDLS's optional alias tail lacks a complete framing/ID-selector encoding.
    Freeze a bounded shared codec, mandatory/default fields and alias-cycle
    rejection before emitting/reading registration bytes.
@@ -60,7 +59,7 @@ extension-driver-system-spec.md; System7/docs/RESEDIT.md; current Res Edit code.
     containers over identical blocks. Selected export must not renumber resources,
     invent companions, change file association, or erase unrelated dirty flags.
 11. FASS is owned by `crates/mac-module/src/file_handlers.rs`, not the
-    filesystem interface crate named in the JSON spec. Its `FAS1` version 1
+    filesystem interface crate. Its `FAS1` version 1
     codec has an 8-byte header and 12-byte rules: file type, mount action,
     signed icon ID and four reserved zero bytes; no creator field. FSYS v4
     is a separate interface contract. Reconcile the schema with that codec in
@@ -101,7 +100,7 @@ readonly saves, disk/flush/rollback failures and editor panic without file damag
   registry; RSSC must be registered with its invocation contract, validation and
   loader tests in the same slice as editor packaging.
 - `tools/mac-build/src/manifest.rs` remains the current authoring compiler. The
-  resource catalog in the proposed JSON spec is a target, not current coverage.
+  planned complete Macintosh resource catalog is a target, not current coverage.
 - Driver discovery stays in System Folder/Drivers; extensions stay in Extensions.
   Editor discovery must not borrow trusted kernel execution merely because its
   packaging reuses native code resources.
@@ -125,7 +124,8 @@ requires a separate journal/service decision.
 
 UI and source bridge: original fixtures for DLOG/DITL/WIND/MENU, selective
 exports preserving IDs and unrelated dirty state, clipboard remapping as an
-atomic set, and the spec's Get Info two-edit/recompile comparison. Trace pane
+atomic set, and editing two Get Info dialog items followed by export/recompile
+whose resource diff contains only those edits. Trace pane
 scrolls and selection changes: unchanged headers, zero whole-fork rescans and
 bounded changed-pane damage. Retain full code metadata outside the scroll view.
 

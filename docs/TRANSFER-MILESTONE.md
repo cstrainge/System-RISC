@@ -1,10 +1,8 @@
 # Complete external-volume workflows
 
-Authorized 2026-10-21: implement targets 1–6, then
-review the root resource-editor and resources.json specifications together with
-extension-driver-system-spec.md. Do not mark either mount driver complete while
-its required contracts remain missing. On 2026-10-22 the user superseded the
-earlier push instruction: commit the filesystem milestone locally; do not push.
+This milestone covers six external-volume workflows and the resource-editor
+follow-on architecture. Each mount driver must implement its complete required
+contract before the corresponding workflow can be considered complete.
 
 ## Acceptance targets
 
@@ -108,8 +106,7 @@ Text Edit performance and display-option work is next, in its own commit.
 - [x] Complete provider mutation contracts and persistence.
 - [x] Transfer engine and Finder copy/move/cancellation UI.
 - [x] Application drag targets and complete end-to-end acceptance matrix.
-- [x] Review resedit-editors-spec.md, resources-json-spec.md and
-      extension-driver-system-spec.md; record their combined follow-on design.
+- [x] Record the combined resource-authoring, editor and extension follow-on design.
 
 Use private optimized guests, preserve the visible VM, retain reports outside
 Git and prune obsolete media at every check boundary. Passing smaller gates
@@ -117,11 +114,8 @@ closes only the named milestone, never the whole driver contract.
 
 ## Historical implementation batch (superseded by current findings)
 
-At the user's request, finish the remaining implementation before running the
-combined verification pass. This was the implementation-stage gate; see Current findings for subsequent
-verification. The latest user instruction is to commit verified filesystem work
-without pushing. Progress reports are also appended to the
-workspace-root `status.txt` (outside this repository).
+This section records implementation work before the combined verification
+pass. Current findings above describe its subsequent qualification.
 
 The pending tree adds field-selective provider metadata transactions, optional
 identity-keyed annotations, mixed plain/container host-tool export, delayed
@@ -583,7 +577,7 @@ source/read protection and recovery UI; application document delivery/type
 contracts and application icon targets; archive-to-writable transfer and the
 full fault/disconnect/RAII/Finder matrix; combined build/native/visual/performance
 verification; contract-version regeneration and docs/api generation. Review of
-the resource-editor/extension specs remains after all six acceptance targets.
+the resource-editor/extension architecture remains after all six acceptance targets.
 No build/test, commit or push was run for this continuation.
 
 ## Verified Text Edit / JSON preferences preview, 2026-10-22

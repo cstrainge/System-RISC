@@ -3,11 +3,8 @@
 Status: §13.1 accepted by Chloe, 2026-10-23; proceeding with §13.2. The complete
 RVA23 floor is live. Process identity/directory migration has begun; the live
 allocator, paging, complete owner-walk cleanup and scheduler-capacity migration
-remain pending. Source contract:
-workspace `memory-app-resource-model-spec.md`; companion inputs are
-`extension-traits-shape-brief.md`, `extension-driver-system-spec.md` and Xtra's
-workspace `codebase.md`. Those private inputs remain outside this repository;
-this document preserves the implementation decisions and unresolved questions.
+remain pending. This document describes the implemented foundations,
+architectural decisions and remaining migration gates.
 
 ## What landed
 
@@ -216,8 +213,8 @@ healthy range selections remain [DECIDE]**; don't fossilize today's physical
 0x81… application addresses as future virtual addresses. The emitter exists;
 production linker scripts have not switched to it.
 
-Image resource residency proposal: **resident-with-image** for v1 (the spec's
-permitted provisional default). Last image release drops code/resource backing
+Image resource residency proposal: **resident-with-image** for v1.
+Last image release drops code/resource backing
 immediately; no unaccounted warm cache. Shared immutable image backing plus
 per-process writable sections must replace today's never-unloaded `Once` slots.
 Demand paging is a separate [DECIDE], not an implicit change here.
@@ -261,7 +258,7 @@ ratification after measurement; no magic emergency buffer sizes are chosen now.
 | M-D06 | New refcounted/drop-on-last image vs fixed eight never-evicted `Once` cache | Replace cache with facility-owned image/pin aliases; shared RO and private RW mapping, not relocation into another hardcoded slot |
 | M-D07 | Module allocator forwarding vs current `drivers/vhost-filesystem` and `drivers/stuffit-filesystem` private global heaps (`mac-driver-alloc` calls the module global allocator) | New invocation adapter forwards explicit allocation context; migrate module implementations together, not by mixing heaps/free functions |
 | M-D08 | Port/copy definition protocol vs current raw surface/DefinitionCall ABI | Introduce host-owned port operations and bounded copies/managed buffers; remove raw app pointer access before privilege gate |
-| M-D09 | Synchronous participant shape brief vs queued/deadline participants in extension spec §5.5 | **Ratified, Chloe 2026-10-23.** Synchronous participants stand; the earlier queued/deadline rule is superseded. Observers remain queued on their own execution context |
+| M-D09 | Synchronous participants vs earlier queued/deadline participant designs | **Ratified, Chloe 2026-10-23.** Synchronous participants stand; the earlier queued/deadline rule is superseded. Observers remain queued on their own execution context |
 | M-D10 | Registered payload dispatch alone did not release empty per-owner value-array/cache backing | Closed for migrated stores: CSTA/SBST register backing lifetimes; the last child completes a deferred backing release, including after quarantine retry. The explicit control pruning hook is removed. Other manager saved-state slots and EXIT cleanup remain stage-2/3 migration work |
 | M-D11 | Hard-bound capacity reasons are currently resident `&'static str` values, while module-sourced policies and empty pool history must survive provider unload | Required before module registration admission: retain kernel-owned bounded reason data in pool history. Never cast module text to a static reference, leak a per-registration string, or leave history pointing into unloaded code. Current resident literals are valid; this is module-phase migration work |
 
@@ -308,8 +305,8 @@ See [architecture](../ARCHITECTURE.md#native-isa-floor).
 
 Reactor Room is now the first customer for stage-2 inspection APIs and a visible
 acceptance surface for each later stage. Implement its application and native
-data controls alongside the services, following [Reactor Room integration](REACTOR.md)
-and the workspace unified design. Enumeration, capabilities, revisions and cheap
+data controls alongside the services, following [Reactor Room integration](REACTOR.md).
+Enumeration, capabilities, revisions and cheap
 cumulative counters are part of the model, not a private inspection backdoor.
 
 Keep §13.2 stages explicit: ISA floor; facility/manager migration; owner walk and
@@ -354,11 +351,15 @@ the metadata slots, so a new generation cannot reveal a previous payload while
 its disposal is still running. Actual kind registration/value-storage customers
 and the common EXIT walk remain staged work.
 
-The source spec's §4.6 cleanup recovery wording is scoped to contained failures
-under M-D04, as the invocation specs are. A completed walk attempt can report
-quarantined resources; it cannot claim complete reclamation or drop backing pages
-until pending cleanup and queues are drained. Arbitrary privileged-fault
-containment remains unproven and a required future gate.
+Cleanup and invocation recovery apply to contained failures only, under M-D04.
+A completed walk attempt can report quarantined resources; it cannot claim
+complete reclamation or drop backing pages until pending cleanup and queues
+are drained.
+
+The walk provides resource containment. Arbitrary privileged-fault containment
+is **unproven** and is a **required future gate**. Until a recovery contract
+exists and passes, the System must not claim it can safely recover from every
+mid-call module fault.
 
 
 ## First resident value-store customer: managed controls
@@ -466,8 +467,8 @@ single-slice NABI/RLOC association is not yet that fat-bundle implementation.
 
 ## Enumeration requirements carried by the migration
 
-The 2026-10-23 Reactor enumeration handoff and unified design require eight
-queries from the authoritative facility, not a second inspector database:
+The public inspection contract requires eight queries from the authoritative
+facility:
 
 1. Domains: kind, incarnation, human label, state and account summary.
 2. Ledgers: kind counts, retired/pending counts, generation headroom and

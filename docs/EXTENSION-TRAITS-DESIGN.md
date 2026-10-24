@@ -1,13 +1,11 @@
 # Extension traits and composition: shape for review
 
-Status: design deliverable for memory/app/resource spec §10, 2026-10-23.
+Status: extension composition design, 2026-10-23.
 **Not a published trait/ABI revision or an implemented extension runtime.**
-Inputs: workspace `extension-traits-shape-brief.md` and
-`extension-driver-system-spec.md`, [P6](SYSTEM-EXTENSIONS.md),
+Related architecture: [P6](SYSTEM-EXTENSIONS.md),
 [Host Clipboard](HOST-CLIPBOARD.md), [P13](PROCESS-ISOLATION.md), and the
-[memory model](MEMORY-APP-RESOURCE-MODEL.md). The newer shape brief's invariants
-are binding for this proposal. Conflicting older rules are listed below rather
-than edited out of their source documents.
+[memory model](MEMORY-APP-RESOURCE-MODEL.md). The participant/observer invariants,
+trait families and remaining proof gates are described below.
 
 ## One registry, explicit lifetimes, coarse dispatch
 
@@ -323,8 +321,8 @@ Finder uses the Toolbox facade; the hook does not import private System managers
 
 | ID | Conflict | Proposed handling |
 |---|---|---|
-| T-D01 | Older §5.5 defers participant replies/defaults; new brief requires synchronous participants | **Ratified, Chloe 2026-10-23:** synchronous participants; the old queued/deadline/default-on-expiry rule is superseded. Queued rights are observers/services |
-| T-D02 | Older §5.2 queues all extension code and bans host-stack callbacks | Synchronous participants and bounded SCHD calls are explicit exceptions needed by newer brief; observer deliveries remain queued. Review invocation-stack/fault mechanism before implementation |
+| T-D01 | Earlier participant designs deferred replies and supplied defaults on expiry | **Ratified, Chloe 2026-10-23:** synchronous participants; the queued/deadline/default-on-expiry rule is superseded. Queued rights are observers/services |
+| T-D02 | Earlier designs queued all extension code and banned host-stack callbacks | Synchronous participants and bounded SCHD calls are explicit exceptions; observer deliveries remain queued. Review invocation-stack/fault mechanism before implementation |
 | T-D03 | Mid-call recovery wording previously exceeded the accepted model ruling | **Resolved by M-D04, Chloe 2026-10-23.** Recovery/quarantine/degradation promises apply to contained failures only. Arbitrary privileged-fault containment is **unproven** and is a **required future gate**; the proof remains outstanding |
 | T-D04 | Registry described as holding module dyn objects/vtables; independent binaries have no stable Rust trait-object ABI | Registry holds host-owned dyn adapters over generated checked ABI; same semantic trait, no Rust-vtable wire contract |
 | T-D05 | Published multi-version wrappers vs current exact revision selection and unreleased rebuild policy | Publication boundary + adapters remain required module work. No wrappers solely for stale project artifacts; don't claim published driver support until tests prove it |
@@ -333,7 +331,7 @@ Finder uses the Toolbox facade; the hook does not import private System managers
 
 ## Invariant coverage and review gates
 
-| Brief invariant | Mechanism / evidence still required |
+| Invariant | Mechanism / evidence still required |
 |---|---|
 | Coarse dyn + object safety | Concrete request methods, host wrappers; compile-check dyn use per published revision, benchmark boundaries |
 | Unmixable chain kinds | Distinct participant Decision vs observer `()`/mailbox surface, distinct registration rights; test observer cannot obtain reply capability |

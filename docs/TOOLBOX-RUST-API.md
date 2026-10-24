@@ -1,7 +1,7 @@
 # Public Rust Toolbox API worklist
 
 Verified on 2026-10-20 before the driver/module milestone.
-Source review: workspace `toolbox-rust-api-audit-2026-10-20.md`, baseline `96461ba`.
+API audit baseline: `96461ba`.
 The ABI remains the transport and classic compatibility contract. Native apps use
 thin typed clients over the same resident services. Rebuild all apps together;
 remove superseded native paths rather than preserving old project APIs.
