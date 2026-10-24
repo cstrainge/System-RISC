@@ -26,8 +26,10 @@ currently visible QuickDraw or classic-Mac QEMU sessions.
 
 ## Startup sequence
 
-1. Park secondary harts, initialize the stack and trap handler, copy initialized
-   data from flash to RAM, clear BSS, and initialize the firmware allocator.
+1. Park secondary harts, preserve the reset DTB pointer, initialize the stack and
+   trap handler, copy initialized data from flash to RAM and clear BSS. Parse
+   DTSpec-compatible memory nodes and reject insufficient RAM before touching the
+   firmware heap. Build the disjoint reservation account after allocator admission.
 2. Scan the board's eight virtio-MMIO slots for block devices. Negotiate modern
    virtio, initialize a split request queue, and read sectors with bounded waits.
 3. Find unpartitioned HFS-B volumes or `System_RISC_HFS_B` entries in a512-byte
@@ -58,14 +60,18 @@ An original 68k System file does not satisfy this native executable contract.
 
 ## Hardware and initial limits
 
-- QEMU `virt`, RV64, 128 MiB RAM, one active hart, M-mode, identity mapping.
+- QEMU `virt`, RV64, at least 128 MiB discovered RAM, one active hart, M-mode, identity addressing.
 - UART at `0x10000000`, virtio-MMIO at `0x10001000..0x10008000`, 10 MHz CLINT
   timer, and flash at `0x20000000`.
 - The low 2 MiB of RAM is reserved for firmware state and its 256 KiB stack.
   Firmware uses a separate 8 MiB scratch heap at `0x87000000..0x87800000`;
   System loading excludes this entire high-memory region and the FDT.
   System's own 8 MiB heap is within its executable reservation;
-  `BootInfo` currently reports total RAM, not a general memory map.
+  Platform sizes/addresses come from the checked `platforms/QemuRISC-V.json`
+  record, which generates the linker symbols and Rust constants together.
+  `BootInfo` lends all discovered RAM banks and a disjoint reservation list;
+  its primary-bank summary must agree with that list. The account includes the
+  loaded System image, firmware buffers/heap, modules and FDT tail.
 - The System reservation must fit `0x80200000..0x87000000`. ROM owns one pinned
   640×480 RAM framebuffer inside its low2MiB reservation until System takes over.
 - Resource maps are limited to256KiB and selected payloads to4MiB per load. A
@@ -79,7 +85,9 @@ An original 68k System file does not satisfy this native executable contract.
   by `mac-hfs-b`, also used by the Linux host tool and image builder. Boot uses
   read-only operations. APM enumeration is bounded to128 entries. Unsupported
   format/Unicode versions, dirty headers and malformed maps are rejected.
-- The ROM has no HFS+, GPT/MBR, SCSI, legacy virtio or general memory-map support.
+- The ROM has no HFS+, GPT/MBR, SCSI or legacy virtio support. DTB discovery handles
+  root memory banks, the reservation block and static `/reserved-memory` entries;
+  dynamic/translated reserved-memory requests fail with a specific diagnostic.
 - Segment permissions are validated; no MMU/PMP protection is installed
   in this initial M-mode firmware.
 
@@ -121,10 +129,11 @@ checks plus the original packaging, disk roundtrip and native ABI tests.
 
 - [QEMU RISC-V virt firmware and flash boot](https://www.qemu.org/docs/master/system/riscv/virt.html)
 - [QEMU 10.1 reset-vector selection](https://github.com/qemu/qemu/blob/v10.1.0/hw/riscv/virt.c)
+- [Devicetree v17 flattened format](https://devicetree-specification.readthedocs.io/en/stable/flattened-format.html)
 - [Virtio 1.2 specification](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html)
 - [Apple: HFS data organization](https://dev.os9.ca/techpubs/mac/Files/Files-99.html)
 
-The ABI6 firmware opens supported block devices before choosing a startup
+The native ABI-1 firmware opens supported block devices before choosing a startup
 volume, retains their queues, and lends System disk-info/read/write/flush
 callbacks. System mounts HFS-B and non-startup classic HFS volumes through the
 same interface. Resident startup reads use the File Manager; there is no

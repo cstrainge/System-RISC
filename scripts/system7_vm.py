@@ -143,7 +143,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                 qmp('query-status', endpoint=endpoint)
                 return process, endpoint
             if any(marker in log for marker in ['BOOT_NO_SYSTEM:', 'BOOT_TRAP:', 'BOOT_PANIC:', 'BOOT_UNSUPPORTED_ISA:',
-                                               'SYSTEM_PANIC:', 'SYSTEM_TRAP:', 'SYSTEM_ALLOCATION_FAILED:']):
+                                               'BOOT_MEMORY_REJECTED:', 'SYSTEM_PANIC:', 'SYSTEM_TRAP:', 'SYSTEM_ALLOCATION_FAILED:']):
                 raise RuntimeError('System RISC startup failed:\n' + log)
             time.sleep(.05)
         raise TimeoutError('Desktop did not finish boot:\n' + serial.read_text(errors='replace')

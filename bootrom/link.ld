@@ -1,9 +1,9 @@
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 MEMORY {
-    flash (rx) : ORIGIN = 0x20000000, LENGTH = 32M
-    ram (rw) : ORIGIN = 0x80000000, LENGTH = 2M
-    scratch (rw) : ORIGIN = 0x87000000, LENGTH = 8M
+    flash (rx) : ORIGIN = __platform_FLASH_START, LENGTH = __platform_FLASH_END - __platform_FLASH_START
+    ram (rw) : ORIGIN = __platform_BOOT_START, LENGTH = __platform_BOOT_END - __platform_BOOT_START
+    scratch (rw) : ORIGIN = __platform_FIRMWARE_HEAP_START, LENGTH = __platform_FIRMWARE_HEAP_END - __platform_FIRMWARE_HEAP_START
 }
 SECTIONS {
     .text : { KEEP(*(.text.entry)) *(.text .text.*) } > flash
@@ -17,7 +17,7 @@ SECTIONS {
         __bss_start = .; *(.bss .bss.* .sbss .sbss.*) *(COMMON)
         . = ALIGN(8); __bss_end = .;
     } > ram
-    .heap (NOLOAD) : ALIGN(16) { __heap_start = .; . += 8M; __heap_end = .; } > scratch
-    .stack (NOLOAD) : ALIGN(16) { . += 256K; __stack_top = .; } > ram
+    .heap (NOLOAD) : ALIGN(16) { __heap_start = .; . += LENGTH(scratch); __heap_end = .; } > scratch
+    .stack (NOLOAD) : ALIGN(16) { . += __platform_BOOT_STACK_BYTES; __stack_top = .; } > ram
     /DISCARD/ : { *(.eh_frame .eh_frame_hdr) }
 }

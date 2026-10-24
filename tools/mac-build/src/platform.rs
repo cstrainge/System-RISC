@@ -6,6 +6,8 @@ use serde::Deserialize;
 
 use crate::{Result, error};
 
+pub mod memory;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Platform
@@ -14,7 +16,8 @@ pub struct Platform
     pub rust_target:    String,
     pub llvm_profile:   String,
     pub qemu_cpu:       String,
-    pub fatal_shutdown: FatalShutdown
+    pub fatal_shutdown: FatalShutdown,
+    memory:             memory::Definition
 }
 pub const DEFAULT_PLATFORM: &str = "QemuRISC-V";
 pub const PLATFORM_ENV: &str = "SYSTEM7_PLATFORM";
@@ -41,6 +44,7 @@ pub fn load(name: &str) -> Result<Platform>
                                  platform.name)));
     }
     artifacts_for(&platform.fatal_shutdown)?;
+    platform.memory.check()?;
     Ok(platform)
 }
 static PLATFORM: LazyLock<Platform> = LazyLock::new(|| {
@@ -149,8 +153,7 @@ mod tests
 }
 
 
-/// Board failure signal, emitted alongside linker symbols and Rust constants.
-/// General memory-layout/reservation emission follows the page-layer stage.
+/// Board failure signal emitted alongside the checked memory artifacts.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FatalShutdown
@@ -160,7 +163,21 @@ pub struct FatalShutdown
 }
 pub fn guest_artifacts() -> Result<(String, String)>
 {
-    artifacts_for(&current().fatal_shutdown)
+    let (rust, mut linker) = artifacts_for(&current().fatal_shutdown)?;
+    linker.push_str(&current().memory()?.linker_symbols());
+    Ok((rust, linker))
+}
+impl Platform
+{
+    pub fn memory(&self) -> Result<memory::Checked>
+    {
+        self.memory.check()
+    }
+}
+pub fn memory_artifacts() -> Result<(String, String)>
+{
+    let checked = current().memory()?;
+    Ok((checked.system_constants(), checked.boot_constants()))
 }
 fn artifacts_for(device: &FatalShutdown) -> Result<(String, String)>
 {

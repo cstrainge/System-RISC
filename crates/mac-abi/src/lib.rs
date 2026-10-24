@@ -115,6 +115,17 @@ impl Header
     }
 }
 
+/// Physical byte extent reported by the bootstrap, independent of pointer width.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BootMemoryRange
+{
+    pub base:   u64,
+    pub length: u64
+}
+
+pub mod boot;
+
 pub const BOOT_GRAPHICAL: u32 = 1;
 /// Supplied by the bootstrap; the loader owns the stack and zeroes native BSS.
 #[repr(C)]
@@ -131,7 +142,13 @@ pub struct BootInfo
     pub flush_disk:              Option<FlushDiskFn>,
     pub startup_disk:            u32,
     pub flags:                   u32,
-    pub startup_partition_start: u64
+    pub startup_partition_start: u64,
+    /// Borrowed for the entire System lifetime. The first bank matches ram_base/size.
+    pub ram_regions:             *const BootMemoryRange,
+    pub ram_region_count:        usize,
+    /// Disjoint page-aligned extents unavailable to the page pool.
+    pub reservations:            *const BootMemoryRange,
+    pub reservation_count:       usize
 }
 
 /// Resident in System memory for the entire application lifetime.
@@ -253,9 +270,11 @@ mod tests
         assert_eq!(core::mem::size_of::<Header>(), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_base), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, log), 24);
-        assert_eq!(core::mem::size_of::<BootInfo>(), 88);
+        assert_eq!(core::mem::size_of::<BootInfo>(), 120);
         assert_eq!(core::mem::offset_of!(BootInfo, storage_context), 32);
         assert_eq!(core::mem::offset_of!(BootInfo, startup_partition_start), 80);
+        assert_eq!(core::mem::offset_of!(BootInfo, ram_regions), 88);
+        assert_eq!(core::mem::offset_of!(BootInfo, reservations), 104);
         assert_eq!(core::mem::offset_of!(SystemServices, trap), 8);
         assert_eq!(core::mem::size_of::<SystemServices>(), 24);
         assert!(Header::for_type::<SystemServices>().supports::<SystemServices>());

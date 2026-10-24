@@ -416,11 +416,37 @@ emits both linker scripts/symbols and the Rust constants code consumes, plus the
 BootInfo reservation list for the page layer. Sizes and ranges remain tunable.
 Validate overlaps/alignment and statically knowable RAM bounds at build time;
 validate resolved placement against discovered actual RAM at boot too. Current
-ROM BootInfo still reports fixed 128 MiB: DTB RAM/topology discovery is a required
-part of that transport migration, not an already fulfilled prerequisite. Current
-QEMU module/firmware/FDT carveouts must leave kernel memory policy source.
-The generated fatal-finisher device constants introduced with definition failure
-reporting are an initial consumer, not the complete memory-map migration.
+QemuRISC-V now defines its physical reservations, flash, image/module placement,
+relocation base, boot stack and current System heap in that record. The generated
+ROM linker script and resident constants share it; those physical carveouts no
+longer live as kernel-source address literals. Boot admission parses the DTB
+before initializing its heap, reports all enabled RAM banks and combines firmware
+reservations with platform exclusions. BootInfo transports those borrowed extents
+and the loaded System reservation; System validates the same account at entry.
+The summary RAM fields are derived from the primary bank and checked against it.
+
+This is physical placement/boot transport groundwork, not live paging. The uniform
+virtual layout, physmap mappings, buddy activation, later image allocations and
+page-backed heaps remain their staged work. The ROM and System still execute in
+M-mode with identity addressing; kernel self-virtualization needs the architecture
+privilege transition in addition to SATP/table setup. No user-isolation claim
+follows from the reservation list.
+
+Physical-map qualification includes 21 parser/ABI/build host tests, 219 public
+SDK host cases, optimized whole-world packaging, seventeen ROM boot/rejection/
+fallback cases, actual 128 MiB/512 MiB/8 GiB boots and a pre-heap 64 MiB refusal.
+Native/classic ECALL smoke, boot pixels, aggregate userspace and Reactor Room on
+Linux/Windows also pass. A standalone `cargo xtask abi-check` runs the same Rust
+smoke harness used by the canonical gate. Bootstrap library tests and the RAM
+campaign now join that gate.
+
+**Open performance qualification:** the strict 1-ms physical-delivery campaign is
+not consistently met for the cold first key: a fixed three-run set measured
+1.021, 0.978 and 1.478 ms. The queued-event maxima stayed below 0.597 ms. No
+repaint or serial write appears in the first key's pre-routing interval; the
+cause is still under investigation. Keep all samples, do not discard the cold
+key or weaken the threshold, and do not call the latency baseline clean before
+page activation. These emulated samples are not a hard real-time guarantee.
 
 Future Pi targets produce one whole-device image with a board boot partition
 (firmware and loader) and an HFS-B System RISC partition. The loader discovers

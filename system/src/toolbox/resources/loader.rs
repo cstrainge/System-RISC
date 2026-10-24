@@ -125,16 +125,19 @@ impl Definitions
         let code = self.registry.prepare(resource, origin, &mut NoTranslator)?;
         let d = &code.descriptor;
         let extent = d.load_limit - d.load_base;
-        if extent > 0x1000000 || extent & 4095 != 0 || d.load_base & 4095 != 0
+        if extent
+           > crate::machine::memory::DEFINITION_LIMIT - crate::machine::memory::DEFINITION_BASE
+           || extent & 4095 != 0
+           || d.load_base & 4095 != 0
         {
             return Err(Error::Malformed("invalid code resource reservation"));
         }
         // Definition resources are independently relocatable modules. Allocate
         // top-down rather than depending on their build-time preferred addresses.
-        let mut base = 0x83000000u64 - extent;
+        let mut base = crate::machine::memory::DEFINITION_LIMIT - extent;
         loop
         {
-            if base < 0x82000000
+            if base < crate::machine::memory::DEFINITION_BASE
             {
                 return Err(Error::BudgetExceeded("code resource address space exhausted"));
             }
@@ -180,8 +183,7 @@ pub fn status(error: Error) -> Status
 
 pub fn application_region(base: u64, limit: u64) -> bool
 {
-    base < limit
-    && ((base >= 0x81000000 && limit <= 0x82000000) || (base >= 0x83000000 && limit <= 0x87000000))
+    crate::machine::memory::application_region(base, limit)
 }
 pub fn reservation(resources: &[Resource]) -> Result<(u64, u64)>
 {

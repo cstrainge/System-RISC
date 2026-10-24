@@ -23,8 +23,8 @@ impl Write for Serial
 #[global_allocator]
 static HEAP: crate::allocator::ResidentHeap = crate::allocator::ResidentHeap::empty();
 #[repr(C, align(16))]
-struct HeapMemory([u8; 8 * 1024 * 1024]);
-static mut HEAP_MEMORY: HeapMemory = HeapMemory([0; 8 * 1024 * 1024]);
+struct HeapMemory([u8; crate::machine::memory::SYSTEM_HEAP_BYTES]);
+static mut HEAP_MEMORY: HeapMemory = HeapMemory([0; crate::machine::memory::SYSTEM_HEAP_BYTES]);
 static BOOT_LOG: Once<Option<LogFn>> = Once::new();
 static RESOURCE_FILES: Once<crate::toolbox::resources::manager::Files> = Once::new();
 static FONTS: Once<crate::toolbox::quickdraw::fonts::FontManager> = Once::new();
@@ -80,13 +80,14 @@ pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [
     }
     else
     {
-        let mut regions: alloc::vec::Vec<_> = IMAGES.iter()
-                                                    .filter_map(Once::get)
-                                                    .filter(|i| i.limit > 0x83000000)
-                                                    .map(|i| (i.base, i.limit))
-                                                    .collect();
+        let mut regions: alloc::vec::Vec<_> =
+            IMAGES.iter()
+                  .filter_map(Once::get)
+                  .filter(|i| i.limit > crate::machine::memory::APPLICATION_RELOCATION_BASE)
+                  .map(|i| (i.base, i.limit))
+                  .collect();
         regions.sort_unstable();
-        let mut candidate = 0x83000000u64;
+        let mut candidate = crate::machine::memory::APPLICATION_RELOCATION_BASE;
         for (start, end) in regions
         {
             if candidate + extent <= start
@@ -95,7 +96,7 @@ pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [
             }
             candidate = candidate.max(end);
         }
-        if candidate.checked_add(extent).is_none_or(|end| end > 0x87000000)
+        if candidate.checked_add(extent).is_none_or(|end| end > crate::machine::memory::IMAGE_LIMIT)
         {
             return Err(NO_MEMORY);
         }
@@ -395,8 +396,15 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
         return ptr::null();
     }
     BOOT_LOG.call_once(|| info.log);
+    if let Err(error) = unsafe { crate::machine::memory::validate_boot(info) }
+    {
+        serial!("BOOT_MEMORY_REJECTED: {error}; rebuild the whole system and recreate stale boot \
+                 media");
+        return ptr::null();
+    }
     unsafe {
-        HEAP.initialize(addr_of_mut!(HEAP_MEMORY).cast::<u8>(), 8 * 1024 * 1024);
+        HEAP.initialize(addr_of_mut!(HEAP_MEMORY).cast::<u8>(),
+                        crate::machine::memory::SYSTEM_HEAP_BYTES);
     }
     crate::machine::traps::install();
     let files = match unsafe { crate::toolbox::files::BootStorage::from_boot_info(info) }

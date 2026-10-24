@@ -5,7 +5,6 @@
 extern crate alloc;
 mod virtio_blk;
 mod screen;
-
 use alloc::vec::Vec;
 use core::{alloc::Layout,
            arch::{asm, global_asm},
@@ -13,6 +12,7 @@ use core::{alloc::Layout,
            panic::PanicInfo,
            ptr::{addr_of_mut, read_volatile, write_volatile}};
 
+use bootrom::memory;
 use linked_list_allocator::LockedHeap;
 use mac_abi::{BAD_ARGUMENT, BootInfo, Header, NOT_FOUND, NOT_SUPPORTED, OK, Status, SystemEntry,
               SystemServices};
@@ -33,6 +33,7 @@ global_asm!(concat!(
 _start:
     csrr t0, mhartid
     bnez t0, parked
+    mv s0, a1
     csrw mie, zero
     csrw satp, zero
     la sp, __stack_top
@@ -55,7 +56,8 @@ _start:
     sd zero, 0(t0)
     addi t0, t0, 8
     j 3b
-4:  call boot_main
+4:  mv a0, s0
+    call boot_main
 parked:
     wfi
     j parked
@@ -149,10 +151,9 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     {
         return Err(Error::Malformed("startup executable is not a compatible System"));
     }
-    // Fixed QEMU virt/128 MiB board contract. Keep low 2 MiB for ROM state,
-    // stack; firmware scratch occupies 0x87000000..0x87800000 and QEMU's
-    // device tree occupies the high 2 MiB. Resource forks now include fonts.
-    if descriptor.load_base < 0x80200000 || descriptor.load_limit > 0x87000000
+    // Placement policy is generated from the checked platform record.
+    if descriptor.load_base < memory::IMAGE_BASE
+       || descriptor.load_limit > memory::APPLICATION_PRIMARY_BASE
     {
         return Err(Error::Malformed("System reservation overlaps firmware or exceeds usable RAM"));
     }
@@ -194,8 +195,7 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     let abi = Descriptor::decode(&get(*b"NABI")?.data)?;
     if abi.role != Role::Application
        || abi.abi_version != mac_abi::ABI_VERSION
-       || abi.load_base != 0x81000000
-       || abi.load_limit > 0x82000000
+       || !memory::application_region(abi.load_base, abi.load_limit)
     {
         return Err(Error::Malformed("startup Finder is incompatible; rebuild System disk"));
     }
@@ -321,7 +321,8 @@ unsafe extern "C" fn flush_disk(context: *mut (), index: u32) -> Status
 
 
 
-fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize, partition: Partition)
+fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
+         partition: Partition, memory: &mut memory::Memory)
          -> Result<()>
 {
     let plan = image::LoadPlan::new(&startup.code, &startup.descriptor, None,
@@ -333,6 +334,7 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize, pa
                 segment.length,
                 segment.flags);
     }
+    memory.reserve(startup.descriptor.load_base..startup.descriptor.load_limit)?;
     let output = unsafe {
         core::slice::from_raw_parts_mut(startup.descriptor.load_base as *mut u8, plan.length())
     };
@@ -347,9 +349,16 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize, pa
     let mut context = BootVolume { disks:      disks.as_mut_ptr(),
                                    disk_count: disks.len() };
     let context_pointer = (&mut context as *mut BootVolume).cast();
+    mac_abi::boot::Memory { ram: &memory.ram, reservations: &memory.reserved }
+        .validate(memory::PAGE_BYTES, memory.ram[0])
+        .map_err(|_| Error::Malformed("bootstrap memory account failed validation"))?;
+    serial!("BOOT_MEMORY banks={} reservations={} primary_bytes={}",
+            memory.ram.len(),
+            memory.reserved.len(),
+            memory.ram[0].length);
     let info = BootInfo { header:                  Header::for_type::<BootInfo>(),
-                          ram_base:                0x80000000,
-                          ram_size:                128 * 1024 * 1024,
+                          ram_base:                memory.ram[0].base,
+                          ram_size:                memory.ram[0].length,
                           log:                     Some(log),
                           storage_context:         context_pointer,
                           disk_info:               Some(disk_info),
@@ -358,7 +367,11 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize, pa
                           flush_disk:              Some(flush_disk),
                           startup_disk:            disk_index as u32,
                           flags:                   mac_abi::BOOT_GRAPHICAL,
-                          startup_partition_start: partition.start };
+                          startup_partition_start: partition.start,
+                          ram_regions:             memory.ram.as_ptr(),
+                          ram_region_count:        memory.ram.len(),
+                          reservations:            memory.reserved.as_ptr(),
+                          reservation_count:       memory.reserved.len() };
     let table = unsafe { entry(&info) };
     let address = table as usize as u64;
     if address < startup.descriptor.load_base
@@ -380,8 +393,39 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize, pa
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn boot_main() -> !
+extern "C" fn boot_main(tree_address: usize) -> !
 {
+    // SAFETY: QEMU's reset firmware passes the valid DTB address in a1. Only
+    // this bootstrap boundary reads a physical pointer; parsing uses checked
+    // slices. Limit the full read to the build-defined FDT reservation size.
+    let tree = unsafe {
+        if tree_address == 0 || tree_address % 8 != 0
+        {
+            serial!("BOOT_MEMORY_REJECTED: missing or unaligned DTB");
+            halt();
+        }
+        let header = core::slice::from_raw_parts(tree_address as *const u8, 40);
+        let size = u32::from_be_bytes(header[4..8].try_into().unwrap()) as usize;
+        if !(40..=memory::FDT_TAIL_BYTES as usize).contains(&size)
+        {
+            serial!("BOOT_MEMORY_REJECTED: DTB exceeds platform reservation");
+            halt();
+        }
+        bootrom::devicetree::Tree::new(core::slice::from_raw_parts(tree_address as *const u8, size))
+    };
+    let tree = match tree.and_then(|tree| {
+                             memory::admit(&tree)?;
+                             Ok(tree)
+                         })
+    {
+        Ok(tree) => tree,
+        Err(error) =>
+        {
+            serial!("BOOT_MEMORY_REJECTED: {error}");
+            halt();
+        }
+    };
+
     unsafe extern "C" {
         static mut __heap_start: u8;
         static mut __heap_end: u8;
@@ -390,6 +434,20 @@ extern "C" fn boot_main() -> !
         HEAP.lock().init(addr_of_mut!(__heap_start),
                          addr_of_mut!(__heap_end) as usize - addr_of_mut!(__heap_start) as usize);
     }
+    let mut memory = match memory::Memory::discover(&tree, tree_address as u64)
+    {
+        Ok(memory) => memory,
+        Err(error) =>
+        {
+            serial!("BOOT_MEMORY_REJECTED: {error}");
+            halt();
+        }
+    };
+    serial!("BOOT_RAM base={:#x} bytes={} banks={} reservations={}",
+            memory.ram[0].base,
+            memory.ram[0].length,
+            memory.ram.len(),
+            memory.reserved.len());
     serial!("System RISC Boot ROM v1 at 0x{:x}", boot_main as *const () as usize);
     let _ = screen::init();
     serial!("Searching virtio disks for a blessed HFS-B System Folder...");
@@ -427,7 +485,9 @@ extern "C" fn boot_main() -> !
         for partition in partitions
         {
             let result = startup(&mut disks[disk_index], partition);
-            match result.and_then(|startup| enter(startup, &mut disks, disk_index, partition))
+            match result.and_then(|startup| {
+                            enter(startup, &mut disks, disk_index, partition, &mut memory)
+                        })
             {
                 Ok(()) =>
                 {

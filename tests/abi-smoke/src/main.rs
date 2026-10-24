@@ -64,6 +64,8 @@ unsafe extern "C" fn log(bytes: *const u8, length: usize) -> Status
 #[unsafe(no_mangle)]
 extern "C" fn main() -> !
 {
+    let ram = mac_abi::BootMemoryRange { base:   0x80000000,
+                                         length: 128 * 1024 * 1024 };
     let boot = BootInfo { header:                  Header::for_type::<BootInfo>(),
                           ram_base:                0x80000000,
                           ram_size:                128 * 1024 * 1024,
@@ -75,7 +77,11 @@ extern "C" fn main() -> !
                           flush_disk:              None,
                           startup_disk:            0,
                           flags:                   0,
-                          startup_partition_start: 0 };
+                          startup_partition_start: 0,
+                          ram_regions:             &ram,
+                          ram_region_count:        1,
+                          reservations:            core::ptr::null(),
+                          reservation_count:       0 };
     let system_entry: SystemEntry = unsafe { core::mem::transmute(SYSTEM_ENTRY) };
     let finder_entry: ApplicationEntry = unsafe { core::mem::transmute(FINDER_ENTRY) };
     let services = unsafe { system_entry(&boot) };

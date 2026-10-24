@@ -255,7 +255,7 @@ definition resources through its resident filesystem service. Normal disk-boot c
 for `DESKTOP_READY`. Rebuild the complete unreleased system on format changes.
 See [CODE-RESOURCES.md](CODE-RESOURCES.md) for executable resource families.
 
-The current BootInfo is88bytes on RV64; SystemServices remains24bytes. BootInfo
+The current BootInfo is120bytes on RV64; SystemServices remains24bytes. BootInfo
 contains RAM/log information, firmware disk-info/read/write/flush callbacks,
 startup disk/partition identity and flags. Device ordinals remain stable while
 System runs; NOT_FOUND ends enumeration. Each read/write transfers exactly512
@@ -264,6 +264,26 @@ remain firmware-owned and are serialized by the resident owner guard. DiskInfo
 is24bytes and carries sector count, read-only state and driver icon identity.
 Missing write/flush callbacks make storage read-only. Unknown native artifacts
 must be rebuilt together; no earlier BootInfo layout is decoded.
+
+At byte88, BootInfo appends a pointer/count pair for RAM banks, followed at
+byte104 by a pointer/count pair for reservations. Counts are native usize
+(RV64: u64); each extent is `{ base: u64, length: u64 }`. Arrays are borrowed
+from pinned firmware storage for the System lifetime. The existing RAM summary
+is derived from bank0 and must agree with it; it is not a configured world size.
+Every extent is nonempty, page aligned and checked for overflow. RAM banks do
+not overlap. Reservations are disjoint and wholly within one bank. System
+validates the complete account at entry. The ROM discovers all enabled memory
+banks and firmware reservations from the DTB; its reservation union includes
+build-defined firmware state/heap, the module arena, the FDT tail and the loaded
+System reservation (including its static heap/framebuffers). Later loader
+allocations must join the same account when the page layer becomes live.
+
+`platforms/<name>.json` defines physical placement policy. mac-build rejects
+overlap, misalignment, arithmetic overflow and ranges outside minimum RAM before
+emitting linker symbols or Rust constants. The ROM link script, flash packager,
+module allocator, relocation arena and current System heap consume that checked
+record. Actual RAM size remains a boot discovery. Paging, virtual placement and
+page-backed heaps are separate staged work; these records do not enable an MMU.
 
 Native catalog and volume names have256-byte UTF8 buffers, enough for255-byte
 NFC names plus a spare byte. Catalog dates are unsigned64-bit microseconds since

@@ -23,15 +23,17 @@ pub fn package_rom(workspace: &Workspace) -> Result<Value>
     let rom = dist.join("bootrom.bin");
     run(Command::new("llvm-objcopy").args(["-O", "binary"]).arg(&elf).arg(&rom))?;
     let length = rom.metadata()?.len();
-    if length == 0 || length > 32 * 1024 * 1024
+    let memory = workspace.platform.memory()?;
+    if length == 0 || length > memory.flash_bytes()
     {
-        return Err(error("ROM payload does not fit QEMU flash bank"));
+        return Err(error("ROM payload does not fit the selected platform flash bank"));
     }
-    OpenOptions::new().write(true).open(&rom)?.set_len(32 * 1024 * 1024)?;
+    OpenOptions::new().write(true).open(&rom)?.set_len(memory.flash_bytes())?;
     fs::copy(&elf, dist.join("bootrom.elf"))?;
-    let report = json!({"image": workspace.describe(&rom), "elf": workspace.describe(&dist.join("bootrom.elf")), "flash_base": 0x20000000u64, "payload_size": length, "flash_bank_size": 32 * 1024 * 1024, "sha256": package::sha256(&fs::read(rom)?), "source": "System7/bootrom", "execution": "M-mode execute-in-place from read-only QEMU virt pflash"});
+    let report = json!({"image": workspace.describe(&rom), "elf": workspace.describe(&dist.join("bootrom.elf")), "flash_base": memory.flash_base(), "payload_size": length, "flash_bank_size": memory.flash_bytes(), "sha256": package::sha256(&fs::read(rom)?), "source": "System7/bootrom", "execution": "M-mode execute-in-place from read-only QEMU virt pflash"});
     write_json(&dist.join("bootrom.json"), &report)?;
-    println!("Packaged boot ROM: {length} bytes in 32 MiB flash bank.");
+    println!("Packaged boot ROM: {length} bytes in {} MiB platform flash bank.",
+             memory.flash_bytes() / (1024 * 1024));
     Ok(report)
 }
 
@@ -169,12 +171,29 @@ fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alterat
             // Grow actual resident payloads as well as the fork's unused tail.
             // ROM selects executable resources; System must load this additional
             // resource within its explicit selected-payload memory budget.
+            let payload_bytes = resources.iter().try_fold(0usize, |total, resource| {
+                                                     total.checked_add(resource.data.len())
+                                                          .ok_or_else(|| {
+                                                              error("large-fork fixture payload \
+                                                                     length overflow")
+                                                          })
+                                                 })?;
+            let budget = resource::stream::Budget::default().payload_bytes;
+            let extra = budget.checked_sub(payload_bytes)
+                              .map(|headroom| headroom / 2)
+                              .filter(|extra| *extra >= 64 * 1024)
+                              .ok_or_else(|| {
+                                  error("large-fork fixture needs at least 128 KiB of \
+                                         selected-payload budget headroom; inspect System \
+                                         resources before changing the loader budget")
+                              })?
+                              .min(1024 * 1024);
             resources.push(resource::Resource { kind:       *b"TEST",
                                                 id:         32760,
                                                 name:
                                                     Some(b"Large-fork boot acceptance".to_vec()),
                                                 attributes: 0,
-                                                data:       vec![0x5a; 1024 * 1024] });
+                                                data:       vec![0x5a; extra] });
         }
         "code" => resources.iter_mut().find(|r| r.kind == *b"RV64").unwrap().data[0] = 0,
         "elf-resource" =>
@@ -205,7 +224,13 @@ fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alterat
     file.resources = resource::encode(&resources)?;
     if alteration == "large-fork"
     {
-        file.resources.resize(5 * 1024 * 1024 + 17, 0x77);
+        // Never truncate a growing System fork while constructing padding.
+        let padded_length = file.resources
+                                .len()
+                                .checked_add(17)
+                                .ok_or_else(|| error("large-fork fixture length overflow"))?
+                                .max(5 * 1024 * 1024 + 17);
+        file.resources.resize(padded_length, 0x77);
     }
     let _ = directory;
     disk::edit(image, |volume| {

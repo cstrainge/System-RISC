@@ -197,8 +197,8 @@ impl Workspace
                                "--exclude", "quickdraw-test", "--exclude", "text-edit",
                                "--exclude", "cursor-test", "--exclude", "panic-test",
                                "--exclude", "resedit", "--exclude", "reactor", "--exclude",
-                               "abi-smoke", "--exclude", "bootrom", "--exclude", "native-wdef",
-                               "--exclude", "native-buttons-cdef", "--exclude", "native-mdef"]))?;
+                               "abi-smoke", "--exclude", "native-wdef", "--exclude",
+                               "native-buttons-cdef", "--exclude", "native-mdef"]))?;
         // The large-fork fixture writes every logical block through the shared
         // core, then verifies 64-bit File Manager transport through the SDK.
         run(self.cargo().args(["test", "--locked", "--release", "-p", "mac-toolbox", "--test",
@@ -217,13 +217,13 @@ impl Workspace
         {
             self.private_guest_test(test)?;
         }
-        for test in ["dates", "boot_ui", "resedit", "menus", "finder_trash", "file_writes_guest",
-                     "deferred_close", "get_info_ui", "events", "clipboard", "textedit_graphical",
-                     "text_edit_documents", "textedit_display", "textedit_performance", "typing",
-                     "processes", "application_ui", "retained_update", "event_latency",
-                     "cursor_graphical", "busy_cursor", "panic_graphical", "finder_selection",
-                     "transfer_incident", "remote_get_info", "finder_drag", "finder_layout",
-                     "reactor_ui", "definition_binding"]
+        for test in ["dates", "boot_ui", "boot_memory", "resedit", "menus", "finder_trash",
+                     "file_writes_guest", "deferred_close", "get_info_ui", "events", "clipboard",
+                     "textedit_graphical", "text_edit_documents", "textedit_display",
+                     "textedit_performance", "typing", "processes", "application_ui",
+                     "retained_update", "event_latency", "cursor_graphical", "busy_cursor",
+                     "panic_graphical", "finder_selection", "transfer_incident", "remote_get_info",
+                     "finder_drag", "finder_layout", "reactor_ui", "definition_binding"]
         {
             self.private_guest_test(test)?;
         }
@@ -425,7 +425,8 @@ fn execute() -> Result<()>
         }
     }
     let checking =
-        args.first().is_some_and(|s| matches!(s.as_str(), "check" | "test" | "boot-check"));
+        args.first()
+            .is_some_and(|s| matches!(s.as_str(), "check" | "test" | "boot-check" | "abi-check"));
     let name = platform.or_else(|| env::var(mac_build::platform::PLATFORM_ENV).ok())
                        .unwrap_or_else(|| mac_build::platform::DEFAULT_PLATFORM.into());
     let workspace = Workspace::new(build, checking, mac_build::platform::load(&name)?)?;
@@ -436,6 +437,7 @@ fn execute() -> Result<()>
                                             | "rom"
                                             | "boot"
                                             | "boot-check"
+                                            | "abi-check"
                                             | "check"
                                             | "test")
                                })
@@ -469,6 +471,12 @@ fn execute() -> Result<()>
                                        .arg("System7/scripts/prune_system7_images.py"));
             checked?;
             cleaned?;
+        }
+        [command] if command == "abi-check" =>
+        {
+            let reports = workspace.build()?;
+            let result = smoke::check(&workspace, &reports)?;
+            write_json(&workspace.build.join("abi-smoke/result.json"), &result)?;
         }
         [command] if command == "rom" =>
         {
@@ -526,6 +534,7 @@ fn help()
               and boot ROM\n  cargo xtask image          Build a separate 500 MiB HFS-B disk and \
               qcow2\n  cargo xtask rom            Build the read-only flash ROM\n  cargo xtask \
               boot [DISK]    Boot from a read-only raw/qcow2 disk; serial console\n  cargo xtask \
+              abi-check      Verify native/classic ABI through real ECALLs\n  cargo xtask \
               boot-check     Verify ROM disk boot and rejection cases\n  cargo xtask inspect \
               FILE   Validate a native MacBinary file\n  cargo xtask package MANIFEST ELF OUT  \
               Package a native application\n  cargo xtask check          Host, disk, ABI, ROM \
