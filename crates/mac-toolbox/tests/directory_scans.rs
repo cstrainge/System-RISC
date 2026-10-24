@@ -144,7 +144,7 @@ fn collect(system: &System<'_>, parent: mac_toolbox::Cnid) -> (Entries, usize, u
 fn incremental_directory_entries_match_catalog_and_allocation_with_one_leaf_per_step()
 {
     let fixture = Fixture::new();
-    let (expected, _) =
+    let (mut expected, _) =
         fixture.run(|system| {
                    let parent =
                        system.files()
@@ -181,6 +181,14 @@ fn incremental_directory_entries_match_catalog_and_allocation_with_one_leaf_per_
                              .unwrap();
                    collect(system, parent.id)
                });
+    // Catalog contents persist, but mounted-volume handles belong to this
+    // service incarnation and must not survive reconstruction.
+    let current_volume = actual.values().next().unwrap().0.volume;
+    for (catalog, _, _) in expected.values_mut()
+    {
+        assert_ne!(catalog.volume, current_volume);
+        catalog.volume = current_volume;
+    }
     assert_eq!(actual, expected);
     assert!(pending > 0, "unrelated leaves must yield progress");
     assert!(activity.reads - baseline.reads <= steps,
@@ -199,7 +207,7 @@ fn incremental_directory_entries_match_catalog_and_allocation_with_one_leaf_per_
 fn directory_scan_mutation_remount_and_binding_guards_prevent_mixed_totals()
 {
     let fixture = Fixture::new();
-    let ((saved, parent), _) =
+    let ((saved, parent, old_volume), _) =
         fixture.run(|system| {
                    let files = system.files();
                    let parent =
@@ -239,14 +247,20 @@ fn directory_scan_mutation_remount_and_binding_guards_prevent_mixed_totals()
                                         parent,
                                         &mut fresh)
                         .unwrap();
-                   (fresh, parent)
+                   (fresh, parent, files.volume_at(0).unwrap().id)
                });
     fixture.run(|system| {
+               let files = system.files();
+               let new_volume = files.volume_at(0).unwrap().id;
+               assert_ne!(new_volume, old_volume);
                let mut cursor = saved;
-               assert_eq!(system.files().scan_directory(system.files().volume_at(0).unwrap().id,
-                                                        parent,
-                                                        &mut cursor),
-                          Err(Error::ScanStale));
+               assert_eq!(files.scan_directory(old_volume, parent, &mut cursor),
+                          Err(Error::NotFound));
+               assert_eq!(cursor, saved, "stale mount refusal changed the cursor");
+               assert_eq!(files.scan_directory(new_volume, parent, &mut cursor),
+                          Err(Error::BadArgument));
+               assert_eq!(cursor, saved, "foreign cursor binding refusal changed the cursor");
+               assert_eq!(collect(system, parent).0.len(), 4, "a fresh scan still works");
            });
 }
 #[test]

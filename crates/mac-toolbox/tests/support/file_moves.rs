@@ -101,7 +101,10 @@ pub fn persisted(system: &System<'_>, volume: VolumeId, expected: &CatalogInfo, 
                  resources: &[u8])
 {
     let actual = system.files().catalog(volume, expected.id).unwrap();
-    same_object(expected, &actual);
+    // Remounts preserve the catalog identity, not the old mount capability.
+    let rebound = CatalogInfo { volume,
+                                ..expected.clone() };
+    same_object(&rebound, &actual);
     assert_eq!(actual.parent, expected.parent);
     assert_eq!(fork(system, volume, expected.id, Fork::Data), data);
     assert_eq!(fork(system, volume, expected.id, Fork::Resource), resources);

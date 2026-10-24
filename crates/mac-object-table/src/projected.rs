@@ -14,7 +14,6 @@ use crate::{Kind, Table,
 #[derive(Debug)]
 pub enum Error
 {
-    UnscopedProjection,
     ProjectionExhausted,
     Pool(PoolError)
 }
@@ -24,11 +23,6 @@ impl fmt::Display for Error
     {
         match self
         {
-            Self::UnscopedProjection =>
-            {
-                f.write_str("object projection requires boot-wide generation history; this \
-                             namespace has not migrated")
-            }
             Self::ProjectionExhausted =>
             {
                 f.write_str("32-bit object projection has no reusable slot or backing memory")
@@ -76,12 +70,6 @@ impl<T, G: InvocationGate> Store<T, G>
 {
     pub fn new(wire: Kind, payload: KindLease<G>, backing: KindLease<G>) -> Result<Self, Error>
     {
-        // Refuse a namespace whose table could recreate a foreign/stale wire ID.
-        // Adding a customer requires its shared generation history first.
-        if wire.shared_generation(0).is_none()
-        {
-            return Err(Error::UnscopedProjection);
-        }
         Ok(Self { projection: Arc::try_new(Projection { entries: Spinlock::new(Table::new(wire)) })
                                   .map_err(|_| Error::ProjectionExhausted)?,
                   values:     store::Store::owned(payload, backing).map_err(Error::Pool)? })

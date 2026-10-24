@@ -9,8 +9,11 @@ pub mod projected;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
 
-// App-local tables share generation histories so the same slot in two apps
-// cannot issue the same ID. The classic memory wire contract stays unchanged.
+// All tables share boot-wide generation histories: reconstructed managers and
+// concurrent instances cannot issue the same wire ID. Memory's contract stays unchanged.
+static FILE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
+static FILE_WRITE_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
+static VOLUME_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static MEMORY_GENERATIONS: [AtomicU16; 512] = [const { AtomicU16::new(0) }; 512];
 static MODULE_GENERATIONS: [AtomicU16; 32] = [const { AtomicU16::new(0) }; 32];
 static DRIVER_INTERFACE_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
@@ -182,39 +185,41 @@ impl Kind
         && slot < self.first_slot() + self.capacity() as u32
     }
 
-    fn shared_generation(self, index: usize) -> Option<&'static AtomicU16>
+    fn shared_generation(self, index: usize) -> &'static AtomicU16
     {
         match self
         {
-            Self::Memory => MEMORY_GENERATIONS.get(index),
-            Self::DocumentBatches => DOCUMENT_BATCH_GENERATIONS.get(index),
-            Self::FileTransfers => FILE_TRANSFER_GENERATIONS.get(index),
-            Self::FileGroups => FILE_GROUP_GENERATIONS.get(index),
-            Self::FileStreams => FILE_STREAM_GENERATIONS.get(index),
-            Self::Drags => DRAG_GENERATIONS.get(index),
-            Self::DragReceivers => DRAG_RECEIVER_GENERATIONS.get(index),
-            Self::FileWatches => FILE_WATCH_GENERATIONS.get(index),
-            Self::HostNodes => HOST_NODE_GENERATIONS.get(index),
-            Self::FileSources => FILE_SOURCE_GENERATIONS.get(index),
-            Self::Threads => THREAD_GENERATIONS.get(index),
-            Self::DriverJobs => JOB_GENERATIONS.get(index),
-            Self::DriverDevices => DEVICE_GENERATIONS.get(index),
-            Self::DriverDma => DMA_GENERATIONS.get(index),
-            Self::HostFiles => HOST_FILE_GENERATIONS.get(index),
-            Self::HostDirectories => HOST_DIRECTORY_GENERATIONS.get(index),
-            Self::HostTransactions => HOST_TRANSACTION_GENERATIONS.get(index),
-            Self::HostSessions => HOST_SESSION_GENERATIONS.get(index),
-            Self::Modules => MODULE_GENERATIONS.get(index),
-            Self::DriverInterfaces => DRIVER_INTERFACE_GENERATIONS.get(index),
-            Self::DriverRequests => DRIVER_REQUEST_GENERATIONS.get(index),
-            _ => None
+            Self::Memory => &MEMORY_GENERATIONS[index],
+            Self::Files => &FILE_GENERATIONS[index],
+            Self::FileWrites => &FILE_WRITE_GENERATIONS[index],
+            Self::Volumes => &VOLUME_GENERATIONS[index],
+            Self::DocumentBatches => &DOCUMENT_BATCH_GENERATIONS[index],
+            Self::FileTransfers => &FILE_TRANSFER_GENERATIONS[index],
+            Self::FileGroups => &FILE_GROUP_GENERATIONS[index],
+            Self::FileStreams => &FILE_STREAM_GENERATIONS[index],
+            Self::Drags => &DRAG_GENERATIONS[index],
+            Self::DragReceivers => &DRAG_RECEIVER_GENERATIONS[index],
+            Self::FileWatches => &FILE_WATCH_GENERATIONS[index],
+            Self::HostNodes => &HOST_NODE_GENERATIONS[index],
+            Self::FileSources => &FILE_SOURCE_GENERATIONS[index],
+            Self::Threads => &THREAD_GENERATIONS[index],
+            Self::DriverJobs => &JOB_GENERATIONS[index],
+            Self::DriverDevices => &DEVICE_GENERATIONS[index],
+            Self::DriverDma => &DMA_GENERATIONS[index],
+            Self::HostFiles => &HOST_FILE_GENERATIONS[index],
+            Self::HostDirectories => &HOST_DIRECTORY_GENERATIONS[index],
+            Self::HostTransactions => &HOST_TRANSACTION_GENERATIONS[index],
+            Self::HostSessions => &HOST_SESSION_GENERATIONS[index],
+            Self::Modules => &MODULE_GENERATIONS[index],
+            Self::DriverInterfaces => &DRIVER_INTERFACE_GENERATIONS[index],
+            Self::DriverRequests => &DRIVER_REQUEST_GENERATIONS[index]
         }
     }
 }
 
 /// Service-scoped identity storage; managers retain their existing owner policy.
-/// Keep the table across resets and use clear(): replacing it resets identity
-/// history. App-local kinds use centrally shared generation histories instead.
+/// Every namespace retains boot-wide generation history, including when a
+/// manager is cleared, reconstructed, or exists alongside another instance.
 /// The central namespace registry also bounds generations for each ABI.
 pub struct Table<T>
 {
@@ -242,10 +247,7 @@ impl<T> Table<T>
     fn available(&self, index: usize, slot: &Slot<T>) -> bool
     {
         slot.value.is_none()
-        && self.kind
-               .shared_generation(index)
-               .map_or(slot.generation, |generation| generation.load(Ordering::Relaxed))
-           < u16::MAX
+        && self.kind.shared_generation(index).load(Ordering::Relaxed) < u16::MAX
     }
 
     fn vacant(&mut self) -> Result<usize, Exhausted>
@@ -286,21 +288,15 @@ impl<T> Table<T>
         loop
         {
             let index = self.vacant()?;
-            let generation = if let Some(shared) = self.kind.shared_generation(index)
-            {
-                let Ok(previous) = shared.try_update(Ordering::Relaxed,
-                                                     Ordering::Relaxed,
-                                                     |generation| generation.checked_add(1))
-                else
-                {
-                    continue;
-                };
-                previous + 1
-            }
+            let shared = self.kind.shared_generation(index);
+            let Ok(previous) = shared.try_update(Ordering::Relaxed,
+                                                 Ordering::Relaxed,
+                                                 |generation| generation.checked_add(1))
             else
             {
-                self.slots[index].generation + 1
+                continue;
             };
+            let generation = previous + 1;
             let slot = &mut self.slots[index];
             slot.generation = generation;
             let id = Self::id(self.kind, index, generation);

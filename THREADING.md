@@ -303,8 +303,9 @@ RV64 pointers and a future x86 ABI have the same representation. Cross-target
 layout/codegen/boot/trap/context-switch tests are required before advertising a
 second architecture; a Rust compile target alone is insufficient.
 
-The shared handle facility allocates Memory projection generations across
-tables. Two live app contexts cannot mint the same projected ID; dropping a
+The shared handle facility allocates every treaty namespace's generations
+across tables, including open forks, staged writes and volumes. Two live
+manager instances cannot mint the same projected ID; dropping a
 context does not reset history. Counter allocation is atomic and exhausted slots
 retire. Memory keeps its high16/low16 wire, with payload and zone in the registered
 owner store. Windows, controls, menus, TextEdit editors and offscreen worlds use

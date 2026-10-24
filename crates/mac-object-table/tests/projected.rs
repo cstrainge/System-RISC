@@ -178,12 +178,30 @@ fn cleanup_guard_outlives_its_manager_without_losing_the_pending_barrier()
 }
 
 #[test]
-fn unscoped_wire_namespaces_cannot_construct_a_registered_projection()
+fn file_wire_namespaces_preserve_history_through_registered_store_reconstruction()
 {
-    let registrar = owner(DomainKind::Module);
-    let mut registry = Registry::new();
-    let (payload, backing) = kinds(&mut registry, &registrar);
-    let error = Store::<u8, Gate>::new(Kind::Files, payload, backing).err().unwrap();
-    assert!(matches!(error, Error::UnscopedProjection));
-    assert!(error.to_string().contains("requires boot-wide generation history"));
+    for kind in [Kind::Files, Kind::FileWrites, Kind::Volumes]
+    {
+        let registrar = owner(DomainKind::Module);
+        let mut registry = Registry::new();
+        let (payload, backing) = kinds(&mut registry, &registrar);
+        let ledger = owner(DomainKind::Process);
+        let other_ledger = owner(DomainKind::Process);
+        let mut first = Store::new(kind, payload.clone(), backing.clone()).unwrap();
+        let stale = first.insert(&ledger, 1u8).unwrap();
+        let mut second = Store::new(kind, payload.clone(), backing.clone()).unwrap();
+        let foreign = second.insert(&other_ledger, 2).unwrap();
+        assert_ne!(stale, foreign);
+        assert!(first.get(foreign).is_none());
+        assert!(second.get(stale).is_none());
+        drop(first);
+        let mut recreated = Store::new(kind, payload, backing).unwrap();
+        let current = recreated.insert(&ledger, 3).unwrap();
+        assert_eq!(stale & 0xffff, current & 0xffff);
+        assert_ne!(stale, current);
+        assert_ne!(foreign, current);
+        assert!(recreated.get(stale).is_none());
+        assert!(recreated.get(foreign).is_none());
+        assert_eq!(second.get(foreign), Some(&2));
+    }
 }

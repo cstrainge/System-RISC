@@ -955,3 +955,19 @@ supplies transport acknowledgement; it does not prove privileged panic recovery
 under M-D04. Native conformance adds 64 reuse cycles through native and classic
 traps; process workers abandon FWCH/FWST with the other registered resources.
 Verification results belong in the milestone report after checks finish.
+
+### Boot-wide file treaty generation history
+
+All central treaty namespaces now use boot-wide generation history, including
+open forks, staged writes and mounts. Clearing, reconstructing or concurrently
+instantiating a File Manager cannot mint another manager's live or stale ID.
+The high16-generation/low16-slot contract and separate owner checks are unchanged;
+exhausted generations retire a slot rather than wrapping. Namespace history
+selection is exhaustive, with no per-table fallback. Registered projections no
+longer need a temporary exclusion for not-yet-migrated namespaces.
+
+Canonical public SDK checks recreate the real disk service with the same caller,
+force the same volume/fork/write slots, reject prior IDs through native and
+classic gates, and verify current objects remain usable. This is identity
+foundation for the remaining File Manager registration work, not a claim that
+its forks, transactions, mount references or I/O death barrier have migrated.

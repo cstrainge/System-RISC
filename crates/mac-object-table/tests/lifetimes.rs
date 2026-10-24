@@ -40,7 +40,11 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
                  Kind::HostNodes,
                  Kind::FileWatches,
                  Kind::Drags,
-                 Kind::DragReceivers];
+                 Kind::DragReceivers,
+                 Kind::FileStreams,
+                 Kind::FileGroups,
+                 Kind::FileTransfers,
+                 Kind::DocumentBatches];
     let mut tables: Vec<_> = kinds.into_iter().map(Table::new).collect();
     let ids: Vec<_> = tables.iter_mut().map(|t| t.insert(1).unwrap()).collect();
     for (row, table) in tables.iter().enumerate()
@@ -128,4 +132,36 @@ fn memory_projections_reject_foreign_owners_and_recreated_tables()
     assert_ne!(foreign, current);
     assert!(replacement.get(old).is_none());
     assert!(second.get(current).is_none());
+}
+
+#[test]
+fn file_manager_ids_reject_foreign_instances_and_reconstructed_storage()
+{
+    for kind in [Kind::Files, Kind::FileWrites, Kind::Volumes]
+    {
+        let mut first = Table::new(kind);
+        let mut foreign = Table::new(kind);
+        let stale = first.insert("old").unwrap();
+        let other = foreign.insert("foreign").unwrap();
+        assert_ne!(stale, other);
+        assert!(first.get(other).is_none());
+        assert!(foreign.get(stale).is_none());
+        assert!(first.remove(other).is_none());
+        assert_eq!(first.get(stale), Some(&"old"));
+        drop(first);
+        let mut recreated = Table::new(kind);
+        let fresh = recreated.insert("fresh").unwrap();
+        assert_eq!(stale & 0xffff, fresh & 0xffff);
+        assert_ne!(stale, fresh);
+        assert_ne!(other, fresh);
+        assert!(recreated.get(stale).is_none());
+        assert!(recreated.remove(stale).is_none());
+        assert!(recreated.get(other).is_none());
+        assert_eq!(foreign.get(other), Some(&"foreign"));
+        recreated.clear();
+        let next = recreated.insert("after reset").unwrap();
+        assert_ne!(fresh, next);
+        assert!(recreated.get(fresh).is_none());
+        assert_eq!(recreated.get(next), Some(&"after reset"));
+    }
 }

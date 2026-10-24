@@ -165,7 +165,6 @@ fn admission(error: mac_object_table::projected::Error) -> Status
 {
     match error
     {
-        mac_object_table::projected::Error::UnscopedProjection => BAD_ARGUMENT,
         mac_object_table::projected::Error::ProjectionExhausted => NO_MEMORY,
         mac_object_table::projected::Error::Pool(error) =>
             crate::toolbox::handles::registry_status(&mac_object_table::registry::Error::Pool(error))

@@ -21,7 +21,12 @@ fn watch_pool(system: &System<'_>, kind: [u8; 4]) -> mac_toolbox::inspection::Po
                      .expect("registered directory watch pool")
 }
 
-fn watch_disk(run: impl FnOnce(&System<'_>))
+fn writable_disk(run: impl FnOnce(&System<'_>))
+{
+    writable_disk_with_gate(|system, _| run(system));
+}
+
+fn writable_disk_with_gate(run: impl FnOnce(&System<'_>, mac_abi::TrapGate))
 {
     struct Temporary(PathBuf);
     impl Drop for Temporary
@@ -36,7 +41,7 @@ fn watch_disk(run: impl FnOnce(&System<'_>))
                                                            NEXT.fetch_add(1, Ordering::Relaxed))));
     fs::write(&path.0, disk()).unwrap();
     mac_system::testing::with_file_disk(&path.0, false, Default::default(), |services| {
-        run(&unsafe { System::from_raw(services) }.unwrap());
+        run(&unsafe { System::from_raw(services) }.unwrap(), services.trap);
     }).unwrap();
 }
 
@@ -44,7 +49,7 @@ fn watch_disk(run: impl FnOnce(&System<'_>))
 fn pending_watch_disposal_invalidates_immediately_but_reserves_its_slot_until_ack()
 {
     use mac_system::testing::files::with_pending_watch_probe;
-    watch_disk(|system| {
+    writable_disk(|system| {
         let files = system.files();
         let volume = files.volume_at(0).unwrap().id;
         let watches: Vec<_> =
@@ -92,7 +97,7 @@ fn watch_ack_after_invalidation_completes_pending_or_later_quarantined_cleanup()
     use mac_system::testing::{files::with_pending_watch_probe, inspection as fixture};
     for unavailable in [false, true]
     {
-        watch_disk(|system| {
+        writable_disk(|system| {
             let files = system.files();
             let volume = files.volume_at(0).unwrap().id;
             let watch = files.watch_directory(volume, mac_toolbox::Cnid(ROOT_ID)).unwrap();
@@ -140,7 +145,7 @@ fn watch_ack_after_invalidation_completes_pending_or_later_quarantined_cleanup()
 fn provider_fixture_unwind_finishes_the_real_pending_watch_guard()
 {
     use mac_system::testing::files::with_pending_watch_probe;
-    watch_disk(|system| {
+    writable_disk(|system| {
         let files = system.files();
         let volume = files.volume_at(0).unwrap().id;
         let watch = files.watch_directory(volume, mac_toolbox::Cnid(ROOT_ID)).unwrap();
@@ -406,4 +411,82 @@ fn directory_watches_are_owned_coalesced_scoped_and_reject_disposed_reused_ids()
         drop(child);
         drop(replacement);
     }).unwrap();
+}
+
+#[test]
+fn reconstructed_file_manager_rejects_old_volume_fork_and_write_ids_through_both_gates()
+{
+    // Both service sessions use the same trusted caller. Rejection is identity
+    // validation, not a different application's ownership check.
+    let mut old = None;
+    for generation in 0..2
+    {
+        writable_disk_with_gate(|system, gate| {
+            let volume = system.files().volume_at(0).unwrap().id.0;
+            let handle = open(system, 1);
+            let mut write = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                            volume,
+                                            parent: ROOT_ID,
+                                            length: 2,
+                                            file_type: *b"TEXT",
+                                            creator: *b"TEST",
+                                            ..Default::default() };
+            system.client().data_write(&mut write, "Staged", &[]).unwrap();
+            if generation == 0
+            {
+                old = Some((volume, handle, write.handle));
+            }
+            else
+            {
+                let (old_volume, old_fork, old_write) = old.unwrap();
+                for (stale, fresh) in
+                    [(old_volume, volume), (old_fork, handle), (old_write, write.handle)]
+                {
+                    assert_eq!(stale & 0xffff, fresh & 0xffff, "same treaty slot reused");
+                    assert_ne!(stale, fresh, "reconstruction must preserve generation history");
+                }
+                for operation in [VOLUME_INFO, TELL, CLOSE]
+                {
+                    let mut call = FileCall { operation,
+                                              volume: old_volume,
+                                              handle: old_fork,
+                                              ..Default::default() };
+                    let error = system.client().file(&mut call, "", &mut []).unwrap_err();
+                    assert_eq!(error, Error::NotFound);
+                    assert!(error.to_string().contains("found"));
+                    assert_eq!(unsafe {
+                                   gate(mac_abi::traps::PSTRING_FILE,
+                                        core::ptr::from_mut(&mut call).cast(),
+                                        size_of::<FileCall>())
+                               },
+                               i64::from(mac_abi::NOT_FOUND));
+                }
+                for operation in [APPEND_DATA_WRITE, ABORT_DATA_WRITE, COMMIT_DATA_WRITE]
+                {
+                    let mut call = DataWriteCall { operation,
+                                                   handle: old_write,
+                                                   ..Default::default() };
+                    assert_eq!(system.client().data_write(&mut call, "", &[]),
+                               Err(Error::NotFound));
+                    assert_eq!(unsafe {
+                                   gate(mac_abi::traps::PSTRING_FILE,
+                                        core::ptr::from_mut(&mut call).cast(),
+                                        size_of::<DataWriteCall>())
+                               },
+                               i64::from(mac_abi::NOT_FOUND));
+                }
+                let mut tell = FileCall { operation: TELL,
+                                          handle,
+                                          ..Default::default() };
+                system.client().file(&mut tell, "", &mut []).unwrap();
+                assert_eq!(tell.position, 0, "stale requests changed the current fork mark");
+                assert_eq!(system.files().volume_at(0).unwrap().id.0, volume);
+                write.operation = APPEND_DATA_WRITE;
+                system.client().data_write(&mut write, "", b"ok").unwrap();
+            }
+            write.operation = ABORT_DATA_WRITE;
+            system.client().data_write(&mut write, "", &[]).unwrap();
+            assert_eq!(close_owner(1), 1);
+        });
+    }
 }

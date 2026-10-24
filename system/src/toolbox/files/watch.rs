@@ -38,7 +38,6 @@ fn projection_status(error: projected::Error) -> Status
     use mac_object_table::domain::PoolError;
     match error
     {
-        projected::Error::UnscopedProjection => BAD_ABI,
         projected::Error::ProjectionExhausted => NO_MEMORY,
         projected::Error::Pool(error) =>
         {

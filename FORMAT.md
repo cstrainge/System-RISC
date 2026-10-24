@@ -565,6 +565,14 @@ registered cleanup walk releases both lifetimes, retaining backing until every
 block is released. Original handle operations, errors and the 32-bit wire stay
 unchanged; this is not an original 68k master-pointer ABI.
 
+Every central 32-bit treaty namespace uses shared boot-wide generation history,
+including open-file, staged-write and volume slots. Reconstructing or clearing
+a table does not reset that history. Namespace selection is exhaustive; there
+is no per-table generation fallback. The existing slot ranges, owner checks,
+nonzero high16 generation and permanent retirement on exhaustion are unchanged.
+This identity rule does not by itself establish registered lifetime/alias
+coverage for the remaining File Manager objects.
+
 Windows use registered WIND object and WNST backing lifetimes in the shared
 owner-ledger facility, with opaque u64 native tokens and full-width generations.
 There is no legacy window slot range, 32-window global cap or 8-bit generation

@@ -1299,7 +1299,11 @@ fn comments_create_real_desktop_db_and_remount_update_delete_without_touching_ta
                assert_eq!(comment_text(system, (original.parent).0), "Folder comment");
                assert_eq!(files.catalog(system.files().volume_at(0).unwrap().id, original.id)
                                .unwrap(),
-                          original);
+                          mac_toolbox::files::CatalogInfo { volume: system.files()
+                                                                          .volume_at(0)
+                                                                          .unwrap()
+                                                                          .id,
+                                                            ..original.clone() });
                assert_eq!(fork_bytes(system, (original.id).0, Fork::Data),
                           (0..1700).map(|n| (n * 17) as u8).collect::<Vec<_>>());
            });
@@ -1309,7 +1313,11 @@ fn comments_create_real_desktop_db_and_remount_update_delete_without_touching_ta
                assert_eq!(system.files()
                                 .catalog(system.files().volume_at(0).unwrap().id, original.id)
                                 .unwrap(),
-                          original);
+                          mac_toolbox::files::CatalogInfo { volume: system.files()
+                                                                          .volume_at(0)
+                                                                          .unwrap()
+                                                                          .id,
+                                                            ..original.clone() });
            });
 }
 #[test]
@@ -1753,12 +1761,20 @@ fn native_data_write_failures_preserve_live_files_and_abort_unpublished_creation
                               creator: mac_toolbox::TypeCode::new(*b"TEST") };
     // Sweep every write and flush in the successful operation, including payload
     // staging, journal publication and rollback of partially written sectors.
-    let (_, activity) = fixture.run(false, DiskFaults::default(), |system| {
-                                   let mut w =
-                                       system.files().create_data_at(spec, 1800, WHEN).unwrap();
-                                   w.write_all(&[42; 1800]).unwrap();
-                                   w.finish().unwrap();
-                               });
+    let (_, activity) =
+        fixture.run(false, DiskFaults::default(), |system| {
+                   let mut w = system.files()
+                                     .create_data_at(DataFileSpec { volume: system.files()
+                                                                                  .volume_at(0)
+                                                                                  .unwrap()
+                                                                                  .id,
+                                                                    ..spec },
+                                                     1800,
+                                                     WHEN)
+                                     .unwrap();
+                   w.write_all(&[42; 1800]).unwrap();
+                   w.finish().unwrap();
+               });
     for fault in (0..activity.writes).map(|n| {
                                          DiskFaults { write_at: Some(n),
                                                       partial_write: true,
@@ -1771,7 +1787,15 @@ fn native_data_write_failures_preserve_live_files_and_abort_unpublished_creation
     {
         fs::write(&fixture.disk, &original).unwrap();
         fixture.run(false, fault, |system| {
-                   let mut w = system.files().create_data_at(spec, 1800, WHEN).unwrap();
+                   let mut w = system.files()
+                                     .create_data_at(DataFileSpec { volume: system.files()
+                                                                                  .volume_at(0)
+                                                                                  .unwrap()
+                                                                                  .id,
+                                                                    ..spec },
+                                                     1800,
+                                                     WHEN)
+                                     .unwrap();
                    w.write_all(&[42; 1800]).unwrap();
                    assert!(w.finish().is_err(), "fault {fault:?}, activity {activity:?}");
                });
@@ -1781,7 +1805,14 @@ fn native_data_write_failures_preserve_live_files_and_abort_unpublished_creation
                });
     }
     fixture.run(true, DiskFaults::default(), |system| {
-               assert!(matches!(system.files().create_data_at(spec, 0, WHEN),
+               assert!(matches!(system.files().create_data_at(DataFileSpec { volume:
+                                                                                 system.files()
+                                                                                       .volume_at(0)
+                                                                                       .unwrap()
+                                                                                       .id,
+                                                                             ..spec },
+                                                              0,
+                                                              WHEN),
                                 Err(mac_toolbox::Error::ReadOnly)))
            });
 }
@@ -2290,7 +2321,9 @@ fn classic_move_write_and_flush_faults_restore_catalog_threads_and_forks()
         assert_eq!(fs::read(&fixture.disk).unwrap(), before, "move rollback: {fault:?}");
         fixture.run(true, DiskFaults::default(), |system| {
                    let volume = system.files().volume_at(0).unwrap().id;
-                   assert_eq!(system.files().catalog(volume, file.id).unwrap(), file);
+                   assert_eq!(system.files().catalog(volume, file.id).unwrap(),
+                              mac_toolbox::files::CatalogInfo { volume,
+                                                                ..file.clone() });
                });
     }
     fixture.verify_hfs(":Source:Sample");
