@@ -101,6 +101,41 @@ fn installed_cursor_app_and_automatic_text_regions_render_original_sprites()
     let asset = |name: &str| fs::read(root.join("System7/system/assets").join(name)).unwrap();
     let arrow = asset("cursors/arrow.curs");
     let ibeam = asset("visual/43555253-1.bin");
+    let pointer = &report["pointer_present"];
+    let scene_before = fs::read(output.join(pointer["before"].as_str().unwrap())).unwrap();
+    let scene_after = fs::read(output.join(pointer["after"].as_str().unwrap())).unwrap();
+    assert_eq!(scene_before.len(), 640 * 480 * 4);
+    assert_eq!(scene_before, scene_after, "pure pointer motion wrote the backbuffer");
+    for field in ["scene_rev", "compositions", "updates", "menu_paints"]
+    {
+        assert_eq!(pointer["state_before"][field], pointer["state_after"][field],
+                   "pure pointer motion did scene work: {field}");
+    }
+    let clean_scene: Vec<u8> = scene_after.chunks_exact(4)
+                                          .flat_map(|pixel| {
+                                              let pixel =
+                                                  u32::from_le_bytes(pixel.try_into().unwrap());
+                                              [(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8]
+                                          })
+                                          .collect();
+    let moved = load("pointer-moved");
+    assert!(sprite(&clean_scene, &moved, [143, 126], &arrow),
+            "present-time sprite differs from the original arrow over the actual scene");
+    let previous = load("pointer-before");
+    for y in 0..480
+    {
+        for x in 0..640
+        {
+            // Both original and new 16x16 cursor boxes, hotspot (1,1).
+            if !(141..158).contains(&x) || !(125..141).contains(&y)
+            {
+                let at = (y * 640 + x) * 3;
+                assert_eq!(previous[at..at + 3],
+                           moved[at..at + 3],
+                           "pointer movement changed unrelated pixel {x},{y}");
+            }
+        }
+    }
     let mut original_pixels = 0;
     for (name, point, data) in [("arrow", [142, 126], arrow.clone()),
                                 ("ibeam", [271, 126], ibeam.clone()),
@@ -157,6 +192,7 @@ fn installed_cursor_app_and_automatic_text_regions_render_original_sprites()
     assert!(sprite(&load("title-bar-hidden"), &load("title-bar-base"), [350, 52], &arrow),
             "automatic I-beam leaked into title bar");
     let acceptance = serde_json::json!({"status":"passed", "original_sprite_pixels":original_pixels,
+        "pointer_backbuffer_identity_bytes":scene_after.len(), "pointer_scene_recompositions":0,
         "observed_watch_frames":observed_frames, "automatic_hover_cases":10,
         "capture":report, "output":output});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();

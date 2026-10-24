@@ -118,7 +118,8 @@ impl BootScreen
                 drawing.paint_clipped(&mut canvas).map_err(failed)?;
             }
             crate::platform::present_rects(pixels,
-                                           damage.into_iter().filter(|rect| !rect.is_empty()));
+                                           damage.into_iter().filter(|rect| !rect.is_empty()),
+                                           None);
             serial!("BOOT_PROGRESS completed={} total=7", value);
         }
         Ok(())

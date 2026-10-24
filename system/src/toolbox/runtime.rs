@@ -2353,7 +2353,8 @@ impl Desktop
         let cursor =
             if self.responsiveness.active() { &mut self.busy_cursor } else { &mut self.cursors };
         let text_cursor = if self.responsiveness.active() { None } else { text_cursor };
-        let bounds = cursor.bounds(self.events.mouse, text_cursor);
+        let sprite = cursor.sprite(self.events.mouse, text_cursor);
+        let bounds = sprite.map_or(Rect::ZERO, |sprite| sprite.bounds());
         let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
         let desktop_outline =
             (self.foreground == crate::context::finder_app().0
@@ -2404,24 +2405,9 @@ impl Desktop
                 self.outline_under.paint(&mut canvas, &self.windows, desktop_outline, &damage);
             }
         }
-        let cursor_affected =
-            full
-            || cursor_changed
-            || damaged.iter().any(|&rect| {
-                                 let mut hit = Rect::ZERO;
-                                 super::quickdraw::geometry::sect_rect(rect, bounds, &mut hit)
-                             });
-        let under = cursor_affected.then(|| {
-                                       super::quickdraw::overlay::CursorUnder::capture(&canvas,
-                                                                                       bounds)
-                                   });
-        if cursor_affected
-        {
-            cursor.draw_auto(&mut canvas, self.events.mouse, text_cursor);
-        }
         if full
         {
-            platform::present(canvas.pixels);
+            platform::present_rects(canvas.pixels, [Rect::new(0, 0, 640, 480)], sprite);
         }
         else
         {
@@ -2433,11 +2419,8 @@ impl Desktop
                                                                   else
                                                                   {
                                                                       [Rect::ZERO; 2]
-                                                                  }));
-        }
-        if let Some(under) = under
-        {
-            under.restore(&mut canvas);
+                                                                  }),
+                                    sprite);
         }
         if outline_visible
         {

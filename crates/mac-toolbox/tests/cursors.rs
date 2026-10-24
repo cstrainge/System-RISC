@@ -301,3 +301,169 @@ fn original_acur_sequences_wrap_and_failures_preserve_the_previous_cursor()
         assert_eq!(cursors.info().unwrap().flags & CURSOR_ANIMATED, 0);
     });
 }
+
+fn expected_frame(scene: &[u32], width: usize, height: usize, point: Point,
+                  cursor: mac_toolbox::quickdraw::cursors::CursorSnapshot, colors: Option<&[u32]>)
+                  -> Vec<u32>
+{
+    let mut expected = scene.to_vec();
+    if cursor.flags & CURSOR_VISIBLE == 0
+    {
+        return expected;
+    }
+    for y in 0..height
+    {
+        for x in 0..width
+        {
+            let column = x as i32 - i32::from(point.h) + i32::from(cursor.cursor.hotspot.h);
+            let row = y as i32 - i32::from(point.v) + i32::from(cursor.cursor.hotspot.v);
+            if !(0..16).contains(&column) || !(0..16).contains(&row)
+            {
+                continue;
+            }
+            let index = y * width + x;
+            let bit = 0x8000 >> column;
+            let mask = cursor.cursor.mask[row as usize] & bit != 0;
+            let image = cursor.cursor.image[row as usize] & bit != 0;
+            if let Some(colors) = colors
+            {
+                let color = colors[row as usize * 16 + column as usize] & 0xffffff;
+                expected[index] = if mask { color } else { scene[index] ^ (!color & 0xffffff) };
+            }
+            else
+            {
+                expected[index] = match (mask, image)
+                {
+                    (true, true) => 0,
+                    (true, false) => 0xffffff,
+                    (false, true) => scene[index] ^ 0xffffff,
+                    (false, false) => scene[index]
+                };
+            }
+        }
+    }
+    expected
+}
+
+#[test]
+fn pointer_presents_preserve_the_scene_and_original_pixels_across_damage_and_visibility()
+{
+    use mac_system::testing::presentation::{pointer, present};
+    corpus([], |system| {
+        let cursor = system.quickdraw().cursors();
+        let full = Rect::new(0, 0, 64, 48);
+        let mut scene: Vec<u32> = (0..64 * 48).map(|i| (i * 7919) as u32 & 0xffffff).collect();
+        let mut front = vec![0; scene.len()];
+        let mut old = Rect::ZERO;
+        for point in [Point { h: 20,
+                              v: 20 },
+                      Point { h: 21,
+                              v: 20 },
+                      Point { h: 0,
+                              v: 0 },
+                      Point { h: 63,
+                              v: 47 },
+                      Point { h: -16,
+                              v: -16 },
+                      Point { h: i16::MIN,
+                              v: i16::MIN },
+                      Point { h: i16::MAX,
+                              v: i16::MAX },
+                      Point { h: 35,
+                              v: 25 }]
+        {
+            pointer(point);
+            let state = cursor.info().unwrap();
+            let left = point.h.saturating_sub(state.cursor.hotspot.h);
+            let top = point.v.saturating_sub(state.cursor.hotspot.v);
+            let next = Rect::new(left, top, left.saturating_add(16), top.saturating_add(16));
+            let before = scene.clone();
+            if old == Rect::ZERO
+            {
+                present(&scene, &mut front, 64, 48, [full]);
+            }
+            else
+            {
+                present(&scene, &mut front, 64, 48, [old, next, next]);
+            }
+            assert_eq!(scene, before, "a pointer-only present wrote the retained scene");
+            assert_eq!(front,
+                       expected_frame(&scene, 64, 48, point, state, None),
+                       "pointer {point:?}");
+            old = next;
+        }
+        // Damage under a stationary cursor: publish new scene pixels and sprite
+        // together, including inversion bits, without a separate cursor repaint.
+        let point = system.events().mouse().unwrap();
+        scene[25 * 64 + 35..25 * 64 + 40].fill(0x2468ac);
+        present(&scene, &mut front, 64, 48, [Rect::new(35, 25, 40, 26)]);
+        assert_eq!(front, expected_frame(&scene, 64, 48, point, cursor.info().unwrap(), None));
+        for standard in [StandardCursor::IBeam, StandardCursor::Crosshair, StandardCursor::Arrow]
+        {
+            cursor.set_standard(standard).unwrap();
+            present(&scene, &mut front, 64, 48, [full]);
+            assert_eq!(front, expected_frame(&scene, 64, 48, point, cursor.info().unwrap(), None));
+        }
+        cursor.hide().unwrap();
+        present(&scene, &mut front, 64, 48, [full]);
+        assert_eq!(front, scene);
+        cursor.show().unwrap();
+        present(&scene, &mut front, 64, 48, [full]);
+        assert_eq!(front, expected_frame(&scene, 64, 48, point, cursor.info().unwrap(), None));
+    });
+}
+
+#[test]
+fn present_preserves_all_mono_and_color_mask_operations_without_double_inverting_overlaps()
+{
+    use mac_system::testing::presentation::{pointer, present};
+    corpus([], |system| {
+        let cursor = system.quickdraw().cursors();
+        let image = MonoCursor { image:   [0x5555; 16],
+                                 mask:    [0x3333; 16],
+                                 hotspot: Point { h: 7,
+                                                  v: 5 } };
+        let point = Point { h: 15,
+                            v: 12 };
+        let scene: Vec<u32> = (0..32 * 32).map(|i| 0xa0000000 | (i * 4129) as u32).collect();
+        let full = Rect::new(0, 0, 32, 32);
+        pointer(point);
+        cursor.set(image).unwrap();
+        let mut front = vec![0; scene.len()];
+        present(&scene, &mut front, 32, 32, [full, Rect::new(9, 9, 14, 14)]);
+        assert_eq!(front, expected_frame(&scene, 32, 32, point, cursor.info().unwrap(), None));
+        let colors: Vec<u32> = (0..256).map(|i| 0xff000000 | (i * 65539) as u32).collect();
+        cursor.set_color(image, &colors).unwrap();
+        present(&scene, &mut front, 32, 32, [full, Rect::new(9, 9, 14, 14)]);
+        assert_eq!(front,
+                   expected_frame(&scene, 32, 32, point, cursor.info().unwrap(), Some(&colors)));
+        let before = cursor.info().unwrap();
+        let error = cursor.set_color(image, &colors[..255]).unwrap_err();
+        assert_eq!(error, mac_toolbox::Error::BadArgument);
+        assert!(!error.to_string().is_empty());
+        assert_eq!(cursor.info().unwrap(), before);
+        present(&scene, &mut front, 32, 32, [full]);
+        assert_eq!(front, expected_frame(&scene, 32, 32, point, before, Some(&colors)));
+    });
+}
+
+#[test]
+fn invalid_present_extents_and_empty_damage_leave_both_buffers_untouched()
+{
+    use mac_system::testing::presentation::present;
+    corpus([], |_| {
+        let scene = vec![0x123456; 32 * 32];
+        let mut front = vec![0xabcdef; 32 * 32];
+        let before = front.clone();
+        for (width, height) in [(usize::MAX, 2), (33, 32), (i16::MAX as usize + 1, 0)]
+        {
+            assert!(present(&scene,&mut front,width,height,[Rect::new(0,0,32,32)]).is_empty());
+            assert_eq!(front, before);
+        }
+        assert!(present(&scene[..32], &mut front, 32, 32, [Rect::new(0, 0, 32, 32)]).is_empty());
+        assert!(present(&scene, &mut front[..32], 32, 32, [Rect::new(0, 0, 32, 32)]).is_empty());
+        assert!(present(&scene,&mut front,32,32,[Rect::ZERO,Rect::new(40,40,50,50)]).is_empty());
+        assert_eq!(front, before);
+        assert_eq!(scene, vec![0x123456; 32 * 32]);
+    });
+}

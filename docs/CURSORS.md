@@ -55,3 +55,23 @@ fields, obscuring, out-and-back movement, title-bar and menu behavior. The
 transport preserves base disk hashes and never sends input to the visible VM.
 `retained_update.rs` additionally checks hover-region publication while two
 actual application threads are running.
+
+The cursor is composited into the frontbuffer during damaged-rectangle
+presentation. The scene is borrowed read-only; cursor pixels never enter the
+backbuffer. Pointer-only presentation copies the old cursor bounds from the
+scene and publishes the new bounds with the current sprite, without replaying
+window content or sweeping scene visibility. Scene damage underneath a stationary
+cursor uses the same masked blit. Monochrome inversion, color masks, clipping,
+hotspots, visibility and animation retain their original semantics.
+
+Drag outlines and highlights still temporarily paint and restore the canvas;
+they have not yet migrated to present-time compositing. Presentation remains
+serialized with the compositor; this does not establish independent pointer-path
+scheduling or a strict input-latency guarantee. A failed scene replay suppresses
+cursor-only copies until a complete scene is available again.
+
+The graphical cursor test snapshots all 1,228,800 backbuffer bytes around an
+actual pointer move, asserts byte identity and unchanged scene/update/menu
+counters, and checks exact sprite pixels and unrelated screen bounds. SDK tests
+also cover scene damage, overlapping rectangles, all mono/color mask operations,
+surface refusal before any write, hide/show, shape changes and clipped edges.

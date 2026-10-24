@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use mac_abi::{quickdraw::*, *};
 
-use super::Canvas;
+use super::presentation::CursorSprite;
 
 struct Animation
 {
@@ -313,34 +313,18 @@ impl Cursors
         self.obscured.is_none() && (self.visibility == 0 || self.deferred_hide.is_some())
     }
 
-    pub fn draw(&mut self, canvas: &mut Canvas<'_>, mouse: Point)
-    {
-        self.draw_auto(canvas, mouse, None);
-    }
-
-    /// Screen-space damage for the current cursor, including automatic I-beams.
-    pub fn bounds(&self, mouse: Point, ibeam: Option<MonoCursor>) -> Rect
-    {
-        if self.snapshot(mouse).flags & CURSOR_VISIBLE == 0
-        {
-            return Rect::ZERO;
-        }
-        let cursor = if self.automatic { ibeam.unwrap_or(self.image) } else { self.image };
-        let left = mouse.h.saturating_sub(cursor.hotspot.h);
-        let top = mouse.v.saturating_sub(cursor.hotspot.v);
-        Rect::new(left, top, left.saturating_add(16), top.saturating_add(16))
-    }
-
-    pub fn draw_auto(&mut self, canvas: &mut Canvas<'_>, mouse: Point, ibeam: Option<MonoCursor>)
+    /// Borrow a sprite for the serialized present; never paint the scene.
+    pub(crate) fn sprite(&mut self, mouse: Point, ibeam: Option<MonoCursor>)
+                         -> Option<CursorSprite<'_>>
     {
         self.mouse_moved(mouse);
         if self.snapshot(mouse).flags & CURSOR_VISIBLE == 0
         {
-            return;
+            return None;
         }
         let cursor = if self.automatic { ibeam.unwrap_or(self.image) } else { self.image };
         self.effective_hotspot = cursor.hotspot;
-        paint(canvas, mouse, cursor, &self.colors);
+        Some(CursorSprite::new(cursor, &self.colors, mouse))
     }
 }
 
@@ -475,56 +459,4 @@ pub fn decode_color(bytes: &[u8]) -> Result<(MonoCursor, Vec<u32>), Status>
         }
     }
     Ok((image, colors))
-}
-
-fn paint(canvas: &mut Canvas<'_>, mouse: Point, cursor: MonoCursor, colors: &[u32])
-{
-    let clip = canvas.clip();
-    let origin = canvas.origin();
-    for row in 0..16
-    {
-        for column in 0..16
-        {
-            let x = i32::from(mouse.h) - i32::from(cursor.hotspot.h)
-                    + column as i32
-                    + i32::from(origin.h);
-            let y =
-                i32::from(mouse.v) - i32::from(cursor.hotspot.v) + row as i32 + i32::from(origin.v);
-            if x < i32::from(clip.left)
-               || x >= i32::from(clip.right)
-               || y < i32::from(clip.top)
-               || y >= i32::from(clip.bottom)
-            {
-                continue;
-            }
-            let Some(pixel) = canvas.pixels.get_mut(y as usize * canvas.width + x as usize)
-            else
-            {
-                continue;
-            };
-            let bit = 0x8000 >> column;
-            let image = cursor.image[row] & bit != 0;
-            let mask = cursor.mask[row] & bit != 0;
-            if colors.len() == 256
-            {
-                let color = colors[row * 16 + column] & 0xffffff;
-                if mask
-                {
-                    *pixel = color;
-                }
-                else
-                {
-                    *pixel ^= !color & 0xffffff;
-                }
-            }
-            else if mask
-            {
-                *pixel = if image { 0 } else { 0xffffff };
-            }
-            else if image
-            {
-                *pixel ^= 0xffffff;
-            }
-        }
-    }
 }

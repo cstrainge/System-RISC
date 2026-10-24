@@ -57,6 +57,10 @@ pub fn setup_framebuffer() -> bool
     if ready
     {
         serial!("RAMFB {}x{} addr=0x{:x}", WIDTH, HEIGHT, address);
+        serial!("DISPLAY_BUFFERS back={} front={} bytes={}",
+                addr_of_mut!(BACKBUFFER) as usize,
+                address,
+                PIXELS * size_of::<u32>());
     }
     ready
 }
@@ -67,41 +71,34 @@ pub fn ticks() -> u64
 }
 pub fn present(back: &[u32])
 {
-    present_rects(back, [mac_abi::Rect::new(0, 0, WIDTH as i16, HEIGHT as i16)]);
+    present_rects(back, [mac_abi::Rect::new(0, 0, WIDTH as i16, HEIGHT as i16)], None);
 }
 
 /// Publish only damaged screen rectangles. The compositor keeps a cursor-free
 /// backbuffer and supplies the previous/new cursor bounds along with scene damage.
-pub fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_abi::Rect>)
+pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_abi::Rect>,
+                            cursor: Option<crate::toolbox::quickdraw::presentation::CursorSprite<'_>>)
 {
-    assert_eq!(back.len(), PIXELS);
-    let front = addr_of_mut!(FRAMEBUFFER) as *mut u32;
+    // The serialized compositor owns both buffers. This exclusive frontbuffer
+    // slice cannot escape; the scene is borrowed read-only for the entire copy.
+    let front =
+        unsafe { core::slice::from_raw_parts_mut(addr_of_mut!(FRAMEBUFFER).cast::<u32>(), PIXELS) };
     for rect in rects
     {
-        let left = rect.left.clamp(0, WIDTH as i16) as usize;
-        let right = rect.right.clamp(0, WIDTH as i16) as usize;
-        let top = rect.top.clamp(0, HEIGHT as i16) as usize;
-        let bottom = rect.bottom.clamp(0, HEIGHT as i16) as usize;
-        if left >= right || top >= bottom
+        let started = crate::trace::clock();
+        let Some(rect) = crate::toolbox::quickdraw::presentation::present_rect(back, front, WIDTH,
+                                                                               HEIGHT, rect,
+                                                                               cursor)
+        else
         {
             continue;
-        }
-        let started = crate::trace::clock();
-        for y in top..bottom
-        {
-            let at = y * WIDTH + left;
-            // RAMFB is ordinary guest RAM, exclusively written by the serialized
-            // compositor. Clamped row slices stay within both distinct buffers.
-            unsafe {
-                core::ptr::copy_nonoverlapping(back.as_ptr().add(at), front.add(at), right - left);
-            }
-        }
+        };
         crate::trace::record(crate::trace::FRAME_COPY,
                              crate::context::current_thread_context().identity().app.0,
                              crate::trace::clock().wrapping_sub(started),
-                             ((right - left) * (bottom - top)) as u64,
-                             ((left as u64) << 32) | top as u64,
-                             ((right as u64) << 32) | bottom as u64);
+                             (rect.right - rect.left) as u64 * (rect.bottom - rect.top) as u64,
+                             ((rect.left as u64) << 32) | rect.top as u64,
+                             ((rect.right as u64) << 32) | rect.bottom as u64);
     }
     unsafe {
         asm!("fence iorw, iorw", options(nostack));

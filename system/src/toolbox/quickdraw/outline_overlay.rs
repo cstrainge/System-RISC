@@ -1,5 +1,5 @@
-//! Transient tracking feedback shares the cursor's save-under presentation.
-//! The backbuffer and window cache always contain the underlying scene alone.
+//! Transient drag feedback retains save-under; the cursor composites at present.
+//! Tracking feedback restores its temporary canvas pixels after presentation.
 #![forbid(unsafe_code)]
 use super::{Canvas, Rect, geometry::sect_rect, region::Region};
 use crate::toolbox::windows::WindowManager;

@@ -368,11 +368,14 @@ Definition-owned grow adornments remain above content and respect both damage
 and application clipping. Structural scene changes still use the full compositor;
 they must not be requested for ordinary content updates or cursor activity.
 
-The compositor's backing scene contains no cursor pixels. A 16x16 save-under
-temporarily holds the pixels covered by the cursor while presenting its overlay,
-then restores the backing scene. Motion, shape/visibility changes and animation
-publish only old/new cursor rectangles without scene replay. Scene damage under
-a cursor updates its backing pixels before compositing the current cursor.
+The compositor's backing scene contains no cursor pixels, including during
+presentation. Damaged rectangles copy the scene read-only to the frontbuffer;
+only their intersection with the current cursor receives its masked sprite.
+Motion, shape/visibility changes and animation publish old/new cursor rectangles
+without scene replay or cursor writes to the backing scene. Scene damage under
+a cursor updates the scene before publishing it with the current sprite. Drag
+outlines/highlights still paint and restore their temporary canvas pixels;
+their present-time migration and independent pointer scheduling remain future work.
 The opt-in event trace records the actual framebuffer-copy rectangles, enabling
 public SDK tests to reject cursor-triggered scene replays and scroll damage
 outside the viewport/bar rather than relying only on unchanged screenshots.

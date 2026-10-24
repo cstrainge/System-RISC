@@ -7,6 +7,7 @@ pixel/behavior acceptance; no input is sent to the user's visible desktop.
 import argparse
 import json
 from pathlib import Path
+import re
 import time
 
 import capture_system7_conformance as packaging
@@ -19,10 +20,25 @@ def capture(output, windows=False):
     output.mkdir(parents=True, exist_ok=False)
     before = {name: packaging.sha(vm.DIST / name)
               for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc', 'Cursor Test.rsrc']}
-    options = {'frontend': 'native-headless', 'qmp_port': 4457} if windows else {}
+    options = {'frontend': 'native-headless', 'qmp_port': 4467} if windows else {}
     process, endpoint = vm.launch(output / 'vm', **options)
     driver = Driver(endpoint, output / 'vm/serial.log')
     frames = []
+    pointer_present = None
+
+    def backbuffer(name):
+        marker = re.search(r'DISPLAY_BUFFERS back=(\d+) front=(\d+) bytes=(\d+)', driver.log())
+        if not marker:
+            raise RuntimeError('System did not publish its framebuffer diagnostic')
+        address, _, length = map(int, marker.groups())
+        path = output / (name + '.bin')
+        filename = vm.windows_path(path) if windows else str(path)
+        vm.qmp('stop', endpoint=endpoint)
+        try:
+            vm.qmp('pmemsave', {'val': address, 'size': length, 'filename': filename}, endpoint)
+        finally:
+            vm.qmp('cont', endpoint=endpoint)
+        return path.name
 
     def frame(name, point=None):
         time.sleep(.06)
@@ -58,6 +74,24 @@ def capture(output, windows=False):
             frame(name + '-base', [x, y])
             action('s', 'show')
             frame(name + '-shown', [x, y])
+            if name == 'arrow':
+                # Stop caret animation for this no-scene-damage observation.
+                # Input and cursor selection still use the installed SDK app.
+                action('l', 'read-only')
+                frame('pointer-before', [x, y])
+                first = driver.state()
+                before_scene = backbuffer('pointer-scene-before')
+                driver.move(x + 1, y)
+                after = driver.wait_state(lambda state:
+                    int(state['presentations']) > int(first['presentations'])
+                    and state['mouse'] == f'{x + 1},{y}')
+                after_scene = backbuffer('pointer-scene-after')
+                frame('pointer-moved', [x + 1, y])
+                pointer_present = {'before': before_scene, 'after': after_scene,
+                                   'state_before': first, 'state_after': after,
+                                   'old_point': [x, y], 'new_point': [x + 1, y]}
+                driver.move(x, y)
+                action('l', 'editable')
         region('animated-watch', 271, 200)
         action('h', 'hide')
         frame('animation-base', [271, 200])
@@ -116,6 +150,7 @@ def capture(output, windows=False):
                   'original_before': before,
                   'original_after': {name: packaging.sha(vm.DIST / name) for name in before},
                   'frames': frames,
+                  'pointer_present': pointer_present,
                   'launch': json.loads((output / 'vm/command.json').read_text()),
                   'serial_sha256': packaging.sha(output / 'vm/serial.log')}
         (output / 'capture.json').write_text(json.dumps(report, indent=2) + '\n')
