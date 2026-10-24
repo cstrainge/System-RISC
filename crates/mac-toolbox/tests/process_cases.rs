@@ -798,7 +798,9 @@ pub fn worker(system: &System<'_>) -> Result<()>
                             (*b"GWLD", 1),
                             (*b"GWST", 1),
                             (*b"MENU", 1),
-                            (*b"MNST", 1)];
+                            (*b"MNST", 1),
+                            (*b"MMBL", 1),
+                            (*b"MMST", 1)];
             require(ledger.len() == expected.len() as u64,
                     "worker exit pool census missing a registered kind")?;
             for index in 0..ledger.len()

@@ -40,6 +40,11 @@ impl Saved
 }
 impl Desktop
 {
+    pub(crate) fn spawn_process(&self, id: u64, image: usize, entry: usize) -> Result<u64, Status>
+    {
+        crate::machine::scheduler::spawn(self.processes.ledger(id)?, image, entry)
+    }
+
     pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
     {
         if matches!(notice.event.message & 0xff00_0000,
@@ -581,7 +586,7 @@ impl Desktop
             self.processes.remove(id)?;
             return Err(error);
         }
-        let thread = match crate::machine::scheduler::spawn(id, image, entry)
+        let thread = match self.spawn_process(id, image, entry)
         {
             Ok(t) => t,
             Err(e) =>
@@ -679,7 +684,6 @@ impl Desktop
                 }
                 super::super::processes::documents::close_owner(&mut self.processes, caller);
                 let _ = crate::kernel::with_files(|files| files.close_all(caller));
-                crate::kernel::release_memory();
                 crate::machine::scheduler::retire_current();
                 retirement?;
                 serial!("PROCESS_EXIT app={}", caller);
@@ -720,5 +724,23 @@ impl crate::toolbox::menus::lifetime::MenuHost for Desktop
             self.locals.iter_mut().find(|state| state.id == owner).map(|state| &mut state.menus)
         };
         match manager { Some(manager) => manager.release_storage(ticket), None => Err(<mac_object_table::domain::CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket)) }
+    }
+}
+
+impl crate::toolbox::memory::lifetime::MemoryHost for Desktop
+{
+    fn release_memory(&mut self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
+                      -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        let mut ticket = Some(ticket);
+        match crate::kernel::with_memory(|manager| manager.release(ticket.take().unwrap(), storage))
+        {
+            Ok(result) => result.map_err(Into::into),
+            Err(error) =>
+            {
+                Err(crate::toolbox::handles::cleanup::Failure::memory_unavailable(ticket.unwrap(),
+                                                                                  error))
+            }
+        }
     }
 }

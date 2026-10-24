@@ -544,7 +544,11 @@ impl Desktop
                             {
                                 i32::try_from(reply).unwrap_or(BAD_ABI)
                             }
-                            super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT
+                            super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
+                            super::handles::cleanup::Cause::MemoryManagerUnavailable(error) =>
+                            {
+                                error.status()
+                            }
                         };
                     }
                 }

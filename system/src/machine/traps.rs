@@ -400,8 +400,13 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         }
         MEMORY =>
         {
+            let owner = match crate::context::current_owner()
+            {
+                Ok(owner) => owner,
+                Err(status) => return status as i64
+            };
             crate::kernel::with_memory(|manager| unsafe {
-                toolbox::memory::native::dispatch(manager, number, pointer, size)
+                toolbox::memory::native::dispatch(manager, &owner, number, pointer, size)
             }).unwrap_or_else(|error| error.status() as i64)
         }
         SCROLL_BOX =>

@@ -245,6 +245,25 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         self.insert_with(owner, |_| value)
     }
 
+    /// Admit registered saved state without publishing a semantic object.
+    /// Error/status queries can own state even before their first object exists.
+    /// The backing participates in the same walk as object-triggered backing.
+    pub fn prepare(&mut self, owner: &OwnerRef<G>) -> Result<(), PoolError>
+    {
+        if !owner.accepting()
+        {
+            return Err(PoolError::Stopping { owner: owner.owner() });
+        }
+        if self.registration.as_ref().is_none_or(|kind| kind.live())
+           && self.state(owner.owner().incarnation()).is_some()
+        {
+            return Ok(());
+        }
+        let _usage = self.registration.as_ref().map(|kind| kind.acquire(true)).transpose()?;
+        self.attach(owner)?;
+        Ok(())
+    }
+
     /// Build an object containing its opaque native identity before publishing
     /// it. Construction runs once, outside the owner lock. The live key is
     /// published only after construction succeeds; admission refusal leaves

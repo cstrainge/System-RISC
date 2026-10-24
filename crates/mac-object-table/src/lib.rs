@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicU16, Ordering};
 
 // App-local tables share generation histories so the same slot in two apps
 // cannot issue the same ID. The classic memory wire contract stays unchanged.
+static MEMORY_GENERATIONS: [AtomicU16; 512] = [const { AtomicU16::new(0) }; 512];
 static EDITOR_GENERATIONS: [AtomicU16; mac_abi::textedit::MAX_EDITORS] =
     [const { AtomicU16::new(0) }; mac_abi::textedit::MAX_EDITORS];
 static MODULE_GENERATIONS: [AtomicU16; 32] = [const { AtomicU16::new(0) }; 32];
@@ -189,6 +190,7 @@ impl Kind
     {
         match self
         {
+            Self::Memory => MEMORY_GENERATIONS.get(index),
             Self::DocumentBatches => DOCUMENT_BATCH_GENERATIONS.get(index),
             Self::FileTransfers => FILE_TRANSFER_GENERATIONS.get(index),
             Self::FileGroups => FILE_GROUP_GENERATIONS.get(index),

@@ -4,14 +4,17 @@ fn memory_wire_format_and_history_survive_remove_and_clear()
 {
     let mut table = Table::new(Kind::Memory);
     let first = table.insert(17).unwrap();
-    assert_eq!(first, 0x00010001);
+    assert!((1..=512).contains(&(first & 0xffff)));
+    assert_ne!(first >> 16, 0);
     assert_eq!(table.remove(first), Some(17));
     let second = table.insert(18).unwrap();
-    assert_eq!(second, 0x00020001);
+    assert_ne!(second, first);
+    assert!((1..=512).contains(&(second & 0xffff)));
     assert!(table.get(first).is_none());
     table.clear();
     let third = table.insert(19).unwrap();
-    assert_eq!(third, 0x00030001);
+    assert_ne!(third, second);
+    assert!((1..=512).contains(&(third & 0xffff)));
     assert!(table.get(first).is_none());
     assert!(table.get(second).is_none());
 }
@@ -107,4 +110,23 @@ fn retired_thread_slots_cannot_alias_recreated_tables()
         assert_ne!(fresh, replacement);
         assert!(threads.get(replacement).is_none());
     }
+}
+
+#[test]
+fn memory_projections_reject_foreign_owners_and_recreated_tables()
+{
+    let mut first = Table::new(Kind::Memory);
+    let mut second = Table::new(Kind::Memory);
+    let old = first.insert("first owner").unwrap();
+    let foreign = second.insert("second owner").unwrap();
+    assert_ne!(old, foreign);
+    assert!(first.get(foreign).is_none());
+    assert!(second.get(old).is_none());
+    drop(first);
+    let mut replacement = Table::new(Kind::Memory);
+    let current = replacement.insert("replacement owner").unwrap();
+    assert_ne!(old, current);
+    assert_ne!(foreign, current);
+    assert!(replacement.get(old).is_none());
+    assert!(second.get(current).is_none());
 }

@@ -4,65 +4,165 @@ use alloc::vec::Vec;
 
 use mac_abi::{memory::*, *};
 
-use crate::toolbox::handles::{Kind, Table};
+use crate::toolbox::handles::{Kind, KindLease, OwnerRef, Store, Table};
 const ZONE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_BYTES: usize = 1024 * 1024;
 const HEADER: usize = 12;
 #[derive(Clone, Copy)]
 struct Block
 {
+    wire:  u32,
     start: Option<usize>,
     size:  usize,
     state: u8
 }
-pub struct Manager
+struct Zone
 {
-    arena: Vec<u8>,
-    slots: Table<Block>,
-    error: Status
+    arena:      Vec<u8>,
+    projection: Table<u64>,
+    error:      Status
 }
-impl Default for Manager
+impl Default for Zone
 {
     fn default() -> Self
     {
-        Self { arena: Vec::new(),
-               slots: Table::new(Kind::Memory),
-               error: OK }
+        Self { arena:      Vec::new(),
+               projection: Table::new(Kind::Memory),
+               error:      OK }
     }
+}
+pub struct Manager
+{
+    blocks: Store<Block, Zone>
+}
+impl Manager
+{
+    pub(crate) fn new(kinds: (KindLease, KindLease)) -> Result<Self, Status>
+    {
+        Ok(Self { blocks:
+                      Store::owned_state(kinds.0, kinds.1, |_| Ok(Zone::default())).map_err(|_| {
+                                                                                       BAD_ARGUMENT
+                                                                                   })? })
+    }
+
+    pub(crate) fn release(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                          storage: bool)
+                          -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        if storage
+        {
+            self.blocks.release_storage(ticket)
+        }
+        else
+        {
+            let Some(block) = self.blocks.releasing(&ticket)
+            else
+            {
+                return Err(<mac_object_table::domain::CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket));
+            };
+            let wire = block.wire;
+            if let Some(zone) = self.blocks.state_mut(ticket.key().owner().incarnation())
+            {
+                zone.projection.remove(wire);
+            }
+            drop(self.blocks.release(ticket)?);
+            Ok(())
+        }
+    }
+
+    pub(crate) fn request(&mut self, owner: &OwnerRef, call: &mut MemoryCall, input: &[u8],
+                          output: &mut [u8])
+                          -> Status
+    {
+        if let Err(error) = self.blocks.prepare(owner)
+        {
+            let status = match error
+            {
+                mac_object_table::domain::PoolError::Stopping { .. }
+                | mac_object_table::domain::PoolError::RegistrationUnavailable { .. } =>
+                {
+                    SERVICE_BUSY
+                }
+                _ => MEM_FULL_ERR
+            };
+            call.error = status;
+            return status;
+        }
+        Scope { blocks: &mut self.blocks,
+                owner }.request(call, input, output)
+    }
+}
+struct Scope<'a>
+{
+    blocks: &'a mut Store<Block, Zone>,
+    owner:  &'a OwnerRef
 }
 fn span(size: usize) -> usize
 {
     (size + HEADER + 15) & !15
 }
-impl Manager
+impl Scope<'_>
 {
-    /// Release an application's arena and live blocks without recycling old
-    /// handle generations when its scheduler slot is assigned to another app.
-    pub fn clear(&mut self)
+    fn zone(&self) -> Result<&Zone, Status>
     {
-        self.arena = Vec::new();
-        self.slots.clear();
-        self.error = OK;
+        self.blocks.state(self.owner.owner().incarnation()).ok_or(SERVICE_BUSY)
+    }
+
+    fn zone_mut(&mut self) -> Result<&mut Zone, Status>
+    {
+        self.blocks.state_mut(self.owner.owner().incarnation()).ok_or(SERVICE_BUSY)
+    }
+
+    fn record(&self, wire: u32) -> Result<(u64, &Block), Status>
+    {
+        let id = *self.zone()?.projection.get(wire).ok_or(NIL_HANDLE_ERR)?;
+        let (owner, block) = self.blocks.get_with_owner(id).ok_or(NIL_HANDLE_ERR)?;
+        if owner != self.owner.owner() || block.wire != wire
+        {
+            return Err(NIL_HANDLE_ERR);
+        }
+        Ok((id, block))
+    }
+
+    fn block(&self, wire: u32) -> Result<&Block, Status>
+    {
+        self.record(wire).map(|(_, block)| block)
+    }
+
+    fn block_mut(&mut self, wire: u32) -> Result<&mut Block, Status>
+    {
+        let id = self.record(wire)?.0;
+        self.blocks.get_mut(id).ok_or(NIL_HANDLE_ERR)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (u32, &Block)>
+    {
+        self.blocks
+            .state(self.owner.owner().incarnation())
+            .into_iter()
+            .flat_map(|zone| zone.projection.iter())
+            .filter_map(|(wire, id)| self.blocks.get(*id).map(|block| (wire, block)))
     }
 
     fn populated(&self, id: u32) -> Result<Block, Status>
     {
-        self.slots.get(id).copied().filter(|b| b.start.is_some()).ok_or(NIL_HANDLE_ERR)
+        let block = *self.block(id)?;
+        block.start.is_some().then_some(block).ok_or(NIL_HANDLE_ERR)
     }
 
     fn fits(&self, start: usize, size: usize, ignore: Option<u32>) -> bool
     {
         let end = start + span(size);
         end <= ZONE_BYTES
-        && !self.slots.iter().any(|(id, block)| {
-                                 if Some(id) == ignore
-                                 {
-                                     return false;
-                                 }
-                                 block.start.is_some_and(|other| {
-                                                start < other + span(block.size) && other < end
-                                            })
-                             })
+        && !self.iter().any(|(id, block)| {
+                           if Some(id) == ignore
+                           {
+                               return false;
+                           }
+                           block.start.is_some_and(|other| {
+                                          start < other + span(block.size) && other < end
+                                      })
+                       })
     }
 
     fn space(&self, size: usize, ignore: Option<u32>) -> Result<usize, Status>
@@ -79,7 +179,7 @@ impl Manager
             {
                 return Err(MEM_FULL_ERR);
             }
-            let conflict = self.slots.iter().find_map(|(id, block)| {
+            let conflict = self.iter().find_map(|(id, block)| {
                 if Some(id) == ignore { return None; }
                 let other = block.start?;
                 (start < other + span(block.size) && other < end).then_some(other + span(block.size))
@@ -94,17 +194,18 @@ impl Manager
 
     fn backing(&mut self, end: usize) -> Result<(), Status>
     {
-        if end > self.arena.len()
+        let len = self.zone()?.arena.len();
+        if end > len
         {
-            self.arena.try_reserve_exact(end - self.arena.len()).map_err(|_| MEM_FULL_ERR)?;
-            self.arena.resize(end, 0);
+            self.zone_mut()?.arena.try_reserve_exact(end - len).map_err(|_| MEM_FULL_ERR)?;
+            self.zone_mut()?.arena.resize(end, 0);
         }
         Ok(())
     }
 
     fn allocate(&mut self, size: usize, empty: bool) -> Result<u32, Status>
     {
-        self.slots.reserve().map_err(|_| MEM_FULL_ERR)?;
+        self.zone_mut()?.projection.reserve().map_err(|_| MEM_FULL_ERR)?;
         let start = if empty
         {
             None
@@ -113,14 +214,39 @@ impl Manager
         {
             let start = self.space(size, None)?;
             self.backing(start + span(size))?;
-            self.arena[start + HEADER..start + HEADER + size].fill(0);
+            self.zone_mut()?.arena[start + HEADER..start + HEADER + size].fill(0);
             Some(start)
         };
-        self.slots
-            .insert(Block { start,
-                            size,
-                            state: 0 })
-            .map_err(|_| MEM_FULL_ERR)
+        // Reserve the classic projection before publishing its canonical block.
+        // Zero is not a native identity; no request can observe this preparation
+        // while the manager is borrowed. Refusal removes the unpublished entry.
+        let wire = self.zone_mut()?.projection.insert(0).map_err(|_| MEM_FULL_ERR)?;
+        let native = match self.blocks.insert(self.owner,
+                                              Block { wire,
+                                                      start,
+                                                      size,
+                                                      state: 0 })
+        {
+            Ok(id) => id,
+            Err(error) =>
+            {
+                if let Ok(zone) = self.zone_mut()
+                {
+                    zone.projection.remove(wire);
+                }
+                return Err(match error
+                {
+                    mac_object_table::domain::PoolError::Stopping { .. }
+                    | mac_object_table::domain::PoolError::RegistrationUnavailable { .. } =>
+                    {
+                        SERVICE_BUSY
+                    }
+                    _ => MEM_FULL_ERR
+                });
+            }
+        };
+        *self.zone_mut()?.projection.get_mut(wire).ok_or(NIL_HANDLE_ERR)? = native;
+        Ok(wire)
     }
 
     fn resize(&mut self, id: u32, size: usize) -> Result<(), Status>
@@ -145,11 +271,11 @@ impl Manager
         };
         self.backing(start + span(size))?;
         let prefix = block.size.min(size);
-        self.arena.copy_within(old + HEADER..old + HEADER + prefix, start + HEADER);
-        self.arena[start + HEADER + prefix..start + HEADER + size].fill(0);
-        *self.slots.get_mut(id).ok_or(NIL_HANDLE_ERR)? = Block { start: Some(start),
-                                                                 size,
-                                                                 ..block };
+        self.zone_mut()?.arena.copy_within(old + HEADER..old + HEADER + prefix, start + HEADER);
+        self.zone_mut()?.arena[start + HEADER + prefix..start + HEADER + size].fill(0);
+        *self.block_mut(id)? = Block { start: Some(start),
+                                       size,
+                                       ..block };
         Ok(())
     }
 
@@ -157,7 +283,7 @@ impl Manager
     {
         let block = self.populated(id)?;
         let start = block.start.ok_or(NIL_HANDLE_ERR)? + HEADER;
-        Ok(&self.arena[start..start + block.size])
+        Ok(&self.zone()?.arena[start..start + block.size])
     }
 
     fn copy(&self, id: u32) -> Result<Vec<u8>, Status>
@@ -177,7 +303,7 @@ impl Manager
             return Err(BAD_ARGUMENT);
         }
         let start = block.start.ok_or(NIL_HANDLE_ERR)? + HEADER + offset;
-        self.arena[start..start + input.len()].copy_from_slice(input);
+        self.zone_mut()?.arena[start..start + input.len()].copy_from_slice(input);
         Ok(())
     }
 
@@ -217,12 +343,14 @@ impl Manager
             _ =>
             {
                 let id = call.handle;
-                self.slots.get(id).ok_or(NIL_HANDLE_ERR)?;
+                self.block(id)?;
                 match call.operation
                 {
                     DISPOSE =>
                     {
-                        self.slots.remove(id).ok_or(NIL_HANDLE_ERR)?;
+                        let native = self.record(id)?.0;
+                        self.zone_mut()?.projection.remove(id).ok_or(NIL_HANDLE_ERR)?;
+                        drop(self.blocks.remove(native).ok_or(NIL_HANDLE_ERR)?);
                     }
                     SIZE =>
                     {
@@ -243,12 +371,12 @@ impl Manager
                             PURGEABLE => block.state | PURGEABLE_BIT,
                             _ => block.state & !PURGEABLE_BIT
                         };
-                        *self.slots.get_mut(id).ok_or(NIL_HANDLE_ERR)? = block;
+                        *self.block_mut(id)? = block;
                     }
                     RESIZE => self.resize(id, call.size as usize)?,
                     EMPTY | REALLOCATE =>
                     {
-                        let block = *self.slots.get(id).ok_or(NIL_HANDLE_ERR)?;
+                        let block = *self.block(id)?;
                         if block.start.is_some() && block.state & LOCKED != 0
                         {
                             return Err(MEM_PUR_ERR);
@@ -262,12 +390,13 @@ impl Manager
                         {
                             let start = self.space(size, Some(id))?;
                             self.backing(start + span(size))?;
-                            self.arena[start + HEADER..start + HEADER + size].fill(0);
+                            self.zone_mut()?.arena[start + HEADER..start + HEADER + size].fill(0);
                             Some(start)
                         };
-                        *self.slots.get_mut(id).ok_or(NIL_HANDLE_ERR)? = Block { start,
-                                                                                 size,
-                                                                                 state: 0 };
+                        *self.block_mut(id)? = Block { wire: id,
+                                                       start,
+                                                       size,
+                                                       state: 0 };
                     }
                     DUPLICATE =>
                     {
@@ -306,16 +435,24 @@ impl Manager
         Ok(())
     }
 
-    pub fn request(&mut self, call: &mut MemoryCall, input: &[u8], output: &mut [u8]) -> Status
+    fn request(&mut self, call: &mut MemoryCall, input: &[u8], output: &mut [u8]) -> Status
     {
         let result = self.perform(call, input, output).map_or_else(|e| e, |()| OK);
-        // Read/write are native safe equivalents of direct byte access: successful
-        // copies do not change the original Memory Manager's last error.
+        // An owner may stop on another hart while this admitted service still
+        // holds manager storage. Cleanup retains that storage until this call
+        // leaves; a stopped backing is a typed refusal, never an expectation.
+        let Ok(zone) = self.zone_mut()
+        else
+        {
+            call.error = SERVICE_BUSY;
+            return SERVICE_BUSY;
+        };
+        // Successful bounded byte copies preserve the original last error.
         if !matches!(call.operation, READ | WRITE | ERROR)
         {
-            self.error = result;
+            zone.error = result;
         }
-        call.error = self.error;
+        call.error = zone.error;
         result
     }
 }

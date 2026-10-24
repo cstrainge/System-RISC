@@ -7,6 +7,8 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 pub(crate) enum Cause
 {
     Facility(PoolError),
+    #[cfg(target_arch = "riscv64")]
+    MemoryManagerUnavailable(crate::state::AccessError),
     WindowDefinitionDisposal
     {
         window:    u64,
@@ -21,6 +23,13 @@ impl core::fmt::Display for Cause
         match self
         {
             Self::Facility(error) => error.fmt(f),
+            #[cfg(target_arch = "riscv64")]
+            Self::MemoryManagerUnavailable(error) =>
+            {
+                write!(f,
+                       "Memory Manager cleanup could not enter its resident state ({error:?}); \
+                        payload, backing and cleanup ticket remain retained for retry")
+            }
             Self::WindowDefinitionDisposal { window,
                                              procedure,
                                              reply } =>
@@ -45,6 +54,14 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn memory_unavailable(ticket: ReleasedResource, error: crate::state::AccessError)
+                                     -> Self
+    {
+        Self { ticket,
+               cause: Cause::MemoryManagerUnavailable(error) }
+    }
+
     pub(crate) fn window_definition(ticket: ReleasedResource, window: u64, procedure: i16,
                                     reply: i64)
                                     -> Self

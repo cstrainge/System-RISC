@@ -91,7 +91,8 @@ pub fn switches(app: u64) -> u64
      })
      .unwrap_or(0)
 }
-pub fn spawn(app: u64, image: usize, entry: usize) -> Result<u64, mac_abi::Status>
+pub fn spawn(owner: crate::toolbox::handles::OwnerRef, image: usize, entry: usize)
+             -> Result<u64, mac_abi::Status>
 {
     let mut scheduler = SCHEDULER.lock();
     let slot = scheduler.threads.iter().position(|t| t.is_none()).ok_or(mac_abi::NO_MEMORY)?;
@@ -120,7 +121,12 @@ pub fn spawn(app: u64, image: usize, entry: usize) -> Result<u64, mac_abi::Statu
     }
     let id = scheduler.identities.insert(slot).map_err(|_| mac_abi::NO_MEMORY)?;
     let thread = u64::from(id);
-    CONTEXTS[slot].assign(app, thread);
+    let app = owner.owner().incarnation();
+    if let Err(error) = CONTEXTS[slot].assign(owner, thread)
+    {
+        scheduler.identities.remove(id);
+        return Err(error);
+    }
     scheduler.threads[slot] = Some(Thread { id,
                                             _stack: stack,
                                             frame: frame as usize,
@@ -368,6 +374,7 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
            && let Some(thread) = scheduler.threads[index].take()
         {
             scheduler.identities.remove(thread.id);
+            CONTEXTS[index].release();
         }
     }
     if let Some(thread) = scheduler.threads.get_mut(current).and_then(Option::as_mut)
@@ -430,11 +437,6 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
     CURRENT.store(MAX_THREADS, Ordering::Relaxed);
     arm();
     next
-}
-
-pub fn slot() -> usize
-{
-    CURRENT.load(Ordering::Relaxed).min(MAX_THREADS - 1)
 }
 
 pub fn retired() -> bool

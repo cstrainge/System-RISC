@@ -107,42 +107,107 @@ fn application_cleanup_reclaims_zone_without_reusing_old_handle_generations()
     });
 }
 
+
 #[test]
-fn full_u16_generation_range_retires_the_slot_without_reissuing_an_old_id()
+fn memory_ownership_and_last_error_are_scoped_to_authenticated_processes()
 {
+    use mac_system::testing::{files::with_owner, inspection as fixture};
     support::with_system(|system| {
-        let client = system.client();
-        let mut call = MemoryCall { operation: NEW_EMPTY,
-                                    ..Default::default() };
-        let mut first = 0;
-        for generation in 1..=u16::MAX
-        {
-            call.operation = NEW_EMPTY;
-            client.memory(&mut call, &[], &mut []).unwrap();
-            assert_eq!(call.handle, (u32::from(generation) << 16) | 1);
-            if generation == 1
+        let first = fixture::add("First Memory owner", 0);
+        let second = fixture::add("Second Memory owner", 0);
+        let mut old = MemoryCall { operation: NEW_CLEAR,
+                                   size: 16,
+                                   ..Default::default() };
+        with_owner(first, || system.client().memory(&mut old, &[], &mut []).unwrap());
+        let mut current = MemoryCall { operation: NEW_CLEAR,
+                                       size: 16,
+                                       ..Default::default() };
+        with_owner(second, || {
+            system.client().memory(&mut current, &[], &mut []).unwrap();
+            assert_ne!(old.handle, current.handle);
+            let mut foreign = MemoryCall { operation: SIZE,
+                                           handle: old.handle,
+                                           ..Default::default() };
+            let error = system.client().memory(&mut foreign, &[], &mut []).unwrap_err();
+            assert_eq!(error, Error::NilHandle);
+            assert!(error.to_string().contains("invalid or empty memory handle"));
+            assert_eq!(system.memory().last_error().unwrap(), Some(Error::NilHandle));
+        });
+        with_owner(first, || {
+            assert_eq!(system.memory().last_error().unwrap(), None);
+            old.operation = SIZE;
+            system.client().memory(&mut old, &[], &mut []).unwrap();
+            assert_eq!(old.size, 16);
+        });
+    });
+}
+
+#[test]
+fn memory_objects_and_empty_zone_backing_use_the_generic_quarantine_and_retry_walk()
+{
+    use mac_system::testing::{files::with_owner, inspection as fixture};
+    use mac_toolbox::inspection::Scope;
+    support::with_system(|system| {
+        let owner = fixture::add("Memory cleanup subject", 0);
+        with_owner(owner, || {
+            let handle = system.memory().handle_from_bytes(b"registered memory").unwrap();
+            let membership = system.inspection().snapshot(Scope::Own).unwrap();
+            let before = membership.at(0).unwrap();
+            assert_eq!((before.live, before.pending), (2, 0));
+            let pools = membership.ledger(0).unwrap();
+            assert_eq!(pools.len(), 2);
+            for i in 0..2
             {
-                first = call.handle;
+                let pool = pools.at(i).unwrap();
+                assert!([*b"MMBL", *b"MMST"].contains(&pool.kind));
+                assert_eq!(pool.live, 1);
             }
-            call.operation = DISPOSE;
-            client.memory(&mut call, &[], &mut []).unwrap();
-        }
-        call.operation = NEW_CLEAR;
-        call.size = 4;
-        client.memory(&mut call, &[], &mut []).unwrap();
-        let current = call.handle;
-        assert_eq!(current, (1 << 16) | 2, "retire rather than wrap generation");
-        for stale in [first, 0xffff0001, 1, 0, u32::MAX]
-        {
-            call.operation = DISPOSE;
-            call.handle = stale;
-            assert_eq!(client.memory(&mut call, &[], &mut []), Err(Error::NilHandle));
-        }
-        call.operation = SIZE;
-        call.handle = current;
-        client.memory(&mut call, &[], &mut []).unwrap();
-        assert_eq!(call.size, 4);
-        call.operation = DISPOSE;
-        client.memory(&mut call, &[], &mut []).unwrap();
+            let failure = fixture::walk_registered(owner, true, false);
+            assert_eq!((failure.report.invalidated, failure.report.quarantined), (2, 2));
+            assert!(failure.failures.iter().any(|error| {
+                                               error.contains("MMBL")
+                                               && error.contains("no registered cleanup provider")
+                                           }));
+            assert_eq!((membership.at(0).unwrap().live, membership.at(0).unwrap().pending), (0, 2));
+            let refused = system.memory().new_empty_handle().err().unwrap();
+            assert_eq!(refused, Error::ServiceBusy);
+            assert!(refused.to_string().contains("busy"));
+            let retry = fixture::walk_registered(owner, false, true);
+            assert_eq!((retry.report.released, retry.report.quarantined), (2, 0));
+            let done = membership.at(0).unwrap();
+            assert_eq!((done.live, done.pending, done.quarantined), (0, 0, 0));
+            assert_eq!(done.deaths, before.deaths + 2);
+            drop(handle);
+        });
+    });
+}
+
+#[test]
+fn first_allocation_refusal_keeps_only_a_registered_error_state_until_the_walk()
+{
+    use mac_system::testing::{files::with_owner, inspection as fixture};
+    use mac_toolbox::inspection::Scope;
+    support::with_system(|system| {
+        let owner = fixture::add("Empty Memory cleanup subject", 0);
+        with_owner(owner, || {
+            let error = system.memory().new_handle_clear(1024 * 1024 + 1).err().unwrap();
+            assert_eq!(error, Error::MemoryFull);
+            assert!(error.to_string().contains("Memory Manager allocation failed"));
+            assert_eq!(system.memory().last_error().unwrap(), Some(Error::MemoryFull));
+            let snapshot = system.inspection().snapshot(Scope::Own).unwrap();
+            assert_eq!((snapshot.at(0).unwrap().live, snapshot.at(0).unwrap().pending), (1, 0));
+            let pools = snapshot.ledger(0).unwrap();
+            for i in 0..pools.len()
+            {
+                let pool = pools.at(i).unwrap();
+                assert_eq!(pool.live, u64::from(pool.kind == *b"MMST"));
+            }
+            let result = fixture::walk_registered(owner, false, false);
+            assert_eq!((result.report.invalidated,
+                        result.report.released,
+                        result.report.quarantined),
+                       (1, 1, 0));
+            assert_eq!((snapshot.at(0).unwrap().live, snapshot.at(0).unwrap().pending), (0, 0));
+        });
     });
 }

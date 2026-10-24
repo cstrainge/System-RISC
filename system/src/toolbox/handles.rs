@@ -145,6 +145,10 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                    cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseMenus)).map_err(KindAccessError::Registry)?;
                                registry.register(&owner, crate::toolbox::menus::lifetime::specification(true),
                                    cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::memory::lifetime::specification(false),
+                                   crate::toolbox::memory::lifetime::ReleaseBlocks).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::memory::lifetime::specification(true),
+                                   crate::toolbox::memory::lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
                            })?;
     Ok(InvocationGate::run(|| run(&registry.lock())))
@@ -205,5 +209,12 @@ pub(crate) fn window_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 pub(crate) fn menu_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"MENU"))?, registry.get(KindCode(*b"MNST"))?)))
+        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn memory_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"MMBL"))?, registry.get(KindCode(*b"MMST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }

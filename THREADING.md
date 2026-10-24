@@ -109,7 +109,7 @@ its historical implicit global is selected through AppId.
 | `Desktop` | The global compositor, physical input and window registry remain shared. Trusted app context selects saved events, menus, dialogs, cursors, worlds, font/legacy state and TextEdit managers at the masked service boundary. Windows carry an owner; background retained scenes are composed centrally. |
 | Application resources | Read-only application-to-System/font search selects the caller's immutable image. Retained content replay selects the owning image, so a background window does not resolve against whichever application invoked the compositor. General mutable Resource Manager chains remain open. |
 | Scrap Manager | One shared guarded System clipboard. Native edits stage fallible changes before publication. Original private scraps and process suspend/resume transfer remain unimplemented. |
-| Memory Manager | Each scheduler slot has a separate bounded handle zone and MemErr state. Numeric IDs are process-local, not globally unique capabilities. Exit drops arena/live blocks while retaining generation counters across scheduler-slot reuse; a stale ID cannot alias the next allocation in that reused namespace. |
+| Memory Manager | One synchronized resident store owns registered MMBL blocks and MMST per-domain arena/projection/MemErr state. The scheduler binds the authentic OwnerRef; traps never select memory by scheduler slot. Shared boot-wide projection generations reject stale/foreign 32-bit IDs, including after zone destruction. The generic walk owns block and backing release. |
 | File Manager | One mounted catalog/device service with owner-tagged fork marks. The native trap captures AppId before I/O handoff; handle read/seek/tell/close checks that identity. Exit closes only its owner's marks. Internal loader requests use reserved owner zero. |
 | Framebuffer, input and allocator | One-hart interrupt-masked kernel work serializes device and heap access. App-only code is preemptible. This is not a multi-hart synchronization or blocking-mutex design. Secondary harts remain parked. |
 | Firmware `BootVolume` and disk callbacks | The original boot call remains live. `machine/io.rs` masks interrupts and switches to a dedicated synchronous execution stack with fixed bootstrap ownership. It is not an independently runnable I/O thread or an asynchronous queue, and the opaque firmware context is not given a Send implementation. |
@@ -303,13 +303,22 @@ RV64 pointers and a future x86 ABI have the same representation. Cross-target
 layout/codegen/boot/trap/context-switch tests are required before advertising a
 second architecture; a Rust compile target alone is insufficient.
 
-The shared handle facility allocates TextEdit and menu-object generations across
-all app-local tables. Two simultaneously live app contexts cannot mint the same
-object ID for corresponding slots, and dropping an old context does not reset
-that history. Counter allocation is atomic and exhausted slots are retired.
-Memory keeps its existing process-local wire contract and scheduler-slot history.
-Native MenuId values name semantic menu properties; MenuHandle values identify
-actual live menu objects. Owned menu references validate the latter on every call.
+The shared handle facility allocates Memory and remaining app-local TextEdit
+projection generations across tables. Two live app contexts cannot mint the same
+projected ID; dropping a context does not reset history. Counter allocation is
+atomic and exhausted slots retire. Memory keeps its high16/low16 wire, with its
+payload and zone now in the registered owner store. Windows, controls, menus and
+offscreen worlds use full-width opaque tokens resolving to authenticated ledger
+keys. Native MenuId names a semantic menu property; MenuHandle identifies a live
+object. Owned menu references validate the latter on every call.
+
+The current native ThreadContext receives the directory's actual OwnerRef when
+its thread is spawned; its scalar AppId is derived from that authority. Traps can
+borrow that binding without taking the Desktop lock, including nested definition
+service calls. The reference is released only when a different stack reclaims the
+retired thread. Bootstrap/headless storage calls use the one System owner. This
+is an ownership bridge, not the later module executor/subject/allocation/resource
+scope protocol, dynamic thread capacity, multi-hart admission or privilege gate.
 
 ## Deferred driver I/O integration
 

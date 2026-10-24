@@ -1,5 +1,5 @@
 //! Checked DTSpec v17 memory discovery. No MMIO, pointers, allocation or recursion.
-//! https://devicetree-specification.readthedocs.io/en/stable/flattened-format.html
+//! <https://devicetree-specification.readthedocs.io/en/stable/flattened-format.html>
 use core::ops::Range;
 
 pub use mac_formats::Error;

@@ -30,7 +30,7 @@ static RESOURCE_FILES: Once<crate::toolbox::resources::manager::Files> = Once::n
 static FONTS: Once<crate::toolbox::quickdraw::fonts::FontManager> = Once::new();
 static DESKTOP: TryState<crate::toolbox::runtime::Desktop> = TryState::new();
 static SCRAP: TryState<crate::toolbox::scrap::Manager> = TryState::new();
-static MEMORY: [TryState<crate::toolbox::memory::Manager>; 8] = [const { TryState::new() }; 8];
+static MEMORY: TryState<crate::toolbox::memory::Manager> = TryState::new();
 // SAFETY: storage executes on hart0's fixed-owner service stack, with interrupts
 // masked. The scheduler supplies genuine app thread identities; io::run hands
 // execution to the bootstrap storage context before accessing opaque callbacks.
@@ -218,16 +218,12 @@ pub(crate) fn with_files<R>(call: impl FnOnce(&mut crate::toolbox::files::Manage
 pub(crate) fn with_memory<R>(call: impl FnOnce(&mut crate::toolbox::memory::Manager) -> R)
                              -> Result<R, AccessError>
 {
-    MEMORY[crate::machine::scheduler::slot()].with(call)
+    MEMORY.with(call)
 }
 pub(crate) fn with_scrap<R>(call: impl FnOnce(&mut crate::toolbox::scrap::Manager) -> R)
                             -> Result<R, AccessError>
 {
     SCRAP.with(call)
-}
-pub(crate) fn release_memory()
-{
-    let _ = MEMORY[crate::machine::scheduler::slot()].with(|manager| manager.clear());
 }
 pub(crate) fn reload_image(index: usize) -> Result<usize, Status>
 {
@@ -355,7 +351,14 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     boot_screen.completed(5)?;
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", &SERVICES as *const SystemServices as usize);
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
-    let thread=crate::machine::scheduler::spawn(crate::context::finder_app().0,0,finder_entry).map_err(|_|mac_formats::Error::Malformed("Finder thread creation failed"))?;
+    let thread =
+        with_desktop(|desktop| {
+            desktop.spawn_process(crate::context::finder_app().0, 0, finder_entry)
+        }).map_err(|_| mac_formats::Error::Malformed("Finder owner directory is unavailable"))?
+          .map_err(|status| {
+              serial!("FINDER_THREAD_CREATION_FAILED status={status}");
+              mac_formats::Error::Malformed("Finder thread creation failed")
+          })?;
     boot_screen.completed(6)?;
     with_desktop(|desktop| desktop.started(crate::context::finder_app().0, thread)).map_err(|_| {
                                                           mac_formats::Error::Malformed("Finder context \
@@ -423,9 +426,19 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
         }
         None => crate::toolbox::files::Manager::default()
     };
-    for memory in &MEMORY
+    let memory =
+        match crate::toolbox::handles::memory_kinds().and_then(crate::toolbox::memory::Manager::new)
+        {
+            Ok(memory) => memory,
+            Err(status) =>
+            {
+                serial!("MEMORY_MANAGER_INIT_FAILED status={status}");
+                return ptr::null();
+            }
+        };
+    if MEMORY.publish(memory).is_err()
     {
-        let _ = memory.publish(Default::default());
+        return ptr::null();
     }
     if FILES.publish(files).is_err()
        || SCRAP.publish(crate::toolbox::scrap::Manager::default()).is_err()

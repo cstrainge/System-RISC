@@ -691,3 +691,44 @@ work; the measurements do not establish a latency improvement or a hard
 real-time guarantee. Evidence: private `input-metadata-*` reports. Paging is
 still off, and the remaining manager/cleanup and dynamic-process stages precede
 live MMU activation.
+
+
+### Memory Manager ledger integration
+
+MMBL registers every memory block, and MMST registers the per-domain arena,
+classic-shaped projection table and MemErr state. Both use the shared store and
+registry, including state created by an initial failing allocation or an error
+query before any handle. Explicit disposal and generic teardown invalidate the
+same canonical key; a pending backing remains until its last block is released.
+A busy resident holder retains a typed cause and the unique cleanup ticket for
+retry. Ordinary requests encountering a stopped backing return a typed refusal,
+not a System panic. The old eight-element Memory Manager array, scheduler-slot
+selector and memory-specific EXIT hook are removed.
+
+The high16-generation/low16-one-based-slot u32 wire is unchanged. The shared
+facility now retains projection generations across all owners for the whole
+boot, preventing foreign-owner or recreated-zone aliasing. Exhausted slots retire;
+the existing 512 projection slots, 4 MiB zone and 1 MiB block policies remain.
+These policies are inherited limits, not a claim of page-backed heap accounting
+or an unbounded native allocation API. Canonical retirement acceptance runs in
+its own host process so deliberately exhausting the boot-wide issuer cannot
+perturb other tests' slot-reuse setup.
+
+Native threads bind the actual directory-issued OwnerRef; memory services do not
+re-enter the Desktop lock or reconstruct authority from an application-supplied
+number. Bootstrap/headless work uses the existing System owner. This bridge does
+not implement module invocation's four-part identity, dynamic thread/image
+capacity, process quiescence enforcement or MMU isolation; those remain staged.
+
+
+Memory qualification: 58 facility tests (including three compile-fail checks),
+131 System unit tests (one gated), 222 public SDK host tests (62 native gates),
+optimized whole-world image, native aggregate conformance, both process campaigns,
+physical events, Linux/Windows Reactor Room and headless native/classic ABI smoke
+pass. A final review removed duplicate block validation; targeted host memory,
+concurrency and original-oracle checks plus native aggregate/process/Windows/ABI
+acceptance pass on that final image. Each native worker leaves MMBL=1 and MMST=1:
+fourteen completed lifetimes require twelve walk callbacks, with no live/pending
+resources. Boundary checks and all 49 library docs pass. Evidence is in the private
+`memory-ledger-*` reports. This is not the entire model's acceptance campaign or
+closure of the separately recorded cold first-key latency gate.

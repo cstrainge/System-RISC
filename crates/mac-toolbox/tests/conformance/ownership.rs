@@ -215,6 +215,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     }
     assert_eq!(window_pool(system)?.live, 0);
     front_projection(system)?;
+    memory_ledger(system)?;
     system.log("WINDOW_LEDGER_USERSPACE_PASS simultaneous=40 reuse=300 full_width=passed\n")?;
     editors(system, Some(gate))?;
     system.log("OWNERSHIP_MENU_BEGIN\n")?;
@@ -566,5 +567,42 @@ fn alerts(system: &System<'_>) -> Result<(), Failure>
     assert_eq!(stale.close(), Err(Error::NotFound));
     assert!(system.windows().info(current.window()).is_ok());
     drop(current);
+    Ok(())
+}
+
+fn memory_ledger(system: &System<'_>) -> Result<(), Failure>
+{
+    use mac_abi::memory::*;
+    let _ = system.memory().last_error()?;
+    let before = registered_pool(system, *b"MMBL")?;
+    let state = registered_pool(system, *b"MMST")?;
+    assert_eq!(state.live, 1);
+    let mut call = MemoryCall { operation: NEW_CLEAR,
+                                size: 32,
+                                ..Default::default() };
+    system.client().memory(&mut call, &[], &mut [])?;
+    let old = call.handle;
+    assert_eq!(registered_pool(system, *b"MMBL")?.live, before.live + 1);
+    call.operation = DISPOSE;
+    system.client().memory(&mut call, &[], &mut [])?;
+    call.operation = NEW_CLEAR;
+    system.client().memory(&mut call, &[], &mut [])?;
+    let replacement = call.handle;
+    assert_ne!(old, replacement);
+    assert_eq!(old & 0xffff, replacement & 0xffff, "force projection slot reuse");
+    call.operation = SIZE;
+    call.handle = old;
+    assert_eq!(system.client().memory(&mut call, &[], &mut []), Err(Error::NilHandle));
+    call.handle = replacement;
+    system.client().memory(&mut call, &[], &mut [])?;
+    assert_eq!(call.size, 32);
+    call.operation = DISPOSE;
+    system.client().memory(&mut call, &[], &mut [])?;
+    let after = registered_pool(system, *b"MMBL")?;
+    assert_eq!(after.live, before.live);
+    assert_eq!(after.births, before.births + 2);
+    assert_eq!(after.deaths, before.deaths + 2);
+    assert_eq!(registered_pool(system, *b"MMST")?.births, state.births);
+    system.log("MEMORY_LEDGER_USERSPACE_PASS projection=passed reuse=passed accounting=passed\n")?;
     Ok(())
 }

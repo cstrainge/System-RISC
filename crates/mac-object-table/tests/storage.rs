@@ -320,3 +320,23 @@ fn saved_state_panic_keeps_backing_pending_and_provider_pinned()
     assert_eq!(row.uses, 1, "failed destruction cannot unpin its provider");
     // Host unwinding checks the resource barrier only, not native privileged recovery (M-D04).
 }
+
+#[test]
+fn saved_state_can_precede_objects_and_is_refused_after_owner_stop()
+{
+    let (registry, owner, mut context) = setup();
+    context.objects.prepare(&owner).unwrap();
+    assert_eq!(owner.summary().live, 1);
+    assert!(context.objects.state(owner.owner().incarnation()).is_some());
+    context.objects.prepare(&owner).unwrap();
+    assert_eq!(owner.summary().live, 1, "unchanged state is not another lifetime");
+    let report = walk::drain(&mut context,
+                             &owner,
+                             |_, key| registry.dispatch(key.kind()),
+                             |_, error| panic!("{error}")).unwrap();
+    assert_eq!((report.invalidated, report.released), (1, 1));
+    let error = context.objects.prepare(&owner).unwrap_err();
+    assert!(matches!(error, mac_object_table::domain::PoolError::Stopping { .. }));
+    assert!(error.to_string().contains("stopping; new handles are refused"));
+    assert_eq!((owner.summary().live, owner.summary().pending), (0, 0));
+}

@@ -557,7 +557,13 @@ stream. No original Macintosh system-error trap is repurposed. See
 Resident memory identities retain their original shared `toolbox::handles::Table`
 wire format: high 16 bits are the nonzero generation, low 16 bits the registered
 one-based slot. Memory retains slots 1..512 and all 65535 generations. Exhausted
-slots retire rather than wrap. Owner checks remain independent of identity.
+slots retire rather than wrap. The projection's generation history is shared
+across owners for the whole boot, including after zone destruction. A projected
+ID resolves to a registered MMBL block and its full authenticated owner/key;
+MMST owns each domain's arena, projection table and last-error state. The
+registered cleanup walk releases both lifetimes, retaining backing until every
+block is released. Original handle operations, errors and the 32-bit wire stay
+unchanged; this is not an original 68k master-pointer ABI.
 
 Windows use registered WIND object and WNST backing lifetimes in the shared
 owner-ledger facility, with opaque u64 native tokens and full-width generations.

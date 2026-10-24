@@ -100,6 +100,15 @@ impl Default for Session
             crate::toolbox::handles::cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseMenus)).unwrap();
         registry.register(&registrar, crate::toolbox::menus::lifetime::specification(true),
             crate::toolbox::handles::cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseStorage)).unwrap();
+        let memory = registry.register(&registrar,
+                                       crate::toolbox::memory::lifetime::specification(false),
+                                       crate::toolbox::memory::lifetime::ReleaseBlocks)
+                             .unwrap();
+        let memory_storage =
+            registry.register(&registrar,
+                              crate::toolbox::memory::lifetime::specification(true),
+                              crate::toolbox::memory::lifetime::ReleaseStorage)
+                    .unwrap();
         Self { worlds: crate::toolbox::quickdraw::worlds::Worlds::new((worlds, world_storage)).unwrap(),
                registry,
                menus: RefCell::new(std::vec::Vec::new()),
@@ -117,7 +126,7 @@ impl Default for Session
                textedit: Default::default(),
                cursors: Default::default(),
                started: std::time::Instant::now(),
-               memory: Default::default(),
+               memory: crate::toolbox::memory::Manager::new((memory, memory_storage)).unwrap(),
                files: Default::default(),
                fonts,
                resources,
@@ -488,6 +497,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
         }
         MEMORY =>
         {
+            let owner = match inspection::caller_ledger(files::current_owner()) { Ok(owner) => owner, Err(status) => return status as i64 };
             SESSION.with(|slot| {
                        let Ok(mut session) = slot.try_borrow_mut()
                        else
@@ -500,7 +510,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                            return NOT_SUPPORTED as i64;
                        };
                        unsafe {
-                           crate::toolbox::memory::native::dispatch(&mut session.memory, number,
+                           crate::toolbox::memory::native::dispatch(&mut session.memory, &owner, number,
                                                                     pointer, size)
                        }
                    })
@@ -945,5 +955,14 @@ impl crate::toolbox::quickdraw::worlds::WorldHost for Session
     fn offscreen_worlds(&mut self) -> &mut crate::toolbox::quickdraw::worlds::Worlds
     {
         &mut self.worlds
+    }
+}
+
+impl crate::toolbox::memory::lifetime::MemoryHost for Session
+{
+    fn release_memory(&mut self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
+                      -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        self.memory.release(ticket, storage).map_err(Into::into)
     }
 }

@@ -109,6 +109,7 @@ pub struct ThreadContext
 {
     app:             core::sync::atomic::AtomicU64,
     thread:          core::sync::atomic::AtomicU64,
+    owner:           spinning_top::Spinlock<Option<crate::toolbox::handles::OwnerRef>>,
     pub traps:       ThreadTrapState,
     pub definitions: DefinitionInvocations
 }
@@ -119,6 +120,7 @@ impl ThreadContext
     {
         Self { app:         core::sync::atomic::AtomicU64::new(0),
                thread:      core::sync::atomic::AtomicU64::new(1),
+               owner:       spinning_top::Spinlock::new(None),
                traps:       ThreadTrapState::new(),
                definitions: DefinitionInvocations::new() }
     }
@@ -130,11 +132,50 @@ impl ThreadContext
                            thread: ThreadId(self.thread.load(Relaxed)) }
     }
 
-    pub fn assign(&self, app: u64, thread: u64)
+    pub(crate) fn assign(&self, owner: crate::toolbox::handles::OwnerRef, thread: u64)
+                         -> Result<(), mac_abi::Status>
     {
         use core::sync::atomic::Ordering::Relaxed;
-        self.app.store(app, Relaxed);
-        self.thread.store(thread, Relaxed);
+
+        use mac_object_table::shared::InvocationGate as _;
+        if thread == 0 || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+        {
+            return Err(mac_abi::BAD_ARGUMENT);
+        }
+        if !owner.accepting()
+        {
+            return Err(mac_abi::SERVICE_BUSY);
+        }
+        crate::toolbox::handles::InvocationGate::run(|| {
+            let mut binding = self.owner.lock();
+            if binding.is_some()
+            {
+                return Err(mac_abi::SERVICE_BUSY);
+            }
+            self.app.store(owner.owner().incarnation(), Relaxed);
+            self.thread.store(thread, Relaxed);
+            *binding = Some(owner);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn release(&self)
+    {
+        use mac_object_table::shared::InvocationGate as _;
+        crate::toolbox::handles::InvocationGate::run(|| {
+            let owner = self.owner.lock().take();
+            self.app.store(0, core::sync::atomic::Ordering::Relaxed);
+            self.thread.store(0, core::sync::atomic::Ordering::Relaxed);
+            drop(owner);
+        });
+    }
+
+    pub(crate) fn owner(&self) -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
+    {
+        use mac_object_table::shared::InvocationGate as _;
+        crate::toolbox::handles::InvocationGate::run(|| {
+            self.owner.lock().clone().ok_or(mac_abi::WRONG_THREAD)
+        })
     }
 }
 #[cfg(target_arch = "riscv64")]
@@ -153,6 +194,20 @@ pub fn boot_context() -> &'static ThreadContext
 pub fn current_thread() -> ThreadId
 {
     current_thread_context().identity().thread
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn current_owner() -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
+{
+    let context = current_thread_context();
+    if core::ptr::eq(context, boot_context())
+    {
+        crate::toolbox::handles::system_owner()
+    }
+    else
+    {
+        context.owner()
+    }
 }
 
 

@@ -48,7 +48,12 @@ Original expectations are frozen under `data/`:
 - `conformance-ledger.json` distinguishes original observations, native safety
   extensions, deferred families and host versus real ECALL verification.
 
-`memory_boundaries.rs` contains separately labelled native API safety tests. Those
+`memory_boundaries.rs` contains separately labelled native API safety tests,
+including authenticated ownership, per-domain errors and registered cleanup
+quarantine/retry. `memory_generation_retirement.rs` deliberately exhausts the
+boot-wide projection history in a separate host test process. Native aggregate
+ownership acceptance checks projection reuse and MMBL/MMST accounting; native
+process acceptance abandons a block and zone for the actual owner walk. Those
 bounds/generation/borrow checks are not presented as original Macintosh behavior.
 The resident arena's16-byte alignment/12-byte accounting overhead is a bounded
 native policy fitting observed guarded growth/append outcomes; neither the tests

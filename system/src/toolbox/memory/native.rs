@@ -5,7 +5,9 @@ use super::Manager;
 /// # Safety
 /// The request and nested slices borrow valid exclusive storage for this call;
 /// input, output and request must not alias. Native modules share one address space.
-pub unsafe fn dispatch(manager: &mut Manager, number: u32, pointer: *mut (), size: usize) -> i64
+pub(crate) unsafe fn dispatch(manager: &mut Manager, owner: &crate::toolbox::handles::OwnerRef,
+                              number: u32, pointer: *mut (), size: usize)
+                              -> i64
 {
     if number != MEMORY
     {
@@ -41,5 +43,5 @@ pub unsafe fn dispatch(manager: &mut Manager, number: u32, pointer: *mut (), siz
     {
         unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
     };
-    manager.request(call, input, output) as i64
+    manager.request(owner, call, input, output) as i64
 }
