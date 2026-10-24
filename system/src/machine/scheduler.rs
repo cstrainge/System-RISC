@@ -21,6 +21,8 @@ static CONTEXTS: [ThreadContext; MAX_THREADS] = [const { ThreadContext::new() };
 static CURRENT: AtomicUsize = AtomicUsize::new(MAX_THREADS);
 static IO: AtomicBool = AtomicBool::new(false);
 static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
+static INPUT_PRIORITY: crate::toolbox::events::priority::InputPriority =
+    crate::toolbox::events::priority::InputPriority::new();
 struct Thread
 {
     id:       u32,
@@ -415,12 +417,17 @@ pub(crate) fn reclaim_retired()
 
 pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
 {
-    reclaim_retired();
-    crate::drivers::pump_jobs();
-    crate::toolbox::files::pump_provider_operations();
-    crate::toolbox::processes::documents::pump();
-    crate::toolbox::processes::retirement::pump();
-    crate::kernel::poll_waiting_events();
+    // Device input and cursor publication precede all ordinary maintenance.
+    // Never enable nested preemption while a resident manager owns its guards.
+    let fresh_input = crate::kernel::poll_waiting_events();
+    if INPUT_PRIORITY.background_allowed(fresh_input)
+    {
+        reclaim_retired();
+        crate::drivers::pump_jobs();
+        crate::toolbox::files::pump_provider_operations();
+        crate::toolbox::processes::documents::pump();
+        crate::toolbox::processes::retirement::pump();
+    }
     let current = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();
     scheduler.ticks += 1;

@@ -101,6 +101,98 @@ fn installed_cursor_app_and_automatic_text_regions_render_original_sprites()
     let asset = |name: &str| fs::read(root.join("System7/system/assets").join(name)).unwrap();
     let arrow = asset("cursors/arrow.curs");
     let ibeam = asset("visual/43555253-1.bin");
+    let motion = &report["active_caret_motion"];
+    let app = motion["app"].as_u64().unwrap();
+    assert_eq!(motion["submitted"].as_array().unwrap().len(), 200);
+    assert_eq!(motion["trace"]["overwritten"], 0, "caret-motion evidence was lost");
+    let records = motion["trace"]["records"].as_array().unwrap();
+    let owned = |row: &&Value| row[3].as_u64() == Some(app);
+    let blinks = records.iter().filter(owned).filter(|row| row[2] == 0 && row[4] == 3).count();
+    assert!(blinks >= 2, "motion must span multiple actual caret XORs: {motion}");
+    for row in records.iter().filter(owned)
+    {
+        assert!(row[2] != 7, "caret motion replayed the application scene: {row}");
+        assert!(!(row[2] == 0 && row[4] == 2), "caret blink redrew TextEdit: {row}");
+        assert!(!(row[2] == 5 && matches!(row[4].as_u64(), Some(5 | 6))),
+                "caret blink opened a window update: {row}");
+        if row[2] == 14
+        {
+            assert!(row[5].as_u64().unwrap() <= 256,
+                    "cursor/caret copied more than their own bounds: {row}");
+        }
+    }
+    let mut pending = None;
+    let mut latency_ns = Vec::new();
+    let mut copy_ns = Vec::new();
+    let mut decoded_ticks = Vec::new();
+    let mut coalesced = 0;
+    for row in records
+    {
+        if row[2] == 1 && row[4] == 1 && row[3] == app
+        {
+            let tick = row[1].as_u64().unwrap();
+            decoded_ticks.push(tick);
+            if pending.is_some()
+            {
+                coalesced += 1;
+            }
+            let x = row[5].as_u64().unwrap();
+            let y = row[6].as_u64().unwrap();
+            pending = Some((tick, x - 1, y - 1));
+        }
+        else if row[2] == 14
+        {
+            copy_ns.push(row[4].as_u64().unwrap() * 100);
+            if let Some((tick, left, top)) = pending
+            {
+                let from = row[6].as_u64().unwrap();
+                let to = row[7].as_u64().unwrap();
+                if from >> 32 <= left
+                   && from & 0xffff_ffff <= top
+                   && to >> 32 >= left + 16
+                   && to & 0xffff_ffff >= top + 16
+                {
+                    latency_ns.push((row[1].as_u64().unwrap() - tick) * 100);
+                    pending = None;
+                }
+            }
+        }
+    }
+    assert!(pending.is_none(), "last decoded motion never reached the framebuffer");
+    assert!(latency_ns.len() >= 100, "motion did not make sustained presentation progress");
+    assert_eq!(latency_ns.len() + coalesced, decoded_ticks.len());
+    let distribution = |values: &[u64]| {
+        let mut sorted = values.to_vec();
+        sorted.sort_unstable();
+        let percentile =
+            |n: usize| sorted[((sorted.len() * n).div_ceil(100) - 1).min(sorted.len() - 1)];
+        serde_json::json!({"samples":sorted.len(),"p50_ns":percentile(50),
+            "p95_ns":percentile(95),"p99_ns":percentile(99),"max_ns":sorted.last().unwrap()})
+    };
+    let gaps: Vec<_> = decoded_ticks.windows(2).map(|pair| (pair[1] - pair[0]) * 100).collect();
+    let submissions = motion["submitted"].as_array().unwrap();
+    let host_gaps: Vec<_> = submissions.windows(2)
+                                       .map(|pair| {
+                                           ((pair[1]["seconds"].as_f64().unwrap()
+                                             - pair[0]["seconds"].as_f64().unwrap())
+                                            * 1e9)
+                                                  .round()
+                                           as u64
+                                       })
+                                       .collect();
+    let strict = std::env::var_os("SYSTEM7_STRICT_EVENT_LATENCY").is_some();
+    let profile = serde_json::json!({"submitted":200,"decoded":decoded_ticks.len(),
+        "coalesced_decoded_moves":coalesced,"decoded_to_frontbuffer":distribution(&latency_ns),
+        "frame_copy":distribution(&copy_ns),"decoded_interarrival":distribution(&gaps),
+        "host_submission_interarrival":distribution(&host_gaps),
+        "strict_flag":strict,"strict_limit_ns":1_000_000u64,
+        "limits":"Includes every decoded motion, including the first. Intentional coalescing is counted. Decode-to-frontbuffer excludes host submission/guest polling delay and scanout; interarrival also reflects host QMP cadence. Snapshot pauses lie outside the stream."});
+    fs::write(output.join("mouse-profile.json"), serde_json::to_vec_pretty(&profile).unwrap()).unwrap();
+    if strict
+    {
+        assert!(latency_ns.iter().all(|value| *value < 1_000_000),
+                "strict decoded mouse-to-frontbuffer latency exceeded1ms: {profile}");
+    }
     let pointer = &report["pointer_present"];
     let scene_before = fs::read(output.join(pointer["before"].as_str().unwrap())).unwrap();
     let scene_after = fs::read(output.join(pointer["after"].as_str().unwrap())).unwrap();
@@ -193,6 +285,8 @@ fn installed_cursor_app_and_automatic_text_regions_render_original_sprites()
             "automatic I-beam leaked into title bar");
     let acceptance = serde_json::json!({"status":"passed", "original_sprite_pixels":original_pixels,
         "pointer_backbuffer_identity_bytes":scene_after.len(), "pointer_scene_recompositions":0,
+        "active_caret_xor_cycles":blinks, "caret_motion_window_replays":0,
+        "mouse_profile":profile,
         "observed_watch_frames":observed_frames, "automatic_hover_cases":10,
         "capture":report, "output":output});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();

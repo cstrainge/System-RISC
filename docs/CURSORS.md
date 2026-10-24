@@ -75,3 +75,12 @@ actual pointer move, asserts byte identity and unchanged scene/update/menu
 counters, and checks exact sprite pixels and unrelated screen bounds. SDK tests
 also cover scene damage, overlapping rectangles, all mono/color mask operations,
 surface refusal before any write, hide/show, shape changes and clipped edges.
+
+Cursor Test and Finder Get Info use the resident TextEdit caret-blink operation.
+A blink XORs only its committed caret pixels; it does not begin a window update
+or replay the text/window scene. Cursor Test's physical acceptance includes
+200 paced moves across multiple active caret cycles, with copy bounds and
+decoded-input-to-frontbuffer latency distributions. Strict latency runs use
+`SYSTEM7_STRICT_EVENT_LATENCY=1`; ordinary profiling retains the same raw samples
+without treating its threshold as enforced. Coalesced decoded moves and input
+interarrival gaps are reported separately from presentation latency.

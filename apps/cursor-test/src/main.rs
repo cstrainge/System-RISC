@@ -309,8 +309,10 @@ fn run(system: &System<'_>) -> Result<(), Error>
                         system.textedit().click(editor, local, true)?;
                         redraw = true;
                     }
-                    let before = system.textedit().info(editor)?;
-                    redraw |= system.textedit().idle(editor, event.input().when)? != before;
+                    if !redraw
+                    {
+                        redraw = system.textedit().blink(editor, window, event.input().when)?;
+                    }
                 }
                 _ =>
                 {}

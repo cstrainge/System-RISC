@@ -164,9 +164,11 @@ impl Desktop
 
     /// Read waiting queues in place. A timer tick must not swap each app's UI
     /// state just to find out whether its thread can remain asleep.
-    pub fn wake_waiters(&mut self, waiting: &[(u64, u16); 8]) -> ([bool; 8], u64)
+    pub fn wake_waiters(&mut self, waiting: &[(u64, u16); 8]) -> ([bool; 8], u64, bool)
     {
+        let previous_activity = self.activity;
         let pointer_activity = self.poll_inputs();
+        let fresh_input = previous_activity != self.activity;
         let cursor_activity = self.tick_cursor();
         let now = Self::when();
         self.cursor_dirty |=
@@ -234,7 +236,7 @@ impl Desktop
                     .is_some()
             }
         });
-        (ready, self.foreground)
+        (ready, self.foreground, fresh_input)
     }
 
     pub fn started(&mut self, id: u64, thread: u64)

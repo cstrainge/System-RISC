@@ -19,13 +19,21 @@ saved integer/FP/vector frames (vector storage scales with hardware VLEN) and
 trusted AppId/ThreadId contexts. Kernel traps mask
 interrupts, including nested definition calls, so allocator and manager guards
 cannot be preempted by another application on this hart. Native event waits now
-block the actual application thread, with a separate idle WFI context and 500 us
+block the actual application thread, with a separate idle WFI context and 250 us
 timer sampling. Readiness is inspected before taking the scheduler lock; a fresh
 foreground input wake takes priority over background and timeout wakes. No manager
 guard or borrowed request crosses the context switch. Worker thread APIs, general
 blocking primitives, migration and multiple harts remain future work. A private
 RV64 SDK gate has demonstrated another app progressing during a
 no-trap/no-yield interval, plus launch, relaunch, ownership, input, hide and exit.
+
+Each scheduling boundary services physical input, cursor presentation and event
+wakes before background jobs, provider continuations, document delivery and
+reclamation. Fresh input may take one input-only turn; continuous input admits
+maintenance on alternate turns to retain I/O and cleanup progress. This priority
+does not preempt an in-flight interrupt-masked System call. Such calls must still
+bound their work; application scheduling priority cannot repair an unnecessary
+whole-window paint inside a service.
 The consolidated regression gate also passes the paired Pascal process traps,
 twelve caller-posted foreign-window event-isolation cases, and actual Finder/two-
 app graphical launch, focus, hide/restore, quit and relaunch tests.

@@ -125,6 +125,19 @@ fn editable_info_windows_persist_through_real_filesystem_commits_and_cold_boot()
         serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
     assert_eq!(report["original_before"], report["original_after"]);
     assert_eq!(report["owned_vm_exited"], true);
+    let idle = &report["caret_idle"];
+    let app = idle["app"].as_u64().unwrap();
+    let window = idle["window"].as_u64().unwrap();
+    assert_eq!(idle["trace"]["overwritten"], 0);
+    let records = idle["trace"]["records"].as_array().unwrap();
+    assert!(records.iter().filter(|row| row[3] == app && row[2] == 0 && row[4] == 3).count() >= 2,
+            "Get Info must exercise multiple actual caret XORs: {idle}");
+    for row in records.iter().filter(|row| row[3] == app)
+    {
+        assert!(!(row[2] == 0 && row[4] == 2), "idle Get Info redrew TextEdit: {row}");
+        assert!(!(row[2] == 5 && row[5] == window && matches!(row[4].as_u64(), Some(5 | 6))),
+                "idle Get Info redrew the whole window: {row}");
+    }
     let boot1 = fs::read_to_string(output.join("boot-1.log")).unwrap();
     let boot2 = fs::read_to_string(output.join("boot-2.log")).unwrap();
     for serial in [&boot1, &boot2]

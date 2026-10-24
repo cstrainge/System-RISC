@@ -185,14 +185,15 @@ pub(crate) fn with_desktop<R>(call: impl FnOnce(&mut crate::toolbox::runtime::De
 /// Timer/idle input pump. Never hold the scheduler lock while input routing may
 /// invoke definitions or load an application. The desktop guard remains bounded
 /// to this service, and no caller identity is borrowed across scheduling.
-pub(crate) fn poll_waiting_events()
+pub(crate) fn poll_waiting_events() -> bool
 {
     let waiting = crate::machine::scheduler::waiting();
     let _scope = crate::context::current_thread_context().traps.enter();
-    let Ok((ready, foreground)) = DESKTOP.with(|desktop| desktop.wake_waiters(&waiting))
+    let Ok((ready, foreground, fresh_input)) =
+        DESKTOP.with(|desktop| desktop.wake_waiters(&waiting))
     else
     {
-        return;
+        return false;
     };
     for ((app, _), ready) in waiting.iter().zip(ready)
     {
@@ -209,6 +210,7 @@ pub(crate) fn poll_waiting_events()
             }
         }
     }
+    fresh_input
 }
 pub(crate) fn with_files<R>(call: impl FnOnce(&mut crate::toolbox::files::Manager) -> R)
                             -> Result<R, AccessError>

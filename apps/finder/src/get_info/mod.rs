@@ -622,9 +622,7 @@ impl<'a> Controller<'a>
             if info.active && info.editable(info.focus)
             {
                 let editor = info.current_editor();
-                let old = system.textedit().info(editor)?;
-                let new = system.textedit().idle(editor, event.input().when)?;
-                if old.caret_visible != new.caret_visible
+                if system.textedit().blink(editor, info.window, event.input().when)?
                 {
                     info.draw(system)?;
                 }

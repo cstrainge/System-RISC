@@ -19,6 +19,8 @@ from PIL import Image
 import capture_system7_conformance as packaging
 from capture_system7_applications_ui import Driver
 import system7_vm as vm
+from system7_trace_capture import snapshot as trace_snapshot
+from capture_system7_event_trace import delta
 
 
 def prepare(output):
@@ -68,7 +70,7 @@ def capture(output, windows=False):
     private = output / 'dist'
     original_frames = vm.ROOT / 'System7/crates/mac-toolbox/tests/data/get-info'
     references = []
-    options = {'frontend': 'native-headless', 'qmp_port': 4457} if windows else {}
+    options = {'frontend': 'native-headless', 'qmp_port': 4467} if windows else {}
     observations = []
     launches = []
     process = None
@@ -183,6 +185,12 @@ def capture(output, windows=False):
         open_cases()
         opened = open_info(120, 'Plain File', False)
         frame('file-empty')
+        idle_before = trace_snapshot(endpoint, driver.serial, output, 'info-caret-before')
+        time.sleep(1.2)
+        idle_after = trace_snapshot(endpoint, driver.serial, output, 'info-caret-after')
+        caret_idle = {'app': driver.app_id('Finder'),
+                      'window': int(re.search(r' window=(\d+)', opened).group(1)),
+                      'trace': delta(idle_before, idle_after)}
         text('native comment\rsecond line')
         frame('file-comment-draft')
         driver.click(22, 293)
@@ -211,9 +219,9 @@ def capture(output, windows=False):
         previous = driver.log().count('FINDER_INFO_REUSED ')
         driver.key('i', ('ctrl',))
         log = driver.wait('FINDER_INFO_REUSED ', previous)
-        marker = f'FINDER_FOLDER_READY window={cases_window}\n'
-        selected = log.rindex('FINDER_INFO_REUSED ')
-        driver.wait(marker, log[:selected].count(marker))
+        reused = [line for line in log.splitlines() if line.startswith('FINDER_INFO_REUSED ')][-1]
+        reused_window = re.search(r' window=(\d+)', reused).group(1)
+        driver.wait_state(lambda state: state['front'] == reused_window)
         frame('file-reused')
         driver.click(430, 122)
         driver.key('a', ('ctrl',))
@@ -276,7 +284,7 @@ def capture(output, windows=False):
                   'original_before': before,
                   'original_after': {name: packaging.sha(original / name) for name in before},
                   'original_references': references, 'observations': observations,
-                  'first_open': opened, 'launches': launches,
+                  'first_open': opened, 'launches': launches, 'caret_idle': caret_idle,
                   'boot_1_disk': first_disk, 'persisted_disk': persisted,
                   'owned_vm_exited': process is None,
                   'serial_sha256': {name: packaging.sha(output / name)

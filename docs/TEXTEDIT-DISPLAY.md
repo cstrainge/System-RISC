@@ -41,6 +41,8 @@ editing, scrolling, activation or geometry changes. During idle, call
 `editor.blink(window, ticks)`: System XORs the committed caret in place, keeping
 retained drawing, cached pixels and occlusion coherent. A true result asks the
 caller to provide a current drawing because the caret's retained state is stale.
+This is the caret-idle contract for every text editing control; applications
+must not compare caret visibility or the whole EditorInfo and repaint on a blink.
 The original `idle` remains a model-only operation. Blink is not a substitute for
 an app drawing its text changes.
 
