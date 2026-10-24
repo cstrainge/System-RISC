@@ -179,7 +179,7 @@ pub const WINDOW_TITLE_BYTES: usize = INLINE_STRING_BYTES;
 #[derive(Clone, Copy)]
 pub struct WindowRequest
 {
-    pub id:             u32,
+    pub id:             u64,
     pub bounds:         Rect,
     pub title:          [u8; WINDOW_TITLE_BYTES],
     pub title_length:   u32,
@@ -272,7 +272,7 @@ pub mod resources;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct WindowId(pub u32);
+pub struct WindowId(pub u64);
 impl core::fmt::Display for WindowId
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result

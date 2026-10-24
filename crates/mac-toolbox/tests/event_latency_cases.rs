@@ -132,7 +132,8 @@ pub fn run(system: &System<'_>) -> Result<()>
                               when:      9,
                               where_:    mac_toolbox::Point { h: 13,
                                                               v: 17 },
-                              modifiers: mac_toolbox::events::classic::SHIFT_KEY };
+                              modifiers: mac_toolbox::events::classic::SHIFT_KEY,
+                              window:    0 };
     events.post(posted_null.into())?;
     require(events.wait_event(mac_toolbox::events::EventMask::from_bits_retain(1
                                                                                << EventKind::Null

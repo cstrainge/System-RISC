@@ -42,19 +42,8 @@ impl super::Desktop
                                    | mac_abi::EventKind::KeyDown
                                    | mac_abi::EventKind::KeyUp
                                    | mac_abi::EventKind::AutoKey)
-                          || event.kind == mac_abi::EventKind::MouseUp && event.message == 0;
-        let front = if needs_front
-        {
-            self.windows
-                .back_to_front()
-                .filter(|w| self.window_owner(w.id) == Some(owner))
-                .last()
-                .map(|w| w.id)
-        }
-        else
-        {
-            None
-        };
+                          || event.kind == mac_abi::EventKind::MouseUp && event.window == 0;
+        let front = if needs_front { self.windows.front_for_owner(owner) } else { None };
         let Some(id) = crate::toolbox::events::position::target(event, front)
         else
         {

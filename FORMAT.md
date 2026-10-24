@@ -227,9 +227,10 @@ is encoded in token bits. Rust applications use `DrawingTarget` / `WorldId`
 through the Toolbox; the binding encodes this record. Borrowed definition
 surfaces use the default Window/zero target and cannot combine that surface
 with another destination. Retained scene/cache/damage keys distinguish windows
-and the desktop explicitly. Window identities remain u32 pending their staged
-full-width migration; out-of-range wire window values are rejected, never
-truncated. Offscreen World identities and `WorldCall.world` are native u64.
+and the desktop explicitly. Window and Offscreen World identities, including
+`WindowRequest.id`, drawing/control/dialog/drag window references and
+`WorldCall.world`, are opaque native u64 tokens. No window token is truncated
+or packed into another identity.
 
 Offscreen Worlds use the registered GWLD object and GWST backing/state lifetimes.
 The generic owner walk releases both, retaining quarantined payloads/backing
@@ -476,7 +477,7 @@ paired Pascal Resource trap returns a Pascal/MacRoman result.
 
 POSITIONED_EVENT0x10023 uses `events::PositionedEventCall` for NEXT=0, WAIT=1,
 PEEK=2, INPUT=3 and LOCATE=4. It returns the original Event plus EventPosition
-(u32 complete window ID, i32 horizontal and vertical content coordinates).
+(u64 complete window ID, i32 horizontal and vertical content coordinates).
 Window zero means no available owned local position. INPUT can name an explicitly
 owned live window for capture outside its bounds; LOCATE projects a supplied
 record against current geometry. NEXT/WAIT/PEEK preserve positions captured when
@@ -486,8 +487,8 @@ Disposal/reuse withdraws the old local identity. Differences are calculated in
 
 WAIT uses the existing scheduler's mask/timeout behavior and a `waited` transport
 flag followed by repoll after resumption. PEEK is non-owning and never constructs
-a drag capability. No ABI version, existing request layout, native Event/Input
-shape, or classic 16-byte EventRecord changes for this additive interface.
+a drag capability. Native records rebuild together at development ABI 1. The
+classic 16-byte EventRecord codec remains a separate, unchanged projection.
 
 ## Monochrome TextEdit (development ABI 1, independent service)
 
@@ -533,16 +534,24 @@ stream. No original Macintosh system-error trap is repurposed. See
 [panic report ownership and failure behavior](docs/PANIC-REPORTS.md).
 
 
-Resident memory and window identities use the shared `toolbox::handles::Table`.
-The high16 bits hold a nonzero generation; the low16 bits hold a registered,
-one-based slot. Memory retains slots1..512 and all65535 generations, exactly as
-before. Windows use the disjoint range513..544 and generations1..255 so their
-IDs remain representable in the existing24-bit close-event payload. These are
-opaque service-scoped IDs; applications must not infer allocation order or
-construct IDs from slot numbers. Removal/clear invalidates the old generation;
-an exhausted slot is permanently retired rather than wrapped. Existing owner
-checks and Pascal/68k adapter contracts are unchanged. Other resident managers
-must register and adopt this facility when their implementation is next touched.
+Resident memory identities retain their original shared `toolbox::handles::Table`
+wire format: high 16 bits are the nonzero generation, low 16 bits the registered
+one-based slot. Memory retains slots 1..512 and all 65535 generations. Exhausted
+slots retire rather than wrap. Owner checks remain independent of identity.
+
+Windows use registered WIND object and WNST backing lifetimes in the shared
+owner-ledger facility, with opaque u64 native tokens and full-width generations.
+There is no legacy window slot range, 32-window global cap or 8-bit generation
+ceiling. Stale and foreign tokens fail validation before either native or
+Pascal-string window service use. Both boundaries address the same manager;
+this does not introduce an original WindowRecord/68k ABI.
+
+Window creation retains an initialization owner through WDEF New/Calculate and
+geometry validation. Refusal disposes the unpublished window; a failed WDEF
+Dispose invalidates the token and retains the payload, provider-use pin and
+unique quarantine ticket for retry. The generic owner walk uses the same release
+path. WNST completion waits for every retained window payload. These are contained
+refusals, not a claim of arbitrary privileged-fault recovery.
 
 ## Native managed-control identities (development ABI 1)
 
@@ -600,10 +609,14 @@ All native applications, System and definition resources rebuild at ABI 1.
 
 ## Native drag transport (development ABI 1)
 
-Native Event records add a u64 manager payload; the original big-endian
-16-byte EventRecord codec still excludes it. Drag notifications put the complete
-generation-tagged session ID in its low 32 bits and the complete WindowId in its
-high 32 bits. These IDs must never be truncated into the message field. Message
+Native Event records carry separate u64 `payload` and `window` fields; the
+original big-endian 16-byte EventRecord codec excludes both. Drag notifications
+put the complete generation-tagged session ID in `payload` and the complete
+WindowId in `window`. These IDs must never be truncated or packed into each
+other or the message field. Mouse/update/activation/geometry/close events also
+carry their native window target in `window`. Trusted Window Manager close
+routing captures the owner before removing that object; this routing authority
+is private queue metadata and cannot be supplied by application posting. Message
 high byte selects enter/within/leave/drop/promise/data-ready/finished; tracking
 low bits carry item count and a precomputed intersection of offered types.
 These messages are native service events, not the original Drag Manager callback
@@ -1556,6 +1569,7 @@ owner; it never acknowledges cleanup implicitly. Counters and
 revisions never wrap; saturated revisions refuse snapshots. The initial coverage
 is process domains and partial ledgers, not all objects or all lifetime domains.
 Snapshot values allocate no resident session object and convey no authority to a
-foreign caller. Coalesced OsEvent 0x0d000000 advises process membership changes.
+foreign caller. Coalesced OsEvent 0x11000000 advises process membership changes. This tag is
+distinct from the Window Manager geometry notification.
 THEME (0x10025) returns a resident role-palette snapshot; applications cache its
 revision rather than embedding palette choices.

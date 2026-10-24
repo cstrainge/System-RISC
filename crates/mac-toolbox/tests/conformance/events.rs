@@ -163,13 +163,14 @@ fn native(system: &System<'_>) -> Result<(), Failure>
     let events = system.events();
     events.flush(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT),
                  mac_toolbox::events::EventMask::from_bits_retain(0))?;
-    let event = Event { payload:   0,
+    let event = Event { payload:   0xfedc_ba98_7654_3210,
                         kind:      EventKind::Application1,
                         message:   0xfeed_beef,
                         when:      u32::MAX - 2,
                         where_:    Point { h: -17,
                                            v: 1024 },
-                        modifiers: SHIFT_KEY | BTN_STATE };
+                        modifiers: SHIFT_KEY | BTN_STATE,
+                        window:    0x1234_5678_9abc_def0 };
     events.post(event.into())?;
     require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?
             == Some(event.into()),
@@ -183,6 +184,25 @@ fn native(system: &System<'_>) -> Result<(), Failure>
             "native next receives posted record")?;
     require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(1 << 12))?.is_none(),
             "native next removes record")?;
+    // Posting a supplied window token never grants trusted routing authority.
+    // These unknown events remain in this application's queue with both native
+    // identity fields intact, even above the classic 32-bit namespace.
+    assert_ne!(mac_toolbox::abi::inspection::CHANGED_EVENT,
+               mac_toolbox::abi::events::WINDOW_GEOMETRY_CHANGED);
+    let changed = Event { kind: EventKind::OsEvent,
+                          message: mac_toolbox::abi::inspection::CHANGED_EVENT,
+                          window: 0,
+                          payload: 0,
+                          ..event };
+    events.post(changed.into())?;
+    let received = events.next(mac_toolbox::events::EventMask::SYSTEM)?;
+    require(
+            matches!(received, mac_toolbox::Event::Other { message, window: None, .. }
+        if message == mac_toolbox::abi::inspection::CHANGED_EVENT),
+            "inspection change notification must not decode as window geometry"
+    )?;
+    let event = Event { window: 0,
+                        ..event };
     for message in 0..130
     {
         events.post(Event { message,
@@ -211,8 +231,8 @@ fn native(system: &System<'_>) -> Result<(), Failure>
                  mac_toolbox::events::EventMask::from_bits_retain(2))?;
     require(events.next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT))?
                   .into_record()
-                  .message
-            == 2,
+                  .kind
+            == EventKind::MouseDown,
             "native flush keeps stopping event")?;
     require(events.next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT))?
                   .into_record()

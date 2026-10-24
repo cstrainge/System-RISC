@@ -29,7 +29,7 @@ struct Item
 struct Session
 {
     owner:               u64,
-    source:              u32,
+    source:              u64,
     thread:              u64,
     detached:            bool,
     action:              u32,
@@ -123,7 +123,7 @@ impl Session
 struct Receiver
 {
     owner:   u64,
-    window:  u32,
+    window:  u64,
     thread:  u64,
     closing: bool
 }
@@ -139,7 +139,7 @@ pub struct Manager
     receivers:        Table<Receiver>,
     active:           Option<u32>,
     notices:          [Option<Notice>; 4],
-    highlight:        Option<(u32, Rect)>,
+    highlight:        Option<(u64, Rect)>,
     highlight_damage: [Option<Rect>; 2]
 }
 impl Default for Manager
@@ -163,29 +163,30 @@ fn copied(bytes: &[u8]) -> Result<Vec<u8>, Status>
 }
 impl Manager
 {
-    fn notice(&mut self, owner: u64, prefix: u32, window: u32, id: u32, when: u32)
+    fn notice(&mut self, owner: u64, prefix: u32, window: u64, id: u32, when: u32)
     {
         let session = self.sessions.get(id).expect("live drag notification");
-        let notice =
-            Notice { owner,
-                     event: Event { kind: EventKind::OsEvent,
-                                    message: prefix
-                                             | if prefix == FINISHED_EVENT
-                                             {
-                                                 session.outcome
-                                             }
-                                             else if prefix == DROP_EVENT
-                                             {
-                                                 session.action
-                                             }
-                                             else
-                                             {
-                                                 session.items.len() as u32 | (session.common << 12)
-                                             },
-                                    when,
-                                    where_: session.point,
-                                    modifiers: session.modifiers,
-                                    payload: u64::from(id) | (u64::from(window) << 32) } };
+        let notice = Notice { owner,
+                              event: Event { kind: EventKind::OsEvent,
+                                             message: prefix
+                                                      | if prefix == FINISHED_EVENT
+                                                      {
+                                                          session.outcome
+                                                      }
+                                                      else if prefix == DROP_EVENT
+                                                      {
+                                                          session.action
+                                                      }
+                                                      else
+                                                      {
+                                                          session.items.len() as u32
+                                                          | (session.common << 12)
+                                                      },
+                                             when,
+                                             where_: session.point,
+                                             modifiers: session.modifiers,
+                                             payload: u64::from(id),
+                                             window } };
         // Each input/request is drained before another manager operation.
         *self.notices.iter_mut().find(|n| n.is_none()).expect("bounded drag effects") =
             Some(notice);
@@ -260,7 +261,7 @@ impl Manager
         Ok(())
     }
 
-    pub fn receiver_at(&self, window: u32) -> Option<u32>
+    pub fn receiver_at(&self, window: u64) -> Option<u32>
     {
         self.receivers.iter().find_map(|(id, r)| (r.window == window).then_some(id))
     }
@@ -292,7 +293,7 @@ impl Manager
             .is_some_and(|s| matches!(s.phase, ARMED | TRACKING | RETURNING))
     }
 
-    pub fn ensure_receiver(&mut self, owner: u64, thread: u64, window: u32) -> Result<(), Status>
+    pub fn ensure_receiver(&mut self, owner: u64, thread: u64, window: u64) -> Result<(), Status>
     {
         if let Some(id) = self.receiver_at(window)
         {
@@ -315,7 +316,7 @@ impl Manager
         Ok(())
     }
 
-    pub fn highlight(&self) -> Option<(u32, Rect)>
+    pub fn highlight(&self) -> Option<(u64, Rect)>
     {
         self.highlight
     }
@@ -325,7 +326,7 @@ impl Manager
         core::mem::take(&mut self.highlight_damage)
     }
 
-    fn set_highlight(&mut self, next: Option<(u32, Rect)>)
+    fn set_highlight(&mut self, next: Option<(u64, Rect)>)
     {
         if next == self.highlight
         {
@@ -568,7 +569,7 @@ impl Manager
         }
     }
 
-    pub fn forget_window(&mut self, window: u32, when: u32)
+    pub fn forget_window(&mut self, window: u64, when: u32)
     {
         if let Some(active) = self.active
            && self.sessions.get(active).is_some_and(|s| s.source == window && s.phase != DROPPING)

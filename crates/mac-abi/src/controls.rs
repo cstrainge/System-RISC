@@ -78,7 +78,7 @@ pub struct ControlCall
     pub step:      i16,
     pub page:      i16,
     pub operation: u32,
-    pub window:    u32,
+    pub window:    u64,
     pub scrollbar: ScrollbarState,
     /// Hit-test point, in window-local coordinates. Drawing ignores it.
     pub point:     crate::Point,

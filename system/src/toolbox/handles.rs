@@ -1,6 +1,7 @@
 //! Central generation-tagged object table shared by System and host providers.
 //! Keep memory's original high16 generation/low16 one-based slot wire contract.
 #![forbid(unsafe_code)]
+pub(crate) mod cleanup;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use mac_object_table::domain::{DirectoryError, DomainKind, OwnerIndex};
 #[cfg(target_arch = "riscv64")]
@@ -23,7 +24,8 @@ impl mac_object_table::shared::InvocationGate for InvocationGate
 pub(crate) type OwnerRef = mac_object_table::shared::OwnerRef<InvocationGate>;
 pub(crate) type Store<T, S = ()> = mac_object_table::store::Store<T, InvocationGate, S>;
 pub(crate) type KindLease = mac_object_table::registry::KindLease<InvocationGate>;
-pub(crate) type Registry<C> = mac_object_table::registry::Registry<C, InvocationGate>;
+pub(crate) type Registry<C> =
+    mac_object_table::registry::Registry<C, InvocationGate, cleanup::Failure>;
 pub(crate) use mac_object_table::domain::{CapacityPolicy, KindCode};
 
 pub(crate) fn registry_status(error: &mac_object_table::registry::Error) -> mac_abi::Status
@@ -102,39 +104,43 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                let mut registry = Resident::new();
                                registry.register(&owner,
                                          crate::toolbox::controls::objects::specification(),
-                                         crate::toolbox::controls::objects::ReleaseControls)
+                                         crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseControls))
                                .map_err(|error| {
                                    serial!("KIND_REGISTRATION_REFUSED: {error}");
                                    KindAccessError::Registry(error)
                                })?;
                                registry.register(&owner,
                                          crate::toolbox::controls::objects::storage_specification(),
-                                         crate::toolbox::controls::objects::ReleaseStorage)
+                                         crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseStorage))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
                                          crate::toolbox::controls::scrollbox::specification(false),
-                                         crate::toolbox::controls::scrollbox::ReleaseScrollBoxes)
+                                         crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::scrollbox::ReleaseScrollBoxes))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
                                          crate::toolbox::controls::scrollbox::specification(true),
-                                         crate::toolbox::controls::scrollbox::ReleaseStorage)
+                                         crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::scrollbox::ReleaseStorage))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
                                          crate::toolbox::standard_file::specification(false),
-                                         crate::toolbox::standard_file::ReleaseDialogs)
+                                         crate::toolbox::handles::cleanup::Complete(crate::toolbox::standard_file::ReleaseDialogs))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
                                          crate::toolbox::standard_file::specification(true),
-                                         crate::toolbox::standard_file::ReleaseStorage)
+                                         crate::toolbox::handles::cleanup::Complete(crate::toolbox::standard_file::ReleaseStorage))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
                                          crate::toolbox::quickdraw::worlds::specification(false),
-                                         crate::toolbox::quickdraw::worlds::ReleaseWorlds)
+                                         crate::toolbox::handles::cleanup::Complete(crate::toolbox::quickdraw::worlds::ReleaseWorlds))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
                                          crate::toolbox::quickdraw::worlds::specification(true),
-                                         crate::toolbox::quickdraw::worlds::ReleaseStorage)
+                                         crate::toolbox::handles::cleanup::Complete(crate::toolbox::quickdraw::worlds::ReleaseStorage))
                                .map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::windows::lifetime::specification(false),
+                                   crate::toolbox::windows::lifetime::ReleaseWindows).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::windows::lifetime::specification(true),
+                                   crate::toolbox::windows::lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
                            })?;
     Ok(InvocationGate::run(|| run(&registry.lock())))
@@ -181,5 +187,12 @@ fn system_owner_checked() -> Result<OwnerRef, KindAccessError>
 pub(crate) fn world_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"GWLD"))?, registry.get(KindCode(*b"GWST"))?)))
+        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn window_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"WIND"))?, registry.get(KindCode(*b"WNST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }

@@ -62,38 +62,38 @@ impl Default for Session
         let mut registry = crate::toolbox::handles::Registry::<Session>::new();
         let controls = registry.register(&registrar,
                                          crate::toolbox::controls::objects::specification(),
-                                         crate::toolbox::controls::objects::ReleaseControls)
+                                         crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseControls))
                                .unwrap();
         let storage = registry.register(&registrar,
                                         crate::toolbox::controls::objects::storage_specification(),
-                                        crate::toolbox::controls::objects::ReleaseStorage)
+                                        crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseStorage))
                               .unwrap();
         let scroll_boxes =
             registry.register(&registrar,
                               crate::toolbox::controls::scrollbox::specification(false),
-                              crate::toolbox::controls::scrollbox::ReleaseScrollBoxes)
+                              crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::scrollbox::ReleaseScrollBoxes))
                     .unwrap();
         let scroll_storage =
             registry.register(&registrar,
                               crate::toolbox::controls::scrollbox::specification(true),
-                              crate::toolbox::controls::scrollbox::ReleaseStorage)
+                              crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::scrollbox::ReleaseStorage))
                     .unwrap();
         let dialogs = registry.register(&registrar,
                                         crate::toolbox::standard_file::specification(false),
-                                        crate::toolbox::standard_file::ReleaseDialogs)
+                                        crate::toolbox::handles::cleanup::Complete(crate::toolbox::standard_file::ReleaseDialogs))
                               .unwrap();
         let dialog_storage = registry.register(&registrar,
                                                crate::toolbox::standard_file::specification(true),
-                                               crate::toolbox::standard_file::ReleaseStorage)
+                                               crate::toolbox::handles::cleanup::Complete(crate::toolbox::standard_file::ReleaseStorage))
                                      .unwrap();
         let worlds = registry.register(&registrar,
                                        crate::toolbox::quickdraw::worlds::specification(false),
-                                       crate::toolbox::quickdraw::worlds::ReleaseWorlds)
+                                       crate::toolbox::handles::cleanup::Complete(crate::toolbox::quickdraw::worlds::ReleaseWorlds))
                              .unwrap();
         let world_storage =
             registry.register(&registrar,
                               crate::toolbox::quickdraw::worlds::specification(true),
-                              crate::toolbox::quickdraw::worlds::ReleaseStorage)
+                              crate::toolbox::handles::cleanup::Complete(crate::toolbox::quickdraw::worlds::ReleaseStorage))
                     .unwrap();
         Self { worlds: crate::toolbox::quickdraw::worlds::Worlds::new((worlds, world_storage)).unwrap(),
                registry,

@@ -57,7 +57,7 @@ pub struct Call
 {
     pub operation:   u32,
     pub id:          u64,
-    pub window:      u32,
+    pub window:      u64,
     pub flags:       u32,
     pub spec:        Spec,
     pub top:         u32,

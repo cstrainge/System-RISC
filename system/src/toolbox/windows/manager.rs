@@ -3,18 +3,18 @@
 #![cfg_attr(not(test), forbid(unsafe_code))]
 #[cfg(test)]
 use alloc::vec;
+use alloc::vec::Vec;
+use core::cell::RefCell;
 
+pub use mac_abi::WindowId;
 use mac_abi::{BAD_ARGUMENT, DefinitionCall, DefinitionEntry, Header, NOT_FOUND, Status, Surface};
 
 use super::definition::{self, WindowDefinitionState};
 use crate::toolbox::{events::*,
-                     handles::{Kind, Table},
+                     handles::{KindLease, OwnerRef, Store, cleanup::Failure},
                      quickdraw::{Canvas, Point, Rect, SurfaceExt,
                                  geometry::{sect_rect, union_rect},
                                  region::{BooleanOp, Region}}};
-
-pub const MAX_WINDOWS: usize = Kind::Windows.capacity();
-pub use mac_abi::WindowId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i16)]
 pub enum WindowPart
@@ -49,6 +49,7 @@ pub enum GroupFocus
 pub struct Window
 {
     pub id:              WindowId,
+    initialized:         bool,
     pub bounds:          Rect,
     pub owner:           u64,
     pub min_width:       i16,
@@ -284,21 +285,155 @@ pub enum Action
 {
     Drag(WindowId),
     Resize(WindowId),
-    Close(WindowId),
+    Close(WindowId, u64),
     CloseRequest(WindowId)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CreationError
+{
+    InvalidRequest,
+    NoMemory,
+    Facility(mac_object_table::domain::PoolError),
+    Stopping,
+    Definition
+    {
+        procedure: i16,
+        operation: i16,
+        reply:     i64
+    },
+    Geometry
+    {
+        procedure: i16
+    }
+}
+impl core::fmt::Display for CreationError
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::InvalidRequest => f.write_str("window bounds or minimum dimensions are invalid"),
+            Self::NoMemory =>
+            {
+                f.write_str("not enough memory to prepare window metadata or visibility storage")
+            }
+            Self::Facility(error) => error.fmt(f),
+            Self::Stopping =>
+            {
+                f.write_str("the window owner is stopping; no window was published to its UI")
+            }
+            Self::Definition { procedure,
+                               operation,
+                               reply } =>
+            {
+                write!(f,
+                       "WDEF {} variation {} refused initialization message {operation} with \
+                        reply {reply}",
+                       procedure >> 4,
+                       procedure & 15)
+            }
+            Self::Geometry { procedure } =>
+            {
+                write!(f,
+                       "WDEF {} variation {} produced empty or out-of-screen structure geometry",
+                       procedure >> 4,
+                       procedure & 15)
+            }
+        }
+    }
+}
+struct InitializingWindow<'a>
+{
+    manager:   &'a mut WindowManager,
+    id:        WindowId,
+    committed: bool
+}
+impl InitializingWindow<'_>
+{
+    fn value(&mut self) -> Result<&mut Window, CreationError>
+    {
+        self.manager.windows.get_mut(self.id.0).ok_or(CreationError::Stopping)
+    }
+
+    fn commit(mut self) -> WindowId
+    {
+        self.committed = true;
+        self.id
+    }
+}
+impl Drop for InitializingWindow<'_>
+{
+    fn drop(&mut self)
+    {
+        use mac_object_table::registry::CleanupFailure;
+        if self.committed
+        {
+            return;
+        }
+        // A concurrent owner walk may already own the invalidated ticket. It
+        // cannot remove this payload until the exclusive manager borrow ends.
+        let Some(ticket) = self.manager.windows.begin_release(self.id.0)
+        else
+        {
+            return;
+        };
+        if let Err(failure) = self.manager.release(ticket)
+        {
+            let (ticket, cause) = failure.into_parts();
+            self.manager
+                .windows
+                .quarantine(ticket)
+                .unwrap_or_else(|error| {
+                    panic!("window initialization lost its owned retry ticket: {error}")
+                });
+            #[cfg(target_arch = "riscv64")]
+            serial!("WINDOW_INITIALIZATION_ROLLBACK_REFUSED: {cause}");
+            #[cfg(not(target_arch = "riscv64"))]
+            let _ = cause;
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CloseError
+{
+    NotFound(WindowId),
+    Cleanup(crate::toolbox::handles::cleanup::Cause)
+}
+impl core::fmt::Display for CloseError
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::NotFound(id) => write!(f, "window {id} is no longer live"),
+            Self::Cleanup(cause) => cause.fmt(f)
+        }
+    }
 }
 
 pub struct WindowManager
 {
-    // Close notifications carry24 bits. Retire at255 instead of letting a
-    // generation overwrite their message kind or a QuickDraw target namespace.
-    windows:  Table<Window>,
-    order:    [WindowId; MAX_WINDOWS],
-    len:      usize,
-    active:   Option<WindowId>,
-    gate:     mac_abi::TrapGate,
-    tracking: Option<Tracking>
+    // Desktop admission already excludes reentrant/mutating WM requests while
+    // drawing. Reborrow cached sweep storage without adding an interrupt lock
+    // around definition drawing callbacks. The manager remains Send behind the
+    // resident service lock; callers never share it without that admission.
+    visibility:     RefCell<super::visibility::Scratch>,
+    windows:        Store<Window>,
+    order:          Vec<WindowId>,
+    len:            usize,
+    active:         Option<WindowId>,
+    order_scratch:  Vec<WindowId>,
+    geometry_order: Vec<WindowId>,
+    #[cfg(test)]
+    test_registry:  Option<alloc::boxed::Box<crate::toolbox::handles::Registry<WindowManager>>>,
+    #[cfg(test)]
+    test_owners:    Vec<(u64, OwnerRef)>,
+    gate:           mac_abi::TrapGate,
+    tracking:       Option<Tracking>
 }
+#[cfg(test)]
 impl Default for WindowManager
 {
     fn default() -> Self
@@ -308,25 +443,127 @@ impl Default for WindowManager
 }
 impl WindowManager
 {
-    pub fn with_gate(gate: mac_abi::TrapGate) -> Self
+    pub(crate) fn with_kinds(kinds: (KindLease, KindLease), gate: mac_abi::TrapGate)
+                             -> Result<Self, Status>
     {
-        Self { gate,
-               ..Self::new() }
+        Ok(Self { visibility: RefCell::new(Default::default()),
+                  windows: Store::owned(kinds.0, kinds.1).map_err(|_| BAD_ARGUMENT)?,
+                  order: Vec::new(),
+                  len: 0,
+                  active: None,
+                  order_scratch: Vec::new(),
+                  geometry_order: Vec::new(),
+                  gate,
+                  tracking: None,
+                  #[cfg(test)]
+                  test_registry: None,
+                  #[cfg(test)]
+                  test_owners: Vec::new() })
     }
 
+    #[cfg(test)]
     pub fn new() -> Self
     {
-        Self { windows:  Table::new(Kind::Windows),
-               order:    [WindowId(0); MAX_WINDOWS],
-               len:      0,
-               active:   None,
-               gate:     crate::toolbox::quickdraw::surface_gate,
-               tracking: None }
+        use mac_object_table::{domain::{DomainKind, OwnerIndex},
+                               registry::Registry};
+        let registrar = OwnerRef::try_new(OwnerIndex::issue(DomainKind::Module).unwrap()).unwrap();
+        let mut registry = Registry::new();
+        let objects = registry.register(&registrar,
+                                        super::lifetime::specification(false),
+                                        super::lifetime::ReleaseWindows)
+                              .unwrap();
+        let storage = registry.register(&registrar,
+                                        super::lifetime::specification(true),
+                                        super::lifetime::ReleaseStorage)
+                              .unwrap();
+        let mut manager =
+            Self::with_kinds((objects, storage), crate::toolbox::quickdraw::surface_gate).unwrap();
+        manager.test_registry = Some(alloc::boxed::Box::new(registry));
+        manager
+    }
+
+    #[cfg(test)]
+    fn test_owner(&mut self, alias: u64) -> OwnerRef
+    {
+        if let Some((_, owner)) = self.test_owners.iter().find(|(id, _)| *id == alias)
+        {
+            return owner.clone();
+        }
+        let owner = OwnerRef::try_new(mac_object_table::domain::OwnerIndex::issue(mac_object_table::domain::DomainKind::Process).unwrap()).unwrap();
+        self.test_owners.push((alias, owner.clone()));
+        owner
+    }
+
+    pub(crate) fn owner(&self, id: WindowId) -> Option<u64>
+    {
+        self.windows.owner(id.0).map(|owner| owner.incarnation())
+    }
+
+    pub(crate) fn releasing_id(&self, ticket: &mac_object_table::domain::ReleasedResource)
+                               -> Option<WindowId>
+    {
+        self.windows.releasing(ticket).map(|window| window.id)
+    }
+
+    pub(crate) fn release_storage(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                                  -> Result<(), Failure>
+    {
+        self.windows.release_storage(ticket).map_err(Failure::from)
+    }
+
+    pub(crate) fn release(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                          -> Result<WindowId, Failure>
+    {
+        use mac_object_table::registry::CleanupFailure;
+        let Some(window) = self.windows.releasing(&ticket).copied()
+        else
+        {
+            return Err(Failure::registration_mismatch(ticket));
+        };
+        let id = window.id;
+        if let Some(index) = self.order.iter().position(|other| *other == id)
+        {
+            self.order.remove(index);
+            self.len -= 1;
+            if !window.hidden
+            {
+                self.invalidate_uncovered(&window, index);
+            }
+        }
+        if self.active == Some(id)
+        {
+            self.active = None;
+        }
+        if matches!(self.tracking, Some(Tracking::Drag {window,..} | Tracking::Grow {window,..} | Tracking::Close {window,..} | Tracking::Zoom {window,..}) if window == id)
+        {
+            self.tracking = None;
+        }
+        let reply = self.windows
+                        .with_releasing(&ticket, |window| {
+                            window.call(definition::DISPOSE, 0, core::ptr::null_mut())
+                        })
+                        .expect("the unique cleanup ticket retains its window payload");
+        if reply < 0
+        {
+            return Err(Failure::window_definition(ticket, id.0, window.procedure, reply));
+        }
+        drop(self.windows.release(ticket).map_err(Failure::from)?);
+        Ok(id)
     }
 
     pub fn count(&self) -> usize
     {
         self.len
+    }
+
+    pub(crate) fn front_for_owner(&self, owner: u64) -> Option<WindowId>
+    {
+        self.order.iter().rev().copied().find(|id| {
+                                            self.window(*id)
+                                                .is_some_and(|window| {
+                                                    !window.hidden && window.owner == owner
+                                                })
+                                        })
     }
 
     pub fn front_window(&self) -> Option<WindowId>
@@ -345,7 +582,7 @@ impl WindowManager
 
     pub fn window(&self, id: WindowId) -> Option<&Window>
     {
-        self.windows.get(id.0)
+        self.windows.get(id.0).filter(|window| window.initialized)
     }
 
     fn window_mut(&mut self, id: WindowId) -> Option<&mut Window>
@@ -375,26 +612,30 @@ impl WindowManager
 
     /// The entry must satisfy the native WDEF ABI for this window's lifetime.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn new_window_with_definition(&mut self, bounds: Rect, title: &str, owner: u64,
                                       minimum: (i16, i16), procedure: i16, entry: DefinitionEntry,
                                       events: &mut EventManager, when: u32)
                                       -> Option<WindowId>
     {
-        self.new_window_with_activation(bounds, title, owner, minimum, procedure, entry, events,
+        let owner = self.test_owner(owner);
+        self.new_window_with_activation(bounds, title, &owner, minimum, procedure, entry, events,
                                         when, true)
+            .ok()
     }
 
     /// Background application windows enter the z order without transient focus.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_window_with_activation(&mut self, bounds: Rect, title: &str, owner: u64,
-                                      minimum: (i16, i16), procedure: i16, entry: DefinitionEntry,
-                                      events: &mut EventManager, when: u32, activate: bool)
-                                      -> Option<WindowId>
+    pub(crate) fn new_window_with_activation(&mut self, bounds: Rect, title: &str,
+                                             owner: &OwnerRef, minimum: (i16, i16),
+                                             procedure: i16, entry: DefinitionEntry,
+                                             events: &mut EventManager, when: u32, activate: bool)
+                                             -> Result<WindowId, CreationError>
     {
         let (min_width, min_height) = minimum;
         if min_width < 1 || min_height < 1
         {
-            return None;
+            return Err(CreationError::InvalidRequest);
         }
         if bounds.is_empty()
            || bounds.left < 1
@@ -404,13 +645,24 @@ impl WindowManager
            || bounds.right - bounds.left < min_width
            || bounds.bottom - bounds.top < min_height
         {
-            return None;
+            return Err(CreationError::InvalidRequest);
         }
-        self.windows.reserve().ok()?;
+        self.visibility
+            .get_mut()
+            .prepare(self.len.checked_add(1).ok_or(CreationError::NoMemory)?)
+            .map_err(|_| CreationError::NoMemory)?;
+        self.order.try_reserve(1).map_err(|_| CreationError::NoMemory)?;
+        self.order_scratch
+            .try_reserve((self.len + 1).saturating_sub(self.order_scratch.len()))
+            .map_err(|_| CreationError::NoMemory)?;
+        self.geometry_order
+            .try_reserve((self.len + 1).saturating_sub(self.geometry_order.len()))
+            .map_err(|_| CreationError::NoMemory)?;
         let previous = self.active;
         let mut window = Window { id: WindowId(0),
+                                  initialized: false,
                                   bounds,
-                                  owner,
+                                  owner: owner.owner().incarnation(),
                                   min_width,
                                   min_height,
                                   state: WindowDefinitionState::new(bounds, title),
@@ -428,45 +680,63 @@ impl WindowManager
                                                          bounds.bottom - bounds.top)),
                                   hidden: false,
                                   updating: false };
-        if window.call(definition::NEW, 0, core::ptr::null_mut()) < 0 || !window.calculate()
+        let id = WindowId(self.windows
+                              .insert_with(owner, |id| {
+                                  window.id = WindowId(id);
+                                  window
+                              })
+                              .map_err(CreationError::Facility)?);
+        let mut guard = InitializingWindow { manager: self,
+                                             id,
+                                             committed: false };
+        for operation in [definition::NEW, definition::CALCULATE]
         {
-            return None;
+            let reply = guard.value()?.call(operation, 0, core::ptr::null_mut());
+            if reply < 0
+            {
+                return Err(CreationError::Definition { procedure,
+                                                       operation,
+                                                       reply });
+            }
         }
-        let structure = window.structure();
+        let structure = guard.value()?.structure();
         if structure.is_empty()
            || structure.left < 0
            || structure.top < 25
            || structure.right > 640
            || structure.bottom > 480
         {
-            window.call(definition::DISPOSE, 0, core::ptr::null_mut());
-            return None;
+            return Err(CreationError::Geometry { procedure });
         }
-        let id = WindowId(self.windows
-                              .insert_with(|id| {
-                                  window.id = WindowId(id);
-                                  window
-                              })
-                              .ok()?);
-        self.order[self.len] = id;
+        guard.value()?.initialized = true;
+        let id = guard.commit();
+        self.order.push(id);
         self.len += 1;
         if activate
         {
             self.active = Some(id);
-            self.refresh_active();
+            self.refresh_active(previous);
             Self::activation(previous, false, events, when);
             Self::activation(Some(id), true, events, when);
         }
-        self.invalidate_all();
-        Some(id)
+        // The new window already owns full initial damage. Covering another
+        // window exposes no content there; activation changes only chrome.
+        Ok(id)
     }
 
-    fn refresh_active(&mut self)
+    fn refresh_active(&mut self, previous: Option<WindowId>)
     {
-        let active = self.active;
-        for window in self.windows.values_mut()
+        if previous == self.active
         {
-            window.state.active = u32::from(active == Some(window.id));
+            return;
+        }
+        if let Some(window) = previous.and_then(|id| self.window_mut(id))
+        {
+            window.state.active = 0;
+        }
+        if let Some(window) = self.active.and_then(|id| self.window_mut(id))
+        {
+            window.state.active = 1;
         }
     }
 
@@ -475,12 +745,13 @@ impl WindowManager
         if let Some(id) = id
         {
             events.post_system(Event { kind: EventKind::Activate,
-                                       message: id.0,
+                                       message: 0,
                                        when,
                                        where_: events.mouse,
                                        payload: 0,
                                        modifiers: (events.modifiers & !ACTIVE_FLAG)
-                                                  | if active { ACTIVE_FLAG } else { 0 } });
+                                                  | if active { ACTIVE_FLAG } else { 0 },
+                                       window: id.0 });
         }
     }
 
@@ -496,13 +767,20 @@ impl WindowManager
             return;
         };
         let previous = self.active;
+        let mut old_order = core::mem::take(&mut self.order_scratch);
+        old_order.clear();
+        old_order.extend_from_slice(&self.order);
         self.order.copy_within(index + 1..self.len, index);
         self.order[self.len - 1] = id;
         self.active = Some(id);
-        self.refresh_active();
-        Self::activation(previous, false, events, when);
-        Self::activation(Some(id), true, events, when);
-        self.invalidate_all();
+        self.refresh_active(previous);
+        if previous != Some(id)
+        {
+            Self::activation(previous, false, events, when);
+            Self::activation(Some(id), true, events, when);
+        }
+        self.invalidate_order_exposure(&old_order);
+        self.order_scratch = old_order;
     }
 
     /// Raise an application's complete window plane in one transition. The
@@ -527,19 +805,31 @@ impl WindowManager
         self.order_group(ids, events, when, GroupFocus::Preserve);
     }
 
+    /// Reuse prepared ID storage rather than allocating a foreground plane
+    /// vector on every background window creation.
+    pub(crate) fn restore_owner_group(&mut self, owner: u64, events: &mut EventManager, when: u32)
+    {
+        let mut ids = core::mem::take(&mut self.geometry_order);
+        ids.clear();
+        ids.extend(self.back_to_front()
+                       .filter(|window| window.owner == owner)
+                       .map(|window| window.id));
+        self.restore_group(&ids, events, when);
+        self.geometry_order = ids;
+    }
+
     fn order_group(&mut self, ids: &[WindowId], events: &mut EventManager, when: u32,
                    focus: GroupFocus)
     {
-        let mut order = [WindowId(0); MAX_WINDOWS];
-        let mut count = 0;
+        let mut order = core::mem::take(&mut self.order_scratch);
+        order.clear();
         for selected in [false, true]
         {
             for id in self.order[..self.len].iter().copied()
             {
                 if ids.contains(&id) == selected
                 {
-                    order[count] = id;
-                    count += 1;
+                    order.push(id);
                 }
             }
         }
@@ -569,17 +859,19 @@ impl WindowManager
         let previous = self.active;
         if !reordered && previous == active
         {
+            self.order_scratch = order;
             return;
         }
-        self.order = order;
+        core::mem::swap(&mut self.order, &mut order);
+        self.invalidate_order_exposure(&order);
+        self.order_scratch = order;
         self.active = active;
-        self.refresh_active();
+        self.refresh_active(previous);
         if previous != active
         {
             Self::activation(previous, false, events, when);
             Self::activation(active, true, events, when);
         }
-        self.invalidate_all();
     }
 
     pub fn deactivate_all(&mut self, events: &mut EventManager, when: u32)
@@ -589,56 +881,58 @@ impl WindowManager
         {
             return;
         };
-        self.refresh_active();
+        self.refresh_active(Some(previous));
         self.tracking = None;
         Self::activation(Some(previous), false, events, when);
-        self.invalidate_all();
     }
 
-    pub fn dispose_window(&mut self, id: WindowId, events: &mut EventManager, when: u32) -> bool
+    pub(crate) fn dispose_window(&mut self, id: WindowId, events: &mut EventManager, when: u32)
+                                 -> Result<(), CloseError>
     {
-        self.dispose_with_focus(id, events, when, true)
-    }
-
-    /// Process teardown chooses its surviving application's final focus after
-    /// all departing windows are gone, rather than activating each intermediate.
-    #[cfg(target_arch = "riscv64")]
-    pub(crate) fn dispose_without_activation(&mut self, id: WindowId, events: &mut EventManager,
-                                             when: u32)
-                                             -> bool
-    {
-        self.dispose_with_focus(id, events, when, false)
-    }
-
-    fn dispose_with_focus(&mut self, id: WindowId, events: &mut EventManager, when: u32,
-                          select_next: bool)
-                          -> bool
-    {
-        let Some(index) = self.order[..self.len].iter().position(|other| *other == id)
-        else
-        {
-            return false;
-        };
+        use mac_object_table::registry::CleanupFailure;
         let active = self.active == Some(id);
-        if let Some(window) = self.window_mut(id)
+        let ticket = self.windows.begin_release(id.0).ok_or(CloseError::NotFound(id))?;
+        let result = match self.release(ticket)
         {
-            window.call(definition::DISPOSE, 0, core::ptr::null_mut());
-        }
-        self.windows.remove(id.0);
-        self.order.copy_within(index + 1..self.len, index);
-        self.len -= 1;
+            Ok(_) => Ok(()),
+            Err(failure) =>
+            {
+                let (ticket, cause) = failure.into_parts();
+                self.windows
+                    .quarantine(ticket)
+                    .unwrap_or_else(|error| {
+                        panic!("window disposal lost its owned retry ticket: {error}")
+                    });
+                Err(CloseError::Cleanup(cause))
+            }
+        };
         if active
         {
-            self.active = if select_next { self.front_window() } else { None };
+            self.active = self.front_window();
+            self.refresh_active(None);
+            Self::activation(self.active, true, events, when);
         }
-        self.refresh_active();
-        if active && select_next
+        result
+    }
+
+    pub(crate) fn set_owner_hidden(&mut self, owner: u64, hidden: bool)
+    {
+        for index in 0..self.len
         {
-            Self::activation(self.front_window(), true, events, when);
+            let id = self.order[index];
+            if self.window(id).is_some_and(|window| window.owner == owner)
+            {
+                self.set_hidden(id, hidden);
+            }
         }
-        self.tracking = None;
-        self.invalidate_all();
-        true
+    }
+
+    pub(crate) fn set_all_hidden(&mut self, hidden: bool)
+    {
+        for index in 0..self.len
+        {
+            self.set_hidden(self.order[index], hidden);
+        }
     }
 
     pub fn set_hidden(&mut self, id: WindowId, hidden: bool)
@@ -652,8 +946,22 @@ impl WindowManager
         {
             return;
         }
+        let previous = *window;
         window.hidden = hidden;
-        self.invalidate_all();
+        if hidden
+        {
+            if let Some(index) = self.order.iter().position(|other| *other == id)
+            {
+                self.invalidate_uncovered(&previous, index);
+            }
+        }
+        else
+        {
+            // A previously hidden window has no visible pixels. Damage only
+            // its own newly visible content, never the windows it now covers.
+            let visible = self.local_visibility(id, &self.order, None);
+            self.invalidate_region(id, &visible);
+        }
     }
 
     pub fn next_update_matching(&self, events: &EventManager, when: u32,
@@ -679,14 +987,6 @@ impl WindowManager
         }
     }
 
-    pub fn invalidate_all(&mut self)
-    {
-        for window in self.windows.values_mut()
-        {
-            window.damage = Some(window.local_bounds());
-        }
-    }
-
     pub fn next_update(&self, events: &EventManager, when: u32) -> Option<Event>
     {
         let id = self.order[..self.len].iter().rev().find(|id| {
@@ -697,11 +997,12 @@ impl WindowManager
                                                                           })
                                                      })?;
         Some(Event { kind: EventKind::Update,
-                     message: id.0,
+                     message: 0,
                      when,
                      where_: events.mouse,
                      payload: 0,
-                     modifiers: events.modifiers })
+                     modifiers: events.modifiers,
+                     window: id.0 })
     }
 
     /// During modal alerts, leave background damage queued for its application.
@@ -713,11 +1014,12 @@ impl WindowManager
             return None;
         }
         Some(Event { kind: EventKind::Update,
-                     message: id.0,
+                     message: 0,
                      when,
                      where_: events.mouse,
                      payload: 0,
-                     modifiers: events.modifiers })
+                     modifiers: events.modifiers,
+                     window: id.0 })
     }
 
     pub fn begin_update(&mut self, id: WindowId) -> Option<Rect>
@@ -800,8 +1102,12 @@ impl WindowManager
         }
         for id in self.order[..self.len].iter().rev()
         {
-            let window = self.window(*id).unwrap();
-            if window.hidden
+            let Some(window) = self.window(*id)
+            else
+            {
+                continue;
+            };
+            if window.hidden || !window.structure_pieces().iter().any(|rect| rect.contains(point))
             {
                 continue;
             }
@@ -877,6 +1183,23 @@ impl WindowManager
     pub fn track(&mut self, point: Point, released: bool, events: &mut EventManager, when: u32)
                  -> Option<Action>
     {
+        let mut order = core::mem::take(&mut self.geometry_order);
+        order.clear();
+        if released
+           && matches!(self.tracking,
+                       Some(Tracking::Drag { .. } | Tracking::Grow { .. } | Tracking::Zoom { .. }))
+        {
+            order.extend_from_slice(&self.order);
+        }
+        let result = self.track_prepared(point, released, events, when, &order);
+        self.geometry_order = order;
+        result
+    }
+
+    fn track_prepared(&mut self, point: Point, released: bool, events: &mut EventManager,
+                      when: u32, old_order: &[WindowId])
+                      -> Option<Action>
+    {
         let tracking = self.tracking?;
         // Snapshot geometry only on release. Mouse motion keeps its existing
         // outline-only path and never builds content visibility regions.
@@ -889,7 +1212,7 @@ impl WindowManager
                 | Tracking::Grow { window,
                                  .. }
                 | Tracking::Zoom { window,
-                                 .. } => self.window(window).copied().map(|w| (w, self.order)),
+                                 .. } => self.window(window).copied().map(|w| (w, old_order)),
                 _ => None
             }
         }
@@ -1021,8 +1344,15 @@ impl WindowManager
                     }
                     else
                     {
-                        self.dispose_window(window, events, when);
-                        action = Some(Action::Close(window));
+                        let owner = self.window(window)?.owner;
+                        if let Err(error) = self.dispose_window(window, events, when)
+                        {
+                            #[cfg(target_arch = "riscv64")]
+                            serial!("WINDOW_CLOSE_REFUSED: owner={owner} {error}");
+                            #[cfg(not(target_arch = "riscv64"))]
+                            let _ = error;
+                        }
+                        action = Some(Action::Close(window, owner));
                     }
                 }
             }
@@ -1035,10 +1365,6 @@ impl WindowManager
             (action, previous)
         {
             self.invalidate_geometry_exposure(&window, &order, action);
-        }
-        else if action.is_some() && !matches!(action, Some(Action::CloseRequest(_)))
-        {
-            self.invalidate_all();
         }
         action
     }
@@ -1080,8 +1406,67 @@ impl WindowManager
         visible.offset(-window.bounds.left, -window.bounds.top).unwrap_or_default()
     }
 
-    fn invalidate_geometry_exposure(&mut self, previous: &Window,
-                                    old_order: &[WindowId; MAX_WINDOWS], action: Action)
+    fn invalidate_region(&mut self, id: WindowId, region: &Region)
+    {
+        for band in region.bands()
+        {
+            for span in &band.spans
+            {
+                self.invalidate(id, Rect::new(span.left, band.top, span.right, band.bottom));
+            }
+        }
+    }
+
+    /// A plane change damages only pixels that became visible. Focus chrome
+    /// is composited by System and is not application content damage.
+    fn invalidate_order_exposure(&mut self, previous: &[WindowId])
+    {
+        for index in 0..self.len
+        {
+            let id = self.order[index];
+            if previous.iter().position(|old| *old == id) == Some(index)
+               && previous[index + 1..] == self.order[index + 1..]
+            {
+                continue;
+            }
+            let before = self.local_visibility(id, previous, None);
+            let after = self.local_visibility(id, &self.order, None);
+            self.invalidate_region(id, &after.combine(&before, BooleanOp::Difference));
+        }
+    }
+
+    /// Removing or hiding one structure can expose only pixels underneath it.
+    /// This also serves invalidate-first owner cleanup, whose ID no longer
+    /// resolves but whose unique cleanup ticket still retains the geometry.
+    fn invalidate_uncovered(&mut self, previous: &Window, behind: usize)
+    {
+        let mut covered = Region::new();
+        for piece in previous.structure_pieces()
+        {
+            covered = covered.combine(&Region::from_rect(*piece), BooleanOp::Union);
+        }
+        for index in 0..behind
+        {
+            let id = self.order[index];
+            let Some(window) = self.window(id).filter(|window| !window.hidden)
+            else
+            {
+                continue;
+            };
+            let mut overlap = Rect::ZERO;
+            if !sect_rect(window.bounds, previous.structure(), &mut overlap)
+            {
+                continue;
+            }
+            let (left, top) = (window.bounds.left, window.bounds.top);
+            let covered = covered.offset(-left, -top).unwrap_or_default();
+            let visible = self.local_visibility(id, &self.order, None);
+            self.invalidate_region(id, &visible.combine(&covered, BooleanOp::Intersection));
+        }
+    }
+
+    fn invalidate_geometry_exposure(&mut self, previous: &Window, old_order: &[WindowId],
+                                    action: Action)
     {
         let affected =
             self.window(previous.id)
@@ -1352,107 +1737,13 @@ impl WindowManager
         self.visible_fragments(bounds, &self.order[..self.len], visit);
     }
 
-    fn visible_fragments(&self, bounds: Rect, covers: &[WindowId], mut visit: impl FnMut(Rect))
+    fn visible_fragments(&self, bounds: Rect, covers: &[WindowId], visit: impl FnMut(Rect))
     {
-        // A window definition supplies at most two structure rectangles. Sweep
-        // their clipped Y edges and merge X coverage within each band. Scratch
-        // is linear in the window limit, not a 32 KiB quadratic fragment array
-        // on the caller's application stack. The uncovered case visits once.
-        if bounds.is_empty()
-        {
-            return;
-        }
-        let mut rectangles = [Rect::ZERO; MAX_WINDOWS * 2];
-        let mut count = 0;
-        for id in covers
-        {
-            if let Some(window) = self.window(*id).filter(|window| !window.hidden)
-            {
-                for cover in window.structure_pieces()
-                {
-                    let mut clipped = Rect::ZERO;
-                    if sect_rect(bounds, *cover, &mut clipped)
-                    {
-                        rectangles[count] = clipped;
-                        count += 1;
-                    }
-                }
-            }
-        }
-        if count == 0
-        {
-            visit(bounds);
-            return;
-        }
-        let rectangles = &rectangles[..count];
-        let mut edges = [0i16; MAX_WINDOWS * 4 + 2];
-        edges[0] = bounds.top;
-        edges[1] = bounds.bottom;
-        for (index, rect) in rectangles.iter().enumerate()
-        {
-            edges[2 + index * 2] = rect.top;
-            edges[3 + index * 2] = rect.bottom;
-        }
-        let edges = &mut edges[..2 + count * 2];
-        edges.sort_unstable();
-        let mut intervals = [(0i16, 0i16); MAX_WINDOWS * 2];
-        let mut previous = [Rect::ZERO; MAX_WINDOWS * 2 + 1];
-        let mut previous_count = 0;
-        for band in edges.windows(2).filter(|band| band[0] != band[1])
-        {
-            let mut covered = 0;
-            for rect in rectangles
-            {
-                if rect.top <= band[0] && rect.bottom >= band[1]
-                {
-                    intervals[covered] = (rect.left, rect.right);
-                    covered += 1;
-                }
-            }
-            intervals[..covered].sort_unstable();
-            let mut gaps = [Rect::ZERO; MAX_WINDOWS * 2 + 1];
-            let mut gap_count = 0;
-            let mut left = bounds.left;
-            for &(start, end) in &intervals[..covered]
-            {
-                if start > left
-                {
-                    gaps[gap_count] = Rect::new(left, band[0], start, band[1]);
-                    gap_count += 1;
-                }
-                left = left.max(end);
-            }
-            if left < bounds.right
-            {
-                gaps[gap_count] = Rect::new(left, band[0], bounds.right, band[1]);
-                gap_count += 1;
-            }
-            if gap_count == previous_count
-               && gaps[..gap_count].iter().zip(&previous[..previous_count]).all(|(a, b)| {
-                                                                               a.left == b.left
-                                                                               && a.right == b.right
-                                                                               && a.top == b.bottom
-                                                                           })
-            {
-                for rect in &mut previous[..previous_count]
-                {
-                    rect.bottom = band[1];
-                }
-            }
-            else
-            {
-                for rect in &previous[..previous_count]
-                {
-                    visit(*rect);
-                }
-                previous[..gap_count].copy_from_slice(&gaps[..gap_count]);
-                previous_count = gap_count;
-            }
-        }
-        for rect in &previous[..previous_count]
-        {
-            visit(*rect);
-        }
+        let rectangles = covers.iter()
+                               .filter_map(|id| self.window(*id))
+                               .filter(|window| !window.hidden)
+                               .flat_map(|window| window.structure_pieces().iter().copied());
+        self.visibility.borrow_mut().visit(bounds, rectangles, visit);
     }
 }
 
@@ -1501,11 +1792,11 @@ mod tests
         }
     }
     #[test]
-    fn visible_fragments_handle_the_window_limit_without_overlap()
+    fn visible_fragments_handle_eighty_windows_without_overlap()
     {
         let mut wm = WindowManager::new();
         let mut events = EventManager::new();
-        for i in 0..MAX_WINDOWS
+        for i in 0..80
         {
             let x = 16 + (i * 37 % 320) as i16;
             let y = 60 + (i * 23 % 180) as i16;
@@ -1661,6 +1952,178 @@ mod tests
         }
     }
 
+    #[test]
+    fn definition_disposal_refusal_is_retained_and_retry_never_aliases_the_closed_window()
+    {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static ALLOW_DISPOSE: AtomicBool = AtomicBool::new(false);
+        unsafe extern "C" fn definition(call: *mut DefinitionCall) -> i64
+        {
+            // This fixture receives the manager's live, synchronous WDEF call;
+            // the object is its retained WindowDefinitionState until completion.
+            let call = unsafe { &mut *call };
+            if call.message == definition::DISPOSE
+            {
+                let state = unsafe { &mut *call.object.cast::<WindowDefinitionState>() };
+                if !ALLOW_DISPOSE.load(Ordering::SeqCst)
+                {
+                    state.close_pressed = 0xcafe;
+                    return BAD_ARGUMENT as i64;
+                }
+                if state.close_pressed != 0xcafe
+                {
+                    return BAD_ARGUMENT as i64;
+                }
+            }
+            unsafe { crate::test_wdef::standard_window_definition(call) }
+        }
+        ALLOW_DISPOSE.store(false, Ordering::SeqCst);
+        let mut manager = WindowManager::new();
+        let mut events = EventManager::new();
+        let owner = manager.test_owner(7);
+        let stale = manager.new_window_with_definition(Rect::new(80, 80, 320, 240),
+                                                       "Refusing definition",
+                                                       7,
+                                                       (100, 60),
+                                                       0,
+                                                       definition,
+                                                       &mut events,
+                                                       0)
+                           .unwrap();
+        let error = manager.dispose_window(stale, &mut events, 1).unwrap_err();
+        assert!(matches!(error, CloseError::Cleanup(crate::toolbox::handles::cleanup::Cause::WindowDefinitionDisposal { window, reply, .. }) if window == stale.0 && reply == BAD_ARGUMENT as i64));
+        let detail = alloc::format!("{error}");
+        assert!(detail.contains("WDEF 0")
+                && detail.contains("retry")
+                && detail.contains(&alloc::format!("{stale}")));
+        assert!(manager.window(stale).is_none());
+        assert_eq!(manager.count(), 0);
+        assert_eq!((owner.summary().live, owner.summary().pending, owner.summary().quarantined),
+                   (1, 1, 1));
+        let fresh = manager.new_window(Rect::new(80, 80, 320, 240),
+                                       "Healthy window",
+                                       7,
+                                       (100, 60),
+                                       &mut events,
+                                       2)
+                           .unwrap();
+        assert_ne!(fresh, stale);
+        assert_eq!(manager.active_window(), Some(fresh));
+        ALLOW_DISPOSE.store(true, Ordering::SeqCst);
+        let registry = manager.test_registry.take().unwrap();
+        let report = mac_object_table::walk::retry(&mut manager,
+                                                   &owner,
+                                                   |_, key| registry.dispatch(key.kind()),
+                                                   |_, error| panic!("{error}")).unwrap();
+        assert_eq!((report.released, report.quarantined), (1, 0));
+        assert_eq!((owner.summary().pending, owner.summary().quarantined), (0, 0));
+        assert!(manager.window(stale).is_none());
+        assert_eq!(manager.active_window(), Some(fresh));
+        manager.dispose_window(fresh, &mut events, 3).unwrap();
+        let report = mac_object_table::walk::drain(&mut manager,
+                                                   &owner,
+                                                   |_, key| registry.dispatch(key.kind()),
+                                                   |_, error| panic!("{error}")).unwrap();
+        assert_eq!(report.released, 1, "backing remains registered until the generic walk");
+        assert_eq!((owner.summary().live, owner.summary().pending), (0, 0));
+    }
+
+    #[test]
+    fn initialization_refusal_rolls_back_without_publishing_geometry_or_activation()
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        static DISPOSES: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn definition(call: *mut DefinitionCall) -> i64
+        {
+            // The fixture receives the manager's synchronous initialized call.
+            match unsafe { (*call).message }
+            {
+                definition::CALCULATE => BAD_ARGUMENT as i64,
+                definition::DISPOSE =>
+                {
+                    DISPOSES.fetch_add(1, Ordering::SeqCst);
+                    0
+                }
+                _ =>
+                unsafe { crate::test_wdef::standard_window_definition(call) }
+            }
+        }
+        DISPOSES.store(0, Ordering::SeqCst);
+        let mut manager = WindowManager::new();
+        let owner = manager.test_owner(9);
+        let mut events = EventManager::new();
+        let error = manager.new_window_with_activation(Rect::new(80, 80, 320, 240),
+                                                       "Refused creation",
+                                                       &owner,
+                                                       (100, 60),
+                                                       0,
+                                                       definition,
+                                                       &mut events,
+                                                       0,
+                                                       true)
+                           .unwrap_err();
+        assert!(matches!(error, CreationError::Definition { operation: definition::CALCULATE, reply, .. } if reply == BAD_ARGUMENT as i64));
+        assert!(alloc::format!("{error}").contains("WDEF"));
+        assert_eq!(DISPOSES.load(Ordering::SeqCst), 1);
+        assert_eq!(manager.count(), 0);
+        assert!(manager.active_window().is_none());
+        assert!(events.next_matching(u16::MAX).is_none());
+        assert_eq!((owner.summary().live, owner.summary().pending),
+                   (1, 0),
+                   "only the registered backing remains");
+        let fresh = manager.new_window(Rect::new(80, 80, 320, 240),
+                                       "Usable after refusal",
+                                       9,
+                                       (100, 60),
+                                       &mut events,
+                                       1)
+                           .unwrap();
+        assert_eq!(manager.active_window(), Some(fresh));
+    }
+
+    #[test]
+    fn plane_changes_damage_only_newly_visible_content_and_focus_does_not_damage_content()
+    {
+        let (mut manager, mut events, a, b) = make();
+        let unrelated = manager.new_window(Rect::new(530, 80, 630, 200),
+                                           "Unrelated",
+                                           0,
+                                           (50, 50),
+                                           &mut events,
+                                           0)
+                               .unwrap();
+        for id in [a, b, unrelated]
+        {
+            manager.validate(id).unwrap();
+        }
+        manager.deactivate_all(&mut events, 1);
+        assert!(manager.next_update(&events, 1).is_none(),
+                "chrome-only focus changes do not ask applications to repaint");
+        manager.select_window(unrelated, &mut events, 2);
+        assert!(manager.next_update(&events, 2).is_none());
+        manager.select_window(a, &mut events, 3);
+        assert!(manager.window(a).unwrap().damage.is_some());
+        assert!(manager.window(b).unwrap().damage.is_none());
+        assert!(manager.window(unrelated).unwrap().damage.is_none());
+        manager.validate(a).unwrap();
+        manager.select_window(a, &mut events, 4);
+        assert!(manager.next_update(&events, 4).is_none(),
+                "selecting the selected window is a no-op");
+        manager.set_hidden(a, true);
+        assert!(manager.window(b).unwrap().damage.is_some());
+        assert!(manager.window(unrelated).unwrap().damage.is_none());
+        manager.validate(b).unwrap();
+        manager.set_hidden(a, true);
+        assert!(manager.next_update(&events, 5).is_none());
+        manager.set_hidden(a, false);
+        assert!(manager.window(a).unwrap().damage.is_some());
+        assert!(manager.window(b).unwrap().damage.is_none());
+        manager.validate(a).unwrap();
+        manager.dispose_window(a, &mut events, 6).unwrap();
+        assert!(manager.window(b).unwrap().damage.is_some());
+        assert!(manager.window(unrelated).unwrap().damage.is_none());
+    }
+
     fn make() -> (WindowManager, EventManager, WindowId, WindowId)
     {
         let mut wm = WindowManager::new();
@@ -1684,7 +2147,7 @@ mod tests
         assert_eq!(manager.window(b).unwrap().state.active, 0);
         let event = events.next_matching(u16::MAX).unwrap();
         assert_eq!(event.kind, EventKind::Activate);
-        assert_eq!(event.message, b.0);
+        assert_eq!(event.window, b.0);
         assert_eq!(event.modifiers & ACTIVE_FLAG, 0);
         assert!(events.next_matching(u16::MAX).is_none());
         manager.deactivate_all(&mut events, 2);
@@ -1692,16 +2155,44 @@ mod tests
         manager.select_window(b, &mut events, 3);
         assert_eq!(manager.active_window(), Some(b));
         let event = events.next_matching(u16::MAX).unwrap();
-        assert_eq!(event.message, b.0);
+        assert_eq!(event.window, b.0);
         assert_ne!(event.modifiers & ACTIVE_FLAG, 0);
         assert!(events.next_matching(u16::MAX).is_none());
         manager.deactivate_all(&mut events, 4);
-        assert!(manager.dispose_window(b, &mut events, 5));
+        assert!(manager.dispose_window(b, &mut events, 5).is_ok());
         assert_eq!(manager.front_window(), Some(a));
         assert_eq!(manager.active_window(), None);
         assert_eq!(manager.window(a).unwrap().state.active, 0);
         manager.select_window(a, &mut events, 6);
         assert_eq!(manager.active_window(), Some(a));
+    }
+
+    #[test]
+    fn raising_the_already_active_window_does_not_repeat_activation()
+    {
+        let (mut manager, mut events, _, active) = make();
+        let owner = manager.test_owner(0);
+        manager.new_window_with_activation(Rect::new(80, 80, 320, 240),
+                                           "No focus steal",
+                                           &owner,
+                                           (100, 60),
+                                           0,
+                                           crate::test_wdef::standard_window_definition,
+                                           &mut events,
+                                           0,
+                                           false)
+               .unwrap();
+        for id in manager.order.clone()
+        {
+            manager.validate(id).unwrap();
+        }
+        while events.next_matching(u16::MAX).is_some()
+        {}
+        manager.select_window(active, &mut events, 1);
+        assert!(events.next_matching(u16::MAX).is_none(), "plane motion did not change focus");
+        assert!(manager.window(active).unwrap().damage.is_some(),
+                "newly exposed content still needs update");
+        assert_eq!(manager.window(active).unwrap().state.active, 1);
     }
 
     #[test]
@@ -1717,7 +2208,7 @@ mod tests
                                           v: 180 })
                      .window,
                    Some(a));
-        wm.dispose_window(a, &mut events, 2);
+        wm.dispose_window(a, &mut events, 2).unwrap();
         assert_eq!(wm.front_window(), Some(b));
         let c =
             wm.new_window(Rect::new(20, 80, 320, 300), "C", 0, (160, 100), &mut events, 3).unwrap();
@@ -1764,7 +2255,7 @@ mod tests
     fn begin_end_update_preserves_new_damage()
     {
         let (mut wm, events, _, b) = make();
-        assert_eq!(wm.next_update(&events, 0).unwrap().message, b.0);
+        assert_eq!(wm.next_update(&events, 0).unwrap().window, b.0);
         assert!(wm.begin_update(b).is_some());
         wm.invalidate(b, Rect::new(0, 0, 5, 5));
         wm.end_update(b);
@@ -1835,8 +2326,8 @@ mod tests
                    - i32::from(overlap.right - overlap.left)
                      * i32::from(overlap.bottom - overlap.top));
         assert!(wm.next_update(&events, 0).is_none());
-        wm.dispose_window(b, &mut events, 1);
-        assert_eq!(wm.next_update(&events, 1).unwrap().message, a.0);
+        wm.dispose_window(b, &mut events, 1).unwrap();
+        assert_eq!(wm.next_update(&events, 1).unwrap().window, a.0);
     }
 
     #[test]
@@ -1913,5 +2404,21 @@ mod tests
         {
             assert_eq!(pixels[point.v as usize * 640 + point.h as usize], 0x123456);
         }
+    }
+}
+
+#[cfg(test)]
+impl super::lifetime::WindowHost for WindowManager
+{
+    fn release_window(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                      -> Result<(), Failure>
+    {
+        self.release(ticket).map(|_| ())
+    }
+
+    fn release_window_storage(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                              -> Result<(), Failure>
+    {
+        self.release_storage(ticket)
     }
 }

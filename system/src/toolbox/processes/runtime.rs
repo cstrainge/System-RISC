@@ -263,7 +263,7 @@ impl Desktop
 
     pub fn window_owner(&self, id: WindowId) -> Option<u64>
     {
-        self.window_owners.iter().find(|(window, _)| *window == id).map(|(_, app)| *app)
+        self.windows.owner(id)
     }
 
     pub fn owns(&self, id: WindowId) -> bool
@@ -273,31 +273,22 @@ impl Desktop
 
     pub fn front_owned(&self) -> Option<WindowId>
     {
-        self.windows.back_to_front().filter(|w| self.owns(w.id)).last().map(|w| w.id)
+        self.windows.front_for_owner(self.owner)
     }
 
     pub fn route_events(&mut self)
     {
-        while let Some((event, _)) = self.events.next_system()
+        while let Some((event, _, captured_owner)) = self.events.next_system()
         {
-            let id = match event.kind
+            let id = (event.window != 0).then_some(WindowId(event.window));
+            let target = if captured_owner != 0
             {
-                EventKind::OsEvent if event.message == mac_abi::events::WINDOW_GEOMETRY_CHANGED =>
-                {
-                    Some(WindowId(event.payload as u32))
-                }
-                EventKind::Activate | EventKind::Update | EventKind::MouseDown
-                    if event.message != 0 =>
-                {
-                    Some(WindowId(event.message))
-                }
-                EventKind::OsEvent if event.message & 0xff000000 != 0 =>
-                {
-                    Some(WindowId(event.message & 0xffffff))
-                }
-                _ => None
+                captured_owner
+            }
+            else
+            {
+                id.and_then(|id| self.window_owner(id)).unwrap_or(self.owner)
             };
-            let target = id.and_then(|id| self.window_owner(id)).unwrap_or(self.owner);
             crate::trace::record(crate::trace::ROUTE,
                                  self.owner,
                                  target,
@@ -456,13 +447,7 @@ impl Desktop
         self.processes.activate(id)?;
         self.foreground = id;
         self.cursor_dirty |= self.responsiveness.foreground(id, Self::when());
-        for (window, owner) in &self.window_owners
-        {
-            if *owner == id
-            {
-                self.windows.set_hidden(*window, false);
-            }
-        }
+        self.windows.set_owner_hidden(id, false);
         let ids: Vec<_> = self.windows
                               .back_to_front()
                               .filter(|w| self.window_owner(w.id) == Some(id))
@@ -488,13 +473,7 @@ impl Desktop
             return Err(ACCESS_DENIED);
         }
         self.processes.get_mut(id)?.info.hidden = 1;
-        for (window, owner) in &self.window_owners
-        {
-            if *owner == id
-            {
-                self.windows.set_hidden(*window, true);
-            }
-        }
+        self.windows.set_owner_hidden(id, true);
         if self.foreground == id
         {
             let previous = self.processes.previous(id);
@@ -530,10 +509,7 @@ impl Desktop
                 {
                     p.info.hidden = 0;
                 }
-                for (window, _) in &self.window_owners
-                {
-                    self.windows.set_hidden(*window, false);
-                }
+                self.windows.set_all_hidden(false);
                 if changed
                 {
                     self.refresh_app_menu();
@@ -654,6 +630,7 @@ impl Desktop
                 let file = self.processes.snapshot(caller)?;
                 self.enter(caller);
                 let ledger = self.processes.ledger(caller)?;
+                let before_walk = ledger.summary();
                 let walk = mac_object_table::walk::drain(self, &ledger,
                     |_, key| crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
                         .and_then(|result| result.map_err(crate::toolbox::handles::KindAccessError::Registry)),
@@ -662,27 +639,16 @@ impl Desktop
                     .unwrap_or_else(|error| panic!("owner cleanup invariant failed: {error}"));
                 let remaining = ledger.summary();
                 serial!("OWNER_WALK app={} invalidated={} released={} quarantined={} live={} \
-                         pending={} deferred={}",
+                         pending={} deferred={} completed={}",
                         caller,
                         walk.invalidated,
                         walk.released,
                         walk.quarantined,
                         remaining.live,
                         remaining.pending,
-                        walk.deferred);
-                let ids: Vec<_> = self.window_owners
-                                      .iter()
-                                      .filter(|(_, id)| *id == caller)
-                                      .map(|(w, _)| *w)
-                                      .collect();
-                for window in ids
-                {
-                    self.windows.dispose_without_activation(window, &mut self.events, Self::when());
-                    self.content.retain(|c| c.id != window);
-                    self.pending_content.retain(|c| c.id != window);
-                }
+                        walk.deferred,
+                        remaining.deaths.saturating_sub(before_walk.deaths));
                 self.route_events();
-                self.window_owners.retain(|(_, id)| *id != caller);
                 let previous = self.processes.previous(caller);
                 self.enter(previous);
                 let feedback = self.drag.feedback();

@@ -77,9 +77,7 @@ pub fn malformed_targets(gate: mac_toolbox::abi::TrapGate)
                    Target { reserved: 1,
                             ..Default::default() },
                    Target { id: 1,
-                            ..Target::desktop() },
-                   Target { id: u64::MAX,
-                            ..Default::default() }]
+                            ..Target::desktop() }]
     {
         rejected(gate,
                  QUICKDRAW,

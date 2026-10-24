@@ -134,7 +134,7 @@ pub fn load(resources: Manager<'_>, call: &DialogCall) -> Result<Alert, Status>
 pub(crate) struct DialogState
 {
     pub previous:    Option<mac_abi::WindowId>,
-    pub window:      u32,
+    pub window:      u64,
     pub alert:       Option<Alert>,
     pub pressed:     Option<usize>,
     pub highlighted: bool
@@ -162,7 +162,7 @@ impl DialogState
         let old = self.highlighted;
         match event.kind
         {
-            EventKind::MouseDown if event.message == self.window =>
+            EventKind::MouseDown if event.window == self.window =>
             {
                 self.pressed = hit;
                 self.highlighted = hit.is_some();

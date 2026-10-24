@@ -12,7 +12,7 @@ static FILES: AtomicU64 = AtomicU64::new(0);
 static WIDTHS: AtomicU64 = AtomicU64::new(0);
 static DRAWS: AtomicU64 = AtomicU64::new(0);
 static COMMITS: AtomicU64 = AtomicU64::new(0);
-static SCROLL_WINDOW: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static SCROLL_WINDOW: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static BARS: spinning_top::Spinlock<[abi::controls::ScrollbarState; 2]> =
     spinning_top::Spinlock::new([abi::controls::ScrollbarState { bounds:      Rect::ZERO,
                                                                 value:       0,
@@ -189,7 +189,7 @@ fn verify_positions(system: &System<'_>) -> Result<(), Error>
     require(system,
             matches!(system.events().input_in(id), Err(Error::NotFound)),
             "disposed coordinate query succeeded")?;
-    let foreign = Event::MouseDown { window: Some(WindowId(u32::MAX)),
+    let foreign = Event::MouseDown { window: Some(WindowId(u64::MAX)),
                                      input:  input(Point { h: 125,
                                                            v: 135 },
                                                    90,
@@ -712,7 +712,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
                                                         message:   0x351b,
                                                         when:      6203,
                                                         where_:    band_end,
-                                                        modifiers: 0 }))
+                                                        modifiers: 0,
+                                                        window:    0 }))
     })?;
     checkpoint(system, "desktop-band-cancel")?;
     action(system, &mut browser, "desktop-all", 2, false, |browser| browser.select_all(system))?;

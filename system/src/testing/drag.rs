@@ -101,7 +101,7 @@ pub fn feedback() -> Option<Rect>
 {
     SESSION.with(|s| s.borrow().as_ref().unwrap().drag.feedback())
 }
-pub fn highlight() -> Option<(u32, Rect)>
+pub fn highlight() -> Option<(u64, Rect)>
 {
     SESSION.with(|s| s.borrow().as_ref().unwrap().drag.highlight())
 }

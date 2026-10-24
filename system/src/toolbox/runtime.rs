@@ -78,7 +78,6 @@ pub struct Desktop
     owner:                            u64,
     foreground:                       u64,
     locals:                           Vec<local::Saved>,
-    window_owners:                    Vec<(WindowId, u64)>,
     pub(in crate::toolbox) processes: super::processes::Manager,
     app_menu:                         super::processes::menu::ApplicationMenu
 }
@@ -320,7 +319,7 @@ impl Desktop
                   text_cursor,
                   worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
                   classic_font: Default::default(),
-                  windows: WindowManager::with_gate(crate::machine::traps::gateway),
+                  windows: WindowManager::with_kinds(super::handles::window_kinds()?, crate::machine::traps::gateway)?,
                   events: Box::new(EventManager::new()),
                   drag: Default::default(),
                   textedit: Default::default(),
@@ -344,7 +343,7 @@ impl Desktop
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
                   presentations: 0,
                   compositions: 0,
-                  cdef,mdef,owner:finder,foreground:finder,locals:alloc::vec![local::Saved::new(finder,mdef)],window_owners:Vec::new(),
+                  cdef,mdef,owner:finder,foreground:finder,locals:alloc::vec![local::Saved::new(finder,mdef)],
                   processes,
                   app_menu:super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,crate::kernel::resources().ok_or(NOT_SUPPORTED)?)? })
     }
@@ -388,7 +387,8 @@ impl Desktop
                                                  | u32::from(selection.item),
                                         when,
                                         where_: self.events.mouse,
-                                        modifiers: self.events.modifiers });
+                                        modifiers: self.events.modifiers,
+                                        window: 0 });
         self.last_action = "MENU";
     }
 
@@ -403,6 +403,7 @@ impl Desktop
                                  0,
                                  0);
         }
+        let mut result = OK;
         let when = Self::when();
         if request.id == 0 && operation == GET_WINDOW
         {
@@ -448,20 +449,40 @@ impl Desktop
                     Ok(entry) => entry,
                     Err(error) => return crate::loader::status(error)
                 };
-                let Some(id) = self.windows.new_window_with_activation(request.bounds,
-                                                                       title,
-                                                                       self.owner,
-                                                                       (request.minimum_width,
-                                                                        request.minimum_height),
-                                                                       request.procedure,
-                                                                       entry,
-                                                                       &mut self.events,
-                                                                       when,
-                                                                       self.owner
-                                                                       == self.foreground)
-                else
+                if self.content.try_reserve(1).is_err()
                 {
-                    return BAD_ARGUMENT;
+                    return NO_MEMORY;
+                }
+                let id = match self.windows
+                                   .new_window_with_activation(request.bounds,
+                                                               title,
+                                                               &match self.processes
+                                                                          .ledger(self.owner)
+                                                               {
+                                                                   Ok(owner) => owner,
+                                                                   Err(status) => return status
+                                                               },
+                                                               (request.minimum_width,
+                                                                request.minimum_height),
+                                                               request.procedure,
+                                                               entry,
+                                                               &mut self.events,
+                                                               when,
+                                                               false)
+                {
+                    Ok(id) => id,
+                    Err(error) =>
+                    {
+                        serial!("WINDOW_INITIALIZATION_REFUSED: owner={} {error}", self.owner);
+                        use super::windows::manager::CreationError;
+                        return match error {
+                            CreationError::NoMemory => NO_MEMORY,
+                            CreationError::Facility(error) => super::handles::registry_status(&mac_object_table::registry::Error::Pool(error)),
+                            CreationError::Stopping => SERVICE_BUSY,
+                            CreationError::Definition { reply, .. } => i32::try_from(reply).unwrap_or(BAD_ABI),
+                            CreationError::InvalidRequest | CreationError::Geometry { .. } => BAD_ARGUMENT
+                        };
+                    }
                 };
                 if let Err(status) =
                     self.drag.ensure_receiver(self.owner,
@@ -470,7 +491,11 @@ impl Desktop
                                                                                       .0,
                                               id.0)
                 {
-                    self.windows.dispose_window(id, &mut self.events, when);
+                    if let Err(error) = self.windows.dispose_window(id, &mut self.events, when)
+                    {
+                        serial!("WINDOW_INITIALIZATION_ROLLBACK_REFUSED: owner={} {error}",
+                                self.owner);
+                    }
                     return status;
                 }
                 request.id = id.0;
@@ -478,29 +503,45 @@ impl Desktop
                 {
                     self.first_window = id;
                 }
-                self.window_owners.push((id, self.owner));
+                if self.owner == self.foreground
+                {
+                    self.windows.select_window(id, &mut self.events, when);
+                }
                 if self.owner != self.foreground
                 {
                     if self.processes.get(self.owner).is_ok_and(|p| p.info.hidden != 0)
                     {
                         self.windows.set_hidden(id, true);
                     }
-                    let foreground: Vec<_> =
-                        self.windows
-                            .back_to_front()
-                            .filter(|w| self.window_owner(w.id) == Some(self.foreground))
-                            .map(|w| w.id)
-                            .collect();
-                    self.windows.restore_group(&foreground, &mut self.events, when);
+                    self.windows.restore_owner_group(self.foreground, &mut self.events, when);
                 }
                 self.content.push(Content::new(id));
                 self.last_action = "NEW";
             }
             CLOSE_WINDOW =>
             {
-                if !self.windows.dispose_window(id, &mut self.events, when)
+                match self.windows.dispose_window(id, &mut self.events, when)
                 {
-                    return NOT_FOUND;
+                    Ok(()) => (),
+                    Err(super::windows::manager::CloseError::NotFound(_)) => return NOT_FOUND,
+                    Err(error @ super::windows::manager::CloseError::Cleanup(_)) =>
+                    {
+                        serial!("WINDOW_CLOSE_REFUSED: owner={} {error}", self.owner);
+                        let super::windows::manager::CloseError::Cleanup(cause) = error
+                        else
+                        {
+                            unreachable!()
+                        };
+                        result = match cause
+                        {
+                            super::handles::cleanup::Cause::WindowDefinitionDisposal { reply,
+                                                                                       .. } =>
+                            {
+                                i32::try_from(reply).unwrap_or(BAD_ABI)
+                            }
+                            super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT
+                        };
+                    }
                 }
                 let before = self.drag.feedback();
                 self.drag.forget_window(id.0, when);
@@ -510,7 +551,6 @@ impl Desktop
                 self.content.retain(|content| content.id != id);
                 self.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
-                self.window_owners.retain(|(window, _)| *window != id);
                 self.last_action = "CLOSE";
             }
             SELECT_WINDOW =>
@@ -731,7 +771,7 @@ impl Desktop
         {
             self.present();
         }
-        OK
+        result
     }
 
     pub fn control_definition(&mut self, id: i16) -> Result<DefinitionEntry, Status>
@@ -1029,7 +1069,7 @@ impl Desktop
         OK
     }
 
-    pub fn draw(&mut self, id: u32, command: DrawCommand) -> Status
+    pub fn draw(&mut self, id: u64, command: DrawCommand) -> Status
     {
         if self.retained_bytes() + core::mem::size_of::<DrawCommand>() > MAX_RETAINED_BYTES
         {
@@ -1518,7 +1558,7 @@ impl Desktop
         {
             self.events.post_system(Event { kind: EventKind::OsEvent,
                                             message: mac_abi::events::WINDOW_GEOMETRY_CHANGED,
-                                            payload: u64::from(id.0),
+                                            window: id.0,
                                             ..self.events.null_event(when) });
         }
         self.last_action = match action
@@ -1539,27 +1579,28 @@ impl Desktop
             Action::CloseRequest(id) =>
             {
                 self.events.post_system(Event { kind: EventKind::OsEvent,
-                                                message: WINDOW_CLOSE_REQUEST | id.0,
+                                                message: WINDOW_CLOSE_REQUEST,
+                                                window: id.0,
                                                 when,
                                                 ..self.events.null_event(when) });
                 "CLOSE_REQUEST"
             }
-            Action::Close(id) =>
+            Action::Close(id, closed_owner) =>
             {
                 self.scroll_boxes.remove_window(id.0);
                 self.controls.remove_window(id.0);
                 self.content.retain(|content| content.id != id);
                 self.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
-                self.events.post_system(Event { kind: EventKind::OsEvent,
-                                                message: 0x02000000 | id.0,
-                                                when,
-                                                ..self.events.null_event(when) });
-                // Route the final close notice while its ownership is known,
-                // then remove exactly this entry. Input routing never needs a
-                // defensive sweep over every window after every key or move.
+                self.events.post_system_for(closed_owner,
+                                            Event { kind: EventKind::OsEvent,
+                                                    message: 0x02000000,
+                                                    window: id.0,
+                                                    when,
+                                                    ..self.events.null_event(when) });
+                // The trusted notice retained its owner before disposal;
+                // routing does not depend on a second ownership directory.
                 self.route_events();
-                self.window_owners.retain(|(window, _)| *window != id);
                 "CLOSE"
             }
         };
@@ -1715,7 +1756,8 @@ impl Desktop
                                 {
                                     self.events.post_system(Event { payload: 0,
                                                                     kind: EventKind::OsEvent,
-                                                                    message: 0x01000000 | id.0,
+                                                                    message: 0x01000000,
+                                                                    window: id.0,
                                                                     when,
                                                                     where_: point,
                                                                     modifiers: self.events
@@ -1724,7 +1766,8 @@ impl Desktop
                             }
                             self.events.post_system(Event { payload: 0,
                                                             kind: EventKind::MouseDown,
-                                                            message: id.0,
+                                                            message: 0,
+                                                            window: id.0,
                                                             when,
                                                             where_: point,
                                                             modifiers: self.events.modifiers });
@@ -1742,7 +1785,8 @@ impl Desktop
                                                         message: 0,
                                                         when,
                                                         where_: point,
-                                                        modifiers: self.events.modifiers });
+                                                        modifiers: self.events.modifiers,
+                                                        window: 0 });
                     }
                 }
                 else
@@ -1772,7 +1816,8 @@ impl Desktop
                                                     message: 0,
                                                     when,
                                                     where_: point,
-                                                    modifiers: self.events.modifiers });
+                                                    modifiers: self.events.modifiers,
+                                                    window: 0 });
                 }
             }
             Input::Key { mac_code,
@@ -1816,7 +1861,8 @@ impl Desktop
                                                              | character as u32,
                                                     when,
                                                     where_: self.events.mouse,
-                                                    modifiers: self.events.modifiers });
+                                                    modifiers: self.events.modifiers,
+                                                    window: 0 });
                 }
             }
         }
@@ -2475,5 +2521,34 @@ impl super::quickdraw::worlds::WorldHost for Desktop
     fn offscreen_worlds(&mut self) -> &mut super::quickdraw::worlds::Worlds
     {
         &mut self.worlds
+    }
+}
+
+impl super::windows::lifetime::WindowHost for Desktop
+{
+    fn release_window(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                      -> Result<(), super::handles::cleanup::Failure>
+    {
+        let id = self.windows.releasing_id(&ticket);
+        let result = self.windows.release(ticket);
+        if let Some(id) = id
+        {
+            let before = self.drag.feedback();
+            self.drag.forget_window(id.0, Self::when());
+            self.drag_effects(before);
+            self.scroll_boxes.remove_window(id.0);
+            self.controls.remove_window(id.0);
+            self.content.retain(|content| content.id != id);
+            self.pending_content.retain(|content| content.id != id);
+            self.forget_cursor_window(id);
+            self.redraw = true;
+        }
+        result.map(|_| ())
+    }
+
+    fn release_window_storage(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                              -> Result<(), super::handles::cleanup::Failure>
+    {
+        self.windows.release_storage(ticket)
     }
 }

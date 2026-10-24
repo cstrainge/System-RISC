@@ -90,9 +90,10 @@ fn viewer_event(system: &System<'_>, viewer: &mut clipboard::Viewer, event: Even
     let event = mac_toolbox::Event::from(event);
     // Only physical pointer events need coordinate resolution. The synthetic
     // unrelated Activate below intentionally has no live window capability.
-    let position = if matches!(event, mac_toolbox::Event::MouseDown { .. }
-                                    | mac_toolbox::Event::MouseUp { .. }
-                                    | mac_toolbox::Event::Idle { .. })
+    let position = if matches!(event,
+                               mac_toolbox::Event::MouseDown { .. }
+                               | mac_toolbox::Event::MouseUp { .. }
+                               | mac_toolbox::Event::Idle { .. })
     {
         system.events().locate(&event)?
     }
@@ -211,7 +212,7 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
                     viewer_event(system,
                                  &mut viewer,
                                  Event { kind: EventKind::Activate,
-                                         message: other_window,
+                                         window: other_window,
                                          modifiers: mac_toolbox::abi::ACTIVE_FLAG,
                                          ..Default::default() })?;
                     require(COMMITS.load(Ordering::Relaxed) == commits,

@@ -83,7 +83,7 @@ pub fn register_kind(namespace: [u8; 4], provider: &str) -> RegisteredFixtureKin
                 capacity: CapacityPolicy::PerDomainQuota { slots: 16 },
                 source: mac_object_table::registry::Source::BundleResource {
                     bundle: *b"FixtureKindData!", kind: KindCode(*b"KIND"), id: 7 } },
-            crate::toolbox::controls::objects::ReleaseControls).unwrap().id()
+            crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseControls)).unwrap().id()
     });
     RegisteredFixtureKind { registrar,
                             kind,
@@ -109,7 +109,7 @@ pub fn walk_registered(owner: u64, provider_unavailable: bool, retry: bool) -> W
             else { session.registry.dispatch(key.kind()) }
         };
         let mut failures = std::vec::Vec::new();
-        let mut failed = |_: mac_object_table::domain::ResourceKey, error: &mac_object_table::walk::Failure<mac_object_table::registry::Error>| {
+        let mut failed = |_: mac_object_table::domain::ResourceKey, error: &mac_object_table::walk::Failure<mac_object_table::registry::Error, crate::toolbox::handles::cleanup::Cause>| {
             failures.push(std::format!("{error}"));
         };
         let report = if retry { mac_object_table::walk::retry(session, &ledger, resolve, &mut failed) }

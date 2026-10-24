@@ -242,13 +242,24 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
 
     pub fn insert(&mut self, owner: &OwnerRef<G>, value: T) -> Result<u64, PoolError>
     {
+        self.insert_with(owner, |_| value)
+    }
+
+    /// Build an object containing its opaque native identity before publishing
+    /// it. Construction runs once, outside the owner lock. The live key is
+    /// published only after construction succeeds; admission refusal leaves
+    /// the value unpublished and drops it outside the metadata lock.
+    /// Admission is checked again atomically when the payload is published.
+    pub fn insert_with(&mut self, owner: &OwnerRef<G>, make: impl FnOnce(u64) -> T)
+                       -> Result<u64, PoolError>
+    {
         let mut registration_use =
             self.registration.as_ref().map(|kind| kind.acquire(true)).transpose()?;
         let at = self.attach(owner)?;
         let error = self.storage_error(owner.owner(), self.ids.len().saturating_add(1));
         self.ids.try_reserve(1).map_err(|_| error)?;
         let id = issue_native_identity().map_err(|_| PoolError::IdentityExhausted)?.get();
-        let mut value = Some(value);
+        let mut value = Some(make(id));
         loop
         {
             // Publication is atomic with respect to stop/invalidate/the walk.
@@ -329,6 +340,27 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         self.locate(id).map(|(_, key)| key)
     }
 
+    /// Begin ordinary manager disposal without moving its retained payload.
+    /// The returned unique ticket must be completed or retained for retry.
+    pub fn begin_release(&self, id: u64) -> Option<ReleasedResource>
+    {
+        let (at, key) = self.locate(id)?;
+        self.owners[at].claim.owner.invalidate(key).ok()
+    }
+
+    /// Keep a refused explicit disposal in the same preallocated quarantine
+    /// used by the owner walk. Foreign tickets remain owned by the error.
+    pub fn quarantine(&self, ticket: ReleasedResource) -> Result<(), CompletionError>
+    {
+        let key = ticket.key();
+        if self.releasing(&ticket).is_none()
+        {
+            return Err(CompletionError::stale(ticket));
+        }
+        let at = self.owner_index(key.owner()).expect("validated retained owner");
+        self.owners[at].claim.owner.quarantine(ticket)
+    }
+
     pub fn remove(&mut self, id: u64) -> Option<Removed<T, G>>
     {
         let (at, key) = self.locate(id)?;
@@ -376,6 +408,46 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
             }
         }
         Err(CompletionError::stale(ticket))
+    }
+
+    /// Inspect a retained payload through the unique invalidate-first cleanup
+    /// capability. Ordinary IDs remain invalid throughout refusal and retry.
+    /// No mutable payload or metadata lock escapes to the callback.
+    pub fn releasing(&self, ticket: &ReleasedResource) -> Option<&T>
+    {
+        let key = ticket.key();
+        let at = self.owner_index(key.owner()).ok()?;
+        if key.kind() != self.kind
+        {
+            return None;
+        }
+        let entry = self.owners[at].slots.get(key.slot())?.as_ref()?;
+        (entry.key == key).then_some(&entry.value)
+    }
+
+    /// Mutate copy-only cleanup state without revalidating an ordinary ID.
+    /// Non-Copy payloads can own linear resources; their destruction must stay
+    /// behind `release` and its guard. They cannot be extracted or replaced
+    /// through this callback. No metadata lock is held during the operation.
+    /// ```compile_fail
+    /// use mac_object_table::{domain::ReleasedResource, shared::InvocationGate, store::Store};
+    /// fn steal<G: InvocationGate>(store: &mut Store<String, G>, ticket: &ReleasedResource) {
+    ///     let owned = store.with_releasing(ticket, core::mem::take);
+    /// }
+    /// ```
+    pub fn with_releasing<R>(&mut self, ticket: &ReleasedResource,
+                             operation: impl FnOnce(&mut T) -> R)
+                             -> Option<R>
+        where T: Copy
+    {
+        let key = ticket.key();
+        let at = self.owner_index(key.owner()).ok()?;
+        if key.kind() != self.kind
+        {
+            return None;
+        }
+        let entry = self.owners[at].slots.get_mut(key.slot())?.as_mut()?;
+        (entry.key == key).then(|| operation(&mut entry.value))
     }
 
     /// Resolve the facility walk's already-invalidated ticket. Refusal preserves

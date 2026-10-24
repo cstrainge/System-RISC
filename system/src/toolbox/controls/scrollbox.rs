@@ -32,7 +32,7 @@ impl Raster
 }
 struct Object
 {
-    window:    u32,
+    window:    u64,
     spec:      Spec,
     top:       u32,
     raster:    Arc<Raster>,
@@ -338,7 +338,7 @@ impl Manager
         self.objects.get_mut(id).ok_or(NOT_FOUND)
     }
 
-    pub fn window(&self, id: u64, owner: u64) -> Result<u32, Status>
+    pub fn window(&self, id: u64, owner: u64) -> Result<u64, Status>
     {
         Ok(self.get(id, owner)?.window)
     }
@@ -350,7 +350,7 @@ impl Manager
         self.raster_bytes
     }
 
-    pub fn remove_window(&mut self, window: u32)
+    pub fn remove_window(&mut self, window: u64)
     {
         let bytes = &mut self.raster_bytes;
         self.objects.remove_where_with(|_, object| object.window == window,

@@ -7,12 +7,13 @@ pub fn target(event: Event, front: Option<WindowId>) -> Option<WindowId>
     use mac_abi::{WINDOW_CLOSE_REQUEST, drag, events::WINDOW_GEOMETRY_CHANGED};
     let id = match event.kind
     {
-        EventKind::MouseDown | EventKind::Update | EventKind::Activate => event.message,
-        EventKind::MouseUp if event.message != 0 => event.message,
-        EventKind::OsEvent if event.message == WINDOW_GEOMETRY_CHANGED => event.payload as u32,
-        EventKind::OsEvent if event.message & 0xff00_0000 == WINDOW_CLOSE_REQUEST =>
+        EventKind::MouseDown | EventKind::Update | EventKind::Activate => event.window,
+        EventKind::MouseUp if event.window != 0 => event.window,
+        EventKind::OsEvent
+            if event.message == WINDOW_GEOMETRY_CHANGED
+               || event.message == WINDOW_CLOSE_REQUEST =>
         {
-            event.message & 0x00ff_ffff
+            event.window
         }
         EventKind::OsEvent
             if matches!(event.message & 0xff00_0000,
@@ -21,7 +22,7 @@ pub fn target(event: Event, front: Option<WindowId>) -> Option<WindowId>
                         | drag::LEFT_EVENT
                         | drag::DROP_EVENT) =>
         {
-            (event.payload >> 32) as u32
+            event.window
         }
         EventKind::Null
         | EventKind::MouseUp

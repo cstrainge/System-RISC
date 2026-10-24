@@ -1,8 +1,7 @@
 //! Original TextEdit pixel cases rendered through actual resident RV64 traps.
 #![no_std]
 #![no_main]
-use mac_toolbox::abi::EventKind;
-use mac_toolbox::{events::classic::EVERY_EVENT, textedit::EditorId, *};
+use mac_toolbox::{abi::EventKind, events::classic::EVERY_EVENT, textedit::EditorId, *};
 const SAMPLE: &str = "one two three\rfour five six\rseven eight";
 
 fn draw(system: &System<'_>, window: WindowId, editor: EditorId) -> ToolboxResult<()>
@@ -68,8 +67,10 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
     system.log("TEXTEDIT_PROBE_TEXT\n")?;
     loop
     {
-        let event = system.events().next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
-        if event.kind == EventKind::Update && event.message == window.0
+        let event = system.events()
+                          .next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT))
+                          .map(mac_toolbox::Event::into_record)?;
+        if event.kind == EventKind::Update && event.window == window.0
         {
             draw(system, window, editor)?;
         }
@@ -146,8 +147,7 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
                                b'o' => "TEXTEDIT_PROBE_CARET_IDLE_OFF\n",
                                b'u' => "TEXTEDIT_PROBE_INACTIVE_SELECTION\n",
                                _ => "TEXTEDIT_PROBE_TEXT\n"
-                           })
-                      ?;
+                           })?;
             }
         }
     }

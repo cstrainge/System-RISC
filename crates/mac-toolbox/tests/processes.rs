@@ -103,12 +103,32 @@ fn run(malformed: bool)
                "all workers must leave a live registered control for System cleanup");
     for app in workers
     {
+        for (kind, live) in [("WIND", 2),
+                             ("WNST", 1),
+                             ("CTRL", 1),
+                             ("CSTA", 1),
+                             ("SBOX", 1),
+                             ("SBST", 1),
+                             ("SFDL", 0),
+                             ("SFST", 1),
+                             ("GWLD", 1),
+                             ("GWST", 1)]
+        {
+            assert!(serial.lines().any(|line| {
+                                      line
+                                      == format!("PROCESS_WORKER_POOL app={app} kind={kind} \
+                                                  live={live} pending=0")
+                                  }),
+                    "worker {app} must leave its actual {kind} pool for generic \
+                     cleanup:\n{serial}");
+        }
         assert!(serial.lines().any(|line| {
                                   line
-                                  == format!("OWNER_WALK app={app} invalidated=7 released=7 \
-                                              quarantined=0 live=0 pending=0 deferred=0")
+                                  == format!("OWNER_WALK app={app} invalidated=8 released=8 \
+                                              quarantined=0 live=0 pending=0 deferred=0 \
+                                              completed=10")
                               }),
-                "registered owner walk did not reclaim the leaked worker control for \
+                "registered owner walk did not complete all ten leaked worker resources for \
                  {app}:\n{serial}");
     }
     assert!(!serial.contains("OWNER_CLEANUP_QUARANTINED"),

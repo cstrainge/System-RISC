@@ -473,7 +473,8 @@ mod tests
                        when:      9,
                        where_:    Point { h: 3,
                                           v: 4 },
-                       modifiers: CMD_KEY })
+                       modifiers: CMD_KEY,
+                       window:    0 })
         }
     }
     #[derive(Default)]

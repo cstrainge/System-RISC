@@ -46,13 +46,12 @@ struct Slot<T>
 pub struct Exhausted;
 
 /// Register object namespaces here, never in individual managers. Memory's
-/// one-based slots1..512 are its unchanged wire contract; windows use a disjoint
-/// range so a correctly formed live memory ID is still foreign to windows.
+/// one-based slots1..512 are its unchanged wire contract. Migrated managers
+/// use registered owner stores and full-width identities instead of these ranges.
 #[derive(Clone, Copy)]
 pub enum Kind
 {
     Memory,
-    Windows,
     Files,
     FileWrites,
     Volumes,
@@ -109,7 +108,6 @@ impl Kind
             Self::TextEdit => mac_abi::textedit::MAX_EDITORS,
             Self::Volumes => 128,
             Self::Memory => 512,
-            Self::Windows => 32,
             Self::Files => 64,
             Self::FileWrites => 8
         }
@@ -176,8 +174,7 @@ impl Kind
             Self::TextEdit => Self::Volumes.first_slot() + Self::Volumes.capacity() as u32,
             Self::Volumes => Self::FileWrites.first_slot() + Self::FileWrites.capacity() as u32,
             Self::Memory => 1,
-            Self::Windows => Self::Memory.capacity() as u32 + 1,
-            Self::Files => Self::Windows.first_slot() + Self::Windows.capacity() as u32,
+            Self::Files => Self::Memory.capacity() as u32 + 1,
             Self::FileWrites => Self::Files.first_slot() + Self::Files.capacity() as u32
         }
     }
@@ -221,38 +218,6 @@ impl Kind
             _ => None
         }
     }
-
-    const fn last_generation(self) -> u16
-    {
-        match self
-        {
-            Self::Memory | Self::Files | Self::FileWrites => u16::MAX,
-            Self::DocumentBatches
-            | Self::FileTransfers
-            | Self::FileGroups
-            | Self::FileStreams
-            | Self::Threads
-            | Self::Drags
-            | Self::DragReceivers
-            | Self::FileWatches
-            | Self::HostNodes
-            | Self::FileSources
-            | Self::DriverJobs
-            | Self::DriverDevices
-            | Self::DriverDma
-            | Self::HostFiles
-            | Self::HostDirectories
-            | Self::HostTransactions
-            | Self::HostSessions
-            | Self::Modules
-            | Self::DriverInterfaces
-            | Self::DriverRequests
-            | Self::Volumes
-            | Self::TextEdit
-            | Self::Menus => u16::MAX,
-            Self::Windows => 255
-        }
-    }
 }
 
 /// Service-scoped identity storage; managers retain their existing owner policy.
@@ -288,7 +253,7 @@ impl<T> Table<T>
         && self.kind
                .shared_generation(index)
                .map_or(slot.generation, |generation| generation.load(Ordering::Relaxed))
-           < self.kind.last_generation()
+           < u16::MAX
     }
 
     fn vacant(&mut self) -> Result<usize, Exhausted>

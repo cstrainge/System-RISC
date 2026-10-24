@@ -572,10 +572,40 @@ Reserved request fields are validated before a Dispose can close anything.
 QuickDraw offscreen worlds now use registered GWLD/GWST lifetimes and saved
 per-owner pixel accounting. The old per-application counter and high-bit
 target convention are removed; drawing destinations carry an explicit kind
-and full-width identity. This is the prerequisite for full-width Window Manager
-identities, not completion of that migration. Native process workers also leave
+and full-width identity. Window Manager now uses registered WIND/WNST lifetimes
+and opaque full-width native IDs too; the old fixed 32-window table and 8-bit
+generation limit are removed. Native process workers also leave
 a world deliberately live so the registered exit walk must reclaim both world
 and backing.
+
+Window construction publishes its identity and payload together, then an
+initialization guard owns WDEF New/Calculate and geometry validation. Ordinary
+close and generic owner cleanup share invalidate-first release. A typed WDEF
+Dispose refusal retains its payload, provider pin and unique quarantine ticket;
+retry cannot revalidate the dead ID or touch a replacement. Parent modal and
+Standard File protocols still dispose themselves and restore focus when a child
+refuses cleanup. Native events and every window reference now carry u64 IDs
+explicitly; the classic 16-byte codec stays separate. The trusted queue captures
+close ownership before disposal, never from an application-supplied field.
+
+Visibility sweep scratch grows fallibly at window creation, then paints without
+allocation. Open/focus changes do not invalidate unrelated application contents;
+close/hide/reorder damage only newly exposed content. Full-width canonical window
+acceptance covers 40 simultaneous windows and 300 slot reuses. The process worker
+leaves a window and its backing for the same generic walk as its other migrated
+objects. Other process cleanup lines and hard limits remain staged work.
+
+Window milestone qualification includes the optimized whole-world image, public
+native conformance (40 simultaneous windows, 300 reuses, native/Pascal stale and
+foreign rejection), per-kind process exit accounting, malformed-dialog retry,
+original drag/grow pixels, physical tracking, retained updates and Reactor Room
+on Linux/Windows QEMU. A worker's ten completed registered lifetimes require eight
+walk callbacks because parent release also disposes children; diagnostics report
+completed lifetimes separately. The strict 1-ms gate passed: decoded virtio input
+to app delivery peaked at 0.964 ms and queued post-to-wait return at 0.460 ms under
+contention. These samples exclude pre-driver/frame latency and are not a hard
+real-time or MMU-isolation claim. Facility compile-fail tests also forbid extracting
+non-Copy retained payloads through cleanup-state access.
 
 Other managers, the rest of the old EXIT roll call, module-owned KREG teardown
 and document aliases still require migration. Do not call this complete stage-3 cleanup or zero leaks across

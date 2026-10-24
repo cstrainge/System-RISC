@@ -387,10 +387,19 @@ impl<'a> Browser<'a>
     }
 }
 
+#[derive(Clone, Copy)]
+struct ExportToken(WindowId, u32);
+impl fmt::Display for ExportToken
+{
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        write!(output, "{}-{}", self.0.0, self.1)
+    }
+}
 struct HostExport<'a>
 {
     system:   System<'a>,
-    token:    u64,
+    token:    ExportToken,
     sequence: u32,
     length:   u64,
     hash:     u64,
@@ -449,7 +458,7 @@ fn export(system: &System<'_>, browser: &mut Browser<'_>, window: WindowId) -> T
         return Ok(());
     };
     browser.export_number = browser.export_number.checked_add(1).ok_or(Error::BadArgument)?;
-    let token = (u64::from(window.0) << 32) | u64::from(browser.export_number);
+    let token = ExportToken(window, browser.export_number);
     let mut begin = Text::<128>::new();
     let _ = writeln!(begin, "RESEDIT_JSON_BEGIN {token}");
     system.log(begin.as_str())?;

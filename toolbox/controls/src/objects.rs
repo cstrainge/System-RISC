@@ -222,7 +222,7 @@ impl ControlRef<'_>
         self.track_in(anchor.point()?, anchor.window().0, action)
     }
 
-    fn track_in(self, anchor: Point, window: u32,
+    fn track_in(self, anchor: Point, window: u64,
                 mut action: impl FnMut(ControlInfo) -> Result<()>)
                 -> Result<bool>
     {

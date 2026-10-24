@@ -193,3 +193,96 @@ fn publication_racing_domain_stop_always_has_a_payload_for_the_walk()
         assert_eq!((ledger.summary().live, ledger.summary().pending), (0, 0));
     }
 }
+
+#[test]
+fn identity_aware_construction_precedes_publication_and_runs_once_outside_the_lock()
+{
+    let ledger = owner();
+    let mut store = Store::new(KIND, CapacityPolicy::GrowableUntilMemory);
+    let calls = AtomicUsize::new(0);
+    for expected in 0..33
+    {
+        let id = store.insert_with(&ledger, |id| {
+                          // Acquiring the same metadata lock here is legal. No live resource
+                          // may refer to this value while its constructor is still running.
+                          assert_eq!(ledger.summary().live, expected);
+                          calls.fetch_add(1, Ordering::SeqCst);
+                          (id, expected)
+                      })
+                      .unwrap();
+        assert_eq!(store.get(id), Some(&(id, expected)));
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 33);
+}
+
+#[test]
+fn stopping_during_construction_drops_the_unpublished_value_outside_the_lock()
+{
+    struct Payload
+    {
+        owner:   OwnerRef<Gate>,
+        dropped: Arc<AtomicUsize>
+    }
+    impl Drop for Payload
+    {
+        fn drop(&mut self)
+        {
+            assert_eq!((self.owner.summary().live, self.owner.summary().pending), (0, 0));
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let ledger = owner();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut store = Store::new(KIND, CapacityPolicy::GrowableUntilMemory);
+    let error = store.insert_with(&ledger, |_| {
+                         ledger.stop_admission();
+                         Payload { owner:   ledger.clone(),
+                                   dropped: dropped.clone() }
+                     })
+                     .err()
+                     .unwrap();
+    assert!(matches!(error, PoolError::Stopping { .. }));
+    assert!(error.to_string().contains("stopping"));
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(store.iter().count(), 0);
+}
+
+#[test]
+fn explicit_disposal_retains_the_matching_ticket_and_refuses_other_stores()
+{
+    let ledger = owner();
+    let mut first = Store::new(KIND, CapacityPolicy::PerDomainQuota { slots: 1 });
+    let mut second = Store::new(KindCode(*b"WIND"), CapacityPolicy::GrowableUntilMemory);
+    let stale = first.insert(&ledger, "retained").unwrap();
+    let other = second.insert(&ledger, "other kind").unwrap();
+    let ticket = first.begin_release(stale).unwrap();
+    assert!(first.get(stale).is_none());
+    assert!(first.begin_release(stale).is_none());
+    assert_eq!(first.releasing(&ticket), Some(&"retained"));
+    assert!(second.releasing(&ticket).is_none());
+    assert!(second.with_releasing(&ticket, |_| panic!("foreign cleanup callback must not run"))
+                  .is_none());
+    assert_eq!(first.with_releasing(&ticket, |value| {
+                        assert_eq!(ledger.summary().pending,
+                                   1,
+                                   "cleanup runs outside metadata locks");
+                        *value = "cleanup made progress";
+                    }),
+               Some(()));
+    let error = second.quarantine(ticket).unwrap_err();
+    assert!(error.to_string().contains("stale"));
+    let ticket = error.into_ticket();
+    assert_eq!(first.releasing(&ticket), Some(&"cleanup made progress"));
+    first.quarantine(ticket).unwrap();
+    assert_eq!((ledger.summary().pending, ledger.summary().quarantined), (1, 1));
+    assert!(matches!(first.insert(&ledger, "too soon"),
+                     Err(PoolError::Exhausted { pending: 1,
+                                                .. })));
+    let ticket = ledger.resume_quarantined().unwrap();
+    drop(first.release(ticket).unwrap());
+    let fresh = first.insert(&ledger, "replacement").unwrap();
+    assert_ne!(fresh, stale);
+    assert!(first.get(stale).is_none());
+    assert_eq!(first.get(fresh), Some(&"replacement"));
+    assert_eq!(second.get(other), Some(&"other kind"));
+}

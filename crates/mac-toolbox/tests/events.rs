@@ -195,7 +195,7 @@ fn geometry_notifications_preserve_full_window_identity_and_snapshot_input()
     use mac_toolbox::{Event, EventMask, Point, WindowId,
                       events::{Input, Modifiers}};
     support::with_system(|system| {
-        let window = WindowId(0xabcd_1234);
+        let window = WindowId(0xabcd_9876_5432_1234);
         let input = Input { at:        Point { h: 213,
                                                v: 117 },
                             when:      321,
@@ -204,7 +204,8 @@ fn geometry_notifications_preserve_full_window_identity_and_snapshot_input()
                                                    input };
         let record = event.as_record();
         assert_eq!(record.message, mac_toolbox::abi::events::WINDOW_GEOMETRY_CHANGED);
-        assert_eq!(record.payload, u64::from(window.0));
+        assert_eq!(record.window, window.0);
+        assert_eq!(record.payload, 0);
         system.events().post(event).unwrap();
         let peek = system.events().peek(EventMask::ALL).unwrap().unwrap();
         assert_eq!(peek.window(), Some(window));
@@ -221,12 +222,12 @@ fn positioned_delivery_is_additive_and_shares_the_existing_native_queue()
 {
     use mac_toolbox::{Event, EventMask, Point,
                       events::{Input, Modifiers}};
-    // Position delivery has its own trap/request and leaves these event
-    // layouts intact. The global ABI also covers unrelated service families.
-    assert_eq!(core::mem::size_of::<mac_toolbox::abi::Event>(), 32);
-    assert_eq!(core::mem::size_of::<mac_toolbox::abi::traps::NextEventCall>(), 40);
-    assert_eq!(core::mem::size_of::<mac_toolbox::abi::traps::WaitEventCall>(), 48);
-    assert_eq!(core::mem::size_of::<mac_toolbox::abi::events::EventCall>(), 80);
+    // Native records carry full-width window identity separately from payload.
+    // The classic 16-byte codec is a separate projection, not this Rust ABI.
+    assert_eq!(core::mem::size_of::<mac_toolbox::abi::Event>(), 40);
+    assert_eq!(core::mem::size_of::<mac_toolbox::abi::traps::NextEventCall>(), 48);
+    assert_eq!(core::mem::size_of::<mac_toolbox::abi::traps::WaitEventCall>(), 56);
+    assert_eq!(core::mem::size_of::<mac_toolbox::abi::events::EventCall>(), 88);
     support::with_system(|system| {
         let event = Event::MouseDown { window: None,
                                        input:  Input { at:        Point { h: 43,

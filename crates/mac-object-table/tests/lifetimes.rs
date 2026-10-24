@@ -19,7 +19,6 @@ fn memory_wire_format_and_history_survive_remove_and_clear()
 fn service_namespaces_are_disjoint_including_host_wire_leases()
 {
     let kinds = [Kind::Memory,
-                 Kind::Windows,
                  Kind::Files,
                  Kind::FileWrites,
                  Kind::Volumes,
@@ -54,10 +53,10 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
 #[test]
 fn exhaustion_retires_slots_instead_of_wrapping_to_a_stale_id()
 {
-    let mut table = Table::new(Kind::Windows);
+    let mut table = Table::new(Kind::Memory);
     let first = table.insert(1).unwrap();
     table.remove(first);
-    for _ in 1..255
+    for _ in 1..u16::MAX
     {
         let id = table.insert(1).unwrap();
         assert_ne!(id, first);

@@ -75,7 +75,7 @@ impl OutlineUnder
     }
 
     pub fn paint_highlight(&mut self, canvas: &mut Canvas<'_>, windows: &WindowManager,
-                           window: u32, rect: Rect, damage: &Region)
+                           window: u64, rect: Rect, damage: &Region)
     {
         self.length = 0;
         self.used = 0;

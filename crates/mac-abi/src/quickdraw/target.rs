@@ -45,8 +45,7 @@ pub enum TargetError
 {
     UnknownKind(u32),
     Reserved(u32),
-    DesktopIdentity(u64),
-    WindowIdentity(u64)
+    DesktopIdentity(u64)
 }
 impl core::fmt::Display for TargetError
 {
@@ -63,10 +62,6 @@ impl core::fmt::Display for TargetError
             {
                 write!(f, "desktop target cannot carry object identity {id}")
             }
-            Self::WindowIdentity(id) =>
-            {
-                write!(f, "window identity {id} cannot be represented by this Window Manager")
-            }
         }
     }
 }
@@ -79,7 +74,7 @@ impl Target
     {
         Self { kind:     TARGET_WINDOW,
                reserved: 0,
-               id:       window.0 as u64 }
+               id:       window.0 }
     }
 
     pub const fn desktop() -> Self
@@ -104,12 +99,7 @@ impl Target
         }
         match self.kind
         {
-            TARGET_WINDOW =>
-            {
-                Ok(DrawingTarget::Window(WindowId(u32::try_from(self.id).map_err(|_| {
-                                                      TargetError::WindowIdentity(self.id)
-                                                  })?)))
-            }
+            TARGET_WINDOW => Ok(DrawingTarget::Window(WindowId(self.id))),
             TARGET_DESKTOP if self.id == 0 => Ok(DrawingTarget::Desktop),
             TARGET_DESKTOP => Err(TargetError::DesktopIdentity(self.id)),
             TARGET_WORLD => Ok(DrawingTarget::World(WorldId(self.id))),
@@ -152,8 +142,7 @@ mod tests
         assert_eq!(Target { id: 1,
                             ..Target::desktop() }.decode(),
                    Err(TargetError::DesktopIdentity(1)));
-        assert_eq!(Target { id: u64::MAX,
-                            ..Default::default() }.decode(),
-                   Err(TargetError::WindowIdentity(u64::MAX)));
+        assert_eq!(Target::window(WindowId(u64::MAX)).decode(),
+                   Ok(DrawingTarget::Window(WindowId(u64::MAX))));
     }
 }

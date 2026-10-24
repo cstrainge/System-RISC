@@ -54,11 +54,12 @@ fn synthetic_private(system: &System<'_>, foreign_window: WindowId, tag: u32) ->
     {
         let posted = Event { kind,
                              payload: 0,
-                             message: foreign_window.0,
+                             message: 0,
                              when: tag,
                              where_: mac_toolbox::Point { h: 7,
                                                           v: 9 },
-                             modifiers: 0x5a00 };
+                             modifiers: 0x5a00,
+                             window: foreign_window.0 };
         events.post(posted.into())?;
         require(events.peek(mac_toolbox::events::EventMask::from_bits_retain(mask))
                       .map(|event| event.map(mac_toolbox::events::EventSnapshot::into_record))?
@@ -155,7 +156,7 @@ fn atomic_activation(system: &System<'_>, own: ProcessId, other: ProcessId, fron
         let event = events.next(mac_toolbox::events::EventMask::from_bits_retain(activate))
                           .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                           .ok_or(Failure::Contract("missing activation edge"))?;
-        require(event.message == front.0
+        require(event.window == front.0
                 && (event.modifiers & mac_toolbox::abi::ACTIVE_FLAG != 0) == active,
                 "application activation selected an intermediate window")?;
     }
@@ -173,8 +174,8 @@ fn atomic_activation(system: &System<'_>, own: ProcessId, other: ProcessId, fron
         {
             break;
         };
-        system.begin_update(mac_toolbox::WindowId(event.message))?;
-        system.end_update(mac_toolbox::WindowId(event.message))?;
+        system.begin_update(mac_toolbox::WindowId(event.window))?;
+        system.end_update(mac_toolbox::WindowId(event.window))?;
     }
     for _ in 0..3
     {
@@ -203,10 +204,10 @@ fn pulse(system: &System<'_>, mask: u16) -> Result<()>
     require(event.when != WORKER_SYNTHETIC, "worker synthetic event reached foreign observer")?;
     require(event.kind != EventKind::KeyDown || event.character() != b'x',
             "foreground child's physical key leaked to observer")?;
-    if event.kind == EventKind::Update && event.message != 0
+    if event.kind == EventKind::Update && event.window != 0
     {
-        system.windows().begin_update(WindowId(event.message))?;
-        system.windows().end_update(WindowId(event.message))?;
+        system.windows().begin_update(WindowId(event.window))?;
+        system.windows().end_update(WindowId(event.window))?;
     }
     Ok(())
 }
@@ -232,10 +233,10 @@ fn wait_mask(system: &System<'_>, mut condition: impl FnMut() -> Result<bool>, m
 fn parse_window(text: &str, prefix: &str) -> Option<WindowId>
 {
     let suffix = text.strip_prefix(prefix)?;
-    let mut value = 0u32;
+    let mut value = 0u64;
     for byte in suffix.bytes()
     {
-        value = value.checked_mul(10)?.checked_add(u32::from(byte.checked_sub(b'0')?))?;
+        value = value.checked_mul(10)?.checked_add(u64::from(byte.checked_sub(b'0')?))?;
         if !byte.is_ascii_digit()
         {
             return None;
@@ -454,7 +455,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
                       .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
                       .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                       .ok_or(Failure::Contract("missing requested window activation"))?;
-            require(event.message == selected.0
+            require(event.window == selected.0
                     && event.modifiers & mac_toolbox::abi::ACTIVE_FLAG != 0,
                     "background select activated the previous front window")?;
             require(system.events()
@@ -518,7 +519,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
                   .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
                   .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                   .ok_or(Failure::Contract("missing final exit activation"))?;
-        require(final_activation.message == own_front.0
+        require(final_activation.window == own_front.0
                 && final_activation.modifiers & mac_toolbox::abi::ACTIVE_FLAG != 0,
                 "multiwindow exit activated an intermediate window")?;
         require(system.events()
@@ -765,10 +766,10 @@ pub fn worker(system: &System<'_>) -> Result<()>
                 "observer synthetic event reached foreign worker")?;
         require(system.events().uptime_ticks()?.wrapping_sub(start) < 1800,
                 "worker input timeout")?;
-        if event.kind == EventKind::Update && [window.0, second_window.0].contains(&event.message)
+        if event.kind == EventKind::Update && [window.0, second_window.0].contains(&event.window)
         {
-            system.begin_update(mac_toolbox::WindowId(event.message))?;
-            system.end_update(mac_toolbox::WindowId(event.message))?;
+            system.begin_update(mac_toolbox::WindowId(event.window))?;
+            system.end_update(mac_toolbox::WindowId(event.window))?;
         }
         if event.kind == EventKind::KeyDown && event.character() == b'x'
         {
@@ -777,6 +778,42 @@ pub fn worker(system: &System<'_>) -> Result<()>
             require(system.processes().current()?.id == identity.id, "worker identity changed")?;
             require(system.windows().info(window)?.id == mac_toolbox::WindowId(window.0),
                     "worker owned window lost")?;
+            // Account every deliberately abandoned registered object through
+            // the public service. Parent WDEF cleanup may release controls and
+            // scroll boxes, so callback counts alone are not resource counts.
+            let membership = system.inspection()
+                                   .snapshot(mac_toolbox::inspection::Scope::Own)
+                                   .map_err(|e| Failure::Service(e.cause.status()))?;
+            let ledger = membership.ledger(0).map_err(|e| Failure::Service(e.cause.status()))?;
+            let expected = [(*b"WIND", 2),
+                            (*b"WNST", 1),
+                            (*b"CTRL", 1),
+                            (*b"CSTA", 1),
+                            (*b"SBOX", 1),
+                            (*b"SBST", 1),
+                            (*b"SFDL", 0),
+                            (*b"SFST", 1),
+                            (*b"GWLD", 1),
+                            (*b"GWST", 1)];
+            require(ledger.len() == expected.len() as u64,
+                    "worker exit pool census missing a registered kind")?;
+            for index in 0..ledger.len()
+            {
+                let pool = ledger.at(index).map_err(|e| Failure::Service(e.cause.status()))?;
+                let mut diagnostic = crate::LogBuffer::new();
+                let _ = writeln!(diagnostic,
+                                 "PROCESS_WORKER_POOL app={} kind={} live={} pending={}",
+                                 identity.id.0,
+                                 core::str::from_utf8(&pool.kind).unwrap_or("invalid"),
+                                 pool.live,
+                                 pool.pending);
+                system.log(diagnostic.text())?;
+                require(expected.iter()
+                                .any(|&(kind, live)| kind == pool.kind && live == pool.live)
+                        && pool.pending == 0,
+                        "worker exit pool has unexpected live or pending objects; see \
+                         PROCESS_WORKER_POOL")?;
+            }
             system.log("PROCESS_WORKER_INPUT_PASS\n")?;
             let mut cleanup = crate::LogBuffer::new();
             let _ = writeln!(cleanup,

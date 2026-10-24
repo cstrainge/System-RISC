@@ -10,12 +10,12 @@ pub const ALPHA_LOCK: u16 = 1024;
 pub const OPTION_KEY: u16 = 2048;
 pub const CONTROL_KEY: u16 = 4096;
 /// Native Window Manager notification after committed movement/resizing.
-/// The complete WindowId is in payload's low 32 bits, not in the message.
+/// The complete WindowId is in the explicit native window field.
 pub const WINDOW_GEOMETRY_CHANGED: u32 = 0x0d00_0000;
 /// Coalesced native transfer progress; payload is a generation-tagged owner ID.
 pub const FILE_TRANSFER_CHANGED: u32 = 0x0f00_0000;
 
-/// Additive native event transport. Existing Event/EventCall layouts stay fixed.
+/// Native event transport with a separate full-width window identity.
 pub const POSITION_NEXT: u32 = 0;
 pub const POSITION_WAIT: u32 = 1;
 pub const POSITION_PEEK: u32 = 2;
@@ -28,7 +28,7 @@ pub const POSITION_LOCATE: u32 = 4;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EventPosition
 {
-    pub window: u32,
+    pub window: u64,
     pub h:      i32,
     pub v:      i32
 }
@@ -41,7 +41,7 @@ pub struct PositionedEventCall
     pub mask:          u16,
     pub timeout_ticks: u32,
     /// Explicit owned window for physical-input sampling; zero selects front.
-    pub window:        u32,
+    pub window:        u64,
     pub event:         Event,
     pub position:      EventPosition,
     pub present:       u32,
@@ -84,7 +84,9 @@ pub struct Event
     pub where_:    Point,
     pub modifiers: u16,
     /// Native manager payload. The classic 16-byte EventRecord codec omits it.
-    pub payload:   u64
+    pub payload:   u64,
+    /// Full native window identity. The classic 16-byte codec omits it.
+    pub window:    u64
 }
 impl Event
 {

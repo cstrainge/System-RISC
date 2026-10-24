@@ -12,7 +12,7 @@ pub struct DialogCall
     pub operation:   u32,
     pub scope:       i16,
     pub resource:    i16,
-    pub window:      u32,
+    pub window:      u64,
     pub event:       Event,
     pub item:        u16,
     pub reserved:    u16,

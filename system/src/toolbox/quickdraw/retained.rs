@@ -24,9 +24,9 @@ impl From<WindowId> for SceneTarget
         Self::Window(id)
     }
 }
-impl From<u32> for SceneTarget
+impl From<u64> for SceneTarget
 {
-    fn from(id: u32) -> Self
+    fn from(id: u64) -> Self
     {
         Self::Window(WindowId(id))
     }
@@ -822,7 +822,7 @@ mod tests
                    });
         }
         assert_eq!(pixels[120 * 640 + 150], 0xffffff);
-        assert!(windows.dispose_window(id, &mut events, 1));
+        assert!(windows.dispose_window(id, &mut events, 1).is_ok());
         pixels.fill(0x878787);
         layer.paint(&mut Canvas::new(&mut pixels, 640, 480), None, paint_legacy);
         assert_eq!(pixels[120 * 640 + 150], 0xabcdef);

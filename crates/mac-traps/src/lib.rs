@@ -192,7 +192,7 @@ impl<'a> Client<'a>
         Ok(call.request)
     }
 
-    pub fn draw(self, window: u32, command: DrawCommand) -> Result<()>
+    pub fn draw(self, window: u64, command: DrawCommand) -> Result<()>
     {
         status(self.invoke(DRAW,
                            &mut DrawCall { window,

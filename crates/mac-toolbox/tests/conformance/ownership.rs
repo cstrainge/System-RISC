@@ -21,6 +21,23 @@ fn fail_after_creation(system: &System<'_>, identity: &mut WindowId) -> ToolboxR
     window.set_title("unreachable")
 }
 
+fn window_pool(system: &System<'_>) -> Result<mac_toolbox::inspection::Pool, Failure>
+{
+    let map = |error: mac_toolbox::inspection::Failure| Failure::Service(error.cause.status());
+    let membership =
+        system.inspection().snapshot(mac_toolbox::inspection::Scope::Own).map_err(map)?;
+    let ledger = membership.ledger(0).map_err(map)?;
+    for index in 0..ledger.len()
+    {
+        let pool = ledger.at(index).map_err(map)?;
+        if pool.kind == *b"WIND"
+        {
+            return Ok(pool);
+        }
+    }
+    Err(Failure::Mismatch("Window Manager pool missing from authoritative owner ledger"))
+}
+
 fn rejected_window(system: &System<'_>, id: WindowId, gate: mac_abi::TrapGate)
                    -> Result<(), Failure>
 {
@@ -84,39 +101,38 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     let memory_id = memory.handle;
     let window = create(system)?;
     super::managed_controls::ledger_pools(system, window.id())?;
-    assert_ne!(memory_id & 0xffff,
-               window.id().0 & 0xffff,
-               "memory and windows must have disjoint registered slots");
-    rejected_window(system, WindowId(memory_id), gate)?;
-    memory.operation = mac_abi::memory::DISPOSE;
-    memory.handle = window.id().0;
-    assert_eq!(system.client().memory(&mut memory, &[], &mut []), Err(Error::NilHandle));
+    assert!(window.id().0 > u64::from(u32::MAX));
+    assert!(u32::try_from(window.id().0).is_err(),
+            "native window identities cannot be passed as classic memory handles");
+    rejected_window(system, WindowId(u64::from(memory_id)), gate)?;
     assert_eq!(window.info()?.id, window.id());
     memory.operation = mac_abi::memory::SIZE;
     memory.handle = memory_id;
     system.client().memory(&mut memory, &[], &mut [])?;
-    assert_eq!(memory.size, 4, "a foreign window ID must not dispose memory");
+    assert_eq!(memory.size, 4, "rejecting a foreign memory ID must preserve its allocation");
     memory.operation = mac_abi::memory::DISPOSE;
     system.client().memory(&mut memory, &[], &mut [])?;
     drop(window);
     let mut previous: Option<WindowId> = None;
     for _ in 0..40
     {
+        let before = window_pool(system)?;
         let identity;
         {
             let window = create(system)?;
             identity = window.id();
             assert_ne!(identity, WindowId(0));
-            assert_ne!(identity.0 >> 16, 0);
-            assert_eq!(identity.0 >> 24, 0, "close-event identity must fit24 bits");
+            assert!(identity.0 > u64::from(u32::MAX));
+            let after = window_pool(system)?;
+            assert_eq!(after.slots, before.slots, "force actual slot reuse");
+            assert_eq!(after.births, before.births + 1);
             if let Some(stale) = previous
             {
-                assert_eq!(identity.0 & 0xffff, stale.0 & 0xffff, "force reuse");
                 assert_ne!(identity, stale);
                 rejected_window(system, stale, gate)?;
             }
-            rejected_window(system, WindowId(identity.0 & 0xffff), gate)?;
-            rejected_window(system, WindowId(u32::MAX), gate)?;
+            rejected_window(system, WindowId(u64::from(u32::MAX)), gate)?;
+            rejected_window(system, WindowId(u64::MAX), gate)?;
             window.set_title("Automatic cleanup")?;
             window.select()?;
             window.invalidate(Rect::new(0, 0, 240, 140))?;
@@ -157,7 +173,6 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     system.windows().close(identity)?;
     let replacement = create(system)?;
     assert_ne!(replacement.id(), identity);
-    assert_eq!(replacement.id().0 & 0xffff, identity.0 & 0xffff);
     rejected_window(system, identity, gate)?;
     already_closed.close()?;
     drop(already_closed);
@@ -167,25 +182,34 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     let identity = create(system)?.into_id();
     assert_eq!(system.windows().info(identity)?.id, identity);
     system.windows().close(identity)?;
-    // Reach the native24-bit event ceiling through normal SDK allocation.
-    // A retired generation must move to a different slot, never wrap to an old ID.
-    let exhausted = create(system)?.into_id();
-    system.windows().close(exhausted)?;
-    let mut retired = false;
-    for _ in 0..255
+    // Native tokens do not encode event tags or retire at the former 8-bit
+    // generation ceiling. The ledger proves reuse without inspecting token bits.
+    let stale = create(system)?.into_id();
+    system.windows().close(stale)?;
+    let before = window_pool(system)?;
+    for _ in 0..300
     {
         let replacement = create(system)?;
-        assert_ne!(replacement.id(), exhausted);
-        assert!(matches!(system.windows().info(exhausted), Err(Error::NotFound)));
-        assert_eq!(replacement.id().0 >> 24, 0);
-        if replacement.id().0 & 0xffff != exhausted.0 & 0xffff
-        {
-            retired = true;
-            rejected_window(system, exhausted, gate)?;
-            break;
-        }
+        assert_ne!(replacement.id(), stale);
+        assert!(matches!(system.windows().info(stale), Err(Error::NotFound)));
     }
-    assert!(retired, "window generations must retire rather than wrap into event flags");
+    let after = window_pool(system)?;
+    assert_eq!(after.slots, before.slots);
+    assert_eq!(after.retired, before.retired);
+    assert_eq!(after.births, before.births + 300);
+    assert!(after.generation_headroom < before.generation_headroom);
+    let mut simultaneous: [Option<Window<'_>>; 40] = core::array::from_fn(|_| None);
+    for window in &mut simultaneous
+    {
+        *window = Some(create(system)?);
+    }
+    assert_eq!(window_pool(system)?.live, 40, "no old global 32-window ceiling");
+    for window in &mut simultaneous
+    {
+        drop(window.take());
+    }
+    assert_eq!(window_pool(system)?.live, 0);
+    system.log("WINDOW_LEDGER_USERSPACE_PASS simultaneous=40 reuse=300 full_width=passed\n")?;
     editors(system, Some(gate))?;
     system.log("OWNERSHIP_MENU_BEGIN\n")?;
     menus(system, 257)?;
@@ -193,7 +217,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     alerts(system)?;
     scroll_boxes(system, gate)?;
     managed_controls(system, gate)?;
-    system.log("HANDLE_REUSE_USERSPACE_PASS windows=40 native=9 legacy=3 retirement=passed \
+    system.log("HANDLE_REUSE_USERSPACE_PASS windows=40 native=9 legacy=3 generation=passed \
                 foreign=passed\n")
           .map_err(|error| Failure::Service(error.status()))?;
     system.log("OWNERSHIP_USERSPACE_PASS scope=40 early_returns=16 stale=passed transfer=passed\n")
@@ -402,9 +426,13 @@ fn alerts(system: &System<'_>) -> Result<(), Failure>
     let window = owned.window();
     drop(owned);
     assert!(matches!(system.windows().info(window), Err(Error::NotFound)));
+    let before = window_pool(system)?;
     let current =
         dialogs.alert_owned(mac_toolbox::ResourceScope::Application, 6012, "Replacement alert")?;
-    assert_eq!(window.0 & 0xffff, current.window().0 & 0xffff);
+    let after = window_pool(system)?;
+    assert_eq!(after.slots, before.slots,
+               "replacement alert must reuse prepared Window Manager storage");
+    assert_eq!(after.births, before.births + 1);
     assert_ne!(window, current.window());
     assert_eq!(stale.draw(), Err(Error::NotFound));
     assert_eq!(stale.close(), Err(Error::NotFound));

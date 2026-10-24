@@ -1,8 +1,10 @@
 //! Collect actual close tracking observations through the public Window SDK.
 use core::fmt::Write;
 
-use mac_toolbox::abi::WINDOW_CLOSE_REQUEST;
-use mac_toolbox::{Rect, System, WindowId, events::classic::{EVERY_EVENT, EventKind}, windows::WindowSpec};
+use mac_toolbox::{Rect, System, WindowId,
+                  abi::WINDOW_CLOSE_REQUEST,
+                  events::classic::{EVERY_EVENT, EventKind},
+                  windows::WindowSpec};
 struct Line
 {
     bytes: [u8; 256],
@@ -58,34 +60,35 @@ pub fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
     system.log("DESKTOP_READY: public SDK deferred close fixture\n")?;
     loop
     {
-        let event = system.events().wait_event(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT), 1).map(mac_toolbox::Event::into_record)?;
+        let event =
+            system.events()
+                  .wait_event(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT), 1)
+                  .map(mac_toolbox::Event::into_record)?;
         if event.kind == EventKind::Update
-           && (event.message == deferred.0
-               || automatic.is_some_and(|id: WindowId| id.0 == event.message))
+           && (event.window == deferred.0
+               || automatic.is_some_and(|id: WindowId| id.0 == event.window))
         {
-            draw(system, WindowId(event.message))?;
+            draw(system, WindowId(event.window))?;
             updates += 1;
-            log(system, format_args!("DEFERRED_PAINT id={} updates={}\n", event.message, updates))?;
+            log(system, format_args!("DEFERRED_PAINT id={} updates={}\n", event.window, updates))?;
         }
         if event.kind == EventKind::OsEvent
         {
-            if event.message & 0xff00_0000 == WINDOW_CLOSE_REQUEST
+            if event.message == WINDOW_CLOSE_REQUEST
             {
                 close_requests += 1;
-                let id = WindowId(event.message & 0x00ff_ffff);
+                let id = WindowId(event.window);
                 log(system,
                     format_args!("DEFERRED_REQUEST id={} alive={} count={}\n",
                                  id.0,
                                  u32::from(windows.info(id).is_ok()),
                                  close_requests))?;
             }
-            if event.message & 0xff00_0000 == 0x0200_0000
+            if event.message == 0x0200_0000
             {
                 auto_events += 1;
                 log(system,
-                    format_args!("AUTOMATIC_NOTICE id={} count={}\n",
-                                 event.message & 0x00ff_ffff,
-                                 auto_events))?;
+                    format_args!("AUTOMATIC_NOTICE id={} count={}\n", event.window, auto_events))?;
             }
         }
         if event.kind == EventKind::KeyDown && event.character() == b'c' && automatic.is_none()

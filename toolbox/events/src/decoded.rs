@@ -195,7 +195,11 @@ pub enum Event<'a>
     /// Application-defined/classic events with no native payload contract.
     Other
     {
-        kind: raw::EventKind, message: u32, input: Input
+        kind:    raw::EventKind,
+        message: u32,
+        window:  Option<WindowId>,
+        payload: u64,
+        input:   Input
     }
 }
 impl Default for Event<'_>
@@ -213,7 +217,7 @@ impl<'a> From<raw::Event> for Event<'a>
         let input = Input { at:        event.where_,
                             when:      event.when,
                             modifiers: Modifiers::from_bits_retain(event.modifiers) };
-        let window = WindowId(event.message);
+        let window = WindowId(event.window);
         match event.kind
         {
             raw::EventKind::Null =>
@@ -273,7 +277,7 @@ impl<'a> From<raw::Event> for Event<'a>
             }
             raw::EventKind::OsEvent if event.message == raw::WINDOW_GEOMETRY_CHANGED =>
             {
-                Self::WindowGeometryChanged { window: WindowId(event.payload as u32),
+                Self::WindowGeometryChanged { window: WindowId(event.window),
                                               input }
             }
             raw::EventKind::OsEvent
@@ -284,15 +288,17 @@ impl<'a> From<raw::Event> for Event<'a>
                                            running: event.message & 1 != 0,
                                            input }
             }
-            raw::EventKind::OsEvent if event.message & 0xff00_0000 == WINDOW_CLOSE_REQUEST =>
+            raw::EventKind::OsEvent if event.message == WINDOW_CLOSE_REQUEST =>
             {
-                Self::CloseRequested { window: WindowId(event.message & 0x00ff_ffff),
+                Self::CloseRequested { window: WindowId(event.window),
                                        input }
             }
             kind =>
             {
                 Self::Other { kind,
                               message: event.message,
+                              window: (window.0 != 0).then_some(window),
+                              payload: event.payload,
                               input }
             }
         }
@@ -354,112 +360,121 @@ impl Event<'_>
         matches!(self, Self::Idle { .. })
     }
 
-    /// Explicit transport conversion, for classic callbacks and diagnostics.
+    /// Lossless native transport conversion. The original 16-byte EventRecord
+    /// codec is a separate boundary and does not carry native object identities.
     pub fn as_record(&self) -> raw::Event
     {
         let input = self.input();
-        if let Self::Drag { offer,
-                            .. } = self
+        let mut record = raw::Event { when: input.when,
+                                      where_: input.at,
+                                      modifiers: input.modifiers.bits(),
+                                      ..Default::default() };
+        match self
         {
-            return offer.as_record(input.when, input.modifiers.bits());
-        }
-        let (kind, message) = match self
-        {
-            Self::Drag { .. } => unreachable!(),
+            Self::Drag { offer,
+                         .. } => return offer.as_record(input.when, input.modifiers.bits()),
             Self::DocumentsAvailable { batch,
                                        .. } =>
             {
-                return raw::Event { kind:      raw::EventKind::OsEvent,
-                                    message:   mac_abi::processes::DOCUMENT_AVAILABLE,
-                                    payload:   u64::from(batch.0),
-                                    when:      input.when,
-                                    where_:    input.at,
-                                    modifiers: input.modifiers.bits() };
+                record.kind = raw::EventKind::OsEvent;
+                record.message = mac_abi::processes::DOCUMENT_AVAILABLE;
+                record.payload = u64::from(batch.0);
             }
             Self::FileTransferChanged { transfer,
                                         .. } =>
             {
-                return raw::Event { kind:      raw::EventKind::OsEvent,
-                                    message:   raw::FILE_TRANSFER_CHANGED,
-                                    payload:   u64::from(transfer.0),
-                                    when:      input.when,
-                                    where_:    input.at,
-                                    modifiers: input.modifiers.bits() };
+                record.kind = raw::EventKind::OsEvent;
+                record.message = raw::FILE_TRANSFER_CHANGED;
+                record.payload = u64::from(transfer.0);
             }
             Self::WindowGeometryChanged { window,
                                           .. } =>
             {
-                return raw::Event { kind:      raw::EventKind::OsEvent,
-                                    message:   raw::WINDOW_GEOMETRY_CHANGED,
-                                    payload:   u64::from(window.0),
-                                    when:      input.when,
-                                    where_:    input.at,
-                                    modifiers: input.modifiers.bits() };
+                record.kind = raw::EventKind::OsEvent;
+                record.message = raw::WINDOW_GEOMETRY_CHANGED;
+                record.window = window.0;
             }
             Self::ProcessFileChanged { volume,
                                        id,
                                        running,
                                        .. } =>
             {
-                return raw::Event { kind:      raw::EventKind::OsEvent,
-                                    message:   mac_abi::processes::FILE_STATE_EVENT
-                                               | u32::from(*running),
-                                    payload:   u64::from(volume.0) | (u64::from(id.0) << 32),
-                                    when:      input.when,
-                                    where_:    input.at,
-                                    modifiers: input.modifiers.bits() };
+                record.kind = raw::EventKind::OsEvent;
+                record.message = mac_abi::processes::FILE_STATE_EVENT | u32::from(*running);
+                record.payload = u64::from(volume.0) | (u64::from(id.0) << 32);
             }
             Self::Idle { tag,
-                         .. } => (raw::EventKind::Null, *tag),
+                         .. } =>
+            {
+                record.message = *tag;
+            }
             Self::MouseDown { window,
-                              .. } => (raw::EventKind::MouseDown, window.map_or(0, |id| id.0)),
+                              .. } =>
+            {
+                record.kind = raw::EventKind::MouseDown;
+                record.window = window.map_or(0, |id| id.0);
+            }
             Self::MouseUp { window,
-                            .. } => (raw::EventKind::MouseUp, window.map_or(0, |id| id.0)),
+                            .. } =>
+            {
+                record.kind = raw::EventKind::MouseUp;
+                record.window = window.map_or(0, |id| id.0);
+            }
             Self::KeyDown { key,
                             repeat,
                             .. } =>
             {
-                (if *repeat { raw::EventKind::AutoKey } else { raw::EventKind::KeyDown },
-                 key.message)
+                record.kind =
+                    if *repeat { raw::EventKind::AutoKey } else { raw::EventKind::KeyDown };
+                record.message = key.message;
             }
             Self::KeyUp { key,
-                          .. } => (raw::EventKind::KeyUp, key.message),
+                          .. } =>
+            {
+                record.kind = raw::EventKind::KeyUp;
+                record.message = key.message;
+            }
             Self::Update { window,
-                           .. } => (raw::EventKind::Update, window.0),
+                           .. } =>
+            {
+                record.kind = raw::EventKind::Update;
+                record.window = window.0;
+            }
             Self::Activate { window,
                              active,
                              .. } =>
             {
-                let mut record = raw::Event { kind:      raw::EventKind::Activate,
-                                              message:   window.0,
-                                              where_:    input.at,
-                                              when:      input.when,
-                                              modifiers: input.modifiers.bits(),
-                                              payload:   0 };
+                record.kind = raw::EventKind::Activate;
+                record.window = window.0;
                 record.modifiers = (record.modifiers & !raw::ACTIVE_FLAG) | u16::from(*active);
-                return record;
             }
             Self::MenuCommand { menu,
                                 item,
                                 .. } =>
             {
-                (raw::EventKind::MenuCommand, ((menu.0 as u16 as u32) << 16) | *item as u32)
+                record.kind = raw::EventKind::MenuCommand;
+                record.message = ((menu.0 as u16 as u32) << 16) | *item as u32;
             }
             Self::CloseRequested { window,
                                    .. } =>
             {
-                (raw::EventKind::OsEvent, WINDOW_CLOSE_REQUEST | window.0)
+                record.kind = raw::EventKind::OsEvent;
+                record.message = WINDOW_CLOSE_REQUEST;
+                record.window = window.0;
             }
             Self::Other { kind,
                           message,
-                          .. } => (*kind, *message)
-        };
-        raw::Event { kind,
-                     message,
-                     when: input.when,
-                     where_: input.at,
-                     modifiers: input.modifiers.bits(),
-                     payload: 0 }
+                          window,
+                          payload,
+                          .. } =>
+            {
+                record.kind = *kind;
+                record.message = *message;
+                record.window = window.map_or(0, |id| id.0);
+                record.payload = *payload;
+            }
+        }
+        record
     }
 }
 impl Event<'_>
@@ -471,7 +486,9 @@ impl Event<'_>
             Self::MouseDown { window,
                               .. }
             | Self::MouseUp { window,
-                            .. } => *window,
+                            .. }
+            | Self::Other { window,
+                          .. } => *window,
             Self::Drag { offer,
                          .. } => offer.window(),
             Self::Update { window,

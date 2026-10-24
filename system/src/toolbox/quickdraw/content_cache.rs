@@ -512,7 +512,9 @@ mod headroom_tests
         let mut cache = ContentCache::default();
         for id in [1, 2]
         {
-            cache.paint(id, bounds, &mut canvas, |canvas| canvas.paint_rect(bounds, id));
+            cache.paint(id, bounds, &mut canvas, |canvas| {
+                     canvas.paint_rect(bounds, u32::try_from(id).unwrap())
+                 });
         }
         assert_eq!(cache.bytes(), 160_000);
         cache.preserve_headroom(64_000, 128_000, PIXEL_BUDGET);

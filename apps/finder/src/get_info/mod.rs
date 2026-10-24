@@ -480,7 +480,7 @@ impl<'a> Controller<'a>
         if let Some(summary) = self.summary.as_mut()
         {
             let id = summary.id();
-            if matches!(event,Event::Other{kind:events::classic::EventKind::OsEvent,message,..} if message & 0xff00_0000==0x0200_0000 && message & 0x00ff_ffff==id.0)
+            if matches!(event, Event::Other { kind: events::classic::EventKind::OsEvent, message: 0x0200_0000, window: Some(closed), .. } if *closed == id)
             {
                 self.summary = None;
                 return Ok(true);

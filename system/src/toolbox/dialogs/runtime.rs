@@ -40,7 +40,8 @@ impl super::Desktop
                 }
                 Event { payload: 0,
                         kind: if down { EventKind::MouseDown } else { EventKind::MouseUp },
-                        message: window,
+                        message: 0,
+                        window,
                         when,
                         where_: point,
                         modifiers: self.events.modifiers }
@@ -72,7 +73,8 @@ impl super::Desktop
                         message: u32::from(mac_code) << 8 | u32::from(character),
                         when,
                         where_: self.events.mouse,
-                        modifiers: self.events.modifiers }
+                        modifiers: self.events.modifiers,
+                        window: 0 }
             }
         };
         self.events.post_system(event);
@@ -181,7 +183,7 @@ impl super::Desktop
                     let (item, changed) = self.dialogs.event(call.event);
                     call.item = item;
                     if changed
-                       || call.event.kind == EventKind::Update && call.event.message == call.window
+                       || call.event.kind == EventKind::Update && call.event.window == call.window
                     {
                         self.draw_dialog()?;
                     }
@@ -203,15 +205,26 @@ impl super::Desktop
                                           minimum_width:  1,
                                           minimum_height: 1,
                                           reserved:       0 };
-        checked(self.window(CLOSE_WINDOW, &mut request))?;
+        // Clear the modal protocol even if a child definition refuses cleanup.
+        // The Window Manager retains that child's state/ticket independently.
+        self.dialogs = Default::default();
+        let mut result = checked(self.window(CLOSE_WINDOW, &mut request));
         if let Some(previous) = previous.filter(|id| self.windows.window(*id).is_some())
         {
             request.id = previous.0;
-            checked(self.window(SELECT_WINDOW, &mut request))?;
+            let restored = checked(self.window(SELECT_WINDOW, &mut request));
+            if result.is_ok()
+            {
+                result = restored;
+            }
         }
         else if previous.is_none()
         {
-            checked(self.window(SELECT_DESKTOP, &mut request))?;
+            let restored = checked(self.window(SELECT_DESKTOP, &mut request));
+            if result.is_ok()
+            {
+                result = restored;
+            }
         }
         // The dialog consumed activation notifications while modal. Suppress
         // transient focus from disposal/restoration, then deliver the final owner.
@@ -221,16 +234,16 @@ impl super::Desktop
         {
             self.events.post_system(Event { payload:   0,
                                             kind:      EventKind::Activate,
-                                            message:   active.0,
+                                            message:   0,
+                                            window:    active.0,
                                             when:      Self::when(),
                                             where_:    self.events.mouse,
                                             modifiers: self.events.modifiers | ACTIVE_FLAG });
         }
-        self.dialogs = Default::default();
-        Ok(())
+        result
     }
 
-    fn dialog_shape(&mut self, window: u32, bounds: Rect, shape: u32, verb: u32)
+    fn dialog_shape(&mut self, window: u64, bounds: Rect, shape: u32, verb: u32)
                     -> Result<(), Status>
     {
         self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
@@ -246,7 +259,7 @@ impl super::Desktop
                       &[])
     }
 
-    fn dialog_text(&mut self, window: u32, item: &dialogs::Item) -> Result<(), Status>
+    fn dialog_text(&mut self, window: u64, item: &dialogs::Item) -> Result<(), Status>
     {
         let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
         let selection = FontSelection::default();

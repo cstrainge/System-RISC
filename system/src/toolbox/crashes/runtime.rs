@@ -175,7 +175,7 @@ impl super::Desktop
         Ok(())
     }
 
-    fn crash_text(&mut self, window: u32, font: FontSelection, x: i16, baseline: i16, text: &str)
+    fn crash_text(&mut self, window: u64, font: FontSelection, x: i16, baseline: i16, text: &str)
                   -> Result<(), Status>
     {
         self.font_draw(&mut FontCall { target:

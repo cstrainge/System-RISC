@@ -77,12 +77,23 @@ impl Drop for InitializingDialog<'_>
         {
             if let Err(status) = self.desktop.dispose_file_dialog(self.handle)
             {
-                // The guard holds exclusive Desktop access, validated ownership
-                // and the just-published identity. Refusal is an internal lifetime
-                // invariant failure, not an ordinary malformed app request.
-                panic!("Standard File initialization rollback invariant failed: app={} handle={} \
-                        initialization={:?} cleanup={}",
-                       self.desktop.owner, self.handle, self.failure, status);
+                if self.desktop.standard_file.get(self.handle).is_err()
+                {
+                    // The parent protocol is disposed. A refused child WDEF is
+                    // retained by its own registered quarantine, not this dialog.
+                    serial!("STANDARD_FILE_ROLLBACK_CHILD_REFUSED: app={} handle={} \
+                             initialization={:?} cleanup={}",
+                            self.desktop.owner,
+                            self.handle,
+                            self.failure,
+                            status);
+                }
+                else
+                {
+                    panic!("Standard File initialization rollback invariant failed: app={} \
+                            handle={} initialization={:?} cleanup={}",
+                           self.desktop.owner, self.handle, self.failure, status);
+                }
             }
         }
     }
@@ -127,14 +138,19 @@ impl super::Desktop
             return Err(ACCESS_DENIED);
         }
         let windows = [dialog.auxiliary, dialog.window];
+        let mut failure = None;
         for window in windows
         {
             if self.windows.window(window).is_some()
             {
-                checked(self.window(CLOSE_WINDOW, &mut request(window)))?;
+                if let Err(status) = checked(self.window(CLOSE_WINDOW, &mut request(window)))
+                {
+                    failure.get_or_insert(status);
+                }
             }
         }
-        self.standard_file.dispose(self.owner, handle)
+        self.standard_file.dispose(self.owner, handle)?;
+        failure.map_or(Ok(()), Err)
     }
 
     fn initialize_file_dialog(&mut self, call: &StandardFileCall) -> Result<(), Status>
@@ -170,7 +186,7 @@ impl super::Desktop
         Ok(())
     }
 
-    fn sf_shape(&mut self, window: u32, bounds: Rect, verb: u32) -> Result<(), Status>
+    fn sf_shape(&mut self, window: u64, bounds: Rect, verb: u32) -> Result<(), Status>
     {
         self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
                                           target:
@@ -183,7 +199,7 @@ impl super::Desktop
                       &[])
     }
 
-    fn sf_text(&mut self, window: u32, x: i16, y: i16, text: &str) -> Result<(), Status>
+    fn sf_text(&mut self, window: u64, x: i16, y: i16, text: &str) -> Result<(), Status>
     {
         self.font_draw(&mut FontCall { target:
                                            mac_abi::quickdraw::Target::window(WindowId(window)),
@@ -195,7 +211,7 @@ impl super::Desktop
                        crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)
     }
 
-    fn sf_button(&mut self, window: u32, bounds: Rect, label: &str, enabled: bool, pressed: bool,
+    fn sf_button(&mut self, window: u64, bounds: Rect, label: &str, enabled: bool, pressed: bool,
                  default: bool)
                  -> Result<(), Status>
     {
@@ -239,7 +255,7 @@ impl super::Desktop
         Ok(())
     }
 
-    fn sf_wrapped_text(&mut self, window: u32, bounds: Rect, text: &str) -> Result<(), Status>
+    fn sf_wrapped_text(&mut self, window: u64, bounds: Rect, text: &str) -> Result<(), Status>
     {
         let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
         let font = crate::toolbox::quickdraw::fonts_service::selection(FontSelection::default());
@@ -287,7 +303,11 @@ impl super::Desktop
         {
             if old.0 != 0 && self.windows.window(old).is_some()
             {
-                checked(self.window(CLOSE_WINDOW, &mut request(old)))?;
+                let result = checked(self.window(CLOSE_WINDOW, &mut request(old)));
+                let dialog = self.standard_file.get_mut(id)?;
+                dialog.auxiliary = WindowId(0);
+                dialog.auxiliary_sheet = Sheet::Main;
+                result?;
             }
             let mut auxiliary = WindowId(0);
             if sheet != Sheet::Main

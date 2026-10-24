@@ -53,8 +53,11 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
                              transfer=passed"),
             "owned window/handle lifecycle acceptance absent:\n{serial}");
     assert!(serial.contains("HANDLE_REUSE_USERSPACE_PASS windows=40 native=9 legacy=3 \
-                             retirement=passed"),
+                             generation=passed"),
             "shared handle validation through native and legacy traps absent:\n{serial}");
+    assert!(serial.contains("WINDOW_LEDGER_USERSPACE_PASS simultaneous=40 reuse=300 \
+                             full_width=passed"),
+            "registered full-width window lifetime acceptance absent:\n{serial}");
     assert!(serial.contains("SCROLL_BOX_USERSPACE_PASS parent_cleanup=8 stale=passed \
                              legacy=passed rows=passed"),
             "resident scroll-box lifecycle acceptance absent:\n{serial}");

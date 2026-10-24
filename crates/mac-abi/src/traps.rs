@@ -59,7 +59,7 @@ pub struct WindowCall
 #[derive(Clone, Copy)]
 pub struct DrawCall
 {
-    pub window:  u32,
+    pub window:  u64,
     pub command: DrawCommand
 }
 #[repr(C)]

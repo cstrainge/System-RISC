@@ -17,7 +17,7 @@ fn checkpoint(system: &System<'_>, window: WindowId, marker: &str)
         {
             return Ok(());
         }
-        if event.kind == EventKind::Update && event.message == (window).0
+        if event.kind == EventKind::Update && event.window == window.0
         {
             system.begin_update(window)?;
             system.quickdraw().port(window).paint_rect(Rect::new(0, 0, 400, 300), 0xffffff)?;

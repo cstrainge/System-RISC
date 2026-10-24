@@ -3,7 +3,9 @@
 #![no_main]
 use mac_toolbox::System;
 #[cfg(not(feature = "deferred-close"))]
-use mac_toolbox::{events::classic::{EVERY_EVENT, EventKind}, quickdraw::Rect, windows::WindowSpec};
+use mac_toolbox::{events::classic::{EVERY_EVENT, EventKind},
+                  quickdraw::Rect,
+                  windows::WindowSpec};
 #[cfg(feature = "menus")]
 #[path = "../../../conformance/menu_sizing.rs"]
 mod menu_sizing;
@@ -29,7 +31,9 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
     system.log("DESKTOP_READY: public SDK tracking fixture\n")?;
     loop
     {
-        let event = system.events().next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT)).map(mac_toolbox::Event::into_record)?;
+        let event = system.events()
+                          .next(mac_toolbox::events::EventMask::from_bits_retain(EVERY_EVENT))
+                          .map(mac_toolbox::Event::into_record)?;
         // Disabled command equivalents remain ordinary application key events.
         // Observe them through the public SDK; canonical host Rust assertions
         // verify exact-once delivery, Command modifiers and absent selection.
@@ -47,8 +51,7 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
                              event.character(),
                              event.modifiers,
                              system.menus().selection(&event.into())?.is_some());
-            system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())
-                  ?;
+            system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())?;
         }
         #[cfg(feature = "menus")]
         if event.kind == EventKind::KeyDown && event.character() == b'g'
@@ -62,8 +65,7 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
             let mut line = Line { bytes: [0; 128],
                                   len:   0 };
             let _ = writeln!(&mut line, "MENU_LABEL width={width}");
-            system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())
-                  ?;
+            system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())?;
         }
         #[cfg(feature = "menus")]
         if event.kind == EventKind::KeyDown && event.character() == b'h'
@@ -81,10 +83,9 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
             let _ = writeln!(&mut line,
                              "MENU_PROBE menu={} item={} command={:08x}",
                              selection.menu_id, selection.item, selection.command);
-            system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())
-                  ?;
+            system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())?;
         }
-        if event.kind == EventKind::Update && event.message == window.0
+        if event.kind == EventKind::Update && event.window == window.0
         {
             let _ = system.windows().begin_update(window)?;
             let info = system.windows().info(window)?;

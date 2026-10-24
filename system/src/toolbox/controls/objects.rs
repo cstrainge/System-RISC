@@ -49,7 +49,7 @@ impl<C: ControlHost> mac_object_table::registry::Release<C> for ReleaseControls
 
 struct Object
 {
-    window:    u32,
+    window:    u64,
     spec:      Spec,
     scrollbar: bool,
     tracking:  Option<Tracking>
@@ -118,12 +118,12 @@ impl Manager
         Ok(o)
     }
 
-    pub fn window(&self, id: u64, owner: u64) -> Result<u32, Status>
+    pub fn window(&self, id: u64, owner: u64) -> Result<u64, Status>
     {
         Ok(self.get(id, owner)?.window)
     }
 
-    pub fn remove_window(&mut self, window: u32)
+    pub fn remove_window(&mut self, window: u64)
     {
         self.objects.remove_where(|_, object| object.window == window);
     }

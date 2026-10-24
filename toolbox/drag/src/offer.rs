@@ -595,7 +595,7 @@ impl<'a> DragEvent<'a>
     {
         let route = Route { client,
                             id: event.payload as u32 };
-        let window = WindowId((event.payload >> 32) as u32);
+        let window = WindowId(event.window);
         let window = (window.0 != 0).then_some(window);
         let at = event.where_;
         Some(match event.message & 0xff00_0000
@@ -721,10 +721,11 @@ impl DragEvent<'_>
         };
         mac_abi::Event { kind: mac_abi::EventKind::OsEvent,
                          message,
-                         payload: u64::from(id) | (u64::from(window) << 32),
+                         payload: u64::from(id),
                          where_: at,
                          when,
-                         modifiers }
+                         modifiers,
+                         window }
     }
 }
 
