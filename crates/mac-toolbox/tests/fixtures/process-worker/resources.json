@@ -26,6 +26,24 @@
         "title": "M",
         "items": []
       }
+    },
+    {
+      "type": "ALRT",
+      "id": 6012,
+      "symbol": "OWNERSHIP_ALERT",
+      "payload": {
+        "format": "file",
+        "path": "../../../../../apps/finder/assets/visual/414c5254-6012.bin"
+      }
+    },
+    {
+      "type": "DITL",
+      "id": 6012,
+      "symbol": "OWNERSHIP_ALERT_ITEMS",
+      "payload": {
+        "format": "file",
+        "path": "../../../../../apps/finder/assets/visual/4449544c-6012.bin"
+      }
     }
   ]
 }

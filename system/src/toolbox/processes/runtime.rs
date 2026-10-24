@@ -14,7 +14,7 @@ pub(super) struct Saved
 {
     id:           u64,
     crash:        crate::toolbox::crashes::Manager,
-    dialogs:      crate::toolbox::dialogs::DialogState,
+    dialogs:      crate::toolbox::dialogs::Alerts,
     menus:        crate::toolbox::menus::Manager,
     cursors:      crate::toolbox::quickdraw::cursors::Cursors,
     classic_font: mac_abi::quickdraw::FontSelection,
@@ -29,7 +29,7 @@ impl Saved
         let id = owner.owner().incarnation();
         Ok(Self { id,
                   crash: Default::default(),
-                  dialogs: Default::default(),
+                  dialogs: crate::toolbox::dialogs::Alerts::new(crate::toolbox::handles::alert_kinds()?, owner.clone())?,
                   menus:
                       crate::toolbox::menus::Manager::new(crate::toolbox::handles::menu_kinds()?,
                                                           mdef,
@@ -42,6 +42,19 @@ impl Saved
 }
 impl Desktop
 {
+    pub(super) fn alerts_for_owner(&mut self, owner: u64)
+                                   -> Option<&mut crate::toolbox::dialogs::Alerts>
+    {
+        if owner == self.owner
+        {
+            Some(&mut self.dialogs)
+        }
+        else
+        {
+            self.locals.iter_mut().find(|local| local.id == owner).map(|local| &mut local.dialogs)
+        }
+    }
+
     pub(crate) fn spawn_process(&self, id: u64, image: usize, entry: usize) -> Result<u64, Status>
     {
         crate::machine::scheduler::spawn(self.processes.ledger(id)?, image, entry)

@@ -103,9 +103,9 @@ fn run(malformed: bool)
                "all workers must leave a live registered control for System cleanup");
     for app in workers
     {
-        for (kind, live) in [("WIND", 2),
+        for (kind, live) in [("WIND", 3),
                              ("WNST", 1),
-                             ("CTRL", 1),
+                             ("CTRL", 3),
                              ("CSTA", 1),
                              ("SBOX", 1),
                              ("SBST", 1),
@@ -118,7 +118,9 @@ fn run(malformed: bool)
                              ("MMBL", 1),
                              ("MMST", 1),
                              ("TEDT", 1),
-                             ("TESV", 1)]
+                             ("TESV", 1),
+                             ("ALRT", 1),
+                             ("ALST", 1)]
         {
             assert!(serial.lines().any(|line| {
                                       line
@@ -130,12 +132,12 @@ fn run(malformed: bool)
         }
         assert!(serial.lines().any(|line| {
                                   line
-                                  == format!("OWNER_WALK app={app} invalidated=14 released=14 \
+                                  == format!("OWNER_WALK app={app} invalidated=16 released=16 \
                                               quarantined=0 live=0 pending=0 deferred=0 \
-                                              completed=16")
+                                              completed=21")
                               }),
-                "registered owner walk did not complete all sixteen leaked worker resources for \
-                 {app}:\n{serial}");
+                "registered owner walk did not complete all twenty-one leaked worker resources \
+                 for {app}:\n{serial}");
     }
     assert!(!serial.contains("OWNER_CLEANUP_QUARANTINED"),
             "unexpected native cleanup refusal:\n{serial}");

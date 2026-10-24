@@ -54,8 +54,9 @@ def capture(output):
         key('n',True);wait(lambda _: 'FINDER_NEW_FOLDER ' in serial.read_text(errors='replace'));move(16,444);snapshot('folder-created-menu')
         move(45,10);button(True);move(80,28);snapshot('file-menu')
         move(16,444);button(False)
-        # New folders are selected by Finder; drag the fourth root item to Trash.
-        move(296,90);button(True);move(592,436);snapshot('trash-drop-held');button(False)
+        # Wide captions reserve cells: the fourth root item begins row two.
+        # These coordinates come from the captured folder-created-menu frame.
+        move(40,146);button(True);move(592,436);snapshot('trash-drop-held');button(False)
         wait(lambda _: 'FINDER_DRAG_TRANSFER_COMMITTED\n' in serial.read_text(errors='replace'))
         move(16,444);snapshot('trashed')
         click(592,436);click(592,436);snapshot('trash-open')
@@ -65,7 +66,7 @@ def capture(output):
         snapshot('put-away')
         key('w',True)
         # Root selection was cleared by Put Away; select and exercise Ctrl-Backspace.
-        click(296,90);key('backspace',True)
+        click(40,146);key('backspace',True)
         wait(lambda _: serial.read_text(errors='replace').count('FINDER_TRASHED ') >= 1)
         snapshot('trashed-again')
         empty_menu();move(16,444);snapshot('empty-confirm')

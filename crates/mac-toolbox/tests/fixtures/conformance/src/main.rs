@@ -43,6 +43,7 @@ impl Write for LogBuffer
         if n != text.len() { Err(fmt::Error) } else { Ok(()) }
     }
 }
+#[cfg(not(feature = "alert-tracking"))]
 fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
 {
     conformance::run_all(system)?;
@@ -53,6 +54,27 @@ fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::
     conformance::strings::graphical(system, gate)?;
     conformance::ownership::graphical(system, gate)?;
     Ok(())
+}
+#[cfg(feature = "alert-tracking")]
+fn run(system: &System<'_>, _gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
+{
+    conformance::ownership::alert_tracking(system, |name, bounds| {
+        let mut text = LogBuffer::new();
+        let _ = writeln!(text,
+                         "ALERT_TRACKING_READY stage={name} bounds={},{},{},{}",
+                         bounds.left, bounds.top, bounds.right, bounds.bottom);
+        system.log(text.text())?;
+        loop
+        {
+            let event = system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?;
+            if event.as_record().kind == mac_abi::EventKind::KeyDown
+               && event.as_record().character() == b' '
+            {
+                break;
+            }
+        }
+        Ok(())
+    })
 }
 /// # Safety
 /// The loader supplies a live table that remains valid throughout the application.
@@ -71,11 +93,18 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
     {
         Ok(()) =>
         {
-            let _ = system.log("TEXTEDIT_USERSPACE_PASS original=356 native=20 legacy=6 navigation=49\n");
-            let _ = system.log("SCRAP_USERSPACE_PASS original=18 native=17 legacy=12\n");
-            let _ = system.log("TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48 \
-                                controls=86 controlpixels=269600 controlhits=8424 strings=passed \
-                                dates=passed\n");
+            #[cfg(not(feature = "alert-tracking"))]
+            {
+                let _ = system.log("TEXTEDIT_USERSPACE_PASS original=356 native=20 legacy=6 \
+                                    navigation=49\n");
+                let _ = system.log("SCRAP_USERSPACE_PASS original=18 native=17 legacy=12\n");
+                let _ = system.log("TOOLBOX_USERSPACE_PASS geometry=20 ovals=267 handles=48 \
+                                    controls=86 controlpixels=269600 controlhits=8424 \
+                                    strings=passed dates=passed\n");
+            }
+            #[cfg(feature = "alert-tracking")]
+            let _ = system.log("ALERT_TRACKING_USERSPACE_PASS cancel=passed release=passed \
+                                cleanup=passed\n");
             0
         }
         Err(error) =>

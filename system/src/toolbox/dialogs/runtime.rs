@@ -9,6 +9,39 @@ fn checked(status: Status) -> Result<(), Status>
 {
     if status == OK { Ok(()) } else { Err(status) }
 }
+fn request(window: u64, bounds: Rect) -> WindowRequest
+{
+    WindowRequest { id: window,
+                    bounds,
+                    title: [0; WINDOW_TITLE_BYTES],
+                    title_length: 0,
+                    procedure: 1,
+                    minimum_width: 1,
+                    minimum_height: 1,
+                    reserved: 0 }
+}
+// Initialization owns the protocol before any window or control is published.
+// Every fallible exit clears the parent, even if a child WDEF refuses disposal.
+struct InitializingAlert<'a>
+{
+    desktop:   &'a mut super::Desktop,
+    committed: bool
+}
+impl Drop for InitializingAlert<'_>
+{
+    fn drop(&mut self)
+    {
+        if !self.committed
+        {
+            if let Err(status) = self.desktop.close_dialog()
+            {
+                serial!("ALERT_INITIALIZATION_CHILD_REFUSED: owner={} status={status}; parent \
+                         protocol released, child cleanup retained by Window Manager",
+                        self.desktop.owner);
+            }
+        }
+    }
+}
 impl super::Desktop
 {
     pub(super) fn dialog_input(&mut self, input: crate::toolbox::events::input::Input, when: u32)
@@ -87,6 +120,10 @@ impl super::Desktop
 
     fn dialog_result(&mut self, call: &mut DialogCall) -> Result<(), Status>
     {
+        if call.reserved != 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
         call.item = 0;
         match call.operation
         {
@@ -131,34 +168,13 @@ impl super::Desktop
                     alert.bounds.offset((640 - (r.right - r.left)) / 2 - r.left,
                                         20 + (460 - (r.bottom - r.top)) / 5 - r.top);
                 }
-                let mut request = WindowRequest { id:             0,
-                                                  bounds:         alert.bounds,
-                                                  title:          [0; WINDOW_TITLE_BYTES],
-                                                  title_length:   0,
-                                                  procedure:      1,
-                                                  minimum_width:  1,
-                                                  minimum_height: 1,
-                                                  reserved:       0 };
                 let previous = self.windows.active_window();
-                checked(self.window(NEW_WINDOW, &mut request))?;
-                call.window = request.id;
-                self.dialogs = dialogs::DialogState { previous,
-                                                      window: request.id,
-                                                      alert: Some(alert),
-                                                      ..Default::default() };
-                // DrawGrowIcon is an explicit classic operation even on a
-                // non-resizable WDEF. Dialogs suppress automatic grow drawing.
-                request.bounds = Rect::ZERO;
-                request.reserved = 0;
-                let drawing =
-                    checked(self.window(SET_GROW_ICON_CLIP, &mut request)).and_then(|()| {
-                                                                              self.draw_dialog()
-                                                                          });
-                if let Err(error) = drawing
-                {
-                    let _ = self.close_dialog();
-                    return Err(error);
-                }
+                self.dialogs.begin(alert, previous)?;
+                let mut guard = InitializingAlert { desktop:   self,
+                                                    committed: false };
+                guard.desktop.initialize_alert()?;
+                call.window = guard.desktop.dialogs.window;
+                guard.committed = true;
             }
             CLOSE =>
             {
@@ -180,10 +196,8 @@ impl super::Desktop
                 }
                 else
                 {
-                    let (item, changed) = self.dialogs.event(call.event);
-                    call.item = item;
-                    if changed
-                       || call.event.kind == EventKind::Update && call.event.window == call.window
+                    call.item = self.alert_event(call.event)?;
+                    if call.event.kind == EventKind::Update && call.event.window == call.window
                     {
                         self.draw_dialog()?;
                     }
@@ -194,40 +208,171 @@ impl super::Desktop
         Ok(())
     }
 
-    fn close_dialog(&mut self) -> Result<(), Status>
+    fn initialize_alert(&mut self) -> Result<(), Status>
     {
-        let previous = self.dialogs.previous;
-        let mut request = WindowRequest { id:             self.dialogs.window,
-                                          bounds:         Rect::ZERO,
-                                          title:          [0; WINDOW_TITLE_BYTES],
-                                          title_length:   0,
-                                          procedure:      1,
-                                          minimum_width:  1,
-                                          minimum_height: 1,
-                                          reserved:       0 };
-        // Clear the modal protocol even if a child definition refuses cleanup.
-        // The Window Manager retains that child's state/ticket independently.
-        self.dialogs = Default::default();
-        let mut result = checked(self.window(CLOSE_WINDOW, &mut request));
-        if let Some(previous) = previous.filter(|id| self.windows.window(*id).is_some())
+        let bounds = self.dialogs.alert.as_ref().ok_or(NOT_FOUND)?.bounds;
+        let mut request = request(0, bounds);
+        checked(self.window(NEW_WINDOW, &mut request))?;
+        self.dialogs.state_mut()?.window = request.id;
+        // DrawGrowIcon is explicit even on non-resizable classic WDEFs.
+        request.bounds = Rect::ZERO;
+        checked(self.window(SET_GROW_ICON_CLIP, &mut request))?;
+        let alert = self.dialogs.alert.clone().ok_or(NOT_FOUND)?;
+        for (index, item) in alert.items.iter().enumerate().filter(|(_, item)| item.kind == 4)
         {
-            request.id = previous.0;
-            let restored = checked(self.window(SELECT_WINDOW, &mut request));
-            if result.is_ok()
+            let mut standard = definitions::ControlDefinitionState::new(item.bounds, &item.text);
+            standard.enabled = u32::from(item.enabled);
+            if index == 0 && item.enabled
             {
-                result = restored;
+                standard.bounds.inset(-4, -4);
+                standard.flags = definitions::DEFAULT_BUTTON;
             }
+            let mut call = ControlCall { operation: CREATE_STANDARD,
+                                         window: request.id,
+                                         standard,
+                                         ..Default::default() };
+            self.managed_control(&mut call)?;
+            self.dialogs.state_mut()?.controls[index] = Some(call.id);
+        }
+        self.draw_dialog()
+    }
+
+    fn alert_event(&mut self, event: Event) -> Result<u16, Status>
+    {
+        let alert = self.dialogs.alert.as_ref().ok_or(NOT_FOUND)?;
+        let point = Point { h: event.where_.h.saturating_sub(alert.bounds.left),
+                            v: event.where_.v.saturating_sub(alert.bounds.top) };
+        let window = self.dialogs.window;
+        if event.kind == EventKind::MouseDown && event.window == window
+        {
+            for index in 0..self.dialogs.controls.len()
+            {
+                let Some(id) = self.dialogs.controls[index]
+                else
+                {
+                    continue;
+                };
+                let mut call = ControlCall { operation: BEGIN_TRACKING,
+                                             id,
+                                             window,
+                                             point,
+                                             ticks: u64::from(event.when),
+                                             ..Default::default() };
+                self.managed_control(&mut call)?;
+                if call.flags & TRACKING != 0
+                {
+                    self.dialogs.state_mut()?.tracking = Some(index);
+                    break;
+                }
+            }
+        }
+        else if matches!(event.kind, EventKind::MouseUp | EventKind::Null)
+        {
+            if let Some(index) = self.dialogs.tracking
+            {
+                let id = self.dialogs.controls[index].ok_or(BAD_ABI)?;
+                let down = event.kind != EventKind::MouseUp
+                           && event.modifiers & crate::toolbox::events::BTN_STATE == 0;
+                let mut call = ControlCall { operation: POLL_TRACKING,
+                                             id,
+                                             window,
+                                             point,
+                                             ticks: u64::from(event.when),
+                                             flags: if down { BUTTON_DOWN } else { 0 },
+                                             ..Default::default() };
+                self.managed_control(&mut call)?;
+                if call.flags & TRACKING == 0
+                {
+                    self.dialogs.state_mut()?.tracking = None;
+                }
+                if call.flags & ACTION != 0
+                {
+                    return Ok(index as u16 + 1);
+                }
+            }
+        }
+        else if matches!(event.kind, EventKind::KeyDown | EventKind::AutoKey)
+        {
+            let chosen = match event.character()
+            {
+                b'\r' | 3 => Some(0),
+                27 => Some(1),
+                _ => None
+            };
+            if let Some(index) = chosen.filter(|&index| {
+                                           self.dialogs.alert.as_ref().is_some_and(|alert| {
+                                                                          alert.items
+                                                                         .get(index)
+                                                                         .is_some_and(|item| {
+                                                                             item.kind == 4
+                                                                             && item.enabled
+                                                                         })
+                                                                      })
+                                       })
+            {
+                self.cancel_alert_tracking()?;
+                return Ok(index as u16 + 1);
+            }
+        }
+        else if event.kind == EventKind::Activate && event.modifiers & ACTIVE_FLAG == 0
+        {
+            self.cancel_alert_tracking()?;
+        }
+        Ok(0)
+    }
+
+    fn cancel_alert_tracking(&mut self) -> Result<(), Status>
+    {
+        if let Some(index) = self.dialogs.tracking
+        {
+            let id = self.dialogs.controls[index].ok_or(BAD_ABI)?;
+            let mut call = ControlCall { operation: CANCEL_TRACKING,
+                                         id,
+                                         ..Default::default() };
+            self.managed_control(&mut call)?;
+            self.dialogs.state_mut()?.tracking = None;
+        }
+        Ok(())
+    }
+
+    pub(super) fn close_dialog(&mut self) -> Result<(), Status>
+    {
+        let record = self.dialogs.take().ok_or(NOT_FOUND)?;
+        let result = self.finish_alert_window(record.window, record.previous);
+        drop(record);
+        result
+    }
+
+    fn finish_alert_window(&mut self, window: u64, previous: Option<WindowId>)
+                           -> Result<(), Status>
+    {
+        if window == 0
+        {
+            return Ok(());
+        }
+        let result = checked(self.window(CLOSE_WINDOW, &mut request(window, Rect::ZERO)));
+        let restored = self.restore_alert_focus(previous);
+        result.and(restored)
+    }
+
+    pub(super) fn restore_alert_focus(&mut self, previous: Option<WindowId>) -> Result<(), Status>
+    {
+        let mut call = request(0, Rect::ZERO);
+        let result = if let Some(previous) =
+            previous.filter(|id| self.windows.window(*id).is_some())
+        {
+            call.id = previous.0;
+            checked(self.window(SELECT_WINDOW, &mut call))
         }
         else if previous.is_none()
         {
-            let restored = checked(self.window(SELECT_DESKTOP, &mut request));
-            if result.is_ok()
-            {
-                result = restored;
-            }
+            checked(self.window(SELECT_DESKTOP, &mut call))
         }
-        // The dialog consumed activation notifications while modal. Suppress
-        // transient focus from disposal/restoration, then deliver the final owner.
+        else
+        {
+            Ok(())
+        };
+        // Modal handling consumed transient activation; publish the final focus.
         while self.events.next_matching(1 << EventKind::Activate as u16).is_some()
         {}
         if let Some(active) = self.windows.active_window()
@@ -353,35 +498,10 @@ impl super::Desktop
                 {
                     4 =>
                     {
-                        let mut standard =
-                            definitions::ControlDefinitionState::new(item.bounds, &item.text);
-                        standard.enabled = u32::from(item.enabled);
-                        standard.highlighted = u32::from(self.dialogs.pressed == Some(index)
-                                                         && self.dialogs.highlighted);
-                        checked(self.control(&mut ControlCall { operation: DRAW_STANDARD,
-                                                                window,
-                                                                standard,
-                                                                ..Default::default() }))?;
-                        if index == 0 && item.enabled
-                        {
-                            let mut ring = item.bounds;
-                            ring.inset(-4, -4);
-                            self.graphics(&mut GraphicsCall { operation: QD_PEN_SIZE,
-                                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
-                                                              point: Point { h: 3,
-                                                                             v: 3 },
-                                                              ..Default::default() },
-                                          &[],
-                                          &[])?;
-                            self.dialog_shape(window, ring, SHAPE_ROUND_RECT, VERB_FRAME)?;
-                            self.graphics(&mut GraphicsCall { operation: QD_PEN_SIZE,
-                                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
-                                                              point: Point { h: 1,
-                                                                             v: 1 },
-                                                              ..Default::default() },
-                                          &[],
-                                          &[])?;
-                        }
+                        let id = self.dialogs.controls[index].ok_or(BAD_ABI)?;
+                        self.managed_control(&mut ControlCall { operation: DRAW_OBJECT,
+                                                                id,
+                                                                ..Default::default() })?;
                     }
                     8 =>
                     {
@@ -420,5 +540,43 @@ impl super::Desktop
         })();
         checked(self.window(END_UPDATE, &mut request))?;
         result
+    }
+}
+
+impl super::Desktop
+{
+    pub(crate) fn release_alert(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                                -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        let owner = ticket.key().owner().incarnation();
+        let Some(manager) = self.alerts_for_owner(owner)
+        else
+        {
+            return Err(<mac_object_table::domain::CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket).into());
+        };
+        let record = manager.release(ticket)?;
+        if owner == self.owner
+        {
+            if let Err(status) = self.finish_alert_window(record.window, record.previous)
+            {
+                serial!("ALERT_CLEANUP_CHILD_REFUSED: owner={owner} status={status}; parent \
+                         released, Window Manager retains child cleanup");
+            }
+        }
+        // Saved-context cleanup never foregrounds another app. Its registered
+        // windows and controls are independently released by the same walk.
+        drop(record);
+        Ok(())
+    }
+
+    pub(crate) fn release_alert_storage(&mut self,
+                                        ticket: mac_object_table::domain::ReleasedResource)
+                                        -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        let owner = ticket.key().owner().incarnation();
+        match self.alerts_for_owner(owner) {
+            Some(manager)=>manager.release_storage(ticket),
+            None=>Err(<mac_object_table::domain::CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket))
+        }
     }
 }

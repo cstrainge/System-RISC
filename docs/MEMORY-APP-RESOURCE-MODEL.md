@@ -776,3 +776,42 @@ other dependencies through an incomplete death barrier, provide controlled retry
 and retire storage only after real quiescence. Passing normal native exit and
 host provider-refusal tests does not establish that remaining resident failure
 path. This is separate from M-D04's privileged-fault containment gate.
+
+
+### Classic Alert protocol and managed-button migration
+
+ALRT registers one classic Alert protocol per actual app owner; ALST owns its
+saved backing. This preserves the existing one-active-Alert rule. The public
+window reference remains an opaque WindowId; the protocol validates that full
+live identity on every request. Closing the window, replacing it with a crash
+report, explicit Alert disposal and the generic walk all invalidate the same
+protocol. Window and Alert cleanup can occur in either order without reviving
+modal state or foregrounding a saved app. An initialization guard owns rollback
+before creating a window or button. Child Window Manager cleanup refusals retain
+their own tickets after the parent protocol is gone.
+
+DITL buttons now create real managed CDEF controls. Their default ring belongs
+to the control bounds; the parser checks ring expansion and reserved fields
+before publication. Highlight, drag-out, reentry and cancellation use the Control
+Manager tracking contract. A changed button replaces only its own retained draw;
+HANDLE_EVENT no longer erases/redraws the Alert window or clones all item strings.
+Unchanged held-pointer tracking performs no recomposition or menu painting.
+
+Qualification passes: 59 shared-facility tests (including three compile-fail),
+131 System units (one separately gated), 225 SDK host cases (63 native gates),
+optimized whole-world image, native aggregate, real managed-Alert tracking with
+pixel/frame-copy bounds and no-change counters, both process campaigns, original
+Finder Trash dialog pixels and modal input across three boots, panic diagnostics
+and recovery, physical event routing, Reactor Room on Linux/Windows, native and
+classic ABI smoke, boundaries and 49-library API docs. Each worker abandons
+21 registered lifetimes, completed through 16 callbacks with zero live/pending.
+
+Verification also repaired capture assumptions without changing UI or pixel
+acceptance: Trash clicks follow the fourth icon onto row two after wide-caption
+layout; panic relaunch uses actual retirement records rather than decoding bits
+of an opaque process incarnation. The Memory reuse test requires generation
+advancement, allowing intervening generations consumed by concurrent domains.
+Initial failures and final results remain in private `dialog-ledger-*` evidence.
+The current stage-3 Saved-context retention/retry debt and cold first-key latency
+gate remain open; paging, dynamic thread/image capacity and std support are not
+claimed by this manager slice.

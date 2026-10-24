@@ -1621,3 +1621,14 @@ Rebuild System, applications, definitions and fixtures together; the development
 ABI stays 1. Native font, edit and display request sizes remain distinct and are
 checked before borrowing. The existing 32767-byte text engine limit remains
 until the TE2 storage stage.
+
+## Native resource Alert lifetimes (development ABI 1)
+
+ALRT registers the classic Alert protocol; ALST registers per-app backing.
+The existing one-active-Alert-per-app rule remains explicit. The public DialogCall
+still names the Alert's full-width WindowId, validated against the current live
+protocol, not a resource number or reusable index. Window close and crash-report
+replacement invalidate the protocol too. Buttons parsed from DITL become managed
+CDEF controls with their own lifetimes; the default ring belongs to the button's
+four-pixel-expanded bounds. Reserved call fields and overflowing ring bounds are
+rejected before publication. This does not add an original DialogRecord layout.

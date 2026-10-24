@@ -153,6 +153,8 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                    cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseEditors)).map_err(KindAccessError::Registry)?;
                                registry.register(&owner, crate::toolbox::textedit::lifetime::specification(true),
                                    cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::dialogs::specification(false),crate::toolbox::dialogs::ReleaseAlerts).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::dialogs::specification(true),crate::toolbox::dialogs::ReleaseStorage).map_err(KindAccessError::Registry)?;
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
                            })?;
     Ok(InvocationGate::run(|| run(&registry.lock())))
@@ -228,4 +230,11 @@ pub(crate) fn editor_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"TEDT"))?, registry.get(KindCode(*b"TESV"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn alert_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry|Ok((registry.get(KindCode(*b"ALRT"))?,registry.get(KindCode(*b"ALST"))?)))
+        .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }

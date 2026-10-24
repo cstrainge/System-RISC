@@ -58,6 +58,9 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
     assert!(serial.contains("WINDOW_LEDGER_USERSPACE_PASS simultaneous=40 reuse=300 \
                              full_width=passed"),
             "registered full-width window lifetime acceptance absent:\n{serial}");
+    assert!(serial.contains("ALERT_LEDGER_USERSPACE_PASS managed_buttons=2 stale=passed \
+                             external_close=passed reserved=passed"),
+            "missing native Alert ledger acceptance: {serial}");
     assert!(serial.contains("TEXTEDIT_LEDGER_USERSPACE_PASS reuse=passed simultaneous=129 \
                              full_width=passed"),
             "missing native editor ledger acceptance: {serial}");

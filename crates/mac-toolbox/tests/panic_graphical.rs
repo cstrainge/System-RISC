@@ -67,7 +67,11 @@ fn application_panics_show_complete_diagnostics_and_leave_the_desktop_usable()
     let short_app = reports[0]["app"].as_u64().unwrap();
     let long_app = reports[1]["app"].as_u64().unwrap();
     assert_ne!(short_app, long_app);
-    assert_eq!(short_app & 0xffff, long_app & 0xffff, "must reuse the same process slot");
+    // Process IDs are opaque, boot-unique incarnations, not packed slot IDs.
+    // Verify completed retirement before relaunch from actual lifecycle records.
+    let retired = serial.find(&format!("PROCESS_EXIT app={short_app}\n")).unwrap();
+    let relaunched = serial.find(&format!("PROCESS_LAUNCHED app={long_app} ")).unwrap();
+    assert!(retired < relaunched, "panic application relaunched before prior retirement");
     assert!(serial.contains(&format!("CRASH_REPORT_COPIED app={long_app} ")));
     for id in [short_app, long_app]
     {

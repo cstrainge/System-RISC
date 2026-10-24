@@ -221,10 +221,12 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     system.log("OWNERSHIP_MENU_BEGIN\n")?;
     menus(system, 257)?;
     menu_capacity(system)?;
-    system.log("OWNERSHIP_ALERT_BEGIN\n")?;
-    alerts(system)?;
     scroll_boxes(system, gate)?;
     managed_controls(system, gate)?;
+    // Keep the original sole-slot control reuse proof before the Alert's two
+    // simultaneous button slots grow that pool's preserved history.
+    system.log("OWNERSHIP_ALERT_BEGIN\n")?;
+    alerts(system)?;
     system.log("HANDLE_REUSE_USERSPACE_PASS windows=40 native=9 legacy=3 generation=passed \
                 foreign=passed\n")
           .map_err(|error| Failure::Service(error.status()))?;
@@ -571,7 +573,20 @@ fn alerts(system: &System<'_>) -> Result<(), Failure>
     let owned = dialogs.alert_owned(mac_toolbox::ResourceScope::Application, 6012, "Owned alert")?;
     let stale = owned.alert();
     let window = owned.window();
+    let alert_pool = registered_pool(system, *b"ALRT")?;
+    assert_eq!(alert_pool.live, 1);
+    assert_eq!(registered_pool(system, *b"ALST")?.live, 1);
+    // Resource buttons are real resident control objects, not a private loop.
+    assert_eq!(registered_pool(system, *b"CTRL")?.live, 2);
+    let mut malformed = mac_abi::dialogs::DialogCall { operation: mac_abi::dialogs::CLOSE,
+                                                       window: window.0,
+                                                       reserved: 1,
+                                                       ..Default::default() };
+    assert_eq!(system.client().dialog(&mut malformed), Err(Error::BadArgument));
+    system.windows().info(window)?;
     drop(owned);
+    assert_eq!(registered_pool(system, *b"ALRT")?.live, 0);
+    assert_eq!(registered_pool(system, *b"CTRL")?.live, 0);
     assert!(matches!(system.windows().info(window), Err(Error::NotFound)));
     let before = window_pool(system)?;
     let current =
@@ -584,7 +599,41 @@ fn alerts(system: &System<'_>) -> Result<(), Failure>
     assert_eq!(stale.draw(), Err(Error::NotFound));
     assert_eq!(stale.close(), Err(Error::NotFound));
     assert!(system.windows().info(current.window()).is_ok());
+    let next = registered_pool(system, *b"ALRT")?;
+    assert_eq!(next.slots, alert_pool.slots);
+    assert_eq!(next.births, alert_pool.births + 1);
+    assert_eq!(next.deaths, alert_pool.deaths + 1);
+    let externally_closed = current.alert();
+    system.windows().close(current.window())?;
+    assert_eq!(registered_pool(system, *b"ALRT")?.live, 0);
+    assert_eq!(externally_closed.close(), Err(Error::NotFound));
+    let replacement =
+        dialogs.alert_owned(mac_toolbox::ResourceScope::Application, 6012, "After external close")?;
     drop(current);
+    replacement.draw()?;
+    drop(replacement);
+    assert_eq!(registered_pool(system, *b"ALRT")?.live, 0);
+    let interrupted =
+        dialogs.alert_owned(mac_toolbox::ResourceScope::Application, 6012, "Before report")?;
+    let interrupted_window = interrupted.window();
+    let reports = system.crashes();
+    reports.begin()?;
+    reports.append("Alert interruption cleanup conformance")?;
+    let report = reports.show(mac_toolbox::crashes::ReportFlags::NONE)?;
+    assert_ne!(report.window.0, 0);
+    assert_eq!(registered_pool(system, *b"ALRT")?.live, 0);
+    assert!(matches!(system.windows().info(interrupted_window), Err(Error::NotFound)));
+    assert_eq!(interrupted.alert().close(), Err(Error::NotFound));
+    drop(interrupted);
+    system.windows().info(report.window)?;
+    // This fixture is Finder: its report intentionally refuses app dismissal.
+    let refused = reports.dismiss().unwrap_err();
+    assert_eq!(refused, Error::AccessDenied);
+    system.windows().info(report.window)?;
+    system.windows().close(report.window)?;
+    reports.begin()?;
+    system.log("ALERT_LEDGER_USERSPACE_PASS managed_buttons=2 stale=passed \
+                external_close=passed reserved=passed\n")?;
     Ok(())
 }
 
@@ -622,5 +671,58 @@ fn memory_ledger(system: &System<'_>) -> Result<(), Failure>
     assert_eq!(after.deaths, before.deaths + 2);
     assert_eq!(registered_pool(system, *b"MMST")?.births, state.births);
     system.log("MEMORY_LEDGER_USERSPACE_PASS projection=passed reuse=passed accounting=passed\n")?;
+    Ok(())
+}
+
+/// Public SDK tracking plus capture checkpoints; host Rust owns pixel/trace bounds.
+pub fn alert_tracking(system: &System<'_>,
+                      mut checkpoint: impl FnMut(&str, Rect) -> Result<(), Failure>)
+                      -> Result<(), Failure>
+{
+    use mac_abi::{Event as Record, EventKind, Point};
+    let alert =
+        system.dialogs().alert_owned(mac_toolbox::ResourceScope::Application,
+                                      6012,
+                                      "A bounded alert control")?;
+    let window = alert.window();
+    let origin = system.windows().info(window)?.bounds;
+    // Frozen original DITL 6012 item 1: OK at (299,68)..(358,88).
+    let mut button = Rect::new(299, 68, 358, 88);
+    button.offset(origin.left, origin.top);
+    let mut damage = button;
+    damage.inset(-4, -4);
+    let inside = Point { h: (button.left + button.right) / 2,
+                         v: (button.top + button.bottom) / 2 };
+    let outside = Point { h: origin.left + 8,
+                          v: origin.top + 8 };
+    let event = |kind, point, down| {
+        mac_toolbox::Event::from(Record { kind,
+                                          where_: point,
+                                          window: window.0,
+                                          modifiers: if down
+                                          {
+                                              0
+                                          }
+                                          else
+                                          {
+                                              mac_abi::events::BTN_STATE
+                                          },
+                                          ..Default::default() })
+    };
+    checkpoint("base", damage)?;
+    assert_eq!(alert.handle_event(&event(EventKind::MouseDown, inside, true))?, None);
+    checkpoint("pressed", damage)?;
+    assert_eq!(alert.handle_event(&event(EventKind::Null, inside, true))?, None);
+    checkpoint("held", damage)?;
+    assert_eq!(alert.handle_event(&event(EventKind::Null, outside, true))?, None);
+    checkpoint("outside", damage)?;
+    assert_eq!(alert.handle_event(&event(EventKind::MouseUp, outside, false))?, None);
+    checkpoint("released", damage)?;
+    assert_eq!(alert.handle_event(&event(EventKind::MouseDown, inside, true))?, None);
+    assert_eq!(alert.handle_event(&event(EventKind::MouseUp, inside, false))?, Some(1));
+    checkpoint("selected", damage)?;
+    drop(alert);
+    assert_eq!(registered_pool(system, *b"ALRT")?.live, 0);
+    assert_eq!(registered_pool(system, *b"CTRL")?.live, 0);
     Ok(())
 }

@@ -311,6 +311,11 @@ owner store. Windows, controls, menus, TextEdit editors and offscreen worlds use
 full-width opaque tokens resolving to authenticated ledger keys. TEDT/TESV own
 editor payloads and backing in the actual per-app context, including cleanup from
 saved contexts; no fixed editor count or private generation array remains.
+ALRT/ALST retain classic Alert protocol and backing in that same authenticated
+app context. The protocol, its window and its managed controls have independent
+registered lifetimes: cleanup works without imposing parent/child kind order,
+and a saved app's cleanup never foregrounds it. Taking the protocol invalidates
+it before child cleanup; refused window cleanup retains its own ticket.
 Native MenuId names a semantic menu property; MenuHandle identifies a live object. Owned menu references validate the latter on every call.
 
 The current native ThreadContext receives the directory's actual OwnerRef when

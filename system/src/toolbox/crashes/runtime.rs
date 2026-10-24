@@ -112,10 +112,12 @@ impl super::Desktop
     fn show_crash_report(&mut self) -> Result<(), Status>
     {
         if self.dialogs.active()
+           && let Err(status) = self.close_dialog()
         {
-            let old = WindowId(self.dialogs.window);
-            let _ = self.window(CLOSE_WINDOW, &mut window_request(old));
-            self.dialogs = Default::default();
+            // The protocol is already invalidated. Window cleanup retains its
+            // own ticket on refusal; a child must not suppress the panic report.
+            serial!("CRASH_ALERT_CLEANUP_REFUSED status={} protocol=disposed child=retained",
+                    status);
         }
         self.menus.clear();
         self.cursors = Default::default();

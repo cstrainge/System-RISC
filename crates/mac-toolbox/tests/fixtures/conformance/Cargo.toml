@@ -7,6 +7,9 @@ build = "build.rs"
 
 [workspace]
 
+[features]
+alert-tracking = []
+
 [[bin]]
 name = "Finder"
 path = "src/main.rs"

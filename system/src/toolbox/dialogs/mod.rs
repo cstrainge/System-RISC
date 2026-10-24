@@ -1,6 +1,5 @@
 //! Resource-based Alert/DITL interpreter. WDEF/CDEF resources own their pixels.
 #![forbid(unsafe_code)]
-#![cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
 use alloc::{string::String, vec::Vec};
 
 use mac_abi::{dialogs::*, *};
@@ -37,6 +36,10 @@ fn rect(data: &[u8], at: usize) -> Result<Rect, Status>
 /// Unsupported item kinds fail before opening a partially rendered dialog.
 pub fn load(resources: Manager<'_>, call: &DialogCall) -> Result<Alert, Status>
 {
+    if call.reserved != 0
+    {
+        return Err(BAD_ARGUMENT);
+    }
     let text = core::str::from_utf8(call.text
                                         .get(..call.text_length as usize)
                                         .ok_or(BAD_ARGUMENT)?).map_err(|_| BAD_ARGUMENT)?;
@@ -74,8 +77,9 @@ pub fn load(resources: Manager<'_>, call: &DialogCall) -> Result<Alert, Status>
         return Err(BAD_ARGUMENT);
     }
     let mut items = Vec::new();
+    items.try_reserve_exact(count as usize).map_err(|_| NO_MEMORY)?;
     let mut offset = 2;
-    for _ in 0..count
+    for index in 0..count
     {
         let bounds = rect(data, offset + 4)?;
         if bounds.right.checked_sub(bounds.left).is_none_or(|w| !(0..=1024).contains(&w))
@@ -90,6 +94,18 @@ pub fn load(resources: Manager<'_>, call: &DialogCall) -> Result<Alert, Status>
         if ![4, 8, 32].contains(&base)
         {
             return Err(NOT_SUPPORTED);
+        }
+        // The default CDEF includes its four-pixel ring in its own bounds.
+        // Validate expansion before opening any window or doing i16 arithmetic.
+        if index == 0
+           && base == 4
+           && kind & 0x80 == 0
+           && (bounds.left.checked_sub(4).is_none()
+               || bounds.top.checked_sub(4).is_none()
+               || bounds.right.checked_add(4).is_none()
+               || bounds.bottom.checked_add(4).is_none())
+        {
+            return Err(BAD_ARGUMENT);
         }
         let label = if base == 32
         {
@@ -130,68 +146,9 @@ pub fn load(resources: Manager<'_>, call: &DialogCall) -> Result<Alert, Status>
                position,
                items })
 }
-#[derive(Default)]
-pub(crate) struct DialogState
-{
-    pub previous:    Option<mac_abi::WindowId>,
-    pub window:      u64,
-    pub alert:       Option<Alert>,
-    pub pressed:     Option<usize>,
-    pub highlighted: bool
-}
-impl DialogState
-{
-    pub fn active(&self) -> bool
-    {
-        self.alert.is_some()
-    }
-
-    pub fn event(&mut self, event: Event) -> (u16, bool)
-    {
-        let Some(alert) = &self.alert
-        else
-        {
-            return (0, false);
-        };
-        let point = Point { h: event.where_.h.saturating_sub(alert.bounds.left),
-                            v: event.where_.v.saturating_sub(alert.bounds.top) };
-        let button =
-            |index: usize| alert.items.get(index).is_some_and(|i| i.kind == 4 && i.enabled);
-        let hit =
-            alert.items.iter().position(|i| i.kind == 4 && i.enabled && i.bounds.contains(point));
-        let old = self.highlighted;
-        match event.kind
-        {
-            EventKind::MouseDown if event.window == self.window =>
-            {
-                self.pressed = hit;
-                self.highlighted = hit.is_some();
-            }
-            EventKind::MouseUp =>
-            {
-                let item =
-                    self.pressed.filter(|index| Some(*index) == hit).map_or(0, |i| i as u16 + 1);
-                self.pressed = None;
-                self.highlighted = false;
-                return (item, old);
-            }
-            EventKind::Null =>
-            {
-                self.highlighted = self.pressed.is_some() && self.pressed == hit;
-            }
-            EventKind::KeyDown | EventKind::AutoKey =>
-            {
-                match event.character()
-                {
-                    b'\r' | 3 if button(0) => return (1, false),
-                    27 if button(1) => return (2, false),
-                    _ =>
-                    {}
-                }
-            }
-            _ =>
-            {}
-        }
-        (0, old != self.highlighted)
-    }
-}
+#[cfg(target_arch = "riscv64")]
+mod modal;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use modal::Manager as Alerts;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use modal::{ReleaseAlerts, ReleaseStorage, specification};

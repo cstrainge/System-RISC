@@ -786,13 +786,17 @@ pub fn worker(system: &System<'_>) -> Result<()>
             // Account every deliberately abandoned registered object through
             // the public service. Parent WDEF cleanup may release controls and
             // scroll boxes, so callback counts alone are not resource counts.
+            let leaked_alert = system.dialogs()
+                                     .alert_owned(mac_toolbox::ResourceScope::Application,
+                                                  6012,
+                                                  "Registered worker alert")?;
             let membership = system.inspection()
                                    .snapshot(mac_toolbox::inspection::Scope::Own)
                                    .map_err(|e| Failure::Service(e.cause.status()))?;
             let ledger = membership.ledger(0).map_err(|e| Failure::Service(e.cause.status()))?;
-            let expected = [(*b"WIND", 2),
+            let expected = [(*b"WIND", 3),
                             (*b"WNST", 1),
-                            (*b"CTRL", 1),
+                            (*b"CTRL", 3),
                             (*b"CSTA", 1),
                             (*b"SBOX", 1),
                             (*b"SBST", 1),
@@ -805,7 +809,9 @@ pub fn worker(system: &System<'_>) -> Result<()>
                             (*b"MMBL", 1),
                             (*b"MMST", 1),
                             (*b"TEDT", 1),
-                            (*b"TESV", 1)];
+                            (*b"TESV", 1),
+                            (*b"ALRT", 1),
+                            (*b"ALST", 1)];
             require(ledger.len() == expected.len() as u64,
                     "worker exit pool census missing a registered kind")?;
             for index in 0..ledger.len()
@@ -838,6 +844,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
             core::mem::forget(scroll_box);
             core::mem::forget(leaked_world);
             core::mem::forget(leaked_editor);
+            core::mem::forget(leaked_alert);
             core::mem::forget(leaked_menu);
             return Ok(());
         }

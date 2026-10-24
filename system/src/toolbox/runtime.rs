@@ -39,7 +39,7 @@ pub struct Desktop
     scroll_boxes:                     super::controls::scrollbox::Manager,
     controls:                         super::controls::objects::Manager,
     crash:                            super::crashes::Manager,
-    dialogs:                          super::dialogs::DialogState,
+    dialogs:                          super::dialogs::Alerts,
     desktop:                          DesktopLayer,
     menus:                            super::menus::Manager,
     cursors:                          super::quickdraw::cursors::Cursors,
@@ -310,7 +310,7 @@ impl Desktop
                   standard_file: super::standard_file::Manager::new(super::handles::file_dialog_kinds()?)?,
                   scroll_boxes: super::controls::scrollbox::Manager::new(super::handles::scroll_box_kinds()?)?,
                   controls: super::controls::objects::Manager::new(super::handles::controls_kinds()?)?,
-                  dialogs: Default::default(),
+                  dialogs: super::dialogs::Alerts::new(super::handles::alert_kinds()?, processes.ledger(finder)?)?,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
                   desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
                   cursors: Default::default(),
@@ -525,6 +525,9 @@ impl Desktop
             }
             CLOSE_WINDOW =>
             {
+                // Closing a dialog's window also ends its modal protocol.
+                // A parent already taken by explicit/generic close is absent.
+                let alert = self.dialogs.take_window(id.0);
                 match self.windows.dispose_window(id, &mut self.events, when)
                 {
                     Ok(()) => (),
@@ -561,6 +564,14 @@ impl Desktop
                 self.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
                 self.last_action = "CLOSE";
+                if let Some(alert) = alert
+                {
+                    let restored = self.restore_alert_focus(alert.previous);
+                    if result == OK
+                    {
+                        result = restored.map_or_else(|status| status, |()| OK);
+                    }
+                }
             }
             SELECT_WINDOW =>
             {
@@ -2519,10 +2530,15 @@ impl super::windows::lifetime::WindowHost for Desktop
     fn release_window(&mut self, ticket: mac_object_table::domain::ReleasedResource)
                       -> Result<(), super::handles::cleanup::Failure>
     {
+        let owner = ticket.key().owner().incarnation();
         let id = self.windows.releasing_id(&ticket);
         let result = self.windows.release(ticket);
         if let Some(id) = id
         {
+            // A window can be walked before its Alert parent. End that protocol
+            // without foregrounding its owner or imposing a kind order.
+            let alert = self.alerts_for_owner(owner).and_then(|manager| manager.take_window(id.0));
+            drop(alert);
             let before = self.drag.feedback();
             self.drag.forget_window(id.0, Self::when());
             self.drag_effects(before);

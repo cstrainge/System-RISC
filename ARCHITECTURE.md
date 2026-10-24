@@ -416,7 +416,12 @@ foreign IDs and stale IDs after zone destruction. Memory no longer indexes a
 manager by scheduler slot; its EXIT cleanup hook is replaced by registered
 release callbacks. TextEdit's TEDT/TESV registrations own editor payloads and
 per-domain backing, with opaque u64 identities and fallible growth rather than
-the old fixed-64 table. Other managers remain staged for ledger migration. These
+the old fixed-64 table. ALRT/ALST own each classic Alert protocol and its saved
+backing; its window and managed CDEF buttons retain independent registrations.
+Closing the window or opening a crash report ends the protocol, so stale Alert
+references cannot act on a replacement. Initialization owns rollback before
+publishing any child. Tracking changes redraw only the affected control; the
+unchanged held state does no drawing. Other managers remain staged for ledger migration. These
 service-level ownership checks are not MMU isolation.
 Per-app menus, events, dialogs, worlds, editor records and legacy compatibility
 state are disposed at exit; the system clipboard and immutable cached images

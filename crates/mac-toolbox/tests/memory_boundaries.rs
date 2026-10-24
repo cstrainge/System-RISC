@@ -48,7 +48,9 @@ fn disposed_ids_never_alias_reused_slots_and_borrowed_pointers_are_cleared()
         let current = call.handle;
         assert_ne!(current, old);
         assert_eq!(current & 0xffff, old & 0xffff, "force the same slot");
-        assert_eq!(current >> 16, (old >> 16) + 1);
+        // Generations are shared across all domains. Other concurrent sessions
+        // may consume intervening generations of this slot; history must advance.
+        assert!(current >> 16 > old >> 16);
         call.operation = SIZE;
         call.handle = old;
         assert_eq!(client.memory(&mut call, &[], &mut []), Err(Error::NilHandle));

@@ -123,3 +123,35 @@ fn string_resources_are_utf8_in_rust_and_pascal_only_at_legacy_trap()
                    Err(Error::NotFound));
     }).unwrap();
 }
+
+#[test]
+fn malformed_default_ring_and_reserved_requests_are_rejected_before_opening()
+{
+    let mut items = include_bytes!("../../../apps/finder/assets/visual/4449544c-6012.bin").to_vec();
+    items[8..10].copy_from_slice(&i16::MIN.to_be_bytes());
+    items[12..14].copy_from_slice(&(i16::MIN + 59).to_be_bytes());
+    for (data, reserved) in
+        [(items, 0),
+         (include_bytes!("../../../apps/finder/assets/visual/4449544c-6012.bin").to_vec(), 1)]
+    {
+        let validate = |services: &mac_abi::SystemServices| {
+            let mut call = mac_abi::dialogs::DialogCall { operation:
+                                                              mac_abi::dialogs::VALIDATE_ALERT,
+                                                          scope: 1,
+                                                          resource: 6012,
+                                                          reserved,
+                                                          ..Default::default() };
+            let status = unsafe {
+                (services.trap)(mac_abi::traps::DIALOG,
+                                core::ptr::from_mut(&mut call).cast(),
+                                size_of_val(&call))
+            };
+            let error = Error::from_status(status as i32);
+            assert_eq!(error, Error::BadArgument);
+            assert!(error.to_string().contains("invalid"));
+        };
+        mac_system::testing::with_resource_forks(&encode(&[]).unwrap(),
+                                                 &resources(&data),
+                                                 validate).unwrap();
+    }
+}
