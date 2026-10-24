@@ -656,6 +656,15 @@ low bits carry item count and a precomputed intersection of offered types.
 These messages are native service events, not the original Drag Manager callback
 ABI. Rebuild System and every application/definition together at ABI 1.
 
+DRAG/DRST register session payloads and per-owner backing; DRCV/DRVS register
+window/desktop receivers and their backing. Existing 32-bit DragRef and receiver
+namespaces project through the shared facility onto full owner-ledger keys.
+Projection histories are boot-wide, including after manager destruction; an
+unscoped namespace is refused by the projection constructor. The current global
+wire ranges remain 32 sessions and 64 receivers. These are existing wire limits,
+not an added per-application allocation quota. Payloads and saved arrays belong
+to the same generic cleanup walk; no Drag Manager EXIT hook remains.
+
 Application-file lifecycle notifications use native OsEvent message prefix
 `0x0c000000` with bit 0 set while the exact file has a running instance. The
 u64 payload contains mounted volume ID in its low half and CNID in its high
@@ -687,6 +696,18 @@ rejection, without a highlight or drop delivery. Modifier changes recompute
 eligibility; physical release freezes the final modifiers. Explicitly answered
 rejection is separate from an unanswered offer, so release cannot wait for an
 answer already received. Rebuild all native clients together for this contract.
+On successful ACCEPT, `Call.index` is 1 when the response was applied and 0 when
+its position/phase already expired. Ownership, thread and request validation
+still reject invalid callers. The Rust result is
+`TrackingResponse::{Applied, Expired}`. An expired response cannot change an
+already negotiated drop; callers publish a replacement target or document batch
+only after Applied. No extra query trap is needed. Target admission runs only
+after the position/phase check, so an expired response performs no filesystem
+admission work. On admission failure, the unchanged error Status is accompanied
+by `Call.index = 2` and the exact cause in `Call.error`; the SDK exposes
+`DragError::TargetUnavailable { source }`. A missing target is an error, while
+only explicit resident expiry produces Expired. Foreign references and malformed
+requests retain their ordinary refusals.
 
 ## Native kernel module contracts (DABI/EABI, schema 1)
 

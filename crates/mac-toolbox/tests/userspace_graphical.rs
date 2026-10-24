@@ -81,6 +81,9 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
         assert!(serial.contains(definition),
                 "loaded definition evidence {definition} absent:\n{serial}");
     }
+    assert!(serial.contains("DRAG_LEDGER_USERSPACE_PASS projection=passed reuse=64 \
+                             classic=passed"),
+            "missing registered native/classic DragRef lifetime acceptance: {serial}");
     let mut relocated_definitions = 0;
     for line in serial.lines().filter(|line| line.starts_with("CODE_LOADED "))
     {

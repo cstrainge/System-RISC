@@ -7,6 +7,32 @@ reads remain repeatable; they are not native takes. Source/receiver thread and
 owner checks are separate from handle generation checks. Definitions and feedback
 never execute application callbacks in another application's context.
 
+## Registered lifetimes and tracking expiry
+
+DRAG/DRST own session payloads and their per-domain backing. DRCV/DRVS own
+receiver registrations and backing, including receivers created with windows.
+The generic owner walk replaces the separate Drag Manager EXIT call. Source
+release wakes a pending receiver take, and receiver release rejects the drop
+and wakes its surviving source. Ordinary IDs are revoked before cleanup, while
+retained guards keep the payload and provider pins alive through destruction.
+The shared projected store preserves the current 32-bit namespaces and their
+existing global wire limits (32 sessions, 64 receivers). It rejects namespaces
+without boot-wide generation history, including at reconstruction boundaries.
+Native and original traps continue to validate one underlying registered object.
+
+A tracking event is a revocable view. `respond` returns
+`TrackingResponse::Applied` or `TrackingResponse::Expired` in the same trap;
+there is no separate validity query. Expired positions and responses after a
+committed drop cannot overwrite negotiation or trigger a false access-denial
+failure. Finder stages a replacement application target/document batch and keeps
+the previous pins until the response is applied. The deterministic regression
+holds a tracking view across mouse-up, responds late, and verifies the original
+drop remains readable and completes. Ordinary wrong-thread/foreign/request
+refusals remain typed errors, with informative Display and nested causes.
+Filesystem admission happens after position/phase validation; a missing target
+returns TargetUnavailable with its exact cause and releases the response guard.
+It cannot be misclassified as normal expiry or leave mouse-up waiting forever.
+
 ## Current verified slice
 
 `mac-toolbox/tests/drag.rs` exercises real resident services through the SDK and
@@ -39,9 +65,12 @@ The current atomic catalog move preserves volume identity: forced cross-volume
 moves and provider mounts without that operation reject during negotiation. The
 query reads mount state only; tests assert zero device I/O, and pointer-policy
 decisions use source-volume metadata frozen at begin rather than walking items.
-This prevents a false accepted drop; it does **not** complete the writable host
-provider contract. That provider still owes full metadata/rename/move/remove and
-transactional group support. Read-only mounts still owe the complete read API.
+The writable host provider implements metadata, rename, move, remove and stepped
+transactional groups. Native filesystem workflow acceptance copies applications
+with both forks, launches/quits them from the host mount, moves back to native
+storage, opens external documents by application drop, applies modifiers at drop
+and ejects writable/read-only volumes. Read-only drivers retain the complete read
+contract while rejecting storage mutation.
 
 Native `TEXT` is UTF-8. Original `TEXT` sizes, reads and set offsets use MacRoman;
 conversion is counted bytes, without a Pascal-string length limit. Unrepresentable
@@ -55,11 +84,11 @@ the public Files SDK. During the tracked pointer-motion interval it requires zer
 file/font calls and unchanged scene composition, menu painting and update counts.
 Feedback uses resident outline/highlight save-under overlays beneath the cursor.
 
-The broader native regression run currently stops in ResEdit: repeated resource
-viewer changes exhaust available memory while configuring/drawing a scroll box
-(`NO_MEMORY`). The drag acceptance tests pass; the full suite is not green.
-Investigate retained viewer/raster lifetimes separately rather than increasing
-the heap budget to conceal the failure.
+The memory-model stage-6 gate carries the earlier Res Edit exhaustion finding:
+repeated viewer changes exhausted available memory while configuring/drawing a
+scroll box. This drag slice does not qualify the full Res Edit suite. The planned
+page-backed heaps/resource accounting must pass that suite without a machine halt;
+increasing the static heap is not a substitute for that acceptance.
 
 Native offers carry their original parent identity. A group move validates all
 expected parents and publishes placement/catalog changes in one transaction.
@@ -67,13 +96,13 @@ Repositioning does not re-query each source file at drop. Closed-folder/volume
 drops preserve relative layout in destination coordinates. There is no app-local
 pointer tracking or direct source deletion on a successful receiver outcome.
 
-Finder cross-volume copying, Option-forced copies, transfer windows/rollback,
-desktop file placement, volume-icon repositioning and text-field clients remain
-unfinished. The resident policy already samples modifiers at release: Command
-forces move, Option copy, Command wins, Trash always move, read-only sources are
-copy-only and read-only destinations reject. A policy test is not an implemented
-filesystem transfer. The general std-compatible executor and guest std/Tokio
-support remain the separate gates in [ASYNC-SDK.md](ASYNC-SDK.md).
+Finder cross-volume copying, forced copies, transfer windows/rollback, desktop
+placement and volume eject are exercised by native filesystem workflow tests.
+The resident policy samples modifiers at release: Command forces move, Option
+copy, Command wins, Trash always move, read-only sources are copy-only and
+read-only destinations reject. Text-field drag clients, the general application
+executor and real guest std/Tokio support remain separate work; see
+[ASYNC-SDK.md](ASYNC-SDK.md).
 
 ## Original Pascal trap contract
 

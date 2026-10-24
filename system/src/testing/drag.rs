@@ -26,12 +26,11 @@ fn drain(s: &mut Session)
         s.drag_notices.push(notice);
     }
 }
-pub(super) fn request(s: &mut Session, call: &mut mac_abi::drag::Call, input: &[u8],
-                      output: &mut [u8])
+pub(super) fn request(s: &mut Session, owner: &crate::toolbox::handles::OwnerRef,
+                      call: &mut mac_abi::drag::Call, input: &[u8], output: &mut [u8])
                       -> Result<(), Status>
 {
     let source_read_only = crate::toolbox::drag::source_read_only(&mut s.files, call, input)?;
-    crate::toolbox::drag::validate_target(&mut s.files, call)?;
     if matches!(call.operation,
                 mac_abi::drag::ACCEPT
                 | mac_abi::drag::READ
@@ -42,7 +41,9 @@ pub(super) fn request(s: &mut Session, call: &mut mac_abi::drag::Call, input: &[
     {
         call.receiver = s.drag.receiver_at(call.window).ok_or(NOT_FOUND)?;
     }
-    let result = s.drag.request(files::current_owner(), THREAD.get(), call, input, output, 0);
+    let result = s.drag.request(owner, THREAD.get(), call, input, output, 0, |call| {
+                           crate::toolbox::drag::validate_target(&mut s.files, call)
+                       });
     if result.is_ok() && source_read_only
     {
         s.drag.source_read_only(call.id);
@@ -50,23 +51,25 @@ pub(super) fn request(s: &mut Session, call: &mut mac_abi::drag::Call, input: &[
     drain(s);
     result
 }
-pub(super) struct Services<'a>(pub(super) &'a mut Session);
+pub(super) struct Services<'a>(pub(super) &'a mut Session,
+                               pub(super) &'a crate::toolbox::handles::OwnerRef);
 impl crate::toolbox::classic::Services for Services<'_>
 {
     fn drag(&mut self, call: &mut mac_abi::drag::Call, input: &[u8], output: &mut [u8])
             -> Result<(), Status>
     {
-        request(self.0, call, input, output)
+        request(self.0, self.1, call, input, output)
     }
 }
 pub fn receiver(owner: u64, thread: u64, window: WindowId)
 {
+    let owner = super::inspection::caller_ledger(owner).unwrap();
     SESSION.with(|s| {
                s.borrow_mut()
                 .as_mut()
                 .unwrap()
                 .drag
-                .ensure_receiver(owner, thread, window.0)
+                .ensure_receiver(&owner, thread, window.0)
                 .unwrap()
            });
 }
@@ -145,4 +148,16 @@ pub fn provider_volume_for_export(read_only: bool, export: u64) -> VolumeId
         files.publish_provider_mount(id, &bytes[..length]).unwrap();
         VolumeId(id)
     })
+}
+
+impl crate::toolbox::drag::lifetime::Host for Session
+{
+    fn release_drag(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                    kind: crate::toolbox::drag::lifetime::Registration)
+                    -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        self.drag.release_registered(ticket, kind, 0)?;
+        drain(self);
+        Ok(())
+    }
 }

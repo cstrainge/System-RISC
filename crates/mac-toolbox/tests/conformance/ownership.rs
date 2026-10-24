@@ -227,6 +227,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     // simultaneous button slots grow that pool's preserved history.
     system.log("OWNERSHIP_ALERT_BEGIN\n")?;
     alerts(system)?;
+    drag_ledger(system)?;
     system.log("HANDLE_REUSE_USERSPACE_PASS windows=40 native=9 legacy=3 generation=passed \
                 foreign=passed\n")
           .map_err(|error| Failure::Service(error.status()))?;
@@ -634,6 +635,53 @@ fn alerts(system: &System<'_>) -> Result<(), Failure>
     reports.begin()?;
     system.log("ALERT_LEDGER_USERSPACE_PASS managed_buttons=2 stale=passed \
                 external_close=passed reserved=passed\n")?;
+    Ok(())
+}
+
+/// Existing native/legacy DragRef wire, backed by the authoritative ledger.
+pub fn drag_ledger(system: &System<'_>) -> Result<(), Failure>
+{
+    use mac_abi::drag::*;
+    let mut call = Call { operation: CREATE,
+                          ..Default::default() };
+    system.client().drag(&mut call, &[], &mut [])?;
+    let old = call.id;
+    let before = registered_pool(system, *b"DRAG")?;
+    assert_eq!(before.live, 1);
+    assert_eq!(registered_pool(system, *b"DRST")?.live, 1);
+    call.operation = DISPOSE;
+    system.client().drag(&mut call, &[], &mut [])?;
+    for _ in 0..64
+    {
+        call.operation = CREATE;
+        system.client().drag(&mut call, &[], &mut [])?;
+        let current = call.id;
+        assert_ne!(old, current);
+        assert_eq!(old & 0xffff, current & 0xffff, "force the same treaty projection slot");
+        assert_eq!(registered_pool(system, *b"DRAG")?.slots, before.slots);
+        call.operation = INFO;
+        call.id = old;
+        assert_eq!(system.client().drag(&mut call, &[], &mut []), Err(Error::NotFound));
+        // Original GetDragItemCount: output pointer followed by DragRef, then OSErr.
+        let mut memory = [0u8; 32];
+        memory[..4].copy_from_slice(&16u32.to_be_bytes());
+        memory[4..8].copy_from_slice(&old.to_be_bytes());
+        let mut registers = mac_abi::traps::ClassicRegisters::default();
+        registers.d[0] = 0x0e;
+        system.client()
+              .classic(mac_abi::traps::classic::DRAG_DISPATCH, &mut registers, 0, &mut memory)?;
+        assert_eq!(i16::from_be_bytes(memory[8..10].try_into().unwrap()), -1850);
+        call.id = current;
+        system.client().drag(&mut call, &[], &mut [])?;
+        call.operation = DISPOSE;
+        system.client().drag(&mut call, &[], &mut [])?;
+    }
+    let after = registered_pool(system, *b"DRAG")?;
+    assert_eq!(after.live, 0);
+    assert_eq!(after.pending, 0);
+    assert_eq!(after.births, before.births + 64);
+    assert_eq!(after.deaths, before.deaths + 65);
+    system.log("DRAG_LEDGER_USERSPACE_PASS projection=passed reuse=64 classic=passed\n")?;
     Ok(())
 }
 

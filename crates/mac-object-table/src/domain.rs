@@ -270,6 +270,9 @@ pub enum PoolError
         owner: DomainId
     }
 }
+impl core::error::Error for PoolError
+{
+}
 impl fmt::Display for PoolError
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result

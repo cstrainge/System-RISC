@@ -12,6 +12,10 @@ pub const ADD_ITEM: u32 = 3;
 pub const OFFER: u32 = 4;
 pub const CANCEL: u32 = 6;
 pub const ACCEPT: u32 = 9;
+/// ACCEPT reply tags in Call.index; error detail remains in Call.error.
+pub const RESPONSE_EXPIRED: u32 = 0;
+pub const RESPONSE_APPLIED: u32 = 1;
+pub const TARGET_ADMISSION_FAILED: u32 = 2;
 pub const ITEM_AT: u32 = 10;
 pub const FLAVOR_AT: u32 = 11;
 pub const READ: u32 = 12;

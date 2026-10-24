@@ -683,9 +683,6 @@ impl Desktop
                 self.route_events();
                 let previous = self.processes.previous(caller);
                 self.enter(previous);
-                let feedback = self.drag.feedback();
-                self.drag.close_owner(caller, Self::when());
-                self.drag_effects(feedback);
                 self.locals.retain(|s| s.id != caller);
                 let retirement = self.processes.remove(caller);
                 self.notify_finder_file_state(file.volume, file.cnid, false);

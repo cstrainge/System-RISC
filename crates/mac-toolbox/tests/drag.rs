@@ -1054,3 +1054,348 @@ fn atomic_folder_move_negotiation_checks_volume_scope_without_disk_io()
         assert_eq!(activity.flushes, 0);
     }
 }
+
+#[test]
+fn registered_drafts_reuse_treaty_slots_and_quarantine_retains_the_cleanup_barrier()
+{
+    use mac_system::testing::{files::with_owner, inspection as fixture};
+    testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let first = fixture::add("Drag source", 0);
+        let second = fixture::add("Foreign source", 0);
+        with_owner(first, || {
+            let mut call = abi::drag::Call { operation: abi::drag::CREATE,
+                                             ..Default::default() };
+            system.client().drag(&mut call, &[], &mut []).unwrap();
+            let stale = call.id;
+            call.operation = abi::drag::DISPOSE;
+            system.client().drag(&mut call, &[], &mut []).unwrap();
+            call.operation = abi::drag::CREATE;
+            system.client().drag(&mut call, &[], &mut []).unwrap();
+            let live = call.id;
+            assert_ne!(stale, live);
+            assert_eq!(stale & 0xffff, live & 0xffff);
+            call.operation = abi::drag::INFO;
+            call.id = stale;
+            let error = system.client().drag(&mut call, &[], &mut []).unwrap_err();
+            assert_eq!(error, Error::NotFound);
+            assert!(error.to_string().contains("not found"));
+            let mut memory = [0; 32];
+            put(&mut memory, 0, 16);
+            put(&mut memory, 4, stale);
+            assert_eq!(classic(&system, 0x0e, &mut memory, 8), -1850);
+            call.id = live;
+            with_owner(second, || {
+                let error = system.client().drag(&mut call, &[], &mut []).unwrap_err();
+                assert_eq!(error, Error::AccessDenied);
+                assert!(error.to_string().contains("protected or locked"));
+            });
+            system.client().drag(&mut call, &[], &mut []).unwrap();
+            let failed = fixture::walk_registered(first, true, false);
+            assert_eq!(failed.report.quarantined, 2);
+            assert!(failed.failures.iter().all(|s| s.contains("no registered cleanup provider")));
+            assert!(failed.failures.iter().any(|s| s.contains("DRAG")));
+            assert_eq!(system.client().drag(&mut call, &[], &mut []), Err(Error::NotFound));
+            let refusal =
+                system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).err().unwrap();
+            assert_eq!(refusal, DragError::Unknown(abi::SERVICE_BUSY));
+            assert!(refusal.to_string().contains("busy"));
+            let retry = fixture::walk_registered(first, false, true);
+            assert_eq!((retry.report.released, retry.report.quarantined), (2, 0));
+            assert!(retry.failures.is_empty());
+        });
+        with_owner(second, || {
+            let mut replacement =
+                system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            replacement.empty_item(Rect::ZERO).unwrap();
+            let replacement = replacement.begin().unwrap();
+            replacement.cancel().unwrap();
+            assert_eq!(ended(&system), DragOutcome::Cancelled);
+        });
+    });
+}
+
+#[test]
+fn source_death_wakes_a_pending_promised_take_and_does_not_lock_the_next_drag()
+{
+    use std::sync::Arc;
+
+    use mac_system::testing::{files::with_owner, inspection as fixture};
+    struct Counter(AtomicUsize);
+    impl std::task::Wake for Counter
+    {
+        fn wake(self: Arc<Self>)
+        {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let first = fixture::add("Dying source", 0);
+        let receiver = fixture::add("Surviving receiver", 0);
+        input::receiver(receiver, 1, WINDOW);
+        with_owner(first, || {
+            let mut builder =
+                system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            builder.empty_item(Rect::ZERO).unwrap();
+            let _source = builder.promise::<Text<'_>, _>(|| panic!("dead producer must not run"))
+                                 .unwrap()
+                                 .begin()
+                                 .unwrap();
+            with_owner(receiver, || {
+                let offer = entered(&system);
+                let item = offer.flavors().item(0).unwrap();
+                offer.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                                 target:    Target::Content,
+                                                 highlight: Rect::new(20, 40, 60, 90) })
+                     .unwrap();
+                let payload = dropped(&system);
+                let count = Arc::new(Counter(AtomicUsize::new(0)));
+                let waker = Waker::from(count.clone());
+                let mut output = [0xa5; 32];
+                {
+                    let mut take = pin!(payload.text(item, &mut output));
+                    assert!(take.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+                    let walk = fixture::walk_registered(first, false, false);
+                    assert_eq!((walk.report.released, walk.report.quarantined), (2, 0));
+                    assert!(walk.failures.is_empty());
+                    assert_eq!(input::highlight(), None);
+                    assert_eq!(input::feedback(), None);
+                    for _ in 0..4
+                    {
+                        let _ = system.next_event(EventMask::ALL).unwrap();
+                    }
+                    assert_eq!(count.0.load(Ordering::SeqCst), 1);
+                    assert_eq!(poll(take.as_mut()), Poll::Ready(Err(DragError::NoSession)));
+                    assert!(DragError::NoSession.to_string().contains("no longer live"));
+                }
+                assert_eq!(output, [0xa5; 32]);
+                let mut next =
+                    system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+                next.empty_item(Rect::ZERO).unwrap();
+                let next = next.begin().unwrap();
+                next.cancel().unwrap();
+                assert_eq!(ended(&system), DragOutcome::Cancelled);
+            });
+        });
+    });
+}
+
+#[test]
+fn receiver_death_rejects_the_drop_preserves_its_cause_and_releases_feedback()
+{
+    use mac_system::testing::{files::with_owner, inspection as fixture};
+    testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let first = fixture::add("Surviving source", 0);
+        let receiver = fixture::add("Dying receiver", 0);
+        input::receiver(receiver, 1, WINDOW);
+        with_owner(first, || {
+            let mut builder =
+                system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            builder.empty_item(Rect::ZERO).unwrap();
+            builder.flavor(Flavor::text("inline")).unwrap();
+            let _source = builder.begin().unwrap();
+            let id = with_owner(receiver, || {
+                let event = DragEvent::Tracking(entered(&system));
+                let id = event.as_record(0, 0).payload as u32;
+                let DragEvent::Tracking(offer) = event
+                else
+                {
+                    unreachable!()
+                };
+                offer.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                                 target:    Target::Content,
+                                                 highlight: Rect::new(20, 40, 60, 90) })
+                     .unwrap();
+                let _payload = dropped(&system);
+                let walk = fixture::walk_registered(receiver, false, false);
+                assert_eq!((walk.report.released, walk.report.quarantined), (2, 0));
+                assert!(walk.failures.is_empty());
+                id
+            });
+            for tick in 1..9
+            {
+                input::tick(tick);
+            }
+            assert_eq!(ended(&system), DragOutcome::Rejected);
+            assert_eq!(input::feedback(), None);
+            assert_eq!(input::highlight(), None);
+            let mut call = abi::drag::Call { operation: abi::drag::INFO,
+                                             id,
+                                             ..Default::default() };
+            system.client().drag(&mut call, &[], &mut []).unwrap();
+            assert_eq!(call.info.error, abi::OPERATION_CANCELLED);
+            assert!(Error::from_status(call.info.error).to_string().contains("cancelled"));
+            let mut next = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            next.empty_item(Rect::ZERO).unwrap();
+            let next = next.begin().unwrap();
+            next.cancel().unwrap();
+            assert_eq!(ended(&system), DragOutcome::Cancelled);
+        });
+    });
+}
+
+#[test]
+fn a_late_tracking_response_cannot_cancel_an_already_committed_drop()
+{
+    testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        input::receiver(1, 1, WINDOW);
+        let mut builder = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+        builder.empty_item(Rect::ZERO).unwrap();
+        builder.flavor(Flavor::text("preserved")).unwrap();
+        let _source = builder.begin().unwrap();
+        let event = DragEvent::Tracking(entered(&system));
+        let record = event.as_record(0, 0);
+        let late = match DragEvent::decode(system.client(), record).unwrap()
+        {
+            DragEvent::Tracking(offer) => offer,
+            _ => unreachable!()
+        };
+        let DragEvent::Tracking(offer) = event
+        else
+        {
+            unreachable!()
+        };
+        let item = offer.flavors().item(0).unwrap();
+        offer.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                         target:    Target::Content,
+                                         highlight: Rect::ZERO })
+             .unwrap();
+        let payload = dropped(&system);
+        // The expired view must not even admit/query this nonexistent target.
+        let result =
+            late.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                            target:    Target::Folder { volume: VolumeId(u32::MAX),
+                                                                        id:     files::ROOT_ID },
+                                            highlight: Rect::ZERO });
+        assert!(result.is_ok(), "late response must expire without rejecting the drop: {result:?}");
+        let mut bytes = [0; 16];
+        {
+            let mut take = pin!(payload.text(item, &mut bytes));
+            assert_eq!(poll(take.as_mut()), Poll::Ready(Ok("preserved")));
+        }
+        let mut complete = pin!(payload.receive(async { Ok(()) }));
+        assert_eq!(poll(complete.as_mut()), Poll::Ready(Ok(())));
+        assert_eq!(ended(&system), DragOutcome::Moved);
+    });
+}
+
+#[test]
+fn an_older_position_response_expires_without_overwriting_the_new_highlight()
+{
+    testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        input::receiver(1, 1, WINDOW);
+        let mut builder = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+        builder.empty_item(Rect::ZERO).unwrap();
+        let _source = builder.begin().unwrap();
+        let old = entered(&system);
+        let point = Point { h: DROP.h + 1,
+                            v: DROP.v };
+        input::motion(point, 0, WINDOW, 2);
+        let current = match system.next_event(EventMask::ALL).unwrap()
+        {
+            Event::Drag { offer: DragEvent::Tracking(offer),
+                          .. } => offer,
+            event => panic!("{event:?}")
+        };
+        let bounds = Rect::new(20, 40, 60, 90);
+        assert_eq!(current.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                                      target:    Target::Content,
+                                                      highlight: bounds }),
+                   Ok(TrackingResponse::Applied));
+        assert_eq!(old.respond(Response::Reject), Ok(TrackingResponse::Expired));
+        assert_eq!(input::highlight(), Some((WINDOW.0, bounds)));
+    });
+}
+
+#[test]
+fn one_owner_can_die_while_tracking_or_dropping_in_either_registration_order()
+{
+    use mac_system::testing::{files::with_owner, inspection as fixture};
+    for receiver_first in [false, true]
+    {
+        for dropping in [false, true]
+        {
+            testing::with_services(|services| {
+                let system = unsafe { System::from_raw(services) }.unwrap();
+                let owner = fixture::add("Interrupted owner", 0);
+                with_owner(owner, || {
+                    if receiver_first
+                    {
+                        input::receiver(owner, 1, WINDOW);
+                    }
+                    let mut builder =
+                        system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+                    builder.empty_item(Rect::ZERO).unwrap();
+                    if !receiver_first
+                    {
+                        input::receiver(owner, 1, WINDOW);
+                    }
+                    let source = builder.begin().unwrap();
+                    entered(&system).respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                                                target:    Target::Content,
+                                                                highlight: Rect::new(20, 40, 60,
+                                                                                     90) })
+                                    .unwrap();
+                    let payload = dropping.then(|| dropped(&system));
+                    let walk = fixture::walk_registered(owner, false, false);
+                    assert_eq!((walk.report.released, walk.report.quarantined),
+                               (4, 0),
+                               "receiver_first={receiver_first} dropping={dropping}");
+                    assert!(walk.failures.is_empty());
+                    assert_eq!(input::feedback(), None);
+                    assert_eq!(input::highlight(), None);
+                    drop(payload);
+                    let survivor = fixture::add("Next source", 0);
+                    with_owner(survivor, || {
+                        let mut next =
+                            system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+                        next.empty_item(Rect::ZERO).unwrap();
+                        let next = next.begin().unwrap();
+                        drop(source); // A stale owner cannot cancel a replacement.
+                        next.cancel().unwrap();
+                        assert_eq!(ended(&system), DragOutcome::Cancelled);
+                    });
+                });
+            });
+        }
+    }
+}
+
+#[test]
+fn a_missing_target_is_an_informative_error_and_never_silent_tracking_expiry()
+{
+    testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        input::receiver(1, 1, WINDOW);
+        let mut builder = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+        builder.empty_item(Rect::ZERO).unwrap();
+        let source = builder.begin().unwrap();
+        let error =
+            entered(&system).respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                        target:    Target::Folder { volume: VolumeId(u32::MAX),
+                                                                    id:     files::ROOT_ID },
+                                        highlight: Rect::ZERO })
+            .unwrap_err();
+        assert_eq!(error, DragError::TargetUnavailable { source: Error::NotFound });
+        assert!(error.to_string().contains("target is unavailable"));
+        assert!(error.to_string().contains("not found"));
+        assert!(std::error::Error::source(&error).is_some());
+        // Error cleanup rejects this offer rather than stranding mouse-up.
+        input::release(DROP, 0, WINDOW, 2);
+        for tick in 3..12
+        {
+            input::tick(tick);
+        }
+        assert_eq!(ended(&system), DragOutcome::Rejected);
+        drop(source);
+        let mut next = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+        next.empty_item(Rect::ZERO).unwrap();
+        let next = next.begin().unwrap();
+        next.cancel().unwrap();
+        assert_eq!(ended(&system), DragOutcome::Cancelled);
+    });
+}

@@ -122,7 +122,9 @@ def capture(output):
             dismissed = driver.log().count('FINDER_ALERT_DISMISSED\n')
             driver.move(184, 106)
             driver.button(True)
-            driver.move(376, 106)  # The sixth 64px cell fits on the first row.
+            # Wide application captions put Z Conflict in row two. The opened
+            # capture records its actual icon at this location.
+            driver.move(120, 158)
             driver.button(False)
             driver.wait('AlreadyExists (-11)', failed)
             driver.wait('FINDER_DRAG_ENDED rejected\n', ended)

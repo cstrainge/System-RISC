@@ -321,7 +321,8 @@ impl Desktop
                   classic_font: Default::default(),
                   windows: WindowManager::with_kinds(super::handles::window_kinds()?, crate::machine::traps::gateway)?,
                   events: Box::new(EventManager::new()),
-                  drag: Default::default(),
+                  drag: { let (sessions, receivers) = super::handles::drag_kinds()?;
+                          super::drag::Manager::new(sessions, receivers)? },
                   textedit: super::textedit::Manager::new(super::handles::editor_kinds()?, processes.ledger(finder)?)?,
                   definitions,
                   content: Vec::new(),
@@ -490,7 +491,11 @@ impl Desktop
                     }
                 };
                 if let Err(status) =
-                    self.drag.ensure_receiver(self.owner,
+                    self.drag.ensure_receiver(&match self.processes.ledger(self.owner)
+                                              {
+                                                  Ok(owner) => owner,
+                                                  Err(status) => return status
+                                              },
                                               crate::context::current_thread_context().identity()
                                                                                       .thread
                                                                                       .0,

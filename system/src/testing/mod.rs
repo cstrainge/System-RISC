@@ -114,11 +114,27 @@ impl Default for Session
             crate::toolbox::handles::cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseEditors)).unwrap();
         registry.register(&registrar, crate::toolbox::textedit::lifetime::specification(true),
             crate::toolbox::handles::cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseStorage)).unwrap();
+        use crate::toolbox::drag::lifetime::{Registration, ReleaseKind};
+        for kind in [Registration::Sessions,
+                     Registration::SessionStorage,
+                     Registration::Receivers,
+                     Registration::ReceiverStorage]
+        {
+            registry.register(&registrar,
+                              kind.specification(),
+                              crate::toolbox::handles::cleanup::Complete(ReleaseKind(kind)))
+                    .unwrap();
+        }
+        let drag = crate::toolbox::drag::Manager::new(
+            (registry.get(crate::toolbox::handles::KindCode(*b"DRAG")).unwrap(),
+             registry.get(crate::toolbox::handles::KindCode(*b"DRST")).unwrap()),
+            (registry.get(crate::toolbox::handles::KindCode(*b"DRCV")).unwrap(),
+             registry.get(crate::toolbox::handles::KindCode(*b"DRVS")).unwrap())).unwrap();
         Self { worlds: crate::toolbox::quickdraw::worlds::Worlds::new((worlds, world_storage)).unwrap(),
                registry,
                menus: RefCell::new(std::vec::Vec::new()),
                inspection: inspection::Domains::new(),
-               drag: Default::default(),
+               drag,
                drag_notices: std::vec::Vec::new(),
                controls:
                    RefCell::new(crate::toolbox::controls::objects::Manager::new((controls,
@@ -276,17 +292,21 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
             }
         }
         DRAG => unsafe { crate::toolbox::drag::native::dispatch(pointer,size, |call,input,output| {
+            let owner = inspection::caller_ledger(files::current_owner())?;
             SESSION.with(|slot| { let mut s=slot.borrow_mut(); let s=s.as_mut().unwrap();
-                drag::request(s,call,input,output)
+                drag::request(s,&owner,call,input,output)
             })
         }) },
         CLASSIC => {
+            let owner = match inspection::caller_ledger(files::current_owner()) {
+                Ok(owner) => owner, Err(status) => return status as i64
+            };
             let call = match unsafe { request::<ClassicCall>(pointer,size) } { Ok(c)=>c, Err(s)=>return s as i64 };
             if call.memory.is_null() || call.memory_length > 128*1024*1024
                 || u64::from(call.guest_base) + call.memory_length as u64 > u64::from(u32::MAX)+1 { return BAD_ARGUMENT as i64; }
             let memory=unsafe { core::slice::from_raw_parts_mut(call.memory,call.memory_length) };
             SESSION.with(|slot| { let mut s=slot.borrow_mut(); let s=s.as_mut().unwrap();
-                crate::toolbox::classic::dispatch(call.instruction,&mut call.registers,call.guest_base,memory,&mut drag::Services(s)) as i64
+                crate::toolbox::classic::dispatch(call.instruction,&mut call.registers,call.guest_base,memory,&mut drag::Services(s, &owner)) as i64
             })
         }
         STANDARD_FILE => {
@@ -367,6 +387,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
         POSITIONED_EVENT => SESSION.with(|slot| {
             let mut session = slot.borrow_mut();
             let s = session.as_mut().unwrap();
+            let drag_owner = inspection::caller_identity(&s.inspection, files::current_owner());
             let call = match unsafe { request::<events::PositionedEventCall>(pointer, size) } { Ok(call) => call, Err(status) => return status as i64 };
             let ticks = (s.started.elapsed().as_nanos() * 60 / 1_000_000_000) as u64;
             call.waited = 0;
@@ -376,7 +397,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                 events::POSITION_NEXT | events::POSITION_WAIT | events::POSITION_PEEK => {
                     let remove = call.operation != events::POSITION_PEEK;
                     let notice = if call.mask & (1 << EventKind::OsEvent as u16) != 0 {
-                        s.drag_notices.iter().position(|n| n.owner == files::current_owner())
+                        s.drag_notices.iter().position(|n| Some(n.owner) == drag_owner)
                     } else { None };
                     let found = if let Some(index) = notice {
                         let event = s.drag_notices[index].event;
@@ -420,6 +441,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        }
                        let ticks =
                            (session.started.elapsed().as_nanos() * 60 / 1_000_000_000) as u64;
+                       let drag_owner = inspection::caller_identity(&session.inspection, files::current_owner());
                        if number == NEXT_EVENT
                        {
                            return match unsafe { request::<NextEventCall>(pointer, size) }
@@ -427,7 +449,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                                Ok(call) =>
                                {
                                    if call.mask & (1 << EventKind::OsEvent as u16) != 0
-                                      && let Some(index) = session.drag_notices.iter().position(|n| n.owner == files::current_owner()) {
+                                      && let Some(index) = session.drag_notices.iter().position(|n| Some(n.owner) == drag_owner) {
                                         call.event = session.drag_notices.remove(index).event; return OK as i64;
                                    }
                                    call.event = session.events
@@ -445,7 +467,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                            Ok(call) => {
                                if call.operation == events::NATIVE_PEEK
                                   && call.mask & (1 << EventKind::OsEvent as u16) != 0
-                                  && let Some(notice) = session.drag_notices.iter().find(|n| n.owner == files::current_owner())
+                                  && let Some(notice) = session.drag_notices.iter().find(|n| Some(n.owner) == drag_owner)
                                {
                                    call.event = notice.event;
                                    call.present = 1;

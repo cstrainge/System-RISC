@@ -786,6 +786,11 @@ pub fn worker(system: &System<'_>) -> Result<()>
             // Account every deliberately abandoned registered object through
             // the public service. Parent WDEF cleanup may release controls and
             // scroll boxes, so callback counts alone are not resource counts.
+            let mut leaked_drag = mac_toolbox::abi::drag::Call { operation:
+                                                                     mac_toolbox::abi::drag::CREATE,
+                                                                 window: window.0,
+                                                                 ..Default::default() };
+            system.client().drag(&mut leaked_drag, &[], &mut [])?;
             let leaked_alert = system.dialogs()
                                      .alert_owned(mac_toolbox::ResourceScope::Application,
                                                   6012,
@@ -811,7 +816,11 @@ pub fn worker(system: &System<'_>) -> Result<()>
                             (*b"TEDT", 1),
                             (*b"TESV", 1),
                             (*b"ALRT", 1),
-                            (*b"ALST", 1)];
+                            (*b"ALST", 1),
+                            (*b"DRAG", 1),
+                            (*b"DRST", 1),
+                            (*b"DRCV", 3),
+                            (*b"DRVS", 1)];
             require(ledger.len() == expected.len() as u64,
                     "worker exit pool census missing a registered kind")?;
             for index in 0..ledger.len()

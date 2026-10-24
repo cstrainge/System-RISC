@@ -1,7 +1,7 @@
 //! Finder supplies cached items and target intent. System owns the gesture,
 //! feedback, negotiation, modifier policy and terminal outcome.
 use mac_toolbox::drag::{self, DragEvent, DragOutcome, DropAction, DropActions, DropPayload,
-                        FileItem, Response, Target, TrackPhase, TrackingOffer};
+                        FileItem, Response, Target, TrackPhase, TrackingOffer, TrackingResponse};
 
 use super::*;
 #[path = "copy_window.rs"]
@@ -74,7 +74,8 @@ fn status(error: drag::DragError) -> Error
         drag::DragError::WrongThread => Error::WrongThread,
         drag::DragError::Unknown(s) => Error::from_status(s),
         drag::DragError::PromiseFailed { source,
-                                         .. } => source,
+                                         .. }
+        | drag::DragError::TargetUnavailable { source } => source,
         drag::DragError::FlavorUnavailable { .. } => Error::Unknown(-1852)
     }
 }
@@ -367,14 +368,21 @@ impl<'a> Controller<'a>
                 {
                     None
                 };
+                // Probing a replacement must not destroy the last applied
+                // document batch: this leased event may expire during its I/O.
+                let mut application = None;
+                let mut reuse_application = false;
                 if let Some(candidate) = target.filter(|target| target.application)
                 {
                     let key = (candidate.location, candidate.revision, offer.id().0);
-                    if self.application
-                           .as_ref()
-                           .is_none_or(|cache| (cache.location, cache.revision, cache.drag) != key)
+                    reuse_application =
+                        self.application
+                            .as_ref()
+                            .is_some_and(|cache| {
+                                (cache.location, cache.revision, cache.drag) == key
+                            });
+                    if !reuse_application
                     {
-                        self.application = None;
                         let result = (|| {
                             let batch = system.processes().begin_document_drop(processes::DocumentRef { volume: candidate.location.volume, id: candidate.location.folder }, &offer)?;
                             let accepted = batch.accepts_drop(&offer)?;
@@ -392,20 +400,24 @@ impl<'a> Controller<'a>
                                 (None, false)
                             }
                         };
-                        self.application = Some(ApplicationTarget { location: key.0,
-                                                                    revision: key.1,
-                                                                    drag: key.2,
-                                                                    batch,
-                                                                    accepted });
+                        application = Some(ApplicationTarget { location: key.0,
+                                                               revision: key.1,
+                                                               drag: key.2,
+                                                               batch,
+                                                               accepted });
                     }
-                    if !self.application.as_ref().is_some_and(|cache| cache.accepted)
+                    let proposed = if reuse_application
+                    {
+                        self.application.as_ref()
+                    }
+                    else
+                    {
+                        application.as_ref()
+                    };
+                    if !proposed.is_some_and(|cache| cache.accepted)
                     {
                         target = None;
                     }
-                }
-                else
-                {
-                    self.application = None;
                 }
                 let response = target.map_or(Response::Reject, |target| {
                                          Response::Accept { target:    if target.eject
@@ -468,7 +480,15 @@ impl<'a> Controller<'a>
                                      });
                 match offer.respond(response)
                 {
-                    Ok(()) => self.target = target,
+                    Ok(TrackingResponse::Applied) =>
+                    {
+                        self.target = target;
+                        if !reuse_application
+                        {
+                            self.application = application;
+                        }
+                    }
+                    Ok(TrackingResponse::Expired) => (),
                     Err(error) =>
                     {
                         self.target = None;

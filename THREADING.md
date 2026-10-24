@@ -317,6 +317,13 @@ registered lifetimes: cleanup works without imposing parent/child kind order,
 and a saved app's cleanup never foregrounds it. Taking the protocol invalidates
 it before child cleanup; refused window cleanup retains its own ticket.
 Native MenuId names a semantic menu property; MenuHandle identifies a live object. Owned menu references validate the latter on every call.
+DRAG/DRST and DRCV/DRVS register drag sessions, receiver registrations and their
+per-owner backing. Native and classic DragRef wires share the same checked
+projection onto those keys. Registered release wakes surviving peers and removes
+only outline/highlight feedback; it needs no ordered process-exit cleanup hook.
+A leased tracking event can expire during a target probe. The response trap
+reports Applied or Expired atomically with validation; Finder retains its last
+applied target and document pins until a replacement is applied.
 
 The current native ThreadContext receives the directory's actual OwnerRef when
 its thread is spawned; its scalar AppId is derived from that authority. Traps can

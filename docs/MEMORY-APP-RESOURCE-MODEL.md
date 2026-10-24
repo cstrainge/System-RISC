@@ -815,3 +815,62 @@ Initial failures and final results remain in private `dialog-ledger-*` evidence.
 The current stage-3 Saved-context retention/retry debt and cold first-key latency
 gate remain open; paging, dynamic thread/image capacity and std support are not
 claimed by this manager slice.
+
+
+### Drag session/receiver migration and leased-response expiry
+
+DRAG/DRST register session payloads and backing; DRCV/DRVS register receivers and
+backing, including each window's receiver. The actual directory OwnerRef admits
+both kinds. The old drag-specific EXIT call is removed. Kind callbacks release
+source/receiver state in either order, wake surviving peers, and remove only the
+old outline/highlight feedback. Source death wakes a pending promised-data take;
+receiver death preserves the cancellation cause and rejects the drop. Stale IDs
+are already inaccessible while a refused cleanup ticket remains quarantined.
+
+The narrow, safe shared `mac-object-table::projected::Store` places existing
+32-bit treaty namespaces over the registered value store. It is an index, not
+another payload or owner authority. Admission preflights the projection and rolls
+it back if registered publication refuses; cleanup removes both indexes while a
+linear guard retains payload/backing/provider pins. Boot-wide projection history
+prevents aliasing across manager reconstruction. Construction refuses an
+unmigrated namespace without that history. Current DragRef wire limits remain
+32 sessions and 64 receivers globally, derived from the central namespace record.
+This slice does not introduce original callback execution or expand that wire.
+
+Native workflow qualification exposed a pre-existing delayed-tracking-response
+race: responding after a committed drop returned ACCESS_DENIED; Finder's error
+guard then abandoned the valid source. A deterministic SDK regression reproduced
+it. ACCEPT now returns Applied/Expired atomically with validation, without an
+extra query trap. Finder stages a proposed target/document batch and publishes
+it only on Applied, retaining the last valid pins across expiry. An older point
+cannot withdraw a newer highlight. Genuine foreign/thread/malformed refusals
+remain errors; DragError now exposes informative Display and nested promise
+causes. Original Pascal transport/layouts are unchanged.
+
+Qualification passes: 63 facility tests (including three compile-fail), 131 System
+units (one separately gated), 232 SDK host cases (63 native gates), optimized
+whole-world build, native aggregate with 64 native/classic projection reuses,
+both process campaigns (27 completed lifetimes through 19 callbacks per worker),
+Finder failed-drop recovery/group placement and external file/app/document/eject
+workflows. A fixed three-run post-fix external workflow set passed every sample.
+Tracking preserves zero file/font calls and unchanged scene/menu/update counters.
+Cursor, Alert bounded painting/no-change tracking, panic recovery, physical events,
+Linux/Windows Reactor Room, native/classic ABI, boundaries and 49-library API docs
+also pass. Initial failures and final evidence are retained as `drag-ledger-*`.
+
+The captures also now target the actual second-row conflict folder, and the
+placement assertion accounts for Reactor Room and wide-caption rows. The native
+worker uses the public facade's ABI re-export. These repairs retain all existing
+pixel, no-enumeration, bounded-paint, file-identity and persistent-placement
+assertions. Other file/resource/module lifetimes and the Saved-context retry /
+quiescence gate still need migration. Paging, dynamic scheduler/image capacity,
+privileged-fault containment, strict cold-key latency and std readiness remain
+unqualified by this slice.
+
+Final error-identity review separates explicit response expiry from target
+admission failure. The resident replies with a typed wire context and unchanged
+Status/cause; Rust exposes TargetUnavailable with an Error source. An expired
+view skips the File Manager predicate entirely, while a genuinely missing target
+rejects through RAII and leaves the next drag usable. Canonical tests also walk
+an active same-owner drag in both registration orders, during tracking and drop,
+then drop its stale source guard after creating a replacement.

@@ -5,8 +5,10 @@ mod classic;
 use alloc::vec::Vec;
 
 use mac_abi::{drag::*, *};
+use mac_object_table::{domain::{CompletionError, ReleasedResource},
+                       projected::Store};
 
-use super::super::handles::{Kind, Table};
+use super::super::handles::{InvocationGate, Kind, KindLease, OwnerRef};
 
 struct Flavor
 {
@@ -135,23 +137,38 @@ pub struct Notice
 }
 pub struct Manager
 {
-    sessions:         Table<Session>,
-    receivers:        Table<Receiver>,
+    sessions:         Store<Session, InvocationGate>,
+    receivers:        Store<Receiver, InvocationGate>,
     active:           Option<u32>,
     notices:          [Option<Notice>; 4],
     highlight:        Option<(u64, Rect)>,
     highlight_damage: [Option<Rect>; 2]
 }
-impl Default for Manager
+impl Manager
 {
-    fn default() -> Self
+    pub(crate) fn new(sessions: (KindLease, KindLease), receivers: (KindLease, KindLease))
+                      -> Result<Self, Status>
     {
-        Self { sessions:         Table::new(Kind::Drags),
-               receivers:        Table::new(Kind::DragReceivers),
-               active:           None,
-               notices:          [None; 4],
-               highlight:        None,
-               highlight_damage: [None; 2] }
+        Ok(Self { sessions:
+                      Store::new(Kind::Drags, sessions.0, sessions.1).map_err(|_| BAD_ARGUMENT)?,
+                  receivers:
+                      Store::new(Kind::DragReceivers, receivers.0, receivers.1).map_err(|_| {
+                                                                                   BAD_ARGUMENT
+                                                                               })?,
+                  active:           None,
+                  notices:          [None; 4],
+                  highlight:        None,
+                  highlight_damage: [None; 2] })
+    }
+}
+fn admission(error: mac_object_table::projected::Error) -> Status
+{
+    match error
+    {
+        mac_object_table::projected::Error::UnscopedProjection => BAD_ARGUMENT,
+        mac_object_table::projected::Error::ProjectionExhausted => NO_MEMORY,
+        mac_object_table::projected::Error::Pool(error) =>
+            crate::toolbox::handles::registry_status(&mac_object_table::registry::Error::Pool(error))
     }
 }
 fn copied(bytes: &[u8]) -> Result<Vec<u8>, Status>
@@ -166,28 +183,38 @@ impl Manager
     fn notice(&mut self, owner: u64, prefix: u32, window: u64, id: u32, when: u32)
     {
         let session = self.sessions.get(id).expect("live drag notification");
-        let notice = Notice { owner,
-                              event: Event { kind: EventKind::OsEvent,
-                                             message: prefix
-                                                      | if prefix == FINISHED_EVENT
-                                                      {
-                                                          session.outcome
-                                                      }
-                                                      else if prefix == DROP_EVENT
-                                                      {
-                                                          session.action
-                                                      }
-                                                      else
-                                                      {
-                                                          session.items.len() as u32
-                                                          | (session.common << 12)
-                                                      },
-                                             when,
-                                             where_: session.point,
-                                             modifiers: session.modifiers,
-                                             payload: u64::from(id),
-                                             window } };
-        // Each input/request is drained before another manager operation.
+        let notice = Self::notification(session, owner, prefix, window, id, when);
+        self.enqueue(notice);
+    }
+
+    fn notification(session: &Session, owner: u64, prefix: u32, window: u64, id: u32, when: u32)
+                    -> Notice
+    {
+        Notice { owner,
+                 event: Event { kind: EventKind::OsEvent,
+                                message: prefix
+                                         | if prefix == FINISHED_EVENT
+                                         {
+                                             session.outcome
+                                         }
+                                         else if prefix == DROP_EVENT
+                                         {
+                                             session.action
+                                         }
+                                         else
+                                         {
+                                             session.items.len() as u32 | (session.common << 12)
+                                         },
+                                when,
+                                where_: session.point,
+                                modifiers: session.modifiers,
+                                payload: u64::from(id),
+                                window } }
+    }
+
+    fn enqueue(&mut self, notice: Notice)
+    {
+        // A request or registered cleanup drains effects before the next operation.
         *self.notices.iter_mut().find(|n| n.is_none()).expect("bounded drag effects") =
             Some(notice);
     }
@@ -268,7 +295,11 @@ impl Manager
 
     pub fn feedback(&self) -> Option<Rect>
     {
-        let session = self.sessions.get(self.active?)?;
+        Self::feedback_for(self.sessions.get(self.active?)?)
+    }
+
+    fn feedback_for(session: &Session) -> Option<Rect>
+    {
         let bounds = session.bounds?;
         if !matches!(session.phase, TRACKING | RETURNING)
         {
@@ -293,8 +324,10 @@ impl Manager
             .is_some_and(|s| matches!(s.phase, ARMED | TRACKING | RETURNING))
     }
 
-    pub fn ensure_receiver(&mut self, owner: u64, thread: u64, window: u64) -> Result<(), Status>
+    pub(crate) fn ensure_receiver(&mut self, ledger: &OwnerRef, thread: u64, window: u64)
+                                  -> Result<(), Status>
     {
+        let owner = ledger.owner().incarnation();
         if let Some(id) = self.receiver_at(window)
         {
             let r = self.receivers.get(id).unwrap();
@@ -308,11 +341,12 @@ impl Manager
             };
         }
         self.receivers
-            .insert(Receiver { owner,
+            .insert(ledger,
+                    Receiver { owner,
                                thread,
                                window,
                                closing: false })
-            .map_err(|_| NO_MEMORY)?;
+            .map_err(admission)?;
         Ok(())
     }
 
@@ -579,9 +613,10 @@ impl Manager
         if let Some(id) = self.receiver_at(window)
         {
             if let Some(active) = self.active
-               && self.sessions.get(active).unwrap().receiver == Some(id)
+               && let Some(session) = self.sessions.get(active)
+               && session.receiver == Some(id)
             {
-                if self.sessions.get(active).unwrap().phase == DROPPING
+                if session.phase == DROPPING
                 {
                     // Closing a receiver's window cannot invalidate its live
                     // cleanup capability. The app drains even after the window
@@ -596,52 +631,13 @@ impl Manager
         }
     }
 
-    pub fn close_owner(&mut self, owner: u64, when: u32)
-    {
-        // A dead receiver cannot acknowledge. Its File Manager owners have
-        // independent exit cleanup; retire drag feedback/registration now.
-        if let Some(active) = self.active
-           && self.sessions
-                  .get(active)
-                  .and_then(|s| s.receiver)
-                  .and_then(|r| self.receivers.get(r))
-                  .is_some_and(|r| r.owner == owner)
-        {
-            self.return_to_source(active, REJECTED, OPERATION_CANCELLED, when);
-        }
-        loop
-        {
-            let id = self.sessions.iter().find_map(|(id, s)| (s.owner == owner).then_some(id));
-            let Some(id) = id
-            else
-            {
-                break;
-            };
-            if self.active == Some(id)
-            {
-                self.leave(id, when);
-                self.active = None;
-            }
-            self.sessions.remove(id);
-        }
-        loop
-        {
-            let window =
-                self.receivers.iter().find_map(|(_, r)| (r.owner == owner).then_some(r.window));
-            let Some(window) = window
-            else
-            {
-                break;
-            };
-            self.forget_window(window, when);
-        }
-    }
-
     /// Registration's window ownership is validated at the window service boundary.
-    pub fn request(&mut self, owner: u64, thread: u64, call: &mut Call, input: &[u8],
-                   output: &mut [u8], when: u32)
-                   -> Result<(), Status>
+    pub(crate) fn request(&mut self, ledger: &OwnerRef, thread: u64, call: &mut Call,
+                          input: &[u8], output: &mut [u8], when: u32,
+                          admit_target: impl FnOnce(&mut Call) -> Result<(), Status>)
+                          -> Result<(), Status>
     {
+        let owner = ledger.owner().incarnation();
         call.transferred = 0;
         if !matches!(call.operation, CREATE | DISPOSE | ABANDON)
         {
@@ -664,7 +660,8 @@ impl Manager
             CREATE =>
             {
                 call.id = self.sessions
-                              .insert(Session { owner,
+                              .insert(ledger,
+                                      Session { owner,
                                                 source: call.window,
                                                 thread,
                                                 detached: false,
@@ -704,7 +701,7 @@ impl Manager
                                                 return_start: call.point,
                                                 return_tick: 0,
                                                 return_step: 0 })
-                              .map_err(|_| NO_MEMORY)?;
+                              .map_err(admission)?;
             }
             BEGIN =>
             {
@@ -988,6 +985,7 @@ impl Manager
             }
             ACCEPT =>
             {
+                call.index = RESPONSE_EXPIRED;
                 self.receiver(call.id, call.receiver, owner)?;
                 if call.flags
                    & !(1
@@ -1006,7 +1004,9 @@ impl Manager
                 }
                 if self.sessions.get(call.id).unwrap().phase != TRACKING
                 {
-                    return Err(ACCESS_DENIED);
+                    // A previously leased tracking event is ordinary expiry,
+                    // never permission to overwrite a committed drop response.
+                    return Ok(());
                 }
                 let session = self.sessions.get_mut(call.id).unwrap();
                 // A receiver may answer an older coalesced motion after release.
@@ -1014,6 +1014,14 @@ impl Manager
                 if call.point != session.point
                 {
                     return Ok(());
+                }
+                // Admission is RAM-only and runs only for a still-current view.
+                // Retain typed target context separately from a missing DragRef.
+                if let Err(status) = admit_target(call)
+                {
+                    call.index = TARGET_ADMISSION_FAILED;
+                    call.error = status;
+                    return Err(status);
                 }
                 let layout = call.flags & TARGET_ICON_LAYOUT != 0;
                 if layout
@@ -1034,7 +1042,6 @@ impl Manager
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                session.application = application;
                 let eject = call.flags & TARGET_EJECT != 0;
                 if eject
                    && (session.volume_root != Some(call.volume)
@@ -1046,6 +1053,8 @@ impl Manager
                 {
                     return Err(BAD_ARGUMENT);
                 }
+                call.index = RESPONSE_APPLIED;
+                session.application = application;
                 session.eject = eject;
                 session.icon_layout = layout;
                 session.allowed_actions =
@@ -1294,5 +1303,64 @@ impl Manager
             _ => return Err(NOT_SUPPORTED)
         }
         Ok(())
+    }
+}
+
+impl Manager
+{
+    pub(crate) fn release_registered(&mut self, ticket: ReleasedResource,
+                                     kind: super::lifetime::Registration, when: u32)
+                                     -> Result<Option<Rect>, CompletionError>
+    {
+        use super::lifetime::Registration;
+        let mut before = self.feedback();
+        match kind
+        {
+            Registration::Sessions =>
+            {
+                let session = self.sessions.release(ticket)?;
+                let id = session.wire();
+                if self.active == Some(id)
+                {
+                    before = Self::feedback_for(&session);
+                    self.active = None;
+                    self.set_highlight(None);
+                }
+                if let Some((receiver, owner, window, closing)) = session.receiver.and_then(|id| {
+                                                                                      self.receivers
+                                            .get(id)
+                                            .map(|r| (id, r.owner, r.window, r.closing))
+                                                                                  })
+                {
+                    if session.phase == DROPPING
+                       && session.items.iter().flat_map(|i| &i.flavors).any(|f| f.state == 2)
+                    {
+                        self.enqueue(Self::notification(&session, owner, DATA_READY_EVENT,
+                                                        window, id, when));
+                    }
+                    self.enqueue(Self::notification(&session, owner, LEFT_EVENT, window, id, when));
+                    if closing
+                    {
+                        self.receivers.remove(receiver);
+                    }
+                }
+                drop(session);
+            }
+            Registration::Receivers =>
+            {
+                let receiver = self.receivers.release(ticket)?;
+                if let Some(active) = self.active
+                   && self.sessions.get(active).is_some_and(|s| s.receiver == Some(receiver.wire()))
+                {
+                    // The dead receiver cannot acknowledge. Its file resources
+                    // have their own lifetimes; wake the still-live source.
+                    self.return_to_source(active, REJECTED, OPERATION_CANCELLED, when);
+                }
+                drop(receiver);
+            }
+            Registration::SessionStorage => self.sessions.release_storage(ticket)?,
+            Registration::ReceiverStorage => self.receivers.release_storage(ticket)?
+        }
+        Ok(before)
     }
 }

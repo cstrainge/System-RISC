@@ -421,7 +421,11 @@ backing; its window and managed CDEF buttons retain independent registrations.
 Closing the window or opening a crash report ends the protocol, so stale Alert
 references cannot act on a replacement. Initialization owns rollback before
 publishing any child. Tracking changes redraw only the affected control; the
-unchanged held state does no drawing. Other managers remain staged for ledger migration. These
+unchanged held state does no drawing. Drag sessions/receivers use DRAG/DRST and
+DRCV/DRVS with shared checked 32-bit wire projections onto the same ledger.
+Their registered cleanup replaces the drag-specific EXIT hook and wakes surviving
+peers without repainting parent windows. Other managers remain staged for ledger
+migration. These
 service-level ownership checks are not MMU isolation.
 Per-app menus, events, dialogs, worlds, editor records and legacy compatibility
 state are disposed at exit; the system clipboard and immutable cached images

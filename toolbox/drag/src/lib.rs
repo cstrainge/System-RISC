@@ -8,7 +8,8 @@ mod wake;
 pub use promise::{NoPromises, Promises, WithPromise};
 mod offer;
 pub use offer::{DragEvent, DragOutcome, DropAction, DropActions, DropPayload, FileTakeFuture,
-                FlavorInfo, Flavors, Item, Response, TakeFuture, Target, TrackPhase, TrackingOffer};
+                FlavorInfo, Flavors, Item, Response, TakeFuture, Target, TrackPhase,
+                TrackingOffer, TrackingResponse};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FlavorType([u8; 4]);
@@ -40,10 +41,56 @@ pub enum DragError
         flavor: FlavorType,
         source: ToolboxError
     },
+    TargetUnavailable
+    {
+        source: ToolboxError
+    },
     WrongThread,
     Unknown(mac_abi::Status)
 }
 pub type Result<T> = core::result::Result<T, DragError>;
+impl core::fmt::Display for DragError
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::NoSession => f.write_str("drag session is no longer live; start a new drag"),
+            Self::Cancelled => f.write_str("drag operation was cancelled"),
+            Self::FlavorUnavailable { flavor } =>
+            {
+                write!(f, "drag flavor {:?} is unavailable or was already taken", flavor.bytes())
+            }
+            Self::PromiseFailed { flavor,
+                                  source } =>
+            {
+                write!(f, "drag flavor {:?} could not be supplied: {source}", flavor.bytes())
+            }
+            Self::WrongThread =>
+            {
+                f.write_str("drag operation must run on its owning application thread")
+            }
+            Self::TargetUnavailable { source } => write!(f, "drag target is unavailable: {source}"),
+            Self::Unknown(status) =>
+            {
+                write!(f, "drag operation failed: {}", ToolboxError::from_status(*status))
+            }
+        }
+    }
+}
+impl core::error::Error for DragError
+{
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)>
+    {
+        match self
+        {
+            Self::PromiseFailed { source,
+                                  .. }
+            | Self::TargetUnavailable { source } => Some(source),
+            _ => None
+        }
+    }
+}
 impl From<ToolboxError> for DragError
 {
     fn from(error: ToolboxError) -> Self

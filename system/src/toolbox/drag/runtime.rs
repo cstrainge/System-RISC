@@ -83,6 +83,7 @@ impl super::super::runtime::Desktop
                         -> Result<(), Status>
     {
         let caller = crate::context::current_thread_context().identity().app.0;
+        let owner = self.processes.ledger(caller)?;
         if call.operation == CREATE
         {
             // Original NewDrag creates an untied draft. A named source must
@@ -101,7 +102,7 @@ impl super::super::runtime::Desktop
         }
         if call.operation == CREATE && caller == crate::context::finder_app().0
         {
-            self.drag.ensure_receiver(caller,
+            self.drag.ensure_receiver(&owner,
                                        crate::context::current_thread_context().identity()
                                                                                .thread
                                                                                .0,
@@ -123,23 +124,23 @@ impl super::super::runtime::Desktop
         {
             false
         };
-        if call.operation == ACCEPT && call.flags & 1 != 0 && call.volume != 0
-        {
-            crate::kernel::with_files(|files| crate::toolbox::drag::validate_target(files, call))
-                .map_err(|e| e.status())??;
-        }
         if call.operation == BEGIN
         {
             call.flags = u32::from(self.events.modifiers);
         }
         let before = self.drag.feedback();
         let result =
-            self.drag.request(caller,
+            self.drag.request(&owner,
                               crate::context::current_thread_context().identity().thread.0,
                               call,
                               input,
                               output,
-                              Self::when());
+                              Self::when(),
+                              |call| {
+                                  crate::kernel::with_files(|files| {
+                                      crate::toolbox::drag::validate_target(files, call)
+                                  }).map_err(|error| error.status())?
+                              });
         if result.is_ok() && source_read_only
         {
             self.drag.source_read_only(call.id);
@@ -158,5 +159,17 @@ impl super::super::runtime::Desktop
             self.drag_effects(before);
         }
         result
+    }
+}
+
+impl crate::toolbox::drag::lifetime::Host for crate::toolbox::runtime::Desktop
+{
+    fn release_drag(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                    kind: crate::toolbox::drag::lifetime::Registration)
+                    -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        let before = self.drag.release_registered(ticket, kind, Self::when())?;
+        self.drag_effects(before);
+        Ok(())
     }
 }

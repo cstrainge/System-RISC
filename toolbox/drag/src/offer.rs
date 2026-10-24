@@ -199,6 +199,14 @@ pub struct TrackingOffer<'a>
     pub phase: TrackPhase,
     responded: bool
 }
+/// Only an applied response changes the negotiated target. A leased event can
+/// expire while an app is serving other events or awaiting a resource probe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackingResponse
+{
+    Applied,
+    Expired
+}
 impl<'a> TrackingOffer<'a>
 {
     pub const fn id(&self) -> wire::DragId
@@ -239,7 +247,7 @@ impl<'a> TrackingOffer<'a>
                               .ok_or(DragError::Unknown(mac_abi::BAD_ABI))?)
     }
 
-    pub fn respond(mut self, response: Response) -> Result<()>
+    pub fn respond(mut self, response: Response) -> Result<TrackingResponse>
     {
         let (flags, volume, parent, bounds) = match response
         {
@@ -273,18 +281,30 @@ impl<'a> TrackingOffer<'a>
                 }
             }
         };
-        self.route.call(wire::Call { operation: wire::ACCEPT,
-                                      point: self.at,
-                                      window: self.window.map_or(0, |w| w.0),
-                                      flags,
-                                      volume,
-                                      parent,
-                                      bounds,
-                                      ..Default::default() },
-                         &[],
-                         &mut [])?;
+        let mut call = wire::Call { operation: wire::ACCEPT,
+                                    id: self.route.id,
+                                    point: self.at,
+                                    window: self.window.map_or(0, |w| w.0),
+                                    flags,
+                                    volume,
+                                    parent,
+                                    bounds,
+                                    ..Default::default() };
+        let result = self.route.client.drag(&mut call, &[], &mut []);
+        let outcome = match result
+        {
+            Ok(()) if call.index == wire::RESPONSE_APPLIED => TrackingResponse::Applied,
+            Ok(()) if call.index == wire::RESPONSE_EXPIRED => TrackingResponse::Expired,
+            Ok(()) => return Err(DragError::Unknown(mac_abi::BAD_ABI)),
+            Err(_) if call.index == wire::TARGET_ADMISSION_FAILED =>
+            {
+                return Err(DragError::TargetUnavailable { source:
+                                                              ToolboxError::from_status(call.error) });
+            }
+            Err(error) => return Err(error.into())
+        };
         self.responded = true;
-        Ok(())
+        Ok(outcome)
     }
 }
 impl Drop for TrackingOffer<'_>

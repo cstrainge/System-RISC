@@ -206,10 +206,15 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
                     }
                     "Res Edit" =>
                     {
-                        Point { h: 192,
+                        Point { h: 320,
                                 v: 0 }
                     }
                     "Text Edit" =>
+                    {
+                        Point { h: 0,
+                                v: 52 }
+                    }
+                    "Reactor Room" =>
                     {
                         Point { h: 256,
                                 v: 0 }
