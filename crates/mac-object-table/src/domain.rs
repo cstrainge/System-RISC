@@ -1360,6 +1360,11 @@ impl OwnerIndex
         self.pools.iter().find(|p| p.kind == key.kind()).is_some_and(|p| p.contains(key))
     }
 
+    pub fn pending(&self, key: ResourceKey) -> bool
+    {
+        self.pools.iter().find(|p| p.kind == key.kind()).is_some_and(|p| p.pending_key(key))
+    }
+
     pub fn invalidate(&mut self, key: ResourceKey) -> Result<ReleasedResource, PoolError>
     {
         let released =

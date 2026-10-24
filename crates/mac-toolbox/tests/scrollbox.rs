@@ -240,23 +240,35 @@ fn resident_scroll_controls_reject_stale_foreign_and_cross_owner_ids_in_both_tra
 {
     mac_system::testing::with_services(|services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
-        let owned =
-            with_owner(7, || system.controls().create_scroll_box(WindowId(0), spec(10)).unwrap());
+        let owner = mac_system::testing::inspection::add("Scroll owner", 0);
+        let foreign = mac_system::testing::inspection::add("Foreign scroll owner", 0);
+        let owned = with_owner(owner, || {
+            system.controls().create_scroll_box(WindowId(0), spec(10)).unwrap()
+        });
         let stale = owned.id();
-        with_owner(8, || {
+        with_owner(foreign, || {
             let control = owned.control();
             assert!(matches!(control.info(), Err(Error::AccessDenied)));
             assert_eq!(control.dispose(), Err(Error::AccessDenied));
         });
-        with_owner(7, || {
+        with_owner(owner, || {
             owned.control().dispose().unwrap();
             let replacement = system.controls().create_scroll_box(WindowId(0), spec(10)).unwrap();
-            assert_eq!(stale.0 & 0xffff, replacement.id().0 & 0xffff);
+            let pools = system.inspection()
+                              .snapshot(mac_toolbox::inspection::Scope::Own)
+                              .unwrap()
+                              .ledger(0)
+                              .unwrap();
+            let objects = (0..pools.len()).map(|index| pools.at(index).unwrap())
+                                          .find(|pool| pool.kind == *b"SBOX")
+                                          .unwrap();
+            assert_eq!(objects.slots, 1, "replacement must reuse the sole owner slot");
+            assert!(stale.0 > u64::from(u32::MAX) && replacement.id().0 > u64::from(u32::MAX));
             assert_ne!(stale, replacement.id());
             assert!(matches!(system.controls().scroll_box(stale).info(), Err(Error::NotFound)));
             for id in [stale,
                        ScrollBoxId(1),
-                       ScrollBoxId(u32::MAX),
+                       ScrollBoxId(u64::from(u32::MAX)),
                        ScrollBoxId(replacement.id().0 & 0xffff)]
             {
                 let mut call = wire::Call { id: id.0,
@@ -274,6 +286,58 @@ fn resident_scroll_controls_reject_stale_foreign_and_cross_owner_ids_in_both_tra
             drop(replacement);
             assert!(matches!(system.controls().scroll_box(id).info(), Err(Error::NotFound)));
         });
+    });
+}
+
+#[test]
+fn scroll_box_capacity_is_per_owner_and_exceeds_the_removed_global_table()
+{
+    mac_system::testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let first = mac_system::testing::inspection::add("First scroll owner", 0);
+        let second = mac_system::testing::inspection::add("Second scroll owner", 0);
+        let tiny = ScrollBoxSpec { viewport: Rect::new(0, 0, 1, 32),
+                                   scrollbar: Rect::new(1, 0, 17, 32),
+                                   count: 10,
+                                   ..Default::default() };
+        let mut retained = Vec::new();
+        for owner in [first, second]
+        {
+            with_owner(owner, || {
+                let mut views = Vec::new();
+                for _ in 0..100
+                {
+                    views.push(system.controls().create_scroll_box(WindowId(0), tiny).unwrap());
+                }
+                let pools = system.inspection()
+                                  .snapshot(mac_toolbox::inspection::Scope::Own)
+                                  .unwrap()
+                                  .ledger(0)
+                                  .unwrap();
+                let objects = (0..pools.len()).map(|index| pools.at(index).unwrap())
+                                              .find(|pool| pool.kind == *b"SBOX")
+                                              .unwrap();
+                assert_eq!((objects.live, objects.slots), (100, 128));
+                retained.push(views);
+            });
+        }
+        for (owner, views) in [first, second].into_iter().zip(retained)
+        {
+            with_owner(owner, || {
+                drop(views);
+                let result = mac_system::testing::inspection::walk_controls(owner, false, false);
+                assert_eq!((result.report.invalidated,
+                            result.report.released,
+                            result.report.quarantined),
+                           (1, 1, 0));
+                let final_state = system.inspection()
+                                        .snapshot(mac_toolbox::inspection::Scope::Own)
+                                        .unwrap()
+                                        .at(0)
+                                        .unwrap();
+                assert_eq!((final_state.live, final_state.pending), (0, 0));
+            });
+        }
     });
 }
 #[test]

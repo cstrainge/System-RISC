@@ -11,6 +11,9 @@ pub struct Report
 {
     pub invalidated: usize,
     pub released:    usize,
+    /// Accepted callbacks whose resource was still pending on return. Later
+    /// child cleanup may complete them; the ledger is the final death barrier.
+    pub deferred:    usize,
     pub quarantined: usize
 }
 #[derive(Debug)]
@@ -109,7 +112,14 @@ fn run<C, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owner: &Owne
                 {
                     Ok(()) =>
                     {
-                        report.released += 1;
+                        if owner.pending(key)
+                        {
+                            report.deferred += 1;
+                        }
+                        else
+                        {
+                            report.released += 1;
+                        }
                         continue;
                     }
                     Err(error) =>

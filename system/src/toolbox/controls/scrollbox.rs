@@ -7,7 +7,7 @@ use mac_abi::{controls::*,
               scrollbox::{BUTTON_DOWN, CHANGED, TRACKING, *},
               *};
 
-use crate::toolbox::{handles::{Kind, Table},
+use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
                      quickdraw::{Canvas, fonts::FontManager, fonts_service}};
 const PIXEL_BUDGET: usize = 2 * 1024 * 1024;
 struct Row
@@ -32,7 +32,6 @@ impl Raster
 }
 struct Object
 {
-    owner:     u64,
     window:    u32,
     spec:      Spec,
     top:       u32,
@@ -49,18 +48,81 @@ struct Tracking
 }
 pub struct Manager
 {
-    objects: Table<Object>
+    objects:      Store<Object>,
+    raster_bytes: usize
 }
-impl Default for Manager
+pub(crate) fn specification(state: bool) -> mac_object_table::registry::Specification<'static>
 {
-    fn default() -> Self
+    mac_object_table::registry::Specification { kind:     KindCode(if state
+                                                                   {
+                                                                       *b"SBST"
+                                                                   }
+                                                                   else
+                                                                   {
+                                                                       *b"SBOX"
+                                                                   }),
+                                                label:    if state
+                                                {
+                                                    "Scroll Box Manager state"
+                                                }
+                                                else
+                                                {
+                                                    "Managed scroll boxes"
+                                                },
+                                                provider: "System Control Manager",
+                                                capacity: if state
+                                                {
+                                                    CapacityPolicy::HardBound { slots:  1,
+                                                                                reason:
+                                                                                    "One Scroll \
+                                                                                     Box Manager \
+                                                                                     backing state \
+                                                                                     per domain" }
+                                                }
+                                                else
+                                                {
+                                                    CapacityPolicy::GrowableUntilMemory
+                                                },
+                                                source:
+                                                    mac_object_table::registry::Source::Resident }
+}
+pub(crate) trait ScrollBoxHost
+{
+    fn managed_scroll_boxes(&mut self) -> &mut Manager;
+}
+pub(crate) struct ReleaseScrollBoxes;
+pub(crate) struct ReleaseStorage;
+impl<C: ScrollBoxHost> mac_object_table::registry::Release<C> for ReleaseScrollBoxes
+{
+    fn release(&self, context: &mut C, ticket: mac_object_table::domain::ReleasedResource)
+               -> Result<(), mac_object_table::domain::CompletionError>
     {
-        Self { objects: Table::new(Kind::ScrollBoxes) }
+        let manager = context.managed_scroll_boxes();
+        let object = manager.objects.release(ticket)?;
+        manager.raster_bytes -= object.raster.pixels() * 8;
+        drop(object);
+        Ok(())
+    }
+}
+impl<C: ScrollBoxHost> mac_object_table::registry::Release<C> for ReleaseStorage
+{
+    fn release(&self, context: &mut C, ticket: mac_object_table::domain::ReleasedResource)
+               -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        context.managed_scroll_boxes().objects.release_storage(ticket)
+    }
+}
+impl Manager
+{
+    pub(crate) fn new((objects, storage): (KindLease, KindLease)) -> Result<Self, Status>
+    {
+        Ok(Self { objects:      Store::owned(objects, storage).map_err(|_| BAD_ARGUMENT)?,
+                  raster_bytes: 0 })
     }
 }
 pub struct Drawing
 {
-    pub id: u32,
+    pub id: u64,
     bounds: Rect,
     raster: Arc<Raster>,
     bar:    super::Drawing
@@ -260,23 +322,23 @@ impl Object
 }
 impl Manager
 {
-    fn get(&self, id: u32, owner: u64) -> Result<&Object, Status>
+    fn get(&self, id: u64, owner: u64) -> Result<&Object, Status>
     {
         let object = self.objects.get(id).ok_or(NOT_FOUND)?;
-        if object.owner != owner
+        if self.objects.owner(id).map(|domain| domain.incarnation()) != Some(owner)
         {
             return Err(ACCESS_DENIED);
         }
         Ok(object)
     }
 
-    fn get_mut(&mut self, id: u32, owner: u64) -> Result<&mut Object, Status>
+    fn get_mut(&mut self, id: u64, owner: u64) -> Result<&mut Object, Status>
     {
         self.get(id, owner)?;
         self.objects.get_mut(id).ok_or(NOT_FOUND)
     }
 
-    pub fn window(&self, id: u32, owner: u64) -> Result<u32, Status>
+    pub fn window(&self, id: u64, owner: u64) -> Result<u32, Status>
     {
         Ok(self.get(id, owner)?.window)
     }
@@ -285,33 +347,24 @@ impl Manager
     /// shared cache budget, so viewport acceleration cannot starve file I/O.
     pub fn raster_storage(&self) -> usize
     {
-        self.objects.iter().map(|(_, object)| object.raster.pixels() * 8).sum()
+        self.raster_bytes
     }
 
     pub fn remove_window(&mut self, window: u32)
     {
-        let ids: Vec<_> =
-            self.objects.iter().filter(|(_, o)| o.window == window).map(|(id, _)| id).collect();
-        for id in ids
-        {
-            self.objects.remove(id);
-        }
+        let bytes = &mut self.raster_bytes;
+        self.objects.remove_where_with(|_, object| object.window == window,
+                                       |object| {
+                                           *bytes -= object.raster.pixels() * 8;
+                                           drop(object);
+                                       });
     }
 
-    pub fn remove_owner(&mut self, owner: u64)
+    pub(crate) fn request(&mut self, ledger: &OwnerRef, call: &mut Call, fonts: &FontManager,
+                          entry: DefinitionEntry, gate: TrapGate)
+                          -> Result<Option<Drawing>, Status>
     {
-        let ids: Vec<_> =
-            self.objects.iter().filter(|(_, o)| o.owner == owner).map(|(id, _)| id).collect();
-        for id in ids
-        {
-            self.objects.remove(id);
-        }
-    }
-
-    pub fn request(&mut self, owner: u64, call: &mut Call, fonts: &FontManager,
-                   entry: DefinitionEntry, gate: TrapGate)
-                   -> Result<Option<Drawing>, Status>
-    {
+        let owner = ledger.owner().incarnation();
         if call.reserved != [0; 3] || call.text_length as usize > call.text.len()
         {
             return Err(BAD_ARGUMENT);
@@ -331,7 +384,7 @@ impl Manager
             {
                 0
             };
-            let used = self.objects.iter().map(|(_, o)| o.raster.pixels() * 8).sum::<usize>();
+            let used = self.raster_bytes;
             if used - previous + w * h * 8 > PIXEL_BUDGET
             {
                 return Err(NO_MEMORY);
@@ -340,14 +393,17 @@ impl Manager
             {
                 let data = raster(call.spec)?;
                 call.id = self.objects
-                              .insert(Object { owner,
-                                               window: call.window,
+                              .insert(ledger, Object { window: call.window,
                                                spec: call.spec,
                                                top: 0,
                                                raster: data,
                                                tracking: None,
                                                highlight: 0 })
-                              .map_err(|_| NO_MEMORY)?;
+                              .map_err(|error| match error {
+                                  mac_object_table::domain::PoolError::RegistrationUnavailable { .. }
+                                  | mac_object_table::domain::PoolError::Stopping { .. } => SERVICE_BUSY,
+                                  _ => NO_MEMORY })?;
+                self.raster_bytes = used + w * h * 8;
             }
             else
             {
@@ -360,13 +416,17 @@ impl Manager
                     object.top = object.top.min(object.maximum());
                     object.tracking = None;
                     object.highlight = 0;
+                    self.raster_bytes = used - previous + w * h * 8;
                 }
             }
         }
         if call.operation == DISPOSE
         {
             self.get(call.id, owner)?;
-            self.objects.remove(call.id);
+            if let Some(object) = self.objects.remove(call.id)
+            {
+                self.raster_bytes -= object.raster.pixels() * 8;
+            }
             return Ok(None);
         }
         let object = self.get_mut(call.id, owner)?;

@@ -36,9 +36,63 @@ struct Entry<T>
 }
 struct Values<T, G: InvocationGate>
 {
-    slots:  Vec<Option<Entry<T>>>,
-    claim:  Arc<Claim<G>>,
-    stored: usize
+    slots:   Vec<Option<Entry<T>>>,
+    claim:   Arc<Claim<G>>,
+    stored:  usize,
+    storage: Option<Storage<G>>
+}
+
+// The backing is itself a registered resource. Its release may precede its
+// children: retain that unique ticket until the last payload leaves the array.
+// No manager-specific finish-owner hook or teardown ordering is necessary.
+struct Storage<G: InvocationGate>
+{
+    claim:    Claim<G>,
+    key:      ResourceKey,
+    released: Option<ReleasedResource>,
+    usage:    ManuallyDrop<Option<Use>>
+}
+impl<G: InvocationGate> Storage<G>
+{
+    fn new(owner: &OwnerRef<G>, kind: &KindLease<G>) -> Result<Self, PoolError>
+    {
+        let usage = kind.acquire(true)?;
+        let spec = kind.registration();
+        let slots =
+            owner.access(|index| index.attach_values(spec.code, spec.capacity, Some(kind.id())))?;
+        let claim = Claim { owner:  owner.clone(),
+                            kind:   spec.code,
+                            active: true };
+        let key = owner.access(|index| {
+                           if slots == 0
+                           {
+                               index.grow_values(spec.code, 1)?;
+                           }
+                           index.allocate_value(spec.code)
+                       })?;
+        Ok(Self { claim,
+                  key,
+                  released: None,
+                  usage: ManuallyDrop::new(Some(usage)) })
+    }
+}
+impl<G: InvocationGate> Drop for Storage<G>
+{
+    fn drop(&mut self)
+    {
+        let ticket = self.released.take().or_else(|| self.claim.owner.invalidate(self.key).ok());
+        if let Some(ticket) = ticket
+        {
+            self.claim
+                .owner
+                .access(|index| index.complete_value_release(ticket))
+                .expect("storage owns its matching cleanup capability");
+            let usage = core::mem::replace(&mut self.usage, ManuallyDrop::new(None));
+            drop(ManuallyDrop::into_inner(usage));
+        }
+        // A ticket already held by an uncompleted dispatcher is not ours to
+        // acknowledge. Keep the provider pin and pending barrier in that case.
+    }
 }
 
 /// A registered semantic kind's storage. Identity is issued by the shared
@@ -51,11 +105,12 @@ struct Values<T, G: InvocationGate>
 /// authoritative ledger even when an empty store is dropped and recreated.
 pub struct Store<T, G: InvocationGate>
 {
-    kind:         KindCode,
-    policy:       CapacityPolicy,
-    owners:       Vec<Values<T, G>>,
-    ids:          HashMap<u64, ResourceKey>,
-    registration: Option<KindLease<G>>
+    kind:                 KindCode,
+    policy:               CapacityPolicy,
+    owners:               Vec<Values<T, G>>,
+    ids:                  HashMap<u64, ResourceKey>,
+    registration:         Option<KindLease<G>>,
+    storage_registration: Option<KindLease<G>>
 }
 impl<T, G: InvocationGate> Store<T, G>
 {
@@ -65,7 +120,8 @@ impl<T, G: InvocationGate> Store<T, G>
                policy,
                owners: Vec::new(),
                ids: HashMap::new(),
-               registration: None }
+               registration: None,
+               storage_registration: None }
     }
 
     /// Resident stores bind policy and release identity to the registry's
@@ -77,6 +133,24 @@ impl<T, G: InvocationGate> Store<T, G>
         let mut store = Self::new(descriptor.code, descriptor.capacity);
         store.registration = Some(registration);
         store
+    }
+
+    /// A resident manager's values and retained per-owner backing each have a
+    /// registered lifetime. The backing namespace must differ from the object
+    /// namespace, so bookkeeping never consumes the object's capacity policy.
+    pub fn owned(registration: KindLease<G>, storage: KindLease<G>) -> Result<Self, PoolError>
+    {
+        if registration.registration().code == storage.registration().code
+        {
+            return Err(PoolError::DuplicateKind { owner: registration.registration()
+                                                                     .release
+                                                                     .registration
+                                                                     .owner(),
+                                                  kind:  registration.registration().code });
+        }
+        let mut store = Self::registered(registration);
+        store.storage_registration = Some(storage);
+        Ok(store)
     }
 
     fn owner_index(&self, owner: DomainId) -> Result<usize, usize>
@@ -111,10 +185,13 @@ impl<T, G: InvocationGate> Store<T, G>
         let mut values = Vec::new();
         values.try_reserve(slots).map_err(|_| error)?;
         values.resize_with(slots, || None);
+        let storage =
+            self.storage_registration.as_ref().map(|kind| Storage::new(owner, kind)).transpose()?;
         self.owners.insert(at,
                            Values { claim,
                                     slots: values,
-                                    stored: 0 });
+                                    stored: 0,
+                                    storage });
         Ok(at)
     }
 
@@ -220,10 +297,40 @@ impl<T, G: InvocationGate> Store<T, G>
         let entry = self.owners[at].slots[key.slot()].take().expect("validated store slot");
         self.owners[at].stored -= 1;
         self.ids.remove(&entry.id);
-        Removed { value:            Some(entry.value),
-                  released:         Some(released),
-                  claim:            self.owners[at].claim.clone(),
-                  registration_use: entry.registration_use }
+        let removed = Removed { value:            Some(entry.value),
+                                released:         Some(released),
+                                claim:            self.owners[at].claim.clone(),
+                                registration_use: entry.registration_use };
+        if self.owners[at].stored == 0
+           && self.owners[at].storage.as_ref().is_some_and(|state| state.released.is_some())
+        {
+            self.owners.remove(at);
+        }
+        removed
+    }
+
+    /// Accept the backing's invalidate-first ticket. If payloads remain, the
+    /// death barrier stays pending and the last payload removal frees backing.
+    /// Quarantined payloads therefore retain the backing until a real retry.
+    pub fn release_storage(&mut self, ticket: ReleasedResource) -> Result<(), CompletionError>
+    {
+        let key = ticket.key();
+        if let Ok(at) = self.owner_index(key.owner())
+        {
+            if let Some(state) = &mut self.owners[at].storage
+            {
+                if state.key == key && state.released.is_none()
+                {
+                    state.released = Some(ticket);
+                    if self.owners[at].stored == 0
+                    {
+                        self.owners.remove(at);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        Err(CompletionError::stale(ticket))
     }
 
     /// Resolve the facility walk's already-invalidated ticket. Refusal preserves
@@ -254,10 +361,9 @@ impl<T, G: InvocationGate> Store<T, G>
         self.prune_empty_owner(incarnation);
     }
 
-    /// Backing-state cleanup during the staged manager-state migration. This
-    /// never disposes values or acknowledges pending tickets. A quarantined
-    /// payload keeps its backing/claim available for the registered retry.
-    pub fn prune_empty_owner(&mut self, incarnation: u64) -> bool
+    /// Explicit live-owner disposal may free an empty cache too. Never destroy
+    /// quarantined payloads or acknowledge another dispatcher's pending ticket.
+    fn prune_empty_owner(&mut self, incarnation: u64) -> bool
     {
         let Ok(at) =
             self.owners.binary_search_by_key(&incarnation, |values| {
@@ -291,8 +397,18 @@ impl<T, G: InvocationGate> Store<T, G>
     /// No temporary ID vector and no allocation proportional to object count.
     pub fn remove_where(&mut self, mut predicate: impl FnMut(DomainId, &T) -> bool)
     {
-        for at in 0..self.owners.len()
+        self.remove_where_with(&mut predicate, drop);
+    }
+
+    /// Apply manager bookkeeping to each successfully removed payload, outside
+    /// owner locks and without a temporary object-ID allocation.
+    pub fn remove_where_with(&mut self, mut predicate: impl FnMut(DomainId, &T) -> bool,
+                             mut removed: impl FnMut(Removed<T, G>))
+    {
+        let mut at = 0;
+        while at < self.owners.len()
         {
+            let owner = self.owners[at].claim.owner.owner();
             for slot in 0..self.owners[at].slots.len()
             {
                 let Some(entry) = &self.owners[at].slots[slot]
@@ -303,11 +419,21 @@ impl<T, G: InvocationGate> Store<T, G>
                 if predicate(entry.key.owner(), &entry.value)
                 {
                     let id = entry.id;
-                    if let Some(removed) = self.remove(id)
+                    if let Some(object) = self.remove(id)
                     {
-                        drop(removed);
+                        removed(object);
+                        if self.owners
+                               .get(at)
+                               .is_none_or(|values| values.claim.owner.owner() != owner)
+                        {
+                            break;
+                        }
                     }
                 }
+            }
+            if self.owners.get(at).is_some_and(|values| values.claim.owner.owner() == owner)
+            {
+                at += 1;
             }
         }
     }
@@ -317,8 +443,16 @@ impl<T, G: InvocationGate> Drop for Store<T, G>
     fn drop(&mut self)
     {
         self.remove_where(|_, _| true);
-        // If the walk owns a ticket, dropping its value does not acknowledge the
-        // outstanding cleanup. Its pending bit remains until explicit completion.
+        for values in self.owners.drain(..)
+        {
+            if values.stored != 0
+            {
+                // Abandonment is not cleanup. Preserve quarantined payloads,
+                // their provider pins and backing, rather than running their
+                // destructors without the walk's unique tickets.
+                core::mem::forget(values);
+            }
+        }
     }
 }
 

@@ -660,6 +660,17 @@ pub fn worker(system: &System<'_>) -> Result<()>
                                mac_toolbox::controls::StandardState::new(Rect::new(8, 8, 128,
                                                                                    32),
                                                                          "Owned control"))?;
+    let scroll_box =
+        system.controls()
+              .create_scroll_box(window,
+                                 mac_toolbox::controls::ScrollBoxSpec { viewport:
+                                                                            Rect::new(8, 40, 168,
+                                                                                      104),
+                                                                        scrollbar:
+                                                                            Rect::new(168, 40, 184,
+                                                                                      104),
+                                                                        count: 20,
+                                                                        ..Default::default() })?;
     let mut announcement = [0; 64];
     let parent_window = parse_window(system.scrap().text(&mut announcement)?, "process-observer-window:")
         .ok_or(Failure::Contract("observer window publication"))?;
@@ -716,6 +727,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
             // Deliberately leave window and handle live: exit must reclaim them.
             core::mem::forget(handle);
             core::mem::forget(control);
+            core::mem::forget(scroll_box);
             return Ok(());
         }
     }

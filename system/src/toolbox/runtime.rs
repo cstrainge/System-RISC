@@ -90,6 +90,13 @@ impl super::controls::objects::ControlHost for Desktop
         &mut self.controls
     }
 }
+impl super::controls::scrollbox::ScrollBoxHost for Desktop
+{
+    fn managed_scroll_boxes(&mut self) -> &mut super::controls::scrollbox::Manager
+    {
+        &mut self.scroll_boxes
+    }
+}
 
 impl Desktop
 {
@@ -280,8 +287,8 @@ impl Desktop
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
                   standard_file: Default::default(),
-                  scroll_boxes: Default::default(),
-                  controls: super::controls::objects::Manager::new(super::handles::controls_kind()?),
+                  scroll_boxes: super::controls::scrollbox::Manager::new(super::handles::scroll_box_kinds()?)?,
+                  controls: super::controls::objects::Manager::new(super::handles::controls_kinds()?)?,
                   dialogs: Default::default(),
                   menus: super::menus::Manager::new(mdef, crate::machine::traps::gateway),
                   desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
@@ -756,7 +763,7 @@ impl Desktop
             return Err(BAD_ARGUMENT);
         }
         let entry = self.definitions.resolve(*b"CDEF", 1).map_err(crate::loader::status)?;
-        let drawing = self.scroll_boxes.request(self.owner,
+        let drawing = self.scroll_boxes.request(&self.processes.ledger(self.owner)?,
                                                  call,
                                                  crate::kernel::fonts().ok_or(NOT_SUPPORTED)?,
                                                  entry,

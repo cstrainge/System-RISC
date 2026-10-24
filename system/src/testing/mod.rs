@@ -62,12 +62,28 @@ impl Default for Session
                                          crate::toolbox::controls::objects::specification(),
                                          crate::toolbox::controls::objects::ReleaseControls)
                                .unwrap();
+        let storage = registry.register(&registrar,
+                                        crate::toolbox::controls::objects::storage_specification(),
+                                        crate::toolbox::controls::objects::ReleaseStorage)
+                              .unwrap();
+        let scroll_boxes =
+            registry.register(&registrar,
+                              crate::toolbox::controls::scrollbox::specification(false),
+                              crate::toolbox::controls::scrollbox::ReleaseScrollBoxes)
+                    .unwrap();
+        let scroll_storage =
+            registry.register(&registrar,
+                              crate::toolbox::controls::scrollbox::specification(true),
+                              crate::toolbox::controls::scrollbox::ReleaseStorage)
+                    .unwrap();
         Self { registry,
                inspection: inspection::Domains::new(),
                drag: Default::default(),
                drag_notices: std::vec::Vec::new(),
-               controls: RefCell::new(crate::toolbox::controls::objects::Manager::new(controls)),
-               scroll_boxes: Default::default(),
+               controls:
+                   RefCell::new(crate::toolbox::controls::objects::Manager::new((controls,
+                                                                                 storage)).unwrap()),
+               scroll_boxes: crate::toolbox::controls::scrollbox::Manager::new((scroll_boxes, scroll_storage)).unwrap(),
                standard_file: Default::default(),
                crashes: Default::default(),
                events: crate::toolbox::events::EventManager::new(),
@@ -87,6 +103,13 @@ impl crate::toolbox::controls::objects::ControlHost for Session
     fn managed_controls(&mut self) -> &mut crate::toolbox::controls::objects::Manager
     {
         self.controls.get_mut()
+    }
+}
+impl crate::toolbox::controls::scrollbox::ScrollBoxHost for Session
+{
+    fn managed_scroll_boxes(&mut self) -> &mut crate::toolbox::controls::scrollbox::Manager
+    {
+        &mut self.scroll_boxes
     }
 }
 std::thread_local! {static SESSION:RefCell<Option<Session>>=const {RefCell::new(None)};}
@@ -529,11 +552,15 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        }
                    })
         }
-        SCROLL_BOX => unsafe {crate::toolbox::controls::scrollbox_native::dispatch(pointer,size,|call|SESSION.with(|slot|{
+        SCROLL_BOX => {
+            let ledger = match inspection::control_owner(files::current_owner()) {
+                Ok(ledger) => ledger, Err(status) => return status as i64
+            };
+            unsafe {crate::toolbox::controls::scrollbox_native::dispatch(pointer,size,|call|SESSION.with(|slot|{
             let mut session=slot.borrow_mut();let session=session.as_mut().unwrap();
             if call.operation==scrollbox::CREATE && call.window!=0{return Err(NOT_SUPPORTED);}
-            session.scroll_boxes.request(files::current_owner(),call,&session.fonts,crate::test_scrollbar::scrollbar_definition,host_gate)
-        }))},
+            session.scroll_boxes.request(&ledger,call,&session.fonts,crate::test_scrollbar::scrollbar_definition,host_gate)
+        }))}},
         CONTROL =>
         unsafe {
             let call = match request::<mac_abi::controls::ControlCall>(pointer, size) {

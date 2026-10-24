@@ -147,6 +147,11 @@ impl<G: InvocationGate> OwnerRef<G>
         self.access(|index| index.contains(key))
     }
 
+    pub fn pending(&self, key: ResourceKey) -> bool
+    {
+        self.access(|index| index.pending(key))
+    }
+
     pub fn invalidate(&self, key: ResourceKey) -> Result<ReleasedResource, PoolError>
     {
         self.access(|index| index.invalidate(key))

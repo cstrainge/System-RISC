@@ -262,7 +262,7 @@ ratification after measurement; no magic emergency buffer sizes are chosen now.
 | M-D07 | Module allocator forwarding vs current `drivers/vhost-filesystem` and `drivers/stuffit-filesystem` private global heaps (`mac-driver-alloc` calls the module global allocator) | New invocation adapter forwards explicit allocation context; migrate module implementations together, not by mixing heaps/free functions |
 | M-D08 | Port/copy definition protocol vs current raw surface/DefinitionCall ABI | Introduce host-owned port operations and bounded copies/managed buffers; remove raw app pointer access before privilege gate |
 | M-D09 | Synchronous participant shape brief vs queued/deadline participants in extension spec §5.5 | **Ratified, Chloe 2026-10-23.** Synchronous participants stand; the earlier queued/deadline rule is superseded. Observers remain queued on their own execution context |
-| M-D10 | Registered payload dispatch alone does not release empty per-owner value-array/cache backing | Staged migration debt: keep empty-backing pruning explicit until saved manager/storage state is itself ledger-owned. Pruning must never destroy quarantined payloads. Remove this hook with registered manager state; stage 3 is incomplete while it or any manager EXIT roll call remains |
+| M-D10 | Registered payload dispatch alone did not release empty per-owner value-array/cache backing | Closed for migrated stores: CSTA/SBST register backing lifetimes; the last child completes a deferred backing release, including after quarantine retry. The explicit control pruning hook is removed. Other manager saved-state slots and EXIT cleanup remain stage-2/3 migration work |
 
 Chloe accepted M-D01, M-D03, M-D06, M-D07 and M-D08 as migration work as
 classified above and authorized §13.2 staging on 2026-10-23. The remaining
@@ -545,9 +545,16 @@ only that resource-lifetime property, not native privileged unwind.
 Managed-control EXIT cleanup now uses this walk, and Reactor Room reads its
 quarantine and named release-provider data through the public SDK. Stopping
 domains stay inspectable but are no longer running applications; a retired app
-cannot resume merely because cleanup returned an error. Empty control backing
-still has an explicit pruning hook (M-D10); registered storage ownership must
-remove it before stage 3 can be called complete. Other managers, the rest
+cannot resume merely because cleanup returned an error. Managed controls and
+scroll boxes now use `Store::owned`: their backing has a separate registered
+CSTA/SBST lifetime. A retained empty cache is visible in the ledger; releasing
+backing before its children defers completion until the last payload leaves.
+Quarantined children retain that backing for retry. Deferred callbacks are
+reported separately from completed releases; final pending counts govern
+retirement. No Control/Scroll Box Manager finish-owner hook remains (M-D10).
+Scroll boxes use full-width native IDs and fallible per-owner growth; the old
+96-entry table is removed. Raster usage totals change with allocations rather
+than being recomputed during presentation. Other managers, the rest
 of the old EXIT roll call, module-owned KREG teardown and document aliases still
 require migration. Do not call this complete stage-3 cleanup or zero leaks across
 all Toolbox kinds. An abandoned busy registry retains its provider/root pending

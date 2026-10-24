@@ -23,7 +23,6 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
                  Kind::Files,
                  Kind::FileWrites,
                  Kind::StandardFiles,
-                 Kind::ScrollBoxes,
                  Kind::Volumes,
                  Kind::TextEdit,
                  Kind::Menus,

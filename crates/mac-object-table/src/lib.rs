@@ -56,7 +56,6 @@ pub enum Kind
     Files,
     FileWrites,
     StandardFiles,
-    ScrollBoxes,
     Volumes,
     TextEdit,
     Menus,
@@ -110,7 +109,6 @@ impl Kind
             Self::Menus => 8,
             Self::TextEdit => mac_abi::textedit::MAX_EDITORS,
             Self::Volumes => 128,
-            Self::ScrollBoxes => 96,
             Self::Memory => 512,
             Self::Windows => 32,
             Self::Files => 64,
@@ -177,8 +175,7 @@ impl Kind
             }
             Self::Menus => Self::TextEdit.first_slot() + Self::TextEdit.capacity() as u32,
             Self::TextEdit => Self::Volumes.first_slot() + Self::Volumes.capacity() as u32,
-            Self::Volumes => Self::ScrollBoxes.first_slot() + Self::ScrollBoxes.capacity() as u32,
-            Self::ScrollBoxes =>
+            Self::Volumes =>
             {
                 Self::StandardFiles.first_slot() + Self::StandardFiles.capacity() as u32
             }
@@ -237,11 +234,7 @@ impl Kind
     {
         match self
         {
-            Self::Memory
-            | Self::Files
-            | Self::FileWrites
-            | Self::StandardFiles
-            | Self::ScrollBoxes => u16::MAX,
+            Self::Memory | Self::Files | Self::FileWrites | Self::StandardFiles => u16::MAX,
             Self::DocumentBatches
             | Self::FileTransfers
             | Self::FileGroups

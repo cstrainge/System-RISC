@@ -231,15 +231,20 @@ fn controls_publish_into_the_real_owner_ledger_and_stale_ids_fail_after_slot_reu
                                  .unwrap();
             let stale = original.id();
             let live = snapshot.at(0).unwrap();
-            assert_eq!((live.live, live.pending, live.slots, live.kinds), (1, 0, 1, 1));
+            assert_eq!((live.live, live.pending, live.slots, live.kinds), (2, 0, 2, 2));
+            let backing = snapshot.ledger(0).unwrap().at(1).unwrap();
+            assert_eq!(backing.kind, *b"CSTA");
+            assert_eq!(backing.live, 1, "retained backing has its own registered lifetime");
             assert!(live.ledger_revision > before.ledger_revision);
             drop(original);
             let dead = snapshot.at(0).unwrap();
-            assert_eq!((dead.live, dead.pending, dead.deaths), (0, 0, 1));
+            assert_eq!((dead.live, dead.pending, dead.deaths), (1, 0, 1));
             let replacement = system.controls()
                                     .create_standard(WindowId(0), StandardKind::Button, state)
                                     .unwrap();
-            assert_eq!(snapshot.at(0).unwrap().slots, 1, "the sole slot must actually be reused");
+            assert_eq!(snapshot.ledger(0).unwrap().at(0).unwrap().slots,
+                       1,
+                       "the sole object slot must actually be reused");
             assert_ne!(stale, replacement.id());
             let error = system.controls().control(stale).info().err().unwrap();
             assert_eq!(error, Error::NotFound);
@@ -257,7 +262,7 @@ fn controls_publish_into_the_real_owner_ledger_and_stale_ids_fail_after_slot_reu
                                 .at(0)
                                 .unwrap();
                 assert_eq!((own.live, own.slots),
-                           (1, 1),
+                           (2, 2),
                            "one app cannot spend another app's slots");
                 drop(other_control);
             });
@@ -269,10 +274,12 @@ fn controls_publish_into_the_real_owner_ledger_and_stale_ids_fail_after_slot_reu
                                 .create_standard(WindowId(0), StandardKind::Button, state)
                                 .unwrap());
             }
-            assert_eq!(snapshot.at(0).unwrap().live, 300, "the old global 256 cap is gone");
+            assert_eq!(snapshot.ledger(0).unwrap().at(0).unwrap().live,
+                       300,
+                       "the old global 256 cap is gone");
             drop(many);
             let after = snapshot.at(0).unwrap();
-            assert_eq!((after.live, after.pending, after.births, after.deaths), (0, 0, 302, 302));
+            assert_eq!((after.live, after.pending, after.births, after.deaths), (1, 0, 303, 302));
         });
     });
 }

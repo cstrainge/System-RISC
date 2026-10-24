@@ -47,7 +47,10 @@ pub(crate) fn registry_status(error: &mac_object_table::registry::Error) -> mac_
         {
             SERVICE_BUSY
         }
-        Error::Pool(_) | Error::Label { .. } | Error::Duplicate { .. } => BAD_ARGUMENT
+        Error::Pool(_)
+        | Error::Label { .. }
+        | Error::Duplicate { .. }
+        | Error::ReservedNamespace { .. } => BAD_ARGUMENT
     }
 }
 
@@ -104,16 +107,35 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                    serial!("KIND_REGISTRATION_REFUSED: {error}");
                                    KindAccessError::Registry(error)
                                })?;
+                               registry.register(&owner,
+                                         crate::toolbox::controls::objects::storage_specification(),
+                                         crate::toolbox::controls::objects::ReleaseStorage)
+                               .map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,
+                                         crate::toolbox::controls::scrollbox::specification(false),
+                                         crate::toolbox::controls::scrollbox::ReleaseScrollBoxes)
+                               .map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,
+                                         crate::toolbox::controls::scrollbox::specification(true),
+                                         crate::toolbox::controls::scrollbox::ReleaseStorage)
+                               .map_err(KindAccessError::Registry)?;
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
                            })?;
     Ok(InvocationGate::run(|| run(&registry.lock())))
 }
 
 #[cfg(target_arch = "riscv64")]
-pub(crate) fn controls_kind() -> Result<KindLease, mac_abi::Status>
+pub(crate) fn controls_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
-    registry(|registry| registry.get(KindCode(*b"CTRL"))).map_err(|error| error.status())?
+    registry(|registry| Ok((registry.get(KindCode(*b"CTRL"))?, registry.get(KindCode(*b"CSTA"))?))).map_err(|error| error.status())?
                                                          .map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn scroll_box_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"SBOX"))?, registry.get(KindCode(*b"SBST"))?)))
+        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
 #[cfg(target_arch = "riscv64")]

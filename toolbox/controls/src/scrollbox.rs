@@ -5,7 +5,7 @@ use mac_abi::scrollbox::*;
 
 use crate::{Client, Controls, Error, Point, Result, WindowId};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScrollBoxId(pub u32);
+pub struct ScrollBoxId(pub u64);
 #[derive(Clone, Debug)]
 pub struct View
 {

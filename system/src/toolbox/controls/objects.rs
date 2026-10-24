@@ -15,11 +15,28 @@ pub(crate) fn specification() -> mac_object_table::registry::Specification<'stat
                                                 source:
                                                     mac_object_table::registry::Source::Resident }
 }
+pub(crate) fn storage_specification() -> mac_object_table::registry::Specification<'static>
+{
+    mac_object_table::registry::Specification {
+        kind: KindCode(*b"CSTA"), label: "Control Manager state",
+        provider: "System Control Manager",
+        capacity: CapacityPolicy::HardBound { slots: 1, reason: "One Control Manager backing state per domain" },
+        source: mac_object_table::registry::Source::Resident }
+}
 pub(crate) trait ControlHost
 {
     fn managed_controls(&mut self) -> &mut Manager;
 }
 pub(crate) struct ReleaseControls;
+pub(crate) struct ReleaseStorage;
+impl<C: ControlHost> mac_object_table::registry::Release<C> for ReleaseStorage
+{
+    fn release(&self, context: &mut C, resource: mac_object_table::domain::ReleasedResource)
+               -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        context.managed_controls().objects.release_storage(resource)
+    }
+}
 impl<C: ControlHost> mac_object_table::registry::Release<C> for ReleaseControls
 {
     fn release(&self, context: &mut C, resource: mac_object_table::domain::ReleasedResource)
@@ -84,9 +101,9 @@ pub struct Manager
 }
 impl Manager
 {
-    pub(crate) fn new(kind: KindLease) -> Self
+    pub(crate) fn new((kind, storage): (KindLease, KindLease)) -> Result<Self, Status>
     {
-        Self { objects: Store::registered(kind) }
+        Ok(Self { objects: Store::owned(kind, storage).map_err(|_| BAD_ARGUMENT)? })
     }
 }
 impl Manager
@@ -114,11 +131,6 @@ impl Manager
     pub fn remove_owner(&mut self, owner: u64)
     {
         self.objects.remove_owner(owner);
-    }
-
-    pub(crate) fn prune_owner_state(&mut self, owner: u64)
-    {
-        self.objects.prune_empty_owner(owner);
     }
 
     pub fn definition(&self, call: &ControlCall, owner: u64) -> Result<i16, Status>

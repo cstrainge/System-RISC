@@ -10,14 +10,14 @@ import capture_system7_conformance as packaging
 import system7_vm as vm
 
 
-def capture(output):
+def capture(output, frontend='headless', qmp_port=4467):
     output.mkdir(parents=True, exist_ok=False)
     original = {name: packaging.sha(vm.DIST / name)
                 for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
     process = endpoint = None
     snapshots = []
     try:
-        process, endpoint = vm.launch(output / 'vm', frontend='headless', writable=True)
+        process, endpoint = vm.launch(output / 'vm', frontend=frontend, writable=True, qmp_port=qmp_port)
         driver = Driver(endpoint, output / 'vm/serial.log')
 
         def frame(name):
@@ -41,6 +41,15 @@ def capture(output):
         frame('selected-second')
         driver.key('r', ('ctrl',))
         frame('refreshed')
+        for _ in range(3):
+            driver.click(608, 383)
+        frame('scrolled-second')
+        driver.click(80, 97)
+        frame('scrolled-first')
+        driver.click(80, 115)
+        frame('scrolled-second-again')
+        driver.key('r', ('ctrl',))
+        frame('scrolled-refreshed')
         driver.move(614, 414)
         driver.button(True)
         driver.move(586, 390)
@@ -66,4 +75,7 @@ def capture(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
-    capture(parser.parse_args().output.resolve())
+    parser.add_argument('--frontend', choices=['headless', 'native-headless'], default='headless')
+    parser.add_argument('--qmp-port', type=int, default=4467)
+    args = parser.parse_args()
+    capture(args.output.resolve(), args.frontend, args.qmp_port)

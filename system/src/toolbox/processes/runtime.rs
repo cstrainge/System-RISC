@@ -657,7 +657,6 @@ impl Desktop
                 let file = self.processes.snapshot(caller)?;
                 self.enter(caller);
                 self.standard_file.remove_owner(caller);
-                self.scroll_boxes.remove_owner(caller);
                 let ledger = self.processes.ledger(caller)?;
                 let walk = mac_object_table::walk::drain(self, &ledger,
                     |_, key| crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
@@ -666,18 +665,15 @@ impl Desktop
                         key.owner(), key.kind(), key.slot(), key.generation()))
                     .unwrap_or_else(|error| panic!("owner cleanup invariant failed: {error}"));
                 let remaining = ledger.summary();
-                // Payloads were released by registered dispatch. Empty backing
-                // still needs this migration hook until saved manager state is
-                // a ledger resource itself; never drop quarantined values.
-                self.controls.prune_owner_state(caller);
                 serial!("OWNER_WALK app={} invalidated={} released={} quarantined={} live={} \
-                         pending={}",
+                         pending={} deferred={}",
                         caller,
                         walk.invalidated,
                         walk.released,
                         walk.quarantined,
                         remaining.live,
-                        remaining.pending);
+                        remaining.pending,
+                        walk.deferred);
                 let ids: Vec<_> = self.window_owners
                                       .iter()
                                       .filter(|(_, id)| *id == caller)

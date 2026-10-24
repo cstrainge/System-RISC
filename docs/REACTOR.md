@@ -32,10 +32,18 @@ only the old/new visible rows and detail pane; resizing configures the same owne
 objects. The palette comes from resident theme roles.
 
 Current coverage is deliberately partial: only process domains are enumerated,
-and their ledgers contain only migrated customers. System/bootstrap/module
-domains, per-kind/object detail, CPU/account/page/service data, Kill/Restart,
+and their ledgers contain migrated controls, scroll boxes and their backing
+state. Pool details include readable release providers from the public kind
+registry. System/bootstrap/module domains, individual object detail,
+CPU/account/page/service data, Kill/Restart,
 journal, preferences and the four new native controls remain staged work. There
 is no claim of zero total handles, zero leaks or an armed emergency reserve.
+
+Live evaluation note (2026-10-23): one visible Windows run showed a selected
+domain/detail disagreement after pointer-placement automation timed out. The
+extended scrolled-selection/reselection/refresh assertions pass on traced and
+normal Linux QEMU and normal Windows headless QEMU. The live observation remains
+unexplained; those isolated passes do not establish that it is fixed.
 
 All reads go through a thin public `mac-toolbox` service. Exec chains (handlers in
 order, owners, claimed evidence and revisions), handler claims and kind mappings

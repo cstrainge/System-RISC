@@ -18,13 +18,16 @@ fn reactor_uses_public_policy_grants_and_managed_views_without_selection_repaint
 {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
     let output = root.join("results/system7").join(format!("reactor-ui-{}", std::process::id()));
-    let capture = Command::new("python3").arg(root.join("System7/scripts/\
-                                                         capture_system7_reactor.py"))
-                                         .arg("--output")
-                                         .arg(&output)
-                                         .current_dir(&root)
-                                         .output()
-                                         .unwrap();
+    let mut command = Command::new("python3");
+    command.arg(root.join("System7/scripts/capture_system7_reactor.py"))
+           .arg("--output")
+           .arg(&output)
+           .current_dir(&root);
+    if std::env::var_os("SYSTEM7_REACTOR_WINDOWS").is_some()
+    {
+        command.args(["--frontend", "native-headless"]);
+    }
+    let capture = command.output().unwrap();
     assert!(capture.status.success(),
             "Reactor Room capture failed:\n{}\n{}",
             String::from_utf8_lossy(&capture.stdout),
@@ -65,6 +68,12 @@ fn reactor_uses_public_policy_grants_and_managed_views_without_selection_repaint
                frame(&output.join("refreshed.ppm")),
                "refresh did not preserve the selected incarnation");
     assert_ne!(second, frame(&output.join("resized.ppm")), "managed panes did not resize");
+    let scrolled = frame(&output.join("scrolled-second.ppm"));
+    assert_ne!(scrolled, second, "detail scrollbar did not expose another part of the ledger");
+    assert!(scrolled == frame(&output.join("scrolled-second-again.ppm")),
+            "switching domains while scrolled reused another owner's cached rows");
+    assert!(scrolled == frame(&output.join("scrolled-refreshed.ppm")),
+            "refreshing a scrolled domain changed its authoritative detail rows");
 
     // The native All-domain read above is admitted by this exact resource
     // content, not its filename/creator. Shared codec tests cover tampering.

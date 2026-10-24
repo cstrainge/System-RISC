@@ -50,6 +50,14 @@ fn registrations_are_owned_named_revisioned_and_carry_real_source_evidence()
     let registrar = owner(DomainKind::Module);
     let mut registry = Registry::<Context, Gate>::new();
     let before = registry.snapshot().unwrap();
+    let mut reserved = spec();
+    reserved.kind = mac_object_table::registry::REGISTRATION_KIND;
+    let error = registry.register(&registrar, reserved, Cleanup).err().unwrap();
+    assert!(matches!(error, Error::ReservedNamespace { .. }));
+    assert!(error.to_string().contains("bootstrap registrations")
+            && error.to_string().contains("choose a separate object namespace"));
+    assert_eq!(registry.snapshot().unwrap(), before);
+    assert_eq!(registrar.summary().live, 0);
     let kind = registry.register(&registrar, spec(), Cleanup).unwrap();
     assert_eq!((registrar.summary().live, registrar.summary().births), (1, 1));
     assert!(registrar.contains(kind.registration().release.registration));

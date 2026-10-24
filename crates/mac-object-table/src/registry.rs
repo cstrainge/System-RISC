@@ -75,6 +75,10 @@ pub struct Specification<'a>
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error
 {
+    ReservedNamespace
+    {
+        kind: KindCode
+    },
     RegistrationNotFound
     {
         id: u64
@@ -127,6 +131,12 @@ impl fmt::Display for Error
     {
         match self
         {
+            Self::ReservedNamespace { kind } =>
+            {
+                write!(f,
+                       "kind '{kind}' is reserved for the facility's bootstrap registrations; \
+                        choose a separate object namespace")
+            }
             Self::RegistrationNotFound { id } =>
             {
                 write!(f,
@@ -374,6 +384,14 @@ impl<Context: 'static, G: InvocationGate, F: CleanupFailure + 'static> Registry<
                                                       spec: Specification<'_>, release: R)
                                                       -> Result<KindLease<G>, Error>
     {
+        if spec.kind == REGISTRATION_KIND
+        {
+            return Err(Error::ReservedNamespace { kind: spec.kind });
+        }
+        if self.revision == u64::MAX
+        {
+            return Err(Error::RevisionExhausted);
+        }
         let label = Label::checked(spec.label, "label")?;
         let provider = Label::checked(spec.provider, "provider name")?;
         let at = match self.position(spec.kind)

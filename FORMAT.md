@@ -528,7 +528,8 @@ must register and adopt this facility when their implementation is next touched.
 
 ## Native managed-control identities (development ABI 1)
 
-`ControlCall.id`, `ControlId` and retained control drawing identities are opaque
+`ControlCall.id`, `ControlId`, `scrollbox::Call.id`, `ScrollBoxId` and retained
+control/scroll-box drawing identities are opaque
 u64 native tokens. A single boot-wide issuer supplies domain incarnations and
 native object tokens, starting above `u32::MAX`, never wrapping or resetting.
 Tokens resolve inside the shared facility to the complete owner-domain, semantic
@@ -546,6 +547,17 @@ The claim lasts through outstanding removal guards. Values are destroyed outside
 the owner lock before their cleanup ticket completes and their slot is reusable.
 Native and Pascal-string Control calls share these IDs and resident validation;
 this is not a change to an original 68k Control Manager adapter.
+
+Managed scroll boxes use SBOX under the same native identity contract. Their
+per-owner backing has a separate SBST registration; ordinary control backing
+uses CSTA. These state pools contain one backing instance per domain, with an
+explicit hard-bound reason. Backing does not consume an object's quota. An empty
+retained cache remains ledger-owned, even after the last visible object is
+disposed. The owner walk can release backing before or after its children: a
+pending backing ticket is retained until the last payload leaves its storage.
+Quarantined payloads retain both backing and provider pins for retry. The walk
+reports callbacks accepted with a pending ticket as deferred; the final ledger
+pending count, not callback success, remains the death barrier.
 
 All native definitions, System, apps and fixtures rebuild together at ABI 1.
 The global 256-slot Control table and its shared generation array are removed.

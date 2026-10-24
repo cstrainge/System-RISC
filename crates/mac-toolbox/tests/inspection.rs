@@ -14,8 +14,10 @@ fn object_kind_registrations_are_public_named_and_generation_scoped()
             assert_eq!(system.inspection().snapshot(Scope::All).err().unwrap().cause,
                        Error::AccessDenied);
             let snapshot = system.inspection().object_kinds().unwrap();
-            assert_eq!(snapshot.count, 1);
-            let control = snapshot.at(0).unwrap();
+            assert_eq!(snapshot.count, 4);
+            let control = (0..snapshot.count).map(|index| snapshot.at(index).unwrap())
+                                             .find(|row| row.namespace == *b"CTRL")
+                                             .unwrap();
             assert_eq!(control.namespace, *b"CTRL");
             assert_eq!(control.label.as_str(), "Managed controls");
             assert_eq!(control.provider.as_str(), "System Control Manager");
@@ -27,7 +29,7 @@ fn object_kind_registrations_are_public_named_and_generation_scoped()
             let error = snapshot.get(u64::MAX).unwrap_err();
             assert_eq!(error.cause, Error::NotFound);
             assert!(error.to_string().contains("resolve the current provider"));
-            let error = snapshot.at(1).unwrap_err();
+            let error = snapshot.at(4).unwrap_err();
             assert_eq!(error.cause, Error::NotFound);
             assert!(error.to_string().contains("outside this registry snapshot"));
             let other = fixture::add("Another ordinary reader", 0);
@@ -37,7 +39,7 @@ fn object_kind_registrations_are_public_named_and_generation_scoped()
             assert_eq!(error.cause, Error::ScanStale);
             assert!(error.to_string().contains("obtain a new registry snapshot and retry"));
             let next = system.inspection().object_kinds().unwrap();
-            assert_eq!(next.count, 2);
+            assert_eq!(next.count, 5);
             let row = next.get(extra.id()).unwrap();
             assert_eq!(row.provider.as_str(), "Example Extension");
             assert_eq!(row.capacity, CapacityPolicy::PerDomainQuota { slots: 16 });
@@ -46,7 +48,7 @@ fn object_kind_registrations_are_public_named_and_generation_scoped()
             let stale_id = extra.id();
             drop(extra);
             let current = system.inspection().object_kinds().unwrap();
-            assert_eq!(current.count, 1);
+            assert_eq!(current.count, 4);
             assert_eq!(current.get(stale_id).unwrap_err().cause, Error::NotFound);
         });
         with_owner(u64::MAX, || {
@@ -81,12 +83,12 @@ fn owner_walk_quarantines_failed_cleanup_and_retry_clears_the_real_death_barrier
             assert_eq!((failure.report.invalidated,
                         failure.report.released,
                         failure.report.quarantined),
-                       (1, 0, 1));
+                       (2, 0, 2));
             assert!(failure.failures[0].contains("CTRL")
                     && failure.failures[0].contains("no registered cleanup provider"));
             let pending = membership.at(0).unwrap();
             assert!(!pending.accepting);
-            assert_eq!((pending.live, pending.pending, pending.quarantined), (0, 1, 1));
+            assert_eq!((pending.live, pending.pending, pending.quarantined), (0, 2, 2));
             assert!(matches!(system.controls().control(object.id()).info(), Err(Error::NotFound)));
             let error = system.controls()
                               .create_static_text(WindowId(0),
@@ -101,14 +103,14 @@ fn owner_walk_quarantines_failed_cleanup_and_retry_clears_the_real_death_barrier
                        1,
                        "failed cleanup must keep its provider pinned");
             let retry = fixture::walk_controls(owner, false, true);
-            assert_eq!((retry.report.released, retry.report.quarantined), (1, 0));
+            assert_eq!((retry.report.released, retry.report.quarantined), (2, 0));
             assert!(retry.failures.is_empty());
             let done = membership.at(0).unwrap();
             assert_eq!((done.live, done.pending, done.quarantined), (0, 0, 0));
             assert_eq!(system.inspection().object_kinds().unwrap().get(registration).unwrap().uses,
                        0);
             drop(object);
-            assert_eq!(membership.at(0).unwrap().deaths, before.deaths + 1);
+            assert_eq!(membership.at(0).unwrap().deaths, before.deaths + 2);
         });
     });
 }
@@ -144,6 +146,65 @@ fn pool_capacity_policies_preserve_limits_and_the_reason_for_a_hard_bound()
 }
 
 #[test]
+fn empty_control_and_scroll_backings_remain_owned_until_the_common_walk()
+{
+    use mac_toolbox::{Rect, WindowId,
+                      controls::{ScrollBoxSpec, TextAlignment}};
+    with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let owner = fixture::add("Empty manager state", 0);
+        with_owner(owner, || {
+            let text = system.controls()
+                             .create_static_text(WindowId(0),
+                                                 Rect::new(0, 0, 80, 20),
+                                                 "Temporary",
+                                                 Default::default(),
+                                                 TextAlignment::Left)
+                             .unwrap();
+            let scroll =
+                system.controls()
+                      .create_scroll_box(WindowId(0),
+                                         ScrollBoxSpec { viewport: Rect::new(0, 0, 80, 64),
+                                                         scrollbar: Rect::new(80, 0, 96, 64),
+                                                         count: 100,
+                                                         ..Default::default() })
+                      .unwrap();
+            drop(text);
+            drop(scroll);
+            let members = system.inspection().snapshot(Scope::Own).unwrap();
+            let pools = members.ledger(0).unwrap();
+            assert_eq!(pools.len(), 4);
+            for index in 0..pools.len()
+            {
+                let pool = pools.at(index).unwrap();
+                let state = pool.kind == *b"CSTA" || pool.kind == *b"SBST";
+                assert_eq!(pool.live, usize::from(state) as u64);
+                let provider = system.inspection()
+                                     .object_kinds()
+                                     .unwrap()
+                                     .get(pool.registration.unwrap())
+                                     .unwrap();
+                assert_eq!(provider.uses, usize::from(state) as u64);
+            }
+            let result = fixture::walk_controls(owner, false, false);
+            assert_eq!((result.report.invalidated,
+                        result.report.released,
+                        result.report.deferred,
+                        result.report.quarantined),
+                       (2, 2, 0, 0));
+            assert!(result.failures.is_empty());
+            let final_state = members.at(0).unwrap();
+            assert_eq!((final_state.live, final_state.pending, final_state.quarantined), (0, 0, 0));
+            let registry = system.inspection().object_kinds().unwrap();
+            for index in 0..registry.count
+            {
+                assert_eq!(registry.at(index).unwrap().uses, 0);
+            }
+        });
+    });
+}
+
+#[test]
 fn pool_snapshots_track_real_controls_reject_mutation_and_do_not_alias_another_caller()
 {
     use mac_toolbox::{Rect, WindowId, controls::TextAlignment, inspection::CapacityPolicy};
@@ -167,7 +228,7 @@ fn pool_snapshots_track_real_controls_reject_mutation_and_do_not_alias_another_c
             assert!(error.to_string().contains("obtain a new ledger snapshot and retry"));
             let current = members.ledger(0).unwrap();
             assert_eq!(current.domain().incarnation, owner);
-            assert_eq!(current.len(), 1);
+            assert_eq!(current.len(), 2);
             let row = current.at(0).unwrap();
             assert_eq!(row.kind, *b"CTRL");
             assert_eq!(row.capacity, CapacityPolicy::GrowableUntilMemory);
@@ -176,7 +237,10 @@ fn pool_snapshots_track_real_controls_reject_mutation_and_do_not_alias_another_c
             assert_eq!(row.generation_headroom, u64::MAX - 1);
             assert!(!row.counters_saturated);
             assert_eq!(current.at(0).unwrap(), row, "reading a snapshot must not mutate it");
-            let error = current.at(1).unwrap_err();
+            let state = current.at(1).unwrap();
+            assert_eq!(state.kind, *b"CSTA");
+            assert_eq!(state.live, 1);
+            let error = current.at(2).unwrap_err();
             assert_eq!(error.cause, Error::NotFound);
             assert!(error.to_string().contains("outside this ledger snapshot"));
             with_owner(foreign, || {

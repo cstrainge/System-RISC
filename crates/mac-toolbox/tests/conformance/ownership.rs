@@ -201,6 +201,23 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
 
 fn managed_controls(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>
 {
+    fn pool(system: &System<'_>) -> Result<mac_toolbox::inspection::Pool, Failure>
+    {
+        let pools = system.inspection()
+                          .snapshot(mac_toolbox::inspection::Scope::Own)
+                          .map_err(|error| error.cause)?
+                          .ledger(0)
+                          .map_err(|error| error.cause)?;
+        for index in 0..pools.len()
+        {
+            let pool = pools.at(index).map_err(|error| error.cause)?;
+            if pool.kind == *b"CTRL"
+            {
+                return Ok(pool);
+            }
+        }
+        Err(Failure::Mismatch("managed control pool absent from owner ledger"))
+    }
     use mac_toolbox::controls::{StandardKind, StandardState};
     let window = create(system)?;
     super::managed_controls::tracking(system, window.id())?;
@@ -208,22 +225,14 @@ fn managed_controls(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), 
     let state = StandardState::new(Rect::new(8, 8, 128, 32), "Parent cleanup");
     let owned = system.controls().create_standard(window.id(), StandardKind::Button, state)?;
     let stale = owned.id();
-    let before = system.inspection()
-                       .snapshot(mac_toolbox::inspection::Scope::Own)
-                       .map_err(|e| e.cause)?
-                       .at(0)
-                       .map_err(|e| e.cause)?;
+    let before = pool(system)?;
     assert_eq!((before.live, before.slots), (1, 1), "prepare a sole-slot native control pool");
     drop(window);
     assert!(matches!(owned.control().info(), Err(Error::NotFound)));
     let replacement_window = create(system)?;
     let replacement =
         system.controls().create_standard(replacement_window.id(), StandardKind::Button, state)?;
-    let after = system.inspection()
-                      .snapshot(mac_toolbox::inspection::Scope::Own)
-                      .map_err(|e| e.cause)?
-                      .at(0)
-                      .map_err(|e| e.cause)?;
+    let after = pool(system)?;
     assert_eq!((after.live, after.slots), (1, 1), "parent cleanup must permit sole-slot reuse");
     assert_ne!(replacement.id(), stale);
     drop(owned);
@@ -244,7 +253,19 @@ fn scroll_boxes(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fail
                                    ..Default::default() };
         let control = system.controls().create_scroll_box(window.id(), spec)?;
         let id = control.id();
-        assert_ne!(id.0 & 0xffff, window.id().0 & 0xffff);
+        assert!(id.0 > u64::from(u32::MAX));
+        let slots = |system: &System<'_>| {
+            let pools = system.inspection()
+                              .snapshot(mac_toolbox::inspection::Scope::Own)
+                              .unwrap()
+                              .ledger(0)
+                              .unwrap();
+            (0..pools.len()).map(|index| pools.at(index).unwrap())
+                            .find(|pool| pool.kind == *b"SBOX")
+                            .unwrap()
+                            .slots
+        };
+        let prepared = slots(system);
         let view = control.control().info()?;
         for row in view.missing
         {
@@ -263,11 +284,11 @@ fn scroll_boxes(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fail
         assert!(matches!(control.control().info(), Err(Error::NotFound)));
         let replacement_window = create(system)?;
         let replacement = system.controls().create_scroll_box(replacement_window.id(), spec)?;
-        assert_eq!(replacement.id().0 & 0xffff, id.0 & 0xffff);
+        assert_eq!(slots(system), prepared, "replacement must reuse prepared owner storage");
         assert_ne!(replacement.id(), id);
         drop(control);
         assert!(replacement.control().info().is_ok());
-        for foreign in [id, ScrollBoxId(replacement_window.id().0)]
+        for foreign in [id, ScrollBoxId(u64::from(replacement_window.id().0))]
         {
             assert!(matches!(system.controls().scroll_box(foreign).info(), Err(Error::NotFound)));
             let mut call = mac_abi::scrollbox::Call { id: foreign.0,
