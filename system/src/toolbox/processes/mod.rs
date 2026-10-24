@@ -32,7 +32,8 @@ pub struct Process
 {
     pub info:  ProcessInfo,
     pub image: usize,
-    pub stamp: u64
+    pub stamp: u64,
+    cleanup:   crate::toolbox::handles::cleanup::Checkpoint
 }
 
 /// A cleanup resource context is minted from one directory entry, never from
@@ -150,6 +151,8 @@ impl Manager
         }
         info.name[..name.len()].copy_from_slice(name.as_bytes());
         info.name_length = name.len() as u32;
+        let cleanup =
+            crate::toolbox::handles::cleanup::Checkpoint::try_new().map_err(|_| NO_MEMORY)?;
         let ledger = OwnerIndex::issue(DomainKind::Process).map_err(|error| {
                                                                serial!("PROCESS_DOMAIN_REFUSED: \
                                                                         {error}");
@@ -161,7 +164,8 @@ impl Manager
             .insert(ledger,
                     Process { info,
                               image,
-                              stamp: 0 })
+                              stamp: 0,
+                              cleanup })
             .map_err(|error| {
                 serial!("PROCESS_DOMAIN_REFUSED: {error}");
                 NO_MEMORY
@@ -208,11 +212,22 @@ impl Manager
             .map_or(crate::context::finder_app().0, |p| p.info.id)
     }
 
+    pub(super) fn cleanup_checkpoint(
+        &self, id: u64)
+        -> Result<crate::toolbox::handles::cleanup::Checkpoint, Status>
+    {
+        self.entries.get(id).map(|entry| entry.value().cleanup.clone()).ok_or(NOT_FOUND)
+    }
+
     pub fn remove(&mut self, id: u64) -> Result<(), Status>
     {
         // A retired thread still owns its context and stack until a different
         // stack reclaims it. An empty object ledger alone is insufficient.
         if crate::machine::scheduler::has_threads(id)
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if !self.cleanup_checkpoint(id)?.settled()
         {
             return Err(SERVICE_BUSY);
         }

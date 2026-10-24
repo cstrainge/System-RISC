@@ -60,6 +60,9 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
     assert!(serial.contains("FINDER_SELECTION_USERSPACE_PASS stages=30 outline_steps=4000\n"),
             "{serial}");
     assert!(serial.contains("EVENT_COORDINATES_USERSPACE_PASS\n"), "{serial}");
+    assert!(serial.contains("FINDER_DEFERRED_POINTER_USERSPACE_PASS ordered=passed \
+                             modifiers=passed\n"),
+            "{serial}");
     let stages = report["stages"].as_array().unwrap();
     assert_eq!(stages.len(), 30);
     assert!(serial.contains("FINDER_INFO_MULTIPLE_TOTALS selected=10 logical=0 \

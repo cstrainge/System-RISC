@@ -11,27 +11,28 @@ pub(super) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         Err(status) => return status as i64
     };
     super::SESSION.with(|slot| {
-        let Ok(mut session) = slot.try_borrow_mut()
-        else
-        {
-            return SERVICE_BUSY as i64;
-        };
-        let Some(session) = session.as_mut()
-        else
-        {
-            return NOT_SUPPORTED as i64;
-        };
-        let id = owner.owner().incarnation();
-        let at = match session.textedit.iter().position(|(subject, _)| *subject == id)
-        {
-            Some(at) => at,
-            None =>
-            {
-                if session.textedit.try_reserve(1).is_err()
-                {
-                    return NO_MEMORY as i64;
-                }
-                let kinds =
+                      let Ok(mut session) = slot.try_borrow_mut()
+                      else
+                      {
+                          return SERVICE_BUSY as i64;
+                      };
+                      let Some(session) = session.as_mut()
+                      else
+                      {
+                          return NOT_SUPPORTED as i64;
+                      };
+                      let id = owner.owner().incarnation();
+                      let at =
+                          match session.textedit.iter().position(|(subject, _)| *subject == id)
+                          {
+                              Some(at) => at,
+                              None =>
+                              {
+                                  if session.textedit.try_reserve(1).is_err()
+                                  {
+                                      return NO_MEMORY as i64;
+                                  }
+                                  let kinds =
                     match (session.registry.get(crate::toolbox::handles::KindCode(*b"TEDT")),
                            session.registry.get(crate::toolbox::handles::KindCode(*b"TESV")))
                     {
@@ -41,20 +42,25 @@ pub(super) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                             return crate::toolbox::handles::registry_status(&error) as i64;
                         }
                     };
-                let manager = match crate::toolbox::textedit::Manager::new(kinds, owner)
-                {
-                    Ok(manager) => manager,
-                    Err(status) => return status as i64
-                };
-                let at = session.textedit.len();
-                session.textedit.push((id, manager));
-                at
-            }
-        };
-        let manager = &mut session.textedit[at].1;
-        unsafe {
-            crate::toolbox::textedit::native::dispatch_with(number, pointer, size, |request| {
-                match request
+                                  let manager = match crate::toolbox::textedit::Manager::new(kinds,
+                                                                                             owner)
+                                  {
+                                      Ok(manager) => manager,
+                                      Err(status) => return status as i64
+                                  };
+                                  let at = session.textedit.len();
+                                  session.textedit.push((id, manager));
+                                  at
+                              }
+                          };
+                      let manager = &mut session.textedit[at].1;
+                      unsafe {
+                          crate::toolbox::textedit::native::dispatch_with(
+                                                                          number,
+                                                                          pointer,
+                                                                          size,
+                                                                          |request| {
+                                                                              match request
                 {
                     crate::toolbox::textedit::native::Request::Edit(call, input, output) =>
                     {
@@ -71,9 +77,10 @@ pub(super) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                         manager.font_request(call, &session.fonts)
                     }
                 }
-            })
-        }
-    })
+                                                                          }
+            )
+                      }
+                  })
 }
 impl crate::toolbox::textedit::lifetime::EditorHost for super::Session
 {

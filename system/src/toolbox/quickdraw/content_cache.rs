@@ -256,8 +256,28 @@ impl ContentCache
     /// A miss always replays normally, including allocation failure or an
     /// oversized window. At most 64 visible fragments per window are retained;
     /// further fragments safely replay rather than growing metadata unbounded.
+    #[cfg(test)]
     pub fn paint(&mut self, id: impl Into<SceneTarget>, bounds: Rect, canvas: &mut Canvas<'_>,
                  replay: impl FnOnce(&mut Canvas<'_>))
+    {
+        let result: Result<(), core::convert::Infallible> =
+            self.try_paint(id, bounds, canvas, |canvas| {
+                    replay(canvas);
+                    Ok(())
+                });
+        match result
+        {
+            Ok(()) => (),
+            Err(never) => match never {}
+        }
+    }
+
+    /// Refused resource context must not publish partial pixels as a valid
+    /// cache entry. The compositor decides whether to present the frame.
+    pub fn try_paint<E>(&mut self, id: impl Into<SceneTarget>, bounds: Rect,
+                        canvas: &mut Canvas<'_>,
+                        replay: impl FnOnce(&mut Canvas<'_>) -> Result<(), E>)
+                        -> Result<(), E>
     {
         let id = id.into();
         let budget = self.budget.unwrap_or(PIXEL_BUDGET);
@@ -266,7 +286,7 @@ impl ContentCache
         if !sect_rect(bounds, Rect::new(0, 0, canvas.width as i16, canvas.height as i16), &mut crop)
            || !sect_rect(crop, canvas.clip(), &mut visible)
         {
-            return;
+            return Ok(());
         }
         self.clock = self.clock.wrapping_add(1);
         if let Some(index) = self.entries.iter().position(|entry| entry.id == id)
@@ -280,11 +300,11 @@ impl ContentCache
                 self.entries[index].touched = self.clock;
                 self.entries[index].frame = self.frame;
                 self.entries[index].copy(canvas, visible, false);
-                return;
+                return Ok(());
             }
         }
 
-        replay(canvas);
+        replay(canvas)?;
 
         let index = if let Some(index) = self.entries.iter().position(|entry| entry.id == id)
         {
@@ -296,7 +316,7 @@ impl ContentCache
             let bytes = count * core::mem::size_of::<u32>();
             if bytes > budget
             {
-                return;
+                return Ok(());
             }
             while self.entries.len() >= MAX_WINDOWS || self.bytes() + bytes > budget
             {
@@ -312,20 +332,20 @@ impl ContentCache
                                             .min_by_key(|(_, entry)| entry.touched)
                 else
                 {
-                    return;
+                    return Ok(());
                 };
                 self.entries.swap_remove(oldest);
             }
             let mut pixels = Vec::new();
             if self.entries.try_reserve(1).is_err() || pixels.try_reserve_exact(count).is_err()
             {
-                return;
+                return Ok(());
             }
             pixels.resize(count, 0);
             // The allocator may provide more capacity than requested.
             if self.bytes() + pixels.capacity() * 4 > budget
             {
-                return;
+                return Ok(());
             }
             self.entries.push(Entry { id,
                                       bounds,
@@ -342,6 +362,7 @@ impl ContentCache
         self.entries[index].touched = self.clock;
         self.entries[index].frame = self.frame;
         self.entries[index].copy(canvas, visible, true);
+        Ok(())
     }
 }
 
@@ -524,5 +545,62 @@ mod headroom_tests
         cache.paint(3, bounds, &mut canvas, |canvas| canvas.paint_rect(bounds, 0x123456));
         assert!(canvas.pixels.iter().all(|pixel| *pixel == 0x123456));
         assert_eq!(cache.bytes(), 0, "replay may not consume reserved headroom");
+    }
+}
+
+#[cfg(test)]
+mod fallible_replay_tests
+{
+    use super::*;
+    #[test]
+    fn failed_resource_replay_never_marks_partial_pixels_valid()
+    {
+        let bounds = Rect::new(0, 0, 20, 20);
+        let mut pixels = alloc::vec![0; 400];
+        let mut canvas = Canvas::new(&mut pixels, 20, 20);
+        let mut cache = ContentCache::default();
+        assert_eq!(cache.try_paint(1, bounds, &mut canvas, |canvas| {
+                            canvas.paint_rect(bounds, 0xff0000);
+                            Err(mac_abi::NOT_FOUND)
+                        }),
+                   Err(mac_abi::NOT_FOUND));
+        assert_eq!(cache.bytes(), 0);
+        let mut replayed = false;
+        assert_eq!(cache.try_paint(1, bounds, &mut canvas, |canvas| {
+                            replayed = true;
+                            canvas.paint_rect(bounds, 0x123456);
+                            Ok::<(), i32>(())
+                        }),
+                   Ok(()));
+        assert!(replayed, "a failed frame was cached as valid");
+        canvas.pixels.fill(0);
+        assert_eq!(cache.try_paint(1, bounds, &mut canvas, |_| Err(mac_abi::NOT_FOUND)), Ok(()));
+        assert!(canvas.pixels.iter().all(|pixel| *pixel == 0x123456));
+    }
+    #[test]
+    fn failed_hole_replay_keeps_it_invalid_and_no_cache_budget_preserves_error()
+    {
+        let bounds = Rect::new(0, 0, 20, 20);
+        let hole = Rect::new(2, 3, 7, 8);
+        let mut pixels = alloc::vec![0; 400];
+        let mut canvas = Canvas::new(&mut pixels, 20, 20);
+        let mut cache = ContentCache::default();
+        cache.paint(1, bounds, &mut canvas, |canvas| canvas.paint_rect(bounds, 9));
+        cache.invalidate_rect(1, hole);
+        canvas.set_clip(hole);
+        assert_eq!(cache.try_paint(1, bounds, &mut canvas, |_| Err(mac_abi::NOT_FOUND)),
+                   Err(mac_abi::NOT_FOUND));
+        let mut repaired = false;
+        cache.try_paint(1, bounds, &mut canvas, |canvas| {
+                 repaired = true;
+                 canvas.paint_rect(hole, 7);
+                 Ok::<(), i32>(())
+             })
+             .unwrap();
+        assert!(repaired);
+        cache.set_budget(0);
+        assert_eq!(cache.try_paint(2, bounds, &mut canvas, |_| Err(mac_abi::NOT_FOUND)),
+                   Err(mac_abi::NOT_FOUND));
+        assert_eq!(cache.bytes(), 0);
     }
 }

@@ -90,9 +90,17 @@ impl Drop for InitializingDialog<'_>
                 }
                 else
                 {
-                    panic!("Standard File initialization rollback invariant failed: app={} \
-                            handle={} initialization={:?} cleanup={}",
-                           self.desktop.owner, self.handle, self.failure, status);
+                    if let Ok(dialog) = self.desktop.standard_file.get_mut(self.handle)
+                    {
+                        dialog.state = CANCELLED;
+                    }
+                    serial!("STANDARD_FILE_ROLLBACK_RETAINED: app={} handle={} \
+                             initialization={:?} cleanup={}; inactive protocol remains \
+                             registered for owner cleanup",
+                            self.desktop.owner,
+                            self.handle,
+                            self.failure,
+                            status);
                 }
             }
         }
@@ -132,11 +140,9 @@ impl super::Desktop
 
     fn dispose_file_dialog(&mut self, handle: u64) -> Result<(), Status>
     {
-        let dialog = self.standard_file.get(handle)?;
-        if dialog.owner != self.owner
-        {
-            return Err(ACCESS_DENIED);
-        }
+        // Invalidate the parent first and pin it across child disposal.
+        // Child refusals retain their own registered WDEF tickets.
+        let dialog = self.standard_file.take(self.owner, handle)?;
         let windows = [dialog.auxiliary, dialog.window];
         let mut failure = None;
         for window in windows
@@ -149,7 +155,7 @@ impl super::Desktop
                 }
             }
         }
-        self.standard_file.dispose(self.owner, handle)?;
+        drop(dialog);
         failure.map_or(Ok(()), Err)
     }
 

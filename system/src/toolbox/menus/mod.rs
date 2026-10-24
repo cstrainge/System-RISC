@@ -171,15 +171,10 @@ impl Manager
                     left = state.title_bounds.right;
                     replacements.push((next, state));
                 }
-                let ticket = self.objects.begin_release(id).ok_or(NOT_FOUND)?;
-                if let Err(error) = self.release(ticket)
-                {
-                    let status = pool_status(error.cause());
-                    self.objects
-                        .quarantine(error.into_ticket())
-                        .expect("ordinary menu disposal owns its matching cleanup ticket");
-                    return Err(status);
-                }
+                // Pin the registered payload across ordinary menu cleanup.
+                let removed = self.objects.remove(id).ok_or(NOT_FOUND)?;
+                self.unpublish(id);
+                drop(removed);
                 for (id, state) in replacements
                 {
                     if let Some(menu) = self.objects.get_mut(id)
@@ -413,6 +408,15 @@ impl Manager
         changed
     }
 
+    fn unpublish(&mut self, id: u64)
+    {
+        if let Some(bar) = self.bar_mut()
+        {
+            bar.order.retain(|other| *other != id);
+            bar.cancel();
+        }
+    }
+
     pub(crate) fn release(&mut self, ticket: ReleasedResource) -> Result<(), CompletionError>
     {
         let Some(id) = self.objects.releasing(&ticket).map(|menu| menu.id)
@@ -420,11 +424,7 @@ impl Manager
         {
             return Err(<CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket));
         };
-        if let Some(bar) = self.bar_mut()
-        {
-            bar.order.retain(|other| *other != id);
-            bar.cancel();
-        }
+        self.unpublish(id);
         drop(self.objects.release(ticket)?);
         Ok(())
     }

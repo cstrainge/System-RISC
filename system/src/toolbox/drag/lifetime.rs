@@ -1,7 +1,9 @@
 //! Registry-owned drag protocol lifetimes, shared by both trap boundaries.
 #![forbid(unsafe_code)]
-use mac_object_table::{domain::{CapacityPolicy, CompletionError, KindCode, ReleasedResource},
+use mac_object_table::{domain::{CapacityPolicy, KindCode, ReleasedResource},
                        registry::{Release, Source, Specification}};
+
+use crate::toolbox::handles::cleanup::Failure;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Registration
@@ -54,12 +56,12 @@ impl Registration
 pub(crate) trait Host
 {
     fn release_drag(&mut self, ticket: ReleasedResource, kind: Registration)
-                    -> Result<(), CompletionError>;
+                    -> Result<(), Failure>;
 }
 pub(crate) struct ReleaseKind(pub(crate) Registration);
-impl<C: Host> Release<C> for ReleaseKind
+impl<C: Host> Release<C, Failure> for ReleaseKind
 {
-    fn release(&self, context: &mut C, ticket: ReleasedResource) -> Result<(), CompletionError>
+    fn release(&self, context: &mut C, ticket: ReleasedResource) -> Result<(), Failure>
     {
         context.release_drag(ticket, self.0)
     }

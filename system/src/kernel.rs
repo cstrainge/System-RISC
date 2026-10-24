@@ -215,10 +215,23 @@ pub(crate) fn with_files<R>(call: impl FnOnce(&mut crate::toolbox::files::Manage
 {
     crate::machine::io::run(|| FILES.with(call))
 }
+/// A refused firmware handoff returns its unconsumed cleanup capability.
+pub(crate) fn with_files_owned<A, R>(argument: A,
+                                     call: impl FnOnce(A, &mut crate::toolbox::files::Manager) -> R)
+                                     -> Result<R, (AccessError, A)>
+{
+    crate::machine::io::run(|| FILES.with_owned(argument, call))
+}
 pub(crate) fn with_memory<R>(call: impl FnOnce(&mut crate::toolbox::memory::Manager) -> R)
                              -> Result<R, AccessError>
 {
     MEMORY.with(call)
+}
+pub(crate) fn with_memory_owned<A, R>(argument: A,
+                                      call: impl FnOnce(A, &mut crate::toolbox::memory::Manager) -> R)
+                                      -> Result<R, (AccessError, A)>
+{
+    MEMORY.with_owned(argument, call)
 }
 pub(crate) fn with_scrap<R>(call: impl FnOnce(&mut crate::toolbox::scrap::Manager) -> R)
                             -> Result<R, AccessError>

@@ -2,11 +2,10 @@
 #![forbid(unsafe_code)]
 #[path = "classic.rs"]
 mod classic;
-use alloc::vec::Vec;
+use alloc::{collections::VecDeque, vec::Vec};
 
 use mac_abi::{drag::*, *};
-use mac_object_table::{domain::{CompletionError, ReleasedResource},
-                       projected::Store};
+use mac_object_table::{domain::ReleasedResource, projected::Store};
 
 use super::super::handles::{InvocationGate, Kind, KindLease, OwnerRef};
 
@@ -135,29 +134,56 @@ pub struct Notice
     pub owner: u64,
     pub event: Event
 }
+#[derive(Clone, Copy)]
+struct PointerRelease
+{
+    point:     Point,
+    modifiers: u16,
+    hot:       Option<u32>,
+    when:      u32
+}
+#[derive(Clone, Copy)]
+struct PointerPress
+{
+    owner:     u64,
+    window:    u64,
+    point:     Point,
+    modifiers: u16,
+    released:  Option<PointerRelease>
+}
+
 pub struct Manager
 {
-    sessions:         Store<Session, InvocationGate>,
-    receivers:        Store<Receiver, InvocationGate>,
-    active:           Option<u32>,
-    notices:          [Option<Notice>; 4],
-    highlight:        Option<(u64, Rect)>,
-    highlight_damage: [Option<Rect>; 2]
+    sessions:              Store<Session, InvocationGate>,
+    receivers:             Store<Receiver, InvocationGate>,
+    active:                Option<u32>,
+    pointer:               Option<PointerPress>,
+    notices:               VecDeque<Notice>,
+    #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+    refuse_effect_storage: bool,
+    highlight:             Option<(u64, Rect)>,
+    highlight_damage:      [Option<Rect>; 2]
 }
 impl Manager
 {
     pub(crate) fn new(sessions: (KindLease, KindLease), receivers: (KindLease, KindLease))
                       -> Result<Self, Status>
     {
-        Ok(Self { sessions:
-                      Store::new(Kind::Drags, sessions.0, sessions.1).map_err(|_| BAD_ARGUMENT)?,
+        let mut notices = VecDeque::new();
+        notices.try_reserve_exact(8).map_err(|_| NO_MEMORY)?;
+        Ok(Self { sessions: Store::new(Kind::Drags, sessions.0, sessions.1).map_err(|_| {
+                                                                               BAD_ARGUMENT
+                                                                           })?,
                   receivers:
                       Store::new(Kind::DragReceivers, receivers.0, receivers.1).map_err(|_| {
                                                                                    BAD_ARGUMENT
                                                                                })?,
-                  active:           None,
-                  notices:          [None; 4],
-                  highlight:        None,
+                  active: None,
+                  pointer: None,
+                  notices,
+                  #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+                  refuse_effect_storage: false,
+                  highlight: None,
                   highlight_damage: [None; 2] })
     }
 }
@@ -180,10 +206,12 @@ fn copied(bytes: &[u8]) -> Result<Vec<u8>, Status>
 impl Manager
 {
     fn notice(&mut self, owner: u64, prefix: u32, window: u64, id: u32, when: u32)
+              -> Result<(), Status>
     {
-        let session = self.sessions.get(id).expect("live drag notification");
+        let session = self.sessions.get(id).ok_or(NOT_FOUND)?;
         let notice = Self::notification(session, owner, prefix, window, id, when);
         self.enqueue(notice);
+        Ok(())
     }
 
     fn notification(session: &Session, owner: u64, prefix: u32, window: u64, id: u32, when: u32)
@@ -211,23 +239,97 @@ impl Manager
                                 window } }
     }
 
+    /// Reserve the bounded maximum effects of one operation before changing
+    /// protocol state. The same exclusive manager borrow pins this capacity
+    /// through enqueue; no effect or cleanup capability is silently discarded.
+    fn reserve_effects_for(&mut self, slots: usize) -> Result<(), Status>
+    {
+        #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+        if self.refuse_effect_storage
+        {
+            return Err(NO_MEMORY);
+        }
+        self.notices.try_reserve(slots).map_err(|_| NO_MEMORY)
+    }
+
+    fn reserve_effects(&mut self) -> Result<(), Status>
+    {
+        self.reserve_effects_for(4)
+    }
+
+    /// Only trusted physical-input adapters record these observations.
+    /// This immutable input snapshot supplies no new object-ID authority.
+    pub(crate) fn reset_pointer_press(&mut self)
+    {
+        self.pointer = None;
+    }
+
+    pub(crate) fn observe_pointer_press(&mut self, owner: u64, window: u64, point: Point,
+                                        modifiers: u16)
+    {
+        self.pointer = Some(PointerPress { owner,
+                                           window,
+                                           point,
+                                           modifiers,
+                                           released: None });
+    }
+
+    pub(crate) fn awaiting_pointer_release(&self) -> bool
+    {
+        self.pointer.is_some_and(|pointer| pointer.released.is_none())
+    }
+
+    pub(crate) fn observe_pointer_release(&mut self, point: Point, modifiers: u16,
+                                          hot: Option<u32>, when: u32)
+    {
+        if let Some(pointer) = &mut self.pointer
+        {
+            pointer.released = Some(PointerRelease { point,
+                                                     modifiers,
+                                                     hot,
+                                                     when });
+        }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn needs_pointer_start(&self, id: u32) -> bool
+    {
+        self.active == Some(id) && self.sessions.get(id).is_some_and(|session| !session.released)
+    }
+
     fn enqueue(&mut self, notice: Notice)
     {
-        // A request or registered cleanup drains effects before the next operation.
-        *self.notices.iter_mut().find(|n| n.is_none()).expect("bounded drag effects") =
-            Some(notice);
+        self.notices.push_back(notice);
+    }
+
+    #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
+    pub(crate) fn refuse_effect_storage(&mut self, refuse: bool)
+    {
+        self.refuse_effect_storage = refuse;
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn prepare_window_close(&mut self, window: u64) -> Result<(), Status>
+    {
+        if self.receiver_at(window).is_some()
+           || self.active
+                  .and_then(|id| self.sessions.get(id))
+                  .is_some_and(|session| session.source == window)
+        {
+            self.reserve_effects()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn pending_effects(&self) -> usize
+    {
+        self.notices.len()
     }
 
     pub fn next_notice(&mut self) -> Option<Notice>
     {
-        for notice in &mut self.notices
-        {
-            if notice.is_some()
-            {
-                return notice.take();
-            }
-        }
-        None
+        self.notices.pop_front()
     }
 
     fn owner(&self, id: u32, owner: u64) -> Result<&Session, Status>
@@ -329,7 +431,7 @@ impl Manager
         let owner = ledger.owner().incarnation();
         if let Some(id) = self.receiver_at(window)
         {
-            let r = self.receivers.get(id).unwrap();
+            let r = self.receivers.get(id).ok_or(NOT_FOUND)?;
             return if r.owner == owner && r.thread == thread
             {
                 Ok(())
@@ -377,55 +479,58 @@ impl Manager
         }
     }
 
-    fn leave(&mut self, id: u32, when: u32)
+    fn leave(&mut self, id: u32, when: u32) -> Result<(), Status>
     {
         self.set_highlight(None);
-        let old = self.sessions.get_mut(id).unwrap().receiver.take();
+        let old = self.sessions.get_mut(id).ok_or(NOT_FOUND)?.receiver.take();
         if let Some((receiver_id, owner, window, closing)) =
             old.and_then(|id| self.receivers.get(id).map(|r| (id, r.owner, r.window, r.closing)))
         {
             // A pending take must wake when its receiver capability is revoked,
             // including source exit/cancellation before a promise is fulfilled.
-            if self.sessions.get(id).unwrap().phase == DROPPING
+            if self.sessions.get(id).ok_or(NOT_FOUND)?.phase == DROPPING
                && self.sessions
                       .get(id)
-                      .unwrap()
+                      .ok_or(NOT_FOUND)?
                       .items
                       .iter()
                       .flat_map(|item| &item.flavors)
                       .any(|flavor| flavor.state == 2)
             {
-                self.notice(owner, DATA_READY_EVENT, window, id, when);
+                self.notice(owner, DATA_READY_EVENT, window, id, when)?;
             }
-            self.notice(owner, LEFT_EVENT, window, id, when);
+            self.notice(owner, LEFT_EVENT, window, id, when)?;
             if closing
             {
                 self.receivers.remove(receiver_id);
             }
         }
-        let session = self.sessions.get_mut(id).unwrap();
+        let session = self.sessions.get_mut(id).ok_or(NOT_FOUND)?;
         session.accepted = false;
         session.responded = false;
+        Ok(())
     }
 
-    fn finish(&mut self, id: u32, when: u32)
+    fn finish(&mut self, id: u32, when: u32) -> Result<(), Status>
     {
-        let session = self.sessions.get_mut(id).unwrap();
+        let session = self.sessions.get_mut(id).ok_or(NOT_FOUND)?;
         session.phase = FINISHED;
         let (owner, source) = (session.owner, session.source);
         self.active = None;
         let detached = session.detached;
-        self.notice(owner, FINISHED_EVENT, source, id, when);
+        self.notice(owner, FINISHED_EVENT, source, id, when)?;
         if detached
         {
             self.sessions.remove(id);
         }
+        Ok(())
     }
 
     fn return_to_source(&mut self, id: u32, outcome: u32, error: Status, when: u32)
+                        -> Result<(), Status>
     {
-        self.leave(id, when);
-        let session = self.sessions.get_mut(id).unwrap();
+        self.leave(id, when)?;
+        let session = self.sessions.get_mut(id).ok_or(NOT_FOUND)?;
         session.outcome = outcome;
         session.error = error;
         if session.bounds.is_some() && session.point != session.anchor
@@ -437,47 +542,66 @@ impl Manager
         }
         else
         {
-            self.finish(id, when);
+            self.finish(id, when)?;
         }
+        Ok(())
     }
 
-    fn drop_at_receiver(&mut self, id: u32, when: u32)
+    fn drop_at_receiver(&mut self, id: u32, when: u32) -> Result<(), Status>
     {
-        let session = self.sessions.get(id).unwrap();
+        let session = self.sessions.get(id).ok_or(NOT_FOUND)?;
         if session.accepted
            && let Some(r) = session.receiver.and_then(|r| self.receivers.get(r))
         {
             let (owner, window) = (r.owner, r.window);
-            let session = self.sessions.get_mut(id).unwrap();
+            let session = self.sessions.get_mut(id).ok_or(NOT_FOUND)?;
             session.action = session.resolved_action();
             if let Some(error) = session.action_error()
             {
-                self.return_to_source(id, REJECTED, error, when);
-                return;
+                self.return_to_source(id, REJECTED, error, when)?;
+                return Ok(());
             }
             session.phase = DROPPING;
             self.set_highlight(None);
-            self.notice(owner, DROP_EVENT, window, id, when);
+            self.notice(owner, DROP_EVENT, window, id, when)?;
         }
         else
         {
-            self.return_to_source(id, REJECTED, session.error, when);
+            self.return_to_source(id, REJECTED, session.error, when)?;
         }
+        Ok(())
     }
 
     /// System supplies the hot content window from its shared Window Manager.
     /// No client can supply physical release/modifier state or steal the gesture.
     pub fn motion(&mut self, point: Point, modifiers: u16, hot: Option<u32>, when: u32)
+                  -> Result<(), Status>
     {
         let Some(id) = self.active
         else
         {
-            return;
+            return Ok(());
         };
-        let session = self.sessions.get_mut(id).unwrap();
+        let Some(previous) = self.sessions.get(id)
+        else
+        {
+            return Ok(());
+        };
+        if previous.released
+           || !matches!(previous.phase, ARMED | TRACKING)
+           || previous.point == point && previous.modifiers == modifiers && previous.receiver == hot
+        {
+            return Ok(());
+        }
+        self.reserve_effects()?;
+        let Some(session) = self.sessions.get_mut(id)
+        else
+        {
+            return Ok(());
+        };
         if session.released || !matches!(session.phase, ARMED | TRACKING)
         {
-            return;
+            return Ok(());
         }
         let changed = session.point != point || session.modifiers != modifiers;
         if changed && session.phase == TRACKING
@@ -492,14 +616,14 @@ impl Manager
             if (i32::from(point.h) - i32::from(session.anchor.h)).abs() <= 4
                && (i32::from(point.v) - i32::from(session.anchor.v)).abs() <= 4
             {
-                return;
+                return Ok(());
             }
             session.started = true;
             session.phase = TRACKING;
         }
         if session.phase != TRACKING
         {
-            return;
+            return Ok(());
         }
         // Modifier changes withdraw an impossible highlight immediately, before
         // the app services the new offer. This is constant-time cached policy.
@@ -511,28 +635,39 @@ impl Manager
         }
         if receiver_changed
         {
-            self.leave(id, when);
-            self.sessions.get_mut(id).unwrap().receiver = hot;
+            self.leave(id, when)?;
+            self.sessions.get_mut(id).ok_or(NOT_FOUND)?.receiver = hot;
             if let Some(receiver) = hot.and_then(|r| self.receivers.get(r))
             {
-                self.notice(receiver.owner, ENTERED_EVENT, receiver.window, id, when);
+                self.notice(receiver.owner, ENTERED_EVENT, receiver.window, id, when)?;
             }
         }
         else if changed && let Some(receiver) = hot.and_then(|r| self.receivers.get(r))
         {
-            self.notice(receiver.owner, WITHIN_EVENT, receiver.window, id, when);
+            self.notice(receiver.owner, WITHIN_EVENT, receiver.window, id, when)?;
         }
+        Ok(())
     }
 
     pub fn release(&mut self, point: Point, modifiers: u16, hot: Option<u32>, when: u32)
+                   -> Result<(), Status>
     {
-        self.motion(point, modifiers, hot, when);
+        if self.active.and_then(|id| self.sessions.get(id)).is_none_or(|session| session.released)
+        {
+            return Ok(());
+        }
+        self.reserve_effects()?;
+        self.motion(point, modifiers, hot, when)?;
         let Some(id) = self.active
         else
         {
-            return;
+            return Ok(());
         };
-        let session = self.sessions.get_mut(id).unwrap();
+        let Some(session) = self.sessions.get_mut(id)
+        else
+        {
+            return Ok(());
+        };
         session.released = true;
         session.up_modifiers = modifiers;
         match session.phase
@@ -540,25 +675,31 @@ impl Manager
             ARMED =>
             {
                 session.outcome = CLICKED;
-                self.finish(id, when);
+                self.finish(id, when)?;
             }
             TRACKING if session.responded || session.receiver.is_none() =>
             {
-                self.drop_at_receiver(id, when)
+                self.drop_at_receiver(id, when)?
             }
             _ =>
             {}
         }
+        Ok(())
     }
 
-    pub fn escape(&mut self, when: u32) -> bool
+    pub fn escape(&mut self, when: u32) -> Result<bool, Status>
     {
         let Some(id) = self.active
         else
         {
-            return false;
+            return Ok(false);
         };
-        let session = self.sessions.get_mut(id).unwrap();
+        self.reserve_effects()?;
+        let Some(session) = self.sessions.get_mut(id)
+        else
+        {
+            return Ok(false);
+        };
         if session.phase == DROPPING
         {
             if !session.cancel_requested
@@ -566,29 +707,38 @@ impl Manager
                 session.cancel_requested = true;
                 if let Some(receiver) = session.receiver.and_then(|r| self.receivers.get(r))
                 {
-                    self.notice(receiver.owner, CANCEL_REQUESTED_EVENT, receiver.window, id, when);
+                    self.notice(receiver.owner, CANCEL_REQUESTED_EVENT, receiver.window, id, when)?;
                 }
             }
         }
         else if session.phase != RETURNING
         {
-            self.return_to_source(id, CANCELLED, OK, when);
+            self.return_to_source(id, CANCELLED, OK, when)?;
         }
-        true
+        Ok(true)
     }
 
-    pub fn tick(&mut self, when: u32)
+    pub fn tick(&mut self, when: u32) -> Result<(), Status>
     {
         let Some(id) = self.active
         else
         {
-            return;
+            return Ok(());
         };
-        let session = self.sessions.get_mut(id).unwrap();
-        if session.phase != RETURNING || when.wrapping_sub(session.return_tick) == 0
+        if !self.sessions
+                .get(id)
+                .is_some_and(|session| {
+                    session.phase == RETURNING && when.wrapping_sub(session.return_tick) != 0
+                })
         {
-            return;
+            return Ok(());
         }
+        self.reserve_effects()?;
+        let Some(session) = self.sessions.get_mut(id)
+        else
+        {
+            return Ok(());
+        };
         session.return_tick = when;
         session.return_step += 1;
         let step = session.return_step.min(6) as i32;
@@ -598,16 +748,18 @@ impl Manager
                                 v: lerp(session.return_start.v, session.anchor.v) };
         if step == 6
         {
-            self.finish(id, when);
+            self.finish(id, when)?;
         }
+        Ok(())
     }
 
-    pub fn forget_window(&mut self, window: u64, when: u32)
+    pub fn forget_window(&mut self, window: u64, when: u32) -> Result<(), Status>
     {
+        self.reserve_effects()?;
         if let Some(active) = self.active
            && self.sessions.get(active).is_some_and(|s| s.source == window && s.phase != DROPPING)
         {
-            self.return_to_source(active, CANCELLED, OK, when);
+            self.return_to_source(active, CANCELLED, OK, when)?;
         }
         if let Some(id) = self.receiver_at(window)
         {
@@ -620,14 +772,15 @@ impl Manager
                     // Closing a receiver's window cannot invalidate its live
                     // cleanup capability. The app drains even after the window
                     // disappears; leave() retires the closing registration.
-                    self.receivers.get_mut(id).unwrap().closing = true;
-                    self.escape(when);
-                    return;
+                    self.receivers.get_mut(id).ok_or(NOT_FOUND)?.closing = true;
+                    self.escape(when)?;
+                    return Ok(());
                 }
-                self.return_to_source(active, REJECTED, NOT_FOUND, when);
+                self.return_to_source(active, REJECTED, NOT_FOUND, when)?;
             }
             self.receivers.remove(id);
         }
+        Ok(())
     }
 
     /// Registration's window ownership is validated at the window service boundary.
@@ -636,6 +789,23 @@ impl Manager
                           admit_target: impl FnOnce(&mut Call) -> Result<(), Status>)
                           -> Result<(), Status>
     {
+        if call.operation == BEGIN
+        {
+            // Retrospective motion plus release share this pinned reservation.
+            self.reserve_effects_for(8)?;
+        }
+        else if matches!(call.operation,
+                           DISPOSE
+                           | CANCEL
+                           | CANCEL_RECEIVE
+                           | ACCEPT
+                           | READ
+                           | FULFILL
+                           | ABANDON
+                           | ACKNOWLEDGE)
+        {
+            self.reserve_effects()?;
+        }
         let owner = ledger.owner().incarnation();
         call.transferred = 0;
         if !matches!(call.operation, CREATE | DISPOSE | ABANDON)
@@ -708,7 +878,7 @@ impl Manager
                 {
                     return Err(SERVICE_BUSY);
                 }
-                let session = self.sessions.get_mut(call.id).unwrap();
+                let session = self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?;
                 if session.phase != DRAFT || session.items.is_empty() || call.bounds.is_empty()
                 {
                     return Err(BAD_ARGUMENT);
@@ -816,14 +986,32 @@ impl Manager
                        << 1)
                     | (u32::from(session.volume_root.is_some()) << 2);
                 self.active = Some(call.id);
+                let source_window = self.sessions.get(call.id).ok_or(NOT_FOUND)?.source;
+                if let Some(pointer) = self.pointer.filter(|pointer| {
+                                                       pointer.owner == owner
+                                                       && pointer.point == call.point
+                                                       && (source_window == 0
+                                                           || source_window == pointer.window)
+                                                   })
+                {
+                    self.pointer = None;
+                    self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?.down_modifiers =
+                        pointer.modifiers;
+                    if let Some(release) = pointer.released
+                    {
+                        let hot = release.hot.filter(|id| self.receivers.get(*id).is_some());
+                        self.motion(release.point, release.modifiers, hot, release.when)?;
+                        self.release(release.point, release.modifiers, hot, release.when)?;
+                    }
+                }
             }
             DISPOSE =>
             {
                 self.owner(call.id, owner)?;
                 if self.active == Some(call.id)
                 {
-                    self.sessions.get_mut(call.id).unwrap().detached = true;
-                    self.escape(when);
+                    self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?.detached = true;
+                    self.escape(when)?;
                 }
                 else
                 {
@@ -862,25 +1050,25 @@ impl Manager
                 self.owner(call.id, owner)?;
                 if self.active == Some(call.id)
                 {
-                    self.escape(when);
+                    self.escape(when)?;
                 }
             }
             CANCEL_RECEIVE =>
             {
                 self.receiver(call.id, call.receiver, owner)?;
-                if self.sessions.get(call.id).unwrap().phase != DROPPING
+                if self.sessions.get(call.id).ok_or(NOT_FOUND)?.phase != DROPPING
                 {
                     return Err(ACCESS_DENIED);
                 }
                 if self.active == Some(call.id)
                 {
-                    self.escape(when);
+                    self.escape(when)?;
                 }
             }
             FILE_ITEMS =>
             {
                 self.owner(call.id, owner)?;
-                let session = self.sessions.get_mut(call.id).unwrap();
+                let session = self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?;
                 if session.phase != DRAFT || input.len() % FILE_ITEM_BYTES != 0
                 {
                     return Err(BAD_ARGUMENT);
@@ -932,7 +1120,7 @@ impl Manager
                 {
                     return Err(ACCESS_DENIED);
                 }
-                let session = self.sessions.get_mut(call.id).unwrap();
+                let session = self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?;
                 if call.operation == ADD_ITEM
                 {
                     if session.items.len() == MAX_ITEMS
@@ -1001,13 +1189,13 @@ impl Manager
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                if self.sessions.get(call.id).unwrap().phase != TRACKING
+                if self.sessions.get(call.id).ok_or(NOT_FOUND)?.phase != TRACKING
                 {
                     // A previously leased tracking event is ordinary expiry,
                     // never permission to overwrite a committed drop response.
                     return Ok(());
                 }
-                let session = self.sessions.get_mut(call.id).unwrap();
+                let session = self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?;
                 // A receiver may answer an older coalesced motion after release.
                 // Only the response for the actual drop position may commit it.
                 if call.point != session.point
@@ -1075,7 +1263,7 @@ impl Manager
                 self.set_highlight(highlight.filter(|(_, r)| !r.is_empty()));
                 if released
                 {
-                    self.drop_at_receiver(call.id, when);
+                    self.drop_at_receiver(call.id, when)?;
                 }
             }
             FILE_ITEM_METADATA =>
@@ -1133,7 +1321,7 @@ impl Manager
             READ =>
             {
                 self.receiver(call.id, call.receiver, owner)?;
-                let session = self.sessions.get_mut(call.id).unwrap();
+                let session = self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?;
                 if session.phase != DROPPING
                 {
                     return Err(ACCESS_DENIED);
@@ -1176,7 +1364,7 @@ impl Manager
                     {
                         flavor.state = 2;
                         let (owner, source) = (session.owner, session.source);
-                        self.notice(owner, PROMISE_EVENT, source, call.id, when);
+                        self.notice(owner, PROMISE_EVENT, source, call.id, when)?;
                         return Err(SERVICE_BUSY);
                     }
                     2 => return Err(SERVICE_BUSY),
@@ -1191,7 +1379,7 @@ impl Manager
             NEXT_PROMISE =>
             {
                 self.owner(call.id, owner)?;
-                let session = self.sessions.get_mut(call.id).unwrap();
+                let session = self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?;
                 if session.phase != DROPPING
                 {
                     return Err(ACCESS_DENIED);
@@ -1216,7 +1404,7 @@ impl Manager
             FULFILL =>
             {
                 self.owner(call.id, owner)?;
-                let session = self.sessions.get_mut(call.id).unwrap();
+                let session = self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?;
                 if session.phase != DROPPING
                 {
                     return Err(ACCESS_DENIED);
@@ -1243,7 +1431,7 @@ impl Manager
                 session.bytes += input.len();
                 if let Some(receiver) = session.receiver.and_then(|r| self.receivers.get(r))
                 {
-                    self.notice(receiver.owner, DATA_READY_EVENT, receiver.window, call.id, when);
+                    self.notice(receiver.owner, DATA_READY_EVENT, receiver.window, call.id, when)?;
                 }
             }
             ABANDON =>
@@ -1251,47 +1439,47 @@ impl Manager
                 // Cleanup carries no data-access or acceptance capability. It is
                 // safe when a Send future is destroyed on another app thread.
                 self.receiver(call.id, call.receiver, owner)?;
-                let session = self.sessions.get(call.id).unwrap();
+                let session = self.sessions.get(call.id).ok_or(NOT_FOUND)?;
                 if call.index == DROPPING && session.phase == DROPPING
                 {
-                    self.return_to_source(call.id, REJECTED, IO_ERROR, when);
+                    self.return_to_source(call.id, REJECTED, IO_ERROR, when)?;
                 }
                 else if call.index == TRACKING
                           && session.phase == TRACKING
                           && call.point == session.point
                 {
                     let released = session.released;
-                    let session = self.sessions.get_mut(call.id).unwrap();
+                    let session = self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?;
                     session.accepted = false;
                     session.responded = true;
                     self.set_highlight(None);
                     if released
                     {
-                        self.drop_at_receiver(call.id, when);
+                        self.drop_at_receiver(call.id, when)?;
                     }
                 }
             }
             ACKNOWLEDGE =>
             {
                 self.receiver(call.id, call.receiver, owner)?;
-                if self.sessions.get(call.id).unwrap().phase != DROPPING
+                if self.sessions.get(call.id).ok_or(NOT_FOUND)?.phase != DROPPING
                 {
                     return Err(ACCESS_DENIED);
                 }
                 if call.flags == 0
                 {
-                    let cancelled = self.sessions.get(call.id).unwrap().cancel_requested;
+                    let cancelled = self.sessions.get(call.id).ok_or(NOT_FOUND)?.cancel_requested;
                     self.return_to_source(call.id,
                                           if cancelled { CANCELLED } else { REJECTED },
                                           call.error,
-                                          when);
+                                          when)?;
                 }
                 else
                 {
-                    self.leave(call.id, when);
-                    let session = self.sessions.get_mut(call.id).unwrap();
+                    self.leave(call.id, when)?;
+                    let session = self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?;
                     session.outcome = if session.action == COPY { COPIED } else { MOVED };
-                    self.finish(call.id, when);
+                    self.finish(call.id, when)?;
                 }
             }
             CLASSIC_ADD | CLASSIC_SET | CLASSIC_FLAVOR | CLASSIC_READ | ITEM_BOUNDS
@@ -1307,11 +1495,18 @@ impl Manager
 
 impl Manager
 {
-    pub(crate) fn release_registered(&mut self, ticket: ReleasedResource,
-                                     kind: super::lifetime::Registration, when: u32)
-                                     -> Result<Option<Rect>, CompletionError>
+    pub(crate) fn release_registered(
+        &mut self, ticket: ReleasedResource, kind: super::lifetime::Registration, when: u32)
+        -> Result<Option<Rect>, crate::toolbox::handles::cleanup::Failure>
     {
         use super::lifetime::Registration;
+        if matches!(kind, Registration::Sessions | Registration::Receivers)
+           && self.reserve_effects().is_err()
+        {
+            return Err(crate::toolbox::handles::cleanup::Failure::drag_effect_storage(ticket,
+                                                                                     self.notices.len()));
+        }
+
         let mut before = self.feedback();
         match kind
         {
@@ -1353,7 +1548,14 @@ impl Manager
                 {
                     // The dead receiver cannot acknowledge. Its file resources
                     // have their own lifetimes; wake the still-live source.
-                    self.return_to_source(active, REJECTED, OPERATION_CANCELLED, when);
+                    // The source can have been independently invalidated. Its
+                    // own cleanup owns final notifications; no stale lookup is
+                    // needed to acknowledge this receiver's disposal.
+                    if self.return_to_source(active, REJECTED, OPERATION_CANCELLED, when).is_err()
+                    {
+                        self.active = None;
+                        self.set_highlight(None);
+                    }
                 }
                 drop(receiver);
             }

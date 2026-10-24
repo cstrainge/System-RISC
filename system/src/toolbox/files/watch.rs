@@ -593,9 +593,14 @@ mod background
                     return Err(error);
                 }
             };
+            let Some(watch) = self.watches.get_mut(id)
+            else
+            {
+                self.end_provider_read(volume)?;
+                return Err(NOT_FOUND);
+            };
             state.active.store(true, Ordering::Release);
-            let w = self.watches.get_mut(id).expect("exclusively borrowed admitted watch");
-            w.next_due = now.saturating_add(INTERVAL);
+            watch.next_due = now.saturating_add(INTERVAL);
             Ok(Some((ProbeLease { watch: id,
                                   volume,
                                   directory,
@@ -622,10 +627,17 @@ mod background
             // mutation. A refused acknowledgement can therefore stay retained.
             let revisions =
                 if changed { Some((scan::next_revision()?, scan::next_revision()?)) } else { None };
-            self.provider_mount(lease.volume)?;
-            self.end_provider_read(lease.volume)?;
-            self.watches.acknowledge(lease);
-            let Some(watch) = self.watches.get_mut(lease.watch)
+            // Hold the validated mount borrow through ACK and publication;
+            // never re-resolve a preflighted lease after releasing it.
+            let (volumes, watches) = (&mut self.volumes, &mut self.watches);
+            let Some(Mounted::Provider(mounted)) = volumes.get_mut(lease.volume)
+            else
+            {
+                return Err(NOT_FOUND);
+            };
+            mounted.end_read()?;
+            watches.acknowledge(lease);
+            let Some(watch) = watches.get_mut(lease.watch)
             else
             {
                 // Metadata may have been invalidated before its callback could
@@ -650,9 +662,7 @@ mod background
                             watch.changed = true;
                             watch.revision = revision;
                         }
-                        self.provider_mount(lease.volume)
-                            .expect("preflighted provider lease")
-                            .revision = mount_revision;
+                        mounted.revision = mount_revision;
                     }
                 }
                 Err(SERVICE_BUSY) => (),

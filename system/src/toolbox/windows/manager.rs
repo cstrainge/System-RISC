@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), forbid(unsafe_code))]
 #[cfg(test)]
 use alloc::vec;
-use alloc::vec::Vec;
+use alloc::{collections::VecDeque, vec::Vec};
 use core::cell::{Cell, RefCell};
 
 pub use mac_abi::WindowId;
@@ -381,12 +381,7 @@ impl Drop for InitializingWindow<'_>
         if let Err(failure) = self.manager.release(ticket)
         {
             let (ticket, cause) = failure.into_parts();
-            self.manager
-                .windows
-                .quarantine(ticket)
-                .unwrap_or_else(|error| {
-                    panic!("window initialization lost its owned retry ticket: {error}")
-                });
+            self.manager.quarantine_or_retain(ticket);
             #[cfg(target_arch = "riscv64")]
             serial!("WINDOW_INITIALIZATION_ROLLBACK_REFUSED: {cause}");
             #[cfg(not(target_arch = "riscv64"))]
@@ -419,22 +414,23 @@ pub struct WindowManager
     // drawing. Reborrow cached sweep storage without adding an interrupt lock
     // around definition drawing callbacks. The manager remains Send behind the
     // resident service lock; callers never share it without that admission.
-    visibility:     RefCell<super::visibility::Scratch>,
+    visibility:        RefCell<super::visibility::Scratch>,
     // A single bounded memo, never an authority or a payload pin. Successful
     // window-list changes invalidate it; cached IDs still validate on lookup.
-    front_cache:    Cell<Option<(u64, Option<WindowId>)>>,
-    windows:        Store<Window>,
-    order:          Vec<WindowId>,
-    len:            usize,
-    active:         Option<WindowId>,
-    order_scratch:  Vec<WindowId>,
-    geometry_order: Vec<WindowId>,
+    front_cache:       Cell<Option<(u64, Option<WindowId>)>>,
+    windows:           Store<Window>,
+    retained_failures: VecDeque<mac_object_table::domain::CompletionError>,
+    order:             Vec<WindowId>,
+    len:               usize,
+    active:            Option<WindowId>,
+    order_scratch:     Vec<WindowId>,
+    geometry_order:    Vec<WindowId>,
     #[cfg(test)]
-    test_registry:  Option<alloc::boxed::Box<crate::toolbox::handles::Registry<WindowManager>>>,
+    test_registry:     Option<alloc::boxed::Box<crate::toolbox::handles::Registry<WindowManager>>>,
     #[cfg(test)]
-    test_owners:    Vec<(u64, OwnerRef)>,
-    gate:           mac_abi::TrapGate,
-    tracking:       Option<Tracking>
+    test_owners:       Vec<(u64, OwnerRef)>,
+    gate:              mac_abi::TrapGate,
+    tracking:          Option<Tracking>
 }
 #[cfg(test)]
 impl Default for WindowManager
@@ -452,6 +448,7 @@ impl WindowManager
         Ok(Self { visibility: RefCell::new(Default::default()),
                   front_cache: Cell::new(None),
                   windows: Store::owned(kinds.0, kinds.1).map_err(|_| BAD_ARGUMENT)?,
+                  retained_failures: VecDeque::new(),
                   order: Vec::new(),
                   len: 0,
                   active: None,
@@ -509,9 +506,36 @@ impl WindowManager
         self.windows.releasing(ticket).map(|window| window.id)
     }
 
+    fn quarantine_or_retain(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+    {
+        if let Err(error) = self.windows.quarantine(ticket)
+        {
+            #[cfg(target_arch = "riscv64")]
+            serial!("WINDOW_QUARANTINE_RETAINED: {error}; payload/backing remain pending");
+            // Capacity for a refusal per admitted window is pinned before
+            // publication. Cleanup neither allocates nor drops this capability.
+            self.retained_failures.push_back(error);
+        }
+    }
+
+    fn retry_retained_quarantines(&mut self)
+    {
+        // A real create/cleanup checkpoint, never a timer/input scan. A failed
+        // entry is tried once and put back; it cannot starve another owner.
+        for _ in 0..self.retained_failures.len()
+        {
+            if let Some(error) = self.retained_failures.pop_front()
+               && let Err(error) = self.windows.quarantine(error.into_ticket())
+            {
+                self.retained_failures.push_back(error);
+            }
+        }
+    }
+
     pub(crate) fn release_storage(&mut self, ticket: mac_object_table::domain::ReleasedResource)
                                   -> Result<(), Failure>
     {
+        self.retry_retained_quarantines();
         self.windows.release_storage(ticket).map_err(Failure::from)
     }
 
@@ -543,11 +567,13 @@ impl WindowManager
         {
             self.tracking = None;
         }
-        let reply = self.windows
-                        .with_releasing(&ticket, |window| {
-                            window.call(definition::DISPOSE, 0, core::ptr::null_mut())
-                        })
-                        .expect("the unique cleanup ticket retains its window payload");
+        let Some(reply) = self.windows.with_releasing(&ticket, |window| {
+                                          window.call(definition::DISPOSE, 0, core::ptr::null_mut())
+                                      })
+        else
+        {
+            return Err(Failure::registration_mismatch(ticket));
+        };
         if reply < 0
         {
             return Err(Failure::window_definition(ticket, id.0, window.procedure, reply));
@@ -711,6 +737,8 @@ impl WindowManager
                                                          bounds.bottom - bounds.top)),
                                   hidden: false,
                                   updating: false };
+        self.retry_retained_quarantines();
+        self.retained_failures.try_reserve(self.len + 1).map_err(|_| CreationError::NoMemory)?;
         let id = WindowId(self.windows
                               .insert_with(owner, |id| {
                                   window.id = WindowId(id);
@@ -924,6 +952,7 @@ impl WindowManager
                                  -> Result<(), CloseError>
     {
         use mac_object_table::registry::CleanupFailure;
+        self.retry_retained_quarantines();
         let active = self.active == Some(id);
         let ticket = self.windows.begin_release(id.0).ok_or(CloseError::NotFound(id))?;
         let result = match self.release(ticket)
@@ -932,11 +961,7 @@ impl WindowManager
             Err(failure) =>
             {
                 let (ticket, cause) = failure.into_parts();
-                self.windows
-                    .quarantine(ticket)
-                    .unwrap_or_else(|error| {
-                        panic!("window disposal lost its owned retry ticket: {error}")
-                    });
+                self.quarantine_or_retain(ticket);
                 Err(CloseError::Cleanup(cause))
             }
         };

@@ -61,6 +61,48 @@ impl crate::toolbox::classic::Services for Services<'_>
         request(self.0, self.1, call, input, output)
     }
 }
+/// Refuse actual resident effect-storage admission without mutating a gesture.
+pub fn refuse_effect_storage(refuse: bool)
+{
+    SESSION.with(|slot| slot.borrow_mut().as_mut().unwrap().drag.refuse_effect_storage(refuse));
+}
+
+/// Observe trusted physical input before an application services its queue.
+pub fn pointer_down(window: WindowId, point: Point, modifiers: u16)
+{
+    let owner = super::inspection::caller_ledger(super::files::current_owner()).unwrap();
+    SESSION.with(|slot| {
+               let mut slot = slot.borrow_mut();
+               let session = slot.as_mut().unwrap();
+               session.drag.reset_pointer_press();
+               session.drag.observe_pointer_press(owner.owner().incarnation(),
+                                                  window.0,
+                                                  point,
+                                                  modifiers);
+           });
+}
+pub fn pointer_up(window: WindowId, point: Point, modifiers: u16, when: u32)
+{
+    SESSION.with(|slot| {
+               let mut slot = slot.borrow_mut();
+               let session = slot.as_mut().unwrap();
+               if session.drag.awaiting_pointer_release()
+               {
+                   let hot = session.drag.receiver_at(window.0);
+                   session.drag.observe_pointer_release(point, modifiers, hot, when);
+               }
+           });
+}
+pub fn close_window(window: WindowId, when: u32)
+{
+    SESSION.with(|slot| {
+               let mut slot = slot.borrow_mut();
+               let session = slot.as_mut().unwrap();
+               session.drag.forget_window(window.0, when).unwrap();
+               drain(session);
+           });
+}
+
 pub fn receiver(owner: u64, thread: u64, window: WindowId)
 {
     let owner = super::inspection::caller_ledger(owner).unwrap();
@@ -78,7 +120,7 @@ pub fn motion(point: Point, modifiers: u16, window: WindowId, when: u32)
     SESSION.with(|s| {
                let mut s = s.borrow_mut();
                let s = s.as_mut().unwrap();
-               s.drag.motion(point, modifiers, s.drag.receiver_at(window.0), when);
+               s.drag.motion(point, modifiers, s.drag.receiver_at(window.0), when).unwrap();
                drain(s);
            });
 }
@@ -87,7 +129,7 @@ pub fn release(point: Point, modifiers: u16, window: WindowId, when: u32)
     SESSION.with(|s| {
                let mut s = s.borrow_mut();
                let s = s.as_mut().unwrap();
-               s.drag.release(point, modifiers, s.drag.receiver_at(window.0), when);
+               s.drag.release(point, modifiers, s.drag.receiver_at(window.0), when).unwrap();
                drain(s);
            });
 }
@@ -96,7 +138,7 @@ pub fn tick(when: u32)
     SESSION.with(|s| {
                let mut s = s.borrow_mut();
                let s = s.as_mut().unwrap();
-               s.drag.tick(when);
+               s.drag.tick(when).unwrap();
                drain(s);
            });
 }
@@ -154,7 +196,7 @@ impl crate::toolbox::drag::lifetime::Host for Session
 {
     fn release_drag(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                     kind: crate::toolbox::drag::lifetime::Registration)
-                    -> Result<(), mac_object_table::domain::CompletionError>
+                    -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
         self.drag.release_registered(ticket, kind, 0)?;
         drain(self);

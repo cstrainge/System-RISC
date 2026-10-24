@@ -6,7 +6,7 @@ use crate::toolbox::{events::input::Input,
                      windows::{WindowId, WindowPart}};
 impl super::super::runtime::Desktop
 {
-    fn drag_hot(&self, point: Point) -> Option<u32>
+    pub(super) fn drag_hot(&self, point: Point) -> Option<u32>
     {
         let hit = self.windows.find_window(point);
         match hit.part
@@ -47,7 +47,10 @@ impl super::super::runtime::Desktop
     pub(super) fn drag_tick(&mut self)
     {
         let before = self.drag.feedback();
-        self.drag.tick(Self::when());
+        if let Err(status) = self.drag.tick(Self::when())
+        {
+            serial!("DRAG_INPUT_DEFERRED operation=tick status={status}; gesture state retained");
+        }
         self.drag_effects(before);
     }
 
@@ -60,20 +63,21 @@ impl super::super::runtime::Desktop
         let before = self.drag.feedback();
         let point = self.events.mouse;
         let hot = self.drag_hot(point);
-        match input
+        let result = match input
         {
             Input::Key { mac_code: 0x35,
                          down: true,
-                         .. } =>
-            {
-                self.drag.escape(when);
-            }
+                         .. } => self.drag.escape(when).map(|_| ()),
             Input::Button { point,
                             down: false } =>
             {
                 self.drag.release(point, self.events.modifiers, hot, when)
             }
             _ => self.drag.motion(point, self.events.modifiers, hot, when)
+        };
+        if let Err(status) = result
+        {
+            serial!("DRAG_INPUT_DEFERRED operation=input status={status}; gesture state retained");
         }
         self.drag_effects(before);
         true
@@ -146,17 +150,22 @@ impl super::super::runtime::Desktop
             self.drag.source_read_only(call.id);
         }
         self.drag_effects(before);
-        if result.is_ok() && call.operation == BEGIN
+        if result.is_ok() && call.operation == BEGIN && self.drag.needs_pointer_start(call.id)
         {
             let before = self.drag.feedback();
             let point = self.events.mouse;
             let hot = self.drag_hot(point);
-            self.drag.motion(point, self.events.modifiers, hot, Self::when());
+            let motion = self.drag.motion(point, self.events.modifiers, hot, Self::when());
             if self.events.modifiers & mac_abi::events::BTN_STATE != 0
             {
-                self.drag.release(point, self.events.modifiers, hot, Self::when());
+                let release = self.drag.release(point, self.events.modifiers, hot, Self::when());
+                self.drag_effects(before);
+                motion?;
+                release?;
+                return result;
             }
             self.drag_effects(before);
+            motion?;
         }
         result
     }
@@ -166,7 +175,7 @@ impl crate::toolbox::drag::lifetime::Host for crate::toolbox::runtime::Desktop
 {
     fn release_drag(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                     kind: crate::toolbox::drag::lifetime::Registration)
-                    -> Result<(), mac_object_table::domain::CompletionError>
+                    -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
         let before = self.drag.release_registered(ticket, kind, Self::when())?;
         self.drag_effects(before);

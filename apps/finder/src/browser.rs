@@ -366,6 +366,20 @@ impl Browser
                                        })
     }
 
+    /// Return queued pointer events to the application's normal dispatcher.
+    /// Browser-only replay bypasses Drag Toolbox setup and loses the gesture.
+    pub fn next_deferred_pointer(&mut self) -> Option<(Event<'static>, PointerPosition)>
+    {
+        let slot = self.windows.iter().enumerate().find_map(|(slot, window)| {
+            (window.is_some_and(|window| window.pending_clicks[0].is_some())
+             && cache::with(slot, |folder| folder.ready)).then_some(slot)
+        })?;
+        let pending = &mut self.windows[slot].as_mut()?.pending_clicks;
+        let (event, position) = pending[0].take()?;
+        pending.rotate_left(1);
+        Some((Event::from(event), position))
+    }
+
     fn invalidate_cache(&mut self, slot: usize)
     {
         let window = self.windows[slot].unwrap();
@@ -635,20 +649,6 @@ impl Browser
                     system.log(layout.as_str())?;
                 }
                 self.repaint_snapshot(system, slot)?;
-                let pending =
-                    core::mem::take(&mut self.windows[slot].as_mut().unwrap().pending_clicks);
-                for (event, position) in pending.into_iter().flatten()
-                {
-                    let event = Event::from(event);
-                    if matches!(event, Event::MouseDown { .. })
-                    {
-                        self.click(system, &event, position)?;
-                    }
-                    else
-                    {
-                        self.track(system, &event, position)?;
-                    }
-                }
                 if cache::edit(slot, |folder| core::mem::take(&mut folder.notify_changed))
                 {
                     let mut line = Text::<100>::default();

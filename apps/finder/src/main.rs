@@ -180,7 +180,8 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             system.events().next(events::EventMask::from_bits_retain(0))?;
             continue;
         }
-        let (event, position) = if let Some(input) = deferred_command.take()
+        let (event, position) = if let Some(input) =
+            deferred_command.take().or_else(|| browser.next_deferred_pointer())
         {
             input
         }

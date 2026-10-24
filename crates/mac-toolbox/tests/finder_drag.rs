@@ -193,6 +193,7 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
                 {
                     assert!(moved.saved_icon_location().is_some());
                     let mut expected = original;
+                    expected.volume = moved.volume; // A remount issues a fresh capability.
                     expected.finder_info = moved.finder_info;
                     assert_eq!(*moved, expected, "collision fixture changed beyond placement");
                     continue;
@@ -223,6 +224,7 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
                 };
                 assert_eq!(moved.saved_icon_location(), Some(point));
                 let mut expected = original;
+                expected.volume = moved.volume; // Compare persisted metadata, not mount IDs.
                 expected.finder_info[8..10].copy_from_slice(&(original.finder_flags().bits()
                                                               | 0x100)
                                                                       .to_be_bytes());

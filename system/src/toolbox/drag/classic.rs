@@ -76,7 +76,7 @@ impl Manager
                 return Err(NO_MEMORY);
             }
             let length = bytes.len();
-            let session = self.sessions.get_mut(call.id).unwrap();
+            let session = self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?;
             let index = if let Some(i) = session.items.iter().position(|i| i.id == call.item)
             {
                 i
@@ -115,7 +115,7 @@ impl Manager
             session.bytes += length;
             return Ok(());
         }
-        let session = self.sessions.get_mut(call.id).unwrap();
+        let session = self.sessions.get_mut(call.id).ok_or(NOT_FOUND)?;
         let item = session.items.iter_mut().find(|i| i.id == call.item).ok_or(-1851)?;
         if call.operation == CLASSIC_COUNT
         {

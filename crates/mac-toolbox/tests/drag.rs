@@ -1399,3 +1399,157 @@ fn a_missing_target_is_an_informative_error_and_never_silent_tracking_expiry()
         assert_eq!(ended(&system), DragOutcome::Cancelled);
     });
 }
+
+#[test]
+fn refused_effect_storage_preserves_cancel_state_and_registered_cleanup_ticket()
+{
+    use mac_system::testing::{files::with_owner, inspection as fixture};
+    testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let owner = fixture::add("Effect allocation refusal", 0);
+        with_owner(owner, || {
+            let mut source =
+                system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+            source.empty_item(Rect::ZERO).unwrap();
+            source.flavor(Flavor::text("effect refusal")).unwrap();
+            let source = source.begin().unwrap();
+            input::refuse_effect_storage(true);
+            let error = source.cancel().unwrap_err();
+            assert_eq!(error, DragError::Unknown(abi::NO_MEMORY));
+            assert!(error.to_string().contains("memory"));
+            assert!(system.next_event(EventMask::ALL).unwrap().is_idle(),
+                    "refused cancel published an effect");
+            input::refuse_effect_storage(false);
+            source.cancel().unwrap();
+            assert_eq!(ended(&system), DragOutcome::Cancelled);
+            drop(source);
+            let mut call = abi::drag::Call { operation: abi::drag::CREATE,
+                                             ..Default::default() };
+            system.client().drag(&mut call, &[], &mut []).unwrap();
+            input::refuse_effect_storage(true);
+            let failed = fixture::walk_registered(owner, false, false);
+            assert_eq!(failed.report.quarantined, 1);
+            assert!(failed.failures.iter().any(|message| {
+                                              message.contains("4 notification slots")
+                                              && message.contains("cleanup ticket remain retained")
+                                          }));
+            call.operation = abi::drag::INFO;
+            assert_eq!(system.client().drag(&mut call, &[], &mut []), Err(Error::NotFound));
+            assert!(fixture::try_retire(owner).unwrap_err().to_string().contains("pending"));
+            input::refuse_effect_storage(false);
+            let retry = fixture::walk_registered(owner, false, true);
+            assert!(retry.failures.is_empty());
+            assert_eq!(retry.report.released, 1);
+            fixture::try_retire(owner).unwrap();
+        });
+        let mut source = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+        source.empty_item(Rect::ZERO).unwrap();
+        source.flavor(Flavor::text("next gesture")).unwrap();
+        let source = source.begin().unwrap();
+        source.cancel().unwrap();
+        assert_eq!(ended(&system), DragOutcome::Cancelled);
+        drop(source);
+    });
+}
+
+#[test]
+fn delayed_begin_uses_observed_release_position_and_modifiers_after_pointer_moves_away()
+{
+    testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        input::receiver(1, 1, WINDOW);
+        input::pointer_down(WINDOW, ANCHOR, 0);
+        input::pointer_up(WINDOW, DROP, abi::events::OPTION_KEY | abi::events::BTN_STATE, 2);
+        let mut builder = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+        builder.empty_item(Rect::ZERO).unwrap();
+        builder.flavor(Flavor::text("deferred pointer")).unwrap();
+        let source = builder.begin().unwrap();
+        assert!(source.did_start_tracking().unwrap());
+        input::motion(Point { h: 500,
+                              v: 370 },
+                      0,
+                      WindowId(0),
+                      3);
+        input::release(Point { h: 500,
+                               v: 370 },
+                       0,
+                       WindowId(0),
+                       4);
+        let event = system.next_event(EventMask::ALL).unwrap();
+        let record = event.as_record();
+        let Event::Drag { offer: DragEvent::Tracking(offer),
+                          .. } = event
+        else
+        {
+            panic!("deferred physical press did not enter its observed receiver");
+        };
+        assert_eq!(offer.position(), DROP);
+        let mut info = abi::drag::Call { operation: abi::drag::INFO,
+                                         id: record.payload as u32,
+                                         ..Default::default() };
+        system.client().drag(&mut info, &[], &mut []).unwrap();
+        assert_eq!(info.flags >> 16,
+                   u32::from(abi::events::OPTION_KEY | abi::events::BTN_STATE),
+                   "a second mouse-up replaced the actual drop modifiers");
+        offer.respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                         target:    Target::Content,
+                                         highlight: Rect::new(20, 40, 60, 90) })
+             .unwrap();
+        let Event::Drag { offer: DragEvent::Dropped(payload),
+                          .. } = system.next_event(EventMask::ALL).unwrap()
+        else
+        {
+            panic!("deferred physical release was lost");
+        };
+        assert_eq!(payload.position(), DROP);
+        assert_eq!(payload.action,
+                   DropAction::Copy,
+                   "later modifiers replaced the observed mouse-up");
+        let mut receive = pin!(payload.receive(async { Ok(()) }));
+        assert_eq!(poll(receive.as_mut()), Poll::Ready(Ok(())));
+        assert_eq!(ended(&system), DragOutcome::Copied);
+        drop(source);
+    });
+}
+
+#[test]
+fn deferred_release_does_not_retarget_a_reused_receiver_registration()
+{
+    testing::with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        input::receiver(1, 1, WINDOW);
+        input::pointer_down(WINDOW, ANCHOR, 0);
+        input::pointer_up(WINDOW, DROP, abi::events::BTN_STATE, 2);
+        input::close_window(WINDOW, 3);
+        input::receiver(1, 1, WINDOW);
+        let mut builder = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+        builder.empty_item(Rect::ZERO).unwrap();
+        builder.flavor(Flavor::text("stale receiver")).unwrap();
+        let source = builder.begin().unwrap();
+        for tick in 4..14
+        {
+            input::tick(tick);
+        }
+        let Event::Drag { offer: DragEvent::Ended { outcome },
+                          .. } = system.next_event(EventMask::ALL).unwrap()
+        else
+        {
+            panic!("stale release was delivered to the replacement receiver");
+        };
+        assert_eq!(outcome, DragOutcome::Rejected);
+        drop(source);
+        let mut builder = system.drags().builder(None, ANCHOR, Rect::new(0, 30, 20, 50)).unwrap();
+        builder.empty_item(Rect::ZERO).unwrap();
+        builder.flavor(Flavor::text("new receiver usable")).unwrap();
+        let source = builder.begin().unwrap();
+        entered(&system).respond(Response::Accept { actions:   DropActions::CopyOrMove,
+                                                    target:    Target::Content,
+                                                    highlight: Rect::new(20, 40, 60, 90) })
+                        .unwrap();
+        let payload = dropped(&system);
+        let mut receive = pin!(payload.receive(async { Ok(()) }));
+        assert_eq!(poll(receive.as_mut()), Poll::Ready(Ok(())));
+        assert_eq!(ended(&system), DragOutcome::Moved);
+        drop(source);
+    });
+}

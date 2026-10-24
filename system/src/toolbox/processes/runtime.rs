@@ -674,23 +674,33 @@ impl Desktop
                 crate::machine::scheduler::retire_current();
                 serial!("PROCESS_STOPPED app={caller} thread={}", file.thread);
                 let before_walk = ledger.summary();
-                let walk = mac_object_table::walk::drain(self, &ledger,
+                let checkpoint = self.processes.cleanup_checkpoint(caller)?;
+                let walk = checkpoint.run(&ledger, || mac_object_table::walk::drain(self, &ledger,
                     |_, key| crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
                         .and_then(|result| result.map_err(crate::toolbox::handles::KindAccessError::Registry)),
                     |key, error| serial!("OWNER_CLEANUP_QUARANTINED: owner={} kind={} slot={} generation={} {error}",
-                        key.owner(), key.kind(), key.slot(), key.generation()))
-                    .unwrap_or_else(|error| panic!("owner cleanup invariant failed: {error}"));
-                let remaining = ledger.summary();
-                serial!("OWNER_WALK app={} invalidated={} released={} quarantined={} live={} \
-                         pending={} deferred={} completed={}",
-                        caller,
-                        walk.invalidated,
-                        walk.released,
-                        walk.quarantined,
-                        remaining.live,
-                        remaining.pending,
-                        walk.deferred,
-                        remaining.deaths.saturating_sub(before_walk.deaths));
+                        key.owner(), key.kind(), key.slot(), key.generation())));
+                match walk
+                {
+                    Ok(walk) =>
+                    {
+                        let remaining = ledger.summary();
+                        serial!("OWNER_WALK app={} invalidated={} released={} quarantined={} \
+                                 live={} pending={} deferred={} completed={}",
+                                caller,
+                                walk.invalidated,
+                                walk.released,
+                                walk.quarantined,
+                                remaining.live,
+                                remaining.pending,
+                                walk.deferred,
+                                remaining.deaths.saturating_sub(before_walk.deaths));
+                    }
+                    Err(error) =>
+                    {
+                        serial!("OWNER_CLEANUP_RETAINED app={caller} {error}; {checkpoint}")
+                    }
+                }
                 self.route_events();
                 let previous = self.processes.previous(caller);
                 self.enter(previous);
@@ -731,11 +741,25 @@ impl Desktop
             // One bounded retry per genuine reclamation checkpoint. Failed
             // tickets and saved managers survive; input/timer ticks do not
             // repeatedly retry a permanently refusing definition.
-            if ledger.summary().quarantined != 0
+            let Ok(checkpoint) = self.processes.cleanup_checkpoint(owner)
+            else
             {
-                let binding = self.processes.resource_binding(owner).expect("retained process");
+                continue;
+            };
+            if !checkpoint.settled() || ledger.summary().quarantined != 0
+            {
+                let binding = match self.processes.resource_binding(owner)
+                {
+                    Ok(binding) => binding,
+                    Err(status) =>
+                    {
+                        serial!("PROCESS_RETIRE_RETAINED app={owner} status={status}; cleanup \
+                                 resource binding unavailable, saved manager state retained");
+                        continue;
+                    }
+                };
                 let retry = crate::kernel::with_process_resources(&binding, || {
-                    mac_object_table::walk::retry(
+                    checkpoint.run(&ledger, || mac_object_table::walk::retry(
                                                   self,
                                                   &ledger,
                                                   |_, key| {
@@ -751,12 +775,16 @@ impl Desktop
                                                               key.slot(),
                                                               key.generation())
                                                   }
-                    )
+                    ))
                 });
                 match retry
                 {
                     Ok(Ok(_)) => (),
-                    Ok(Err(error)) => panic!("owner cleanup invariant failed: {error}"),
+                    Ok(Err(error)) =>
+                    {
+                        serial!("PROCESS_RETIRE_RETAINED app={owner} {error}; {checkpoint}");
+                        continue;
+                    }
                     Err(status) =>
                     {
                         serial!("PROCESS_RETIRE_RETAINED app={owner} status={status}; cleanup \
@@ -802,14 +830,17 @@ impl crate::toolbox::files::watch::lifetime::WatchHost for Desktop
                           storage: bool)
                           -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
-        let mut retained = Some(ticket);
-        match crate::kernel::with_files(|files| {
-            crate::toolbox::files::watch::lifetime::WatchHost::release_file_watch(files,
-                retained.take().expect("unique watch cleanup ticket"), storage)
-        }) {
+        match crate::kernel::with_files_owned(ticket, |ticket, files| {
+                  crate::toolbox::files::watch::lifetime::WatchHost::release_file_watch(files,
+                                                                                        ticket,
+                                                                                        storage)
+              })
+        {
             Ok(result) => result,
-            Err(error) => Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(
-                retained.expect("unconsumed watch cleanup ticket"), error))
+            Err((error, ticket)) =>
+            {
+                Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(ticket, error))
+            }
         }
     }
 }
@@ -852,14 +883,14 @@ impl crate::toolbox::memory::lifetime::MemoryHost for Desktop
     fn release_memory(&mut self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
                       -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
-        let mut ticket = Some(ticket);
-        match crate::kernel::with_memory(|manager| manager.release(ticket.take().unwrap(), storage))
+        match crate::kernel::with_memory_owned(ticket, |ticket, manager| {
+                  manager.release(ticket, storage)
+              })
         {
             Ok(result) => result.map_err(Into::into),
-            Err(error) =>
+            Err((error, ticket)) =>
             {
-                Err(crate::toolbox::handles::cleanup::Failure::memory_unavailable(ticket.unwrap(),
-                                                                                  error))
+                Err(crate::toolbox::handles::cleanup::Failure::memory_unavailable(ticket, error))
             }
         }
     }

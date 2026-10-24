@@ -41,7 +41,9 @@ fn deferred_close_acceptance_preserves_window_until_explicit_application_close()
     let deferred_id = baseline["front"].as_u64().unwrap();
     let automatic_id = get("explicit-close")["state"]["front"].as_u64().unwrap();
     assert_ne!(deferred_id, automatic_id);
-    assert_eq!(deferred_id & 0xffff, automatic_id & 0xffff, "force slot reuse");
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    assert!(serial.contains("DEFERRED_WINDOW_POOL_USERSPACE_PASS reuse=passed stale=passed"),
+            "guest must prove storage reuse and stale rejection through the public ledger");
     for name in ["baseline", "cancelled", "accepted", "accepted-again"]
     {
         let state = &get(name)["state"];

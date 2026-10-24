@@ -555,6 +555,35 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
         browser.select_all(system)
     })?;
     checkpoint(system, "refreshed")?;
+    // Force the cache-invalidation interval deterministically. Pointer replay
+    // must leave the browser and traverse the application's shared dispatcher.
+    browser.folder_changed(system, lab)?;
+    click(&mut browser, 32, 44, 5000, false)?;
+    let up = Event::MouseUp { window: Some(lab),
+                              input:
+                                  Input { at:        point(32, 44),
+                                          when:      5001,
+                                          modifiers:
+                                              Modifiers::from_bits_retain(abi::events::OPTION_KEY
+                                                                          | abi::events::BTN_STATE) } };
+    pointer_track(system, &mut browser, &up)?;
+    fill(system, &mut browser)?;
+    let (down, down_position) = browser.next_deferred_pointer().ok_or(Error::NotFound)?;
+    require(system,
+            matches!(down, Event::MouseDown { .. }) && down.input().when == 5000,
+            "deferred press did not reach main dispatch")?;
+    browser.click(system, &down, down_position)?;
+    let (received_up, up_position) = browser.next_deferred_pointer().ok_or(Error::NotFound)?;
+    require(system,
+            received_up.as_record() == up.as_record(),
+            "deferred release lost its sampled modifiers")?;
+    browser.track(system, &received_up, up_position)?;
+    require(system,
+            browser.next_deferred_pointer().is_none(),
+            "deferred pointer replay duplicated an event")?;
+    browser.select_all(system)?;
+    require(system, browser.selection_count() == 10, "deferred replay corrupted the snapshot")?;
+    system.log("FINDER_DEFERRED_POINTER_USERSPACE_PASS ordered=passed modifiers=passed\n")?;
     let mut info = crate::get_info::Controller::default();
     info.open_selection(system, browser.selected_locations())?;
     for _ in 0..2000

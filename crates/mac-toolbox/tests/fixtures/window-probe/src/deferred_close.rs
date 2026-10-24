@@ -45,12 +45,29 @@ fn draw(system: &System<'_>, window: WindowId) -> mac_toolbox::ToolboxResult<()>
               0)?;
     system.windows().end_update(window)
 }
+fn window_pool(system: &System<'_>) -> mac_toolbox::ToolboxResult<mac_toolbox::inspection::Pool>
+{
+    let snapshot = system.inspection()
+                         .snapshot(mac_toolbox::inspection::Scope::Own)
+                         .map_err(|error| error.cause)?;
+    let ledger = snapshot.ledger(0).map_err(|error| error.cause)?;
+    for index in 0..ledger.len()
+    {
+        let pool = ledger.at(index).map_err(|error| error.cause)?;
+        if pool.kind == *b"WIND"
+        {
+            return Ok(pool);
+        }
+    }
+    Err(mac_toolbox::Error::NotFound)
+}
 pub fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
 {
     let windows = system.windows();
     let deferred = windows.create(WindowSpec::new(Rect::new(100, 100, 540, 400),
                                                   "DEFERRED CLOSE").procedure(8))?;
     windows.set_close_deferred(deferred, true)?;
+    let initial_pool = window_pool(system)?;
     system.quickdraw().cursors().hide()?;
     let mut automatic = None;
     let mut close_requests = 0u32;
@@ -100,6 +117,18 @@ pub fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
                              u32::from(windows.info(deferred).is_ok())))?;
             let id = windows.create(WindowSpec::new(Rect::new(100, 100, 540, 400),
                                                     "AUTOMATIC CLOSE").procedure(8))?;
+            let reused = window_pool(system)?;
+            let stale = windows.info(deferred);
+            if reused.slots != initial_pool.slots
+               || reused.live != initial_pool.live
+               || reused.births != initial_pool.births + 1
+               || reused.deaths != initial_pool.deaths + 1
+               || !matches!(stale, Err(mac_toolbox::Error::NotFound))
+            {
+                system.log("DEFERRED_WINDOW_POOL_USERSPACE_FAIL slot reuse or stale rejection\n")?;
+                return Err(mac_toolbox::Error::BadArgument);
+            }
+            system.log("DEFERRED_WINDOW_POOL_USERSPACE_PASS reuse=passed stale=passed\n")?;
             automatic = Some(id);
             log(system, format_args!("AUTOMATIC_READY id={}\n", id.0))?;
         }

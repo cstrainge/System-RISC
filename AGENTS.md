@@ -116,3 +116,17 @@ Performance bar: the code must not do unnecessary work. Full recomputation is th
 - Do not retain dead code or superseded implementations. Remove unused
   placeholders instead of suppressing dead-code warnings; introduce executable
   pieces with their consumers as the staged model becomes resident.
+
+## Resident panic discipline
+
+Ruling from Chloe, 2026-10-24: resident code must not use `.expect` on cleanup,
+reap or paint paths. Cleanup/reap failures return the unique ticket and typed
+cause to the walk's quarantine; they never panic. Paint skips a frame when its
+resource owner has dropped an image; a missing image must not kill the System.
+A preflighted lease must stay pinned across its use, or absence must be handled
+fallibly. Preflight followed by `.expect` without a held lease is a defect.
+
+`.expect` is reserved for structural invariants on non-failure paths, such as
+scheduler bootstrap threads, bundled assets and validated parses. Every such
+message must name the invariant. Do not replace forbidden `.expect` calls with
+`unwrap`, `panic!`, or silent loss of cleanup tickets or protocol effects.

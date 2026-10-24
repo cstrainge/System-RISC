@@ -31,6 +31,15 @@ pub(super) struct Mounted
     pub(in crate::toolbox::files) changes:  bool
 }
 
+impl Mounted
+{
+    pub(super) fn end_read(&mut self) -> Result<(), Status>
+    {
+        self.reads = self.reads.checked_sub(1).ok_or(BAD_ABI)?;
+        Ok(())
+    }
+}
+
 /// Decode before exposing any provider bytes to an application. In addition to
 /// wire validation, bind the reply to the requested volume, node or parent.
 fn catalog(volume: u32, bytes: &[u8], node: Option<u32>, parent: Option<u32>)
@@ -284,9 +293,7 @@ impl Manager
 
     pub(super) fn end_provider_read(&mut self, id: u32) -> Result<(), Status>
     {
-        let mounted = self.provider_mount(id)?;
-        mounted.reads = mounted.reads.checked_sub(1).ok_or(BAD_ABI)?;
-        Ok(())
+        self.provider_mount(id)?.end_read()
     }
 
     pub(crate) fn quarantine_provider_mount(&mut self, id: u32) -> Result<(), Status>

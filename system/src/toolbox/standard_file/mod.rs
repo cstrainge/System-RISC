@@ -236,7 +236,10 @@ impl Manager
         self.slots.state(owner)?.active.filter(|id| self.slots.get(*id).is_some_and(Dialog::active))
     }
 
-    pub(crate) fn dispose(&mut self, owner: u64, id: u64) -> Result<(), Status>
+    pub(crate) fn take(
+        &mut self, owner: u64, id: u64)
+        -> Result<mac_object_table::store::Removed<Dialog, crate::toolbox::handles::InvocationGate>,
+                  Status>
     {
         let actual = self.slots.owner(id).ok_or(NOT_FOUND)?;
         if actual.incarnation() != owner
@@ -250,8 +253,12 @@ impl Manager
                 saved.active = None;
             }
         }
-        drop(self.slots.remove(id).ok_or(NOT_FOUND)?);
-        Ok(())
+        self.slots.remove(id).ok_or(NOT_FOUND)
+    }
+
+    pub(crate) fn dispose(&mut self, owner: u64, id: u64) -> Result<(), Status>
+    {
+        self.take(owner, id).map(drop)
     }
 
     pub(crate) fn request(&mut self, ledger: &OwnerRef, call: &mut StandardFileCall,

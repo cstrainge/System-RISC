@@ -68,6 +68,7 @@ pub struct Desktop
     outline_under:                    Box<super::quickdraw::outline_overlay::OutlineUnder>,
     drag_highlight_under:             Box<super::quickdraw::outline_overlay::OutlineUnder>,
     cursor_dirty:                     bool,
+    frame_incomplete:                 bool,
     cursor_bounds:                    Rect,
     activity:                         u64,
     last_observed:                    (u64, u32, u64),
@@ -339,6 +340,7 @@ impl Desktop
                   outline_damage:Vec::new(),
                   outline_under:Box::default(), drag_highlight_under:Box::default(),
                   cursor_dirty: true,
+                  frame_incomplete: false,
                   cursor_bounds: Rect::ZERO,
                   activity: 0,
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
@@ -530,6 +532,10 @@ impl Desktop
             }
             CLOSE_WINDOW =>
             {
+                if let Err(status) = self.drag.prepare_window_close(id.0)
+                {
+                    return status;
+                }
                 // Closing a dialog's window also ends its modal protocol.
                 // A parent already taken by explicit/generic close is absent.
                 let alert = self.dialogs.take_window(id.0);
@@ -537,14 +543,9 @@ impl Desktop
                 {
                     Ok(()) => (),
                     Err(super::windows::manager::CloseError::NotFound(_)) => return NOT_FOUND,
-                    Err(error @ super::windows::manager::CloseError::Cleanup(_)) =>
+                    Err(super::windows::manager::CloseError::Cleanup(cause)) =>
                     {
-                        serial!("WINDOW_CLOSE_REFUSED: owner={} {error}", self.owner);
-                        let super::windows::manager::CloseError::Cleanup(cause) = error
-                        else
-                        {
-                            unreachable!()
-                        };
+                        serial!("WINDOW_CLOSE_REFUSED: owner={} {cause}", self.owner);
                         result = match cause
                         {
                             super::handles::cleanup::Cause::WindowDefinitionDisposal { reply,
@@ -553,6 +554,7 @@ impl Desktop
                                 i32::try_from(reply).unwrap_or(BAD_ABI)
                             }
                             super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
+                            super::handles::cleanup::Cause::DragEffectStorage { .. } => NO_MEMORY,
                             super::handles::cleanup::Cause::MemoryManagerUnavailable(error)
                             | super::handles::cleanup::Cause::FileManagerUnavailable(error) =>
                             {
@@ -562,8 +564,12 @@ impl Desktop
                     }
                 }
                 let before = self.drag.feedback();
-                self.drag.forget_window(id.0, when);
+                let drag_cleanup = self.drag.forget_window(id.0, when);
                 self.drag_effects(before);
+                if let Err(status) = drag_cleanup
+                {
+                    serial!("DRAG_WINDOW_CLEANUP_DEFERRED window={} status={status}", id.0);
+                }
                 self.scroll_boxes.remove_window(id.0);
                 self.controls.remove_window(id.0);
                 self.content.retain(|content| content.id != id);
@@ -1653,6 +1659,20 @@ impl Desktop
         };
         crate::trace::record(crate::trace::INPUT, self.owner, kind, a, b, c);
         let observed = self.events.observe_input(input, when);
+        if let Input::Button { point,
+                               down } = input
+        {
+            if down
+            {
+                // Modal/menu/control clicks invalidate the old observation too.
+                self.drag.reset_pointer_press();
+            }
+            else if self.drag.awaiting_pointer_release()
+            {
+                let hot = self.drag_hot(point);
+                self.drag.observe_pointer_release(point, self.events.modifiers, hot, when);
+            }
+        }
         if let Input::Move(point)
         | Input::Button { point,
                                .. } = input
@@ -1789,6 +1809,8 @@ impl Desktop
                                                                                    .modifiers });
                                 }
                             }
+                            self.drag.observe_pointer_press(self.owner, id.0, point,
+                                                            self.events.modifiers);
                             self.events.post_system(Event { payload: 0,
                                                             kind: EventKind::MouseDown,
                                                             message: 0,
@@ -1805,6 +1827,8 @@ impl Desktop
                     }
                     else
                     {
+                        self.drag
+                            .observe_pointer_press(self.owner, 0, point, self.events.modifiers);
                         self.events.post_system(Event { payload: 0,
                                                         kind: EventKind::MouseDown,
                                                         message: 0,
@@ -2093,7 +2117,7 @@ impl Desktop
                               });
             if desktop_visible
             {
-                self.content_cache.paint(SceneTarget::Desktop,
+                let result = self.content_cache.try_paint(SceneTarget::Desktop,
                                          self.desktop.bounds(),
                                          &mut canvas,
                                          |canvas| {
@@ -2103,27 +2127,37 @@ impl Desktop
                                                                     |canvas, command| {
                                                                         paint(canvas, command, cdef)
                                                                     });
-                                             }).expect("desktop resource owner must retain its image");
+                                             })
                                          });
+                if result.is_err()
+                {
+                    self.frame_incomplete = true;
+                    self.enter(caller);
+                    return;
+                }
             }
             let content = &self.content;
             let cache = &mut self.content_cache;
             let cdef = self.cdef;
+            let mut paint_failed = false;
             platform::with_tracking_mask(|scratch| {
                 self.windows.draw_with_scratch(&mut canvas, scratch, |window, canvas| {
+                                if paint_failed
+                                {
+                                    return;
+                                }
                                 let content =
                                     content.iter().find(|content| content.id == window.id);
                                 let replay = |canvas: &mut Canvas<'_>| {
-                                    canvas.paint_rect(window.local_bounds(), WHITE);
-                                    if let Some(content) = content
-                                    {
-                                        crate::kernel::with_resource_owner(window.owner, || {
+                                    crate::kernel::with_resource_owner(window.owner, || {
+                                        canvas.paint_rect(window.local_bounds(), WHITE);
+                                        if let Some(content) = content
+                                        {
                                             content.paint(canvas, fonts, |canvas, command| {
                                                        paint(canvas, command, cdef)
                                                    });
-                                        }).expect("live window resource owner must retain its \
-                                                   image");
-                                    }
+                                        }
+                                    })
                                 };
                                 // Managed scroll boxes already retain their viewport rasters.
                                 // A second whole-window raster wastes heap and copies every frame.
@@ -2134,14 +2168,22 @@ impl Desktop
                                                     });
                                 if has_viewports
                                 {
-                                    replay(canvas);
+                                    paint_failed = replay(canvas).is_err();
                                 }
                                 else
                                 {
-                                    cache.paint(window.id.0, window.bounds, canvas, replay);
+                                    paint_failed = cache.try_paint(window.id.0, window.bounds,
+                                                                   canvas, replay)
+                                                        .is_err();
                                 }
                             })
             });
+            if paint_failed
+            {
+                self.frame_incomplete = true;
+                self.enter(caller);
+                return;
+            }
             self.menu_cache.paint(&mut canvas,
                                   (self.foreground,
                                    self.menus.selected_menu(),
@@ -2169,8 +2211,14 @@ impl Desktop
             let cdef = self.cdef;
             let cache = &mut self.content_cache;
             let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
-            for (id, region) in damage
+            let mut paint_failed = false;
+            for (id, region) in &damage
             {
+                if paint_failed
+                {
+                    break;
+                }
+                let id = *id;
                 if id == SceneTarget::Desktop
                 {
                     if self.processes
@@ -2183,9 +2231,10 @@ impl Desktop
                                 if !super::quickdraw::geometry::sect_rect(Rect::new(span.left, band.top, span.right, band.bottom), visible, &mut clip) { continue; }
                                 canvas.reset_port(); canvas.set_clip(clip);
                                 background(&mut canvas);
-                                cache.paint(id, self.desktop.bounds(), &mut canvas, |canvas| {
-                                    crate::kernel::with_resource_owner(crate::context::finder_app().0, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef))).expect("desktop resource owner must retain its image");
-                                });
+                                if paint_failed { continue; }
+                                paint_failed = cache.try_paint(id, self.desktop.bounds(), &mut canvas, |canvas| {
+                                    crate::kernel::with_resource_owner(crate::context::finder_app().0, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef)))
+                                }).is_err();
                                 damaged.push(clip);
                             }}
                         });
@@ -2211,29 +2260,57 @@ impl Desktop
                     content.iter_commands()
                            .any(|command| matches!(command, RenderCommand::ScrollBox(_)));
                 self.windows.for_each_visible_rect(id, |visible| {
-                    for band in region.bands()
-                    {
-                        for span in &band.spans
-                        {
-                            let mut bounds = Rect::new(span.left, band.top, span.right, band.bottom);
-                            bounds.offset(window.bounds.left, window.bounds.top);
-                            let mut clip = Rect::ZERO;
-                            if !super::quickdraw::geometry::sect_rect(bounds, visible, &mut clip) { continue; }
-                            canvas.reset_port();
-                            canvas.set_clip(clip);
-                            canvas.set_origin(window.bounds.left, window.bounds.top);
-                            let replay=|canvas:&mut Canvas<'_>| {
-                                canvas.paint_rect(window.local_bounds(), WHITE);
-                                crate::kernel::with_resource_owner(window.owner, || {
-                                    content.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef));
-                                }).expect("live window resource owner must retain its image");
-                            };
-                            if has_viewports {replay(&mut canvas);}else{cache.paint(id.0,window.bounds,&mut canvas,replay);}
-                            window.paint_content_overlay(&mut canvas);
-                            damaged.push(clip);
-                        }
-                    }
-                });
+                                for band in region.bands()
+                                {
+                                    for span in &band.spans
+                                    {
+                                        let mut bounds =
+                                            Rect::new(span.left, band.top, span.right, band.bottom);
+                                        bounds.offset(window.bounds.left, window.bounds.top);
+                                        let mut clip = Rect::ZERO;
+                                        if !super::quickdraw::geometry::sect_rect(bounds, visible,
+                                                                                  &mut clip)
+                                        {
+                                            continue;
+                                        }
+                                        canvas.reset_port();
+                                        canvas.set_clip(clip);
+                                        canvas.set_origin(window.bounds.left, window.bounds.top);
+                                        if paint_failed
+                                        {
+                                            continue;
+                                        }
+                                        let replay = |canvas: &mut Canvas<'_>| {
+                                            crate::kernel::with_resource_owner(window.owner, || {
+                                                canvas.paint_rect(window.local_bounds(), WHITE);
+                                                content.paint(canvas, fonts, |canvas, command| {
+                                                           paint(canvas, command, cdef)
+                                                       });
+                                            })
+                                        };
+                                        paint_failed = if has_viewports
+                                                       {
+                                                           replay(&mut canvas)
+                                                       }
+                                                       else
+                                                       {
+                                                           cache.try_paint(id.0, window.bounds,
+                                                                           &mut canvas, replay)
+                                                       }.is_err();
+                                        window.paint_content_overlay(&mut canvas);
+                                        damaged.push(clip);
+                                    }
+                                }
+                            });
+            }
+            if paint_failed
+            {
+                // Nothing was presented. Preserve the exact pending damage and
+                // retry it when a resource context is available again.
+                self.content_damage = damage;
+                self.frame_incomplete = true;
+                self.enter(caller);
+                return;
             }
             crate::trace::record(crate::trace::RENDER,
                                  caller,
@@ -2242,6 +2319,7 @@ impl Desktop
                                  0,
                                  self.revision as u64);
         }
+        self.frame_incomplete = false;
         if full || self.cursor_dirty || !damaged.is_empty()
         {
             self.compose_cursor(full, damaged);
@@ -2254,7 +2332,9 @@ impl Desktop
     /// scene. It remains available when every app thread is CPU bound.
     fn present_cursor_overlay(&mut self)
     {
-        if !self.cursor_dirty && self.outline_damage.is_empty()
+        // A refused scene replay may have touched only the private back buffer.
+        // Never leak those uncommitted pixels through a later cursor-only copy.
+        if self.frame_incomplete || !self.cursor_dirty && self.outline_damage.is_empty()
         {
             return;
         }
@@ -2539,6 +2619,12 @@ impl super::windows::lifetime::WindowHost for Desktop
     {
         let owner = ticket.key().owner().incarnation();
         let id = self.windows.releasing_id(&ticket);
+        if let Some(id) = id
+           && self.drag.prepare_window_close(id.0).is_err()
+        {
+            return Err(super::handles::cleanup::Failure::drag_effect_storage(ticket,
+                                                                           self.drag.pending_effects()));
+        }
         let result = self.windows.release(ticket);
         if let Some(id) = id
         {
@@ -2547,8 +2633,12 @@ impl super::windows::lifetime::WindowHost for Desktop
             let alert = self.alerts_for_owner(owner).and_then(|manager| manager.take_window(id.0));
             drop(alert);
             let before = self.drag.feedback();
-            self.drag.forget_window(id.0, Self::when());
+            let drag_cleanup = self.drag.forget_window(id.0, Self::when());
             self.drag_effects(before);
+            if let Err(status) = drag_cleanup
+            {
+                serial!("DRAG_WINDOW_CLEANUP_DEFERRED window={} status={status}", id.0);
+            }
             self.scroll_boxes.remove_window(id.0);
             self.controls.remove_window(id.0);
             self.content.retain(|content| content.id != id);

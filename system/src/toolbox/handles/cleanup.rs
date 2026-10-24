@@ -7,6 +7,11 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 pub(crate) enum Cause
 {
     Facility(PoolError),
+    DragEffectStorage
+    {
+        pending:   usize,
+        requested: usize
+    },
     #[cfg(target_arch = "riscv64")]
     MemoryManagerUnavailable(crate::state::AccessError),
     #[cfg(target_arch = "riscv64")]
@@ -25,6 +30,14 @@ impl core::fmt::Display for Cause
         match self
         {
             Self::Facility(error) => error.fmt(f),
+            Self::DragEffectStorage { pending,
+                                      requested } =>
+            {
+                write!(f,
+                       "Drag Manager could not reserve {requested} notification slots with \
+                        {pending} pending; protocol state and cleanup ticket remain retained for \
+                        retry")
+            }
             #[cfg(target_arch = "riscv64")]
             Self::MemoryManagerUnavailable(error) =>
             {
@@ -63,6 +76,13 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    pub(crate) fn drag_effect_storage(ticket: ReleasedResource, pending: usize) -> Self
+    {
+        Self { ticket,
+               cause: Cause::DragEffectStorage { pending,
+                                                 requested: 4 } }
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn files_unavailable(ticket: ReleasedResource, error: crate::state::AccessError)
                                     -> Self
@@ -131,3 +151,8 @@ impl<C, R: Release<C>> Release<C, Failure> for Complete<R>
         self.0.release(context, ticket).map_err(Failure::from)
     }
 }
+
+#[cfg(any(target_arch = "riscv64", test))]
+mod checkpoint;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use checkpoint::Checkpoint;

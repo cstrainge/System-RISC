@@ -128,10 +128,7 @@ impl Default for Session
                      Registration::Receivers,
                      Registration::ReceiverStorage]
         {
-            registry.register(&registrar,
-                              kind.specification(),
-                              crate::toolbox::handles::cleanup::Complete(ReleaseKind(kind)))
-                    .unwrap();
+            registry.register(&registrar, kind.specification(), ReleaseKind(kind)).unwrap();
         }
         let drag = crate::toolbox::drag::Manager::new(
             (registry.get(crate::toolbox::handles::KindCode(*b"DRAG")).unwrap(),

@@ -163,7 +163,7 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                for kind in [Registration::Sessions, Registration::SessionStorage,
                                             Registration::Receivers, Registration::ReceiverStorage]
                                {
-                                   registry.register(&owner, kind.specification(), cleanup::Complete(ReleaseKind(kind)))
+                                   registry.register(&owner, kind.specification(), ReleaseKind(kind))
                                            .map_err(KindAccessError::Registry)?;
                                }
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))

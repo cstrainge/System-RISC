@@ -971,3 +971,64 @@ force the same volume/fork/write slots, reject prior IDs through native and
 classic gates, and verify current objects remain usable. This is identity
 foundation for the remaining File Manager registration work, not a claim that
 its forks, transactions, mount references or I/O death barrier have migrated.
+
+### Resident panic discipline and failure checkpoints
+
+Chloe's 2026-10-24 ruling is recorded in AGENTS.md: cleanup, reap and paint
+paths cannot use `.expect` or substitute another panic for a recoverable
+refusal. Resident access can transfer an owned argument only after its owner,
+state and lock checks pass; refusal returns the original cleanup capability.
+Window disposal resolves the retained payload fallibly. Ordinary menu and
+Standard File disposal take registered removal guards before unpublishing their
+state or disposing children, retaining backing until those guards leave scope.
+
+A process preallocates a shared cleanup checkpoint. If a walk cannot quarantine
+its failed ticket, that checkpoint retains the typed error and capability; final
+process retirement refuses while the checkpoint is running, retained or did not
+return. A later ordinary reclamation checkpoint first restores the ticket to
+quarantine and retries the existing walk. The attempt is linear and its private
+state lock is released before any cleanup callback. Window initialization and
+explicit disposal also reserve failure storage before publication; an unexpected
+quarantine refusal retains its ticket/backing rather than killing the machine.
+Those retained window refusals are retried at actual create/cleanup checkpoints,
+not on physical input or timer ticks. No separate inspector action is added.
+
+The walk provides resource containment. Arbitrary privileged-fault containment
+is **unproven** and is a **required future gate**. Until a recovery contract
+exists and passes, the System must not claim it can safely recover from every
+mid-call module fault. The host transport unwind test leaves a checkpoint
+interrupted; it is not evidence of native privileged-fault recovery.
+
+Content-cache replay propagates a missing resource context without marking
+partial pixels valid. A refused scene keeps its exact pending damage and skips
+presentation; cursor-only copies cannot leak an incomplete private back buffer.
+Successful replay retains the existing clipped/cached path. Directory-probe ACK
+holds its checked mutable mount borrow through read-lease completion and revision
+publication, without a second preflight-and-expect lookup.
+
+Drag notifications use an owned queue whose bounded per-operation effect budget
+is reserved fallibly before protocol mutation and held through use by the same
+exclusive manager borrow. Cleanup reservation failure returns the unique ticket
+and an informative typed cause into ordinary quarantine. Input/cleanup callers
+drain already-queued effects even when an operation refuses. Stale session reads
+are fallible; notification production no longer asserts a fixed empty slot.
+Idle animation and unchanged pointer motion early-out before reserving effects.
+The canonical SDK fault case covers refused cancellation without state change,
+failed teardown with a retained ledger barrier, ordinary retry and a usable next
+gesture. Full paging/I/O/model and strict physical-input gates remain separate.
+
+Native Finder qualification exposed deferred pointer events being replayed
+inside a browser window, bypassing the application's Drag Toolbox dispatch.
+Ready cached events now re-enter that same dispatch in order. A matching
+physical press/release observation preserves the actual drop position and
+release-time modifiers when BEGIN is delayed; a disposed receiver cannot be
+replaced by a newly registered receiver. Repeated release is a no-op. The
+public SDK tests cover cancellation refusal, retained cleanup/retry, delayed
+release and receiver replacement; physical Finder campaigns cover selection,
+group drag, external open/copy/move and unmount workflows.
+
+The deferred-close acceptance test also uses the public owner ledger to prove
+storage reuse and stale-window rejection, rather than decoding opaque ID bits.
+These checks do not certify image unloading or arbitrary privileged unwind:
+failed replay is fault-injected at the cache boundary, and definition panic
+continues to report its authenticated resource identity and shut down loudly.
