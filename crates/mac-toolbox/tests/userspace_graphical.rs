@@ -58,6 +58,9 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
     assert!(serial.contains("WINDOW_LEDGER_USERSPACE_PASS simultaneous=40 reuse=300 \
                              full_width=passed"),
             "registered full-width window lifetime acceptance absent:\n{serial}");
+    assert!(serial.contains("WINDOW_FRONT_INPUT_USERSPACE_PASS lifetime=passed focus=passed \
+                             stale=passed"),
+            "front-window input projections through real ECALL absent:\n{serial}");
     assert!(serial.contains("MENU_LEDGER_USERSPACE_PASS simultaneous=12 reuse=64 \
                              full_width=passed"),
             "registered menu lifetimes through real ECALL absent:\n{serial}");

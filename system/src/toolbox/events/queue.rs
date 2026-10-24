@@ -225,7 +225,9 @@ impl EventManager
 
     /// Update physical state and enqueue the low-level hardware event before
     /// window, menu or modal-dialog routing consumes the same input packet.
-    pub fn observe_input(&mut self, input: super::input::Input, when: u32)
+    /// Return the normalized key snapshot for native routing, so keys do not need
+    /// a second modifier update and another reconstruction of the same event.
+    pub fn observe_input(&mut self, input: super::input::Input, when: u32) -> Option<Event>
     {
         use super::input::Input;
         let (kind, message) = match input
@@ -233,7 +235,7 @@ impl EventManager
             Input::Move(point) =>
             {
                 self.mouse = point;
-                return;
+                return None;
             }
             Input::Button { point,
                             down } =>
@@ -258,7 +260,7 @@ impl EventManager
                 self.modifiers = modifiers | (self.modifiers & BTN_STATE);
                 if mac_code == 0xff
                 {
-                    return;
+                    return None;
                 }
                 (if !down
                  {
@@ -275,12 +277,18 @@ impl EventManager
                  (mac_code as u32) << 8 | character as u32)
             }
         };
-        self.os_post(kind, message, when);
+        let event = Event { kind,
+                            message,
+                            ..self.null_event(when) };
+        self.os_post(event);
+        // Button routing needs its hit-tested window; it does not consume this
+        // return value. Avoid copying an unused snapshot on the pointer path.
+        matches!(kind, EventKind::KeyDown | EventKind::KeyUp | EventKind::AutoKey).then_some(event)
     }
 
-    fn os_post(&mut self, kind: EventKind, message: u32, when: u32)
+    fn os_post(&mut self, event: Event)
     {
-        if (1 << kind as u16) & self.os_mask == 0
+        if !event.matches(self.os_mask)
         {
             return;
         }
@@ -291,9 +299,7 @@ impl EventManager
             self.os_queue.copy_within(1..self.os_len, 0);
             self.os_len -= 1;
         }
-        self.os_queue[self.os_len] = Event { kind,
-                                             message,
-                                             ..self.null_event(when) };
+        self.os_queue[self.os_len] = event;
         self.os_len += 1;
     }
 
@@ -321,7 +327,9 @@ impl EventManager
                 {
                     return EVENT_NOT_ENABLED;
                 }
-                self.os_post(call.event.kind, call.event.message, when);
+                self.os_post(Event { kind: call.event.kind,
+                                     message: call.event.message,
+                                     ..self.null_event(when) });
                 None
             }
             OS_PEEK | OS_GET =>

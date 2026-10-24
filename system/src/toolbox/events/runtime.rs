@@ -43,20 +43,20 @@ impl super::Desktop
                                    | mac_abi::EventKind::KeyUp
                                    | mac_abi::EventKind::AutoKey)
                           || event.kind == mac_abi::EventKind::MouseUp && event.window == 0;
-        let front = if needs_front { self.windows.front_for_owner(owner) } else { None };
-        let Some(id) = crate::toolbox::events::position::target(event, front)
-        else
-        {
-            return Default::default();
-        };
-        if self.window_owner(id) != Some(owner)
-        {
-            return Default::default();
-        }
-        self.windows
-            .window(id)
-            .map(|w| crate::toolbox::events::position::project(event, id, w.bounds))
-            .unwrap_or_default()
+        let window =
+            if needs_front
+            {
+                self.windows.front_record_for_owner(owner)
+            }
+            else
+            {
+                crate::toolbox::events::position::target(event, None)
+                .and_then(|id| self.windows.window_for_owner(id, owner))
+            };
+        window.map(|window| {
+                  crate::toolbox::events::position::project(event, window.id, window.bounds)
+              })
+              .unwrap_or_default()
     }
 
     pub fn positioned_event(&mut self, call: &mut mac_abi::events::PositionedEventCall) -> Status

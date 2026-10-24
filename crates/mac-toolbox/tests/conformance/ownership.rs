@@ -214,6 +214,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
         drop(window.take());
     }
     assert_eq!(window_pool(system)?.live, 0);
+    front_projection(system)?;
     system.log("WINDOW_LEDGER_USERSPACE_PASS simultaneous=40 reuse=300 full_width=passed\n")?;
     editors(system, Some(gate))?;
     system.log("OWNERSHIP_MENU_BEGIN\n")?;
@@ -228,6 +229,78 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
           .map_err(|error| Failure::Service(error.status()))?;
     system.log("OWNERSHIP_USERSPACE_PASS scope=40 early_returns=16 stale=passed transfer=passed\n")
           .map_err(|error| Failure::Service(error.status()))
+}
+
+/// Public input projections remain fresh across front-window lifetime changes.
+fn front_projection(system: &System<'_>) -> Result<(), Failure>
+{
+    let key = mac_toolbox::Event::from(mac_abi::Event { kind: mac_abi::EventKind::KeyDown,
+                                                        message: u32::from(b'a'),
+                                                        where_: mac_abi::Point { h: 127,
+                                                                                 v: 139 },
+                                                        ..Default::default() });
+    let locate =
+        |expected: Option<WindowId>| -> Result<mac_toolbox::events::PointerPosition, Failure> {
+            let position = system.events().locate(&key)?;
+            match expected
+            {
+                Some(id) =>
+                {
+                    let point = position.in_window(id)?;
+                    assert_eq!(point.window(), id);
+                    assert_eq!((point.h(), point.v()), (27, 39));
+                }
+                None =>
+                {
+                    assert!(position.window().is_none(),
+                            "windowless input acquired an unrelated target")
+                }
+            }
+            Ok(position)
+        };
+    locate(None)?;
+    let mut a = create(system)?;
+    locate(Some(a.id()))?;
+    locate(Some(a.id()))?;
+    let mut b = create(system)?;
+    locate(Some(b.id()))?;
+    a.select()?;
+    locate(Some(a.id()))?;
+    let stale = a.id();
+    a.close()?;
+    locate(Some(b.id()))?;
+    b.close()?;
+    locate(None)?;
+    let replacement = create(system)?;
+    let current = locate(Some(replacement.id()))?;
+    assert_ne!(replacement.id(), stale);
+    assert_eq!(current.in_window(stale), Err(Error::NotFound));
+    let explicit = mac_toolbox::Event::from(mac_abi::Event { kind: mac_abi::EventKind::Update,
+                                                             window: stale.0,
+                                                             ..Default::default() });
+    assert!(system.events().locate(&explicit)?.window().is_none(),
+            "a stale explicit target fell back to the live front window");
+    let error = system.windows().info(stale).unwrap_err();
+    assert_eq!(error, Error::NotFound);
+    struct Expected<'a>(&'a str);
+    impl core::fmt::Write for Expected<'_>
+    {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result
+        {
+            self.0 = self.0.strip_prefix(text).ok_or(core::fmt::Error)?;
+            Ok(())
+        }
+    }
+    use core::fmt::Write;
+    let mut message = Expected("not found");
+    write!(&mut message, "{error}").unwrap();
+    assert!(message.0.is_empty());
+    assert_eq!(locate(Some(replacement.id()))?.in_window(replacement.id())?.window(),
+               replacement.id());
+    drop(replacement);
+    locate(None)?;
+    system.log("WINDOW_FRONT_INPUT_USERSPACE_PASS lifetime=passed focus=passed stale=passed\n")?;
+    Ok(())
 }
 
 fn managed_controls(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>

@@ -310,13 +310,20 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
 
     pub fn get(&self, id: u64) -> Option<&T>
     {
+        self.get_with_owner(id).map(|(_, value)| value)
+    }
+
+    /// Read a live payload and its authenticated owner from one validation.
+    /// The returned identity is metadata, not authority to mutate its ledger.
+    pub fn get_with_owner(&self, id: u64) -> Option<(DomainId, &T)>
+    {
         if self.registration.as_ref().is_some_and(|kind| !kind.live())
         {
             return None;
         }
         let (at, key) = self.locate(id)?;
         let entry = self.owners[at].slots.get(key.slot())?.as_ref()?;
-        (entry.key == key && entry.id == id).then_some(&entry.value)
+        (entry.key == key && entry.id == id).then_some((key.owner(), &entry.value))
     }
 
     pub fn get_mut(&mut self, id: u64) -> Option<&mut T>

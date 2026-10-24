@@ -4,7 +4,7 @@
 #[cfg(test)]
 use alloc::vec;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 pub use mac_abi::WindowId;
 use mac_abi::{BAD_ARGUMENT, DefinitionCall, DefinitionEntry, Header, NOT_FOUND, Status, Surface};
@@ -420,6 +420,9 @@ pub struct WindowManager
     // around definition drawing callbacks. The manager remains Send behind the
     // resident service lock; callers never share it without that admission.
     visibility:     RefCell<super::visibility::Scratch>,
+    // A single bounded memo, never an authority or a payload pin. Successful
+    // window-list changes invalidate it; cached IDs still validate on lookup.
+    front_cache:    Cell<Option<(u64, Option<WindowId>)>>,
     windows:        Store<Window>,
     order:          Vec<WindowId>,
     len:            usize,
@@ -447,6 +450,7 @@ impl WindowManager
                              -> Result<Self, Status>
     {
         Ok(Self { visibility: RefCell::new(Default::default()),
+                  front_cache: Cell::new(None),
                   windows: Store::owned(kinds.0, kinds.1).map_err(|_| BAD_ARGUMENT)?,
                   order: Vec::new(),
                   len: 0,
@@ -523,6 +527,7 @@ impl WindowManager
         let id = window.id;
         if let Some(index) = self.order.iter().position(|other| *other == id)
         {
+            self.front_cache.set(None);
             self.order.remove(index);
             self.len -= 1;
             if !window.hidden
@@ -556,14 +561,40 @@ impl WindowManager
         self.len
     }
 
+    pub(crate) fn window_for_owner(&self, id: WindowId, owner: u64) -> Option<&Window>
+    {
+        let (bound, window) = self.windows.get_with_owner(id.0)?;
+        (window.initialized && bound.incarnation() == owner).then_some(window)
+    }
+
+    pub(crate) fn front_record_for_owner(&self, owner: u64) -> Option<&Window>
+    {
+        if let Some((cached_owner, cached)) = self.front_cache.get()
+           && cached_owner == owner
+        {
+            match cached
+            {
+                None => return None,
+                Some(id) =>
+                {
+                    if let Some(window) = self.window_for_owner(id, owner).filter(|w| !w.hidden)
+                    {
+                        return Some(window);
+                    }
+                }
+            }
+        }
+        let front = self.order[..self.len].iter().rev().find_map(|id| {
+                                                           self.window_for_owner(*id, owner)
+                                                               .filter(|window| !window.hidden)
+                                                       });
+        self.front_cache.set(Some((owner, front.map(|window| window.id))));
+        front
+    }
+
     pub(crate) fn front_for_owner(&self, owner: u64) -> Option<WindowId>
     {
-        self.order.iter().rev().copied().find(|id| {
-                                            self.window(*id)
-                                                .is_some_and(|window| {
-                                                    !window.hidden && window.owner == owner
-                                                })
-                                        })
+        self.front_record_for_owner(owner).map(|window| window.id)
     }
 
     pub fn front_window(&self) -> Option<WindowId>
@@ -712,6 +743,7 @@ impl WindowManager
         let id = guard.commit();
         self.order.push(id);
         self.len += 1;
+        self.front_cache.set(None);
         if activate
         {
             self.active = Some(id);
@@ -770,6 +802,7 @@ impl WindowManager
         let mut old_order = core::mem::take(&mut self.order_scratch);
         old_order.clear();
         old_order.extend_from_slice(&self.order);
+        self.front_cache.set(None);
         self.order.copy_within(index + 1..self.len, index);
         self.order[self.len - 1] = id;
         self.active = Some(id);
@@ -862,6 +895,7 @@ impl WindowManager
             self.order_scratch = order;
             return;
         }
+        self.front_cache.set(None);
         core::mem::swap(&mut self.order, &mut order);
         self.invalidate_order_exposure(&order);
         self.order_scratch = order;
@@ -948,6 +982,7 @@ impl WindowManager
         }
         let previous = *window;
         window.hidden = hidden;
+        self.front_cache.set(None);
         if hidden
         {
             if let Some(index) = self.order.iter().position(|other| *other == id)
@@ -1751,6 +1786,40 @@ impl WindowManager
 mod tests
 {
     use super::*;
+
+    #[test]
+    fn owner_front_queries_follow_hide_show_group_order_and_domain_changes()
+    {
+        let (mut manager, mut events, a, b) = make();
+        let owner = manager.owner(a).unwrap();
+        assert_eq!(manager.front_for_owner(owner), Some(b));
+        manager.set_hidden(b, true);
+        assert_eq!(manager.front_for_owner(owner), Some(a));
+        manager.set_hidden(a, true);
+        assert_eq!(manager.front_for_owner(owner), None);
+        manager.set_hidden(b, false);
+        assert_eq!(manager.front_for_owner(owner), Some(b));
+        manager.set_hidden(a, false);
+        manager.select_group_focus(&[a, b], GroupFocus::Window(a), &mut events, 1);
+        assert_eq!(manager.front_for_owner(owner), Some(a));
+        let other = manager.new_window(Rect::new(30, 60, 200, 180),
+                                       "Other domain",
+                                       99,
+                                       (20, 20),
+                                       &mut events,
+                                       2)
+                           .unwrap();
+        let other_owner = manager.owner(other).unwrap();
+        assert_eq!(manager.front_for_owner(other_owner), Some(other));
+        assert_eq!(manager.front_for_owner(owner), Some(a));
+        assert!(manager.window_for_owner(a, other_owner).is_none());
+        assert!(manager.window_for_owner(other, owner).is_none());
+        manager.dispose_window(a, &mut events, 3).unwrap();
+        assert_eq!(manager.front_for_owner(owner), Some(b));
+        manager.dispose_window(b, &mut events, 4).unwrap();
+        assert_eq!(manager.front_for_owner(owner), None);
+        assert_eq!(manager.front_for_owner(other_owner), Some(other));
+    }
 
     #[test]
     fn desktop_fragments_exclude_all_visible_window_structures()

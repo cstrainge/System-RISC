@@ -666,3 +666,28 @@ and retries, while the native resident registry lives for the System lifetime.
 containment is **unproven** and is a **required future gate**. Until a recovery
 contract exists and passes, the System must not claim it can safely recover from
 every mid-call module fault.
+
+
+### Input metadata qualification during manager migration
+
+The native input path now normalizes key records once, retaining the original
+raw OS queue before menu, modal and drag policy runs. Front-window coordinate
+projection uses one bounded owner/opaque-ID memo; structural and visibility
+changes invalidate it, and a cached live ID still passes the shared facility's
+owner/lifetime validation. Bounds are read from the current payload. No event
+query triggers drawing. The canonical public-SDK case exercises empty, create,
+focus, close, replacement and explicitly stale target projections through real
+services. Window visibility/group/domain changes have resident unit coverage.
+
+Qualification: 56 facility tests (including three compile-fail checks), 131
+System unit tests, 219 SDK host tests, optimized whole-world image, native
+aggregate conformance, physical input/menu handling, original window tracking,
+cursor tests and Reactor Room on Linux/Windows; boundary checks and 49-library
+API documentation also pass. The strict latency gate remains **open**: the
+three fixed measurements recorded decoded-key maxima of 1.2592, 1.6977 and
+1.1905 ms, with queued maxima of 0.4379, 0.4370 and 0.5223 ms respectively.
+All samples include the cold first key. These changes remove repeated metadata
+work; the measurements do not establish a latency improvement or a hard
+real-time guarantee. Evidence: private `input-metadata-*` reports. Paging is
+still off, and the remaining manager/cleanup and dynamic-process stages precede
+live MMU activation.

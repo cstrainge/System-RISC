@@ -1631,7 +1631,7 @@ impl Desktop
             }
         };
         crate::trace::record(crate::trace::INPUT, self.owner, kind, a, b, c);
-        self.events.observe_input(input, when);
+        let observed = self.events.observe_input(input, when);
         if let Input::Move(point)
         | Input::Button { point,
                                .. } = input
@@ -1826,13 +1826,11 @@ impl Desktop
                                                     window: 0 });
                 }
             }
-            Input::Key { mac_code,
-                         character,
+            Input::Key { character,
                          down,
-                         repeat,
-                         modifiers } =>
+                         modifiers,
+                         .. } =>
             {
-                self.events.modifiers = modifiers | (self.events.modifiers & BTN_STATE);
                 if down
                    && modifiers & CMD_KEY != 0
                    && self.menus.has_key(character)
@@ -1844,31 +1842,13 @@ impl Desktop
                 // Menu policy can still reflect the previous frame while the
                 // application opens or closes a window. Disabled shortcuts stay
                 // available as keyboard input; only a real selection consumes it.
-                if mac_code != 0xff
+                if let Some(event) = observed
                 {
                     if down
                     {
                         self.last_key = character;
                     }
-                    self.events.post_system(Event { payload: 0,
-                                                    kind: if !down
-                                                    {
-                                                        EventKind::KeyUp
-                                                    }
-                                                    else if repeat
-                                                    {
-                                                        EventKind::AutoKey
-                                                    }
-                                                    else
-                                                    {
-                                                        EventKind::KeyDown
-                                                    },
-                                                    message: (mac_code as u32) << 8
-                                                             | character as u32,
-                                                    when,
-                                                    where_: self.events.mouse,
-                                                    modifiers: self.events.modifiers,
-                                                    window: 0 });
+                    self.events.post_system(event);
                 }
             }
         }

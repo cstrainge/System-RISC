@@ -29,11 +29,14 @@ fn ownership_and_generation_are_validated_and_native_tokens_cannot_be_classic_id
     assert!(a > u64::from(u32::MAX) && b > u64::from(u32::MAX));
     assert_eq!(store.owner(a), Some(first.owner()));
     assert_eq!(store.owner(b), Some(second.owner()));
+    assert_eq!(store.get_with_owner(a), Some((first.owner(), &"first")));
+    assert_eq!(store.get_with_owner(b), Some((second.owner(), &"second")));
     assert_eq!(store.get(u64::from(u32::MAX)), None);
     assert_eq!(store.get(first.owner().incarnation()), None);
     let removed = store.remove(a).unwrap();
     assert_eq!(*removed, "first");
     assert!(store.get(a).is_none());
+    assert!(store.get_with_owner(a).is_none());
     assert_eq!((first.summary().live, first.summary().pending), (0, 1));
     let error = store.insert(&first, "too early").unwrap_err();
     assert!(matches!(error,
@@ -48,6 +51,7 @@ fn ownership_and_generation_are_validated_and_native_tokens_cannot_be_classic_id
     assert_eq!(first.summary().slots, 1, "replacement must reuse the same physical slot");
     assert!(store.get(a).is_none());
     assert_eq!(store.get(replacement), Some(&"replacement"));
+    assert_eq!(store.get_with_owner(replacement), Some((first.owner(), &"replacement")));
     assert_eq!(store.get(b), Some(&"second"));
     drop(store);
     assert_eq!((first.summary().live, first.summary().pending), (0, 0));
