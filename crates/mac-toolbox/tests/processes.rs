@@ -103,6 +103,25 @@ fn run(malformed: bool)
                "all workers must leave a live registered control for System cleanup");
     for app in workers
     {
+        let stopped =
+            serial.lines()
+                  .position(|line| line.starts_with(&format!("PROCESS_STOPPED app={app} ")))
+                  .expect("worker admission and execution were not stopped");
+        let walked = serial.lines()
+                           .position(|line| line.starts_with(&format!("OWNER_WALK app={app} ")))
+                           .expect("worker never entered the common owner walk");
+        let reclaimed =
+            serial.lines()
+                  .position(|line| {
+                      line.starts_with(&format!("PROCESS_THREAD_RECLAIMED app={app} "))
+                  })
+                  .expect("worker stack/context never reached the different-stack checkpoint");
+        let retired = serial.lines()
+                            .position(|line| line == format!("PROCESS_EXIT app={app}"))
+                            .expect("worker domain never retired");
+        assert!(stopped < walked && walked < reclaimed && reclaimed < retired,
+                "{app} must retain saved state until another stack reclaims its thread, then \
+                 pass the ledger barrier: {serial}");
         for (kind, live) in [("WIND", 3),
                              ("WNST", 1),
                              ("CTRL", 3),
@@ -145,6 +164,8 @@ fn run(malformed: bool)
     }
     assert!(!serial.contains("OWNER_CLEANUP_QUARANTINED"),
             "unexpected native cleanup refusal:\n{serial}");
+    assert!(!serial.contains("PROCESS_RETIRE_RETAINED"),
+            "ordinary exits must not strand saved manager state:\n{serial}");
     for actor in ["observer", "worker"]
     {
         assert_eq!(serial.matches(&format!("PROCESS_SYNTHETIC_EVENTS_PASS actor={actor} \

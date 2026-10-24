@@ -90,6 +90,16 @@ fn owner_walk_quarantines_failed_cleanup_and_retry_clears_the_real_death_barrier
             let pending = membership.at(0).unwrap();
             assert!(!pending.accepting);
             assert_eq!((pending.live, pending.pending, pending.quarantined), (0, 2, 2));
+            let refusal = fixture::try_retire(owner).unwrap_err();
+            assert!(matches!(refusal,
+                             fixture::RetirementError::PendingResources { pending: 2,
+                                                                          .. }));
+            assert!(refusal.to_string()
+                           .contains("cleanup of 2 invalidated ledger resources is still pending"),
+                    "retirement must retain its typed pending-cleanup reason: {refusal}");
+            assert_eq!(membership.at(0).unwrap().incarnation,
+                       owner,
+                       "a refused retirement must preserve the actual domain for cleanup retry");
             assert!(matches!(system.controls().control(object.id()).info(), Err(Error::NotFound)));
             let error = system.controls()
                               .create_static_text(WindowId(0),
@@ -112,6 +122,10 @@ fn owner_walk_quarantines_failed_cleanup_and_retry_clears_the_real_death_barrier
                        0);
             drop(object);
             assert_eq!(membership.at(0).unwrap().deaths, before.deaths + 2);
+            fixture::try_retire(owner).unwrap();
+            let error = system.inspection().snapshot(Scope::Own).err().unwrap();
+            assert_eq!(error.cause, Error::AccessDenied);
+            assert!(error.to_string().contains("no live process domain"));
         });
     });
 }

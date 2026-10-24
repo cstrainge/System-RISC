@@ -20,6 +20,7 @@ const TIMER_INTERVAL: u64 = 2_500;
 static CONTEXTS: [ThreadContext; MAX_THREADS] = [const { ThreadContext::new() }; MAX_THREADS];
 static CURRENT: AtomicUsize = AtomicUsize::new(MAX_THREADS);
 static IO: AtomicBool = AtomicBool::new(false);
+static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
 struct Thread
 {
     id:       u32,
@@ -90,6 +91,17 @@ pub fn switches(app: u64) -> u64
          t.as_ref().filter(|t| t.live && CONTEXTS[i].identity().app.0 == app).map(|t| t.switches)
      })
      .unwrap_or(0)
+}
+
+/// Retired records count too: their stacks and invocation contexts have not
+/// yet been reclaimed by another thread. No scheduler guard escapes this read.
+pub(crate) fn has_threads(app: u64) -> bool
+{
+    SCHEDULER.lock()
+             .threads
+             .iter()
+             .enumerate()
+             .any(|(index, thread)| thread.is_some() && CONTEXTS[index].identity().app.0 == app)
 }
 pub fn spawn(owner: crate::toolbox::handles::OwnerRef, image: usize, entry: usize)
              -> Result<u64, mac_abi::Status>
@@ -353,30 +365,61 @@ pub fn retire_current()
     };
     if let Some(thread) = thread
     {
+        RECLAIM_PENDING.store(true, Ordering::Release);
         crate::drivers::discard_thread_jobs(u64::from(thread));
+    }
+}
+
+/// Safe only at a resident, interrupt-masked boundary. The calling stack is
+/// identified by the actual scheduler context; it is never reclaimed here.
+pub(crate) fn reclaim_retired()
+{
+    let current = CURRENT.load(Ordering::Relaxed);
+    let mut reclaimed = false;
+    if RECLAIM_PENDING.swap(false, Ordering::AcqRel)
+    {
+        let mut scheduler = SCHEDULER.lock();
+        // The CPU is executing this trap on `current`'s stack. Only another
+        // stack's retired frame/context may be destroyed here.
+        for index in 0..MAX_THREADS
+        {
+            if index == current
+               && scheduler.threads[index].as_ref().is_some_and(|thread| thread.retired)
+            {
+                RECLAIM_PENDING.store(true, Ordering::Release);
+                continue;
+            }
+            if index != current
+               && scheduler.threads[index].as_ref().is_some_and(|thread| thread.retired)
+               && let Some(thread) = scheduler.threads[index].take()
+            {
+                let app = CONTEXTS[index].identity().app.0;
+                scheduler.identities.remove(thread.id);
+                CONTEXTS[index].release();
+                let id = thread.id;
+                drop(thread);
+                reclaimed = true;
+                serial!("PROCESS_THREAD_RECLAIMED app={app} thread={id}");
+            }
+        }
+    }
+    if reclaimed
+    {
+        crate::toolbox::processes::retirement::thread_reclaimed();
     }
 }
 
 pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
 {
+    reclaim_retired();
     crate::drivers::pump_jobs();
     crate::toolbox::files::pump_provider_operations();
     crate::toolbox::processes::documents::pump();
+    crate::toolbox::processes::retirement::pump();
     crate::kernel::poll_waiting_events();
     let current = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();
     scheduler.ticks += 1;
-    // A retired stack is reclaimed only after a different stack has become current.
-    for index in 0..MAX_THREADS
-    {
-        if index != current
-           && scheduler.threads[index].as_ref().is_some_and(|thread| thread.retired)
-           && let Some(thread) = scheduler.threads[index].take()
-        {
-            scheduler.identities.remove(thread.id);
-            CONTEXTS[index].release();
-        }
-    }
     if let Some(thread) = scheduler.threads.get_mut(current).and_then(Option::as_mut)
     {
         thread.frame = frame as usize;
@@ -450,9 +493,7 @@ pub fn image_for(app: u64) -> Option<usize>
     let s = SCHEDULER.lock();
     s.threads.iter().enumerate().find_map(|(index, thread)| {
                                     thread.as_ref()
-                                          .filter(|t| {
-                                              t.live && CONTEXTS[index].identity().app.0 == app
-                                          })
+                                          .filter(|_| CONTEXTS[index].identity().app.0 == app)
                                           .map(|t| t.image)
                                 })
 }

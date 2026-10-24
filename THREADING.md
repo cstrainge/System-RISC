@@ -325,6 +325,18 @@ A leased tracking event can expire during a target probe. The response trap
 reports Applied or Expired atomically with validation; Finder retains its last
 applied target and document pins until a replacement is applied.
 
+EXIT stops admission and retires its thread before registered cleanup. Saved
+manager state stays owned by the process until another stack has reclaimed that
+thread's stack/context and the authoritative ledger permits retirement. Actual
+stack release schedules a bounded retry/reap checkpoint; ordinary input and
+unchanged timer ticks do not scan or retry dying domains. A persistent refusal
+retains the process, its saved managers and image identity, and prevents writable
+image reload for that file. Cleanup resolves resources from that retained image
+even after the subject has no scheduler thread; an unknown owner is refused
+instead of resolving Finder's resources. The full module invocation context,
+file/provider lifetime migration, explicit inspector retry and I/O death barrier
+remain open; this checkpoint does not establish all of stage 3 or paging.
+
 The current native ThreadContext receives the directory's actual OwnerRef when
 its thread is spawned; its scalar AppId is derived from that authority. Traps can
 borrow that binding without taking the Desktop lock, including nested definition

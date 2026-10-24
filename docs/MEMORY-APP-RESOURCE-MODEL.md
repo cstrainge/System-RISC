@@ -768,14 +768,14 @@ the private `textedit-ledger-*` reports. The cold first-key strict-latency gate
 remains separately open.
 
 
-Carried stage-3 cleanup gate: the current EXIT path removes Saved contexts before
-checking whether domain retirement succeeded. The store retains abandoned pending
-payloads/pins rather than falsely acknowledging them, but a removed manager is
-not an actionable retry path. Unified teardown must retain saved managers and
-other dependencies through an incomplete death barrier, provide controlled retry,
-and retire storage only after real quiescence. Passing normal native exit and
-host provider-refusal tests does not establish that remaining resident failure
-path. This is separate from M-D04's privileged-fault containment gate.
+Stage-3 cleanup gate (updated by the retirement checkpoint slice below): EXIT
+used to remove Saved contexts before checking domain retirement. Saved managers
+now survive a refusal and outlive the retired thread's stack/context. One bounded
+retry occurs at a genuine stack-release checkpoint. A deliberate inspector retry
+action, unified launch rollback, all file/provider lifetime registrations and the
+complete I/O death barrier remain required. Passing normal native exit and host
+provider-refusal tests does not establish those remaining resident failure paths.
+This is separate from M-D04's privileged-fault containment gate.
 
 
 ### Classic Alert protocol and managed-button migration
@@ -874,3 +874,41 @@ view skips the File Manager predicate entirely, while a genuinely missing target
 rejects through RAII and leaves the next drag usable. Canonical tests also walk
 an active same-owner drag in both registration orders, during tracking and drop,
 then drop its stale source guard after creating a replacement.
+
+
+## Retirement checkpoints retain saved managers
+
+EXIT first closes ledger admission and retires the current application thread.
+The common invalidate-first walk then releases registered objects, preserving
+any refused tickets. EXIT parks the app-local managers in Saved and removes the
+app from ordinary running/application-menu views; it does not discard Saved or
+retire the process directory entry on the dying stack.
+
+The machine adapter counts retired-but-not-reclaimed thread records as users.
+Only a trap executing on another stack destroys their contexts/stacks. A real
+stack release schedules one resident reap checkpoint outside the scheduler lock.
+Unchanged timer/input events neither scan dying domains nor retry callbacks;
+thread-stack scanning itself early-outs unless a retirement is pending. At the
+checkpoint, each stopping domain without a thread gets at most its initial
+quarantine count of retries. Failure retains its directory entry, saved managers,
+provider pins and typed cleanup diagnostics. Successful directory retirement
+precedes Saved destruction. The idle/boot case explicitly parks any dying active
+manager set in its saved entry before dropping that entry.
+
+Relaunch refuses a file whose previous process is still stopping, so it cannot
+reload that process's writable image under retained callbacks. Post-thread
+cleanup gets an opaque resource binding minted from the actual directory entry,
+including its ledger pin and image index. Synchronous RAII scopes restore the
+previous resource context; unknown owners fail instead of inheriting Finder's
+resources. This is resource-scope retention, not the future full module-domain
+invocation or arbitrary privileged-fault recovery contract.
+
+Coverage is deliberately split: canonical public SDK inspection tests exercise
+real quarantine, retirement refusal with preserved diagnosis, cleanup retry and
+successful removal; native process campaigns assert stopped -> owner walk ->
+different-stack reclaim -> final retirement for every leaked-resource worker.
+This does not inject a privileged fault or establish every Saved-manager failure
+path in a running guest. File/document/provider lifetime registration, complete
+I/O quiescence, a deliberate inspector retry action, unified launch rollback and
+Finder restart remain stage-3 work. Physical images currently stay resident;
+this checkpoint does not authorize unmapping pages or unloading their code.

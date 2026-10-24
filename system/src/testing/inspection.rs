@@ -28,6 +28,7 @@ impl crate::toolbox::inspection::Subject for Metadata
     }
 }
 pub(crate) type Domains = Directory<Metadata, Gate>;
+pub use mac_object_table::domain::DirectoryError as RetirementError;
 pub fn add(label: &str, authority: u64) -> u64
 {
     super::SESSION.with(|session| {
@@ -40,6 +41,15 @@ pub fn add(label: &str, authority: u64) -> u64
                                                   authority })
                                .unwrap()
                                .incarnation()
+                  })
+}
+
+/// Attempt actual directory retirement; a refusal must leave the domain and
+/// its retryable manager resources inspectable through the public SDK.
+pub fn try_retire(owner: u64) -> Result<(), RetirementError>
+{
+    super::SESSION.with(|slot| {
+                      slot.borrow_mut().as_mut().unwrap().inspection.remove(owner).map(|_| ())
                   })
 }
 

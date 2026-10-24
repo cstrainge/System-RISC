@@ -242,20 +242,51 @@ pub(crate) fn heap_available() -> usize
 }
 static RESOURCE_IMAGE: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(usize::MAX);
-pub(crate) fn with_resource_owner<R>(app: u64, call: impl FnOnce() -> R) -> R
+static RESOURCE_OWNER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub(crate) fn with_resource_owner<R>(app: u64, call: impl FnOnce() -> R) -> Result<R, Status>
 {
     use core::sync::atomic::Ordering::Relaxed;
-    struct Restore(usize);
+    let index = if RESOURCE_OWNER.load(Relaxed) == app
+    {
+        RESOURCE_IMAGE.load(Relaxed)
+    }
+    else
+    {
+        crate::machine::scheduler::image_for(app).ok_or(NOT_FOUND)?
+    };
+    with_resource_binding(app, index, call)
+}
+
+/// Cleanup keeps resolving the subject's resources after its last thread is
+/// gone. The binding can only be minted by the resident process directory.
+/// This scope is synchronous under the interrupt-masked service boundary.
+pub(crate) fn with_process_resources<R>(binding: &crate::toolbox::processes::ResourceBinding,
+                                        call: impl FnOnce() -> R)
+                                        -> Result<R, Status>
+{
+    with_resource_binding(binding.owner(), binding.image(), call)
+}
+
+fn with_resource_binding<R>(app: u64, index: usize, call: impl FnOnce() -> R) -> Result<R, Status>
+{
+    use core::sync::atomic::Ordering::Relaxed;
+    image(index).ok_or(NOT_FOUND)?;
+    struct Restore
+    {
+        image: usize,
+        owner: u64
+    }
     impl Drop for Restore
     {
         fn drop(&mut self)
         {
-            RESOURCE_IMAGE.store(self.0, core::sync::atomic::Ordering::Relaxed);
+            RESOURCE_IMAGE.store(self.image, core::sync::atomic::Ordering::Relaxed);
+            RESOURCE_OWNER.store(self.owner, core::sync::atomic::Ordering::Relaxed);
         }
     }
-    let index = crate::machine::scheduler::image_for(app).unwrap_or(0);
-    let _restore = Restore(RESOURCE_IMAGE.swap(index, Relaxed));
-    call()
+    let _restore = Restore { image: RESOURCE_IMAGE.swap(index, Relaxed),
+                             owner: RESOURCE_OWNER.swap(app, Relaxed) };
+    Ok(call())
 }
 pub(crate) fn resources() -> Option<crate::toolbox::resources::manager::Manager<'static>>
 {

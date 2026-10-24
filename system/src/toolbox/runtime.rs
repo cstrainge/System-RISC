@@ -2102,7 +2102,7 @@ impl Desktop
                                                                     |canvas, command| {
                                                                         paint(canvas, command, cdef)
                                                                     });
-                                             });
+                                             }).expect("desktop resource owner must retain its image");
                                          });
             }
             let content = &self.content;
@@ -2120,7 +2120,8 @@ impl Desktop
                                             content.paint(canvas, fonts, |canvas, command| {
                                                        paint(canvas, command, cdef)
                                                    });
-                                        });
+                                        }).expect("live window resource owner must retain its \
+                                                   image");
                                     }
                                 };
                                 // Managed scroll boxes already retain their viewport rasters.
@@ -2182,7 +2183,7 @@ impl Desktop
                                 canvas.reset_port(); canvas.set_clip(clip);
                                 background(&mut canvas);
                                 cache.paint(id, self.desktop.bounds(), &mut canvas, |canvas| {
-                                    crate::kernel::with_resource_owner(crate::context::finder_app().0, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef)));
+                                    crate::kernel::with_resource_owner(crate::context::finder_app().0, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef))).expect("desktop resource owner must retain its image");
                                 });
                                 damaged.push(clip);
                             }}
@@ -2224,7 +2225,7 @@ impl Desktop
                                 canvas.paint_rect(window.local_bounds(), WHITE);
                                 crate::kernel::with_resource_owner(window.owner, || {
                                     content.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef));
-                                });
+                                }).expect("live window resource owner must retain its image");
                             };
                             if has_viewports {replay(&mut canvas);}else{cache.paint(id.0,window.bounds,&mut canvas,replay);}
                             window.paint_content_overlay(&mut canvas);

@@ -6,6 +6,7 @@ use mac_abi::{processes::*, *};
 use crate::toolbox::handles::{Directory, DirectoryError, DomainKind, OwnerIndex};
 pub mod menu;
 pub(crate) mod documents;
+pub(crate) mod retirement;
 pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
 {
     let caller = crate::context::current_thread_context().identity().app.0;
@@ -32,6 +33,27 @@ pub struct Process
     pub info:  ProcessInfo,
     pub image: usize,
     pub stamp: u64
+}
+
+/// A cleanup resource context is minted from one directory entry, never from
+/// separately supplied owner/image numbers. The ledger stays pinned throughout
+/// the synchronous scope, including for a stopping process without a thread.
+pub(crate) struct ResourceBinding
+{
+    owner: crate::toolbox::handles::OwnerRef,
+    image: usize
+}
+impl ResourceBinding
+{
+    pub(crate) fn owner(&self) -> u64
+    {
+        self.owner.owner().incarnation()
+    }
+
+    pub(crate) fn image(&self) -> usize
+    {
+        self.image
+    }
 }
 impl crate::toolbox::inspection::Subject for Process
 {
@@ -76,6 +98,13 @@ impl Manager
         self.entries.get(id).map(|entry| entry.ledger().clone()).ok_or(NOT_FOUND)
     }
 
+    pub(super) fn resource_binding(&self, id: u64) -> Result<ResourceBinding, Status>
+    {
+        let entry = self.entries.get(id).ok_or(NOT_FOUND)?;
+        Ok(ResourceBinding { owner: entry.ledger().clone(),
+                             image: entry.value().image })
+    }
+
     pub fn len(&self) -> usize
     {
         self.iter().count()
@@ -86,6 +115,23 @@ impl Manager
         // Dying/quarantined domains remain inspectable until their death
         // barrier closes, but are no longer running applications.
         self.entries.iter().filter(|entry| entry.ledger().accepting()).map(|entry| entry.value())
+    }
+
+    pub(super) fn stopping_after(&self, previous: u64) -> Option<u64>
+    {
+        self.entries
+            .iter()
+            .find(|entry| entry.owner().incarnation() > previous && !entry.ledger().accepting())
+            .map(|entry| entry.owner().incarnation())
+    }
+
+    pub(super) fn file_stopping(&self, volume: u32, cnid: u32) -> bool
+    {
+        self.entries.iter().any(|entry| {
+                               !entry.ledger().accepting()
+                               && entry.value().info.volume == volume
+                               && entry.value().info.cnid == cnid
+                           })
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Process>
@@ -164,6 +210,12 @@ impl Manager
 
     pub fn remove(&mut self, id: u64) -> Result<(), Status>
     {
+        // A retired thread still owns its context and stack until a different
+        // stack reclaims it. An empty object ledger alone is insufficient.
+        if crate::machine::scheduler::has_threads(id)
+        {
+            return Err(SERVICE_BUSY);
+        }
         self.entries.remove(id).map(|_| ()).map_err(|error| {
                                                serial!("PROCESS_DOMAIN_RETIRE_REFUSED: {error}");
                                                match error
@@ -195,6 +247,11 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
         {
             return crate::kernel::with_desktop(|d| d.process(call)).map_err(|e| e.status());
         }
+        // An app can quit and another launch it before the next timer tick.
+        // This trap is already on the other app's stack: finish that real
+        // checkpoint before deciding whether reloading the old image is safe.
+        crate::machine::scheduler::reclaim_retired();
+        retirement::pump();
         if !crate::toolbox::files::application::pending()
            && crate::kernel::with_desktop(|d| d.activate_existing_application(call))
                 .map_err(|e| e.status())??

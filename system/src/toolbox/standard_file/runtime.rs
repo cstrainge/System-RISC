@@ -369,7 +369,7 @@ impl super::Desktop
             drawing.destination = destination;
             return Ok(drawing);
         }
-        let resources = crate::kernel::with_resource_owner(dialog.owner, crate::kernel::resources)
+        let resources = crate::kernel::with_resource_owner(dialog.owner, crate::kernel::resources)?
                             .ok_or(NOT_SUPPORTED)?;
         let mut call = IconCall { target:
                                       mac_abi::quickdraw::Target::window(WindowId(dialog.window.0)),

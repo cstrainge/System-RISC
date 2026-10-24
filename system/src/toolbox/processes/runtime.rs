@@ -559,6 +559,12 @@ impl Desktop
             call.info = self.processes.snapshot(id)?;
             return Ok(true);
         }
+        // Reload would overwrite the old process's writable image. Refuse
+        // while its stack or quarantined callbacks still retain that image.
+        if self.processes.file_stopping(call.volume, call.cnid)
+        {
+            return Err(SERVICE_BUSY);
+        }
         if self.processes.len() >= 8
         {
             return Err(NO_MEMORY);
@@ -662,6 +668,11 @@ impl Desktop
                 let file = self.processes.snapshot(caller)?;
                 self.enter(caller);
                 let ledger = self.processes.ledger(caller)?;
+                // Never resume the dying app, even if a cleanup callback or UI
+                // transition below refuses. Its stack is reclaimed elsewhere.
+                ledger.stop_admission();
+                crate::machine::scheduler::retire_current();
+                serial!("PROCESS_STOPPED app={caller} thread={}", file.thread);
                 let before_walk = ledger.summary();
                 let walk = mac_object_table::walk::drain(self, &ledger,
                     |_, key| crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
@@ -683,9 +694,9 @@ impl Desktop
                 self.route_events();
                 let previous = self.processes.previous(caller);
                 self.enter(previous);
-                self.locals.retain(|s| s.id != caller);
-                let retirement = self.processes.remove(caller);
                 self.notify_finder_file_state(file.volume, file.cnid, false);
+                super::super::processes::documents::close_owner(&mut self.processes, caller);
+                let _ = crate::kernel::with_files(|files| files.close_all(caller));
                 if self.foreground == caller
                 {
                     self.activate_process(previous)?;
@@ -694,15 +705,94 @@ impl Desktop
                 {
                     self.refresh_app_menu();
                 }
-                super::super::processes::documents::close_owner(&mut self.processes, caller);
-                let _ = crate::kernel::with_files(|files| files.close_all(caller));
-                crate::machine::scheduler::retire_current();
-                retirement?;
-                serial!("PROCESS_EXIT app={}", caller);
+                // Saved managers remain alive until the thread checkpoint
+                // and the ledger's final retirement both succeed.
             }
             _ => return Err(NOT_SUPPORTED)
         }
         Ok(())
+    }
+
+    pub(crate) fn reap_processes(&mut self)
+    {
+        let mut previous = 0;
+        while let Some(owner) = self.processes.stopping_after(previous)
+        {
+            previous = owner;
+            if crate::machine::scheduler::has_threads(owner)
+            {
+                continue;
+            }
+            let Ok(ledger) = self.processes.ledger(owner)
+            else
+            {
+                continue;
+            };
+            // One bounded retry per genuine stack-release checkpoint. Failed
+            // tickets and saved managers survive; input/timer ticks do not
+            // repeatedly retry a permanently refusing definition.
+            if ledger.summary().quarantined != 0
+            {
+                let binding = self.processes.resource_binding(owner).expect("retained process");
+                let retry = crate::kernel::with_process_resources(&binding, || {
+                    mac_object_table::walk::retry(
+                                                  self,
+                                                  &ledger,
+                                                  |_, key| {
+                                                      crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
+                        .and_then(|result| result.map_err(crate::toolbox::handles::KindAccessError::Registry))
+                                                  },
+                                                  |key, error| {
+                                                      serial!("OWNER_CLEANUP_QUARANTINED: \
+                                                               owner={} kind={} slot={} \
+                                                               generation={} {error}",
+                                                              key.owner(),
+                                                              key.kind(),
+                                                              key.slot(),
+                                                              key.generation())
+                                                  }
+                    )
+                });
+                match retry
+                {
+                    Ok(Ok(_)) => (),
+                    Ok(Err(error)) => panic!("owner cleanup invariant failed: {error}"),
+                    Err(status) =>
+                    {
+                        serial!("PROCESS_RETIRE_RETAINED app={owner} status={status}; cleanup \
+                                 resource context unavailable, saved manager state retained");
+                        continue;
+                    }
+                }
+            }
+            // The checkpoint can run on the idle/boot context. Provider pumps
+            // may have selected the dying app's saved managers on the previous
+            // trap; park them in their entry before removing that entry.
+            if self.owner == owner
+            {
+                self.enter(self.processes.previous(owner));
+                if self.owner == owner
+                {
+                    serial!("PROCESS_RETIRE_RETAINED app={owner}; cannot park active saved \
+                             manager state in a surviving process context");
+                    continue;
+                }
+            }
+            if let Err(status) = self.processes.remove(owner)
+            {
+                let remaining = ledger.summary();
+                serial!("PROCESS_RETIRE_RETAINED app={owner} status={status} live={} pending={} \
+                         quarantined={}; saved manager state retained for cleanup retry",
+                        remaining.live,
+                        remaining.pending,
+                        remaining.quarantined);
+                continue;
+            }
+            // enter(previous) in EXIT saved the dying owner's actual managers
+            // in this entry. No pending payload/provider pin is abandoned.
+            self.locals.retain(|state| state.id != owner);
+            serial!("PROCESS_EXIT app={owner}");
+        }
     }
 }
 

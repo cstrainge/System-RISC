@@ -99,7 +99,12 @@ separate future gates. See [THREADING.md](THREADING.md) for ownership and limits
 applications with resource forks, installed under `Applications`; their code is
 no longer part of Finder. Each app owns its resource-defined menus/windows and calls only the
 aggregate Toolbox facade. Closing its last window or choosing Quit returns from
-its native entry point; System cleans up its state and retires its thread stack.
+its native entry point; System stops admission and its thread before the owner
+walk. A later different-stack checkpoint reclaims that thread's stack/context;
+only successful ledger retirement then drops the saved managers. A refused
+cleanup keeps those managers and the process image available for bounded retry
+and inspection, and blocks reloading that file's writable image. Complete
+file/provider ledger migration and I/O quiescence remain separate model gates.
 Pure application helpers are explicitly allowlisted by the boundary check:
 Finder uses safe synchronization for its local catalog snapshots and Unicode
 grapheme boundaries for cached captions. These contain no System service code;

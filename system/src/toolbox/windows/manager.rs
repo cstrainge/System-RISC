@@ -175,7 +175,7 @@ impl Window
         {
             crate::kernel::with_resource_owner(self.owner, || {
                 crate::toolbox::resources::definitions::invoke(self.entry, &mut call)
-            })
+            }).unwrap_or_else(i64::from)
         }
         #[cfg(not(target_arch = "riscv64"))]
         {
