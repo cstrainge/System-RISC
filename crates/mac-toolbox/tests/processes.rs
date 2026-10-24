@@ -105,7 +105,7 @@ fn run(malformed: bool)
     {
         assert!(serial.lines().any(|line| {
                                   line
-                                  == format!("OWNER_WALK app={app} invalidated=5 released=5 \
+                                  == format!("OWNER_WALK app={app} invalidated=7 released=7 \
                                               quarantined=0 live=0 pending=0 deferred=0")
                               }),
                 "registered owner walk did not reclaim the leaked worker control for \

@@ -10,6 +10,56 @@ use super::{Canvas,
             region::{BooleanOp, Region},
             service};
 
+/// Retained scenes have an explicit kind, independent of object token bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneTarget
+{
+    Window(WindowId),
+    Desktop
+}
+impl From<WindowId> for SceneTarget
+{
+    fn from(id: WindowId) -> Self
+    {
+        Self::Window(id)
+    }
+}
+impl From<u32> for SceneTarget
+{
+    fn from(id: u32) -> Self
+    {
+        Self::Window(WindowId(id))
+    }
+}
+impl PartialEq<WindowId> for SceneTarget
+{
+    fn eq(&self, id: &WindowId) -> bool
+    {
+        *self == Self::Window(*id)
+    }
+}
+impl SceneTarget
+{
+    pub fn decode(target: mac_abi::quickdraw::Target) -> Result<Self, Status>
+    {
+        match target.decode().map_err(|_| BAD_ARGUMENT)?
+        {
+            mac_abi::quickdraw::DrawingTarget::Desktop => Ok(Self::Desktop),
+            mac_abi::quickdraw::DrawingTarget::Window(id) => Ok(Self::Window(id)),
+            mac_abi::quickdraw::DrawingTarget::World(_) => Err(BAD_ARGUMENT)
+        }
+    }
+
+    pub fn window(self) -> Result<WindowId, Status>
+    {
+        match self
+        {
+            Self::Window(id) => Ok(id),
+            Self::Desktop => Err(BAD_ARGUMENT)
+        }
+    }
+}
+
 /// Immutable retained text: shared editor snapshots avoid one allocation per
 /// visible line and survive subsequent in-place document edits.
 pub enum TextData
@@ -171,7 +221,7 @@ impl RenderCommand
 
 pub struct Content
 {
-    pub id:       WindowId,
+    pub id:       SceneTarget,
     pub commands: Vec<RenderCommand>,
     pub port:     service::Port,
     fragments:    Vec<Fragment>,
@@ -189,17 +239,17 @@ fn region_bytes(region: &Region) -> usize
 }
 impl Content
 {
-    pub fn new(id: WindowId) -> Self
+    pub fn new(id: impl Into<SceneTarget>) -> Self
     {
-        Self { id,
-               commands: Vec::new(),
-               port: service::Port::default(),
+        Self { id:        id.into(),
+               commands:  Vec::new(),
+               port:      service::Port::default(),
                fragments: Vec::new(),
-               patch: None,
-               outline: None }
+               patch:     None,
+               outline:   None }
     }
 
-    pub fn pending_patch(id: WindowId, port: service::Port, patch: Region) -> Self
+    pub fn pending_patch(id: impl Into<SceneTarget>, port: service::Port, patch: Region) -> Self
     {
         Self { port,
                patch: Some(patch),
@@ -372,7 +422,7 @@ impl DesktopLayer
 {
     pub fn new(bounds: Rect) -> Self
     {
-        let mut committed = Content::new(WindowId(mac_abi::quickdraw::DESKTOP_TARGET));
+        let mut committed = Content::new(SceneTarget::Desktop);
         committed.port.state.clip = Some(super::region::Region::from_rect(bounds));
         Self { bounds,
                committed,
@@ -385,7 +435,7 @@ impl DesktopLayer
     pub fn request(&mut self, call: &mut mac_abi::quickdraw::GraphicsCall) -> Result<bool, Status>
     {
         use mac_abi::quickdraw::*;
-        if call.window != DESKTOP_TARGET
+        if call.target.decode().map_err(|_| BAD_ARGUMENT)? != DrawingTarget::Desktop
         {
             return Err(BAD_ARGUMENT);
         }
@@ -705,11 +755,11 @@ mod tests
     fn desktop_controls_and_clip_protect_menu_and_restore_canvas()
     {
         let mut layer = DesktopLayer::new(Rect::new(0, 21, 64, 48));
-        let mut call = GraphicsCall { window: 0,
+        let mut call = GraphicsCall { target: Target::window(WindowId(0)),
                                       operation: QD_DESKTOP_BEGIN,
                                       ..Default::default() };
         assert_eq!(layer.request(&mut call), Err(BAD_ARGUMENT));
-        call.window = DESKTOP_TARGET;
+        call.target = Target::desktop();
         assert_eq!(layer.request(&mut call), Ok(false));
         assert_eq!(call.bounds, Rect::new(0, 21, 64, 48));
         rectangle(&mut layer, Rect::new(-100, -100, 100, 100), 0x123456);

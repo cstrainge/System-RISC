@@ -122,9 +122,11 @@ impl super::Desktop
         // An application can panic between BeginUpdate and EndUpdate. Its
         // uncommitted pixels must never leak into a later presentation.
         while let Some(index) =
-            self.pending_content.iter().position(|content| self.owns(content.id))
+            self.pending_content
+                .iter()
+                .position(|content| content.id.window().is_ok_and(|id| self.owns(id)))
         {
-            let id = self.pending_content.remove(index).id;
+            let id = self.pending_content.remove(index).id.window()?;
             self.windows.end_update(id);
             self.textedit.begin_cursor_update(id);
         }
@@ -176,7 +178,8 @@ impl super::Desktop
     fn crash_text(&mut self, window: u32, font: FontSelection, x: i16, baseline: i16, text: &str)
                   -> Result<(), Status>
     {
-        self.font_draw(&mut FontCall { window,
+        self.font_draw(&mut FontCall { target:
+                                           mac_abi::quickdraw::Target::window(WindowId(window)),
                                        selection: font,
                                        baseline: Point { h: x,
                                                          v: baseline },
@@ -210,19 +213,19 @@ impl super::Desktop
         checked(self.window(BEGIN_UPDATE, &mut request))?;
         let result = (|| {
             self.graphics(&mut GraphicsCall { operation: QD_RESET,
-                                              window,
+                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               ..Default::default() },
                           &[],
                           &[])?;
             self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
-                                              window,
+                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               bounds: Rect::new(0, 0, 580, 404),
                                               shape: SHAPE_RECT,
                                               verb: VERB_ERASE,
                                               ..Default::default() },
                           &[],
                           &[])?;
-            let call = IconCall { window,
+            let call = IconCall { target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                   scope: resources::SYSTEM,
                                   id: RESOURCE_ID,
                                   destination: Rect::new(18, 14, 50, 46),
@@ -262,7 +265,7 @@ impl super::Desktop
             }
             self.crash_text(window, MONACO, 14, 84, &warnings)?;
             self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
-                                              window,
+                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               bounds: REPORT,
                                               shape: SHAPE_RECT,
                                               verb: VERB_FRAME,
@@ -270,7 +273,7 @@ impl super::Desktop
                           &[],
                           &[])?;
             self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                              window,
+                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               bounds: Rect::new(REPORT.left + 3,
                                                                 REPORT.top + 3,
                                                                 REPORT.right - 3,
@@ -318,7 +321,7 @@ impl super::Desktop
                                 &text)?;
             }
             self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                              window,
+                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               bounds: Rect::new(0, 0, 580, 404),
                                               ..Default::default() },
                           &[],

@@ -59,6 +59,16 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 call.error_kind = 0;
                 call.info = ImageInfo::default();
                 let result = (|| -> mac_abi::images::Result<()> {
+                    call.target.decode().map_err(|_| {
+                                             ImageError { status: BAD_ARGUMENT,
+                                                          kind:   INVALID_DESTINATION }
+                                         })?;
+                    if !call.surface.is_null() && call.target != Target::default()
+                    {
+                        return Err(ImageError { status: BAD_ARGUMENT,
+                                                kind:   INVALID_DESTINATION });
+                    }
+
                     if call.operation > mac_abi::images::DRAW
                     {
                         return Err(ImageError { status: NOT_SUPPORTED,
@@ -110,6 +120,11 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
             QUICKDRAW =>
             {
                 let call = unsafe { request::<GraphicsCall>(pointer, size) }?;
+                call.target.decode().map_err(|_| BAD_ARGUMENT)?;
+                if !call.surface.is_null() && call.target != Target::default()
+                {
+                    return Err(BAD_ARGUMENT);
+                }
                 let points = unsafe { input(call.points, call.point_count, 4096) }?;
                 let region = unsafe { input(call.region, call.region_length, 65535) }?;
                 if call.surface.is_null()
@@ -133,6 +148,11 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
             FONT =>
             {
                 let call = unsafe { request::<FontCall>(pointer, size) }?;
+                call.target.decode().map_err(|_| BAD_ARGUMENT)?;
+                if !call.surface.is_null() && call.target != Target::default()
+                {
+                    return Err(BAD_ARGUMENT);
+                }
                 let manager = fonts.ok_or(NOT_SUPPORTED)?;
                 let text = unsafe { text(call.text, call.text_length) }?;
                 let status = if call.operation == FONT_DRAW
@@ -181,6 +201,11 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
             COPY_BITS =>
             {
                 let call = unsafe { request::<BitmapCall>(pointer, size) }?;
+                call.target.decode().map_err(|_| BAD_ARGUMENT)?;
+                if !call.surface.is_null() && call.target != Target::default()
+                {
+                    return Err(BAD_ARGUMENT);
+                }
                 let data = unsafe { input(call.data, call.data_length, 2 * 1024 * 1024) }?;
                 let palette = unsafe { input(call.palette, call.palette_length, 256) }?;
                 let mask = unsafe { input(call.mask, call.mask_length, 65535) }?;
@@ -334,6 +359,11 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
             PICTURE =>
             {
                 let call = unsafe { request::<PictureCall>(pointer, size) }?;
+                call.target.decode().map_err(|_| BAD_ARGUMENT)?;
+                if !call.surface.is_null() && call.target != Target::default()
+                {
+                    return Err(BAD_ARGUMENT);
+                }
                 let fonts = fonts.ok_or(NOT_SUPPORTED)?;
                 let bytes = unsafe { input(call.data, call.length, 2 * 1024 * 1024) }?;
                 #[cfg(target_arch = "riscv64")]
@@ -383,12 +413,17 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 if size == size_of::<IconDataCall>()
                 {
                     let call = unsafe { request::<IconDataCall>(pointer, size) }?;
+                    call.target.decode().map_err(|_| BAD_ARGUMENT)?;
+                    if !call.surface.is_null() && call.target != Target::default()
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
                     let drawing = unsafe { icon_bytes(call) }?;
                     if call.surface.is_null()
                     {
                         #[cfg(target_arch = "riscv64")]
                         return crate::kernel::with_desktop(|d| {
-                                   d.icon(&IconCall { window: call.window,
+                                   d.icon(&IconCall { target: call.target,
                                                       ..Default::default() },
                                           drawing)
                                }).unwrap_or_else(|e| Err(e.status()));
@@ -403,6 +438,11 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 if size == size_of::<DefaultFileIconCall>()
                 {
                     let call = unsafe { request::<DefaultFileIconCall>(pointer, size) }?;
+                    call.target.decode().map_err(|_| BAD_ARGUMENT)?;
+                    if !call.surface.is_null() && call.target != Target::default()
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
                     if call.operation != ICON_PLOT_FILE_DEFAULT
                        || call.reserved != 0
                        || call.name_length > 255
@@ -420,7 +460,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     if call.surface.is_null()
                     {
                         return crate::kernel::with_desktop(|d| {
-                                   d.icon(&IconCall { window: call.window,
+                                   d.icon(&IconCall { target: call.target,
                                                       ..Default::default() },
                                           drawing)
                                }).unwrap_or_else(|error| Err(error.status()));
@@ -433,13 +473,18 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 if size == size_of::<FileIconCall>()
                 {
                     let call = unsafe { request::<FileIconCall>(pointer, size) }?;
+                    call.target.decode().map_err(|_| BAD_ARGUMENT)?;
+                    if !call.surface.is_null() && call.target != Target::default()
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
                     let manager = crate::kernel::resources().ok_or(NOT_SUPPORTED)?;
                     let drawing = crate::kernel::with_files(|files| {
                                       super::icons_service::Drawing::file(files, manager, call)
                                   }).map_err(|e| e.status())??;
                     if call.surface.is_null()
                     {
-                        let target = IconCall { window: call.window,
+                        let target = IconCall { target: call.target,
                                                 ..Default::default() };
                         return crate::kernel::with_desktop(|d| d.icon(&target, drawing))
                             .unwrap_or_else(|error| Err(error.status()));
@@ -450,6 +495,11 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     return drawing.paint(&mut canvas);
                 }
                 let call = unsafe { request::<IconCall>(pointer, size) }?;
+                call.target.decode().map_err(|_| BAD_ARGUMENT)?;
+                if !call.surface.is_null() && call.target != Target::default()
+                {
+                    return Err(BAD_ARGUMENT);
+                }
                 #[cfg(not(target_arch = "riscv64"))]
                 {
                     let _ = call;

@@ -57,7 +57,7 @@ fn icons(system: &System<'_>, present: bool) -> Result<(), Error>
 {
     let world = system.quickdraw().new_gworld(32, 32)?;
     let icons = system.quickdraw().icons();
-    let target = world.graphics().window_id();
+    let target = world.graphics().target();
     let flags = IconFlags::default();
     let mut pixels = [0; 1024];
     // File code wins over a misleading suffix; untyped host imports use the

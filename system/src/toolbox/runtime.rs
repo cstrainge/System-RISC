@@ -7,7 +7,7 @@ use mac_abi::*;
 use super::quickdraw::{SurfaceExt,
                        fonts::FontManager,
                        fonts_service,
-                       retained::{Content, DesktopLayer, RenderCommand},
+                       retained::{Content, DesktopLayer, RenderCommand, SceneTarget},
                        service};
 use crate::{loader::Definitions,
             platform,
@@ -63,7 +63,7 @@ pub struct Desktop
     last_key:                         u8,
     last_action:                      &'static str,
     redraw:                           bool,
-    content_damage:                   Vec<(WindowId, super::quickdraw::region::Region)>,
+    content_damage:                   Vec<(SceneTarget, super::quickdraw::region::Region)>,
     outline_damage:                   Vec<Rect>,
     outline_under:                    Box<super::quickdraw::outline_overlay::OutlineUnder>,
     drag_highlight_under:             Box<super::quickdraw::outline_overlay::OutlineUnder>,
@@ -113,9 +113,10 @@ impl Desktop
         + self.content.iter().chain(&self.pending_content).map(Content::storage).sum::<usize>()
     }
 
-    fn content_mut(&mut self, id: u32) -> Result<&mut Content, Status>
+    fn content_mut(&mut self, id: impl Into<SceneTarget>) -> Result<&mut Content, Status>
     {
-        if id == mac_abi::quickdraw::DESKTOP_TARGET
+        let id = id.into();
+        if id == SceneTarget::Desktop
         {
             if self.owner != crate::context::finder_app().0
             {
@@ -125,9 +126,9 @@ impl Desktop
         }
         else
         {
-            if !self.owns(WindowId(id))
+            if !self.owns(id.window()?)
             {
-                return Err(if self.windows.window(WindowId(id)).is_some()
+                return Err(if self.windows.window(id.window()?).is_some()
                            {
                                ACCESS_DENIED
                            }
@@ -139,38 +140,43 @@ impl Desktop
             self.pending_content
                 .iter_mut()
                 .chain(&mut self.content)
-                .find(|content| content.id.0 == id)
+                .find(|content| content.id == id)
                 .ok_or(NOT_FOUND)
         }
     }
 
     /// A retained update is private until EndUpdate. Other threads can poll,
     /// move the pointer and present the previously committed scene meanwhile.
-    fn content_changed(&mut self, id: u32)
+    fn content_changed(&mut self, id: impl Into<SceneTarget>)
     {
-        if let Some(window) = self.windows.window(WindowId(id))
+        let id = id.into();
+        if let Ok(window) = id.window()
+           && let Some(window) = self.windows.window(window)
         {
             self.content_changed_rect(id, window.local_bounds());
         }
     }
 
-    fn content_changed_rect(&mut self, id: u32, rect: Rect)
+    fn content_changed_rect(&mut self, id: impl Into<SceneTarget>, rect: Rect)
     {
-        if self.pending_content.iter().any(|content| content.id.0 == id)
+        let id = id.into();
+        if self.pending_content.iter().any(|content| content.id == id)
         {
             return;
         }
         self.content_changed_region(id, super::quickdraw::region::Region::from_rect(rect));
     }
 
-    fn content_changed_region(&mut self, id: u32, region: super::quickdraw::region::Region)
+    fn content_changed_region(&mut self, id: impl Into<SceneTarget>,
+                              region: super::quickdraw::region::Region)
     {
+        let id = id.into();
         use super::quickdraw::region::{BooleanOp, Region};
-        if self.pending_content.iter().any(|content| content.id.0 == id)
+        if self.pending_content.iter().any(|content| content.id == id)
         {
             return;
         }
-        let local = if id == mac_abi::quickdraw::DESKTOP_TARGET
+        let local = if id == SceneTarget::Desktop
         {
             if self.desktop.is_updating()
             {
@@ -180,7 +186,12 @@ impl Desktop
         }
         else
         {
-            let Some(window) = self.windows.window(WindowId(id))
+            let SceneTarget::Window(window) = id
+            else
+            {
+                return;
+            };
+            let Some(window) = self.windows.window(window)
             else
             {
                 return;
@@ -211,11 +222,13 @@ impl Desktop
                     .invalidate_rect(id, Rect::new(span.left, band.top, span.right, band.bottom));
             }
         }
-        self.queue_content_damage(WindowId(id), region);
+        self.queue_content_damage(id, region);
     }
 
-    fn queue_content_damage(&mut self, id: WindowId, region: super::quickdraw::region::Region)
+    fn queue_content_damage(&mut self, id: impl Into<SceneTarget>,
+                            region: super::quickdraw::region::Region)
     {
+        let id = id.into();
         use super::quickdraw::region::BooleanOp;
         if region.is_empty()
         {
@@ -232,17 +245,19 @@ impl Desktop
         }
     }
 
-    fn apply_content_outline(&mut self, id: WindowId, next: Option<Rect>) -> Result<(), Status>
+    fn apply_content_outline(&mut self, id: impl Into<SceneTarget>, next: Option<Rect>)
+                             -> Result<(), Status>
     {
-        let (edges, origin) = if id.0 == mac_abi::quickdraw::DESKTOP_TARGET
+        let id = id.into();
+        let (edges, origin) = if id == SceneTarget::Desktop
         {
             (self.desktop.set_outline(next), Point::default())
         }
         else
         {
-            (self.windows.content_outline(id, next)?,
+            (self.windows.content_outline(id.window()?, next)?,
              {
-                 let bounds = self.windows.window(id).ok_or(NOT_FOUND)?.bounds;
+                 let bounds = self.windows.window(id.window()?).ok_or(NOT_FOUND)?.bounds;
                  Point { h: bounds.left,
                          v: bounds.top }
              })
@@ -303,7 +318,7 @@ impl Desktop
                   busy_cursor,
                   responsiveness: Default::default(),
                   text_cursor,
-                  worlds: Default::default(),
+                  worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
                   classic_font: Default::default(),
                   windows: WindowManager::with_gate(crate::machine::traps::gateway),
                   events: Box::new(EventManager::new()),
@@ -785,7 +800,7 @@ impl Desktop
             for content in self.content
                                .iter_mut()
                                .chain(self.pending_content.iter_mut())
-                               .filter(|content| content.id.0 == window)
+                               .filter(|content| content.id == SceneTarget::from(window))
             {
                 content.retain_commands(|command| {
                     if let RenderCommand::ScrollBox(drawing) = command
@@ -838,7 +853,7 @@ impl Desktop
             {
                 self.content_changed_rect(window, rect);
             }
-            if !self.pending_content.iter().any(|content| content.id.0 == window)
+            if !self.pending_content.iter().any(|content| content.id == SceneTarget::from(window))
             {
                 self.present();
             }
@@ -888,7 +903,7 @@ impl Desktop
             for content in self.content
                                .iter_mut()
                                .chain(self.pending_content.iter_mut())
-                               .filter(|c| c.id.0 == window)
+                               .filter(|c| c.id == SceneTarget::from(window))
             {
                 content.retain_commands(|command| {
                            if let RenderCommand::Control(d) = command
@@ -957,7 +972,7 @@ impl Desktop
             // A control state change commits its own pixels before returning.
             // Full window updates remain private until EndUpdate.
             if damage.iter().any(|r| !r.is_empty())
-               && !self.pending_content.iter().any(|c| c.id.0 == window)
+               && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
             {
                 self.present();
             }
@@ -1045,9 +1060,10 @@ impl Desktop
         use mac_abi::quickdraw::*;
 
         use super::quickdraw::region::{BooleanOp, Region};
-        let id = WindowId(call.window);
+        let target = SceneTarget::decode(call.target)?;
+        let id = target;
         // Use the ordinary owner/generation gate, including stale window IDs.
-        let desktop = call.window == DESKTOP_TARGET;
+        let desktop = SceneTarget::decode(call.target)? == SceneTarget::Desktop;
         if desktop
         {
             if self.owner != crate::context::finder_app().0
@@ -1057,7 +1073,7 @@ impl Desktop
         }
         else
         {
-            self.content_mut(call.window)?;
+            self.content_mut(SceneTarget::decode(call.target)?)?;
         }
         if matches!(call.operation, QD_WINDOW_BEGIN_MASK | QD_WINDOW_BEGIN_RECTS)
         {
@@ -1071,7 +1087,7 @@ impl Desktop
             }
             else
             {
-                let window = self.windows.window(id).ok_or(NOT_FOUND)?;
+                let window = self.windows.window(id.window()?).ok_or(NOT_FOUND)?;
                 if window.updating
                 {
                     return Err(BAD_ARGUMENT);
@@ -1109,12 +1125,12 @@ impl Desktop
             {
                 return Err(NO_MEMORY);
             }
-            if !self.windows.begin_partial_update(id)
+            if !self.windows.begin_partial_update(id.window()?)
             {
                 return Err(BAD_ARGUMENT);
             }
             self.pending_content.push(pending);
-            self.textedit.begin_cursor_update(id);
+            self.textedit.begin_cursor_update(id.window()?);
         }
         else
         {
@@ -1128,9 +1144,9 @@ impl Desktop
                 let mask = self.desktop.commit_mask(self.retained_bytes(), MAX_RETAINED_BYTES)?;
                 if let Some(outline) = outline
                 {
-                    self.apply_content_outline(id, outline)?;
+                    self.apply_content_outline(SceneTarget::Desktop, outline)?;
                 }
-                self.content_changed_region(id.0, mask);
+                self.content_changed_region(SceneTarget::Desktop, mask);
                 self.present();
                 return Ok(());
             }
@@ -1141,12 +1157,12 @@ impl Desktop
             if call.operation == QD_WINDOW_CANCEL_MASK
             {
                 self.pending_content.swap_remove(index);
-                self.textedit.begin_cursor_update(id);
-                self.windows.end_update(id);
+                self.textedit.begin_cursor_update(id.window()?);
+                self.windows.end_update(id.window()?);
             }
             else
             {
-                let mut request = mac_abi::WindowRequest { id:             id.0,
+                let mut request = mac_abi::WindowRequest { id:             id.window()?.0,
                                                            bounds:         Rect::ZERO,
                                                            title:          [0; WINDOW_TITLE_BYTES],
                                                            title_length:   0,
@@ -1168,15 +1184,15 @@ impl Desktop
                     region: &[u8])
                     -> Result<(), Status>
     {
-        use mac_abi::quickdraw::{DESKTOP_TARGET, QD_DESKTOP_BEGIN, QD_DESKTOP_BOUNDS,
-                                 QD_DESKTOP_CANCEL, QD_DESKTOP_END, QD_GET_STATE};
+        use mac_abi::quickdraw::{QD_DESKTOP_BEGIN, QD_DESKTOP_BOUNDS, QD_DESKTOP_CANCEL,
+                                 QD_DESKTOP_END, QD_GET_STATE};
         if call.operation == mac_abi::quickdraw::QD_WINDOW_OUTLINE
         {
             if call.verb > 1
             {
                 return Err(BAD_ARGUMENT);
             }
-            let desktop = call.window == DESKTOP_TARGET;
+            let desktop = SceneTarget::decode(call.target)? == SceneTarget::Desktop;
             if desktop
             {
                 if self.owner != crate::context::finder_app().0
@@ -1186,10 +1202,11 @@ impl Desktop
             }
             else
             {
-                self.content_mut(call.window)?;
+                self.content_mut(SceneTarget::decode(call.target)?)?;
             }
             let next = (call.verb == 1 && !call.bounds.is_empty()).then_some(call.bounds);
-            let id = WindowId(call.window);
+            let target = SceneTarget::decode(call.target)?;
+            let id = target;
             if desktop && self.desktop.is_updating()
             {
                 self.desktop.pending_mut()?.outline = Some(next);
@@ -1201,7 +1218,7 @@ impl Desktop
             }
             else
             {
-                self.apply_content_outline(id, next)?;
+                self.apply_content_outline(target, next)?;
                 self.present();
             }
             return Ok(());
@@ -1227,26 +1244,29 @@ impl Desktop
             {
                 if let Some(outline) = outline
                 {
-                    self.apply_content_outline(WindowId(DESKTOP_TARGET), outline)?;
+                    self.apply_content_outline(SceneTarget::Desktop, outline)?;
                 }
-                self.content_cache.invalidate(DESKTOP_TARGET);
+                self.content_cache.invalidate(SceneTarget::Desktop);
                 self.last_action = "DESKTOP";
                 self.redraw = true;
                 self.present();
             }
             return Ok(());
         }
-        if call.window == DESKTOP_TARGET && call.operation == QD_GET_STATE
+        if call.operation == QD_GET_STATE
+           && call.target.decode().map_err(|_| BAD_ARGUMENT)?
+              == mac_abi::quickdraw::DrawingTarget::Desktop
         {
             call.state = self.desktop.port().wire();
             return Ok(());
         }
-        if super::quickdraw::worlds::Worlds::is_world(call.window)
+        if let mac_abi::quickdraw::DrawingTarget::World(world) =
+            call.target.decode().map_err(|_| BAD_ARGUMENT)?
         {
-            return self.worlds.get_mut(call.window)?.graphics(call, points, region);
+            return self.worlds.get_mut(world.0, self.owner)?.graphics(call, points, region);
         }
         let used = self.retained_bytes();
-        let content = self.content_mut(call.window)?;
+        let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         if content.commands.len() >= 512
         {
             return Err(NO_MEMORY);
@@ -1260,7 +1280,7 @@ impl Desktop
                 return Err(NO_MEMORY);
             }
             content.commands.push(RenderCommand::Graphics(drawing));
-            self.content_changed(call.window);
+            self.content_changed(SceneTarget::decode(call.target)?);
         }
         Ok(())
     }
@@ -1269,19 +1289,13 @@ impl Desktop
                      palette: &[u32], mask: &[u8])
                      -> Result<(), Status>
     {
-        if super::quickdraw::worlds::Worlds::is_world(call.window)
+        if let mac_abi::quickdraw::DrawingTarget::World(world) =
+            call.target.decode().map_err(|_| BAD_ARGUMENT)?
         {
-            let world = self.worlds.get_mut(call.window)?;
-            let drawing = super::quickdraw::bitmaps_service::BitmapDrawing::new(call,
-                                                                                data,
-                                                                                palette,
-                                                                                mask,
-                                                                                world.port
-                                                                                     .clone())?;
-            return drawing.paint(&mut Canvas::new(&mut world.pixels, world.width, world.height));
+            return self.worlds.get_mut(world.0, self.owner)?.bitmap(call, data, palette, mask);
         }
         let used = self.retained_bytes();
-        let content = self.content_mut(call.window)?;
+        let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         if content.commands.len() >= 512
         {
             return Err(NO_MEMORY);
@@ -1296,7 +1310,7 @@ impl Desktop
             return Err(NO_MEMORY);
         }
         content.commands.push(RenderCommand::Bitmap(drawing));
-        self.content_changed(call.window);
+        self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
     }
 
@@ -1366,77 +1380,30 @@ impl Desktop
                  -> Result<(), Status>
     {
         use mac_abi::quickdraw::*;
-        match call.operation
+        if call.reserved != 0
         {
-            WORLD_NEW =>
-            {
-                call.world = self.worlds.create(call.dimensions.h, call.dimensions.v)?;
-            }
-            WORLD_DISPOSE =>
-            {
-                self.worlds.dispose(call.world)?;
-                return Ok(());
-            }
-            WORLD_INFO =>
-            {}
-            WORLD_READ | WORLD_WRITE =>
-            {
-                let world = self.worlds.get_mut(call.world)?;
-                let count = world.pixels.len();
-                call.pixel_length = count;
-                if pixels.len() < count
-                {
-                    return Err(NO_MEMORY);
-                }
-                if call.operation == WORLD_READ
-                {
-                    pixels[..count].copy_from_slice(&world.pixels);
-                }
-                else
-                {
-                    for (out, input) in world.pixels.iter_mut().zip(pixels.iter())
-                    {
-                        *out = *input & 0xffffff;
-                    }
-                }
-            }
-            WORLD_COPY =>
-            {
-                let world = self.worlds.get(call.world)?;
-                let data: Vec<u8> = world.pixels.iter().flat_map(|p| p.to_ne_bytes()).collect();
-                let bitmap = BitmapCall { window: call.target,
-                                          format: 32,
-                                          row_bytes: world.width * 4,
-                                          bounds: Rect::new(0, 0, world.width as i16,
-                                                            world.height as i16),
-                                          source_rect: call.source,
-                                          destination_rect: call.destination,
-                                          mode: call.mode,
-                                          foreground: 0,
-                                          background: 0xffffff,
-                                          ..Default::default() };
-                self.copy_bits(&bitmap, &data, &[], &[])?;
-                return Ok(());
-            }
-            _ => return Err(NOT_SUPPORTED)
+            return Err(BAD_ARGUMENT);
         }
-        let world = self.worlds.get(call.world)?;
-        call.dimensions = Point { h: world.width as i16,
-                                  v: world.height as i16 };
-        call.pixel_length = world.pixels.len();
-        Ok(())
+        call.target.decode().map_err(|_| BAD_ARGUMENT)?;
+        if call.operation != WORLD_COPY
+        {
+            return self.worlds.request(&self.processes.ledger(self.owner)?, call, pixels);
+        }
+        let (bitmap, data) = self.worlds.get(call.world, self.owner)?.copy_request(call)?;
+        self.copy_bits(&bitmap, &data, &[], &[])
     }
 
     pub fn font_draw(&mut self, call: &mut mac_abi::quickdraw::FontCall, text: &str,
                      fonts: &FontManager)
                      -> Result<(), Status>
     {
-        if super::quickdraw::worlds::Worlds::is_world(call.window)
+        if let mac_abi::quickdraw::DrawingTarget::World(world) =
+            call.target.decode().map_err(|_| BAD_ARGUMENT)?
         {
-            return self.worlds.get_mut(call.window)?.text(call, text, fonts);
+            return self.worlds.get_mut(world.0, self.owner)?.text(call, text, fonts);
         }
         let used = self.retained_bytes();
-        let content = self.content_mut(call.window)?;
+        let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         if content.commands.len() >= 512
         {
             return Err(NO_MEMORY);
@@ -1452,7 +1419,7 @@ impl Desktop
                                                     color:    call.color,
                                                     port:     alloc::sync::Arc::new(content.port.clone()),
                                                     vertical_ink: fonts.vertical_ink_bounds(fonts_service::selection(call.selection)).ok().flatten() });
-        self.content_changed(call.window);
+        self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
     }
 
@@ -1460,22 +1427,23 @@ impl Desktop
                    mut drawing: super::quickdraw::pictures_service::Drawing, fonts: &FontManager)
                    -> Result<(), Status>
     {
-        if super::quickdraw::worlds::Worlds::is_world(call.window)
+        if let mac_abi::quickdraw::DrawingTarget::World(world) =
+            call.target.decode().map_err(|_| BAD_ARGUMENT)?
         {
-            let world = self.worlds.get_mut(call.window)?;
+            let world = self.worlds.get_mut(world.0, self.owner)?;
             drawing.port = world.port.clone();
             return drawing.paint(&mut Canvas::new(&mut world.pixels, world.width, world.height),
                                  fonts);
         }
         let used = self.retained_bytes();
-        let content = self.content_mut(call.window)?;
+        let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         drawing.port = content.port.clone();
         if content.commands.len() >= 512 || used + drawing.storage() > MAX_RETAINED_BYTES
         {
             return Err(NO_MEMORY);
         }
         content.commands.push(RenderCommand::Picture(drawing));
-        self.content_changed(call.window);
+        self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
     }
 
@@ -1483,15 +1451,16 @@ impl Desktop
                  mut drawing: super::quickdraw::png::Drawing)
                  -> Result<(), Status>
     {
-        if super::quickdraw::worlds::Worlds::is_world(call.window)
+        if let mac_abi::quickdraw::DrawingTarget::World(world) =
+            call.target.decode().map_err(|_| BAD_ARGUMENT)?
         {
-            let world = self.worlds.get_mut(call.window)?;
+            let world = self.worlds.get_mut(world.0, self.owner)?;
             drawing.port = world.port.clone();
             drawing.paint(&mut Canvas::new(&mut world.pixels, world.width, world.height));
             return Ok(());
         }
         let used = self.retained_bytes();
-        let content = self.content_mut(call.window)?;
+        let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         drawing.port = content.port.clone();
         if content.commands.len() >= 512 || used + drawing.storage() > MAX_RETAINED_BYTES
         {
@@ -1499,7 +1468,7 @@ impl Desktop
         }
         content.commands.try_reserve(1).map_err(|_| NO_MEMORY)?;
         content.commands.push(RenderCommand::Image(drawing));
-        self.content_changed(call.window);
+        self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
     }
 
@@ -1507,21 +1476,22 @@ impl Desktop
                 mut drawing: super::quickdraw::icons_service::Drawing)
                 -> Result<(), Status>
     {
-        if super::quickdraw::worlds::Worlds::is_world(call.window)
+        if let mac_abi::quickdraw::DrawingTarget::World(world) =
+            call.target.decode().map_err(|_| BAD_ARGUMENT)?
         {
-            let world = self.worlds.get_mut(call.window)?;
+            let world = self.worlds.get_mut(world.0, self.owner)?;
             drawing.port = world.port.clone();
             return drawing.paint(&mut Canvas::new(&mut world.pixels, world.width, world.height));
         }
         let used = self.retained_bytes();
-        let content = self.content_mut(call.window)?;
+        let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         drawing.port = content.port.clone();
         if content.commands.len() >= 512 || used + drawing.storage() > MAX_RETAINED_BYTES
         {
             return Err(NO_MEMORY);
         }
         content.commands.push(RenderCommand::Icon(drawing));
-        self.content_changed(call.window);
+        self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
     }
 
@@ -2048,16 +2018,19 @@ impl Desktop
                                       .is_ok_and(|p| p.info.hidden == 0);
             self.content_cache.begin_frame();
             self.content_cache.retain(|id| {
-                                  if id == mac_abi::quickdraw::DESKTOP_TARGET
+                                  if id == SceneTarget::Desktop
                                   {
                                       desktop_visible
                                   }
                                   else
                                   {
-                                      self.windows.window(WindowId(id)).is_some()
+                                      id.window()
+                                        .ok()
+                                        .and_then(|window| self.windows.window(window))
+                                        .is_some()
                                       && !self.content
                                               .iter()
-                                              .find(|content| content.id.0 == id)
+                                              .find(|content| content.id == id)
                                               .is_some_and(|content| {
                                                   content.iter_commands().any(|command| {
                                                   matches!(command, RenderCommand::ScrollBox(_))
@@ -2067,7 +2040,7 @@ impl Desktop
                               });
             if desktop_visible
             {
-                self.content_cache.paint(mac_abi::quickdraw::DESKTOP_TARGET,
+                self.content_cache.paint(SceneTarget::Desktop,
                                          self.desktop.bounds(),
                                          &mut canvas,
                                          |canvas| {
@@ -2144,7 +2117,7 @@ impl Desktop
             let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
             for (id, region) in damage
             {
-                if id.0 == mac_abi::quickdraw::DESKTOP_TARGET
+                if id == SceneTarget::Desktop
                 {
                     if self.processes
                            .get(crate::context::finder_app().0)
@@ -2156,7 +2129,7 @@ impl Desktop
                                 if !super::quickdraw::geometry::sect_rect(Rect::new(span.left, band.top, span.right, band.bottom), visible, &mut clip) { continue; }
                                 canvas.reset_port(); canvas.set_clip(clip);
                                 background(&mut canvas);
-                                cache.paint(id.0, self.desktop.bounds(), &mut canvas, |canvas| {
+                                cache.paint(id, self.desktop.bounds(), &mut canvas, |canvas| {
                                     crate::kernel::with_resource_owner(crate::context::finder_app().0, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef)));
                                 });
                                 damaged.push(clip);
@@ -2165,6 +2138,11 @@ impl Desktop
                     }
                     continue;
                 }
+                let Ok(id) = id.window()
+                else
+                {
+                    continue;
+                };
                 let Some(window) = self.windows.window(id)
                 else
                 {
@@ -2466,12 +2444,14 @@ impl super::classic::Services for Desktop
         let id = self.windows.front_window().ok_or(NOT_FOUND)?;
         let selection = self.classic_font;
         let content = self.content_mut(id.0)?;
-        let mut call = mac_abi::quickdraw::FontCall { operation: mac_abi::quickdraw::FONT_DRAW,
-                                                      window: id.0,
-                                                      selection,
-                                                      baseline: content.port.state.pen_location,
-                                                      color: content.port.state.foreground,
-                                                      ..Default::default() };
+        let mut call =
+            mac_abi::quickdraw::FontCall { operation: mac_abi::quickdraw::FONT_DRAW,
+                                           target:
+                                               mac_abi::quickdraw::Target::window(WindowId(id.0)),
+                                           selection,
+                                           baseline: content.port.state.pen_location,
+                                           color: content.port.state.foreground,
+                                           ..Default::default() };
         self.font_draw(&mut call, text, crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)?;
         let content = self.content_mut(id.0)?;
         content.port.state.pen_location.h =
@@ -2487,5 +2467,13 @@ impl super::classic::Services for Desktop
     fn ticks(&self) -> u32
     {
         Self::when()
+    }
+}
+
+impl super::quickdraw::worlds::WorldHost for Desktop
+{
+    fn offscreen_worlds(&mut self) -> &mut super::quickdraw::worlds::Worlds
+    {
+        &mut self.worlds
     }
 }

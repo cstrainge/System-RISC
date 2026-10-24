@@ -165,7 +165,7 @@ impl Drawing for Port<'_, '_>
             Icon::Associated { file_type,
                                fallback } =>
             {
-                match icons.plot_file_default(self.graphics.window_id(),
+                match icons.plot_file_default(self.graphics.target(),
                                               file_type,
                                               name,
                                               bounds,
@@ -180,7 +180,7 @@ impl Drawing for Port<'_, '_>
                                 cnid,
                                 fallback } =>
             {
-                match icons.plot_file(self.graphics.window_id(), volume, cnid, bounds, flags)
+                match icons.plot_file(self.graphics.target(), volume, cnid, bounds, flags)
                 {
                     Ok(()) => return Ok(()),
                     Err(Error::NotFound | Error::BadArgument | Error::NotSupported) => fallback,
@@ -188,7 +188,7 @@ impl Drawing for Port<'_, '_>
                 }
             }
         };
-        icons.plot(self.graphics.window_id(), id, bounds, flags)
+        icons.plot(self.graphics.target(), id, bounds, flags)
     }
 }
 fn visible(entry: &CatalogInfo) -> bool

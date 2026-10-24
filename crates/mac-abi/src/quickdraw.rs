@@ -1,5 +1,8 @@
 //! QuickDraw wire values. Drawing algorithms and font resources belong to System.
 use crate::{Point, Rect, Surface};
+mod target;
+pub use target::{DrawingTarget, TARGET_DESKTOP, TARGET_WINDOW, TARGET_WORLD, Target, TargetError,
+                 WorldId};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,9 +73,6 @@ impl Default for PortState
     }
 }
 
-/// Reserved onscreen desktop target; zero keeps its existing window semantics.
-/// Offscreen world handles have the high bit set and cannot collide with this ID.
-pub const DESKTOP_TARGET: u32 = 0x7fff_ffff;
 /// Atomically replace the retained desktop scene through the regular QuickDraw gate.
 pub const QD_DESKTOP_BEGIN: u32 = 32;
 pub const QD_DESKTOP_END: u32 = 33;
@@ -119,7 +119,7 @@ pub const VERB_FILL: u32 = 4;
 pub struct GraphicsCall
 {
     pub operation:     u32,
-    pub window:        u32,
+    pub target:        Target,
     pub surface:       *mut Surface,
     pub state:         PortState,
     pub shape:         u32,
@@ -147,7 +147,7 @@ pub const FONT_DRAW: u32 = 6;
 pub struct FontCall
 {
     pub operation:   u32,
-    pub window:      u32,
+    pub target:      Target,
     pub surface:     *mut Surface,
     pub selection:   FontSelection,
     pub text:        *const u8,
@@ -197,7 +197,7 @@ impl Default for FontCall
     fn default() -> Self
     {
         Self { operation:   0,
-               window:      0,
+               target:      Target::default(),
                surface:     core::ptr::null_mut(),
                selection:   FontSelection::default(),
                text:        core::ptr::null(),
@@ -218,7 +218,7 @@ pub const BITMAP_RGB32: u32 = 32;
 #[derive(Default)]
 pub struct BitmapCall
 {
-    pub window:           u32,
+    pub target:           Target,
     pub surface:          *mut Surface,
     pub format:           u32,
     pub row_bytes:        usize,
@@ -248,8 +248,8 @@ pub const WORLD_COPY: u32 = 5;
 pub struct WorldCall
 {
     pub operation:    u32,
-    pub world:        u32,
-    pub target:       u32,
+    pub world:        u64,
+    pub target:       Target,
     pub dimensions:   Point,
     pub source:       Rect,
     pub destination:  Rect,
@@ -352,7 +352,7 @@ pub const PICTURE_INFO: u32 = 2;
 pub struct PictureCall
 {
     pub operation:     u32,
-    pub window:        u32,
+    pub target:        Target,
     pub surface:       *mut Surface,
     pub scope:         i16,
     pub id:            i16,
@@ -373,7 +373,7 @@ pub const ICON_PLOT_FILE_DEFAULT: u32 = 5;
 pub struct DefaultFileIconCall
 {
     pub operation:   u32,
-    pub window:      u32,
+    pub target:      Target,
     pub surface:     *mut Surface,
     pub file_type:   [u8; 4],
     pub name_length: u32,
@@ -387,7 +387,7 @@ impl Default for DefaultFileIconCall
     fn default() -> Self
     {
         Self { operation:   ICON_PLOT_FILE_DEFAULT,
-               window:      0,
+               target:      Target::default(),
                surface:     core::ptr::null_mut(),
                file_type:   [0; 4],
                name_length: 0,
@@ -403,7 +403,7 @@ impl Default for DefaultFileIconCall
 pub struct FileIconCall
 {
     pub operation:   u32,
-    pub window:      u32,
+    pub target:      Target,
     pub surface:     *mut Surface,
     pub volume:      u32,
     pub cnid:        u32,
@@ -416,7 +416,7 @@ pub struct FileIconCall
 pub struct IconCall
 {
     pub operation:   u32,
-    pub window:      u32,
+    pub target:      Target,
     pub surface:     *mut Surface,
     pub scope:       i16,
     pub id:          i16,
@@ -433,7 +433,7 @@ pub struct IconCall
 #[derive(Default)]
 pub struct IconDataCall
 {
-    pub window:      u32,
+    pub target:      Target,
     pub kind:        [u8; 4],
     pub data:        *const u8,
     pub length:      usize,

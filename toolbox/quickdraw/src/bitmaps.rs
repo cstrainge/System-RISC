@@ -97,7 +97,7 @@ impl GraphicsPort<'_>
                      mode: TransferMode, mask: &[u8])
                      -> Result<()>
     {
-        self.client.copy_bits(self.window.0, bitmap.command(source, destination, mode, mask))
+        self.client.copy_bits(self.target, bitmap.command(source, destination, mode, mask))
     }
 }
 impl crate::SurfacePort<'_>

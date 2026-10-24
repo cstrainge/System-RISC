@@ -569,9 +569,16 @@ EXIT cleanup line, with native u64 identities and per-owner fallible growth. An
 initialization guard owns the record through layout, window, font and drawing
 setup; every early refusal closes its temporary windows and disposes the record.
 Reserved request fields are validated before a Dispose can close anything.
-Other managers, the rest
-of the old EXIT roll call, module-owned KREG teardown and document aliases still
-require migration. Do not call this complete stage-3 cleanup or zero leaks across
+QuickDraw offscreen worlds now use registered GWLD/GWST lifetimes and saved
+per-owner pixel accounting. The old per-application counter and high-bit
+target convention are removed; drawing destinations carry an explicit kind
+and full-width identity. This is the prerequisite for full-width Window Manager
+identities, not completion of that migration. Native process workers also leave
+a world deliberately live so the registered exit walk must reclaim both world
+and backing.
+
+Other managers, the rest of the old EXIT roll call, module-owned KREG teardown
+and document aliases still require migration. Do not call this complete stage-3 cleanup or zero leaks across
 all Toolbox kinds. An abandoned busy registry retains its provider/root pending
 guard rather than falsely reclaiming it; controlled teardown keeps the registry
 and retries, while the native resident registry lives for the System lifetime.

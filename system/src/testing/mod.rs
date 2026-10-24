@@ -6,6 +6,7 @@ pub mod menus;
 pub mod scrap;
 pub mod drag;
 pub mod inspection;
+mod worlds;
 use core::cell::RefCell;
 
 use mac_abi::{traps::*, *};
@@ -17,6 +18,7 @@ struct Session
     drag:          crate::toolbox::drag::Manager,
     drag_notices:  std::vec::Vec<crate::toolbox::drag::Notice>,
     standard_file: crate::toolbox::standard_file::Manager,
+    worlds:        crate::toolbox::quickdraw::worlds::Worlds,
     scroll_boxes:  crate::toolbox::controls::scrollbox::Manager,
     // Definitions can query immutable font services while the Control Manager
     // is borrowed. Keep that manager's mutable borrow narrower than Session.
@@ -84,7 +86,17 @@ impl Default for Session
                                                crate::toolbox::standard_file::specification(true),
                                                crate::toolbox::standard_file::ReleaseStorage)
                                      .unwrap();
-        Self { registry,
+        let worlds = registry.register(&registrar,
+                                       crate::toolbox::quickdraw::worlds::specification(false),
+                                       crate::toolbox::quickdraw::worlds::ReleaseWorlds)
+                             .unwrap();
+        let world_storage =
+            registry.register(&registrar,
+                              crate::toolbox::quickdraw::worlds::specification(true),
+                              crate::toolbox::quickdraw::worlds::ReleaseStorage)
+                    .unwrap();
+        Self { worlds: crate::toolbox::quickdraw::worlds::Worlds::new((worlds, world_storage)).unwrap(),
+               registry,
                inspection: inspection::Domains::new(),
                drag: Default::default(),
                drag_notices: std::vec::Vec::new(),
@@ -178,6 +190,10 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
     if !SESSION.with(|slot| slot.borrow().is_some())
     {
         return NOT_SUPPORTED as i64;
+    }
+    if let Some(result) = unsafe { worlds::dispatch(number, pointer, size) }
+    {
+        return result;
     }
     match number
     {
@@ -897,4 +913,12 @@ pub fn standard_file_entries() -> std::vec::Vec<mac_abi::files::CatalogInfo>
                let id = s.standard_file.active(owner).unwrap();
                s.standard_file.get(id).unwrap().entries.clone()
            })
+}
+
+impl crate::toolbox::quickdraw::worlds::WorldHost for Session
+{
+    fn offscreen_worlds(&mut self) -> &mut crate::toolbox::quickdraw::worlds::Worlds
+    {
+        &mut self.worlds
+    }
 }

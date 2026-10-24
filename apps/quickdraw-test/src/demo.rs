@@ -372,7 +372,7 @@ fn icons(system: &System<'_>, port: GraphicsPort<'_>, offset: u32)
                                                         ..Default::default() }].iter()
                                                                                .enumerate()
         {
-            icons.plot(port.window_id(),
+            icons.plot(port.target(),
                        id,
                        Rect::new(x + column as i16 * 39, y, x + column as i16 * 39 + 32, y + 32),
                        *flags)?;

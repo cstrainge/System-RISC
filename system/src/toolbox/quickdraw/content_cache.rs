@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
-use super::{Canvas, Point, Rect, geometry::sect_rect};
+use super::{Canvas, Point, Rect, geometry::sect_rect, retained::SceneTarget};
 
 const MAX_FRAGMENTS: usize = 64;
 const MAX_WINDOWS: usize = 32;
@@ -14,7 +14,7 @@ pub const PIXEL_BUDGET: usize = 2 * 1024 * 1024;
 
 struct Entry
 {
-    id:        u32,
+    id:        SceneTarget,
     bounds:    Rect,
     origin:    Point,
     screen:    (usize, usize),
@@ -163,8 +163,9 @@ impl ContentCache
 
     /// Keep allocated storage across commits; pending drawing cannot invalidate
     /// the old committed scene until EndUpdate publishes its replacement.
-    pub fn invalidate(&mut self, id: u32)
+    pub fn invalidate(&mut self, id: impl Into<SceneTarget>)
     {
+        let id = id.into();
         if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id)
         {
             entry.valid_len = 0;
@@ -173,8 +174,9 @@ impl ContentCache
 
     /// Preserve cached pixels outside a local content change. Fragment budget
     /// exhaustion drops validity, never correctness or the pixel allocation.
-    pub fn invalidate_rect(&mut self, id: u32, mut damage: Rect)
+    pub fn invalidate_rect(&mut self, id: impl Into<SceneTarget>, mut damage: Rect)
     {
+        let id = id.into();
         let Some(entry) = self.entries.iter_mut().find(|e| e.id == id)
         else
         {
@@ -214,8 +216,9 @@ impl ContentCache
 
     /// XOR cached content in place. Invalid pixels may be toggled too; they
     /// remain invalid and are replaced by normal retained replay before use.
-    pub fn invert(&mut self, id: u32, local: Rect)
+    pub fn invert(&mut self, id: impl Into<SceneTarget>, local: Rect)
     {
+        let id = id.into();
         let Some(entry) = self.entries.iter_mut().find(|e| e.id == id)
         else
         {
@@ -240,7 +243,7 @@ impl ContentCache
         }
     }
 
-    pub fn retain(&mut self, mut live: impl FnMut(u32) -> bool)
+    pub fn retain(&mut self, mut live: impl FnMut(SceneTarget) -> bool)
     {
         self.entries.retain(|entry| live(entry.id));
     }
@@ -253,9 +256,10 @@ impl ContentCache
     /// A miss always replays normally, including allocation failure or an
     /// oversized window. At most 64 visible fragments per window are retained;
     /// further fragments safely replay rather than growing metadata unbounded.
-    pub fn paint(&mut self, id: u32, bounds: Rect, canvas: &mut Canvas<'_>,
+    pub fn paint(&mut self, id: impl Into<SceneTarget>, bounds: Rect, canvas: &mut Canvas<'_>,
                  replay: impl FnOnce(&mut Canvas<'_>))
     {
+        let id = id.into();
         let budget = self.budget.unwrap_or(PIXEL_BUDGET);
         let mut crop = Rect::ZERO;
         let mut visible = Rect::ZERO;

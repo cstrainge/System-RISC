@@ -40,6 +40,9 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
             "actual resident ECALL gate absent:\n{serial}");
     assert!(serial.contains("EVENTS_USERSPACE_PASS original_queue=passed native_queue=passed"),
             "Event Manager public ECALL conformance absent:\n{serial}");
+    assert!(serial.contains("GWORLD_USERSPACE_PASS pixels=passed full_width=passed stale=passed \
+                             recovery=passed"),
+            "owner-scoped offscreen ECALL contracts absent:\n{serial}");
     assert!(serial.contains("LEDGER_POOLS_USERSPACE_PASS real_controls=passed stale=passed \
                              cleanup=passed"),
             "authoritative pool census through real ECALL absent:\n{serial}");

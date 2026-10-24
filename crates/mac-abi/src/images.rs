@@ -1,5 +1,5 @@
 //! Bounded resident PNG decoding. Pointers are valid only for the synchronous call.
-use crate::{Rect, Status, Surface};
+use crate::{Rect, Status, Surface, quickdraw::Target};
 pub const INFO: u32 = 0;
 pub const DRAW: u32 = 1;
 pub const HAS_ALPHA: u16 = 1;
@@ -50,7 +50,7 @@ pub type Result<T> = core::result::Result<T, ImageError>;
 pub struct ImageCall
 {
     pub operation:   u32,
-    pub window:      u32,
+    pub target:      Target,
     pub data:        *const u8,
     pub length:      usize,
     pub surface:     *mut Surface,

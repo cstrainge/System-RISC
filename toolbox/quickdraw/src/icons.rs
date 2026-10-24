@@ -3,7 +3,7 @@ use mac_abi::{quickdraw::*,
               resources::{APPLICATION, CHAIN, SYSTEM}};
 use mac_traps::{Cnid, TypeCode, VolumeId};
 
-use crate::{Client, Rect, Result, WindowId};
+use crate::{Client, Rect, Result};
 #[derive(Clone, Copy, Default)]
 pub struct IconFlags
 {
@@ -80,12 +80,13 @@ impl<'a> Icons<'a>
                .id)
     }
 
-    pub fn plot(self, window: WindowId, id: i16, destination: Rect, flags: IconFlags)
+    pub fn plot(self, target: impl Into<DrawingTarget>, id: i16, destination: Rect,
+                flags: IconFlags)
                 -> Result<()>
     {
         self.client
             .icon(IconCall { operation: ICON_PLOT,
-                             window: window.0,
+                             target: target.into().into(),
                              scope: self.scope,
                              id,
                              destination,
@@ -96,12 +97,12 @@ impl<'a> Icons<'a>
 
     /// Read the file's BNDL/FREF mapping and draw its own icon family. This works
     /// before the application has been launched and leaves the search chain alone.
-    pub fn plot_file(self, window: WindowId, volume: VolumeId, cnid: Cnid, destination: Rect,
-                     flags: IconFlags)
+    pub fn plot_file(self, target: impl Into<DrawingTarget>, volume: VolumeId, cnid: Cnid,
+                     destination: Rect, flags: IconFlags)
                      -> Result<()>
     {
         self.client.file_icon(&mut FileIconCall { operation: ICON_PLOT_FILE,
-                                                  window: window.0,
+                                                  target: target.into().into(),
                                                   volume: volume.0,
                                                   cnid: cnid.0,
                                                   destination,
@@ -111,15 +112,15 @@ impl<'a> Icons<'a>
 
     /// Use the loaded driver's immutable icon family. This performs no catalog,
     /// resource-fork or decoder work while repainting an existing item.
-    pub fn plot_file_default(self, window: WindowId, file_type: TypeCode, name: &str,
-                             destination: Rect, flags: IconFlags)
+    pub fn plot_file_default(self, target: impl Into<DrawingTarget>, file_type: TypeCode,
+                             name: &str, destination: Rect, flags: IconFlags)
                              -> Result<()>
     {
         if name.len() > 255 || name.contains('\0')
         {
             return Err(mac_traps::Error::BadArgument);
         }
-        let mut call = DefaultFileIconCall { window: window.0,
+        let mut call = DefaultFileIconCall { target: target.into().into(),
                                              file_type: file_type.bytes(),
                                              name_length: name.len() as u32,
                                              destination,
@@ -179,7 +180,7 @@ impl crate::graphics::GraphicsPort<'_>
 {
     pub fn draw_icon(self, kind: [u8; 4], data: &[u8], destination: Rect) -> Result<()>
     {
-        self.client.icon_data(&mut IconDataCall { window: self.window.0,
+        self.client.icon_data(&mut IconDataCall { target: self.target.into(),
                                                   kind,
                                                   destination,
                                                   ..Default::default() },

@@ -127,6 +127,14 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                          crate::toolbox::standard_file::specification(true),
                                          crate::toolbox::standard_file::ReleaseStorage)
                                .map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,
+                                         crate::toolbox::quickdraw::worlds::specification(false),
+                                         crate::toolbox::quickdraw::worlds::ReleaseWorlds)
+                               .map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,
+                                         crate::toolbox::quickdraw::worlds::specification(true),
+                                         crate::toolbox::quickdraw::worlds::ReleaseStorage)
+                               .map_err(KindAccessError::Registry)?;
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
                            })?;
     Ok(InvocationGate::run(|| run(&registry.lock())))
@@ -167,4 +175,11 @@ fn system_owner_checked() -> Result<OwnerRef, KindAccessError>
              OwnerRef::try_new(index).map_err(KindAccessError::Directory)
          })
          .cloned()
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn world_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"GWLD"))?, registry.get(KindCode(*b"GWST"))?)))
+        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }

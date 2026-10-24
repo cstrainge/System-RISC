@@ -234,7 +234,8 @@ impl super::Desktop
                     -> Result<(), Status>
     {
         self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
-                                          window,
+                                          target:
+                                              mac_abi::quickdraw::Target::window(WindowId(window)),
                                           bounds,
                                           shape,
                                           verb,
@@ -271,7 +272,7 @@ impl super::Desktop
                    > item.bounds.right - item.bounds.left - 2
                    && !line.is_empty()
                 {
-                    self.font_draw(&mut FontCall { window,
+                    self.font_draw(&mut FontCall { target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                                    selection,
                                                    baseline: Point { h: item.bounds
                                                                             .left
@@ -291,7 +292,7 @@ impl super::Desktop
             }
             if y <= item.bounds.bottom.saturating_add(2)
             {
-                self.font_draw(&mut FontCall { window,
+                self.font_draw(&mut FontCall { target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                                selection,
                                                baseline: Point { h: item.bounds
                                                                         .left
@@ -322,7 +323,7 @@ impl super::Desktop
         checked(self.window(BEGIN_UPDATE, &mut request))?;
         let result = (|| {
             self.graphics(&mut GraphicsCall { operation: QD_RESET,
-                                              window,
+                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               ..Default::default() },
                           &[],
                           &[])?;
@@ -353,7 +354,7 @@ impl super::Desktop
                             let mut ring = item.bounds;
                             ring.inset(-4, -4);
                             self.graphics(&mut GraphicsCall { operation: QD_PEN_SIZE,
-                                                              window,
+                                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                                               point: Point { h: 3,
                                                                              v: 3 },
                                                               ..Default::default() },
@@ -361,7 +362,7 @@ impl super::Desktop
                                           &[])?;
                             self.dialog_shape(window, ring, SHAPE_ROUND_RECT, VERB_FRAME)?;
                             self.graphics(&mut GraphicsCall { operation: QD_PEN_SIZE,
-                                                              window,
+                                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                                               point: Point { h: 1,
                                                                              v: 1 },
                                                               ..Default::default() },
@@ -373,14 +374,14 @@ impl super::Desktop
                     {
                         let clip = self.content_mut(window)?.port.wire().clip;
                         self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                                          window,
+                                                          target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                                           bounds: item.bounds,
                                                           ..Default::default() },
                                       &[],
                                       &[])?;
                         let result = self.dialog_text(window, item);
                         self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                                          window,
+                                                          target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                                           bounds: clip,
                                                           ..Default::default() },
                                       &[],
@@ -389,11 +390,13 @@ impl super::Desktop
                     }
                     32 =>
                     {
-                        let call = IconCall { window,
-                                              scope: resources::CHAIN,
-                                              id: item.icon,
-                                              destination: item.bounds,
-                                              ..Default::default() };
+                        let call =
+                            IconCall { target:
+                                           mac_abi::quickdraw::Target::window(WindowId(window)),
+                                       scope: resources::CHAIN,
+                                       id: item.icon,
+                                       destination: item.bounds,
+                                       ..Default::default() };
                         let drawing=icons_service::Drawing::new(crate::kernel::resources().ok_or(NOT_SUPPORTED)?,&call,service::Port::default())?;
                         self.icon(&call, drawing)?;
                     }

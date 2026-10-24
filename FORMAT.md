@@ -219,6 +219,24 @@ big-endian data and result slots. Unsupported traps return `NOT_SUPPORTED`
 without changing guest registers or memory. A 68k execution engine and classic
 WindowRecord-dependent services are not implemented.
 
+Drawing destinations use an explicit native `Target` record: `kind: u32`,
+`reserved: u32` (zero), `id: u64`. Kinds are Window (0), Desktop (1), and
+Offscreen World (2). Desktop requires ID zero; windows and worlds validate
+opaque object identities with their respective resident owner checks. No kind
+is encoded in token bits. Rust applications use `DrawingTarget` / `WorldId`
+through the Toolbox; the binding encodes this record. Borrowed definition
+surfaces use the default Window/zero target and cannot combine that surface
+with another destination. Retained scene/cache/damage keys distinguish windows
+and the desktop explicitly. Window identities remain u32 pending their staged
+full-width migration; out-of-range wire window values are rejected, never
+truncated. Offscreen World identities and `WorldCall.world` are native u64.
+
+Offscreen Worlds use the registered GWLD object and GWST backing/state lifetimes.
+The generic owner walk releases both, retaining quarantined payloads/backing
+until retry. Pixel usage is cached per owner and changes only at allocation or
+release. The current 512-Kpixel per-owner raster budget remains a bring-up
+limit until accounted page heaps replace it; it is not a quota on world count.
+
 Native QuickDraw, font, region, bitmap, offscreen-world, cursor, mapping, picture,
 icon and Resource Manager request layouts live in `mac-abi/src/quickdraw.rs`
 and `resources.rs`, with their operation numbers in `traps.rs`. Input byte and

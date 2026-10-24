@@ -1,12 +1,12 @@
 //! Owned offscreen drawing storage lives in System and is released by Drop.
 use mac_abi::quickdraw::*;
 
-use crate::{Client, Point, Rect, Result, WindowId,
+use crate::{Client, Point, Rect, Result,
             graphics::{GraphicsPort, TransferMode}};
 pub struct GWorld<'a>
 {
     client: Client<'a>,
-    id:     u32
+    id:     u64
 }
 impl<'a> GWorld<'a>
 {
@@ -23,7 +23,7 @@ impl<'a> GWorld<'a>
 
     pub fn graphics(&self) -> GraphicsPort<'a>
     {
-        GraphicsPort::new(self.client, WindowId(self.id))
+        GraphicsPort::new(self.client, DrawingTarget::World(WorldId(self.id)))
     }
 
     pub fn dimensions(&self) -> Result<Point>
@@ -53,7 +53,7 @@ impl<'a> GWorld<'a>
                    mode: TransferMode)
                    -> Result<()>
     {
-        self.client.world_copy(self.id, target.window.0, source, destination, mode as i16)
+        self.client.world_copy(self.id, target.target, source, destination, mode as i16)
     }
 }
 impl Drop for GWorld<'_>

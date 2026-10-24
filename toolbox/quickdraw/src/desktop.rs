@@ -1,7 +1,7 @@
 //! Finder-owned desktop graphics with complete or masked atomic updates.
 use mac_abi::quickdraw::*;
 
-use crate::{Client, QuickDraw, Rect, Result, WindowId, graphics::GraphicsPort};
+use crate::{Client, QuickDraw, Rect, Result, graphics::GraphicsPort};
 
 #[derive(Clone, Copy)]
 pub struct DesktopPort<'a>
@@ -33,9 +33,9 @@ impl<'a> DesktopPort<'a>
         self.client.desktop(QD_DESKTOP_CANCEL).map(|_| ())
     }
 
-    pub const fn window_id(self) -> WindowId
+    pub const fn target(self) -> DrawingTarget
     {
-        WindowId(DESKTOP_TARGET)
+        DrawingTarget::Desktop
     }
 
     /// Reuse drawing, masked updates and transient outlines with this target ID.
@@ -43,7 +43,7 @@ impl<'a> DesktopPort<'a>
     /// beneath visible window structures and preserves the desktop background.
     pub fn graphics(self) -> GraphicsPort<'a>
     {
-        GraphicsPort::new(self.client, self.window_id())
+        GraphicsPort::new(self.client, self.target())
     }
 }
 impl<'a> QuickDraw<'a>

@@ -396,12 +396,12 @@ pub struct GraphicsCommand<'a>
     pub points:      &'a [Point],
     pub region:      &'a [u8]
 }
-fn graphics_call(window: u32, surface: *mut Surface, state: quickdraw::PortState,
-                 command: GraphicsCommand<'_>)
+fn graphics_call(target: quickdraw::DrawingTarget, surface: *mut Surface,
+                 state: quickdraw::PortState, command: GraphicsCommand<'_>)
                  -> quickdraw::GraphicsCall
 {
     quickdraw::GraphicsCall { operation: command.operation,
-                              window,
+                              target: target.into(),
                               surface,
                               state,
                               shape: command.shape,
@@ -443,12 +443,13 @@ fn font_reply(call: &quickdraw::FontCall) -> FontReply
                 width:       call.width,
                 metrics:     call.metrics }
 }
-fn font_call(operation: u32, target: (u32, *mut Surface), selection: quickdraw::FontSelection,
-             text: &str, index: u32, baseline: Point, color: u32)
+fn font_call(operation: u32, target: (quickdraw::DrawingTarget, *mut Surface),
+             selection: quickdraw::FontSelection, text: &str, index: u32, baseline: Point,
+             color: u32)
              -> quickdraw::FontCall
 {
     quickdraw::FontCall { operation,
-                          window: target.0,
+                          target: target.0.into(),
                           surface: target.1,
                           selection,
                           text: text.as_ptr(),
@@ -471,11 +472,11 @@ pub struct RegionCommand<'a>
 }
 impl Client<'_>
 {
-    pub fn graphics(self, window: u32, state: &mut quickdraw::PortState,
+    pub fn graphics(self, target: quickdraw::DrawingTarget, state: &mut quickdraw::PortState,
                     command: GraphicsCommand<'_>)
                     -> Result<()>
     {
-        let mut call = graphics_call(window, core::ptr::null_mut(), *state, command);
+        let mut call = graphics_call(target, core::ptr::null_mut(), *state, command);
         status(self.invoke(QUICKDRAW, &mut call))?;
         *state = call.state;
         Ok(())
@@ -486,7 +487,7 @@ impl Client<'_>
     pub fn desktop(self, operation: u32) -> Result<Rect>
     {
         let mut call = quickdraw::GraphicsCall { operation,
-                                                 window: quickdraw::DESKTOP_TARGET,
+                                                 target: quickdraw::Target::desktop(),
                                                  ..Default::default() };
         status(self.invoke(QUICKDRAW, &mut call))?;
         Ok(call.bounds)
@@ -496,7 +497,8 @@ impl Client<'_>
                 -> Result<FontReply>
     {
         let mut call = font_call(operation,
-                                 (0, core::ptr::null_mut()),
+                                 (quickdraw::DrawingTarget::Window(WindowId(0)),
+                                  core::ptr::null_mut()),
                                  selection,
                                  text,
                                  index,
@@ -506,12 +508,12 @@ impl Client<'_>
         Ok(font_reply(&call))
     }
 
-    pub fn font_draw(self, window: u32, selection: quickdraw::FontSelection, baseline: Point,
-                     text: &str, color: u32)
+    pub fn font_draw(self, target: quickdraw::DrawingTarget, selection: quickdraw::FontSelection,
+                     baseline: Point, text: &str, color: u32)
                      -> Result<i16>
     {
         let mut call = font_call(quickdraw::FONT_DRAW,
-                                 (window, core::ptr::null_mut()),
+                                 (target, core::ptr::null_mut()),
                                  selection,
                                  text,
                                  0,
@@ -545,7 +547,7 @@ impl SurfaceConnection<'_>
                                  -> Result<quickdraw::FontMetrics>
     {
         let mut call = font_call(quickdraw::FONT_METRICS,
-                                 (0, self.surface),
+                                 (quickdraw::DrawingTarget::Window(WindowId(0)), self.surface),
                                  selection,
                                  "",
                                  0,
@@ -562,7 +564,10 @@ impl SurfaceConnection<'_>
     pub fn graphics(&mut self, state: &mut quickdraw::PortState, command: GraphicsCommand<'_>)
                     -> Result<()>
     {
-        let mut call = graphics_call(0, self.surface, *state, command);
+        let mut call = graphics_call(quickdraw::DrawingTarget::Window(WindowId(0)),
+                                     self.surface,
+                                     *state,
+                                     command);
         status(unsafe {
             (self.gate)(QUICKDRAW,
                         (&mut call as *mut quickdraw::GraphicsCall).cast(),
@@ -575,7 +580,7 @@ impl SurfaceConnection<'_>
     pub fn font_width(&mut self, selection: quickdraw::FontSelection, text: &str) -> Result<i16>
     {
         let mut call = font_call(quickdraw::FONT_WIDTH,
-                                 (0, self.surface),
+                                 (quickdraw::DrawingTarget::Window(WindowId(0)), self.surface),
                                  selection,
                                  text,
                                  0,
@@ -593,8 +598,13 @@ impl SurfaceConnection<'_>
                      color: u32)
                      -> Result<i16>
     {
-        let mut call =
-            font_call(quickdraw::FONT_DRAW, (0, self.surface), selection, text, 0, baseline, color);
+        let mut call = font_call(quickdraw::FONT_DRAW,
+                                 (quickdraw::DrawingTarget::Window(WindowId(0)), self.surface),
+                                 selection,
+                                 text,
+                                 0,
+                                 baseline,
+                                 color);
         status(unsafe {
             (self.gate)(FONT,
                         (&mut call as *mut quickdraw::FontCall).cast(),
@@ -652,9 +662,10 @@ pub struct BitmapCommand<'a>
     pub foreground:       u32,
     pub background:       u32
 }
-fn bitmap_call(window: u32, surface: *mut Surface, c: BitmapCommand<'_>) -> quickdraw::BitmapCall
+fn bitmap_call(target: quickdraw::DrawingTarget, surface: *mut Surface, c: BitmapCommand<'_>)
+               -> quickdraw::BitmapCall
 {
-    quickdraw::BitmapCall { window,
+    quickdraw::BitmapCall { target: target.into(),
                             surface,
                             format: c.format,
                             row_bytes: c.row_bytes,
@@ -674,16 +685,18 @@ fn bitmap_call(window: u32, surface: *mut Surface, c: BitmapCommand<'_>) -> quic
 }
 impl Client<'_>
 {
-    pub fn copy_bits(self, window: u32, command: BitmapCommand<'_>) -> Result<()>
+    pub fn copy_bits(self, target: quickdraw::DrawingTarget, command: BitmapCommand<'_>)
+                     -> Result<()>
     {
-        status(self.invoke(COPY_BITS, &mut bitmap_call(window, core::ptr::null_mut(), command)))
+        status(self.invoke(COPY_BITS, &mut bitmap_call(target, core::ptr::null_mut(), command)))
     }
 }
 impl SurfaceConnection<'_>
 {
     pub fn copy_bits(&mut self, command: BitmapCommand<'_>) -> Result<()>
     {
-        let mut call = bitmap_call(0, self.surface, command);
+        let mut call =
+            bitmap_call(quickdraw::DrawingTarget::Window(WindowId(0)), self.surface, command);
         status(unsafe {
             (self.gate)(COPY_BITS,
                         (&mut call as *mut quickdraw::BitmapCall).cast(),
@@ -694,7 +707,7 @@ impl SurfaceConnection<'_>
 
 impl Client<'_>
 {
-    pub fn world(self, operation: u32, world: u32, dimensions: Point, pixels: &mut [u32])
+    pub fn world(self, operation: u32, world: u64, dimensions: Point, pixels: &mut [u32])
                  -> Result<quickdraw::WorldCall>
     {
         let mut call = quickdraw::WorldCall { operation,
@@ -707,13 +720,14 @@ impl Client<'_>
         Ok(call)
     }
 
-    pub fn world_copy(self, world: u32, target: u32, source: Rect, destination: Rect, mode: i16)
+    pub fn world_copy(self, world: u64, target: quickdraw::DrawingTarget, source: Rect,
+                      destination: Rect, mode: i16)
                       -> Result<()>
     {
         status(self.invoke(WORLD,
                            &mut quickdraw::WorldCall { operation: quickdraw::WORLD_COPY,
                                                        world,
-                                                       target,
+                                                       target: target.into(),
                                                        source,
                                                        destination,
                                                        mode,
@@ -856,10 +870,11 @@ impl Client<'_>
 }
 impl Client<'_>
 {
-    pub fn picture(self, window: u32, data: &[u8], destination: Rect) -> Result<()>
+    pub fn picture(self, target: quickdraw::DrawingTarget, data: &[u8], destination: Rect)
+                   -> Result<()>
     {
         let mut call = quickdraw::PictureCall { operation: quickdraw::PICTURE_BYTES,
-                                                window,
+                                                target: target.into(),
                                                 data: data.as_ptr(),
                                                 length: data.len(),
                                                 destination,
@@ -867,12 +882,13 @@ impl Client<'_>
         status(self.invoke(PICTURE, &mut call))
     }
 
-    pub fn picture_resource(self, window: u32, scope: i16, id: i16, destination: Rect)
+    pub fn picture_resource(self, target: quickdraw::DrawingTarget, scope: i16, id: i16,
+                            destination: Rect)
                             -> Result<()>
     {
         status(self.invoke(PICTURE,
                            &mut quickdraw::PictureCall { operation: quickdraw::PICTURE_RESOURCE,
-                                                         window,
+                                                         target: target.into(),
                                                          scope,
                                                          id,
                                                          destination,

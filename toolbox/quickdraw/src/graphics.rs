@@ -3,7 +3,7 @@ pub use mac_abi::quickdraw::PortState;
 use mac_abi::quickdraw::*;
 use mac_traps::GraphicsCommand;
 
-use crate::{Client, Point, Rect, Result, WindowId};
+use crate::{Client, Point, Rect, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i16)]
@@ -132,7 +132,7 @@ fn drawing(shape: Shape<'_>, verb: Verb) -> (GraphicsCommand<'_>, Option<[u8; 8]
 pub struct GraphicsPort<'a>
 {
     pub(crate) client: Client<'a>,
-    pub(crate) window: WindowId
+    pub(crate) target: DrawingTarget
 }
 impl<'a> GraphicsPort<'a>
 {
@@ -189,21 +189,21 @@ impl<'a> GraphicsPort<'a>
                           active: true })
     }
 
-    pub const fn new(client: Client<'a>, window: WindowId) -> Self
+    pub fn new(client: Client<'a>, target: impl Into<DrawingTarget>) -> Self
     {
         Self { client,
-               window }
+               target: target.into() }
     }
 
-    pub const fn window_id(self) -> WindowId
+    pub const fn target(self) -> DrawingTarget
     {
-        self.window
+        self.target
     }
 
     fn request(self, c: GraphicsCommand<'_>) -> Result<PortState>
     {
         let mut state = PortState::default();
-        self.client.graphics(self.window.0, &mut state, c)?;
+        self.client.graphics(self.target, &mut state, c)?;
         Ok(state)
     }
 
@@ -215,7 +215,7 @@ impl<'a> GraphicsPort<'a>
 
     pub fn set_state(self, mut state: PortState) -> Result<()>
     {
-        self.client.graphics(self.window.0,
+        self.client.graphics(self.target,
                              &mut state,
                              GraphicsCommand { operation: QD_SET_STATE,
                                                ..Default::default() })
@@ -286,7 +286,7 @@ impl<'a> GraphicsPort<'a>
 
     fn value(self, operation: u32, mut state: PortState) -> Result<()>
     {
-        self.client.graphics(self.window.0,
+        self.client.graphics(self.target,
                              &mut state,
                              GraphicsCommand { operation,
                                                ..Default::default() })
@@ -343,7 +343,7 @@ impl<'a> GraphicsPort<'a>
         {
             state.pattern = p;
         }
-        self.client.graphics(self.window.0, &mut state, command)
+        self.client.graphics(self.target, &mut state, command)
     }
 
     pub fn paint_rect(self, r: Rect) -> Result<()>
@@ -368,7 +368,7 @@ impl<'a> GraphicsPort<'a>
 
     pub fn text(self, font: FontSelection, baseline: Point, text: &str, color: u32) -> Result<i16>
     {
-        self.client.font_draw(self.window.0, font, baseline, text, color)
+        self.client.font_draw(self.target, font, baseline, text, color)
     }
 }
 
@@ -403,9 +403,9 @@ impl Drop for MaskedUpdate<'_>
 
 impl<'a> crate::QuickDraw<'a>
 {
-    pub fn graphics(self, window: WindowId) -> GraphicsPort<'a>
+    pub fn graphics(self, target: impl Into<DrawingTarget>) -> GraphicsPort<'a>
     {
-        GraphicsPort::new(self.client, window)
+        GraphicsPort::new(self.client, target)
     }
 }
 

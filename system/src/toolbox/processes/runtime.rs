@@ -17,7 +17,6 @@ pub(super) struct Saved
     dialogs:      crate::toolbox::dialogs::DialogState,
     menus:        crate::toolbox::menus::Manager,
     cursors:      crate::toolbox::quickdraw::cursors::Cursors,
-    worlds:       crate::toolbox::quickdraw::worlds::Worlds,
     classic_font: mac_abi::quickdraw::FontSelection,
     events:       Box<EventManager>,
     textedit:     crate::toolbox::textedit::Manager
@@ -31,7 +30,6 @@ impl Saved
                dialogs: Default::default(),
                menus: crate::toolbox::menus::Manager::new(mdef, crate::machine::traps::gateway),
                cursors: Default::default(),
-               worlds: Default::default(),
                classic_font: Default::default(),
                events: Box::new(EventManager::new()),
                textedit: Default::default() }
@@ -252,7 +250,6 @@ impl Desktop
         swap!(dialogs);
         swap!(menus);
         swap!(cursors);
-        swap!(worlds);
         swap!(classic_font);
         swap!(events);
         swap!(textedit);

@@ -731,6 +731,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
                                                                         ..Default::default() })?;
     let mut announcement = [0; 64];
     standard_file_lifecycle(system)?;
+    let leaked_world = system.quickdraw().new_gworld(8, 8)?;
     let parent_window = parse_window(system.scrap().text(&mut announcement)?, "process-observer-window:")
         .ok_or(Failure::Contract("observer window publication"))?;
     synthetic_private(system, parent_window, WORKER_SYNTHETIC)?;
@@ -787,6 +788,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
             core::mem::forget(handle);
             core::mem::forget(control);
             core::mem::forget(scroll_box);
+            core::mem::forget(leaked_world);
             return Ok(());
         }
     }

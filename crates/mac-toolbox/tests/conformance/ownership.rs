@@ -67,6 +67,7 @@ fn rejected_window(system: &System<'_>, id: WindowId, gate: mac_abi::TrapGate)
 /// real WDEF are available. Memory ownership also has host acceptance coverage.
 pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>
 {
+    super::worlds::malformed_targets(gate);
     let mut failure = mac_abi::definitions::DefinitionPanic::default();
     assert_eq!(unsafe {
                    gate(mac_abi::traps::DEFINITION_PANIC,

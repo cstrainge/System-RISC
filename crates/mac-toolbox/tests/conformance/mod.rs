@@ -1,6 +1,7 @@
 //! Shared, no-std userspace conformance functions. The caller supplies a live
 //! aggregate System; both host adapters and an RV64 ECALL runner can call these.
 pub mod managed_controls;
+pub mod worlds;
 use mac_toolbox::{System,
                   quickdraw::{Point, Rect}};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,6 +13,11 @@ pub enum Failure
         field: &'static str
     },
     Service(i32),
+    ServiceAt
+    {
+        case:   &'static str,
+        status: i32
+    },
     ControlPixel
     {
         case:     u16,
@@ -209,6 +215,7 @@ pub fn run_core(system: &System<'_>) -> Result<(), Failure>
 /// Graphical profile requires real loaded definitions and resident resources.
 pub fn run_all(system: &System<'_>) -> Result<(), Failure>
 {
+    worlds::run(system)?;
     events::run(system)?;
     rust_api::events_and_errors(system)?;
     textedit::original(system)?;

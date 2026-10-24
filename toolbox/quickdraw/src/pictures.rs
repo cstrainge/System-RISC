@@ -4,14 +4,14 @@ impl GraphicsPort<'_>
 {
     pub fn draw_picture(self, data: &[u8], destination: Rect) -> Result<()>
     {
-        self.client.picture(self.window.0, data, destination)
+        self.client.picture(self.target, data, destination)
     }
 
     pub fn picture_resource(self, scope: mac_traps::types::ResourceScope, id: i16,
                             destination: Rect)
                             -> Result<()>
     {
-        self.client.picture_resource(self.window.0, scope.raw(), id, destination)
+        self.client.picture_resource(self.target, scope.raw(), id, destination)
     }
 }
 impl crate::SurfacePort<'_>

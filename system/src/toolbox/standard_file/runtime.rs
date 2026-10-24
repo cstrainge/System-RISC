@@ -173,7 +173,8 @@ impl super::Desktop
     fn sf_shape(&mut self, window: u32, bounds: Rect, verb: u32) -> Result<(), Status>
     {
         self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
-                                          window,
+                                          target:
+                                              mac_abi::quickdraw::Target::window(WindowId(window)),
                                           bounds,
                                           shape: SHAPE_RECT,
                                           verb,
@@ -184,7 +185,8 @@ impl super::Desktop
 
     fn sf_text(&mut self, window: u32, x: i16, y: i16, text: &str) -> Result<(), Status>
     {
-        self.font_draw(&mut FontCall { window,
+        self.font_draw(&mut FontCall { target:
+                                           mac_abi::quickdraw::Target::window(WindowId(window)),
                                        selection: FontSelection::default(),
                                        baseline: Point { h: x,
                                                          v: y },
@@ -207,14 +209,14 @@ impl super::Desktop
         if default
         {
             self.graphics(&mut GraphicsCall { operation: QD_PEN_SIZE,
-                                              window,
+                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               point: Point { h: 3,
                                                              v: 3 },
                                               ..Default::default() },
                           &[],
                           &[])?;
             self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
-                                              window,
+                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               bounds: Rect::new(bounds.left - 4,
                                                                 bounds.top - 4,
                                                                 bounds.right + 4,
@@ -227,7 +229,7 @@ impl super::Desktop
                           &[],
                           &[])?;
             self.graphics(&mut GraphicsCall { operation: QD_PEN_SIZE,
-                                              window,
+                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               point: Point { h: 1,
                                                              v: 1 },
                                               ..Default::default() },
@@ -349,7 +351,8 @@ impl super::Desktop
         }
         let resources = crate::kernel::with_resource_owner(dialog.owner, crate::kernel::resources)
                             .ok_or(NOT_SUPPORTED)?;
-        let mut call = IconCall { window: dialog.window.0,
+        let mut call = IconCall { target:
+                                      mac_abi::quickdraw::Target::window(WindowId(dialog.window.0)),
                                   scope: resources::SYSTEM,
                                   id: if entry.is_directory() { -3999 } else { -4000 },
                                   destination,
@@ -471,7 +474,7 @@ impl super::Desktop
         checked(self.window(BEGIN_UPDATE, &mut request(window)))?;
         let result = (|| {
             self.graphics(&mut GraphicsCall { operation: QD_RESET,
-                                              window: window.0,
+                                              target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                               ..Default::default() },
                           &[],
                           &[])?;
@@ -533,7 +536,7 @@ impl super::Desktop
                                             edit.bottom + 3),
                                   VERB_FRAME)?;
                     self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                                      window: window.0,
+                                                      target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                                       bounds: edit,
                                                       ..Default::default() },
                                   &[],
@@ -548,7 +551,7 @@ impl super::Desktop
                     }
                     self.sf_shape(window.0, caret, VERB_INVERT)?;
                     self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                                      window: window.0,
+                                                      target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                                       bounds: Rect::new(0,
                                                                         0,
                                                                         l.bounds.right
@@ -594,7 +597,7 @@ impl super::Desktop
                           Point { h: pop.right - 10,
                                   v: pop.top + 11 }];
             self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
-                                              window: window.0,
+                                              target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                               shape: SHAPE_POLYGON,
                                               verb: VERB_PAINT,
                                               points: points.as_ptr(),
@@ -614,7 +617,7 @@ impl super::Desktop
                                   Rect::new(list.left + 1, y, list.right - 16, y + 16),
                                   VERB_PAINT)?;
                     self.graphics(&mut GraphicsCall { operation: QD_COLORS,
-                                                      window: window.0,
+                                                      target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                                       state: PortState { foreground:
                                                                              0xffffff,
                                                                          background: 0,
@@ -624,13 +627,13 @@ impl super::Desktop
                                   &[])?;
                 }
                 let c =
-                    IconCall { window: window.0,
+                    IconCall { target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                destination: Rect::new(list.left + 2, y, list.left + 18, y + 16),
                                ..Default::default() };
                 let drawing = self.standard_file_icon(id, e, c.destination)?;
                 self.icon(&c, drawing)?;
                 self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                                  window: window.0,
+                                                  target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                                   bounds: Rect::new(list.left + 20,
                                                                     y,
                                                                     list.right - 17,
@@ -638,7 +641,7 @@ impl super::Desktop
                                                   ..Default::default() },
                               &[],
                               &[])?;
-                self.font_draw(&mut FontCall { window: window.0,
+                self.font_draw(&mut FontCall { target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                                selection: FontSelection::default(),
                                                baseline: Point { h: list.left + 21,
                                                                  v: y + 13 },
@@ -654,13 +657,13 @@ impl super::Desktop
                                e.name(),
                                crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)?;
                 self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                                  window: window.0,
+                                                  target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                                   bounds: Rect::new(0, 0, 344, 188),
                                                   ..Default::default() },
                               &[],
                               &[])?;
                 self.graphics(&mut GraphicsCall { operation: QD_COLORS,
-                                                  window: window.0,
+                                                  target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                                   state: PortState { foreground: 0,
                                                                      background: 0xffffff,
                                                                      ..Default::default() },
@@ -700,7 +703,7 @@ impl super::Desktop
                                         edit.bottom + 3),
                               VERB_FRAME)?;
                 self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                                  window: window.0,
+                                                  target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                                   bounds: edit,
                                                   ..Default::default() },
                               &[],
@@ -718,7 +721,7 @@ impl super::Desktop
                     self.sf_shape(window.0, caret, VERB_INVERT)?;
                 }
                 self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                                  window: window.0,
+                                                  target: mac_abi::quickdraw::Target::window(WindowId(window.0)),
                                                   bounds: Rect::new(0, 0, 344, 188),
                                                   ..Default::default() },
                               &[],

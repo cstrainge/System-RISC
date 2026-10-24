@@ -128,7 +128,7 @@ impl GraphicsPort<'_>
 {
     pub fn draw_png(self, png: &[u8], destination: Rect) -> Result<()>
     {
-        self.client.png_draw(self.window.0, png, destination).map_err(Into::into)
+        self.client.png_draw(self.target, png, destination).map_err(Into::into)
     }
 }
 impl crate::SurfacePort<'_>

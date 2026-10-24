@@ -24,10 +24,11 @@ impl Client<'_>
         reply(self.invoke(traps::IMAGE, &mut call), &call)
     }
 
-    pub fn png_draw(self, window: u32, data: &[u8], destination: Rect) -> images::Result<()>
+    pub fn png_draw(self, target: quickdraw::DrawingTarget, data: &[u8], destination: Rect)
+                    -> images::Result<()>
     {
         let mut call = ImageCall { operation: DRAW,
-                                   window,
+                                   target: target.into(),
                                    data: data.as_ptr(),
                                    length: data.len(),
                                    destination,
