@@ -43,6 +43,9 @@ fn disk_booted_aggregate_userspace_conformance_uses_real_ecalls()
     assert!(serial.contains("LEDGER_POOLS_USERSPACE_PASS real_controls=passed stale=passed \
                              cleanup=passed"),
             "authoritative pool census through real ECALL absent:\n{serial}");
+    assert!(serial.contains("KIND_REGISTRATIONS_USERSPACE_PASS public=passed \
+                             provider=System_Control_Manager binding=passed"),
+            "public registered-kind query through real ECALL absent:\n{serial}");
     assert!(serial.contains("OWNERSHIP_USERSPACE_PASS scope=40 early_returns=16 stale=passed \
                              transfer=passed"),
             "owned window/handle lifecycle acceptance absent:\n{serial}");

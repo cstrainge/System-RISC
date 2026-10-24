@@ -653,6 +653,13 @@ pub fn worker(system: &System<'_>) -> Result<()>
                        .create(WindowSpec::new(Rect::new(100, 180, 400, 310), "Process Worker"))?;
     let second_window =
         system.windows().create(WindowSpec::new(Rect::new(120, 200, 420, 330), "Worker Front"))?;
+    let control =
+        system.controls()
+              .create_standard(window,
+                               mac_toolbox::controls::StandardKind::Button,
+                               mac_toolbox::controls::StandardState::new(Rect::new(8, 8, 128,
+                                                                                   32),
+                                                                         "Owned control"))?;
     let mut announcement = [0; 64];
     let parent_window = parse_window(system.scrap().text(&mut announcement)?, "process-observer-window:")
         .ok_or(Failure::Contract("observer window publication"))?;
@@ -700,8 +707,15 @@ pub fn worker(system: &System<'_>) -> Result<()>
             require(system.windows().info(window)?.id == mac_toolbox::WindowId(window.0),
                     "worker owned window lost")?;
             system.log("PROCESS_WORKER_INPUT_PASS\n")?;
+            let mut cleanup = crate::LogBuffer::new();
+            let _ = writeln!(cleanup,
+                             "PROCESS_WORKER_LEAVING_CONTROL app={} control={}",
+                             identity.id.0,
+                             control.id().0);
+            system.log(cleanup.text())?;
             // Deliberately leave window and handle live: exit must reclaim them.
             core::mem::forget(handle);
+            core::mem::forget(control);
             return Ok(());
         }
     }

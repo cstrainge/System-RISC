@@ -141,10 +141,11 @@ impl CapacityPolicy
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceKey
 {
-    owner:      DomainId,
-    kind:       KindCode,
-    slot:       usize,
-    generation: NonZeroU64
+    owner:        DomainId,
+    kind:         KindCode,
+    slot:         usize,
+    generation:   NonZeroU64,
+    registration: Option<u64>
 }
 impl ResourceKey
 {
@@ -167,6 +168,13 @@ impl ResourceKey
     {
         self.generation
     }
+
+    /// Boot-unique native identity of the registered release provider. Bootstrap
+    /// metadata has no parent registration; observing this value grants no authority.
+    pub const fn registration(self) -> Option<u64>
+    {
+        self.registration
+    }
 }
 /// The host resolves this owned registration capability, never an unpinned
 /// function/vtable address supplied by a package.
@@ -185,6 +193,16 @@ pub struct KindRegistration
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoolError
 {
+    RegistrationUnavailable
+    {
+        kind:         KindCode,
+        registration: ResourceKey
+    },
+    RegistrationUsesExhausted
+    {
+        kind:         KindCode,
+        registration: ResourceKey
+    },
     InvalidBoundReason,
     ValueStorageAttached
     {
@@ -258,6 +276,22 @@ impl fmt::Display for PoolError
     {
         match self
         {
+            Self::RegistrationUnavailable { kind,
+                                            registration } =>
+            {
+                write!(f,
+                       "'{kind}' registration in {} is stopping or stale; no new resources may be \
+                        admitted",
+                       registration.owner())
+            }
+            Self::RegistrationUsesExhausted { kind,
+                                              registration } =>
+            {
+                write!(f,
+                       "'{kind}' registration in {} exhausted its checked resource/invocation \
+                        count",
+                       registration.owner())
+            }
             Self::ValueStorageAttached { owner,
                                          kind } =>
             {
@@ -360,17 +394,21 @@ pub struct DomainSlots
     occupied:              Vec<u64>,
     retired:               Vec<u64>,
     pending:               Vec<u64>,
+    quarantined:           Vec<u64>,
     generations:           Vec<u64>,
     cursor:                usize,
     live:                  usize,
     retired_count:         usize,
     pending_count:         usize,
+    quarantined_count:     usize,
+    quarantine_cursor:     usize,
     births:                u64,
     deaths:                u64,
     generation_high_water: u64,
     accepting:             bool,
     drain_word:            usize,
-    value_storage:         bool
+    value_storage:         bool,
+    registration:          Option<u64>
 }
 impl DomainSlots
 {
@@ -390,17 +428,21 @@ impl DomainSlots
                   occupied: Vec::new(),
                   retired: Vec::new(),
                   pending: Vec::new(),
+                  quarantined: Vec::new(),
                   generations: Vec::new(),
                   cursor: 0,
                   live: 0,
                   retired_count: 0,
                   pending_count: 0,
+                  quarantined_count: 0,
+                  quarantine_cursor: 0,
                   births: 0,
                   deaths: 0,
                   generation_high_water: 0,
                   accepting: true,
                   drain_word: 0,
-                  value_storage: false })
+                  value_storage: false,
+                  registration: None })
     }
 
     /// Capacity comes from the caller's reviewed policy; there is no hidden
@@ -431,10 +473,12 @@ impl DomainSlots
         self.occupied.try_reserve(words - self.occupied.len()).map_err(|_| error)?;
         self.retired.try_reserve(words - self.retired.len()).map_err(|_| error)?;
         self.pending.try_reserve(words - self.pending.len()).map_err(|_| error)?;
+        self.quarantined.try_reserve(words - self.quarantined.len()).map_err(|_| error)?;
         self.generations.try_reserve(slots - self.generations.len()).map_err(|_| error)?;
         self.occupied.resize(words, 0);
         self.retired.resize(words, 0);
         self.pending.resize(words, 0);
+        self.quarantined.resize(words, 0);
         self.generations.resize(slots, 0);
         Ok(())
     }
@@ -495,7 +539,8 @@ impl DomainSlots
                     return Ok(ResourceKey { owner,
                                             kind: self.kind,
                                             slot,
-                                            generation });
+                                            generation,
+                                            registration: self.registration });
                 }
                 at += take;
             }
@@ -520,6 +565,7 @@ impl DomainSlots
     {
         key.owner == self.owner
         && key.kind == self.kind
+        && key.registration == self.registration
         && key.slot < self.generations.len()
         && self.occupied[key.slot / 64] & (1 << (key.slot % 64)) != 0
         && self.generations[key.slot] == key.generation.get()
@@ -569,18 +615,75 @@ impl DomainSlots
                                                                           actual:   key.owner },
                                          released });
         }
-        let valid = key.owner == self.owner
-                    && key.kind == self.kind
-                    && key.slot < self.generations.len()
-                    && self.pending[key.slot / 64] & (1 << (key.slot % 64)) != 0
-                    && self.generations[key.slot] == key.generation.get().saturating_add(1);
-        if !valid
+        if !self.pending_key(key) || self.quarantined[key.slot / 64] & (1 << (key.slot % 64)) != 0
         {
             return Err(CompletionError::stale(released));
         }
         self.pending[key.slot / 64] &= !(1 << (key.slot % 64));
         self.pending_count -= 1;
         Ok(())
+    }
+
+    fn pending_key(&self, key: ResourceKey) -> bool
+    {
+        key.owner == self.owner
+        && key.kind == self.kind
+        && key.registration == self.registration
+        && key.slot < self.generations.len()
+        && self.pending[key.slot / 64] & (1 << (key.slot % 64)) != 0
+        && self.generations[key.slot] == key.generation.get().saturating_add(1)
+        && (self.retired[key.slot / 64] & (1 << (key.slot % 64)) != 0)
+           == (key.generation.get() == u64::MAX)
+    }
+
+    fn quarantine(&mut self, released: ReleasedResource) -> Result<(), CompletionError>
+    {
+        let key = released.key;
+        if !self.pending_key(key) || self.quarantined[key.slot / 64] & (1 << (key.slot % 64)) != 0
+        {
+            return Err(CompletionError::stale(released));
+        }
+        // Consuming the unique ticket transfers its ownership to this bitmap.
+        // Backing was reserved with the pool; failure reporting cannot allocate.
+        self.quarantined[key.slot / 64] |= 1 << (key.slot % 64);
+        self.quarantined_count += 1;
+        Ok(())
+    }
+
+    fn resume_quarantined(&mut self) -> Option<ReleasedResource>
+    {
+        let len = self.generations.len();
+        for (start, end) in [(self.quarantine_cursor, len), (0, self.quarantine_cursor)]
+        {
+            let mut at = start;
+            while at < end
+            {
+                let word = at / 64;
+                let first = at % 64;
+                let take = (end - at).min(64 - first);
+                let mask = if take == 64 { u64::MAX } else { ((1u64 << take) - 1) << first };
+                let bits = self.quarantined[word] & mask;
+                if bits != 0
+                {
+                    let slot = word * 64 + bits.trailing_zeros() as usize;
+                    let generation = if self.retired[word] & (1 << (slot % 64)) != 0
+                    {
+                        u64::MAX
+                    }
+                    else
+                    {
+                        self.generations[slot].checked_sub(1)?
+                    };
+                    self.quarantined[word] &= !(1 << (slot % 64));
+                    self.quarantined_count -= 1;
+                    self.quarantine_cursor = if slot + 1 == len { 0 } else { slot + 1 };
+                    return Some(ReleasedResource { key: ResourceKey { owner: self.owner, kind: self.kind,
+                        slot, generation: NonZeroU64::new(generation)?, registration: self.registration } });
+                }
+                at += take;
+            }
+        }
+        None
     }
 
     pub fn stop_admission(&mut self)
@@ -602,7 +705,8 @@ impl DomainSlots
         let key = ResourceKey { owner: self.owner,
                                 kind: self.kind,
                                 slot,
-                                generation: NonZeroU64::new(self.generations[slot])? };
+                                generation: NonZeroU64::new(self.generations[slot])?,
+                                registration: self.registration };
         self.invalidate(key).ok()
     }
 
@@ -703,25 +807,27 @@ impl ReleasedResource
 /// are the next runtime migration. No manager-specific cleanup list belongs here.
 pub struct OwnerIndex
 {
-    owner:     DomainId,
-    pools:     Vec<DomainSlots>,
-    accepting: bool,
-    revision:  u64
+    owner:                  DomainId,
+    pools:                  Vec<DomainSlots>,
+    accepting:              bool,
+    revision:               u64,
+    quarantine_pool_cursor: usize
 }
 
 /// One locked read of the authoritative ledger; no object-value scan or allocation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LedgerSummary
 {
-    pub revision:  u64,
-    pub kinds:     usize,
-    pub live:      usize,
-    pub retired:   usize,
-    pub pending:   usize,
-    pub slots:     usize,
-    pub births:    u64,
-    pub deaths:    u64,
-    pub accepting: bool
+    pub revision:    u64,
+    pub kinds:       usize,
+    pub live:        usize,
+    pub retired:     usize,
+    pub pending:     usize,
+    pub quarantined: usize,
+    pub slots:       usize,
+    pub births:      u64,
+    pub deaths:      u64,
+    pub accepting:   bool
 }
 
 /// An atomic view of one prepared per-domain pool, not a global kind
@@ -729,11 +835,13 @@ pub struct LedgerSummary
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PoolSummary
 {
+    pub registration:        Option<u64>,
     pub kind:                KindCode,
     pub policy:              CapacityPolicy,
     pub live:                usize,
     pub retired:             usize,
     pub pending:             usize,
+    pub quarantined:         usize,
     pub slots:               usize,
     pub births:              u64,
     pub deaths:              u64,
@@ -1010,6 +1118,41 @@ impl fmt::Display for IndexError
 }
 impl OwnerIndex
 {
+    pub fn quarantine(&mut self, released: ReleasedResource) -> Result<(), CompletionError>
+    {
+        if released.key.owner != self.owner
+        {
+            return Err(CompletionError { cause: PoolError::ForeignOwner { expected: self.owner,
+                                                                          actual:   released.key
+                                                                                            .owner },
+                                         released });
+        }
+        let Some(pool) = self.pool_mut(released.key.kind)
+        else
+        {
+            return Err(CompletionError::stale(released));
+        };
+        pool.quarantine(released)?;
+        self.revision = self.revision.saturating_add(1);
+        Ok(())
+    }
+
+    pub fn resume_quarantined(&mut self) -> Option<ReleasedResource>
+    {
+        let count = self.pools.len();
+        for offset in 0..count
+        {
+            let at = (self.quarantine_pool_cursor + offset) % count;
+            if let Some(ticket) = self.pools[at].resume_quarantined()
+            {
+                self.quarantine_pool_cursor = (at + 1) % count;
+                self.revision = self.revision.saturating_add(1);
+                return Some(ticket);
+            }
+        }
+        None
+    }
+
     pub fn pool_at(&self, revision: u64, index: usize) -> Result<PoolSummary, LedgerReadError>
     {
         if self.revision == u64::MAX
@@ -1025,11 +1168,13 @@ impl OwnerIndex
         let pool =
             self.pools.get(index).ok_or(LedgerReadError::PoolNotFound { owner: self.owner,
                                                                          index })?;
-        Ok(PoolSummary { kind:                pool.kind,
+        Ok(PoolSummary { registration:        pool.registration,
+                         kind:                pool.kind,
                          policy:              pool.policy,
                          live:                pool.live,
                          retired:             pool.retired_count,
                          pending:             pool.pending_count,
+                         quarantined:         pool.quarantined_count,
                          slots:               pool.generations.len(),
                          births:              pool.births,
                          deaths:              pool.deaths,
@@ -1047,6 +1192,7 @@ impl OwnerIndex
             result.live += pool.live();
             result.retired += pool.retired();
             result.pending += pool.pending();
+            result.quarantined += pool.quarantined_count;
             result.slots += pool.storage_slots();
             let (births, deaths) = pool.counters();
             result.births = result.births.saturating_add(births);
@@ -1072,10 +1218,12 @@ impl OwnerIndex
         Ok(Self { owner,
                   pools: Vec::new(),
                   accepting: true,
-                  revision: 1 })
+                  revision: 1,
+                  quarantine_pool_cursor: 0 })
     }
 
-    pub(crate) fn attach_values(&mut self, kind: KindCode, policy: CapacityPolicy)
+    pub(crate) fn attach_values(&mut self, kind: KindCode, policy: CapacityPolicy,
+                                registration: Option<u64>)
                                 -> Result<usize, PoolError>
     {
         if !self.accepting
@@ -1094,7 +1242,13 @@ impl OwnerIndex
                                                          kind });
         }
         pool.value_storage = true;
-        Ok(pool.storage_slots())
+        let slots = pool.storage_slots();
+        if pool.registration != registration
+        {
+            pool.registration = registration;
+            self.revision = self.revision.saturating_add(1);
+        }
+        Ok(slots)
     }
 
     pub(crate) fn detach_values(&mut self, kind: KindCode)
@@ -1338,11 +1492,12 @@ mod tests
         // service trap. Exercise both sides of the u32 boundary without billions
         // of launches or mutating the actual boot-wide issuer.
         let ledger = |incarnation| {
-            OwnerIndex { owner:     DomainId { kind: DomainKind::Process,
-                                               incarnation },
-                         pools:     Vec::new(),
-                         accepting: true,
-                         revision:  1 }
+            OwnerIndex { owner:                  DomainId { kind: DomainKind::Process,
+                                                            incarnation },
+                         pools:                  Vec::new(),
+                         accepting:              true,
+                         revision:               1,
+                         quarantine_pool_cursor: 0 }
         };
         let low = 7;
         let high = (1u64 << 40) | low;

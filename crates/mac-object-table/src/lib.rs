@@ -426,3 +426,5 @@ pub mod domain;
 pub mod shared;
 
 pub mod store;
+pub mod registry;
+pub mod walk;

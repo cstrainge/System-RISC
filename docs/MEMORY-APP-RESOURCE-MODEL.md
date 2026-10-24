@@ -87,10 +87,10 @@ app-menu actions and full-width window resource ownership. The directory's
 greater-than-eight test is host metadata coverage, not a claim of greater-than-
 eight live applications or MMU isolation.
 
-`ReleasedResource` records invalidation-before-dispatch. It is not yet the live
-cleanup dispatcher or a proof of quiescence. Values/callbacks, alias pinning,
-registration lifetime validation, account charging and lock-release-before-call
-are integration work. A drained observation alone cannot authorize page reuse.
+`ReleasedResource` records invalidation-before-dispatch. Registered controls now
+use the live dispatcher described below; this is not a proof of quiescence for
+the remaining managers. Alias pinning and account charging remain integration
+work. A drained observation alone cannot authorize page reuse.
 
 ## Architecture and platform boundaries
 
@@ -262,6 +262,7 @@ ratification after measurement; no magic emergency buffer sizes are chosen now.
 | M-D07 | Module allocator forwarding vs current `drivers/vhost-filesystem` and `drivers/stuffit-filesystem` private global heaps (`mac-driver-alloc` calls the module global allocator) | New invocation adapter forwards explicit allocation context; migrate module implementations together, not by mixing heaps/free functions |
 | M-D08 | Port/copy definition protocol vs current raw surface/DefinitionCall ABI | Introduce host-owned port operations and bounded copies/managed buffers; remove raw app pointer access before privilege gate |
 | M-D09 | Synchronous participant shape brief vs queued/deadline participants in extension spec §5.5 | **Ratified, Chloe 2026-10-23.** Synchronous participants stand; the earlier queued/deadline rule is superseded. Observers remain queued on their own execution context |
+| M-D10 | Registered payload dispatch alone does not release empty per-owner value-array/cache backing | Staged migration debt: keep empty-backing pruning explicit until saved manager/storage state is itself ledger-owned. Pruning must never destroy quarantined payloads. Remove this hook with registered manager state; stage 3 is incomplete while it or any manager EXIT roll call remains |
 
 Chloe accepted M-D01, M-D03, M-D06, M-D07 and M-D08 as migration work as
 classified above and authorized §13.2 staging on 2026-10-23. The remaining
@@ -503,3 +504,57 @@ enumerates. A stale snapshot refreshes on the next event and is labelled if chur
 prevents completion. This is query 2's per-kind census, not completion of global
 kind registrations, individual object labels, CPU/account/page accounting or the
 generic release-dispatch walk. Those remain staged work.
+
+## Registered cleanup and the first owner-walk customer
+
+`mac-object-table::registry` now owns generation-tagged KREG entries in the
+registrar's real ledger. KREG is the facility's explicit bootstrap namespace;
+registered value stores receive a private validated `KindLease`, not a caller
+assembled code/policy/dispatcher tuple. Each resource key also carries its
+boot-unique registration binding. Equal FourCCs from another registry or a
+replacement generation cannot consume each other's cleanup capabilities.
+
+Registration metadata includes a readable kind/provider name, policy and source
+evidence (resident or stable bundle/resource identity). Public object-kind
+enumeration and ID lookup use this same registry; they do not require inspector
+authority. Inspector grants still gate cross-domain ledger detail. Provider use
+counts cover published resources, pending destruction and cleanup invocations.
+Closing and incrementing admission share a checked atomic state transition.
+Unregister stops new admission; busy providers stay owned and enumerable for
+cleanup/retry. Successful unregister returns a RAII guard so provider/code-pin
+destruction follows release of the host registry lock.
+
+The host adapter implements `Release<Context, Failure>` at resource-cleanup
+granularity. The failure carrier owns its unique ticket and typed manager cause;
+I/O or driver errors need not become pool errors, statuses or guessed prose.
+Invocation pins are obtained under the registry boundary and invoked after that
+boundary is released. Loaded-module adapters must own their code/resource pins;
+this landing supplies the resident Control Manager adapter, not module-domain
+invocation recovery or the later module loader migration.
+
+The generic owner walk stops admission, invalidates each resource first, then
+resolves and calls its registered adapter. Parent cleanup can release children;
+already-dead entries disappear naturally, including cycles. A contained refusal
+transfers the ticket to preallocated quarantine bitmap storage in its real pool.
+Reporting and retention allocate nothing. Pending/quarantined slots cannot be
+reused or pass retirement. Retry is bounded to the initial quarantine count,
+with rotating pool/slot cursors. Payload or cleanup panics never acknowledge the
+owner barrier or drop the resource's provider-use pin. Host unwind tests establish
+only that resource-lifetime property, not native privileged unwind.
+
+Managed-control EXIT cleanup now uses this walk, and Reactor Room reads its
+quarantine and named release-provider data through the public SDK. Stopping
+domains stay inspectable but are no longer running applications; a retired app
+cannot resume merely because cleanup returned an error. Empty control backing
+still has an explicit pruning hook (M-D10); registered storage ownership must
+remove it before stage 3 can be called complete. Other managers, the rest
+of the old EXIT roll call, module-owned KREG teardown and document aliases still
+require migration. Do not call this complete stage-3 cleanup or zero leaks across
+all Toolbox kinds. An abandoned busy registry retains its provider/root pending
+guard rather than falsely reclaiming it; controlled teardown keeps the registry
+and retries, while the native resident registry lives for the System lifetime.
+
+**M-D04:** The walk provides resource containment. Arbitrary privileged-fault
+containment is **unproven** and is a **required future gate**. Until a recovery
+contract exists and passes, the System must not claim it can safely recover from
+every mid-call module fault.

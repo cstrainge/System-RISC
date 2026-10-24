@@ -157,6 +157,16 @@ impl<G: InvocationGate> OwnerRef<G>
         self.access(|index| index.complete_release(released))
     }
 
+    pub fn quarantine(&self, released: ReleasedResource) -> Result<(), CompletionError>
+    {
+        self.access(|index| index.quarantine(released))
+    }
+
+    pub fn resume_quarantined(&self) -> Option<ReleasedResource>
+    {
+        self.access(OwnerIndex::resume_quarantined)
+    }
+
     pub fn live(&self) -> usize
     {
         self.access(|index| index.live())

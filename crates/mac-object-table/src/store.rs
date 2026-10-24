@@ -2,12 +2,13 @@
 //! in an attached pool; object payloads cannot be swapped behind a live key.
 //! No destructor or callback runs inside the owner metadata lock.
 use alloc::{sync::Arc, vec::Vec};
-use core::ops::Deref;
+use core::{mem::ManuallyDrop, ops::Deref};
 
 use hashbrown::HashMap;
 
 use crate::{domain::{CapacityPolicy, CompletionError, DomainId, KindCode, PoolError,
                      ReleasedResource, ResourceKey, issue_native_identity},
+            registry::{KindLease, Use},
             shared::{InvocationGate, OwnerRef}};
 
 struct Claim<G: InvocationGate>
@@ -28,14 +29,16 @@ impl<G: InvocationGate> Drop for Claim<G>
 }
 struct Entry<T>
 {
-    id:    u64,
-    key:   ResourceKey,
-    value: T
+    id:               u64,
+    key:              ResourceKey,
+    value:            T,
+    registration_use: ManuallyDrop<Option<Use>>
 }
 struct Values<T, G: InvocationGate>
 {
-    slots: Vec<Option<Entry<T>>>,
-    claim: Arc<Claim<G>>
+    slots:  Vec<Option<Entry<T>>>,
+    claim:  Arc<Claim<G>>,
+    stored: usize
 }
 
 /// A registered semantic kind's storage. Identity is issued by the shared
@@ -48,10 +51,11 @@ struct Values<T, G: InvocationGate>
 /// authoritative ledger even when an empty store is dropped and recreated.
 pub struct Store<T, G: InvocationGate>
 {
-    kind:   KindCode,
-    policy: CapacityPolicy,
-    owners: Vec<Values<T, G>>,
-    ids:    HashMap<u64, ResourceKey>
+    kind:         KindCode,
+    policy:       CapacityPolicy,
+    owners:       Vec<Values<T, G>>,
+    ids:          HashMap<u64, ResourceKey>,
+    registration: Option<KindLease<G>>
 }
 impl<T, G: InvocationGate> Store<T, G>
 {
@@ -60,7 +64,19 @@ impl<T, G: InvocationGate> Store<T, G>
         Self { kind,
                policy,
                owners: Vec::new(),
-               ids: HashMap::new() }
+               ids: HashMap::new(),
+               registration: None }
+    }
+
+    /// Resident stores bind policy and release identity to the registry's
+    /// checked capability. The unregistered constructor is the bootstrap
+    /// metadata primitive, also exercised directly by facility model tests.
+    pub fn registered(registration: KindLease<G>) -> Self
+    {
+        let descriptor = registration.registration();
+        let mut store = Self::new(descriptor.code, descriptor.capacity);
+        store.registration = Some(registration);
+        store
     }
 
     fn owner_index(&self, owner: DomainId) -> Result<usize, usize>
@@ -88,19 +104,24 @@ impl<T, G: InvocationGate> Store<T, G>
         let mut claim = Arc::try_new(Claim { owner:  owner.clone(),
                                              kind:   self.kind,
                                              active: false }).map_err(|_| error)?;
-        let slots = owner.access(|index| index.attach_values(self.kind, self.policy))?;
+        let registration = self.registration.as_ref().map(KindLease::id);
+        let slots =
+            owner.access(|index| index.attach_values(self.kind, self.policy, registration))?;
         Arc::get_mut(&mut claim).unwrap().active = true;
         let mut values = Vec::new();
         values.try_reserve(slots).map_err(|_| error)?;
         values.resize_with(slots, || None);
         self.owners.insert(at,
                            Values { claim,
-                                    slots: values });
+                                    slots: values,
+                                    stored: 0 });
         Ok(at)
     }
 
     pub fn insert(&mut self, owner: &OwnerRef<G>, value: T) -> Result<u64, PoolError>
     {
+        let mut registration_use =
+            self.registration.as_ref().map(|kind| kind.acquire(true)).transpose()?;
         let at = self.attach(owner)?;
         let error = self.storage_error(owner.owner(), self.ids.len().saturating_add(1));
         self.ids.try_reserve(1).map_err(|_| error)?;
@@ -111,15 +132,18 @@ impl<T, G: InvocationGate> Store<T, G>
             // Publication is atomic with respect to stop/invalidate/the walk.
             // All backing capacity was reserved before this metadata lock.
             let result = owner.access(|index| {
-                                  let key = index.allocate_value(self.kind)?;
-                                  debug_assert!(self.owners[at].slots[key.slot()].is_none());
-                                  self.owners[at].slots[key.slot()] =
-                                      Some(Entry { id,
-                                                   key,
-                                                   value: value.take().unwrap() });
-                                  self.ids.insert(id, key);
-                                  Ok(())
-                              });
+                             let key = index.allocate_value(self.kind)?;
+                             debug_assert!(self.owners[at].slots[key.slot()].is_none());
+                             self.owners[at].slots[key.slot()] =
+                                 Some(Entry { id,
+                                              key,
+                                              value: value.take().unwrap(),
+                                              registration_use:
+                                                  ManuallyDrop::new(registration_use.take()) });
+                             self.ids.insert(id, key);
+                             self.owners[at].stored += 1;
+                             Ok(())
+                         });
             match result
             {
                 Ok(()) => break,
@@ -153,6 +177,10 @@ impl<T, G: InvocationGate> Store<T, G>
 
     pub fn get(&self, id: u64) -> Option<&T>
     {
+        if self.registration.as_ref().is_some_and(|kind| !kind.live())
+        {
+            return None;
+        }
         let (at, key) = self.locate(id)?;
         let entry = self.owners[at].slots.get(key.slot())?.as_ref()?;
         (entry.key == key && entry.id == id).then_some(&entry.value)
@@ -160,6 +188,10 @@ impl<T, G: InvocationGate> Store<T, G>
 
     pub fn get_mut(&mut self, id: u64) -> Option<&mut T>
     {
+        if self.registration.as_ref().is_some_and(|kind| !kind.live())
+        {
+            return None;
+        }
         let (at, key) = self.locate(id)?;
         let entry = self.owners[at].slots.get_mut(key.slot())?.as_mut()?;
         (entry.key == key && entry.id == id).then_some(&mut entry.value)
@@ -168,6 +200,11 @@ impl<T, G: InvocationGate> Store<T, G>
     pub fn owner(&self, id: u64) -> Option<DomainId>
     {
         self.locate(id).map(|(_, key)| key.owner())
+    }
+
+    pub fn key(&self, id: u64) -> Option<ResourceKey>
+    {
+        self.locate(id).map(|(_, key)| key)
     }
 
     pub fn remove(&mut self, id: u64) -> Option<Removed<T, G>>
@@ -181,10 +218,12 @@ impl<T, G: InvocationGate> Store<T, G>
     {
         let key = released.key();
         let entry = self.owners[at].slots[key.slot()].take().expect("validated store slot");
+        self.owners[at].stored -= 1;
         self.ids.remove(&entry.id);
-        Removed { value:    Some(entry.value),
-                  released: Some(released),
-                  claim:    self.owners[at].claim.clone() }
+        Removed { value:            Some(entry.value),
+                  released:         Some(released),
+                  claim:            self.owners[at].claim.clone(),
+                  registration_use: entry.registration_use }
     }
 
     /// Resolve the facility walk's already-invalidated ticket. Refusal preserves
@@ -212,14 +251,28 @@ impl<T, G: InvocationGate> Store<T, G>
     pub fn remove_owner(&mut self, incarnation: u64)
     {
         self.remove_where(|owner, _| owner.incarnation() == incarnation);
-        if let Some(at) = self.owners.iter().position(|values| {
-                                                values.claim.owner.owner().incarnation()
-                                                == incarnation
-                                                && values.slots.iter().all(Option::is_none)
-                                            })
+        self.prune_empty_owner(incarnation);
+    }
+
+    /// Backing-state cleanup during the staged manager-state migration. This
+    /// never disposes values or acknowledges pending tickets. A quarantined
+    /// payload keeps its backing/claim available for the registered retry.
+    pub fn prune_empty_owner(&mut self, incarnation: u64) -> bool
+    {
+        let Ok(at) =
+            self.owners.binary_search_by_key(&incarnation, |values| {
+                           values.claim.owner.owner().incarnation()
+                       })
+        else
         {
-            self.owners.remove(at);
+            return true;
+        };
+        if self.owners[at].stored != 0
+        {
+            return false;
         }
+        self.owners.remove(at);
+        true
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (u64, &T)>
@@ -283,9 +336,10 @@ impl<T, G: InvocationGate> Drop for Store<T, G>
 /// ```
 pub struct Removed<T, G: InvocationGate>
 {
-    value:    Option<T>,
-    released: Option<ReleasedResource>,
-    claim:    Arc<Claim<G>>
+    value:            Option<T>,
+    released:         Option<ReleasedResource>,
+    claim:            Arc<Claim<G>>,
+    registration_use: ManuallyDrop<Option<Use>>
 }
 impl<T, G: InvocationGate> Deref for Removed<T, G>
 {
@@ -308,5 +362,10 @@ impl<T, G: InvocationGate> Drop for Removed<T, G>
                 .access(|index| index.complete_value_release(released))
                 .expect("store owns the matching cleanup capability");
         }
+        // A destructor/cleanup panic leaves both the owner barrier and kind
+        // pin outstanding. Unregister must not mistake failed cleanup for zero
+        // users. No unsafe/manual destruction is needed to implement that rule.
+        let usage = core::mem::replace(&mut self.registration_use, ManuallyDrop::new(None));
+        drop(ManuallyDrop::into_inner(usage));
     }
 }

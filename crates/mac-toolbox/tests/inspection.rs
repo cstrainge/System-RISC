@@ -4,6 +4,116 @@ use mac_system::testing::{files::with_owner, inspection as fixture, with_service
 use mac_toolbox::{Error, System, inspection::Scope};
 
 #[test]
+fn object_kind_registrations_are_public_named_and_generation_scoped()
+{
+    use mac_toolbox::inspection::{CapacityPolicy, RegistrationSource};
+    with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let ordinary = fixture::add("Ordinary reader", 0);
+        with_owner(ordinary, || {
+            assert_eq!(system.inspection().snapshot(Scope::All).err().unwrap().cause,
+                       Error::AccessDenied);
+            let snapshot = system.inspection().object_kinds().unwrap();
+            assert_eq!(snapshot.count, 1);
+            let control = snapshot.at(0).unwrap();
+            assert_eq!(control.namespace, *b"CTRL");
+            assert_eq!(control.label.as_str(), "Managed controls");
+            assert_eq!(control.provider.as_str(), "System Control Manager");
+            assert_eq!(control.capacity, CapacityPolicy::GrowableUntilMemory);
+            assert_eq!(control.source, RegistrationSource::Resident);
+            assert_eq!(snapshot.get(control.id).unwrap(), control);
+            assert!(control.admitting);
+            assert_eq!(control.uses, 0);
+            let error = snapshot.get(u64::MAX).unwrap_err();
+            assert_eq!(error.cause, Error::NotFound);
+            assert!(error.to_string().contains("resolve the current provider"));
+            let error = snapshot.at(1).unwrap_err();
+            assert_eq!(error.cause, Error::NotFound);
+            assert!(error.to_string().contains("outside this registry snapshot"));
+            let other = fixture::add("Another ordinary reader", 0);
+            with_owner(other, || assert_eq!(snapshot.get(control.id).unwrap(), control));
+            let extra = fixture::register_kind(*b"DEMO", "Example Extension");
+            let error = snapshot.at(0).unwrap_err();
+            assert_eq!(error.cause, Error::ScanStale);
+            assert!(error.to_string().contains("obtain a new registry snapshot and retry"));
+            let next = system.inspection().object_kinds().unwrap();
+            assert_eq!(next.count, 2);
+            let row = next.get(extra.id()).unwrap();
+            assert_eq!(row.provider.as_str(), "Example Extension");
+            assert_eq!(row.capacity, CapacityPolicy::PerDomainQuota { slots: 16 });
+            assert_eq!(row.source, RegistrationSource::BundleResource { bundle: *b"FixtureKindData!",
+                resource: mac_toolbox::ResourceKey::from_bytes(*b"KIND", 7) });
+            let stale_id = extra.id();
+            drop(extra);
+            let current = system.inspection().object_kinds().unwrap();
+            assert_eq!(current.count, 1);
+            assert_eq!(current.get(stale_id).unwrap_err().cause, Error::NotFound);
+        });
+        with_owner(u64::MAX, || {
+            let error = system.inspection().object_kinds().err().unwrap();
+            assert_eq!(error.cause, Error::AccessDenied);
+            assert!(error.to_string().contains("live application context"));
+        });
+    });
+}
+
+#[test]
+fn owner_walk_quarantines_failed_cleanup_and_retry_clears_the_real_death_barrier()
+{
+    use mac_toolbox::{Rect, WindowId, controls::TextAlignment};
+    with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let owner = fixture::add("Cleanup subject", 0);
+        with_owner(owner, || {
+            let object = system.controls()
+                               .create_static_text(WindowId(0),
+                                                   Rect::new(0, 0, 80, 20),
+                                                   "Cleanup",
+                                                   Default::default(),
+                                                   TextAlignment::Left)
+                               .unwrap();
+            let membership = system.inspection().snapshot(Scope::Own).unwrap();
+            let before = membership.ledger(0).unwrap().at(0).unwrap();
+            let registration = before.registration.unwrap();
+            assert_eq!(system.inspection().object_kinds().unwrap().get(registration).unwrap().uses,
+                       1);
+            let failure = fixture::walk_controls(owner, true, false);
+            assert_eq!((failure.report.invalidated,
+                        failure.report.released,
+                        failure.report.quarantined),
+                       (1, 0, 1));
+            assert!(failure.failures[0].contains("CTRL")
+                    && failure.failures[0].contains("no registered cleanup provider"));
+            let pending = membership.at(0).unwrap();
+            assert!(!pending.accepting);
+            assert_eq!((pending.live, pending.pending, pending.quarantined), (0, 1, 1));
+            assert!(matches!(system.controls().control(object.id()).info(), Err(Error::NotFound)));
+            let error = system.controls()
+                              .create_static_text(WindowId(0),
+                                                  Rect::new(0, 22, 80, 42),
+                                                  "Stopped owner",
+                                                  Default::default(),
+                                                  TextAlignment::Left)
+                              .err()
+                              .unwrap();
+            assert_eq!(error, Error::ServiceBusy);
+            assert_eq!(system.inspection().object_kinds().unwrap().get(registration).unwrap().uses,
+                       1,
+                       "failed cleanup must keep its provider pinned");
+            let retry = fixture::walk_controls(owner, false, true);
+            assert_eq!((retry.report.released, retry.report.quarantined), (1, 0));
+            assert!(retry.failures.is_empty());
+            let done = membership.at(0).unwrap();
+            assert_eq!((done.live, done.pending, done.quarantined), (0, 0, 0));
+            assert_eq!(system.inspection().object_kinds().unwrap().get(registration).unwrap().uses,
+                       0);
+            drop(object);
+            assert_eq!(membership.at(0).unwrap().deaths, before.deaths + 1);
+        });
+    });
+}
+
+#[test]
 fn pool_capacity_policies_preserve_limits_and_the_reason_for_a_hard_bound()
 {
     use mac_toolbox::inspection::CapacityPolicy;

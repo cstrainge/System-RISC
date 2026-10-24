@@ -658,7 +658,26 @@ impl Desktop
                 self.enter(caller);
                 self.standard_file.remove_owner(caller);
                 self.scroll_boxes.remove_owner(caller);
-                self.controls.remove_owner(caller);
+                let ledger = self.processes.ledger(caller)?;
+                let walk = mac_object_table::walk::drain(self, &ledger,
+                    |_, key| crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
+                        .and_then(|result| result.map_err(crate::toolbox::handles::KindAccessError::Registry)),
+                    |key, error| serial!("OWNER_CLEANUP_QUARANTINED: owner={} kind={} slot={} generation={} {error}",
+                        key.owner(), key.kind(), key.slot(), key.generation()))
+                    .unwrap_or_else(|error| panic!("owner cleanup invariant failed: {error}"));
+                let remaining = ledger.summary();
+                // Payloads were released by registered dispatch. Empty backing
+                // still needs this migration hook until saved manager state is
+                // a ledger resource itself; never drop quarantined values.
+                self.controls.prune_owner_state(caller);
+                serial!("OWNER_WALK app={} invalidated={} released={} quarantined={} live={} \
+                         pending={}",
+                        caller,
+                        walk.invalidated,
+                        walk.released,
+                        walk.quarantined,
+                        remaining.live,
+                        remaining.pending);
                 let ids: Vec<_> = self.window_owners
                                       .iter()
                                       .filter(|(_, id)| *id == caller)
@@ -678,7 +697,7 @@ impl Desktop
                 self.drag.close_owner(caller, Self::when());
                 self.drag_effects(feedback);
                 self.locals.retain(|s| s.id != caller);
-                self.processes.remove(caller)?;
+                let retirement = self.processes.remove(caller);
                 self.notify_finder_file_state(file.volume, file.cnid, false);
                 if self.foreground == caller
                 {
@@ -692,6 +711,7 @@ impl Desktop
                 let _ = crate::kernel::with_files(|files| files.close_all(caller));
                 crate::kernel::release_memory();
                 crate::machine::scheduler::retire_current();
+                retirement?;
                 serial!("PROCESS_EXIT app={}", caller);
             }
             _ => return Err(NOT_SUPPORTED)

@@ -56,6 +56,21 @@ mappings, exec-chain participants and native trap handlers. Keep the source
 bundle generation/resource identity with the registered contract and owner;
 none gets a hidden callback or association side table.
 
+**Evening rulings, Chloe 2026-10-23:** file-kind mappings carry their icon
+family alongside extension mapping and executable mark. References name
+PNG-backed bundle resources under the resources.json icon rules, owned by the
+same registration generation. Removing an extension removes its mappings and
+icons together; missing families use the theme's standard kind icon. The Pipes
+Extension contributes both PIPE/PIPE and the Pipes folder icon. A CLAP bundle
+without its own family uses the standard CLAP icon, as part of CLAP manifest /
+icons / Get Info work. These are parked extension/resource shapes, with Host
+Clipboard the proving customer; do not implement icon machinery ahead of that
+phase. File kinds are distinct from the object-lifetime kind namespaces whose
+registration binds capacity policy and cleanup dispatch.
+System-built extensions may ship clear placeholder icon families (Chloe,
+2026-10-23). Keep editable PNG sources so they can be redrawn later; packaging,
+registration ownership and theme fallback remain the final contract.
+
 Exec-chain enumeration (handlers in order, owners, claimed evidence and
 revisions), handler claims and kind mappings are public introspection queries
 for every application. No inspector capability gates the existence of these

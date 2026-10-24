@@ -61,7 +61,7 @@ impl BootScreen
                                                                        determinate: 1,
                                                                        ..Default::default() },
                                              ..Default::default() };
-        let mut controls = Manager::default();
+        let mut controls = Manager::new(crate::toolbox::handles::controls_kind().map_err(failed)?);
         let mut call = ControlCall { operation: CREATE_STANDARD,
                                      procedure: PROGRESS_BAR_PROCEDURE,
                                      standard: state,

@@ -83,6 +83,14 @@ pub struct Desktop
     app_menu:                         super::processes::menu::ApplicationMenu
 }
 
+impl super::controls::objects::ControlHost for Desktop
+{
+    fn managed_controls(&mut self) -> &mut super::controls::objects::Manager
+    {
+        &mut self.controls
+    }
+}
+
 impl Desktop
 {
     fn retained_bytes(&self) -> usize
@@ -273,7 +281,7 @@ impl Desktop
                   crash: Default::default(),
                   standard_file: Default::default(),
                   scroll_boxes: Default::default(),
-                  controls: Default::default(),
+                  controls: super::controls::objects::Manager::new(super::handles::controls_kind()?),
                   dialogs: Default::default(),
                   menus: super::menus::Manager::new(mdef, crate::machine::traps::gateway),
                   desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),

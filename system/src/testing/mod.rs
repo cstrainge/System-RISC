@@ -12,6 +12,7 @@ use mac_abi::{traps::*, *};
 
 struct Session
 {
+    registry:      crate::toolbox::handles::Registry<Session>,
     inspection:    inspection::Domains,
     drag:          crate::toolbox::drag::Manager,
     drag_notices:  std::vec::Vec<crate::toolbox::drag::Notice>,
@@ -54,10 +55,18 @@ impl Default for Session
                                                              data: data.to_vec() });
         }
         let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources);
-        Self { inspection: inspection::Domains::new(),
+        let registrar = crate::toolbox::handles::OwnerRef::try_new(
+            mac_object_table::domain::OwnerIndex::issue(mac_object_table::domain::DomainKind::Module).unwrap()).unwrap();
+        let mut registry = crate::toolbox::handles::Registry::<Session>::new();
+        let controls = registry.register(&registrar,
+                                         crate::toolbox::controls::objects::specification(),
+                                         crate::toolbox::controls::objects::ReleaseControls)
+                               .unwrap();
+        Self { registry,
+               inspection: inspection::Domains::new(),
                drag: Default::default(),
                drag_notices: std::vec::Vec::new(),
-               controls: Default::default(),
+               controls: RefCell::new(crate::toolbox::controls::objects::Manager::new(controls)),
                scroll_boxes: Default::default(),
                standard_file: Default::default(),
                crashes: Default::default(),
@@ -71,6 +80,13 @@ impl Default for Session
                fonts,
                resources,
                application: std::vec::Vec::new() }
+    }
+}
+impl crate::toolbox::controls::objects::ControlHost for Session
+{
+    fn managed_controls(&mut self) -> &mut crate::toolbox::controls::objects::Manager
+    {
+        self.controls.get_mut()
     }
 }
 std::thread_local! {static SESSION:RefCell<Option<Session>>=const {RefCell::new(None)};}
@@ -132,7 +148,10 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
             let session = session.as_ref().unwrap();
             match unsafe { request::<mac_abi::inspection::Call>(pointer, size) }
             {
-                Ok(call) => crate::toolbox::inspection::request(&session.inspection, files::current_owner(), call) as i64,
+                Ok(call) => if matches!(call.operation, mac_abi::inspection::KIND_BEGIN | mac_abi::inspection::KIND | mac_abi::inspection::KIND_ID) {
+                    crate::toolbox::inspection::registered_kinds(&session.registry,
+                        session.inspection.get(files::current_owner()).is_some(), call) as i64
+                } else { crate::toolbox::inspection::request(&session.inspection, files::current_owner(), call) as i64 },
                 Err(error) => error as i64
             }
         }),

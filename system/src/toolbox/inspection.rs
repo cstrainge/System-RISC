@@ -21,6 +21,141 @@ fn reject(call: &mut Call, status: Status, message: &str) -> Status
     status
 }
 
+/// Registry existence is public. Inspector authority is deliberately absent:
+/// the host authenticates only that this is a live application context.
+pub(crate) fn registered_kinds<C: 'static,
+                               G: InvocationGate,
+                               F: mac_object_table::registry::CleanupFailure + 'static>(
+    registry: &mac_object_table::registry::Registry<C, G, F>, caller_live: bool, call: &mut Call)
+    -> Status
+{
+    use mac_object_table::registry::{Error, Source};
+    call.detail_length = 0;
+    call.detail.fill(0);
+    call.kind = RegisteredKind::default();
+    call.count = 0;
+    call.coverage = 0;
+    if !caller_live
+    {
+        return reject(call, ACCESS_DENIED,
+                      "kind registration queries require a live application context");
+    }
+    if call.reserved != 0 || ![SELF, ALL].contains(&call.scope)
+    {
+        return reject(call, BAD_ARGUMENT, "invalid kind query scope or reserved field");
+    }
+    let row = match call.operation
+    {
+        KIND_BEGIN =>
+        {
+            match registry.snapshot()
+            {
+                Ok((revision, count)) =>
+                {
+                    call.revision = revision;
+                    call.count = count as u64;
+                    return OK;
+                }
+                Err(error) => Err(error)
+            }
+        }
+        KIND =>
+        {
+            match usize::try_from(call.index)
+            {
+                Ok(index) => registry.at(call.revision, index),
+                Err(_) =>
+                {
+                    return reject(call, NOT_FOUND, "kind index is outside this registry snapshot");
+                }
+            }
+        }
+        KIND_ID => registry.by_id(call.revision, call.subject),
+        _ => return reject(call, BAD_ARGUMENT, "unknown kind registration query")
+    };
+    let row = match row
+    {
+        Ok(row) => row,
+        Err(Error::SnapshotStale { .. } | Error::Stale { .. } | Error::Missing { .. }) =>
+        {
+            return reject(call, SCAN_STALE,
+                          "kind registrations changed; obtain a new registry snapshot and retry");
+        }
+        Err(Error::IndexNotFound { .. }) =>
+        {
+            return reject(call, NOT_FOUND, "kind index is outside this registry snapshot");
+        }
+        Err(Error::RegistrationNotFound { .. }) =>
+        {
+            return reject(call,
+                          NOT_FOUND,
+                          "registration identity is no longer live; resolve the current \
+                           provider before retrying");
+        }
+        Err(Error::RevisionExhausted) =>
+        {
+            return reject(call,
+                          NOT_SUPPORTED,
+                          "kind registry revision exhausted; restart System to obtain new \
+                           snapshots");
+        }
+        Err(error) =>
+        {
+            return reject(call,
+                          super::handles::registry_status(&error),
+                          "kind registry could not answer this request");
+        }
+    };
+    let (policy, limit, reason) = match row.registration.capacity
+    {
+        CapacityPolicy::GrowableUntilMemory => (CAPACITY_GROWABLE, 0, ""),
+        CapacityPolicy::PerDomainQuota { slots } => (CAPACITY_QUOTA, slots as u64, ""),
+        CapacityPolicy::HardBound { slots,
+                                    reason } => (CAPACITY_BOUND, slots as u64, reason)
+    };
+    if reason.len() > call.kind.reason.len()
+    {
+        return reject(call, CORRUPT_DATA,
+                      "kind registration capacity reason exceeds the inspection wire limit");
+    }
+    let owner = row.registration.release.registration.owner();
+    call.kind.id = row.id;
+    call.kind.namespace = row.registration.code.0;
+    call.kind.owner = owner.incarnation();
+    call.kind.owner_kind = match owner.kind()
+    {
+        DomainKind::System => OWNER_SYSTEM,
+        DomainKind::Process => OWNER_PROCESS,
+        DomainKind::Module => OWNER_MODULE
+    };
+    call.kind.policy = policy;
+    call.kind.limit = limit;
+    call.kind.admitting = u32::from(row.admitting);
+    call.kind.uses = row.uses;
+    let label = row.label.as_str();
+    call.kind.label[..label.len()].copy_from_slice(label.as_bytes());
+    call.kind.label_length = label.len() as u32;
+    let provider = row.provider.as_str();
+    call.kind.provider[..provider.len()].copy_from_slice(provider.as_bytes());
+    call.kind.provider_length = provider.len() as u32;
+    call.kind.reason[..reason.len()].copy_from_slice(reason.as_bytes());
+    call.kind.reason_length = reason.len() as u32;
+    match row.source
+    {
+        Source::Resident => call.kind.source = SOURCE_RESIDENT,
+        Source::BundleResource { bundle,
+                                 kind,
+                                 id } =>
+        {
+            call.kind.source = SOURCE_BUNDLE_RESOURCE;
+            call.kind.bundle = bundle;
+            call.kind.resource_kind = kind.0;
+            call.kind.resource_id = id;
+        }
+    }
+    OK
+}
+
 pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>, caller: u64,
                                                      call: &mut Call)
                                                      -> Status
@@ -145,12 +280,14 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
                     return reject(call, CORRUPT_DATA,
                                   "pool capacity reason exceeds the inspection wire limit");
                 }
-                call.pool = Pool { kind: pool.kind.0,
+                call.pool = Pool { registration: pool.registration.unwrap_or(0),
+                                   kind: pool.kind.0,
                                    policy,
                                    limit,
                                    live: pool.live as u64,
                                    retired: pool.retired as u64,
                                    pending: pool.pending as u64,
+                                   quarantined: pool.quarantined as u64,
                                    slots: pool.slots as u64,
                                    births: pool.births,
                                    deaths: pool.deaths,
@@ -200,6 +337,7 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
                          live: ledger.live as u64,
                          retired: ledger.retired as u64,
                          pending: ledger.pending as u64,
+                         quarantined: ledger.quarantined as u64,
                          slots: ledger.slots as u64,
                          births: ledger.births,
                          deaths: ledger.deaths,

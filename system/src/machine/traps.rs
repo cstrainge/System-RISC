@@ -151,9 +151,7 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
     }
     frame.registers[8] = result as usize;
     frame.pc = frame.pc.wrapping_add(4);
-    if matches!(number, PROCESS | PSTRING_PROCESS)
-       && result == OK as i64
-       && super::scheduler::retired()
+    if matches!(number, PROCESS | PSTRING_PROCESS) && super::scheduler::retired()
     {
         return super::scheduler::schedule(frame);
     }

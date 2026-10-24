@@ -55,6 +55,7 @@ pub struct Domain
     pub live:               u64,
     pub retired:            u64,
     pub pending:            u64,
+    pub quarantined:        u64,
     pub slots:              u64,
     pub births:             u64,
     pub deaths:             u64,
@@ -81,11 +82,13 @@ pub enum CapacityPolicy
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pool
 {
+    pub registration:        Option<u64>,
     pub kind:                [u8; 4],
     pub capacity:            CapacityPolicy,
     pub live:                u64,
     pub retired:             u64,
     pub pending:             u64,
+    pub quarantined:         u64,
     pub slots:               u64,
     pub births:              u64,
     pub deaths:              u64,
@@ -101,6 +104,19 @@ pub struct Inspection<'a>
 }
 impl<'a> Inspection<'a>
 {
+    /// Public object-lifetime kind registrations. This query does not require
+    /// inspector authority. File-kind mappings and their icons are a separate
+    /// registry service, not object cleanup registrations.
+    pub fn object_kinds(self) -> Result<ObjectKinds<'a>>
+    {
+        let mut call = wire::Call { operation: wire::KIND_BEGIN,
+                                    ..Default::default() };
+        self.client.inspection(&mut call).map_err(|e| failure(e, &call))?;
+        Ok(ObjectKinds { client:   self.client,
+                         revision: call.revision,
+                         count:    call.count })
+    }
+
     pub const fn new(client: Client<'a>) -> Self
     {
         Self { client }
@@ -120,6 +136,123 @@ impl<'a> Inspection<'a>
                       revision: call.revision,
                       count:    call.count,
                       coverage: call.coverage })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerKind
+{
+    System,
+    Process,
+    Module
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegistrationSource
+{
+    Resident,
+    BundleResource
+    {
+        bundle:   [u8; 16],
+        resource: mac_traps::types::ResourceKey
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObjectKind
+{
+    pub id:            u64,
+    pub namespace:     [u8; 4],
+    pub release_owner: u64,
+    pub owner_kind:    OwnerKind,
+    pub label:         InlineText<{ mac_abi::INLINE_STRING_BYTES }>,
+    pub provider:      InlineText<{ mac_abi::INLINE_STRING_BYTES }>,
+    pub source:        RegistrationSource,
+    pub capacity:      CapacityPolicy,
+    pub admitting:     bool,
+    /// Live resources and pinned cleanup invocations, including invalidated
+    /// objects whose destruction has not completed. Not a memory usage count.
+    pub uses:          u64
+}
+#[derive(Clone, Copy)]
+pub struct ObjectKinds<'a>
+{
+    client:       Client<'a>,
+    pub revision: u64,
+    pub count:    u64
+}
+impl ObjectKinds<'_>
+{
+    pub fn at(self, index: u64) -> Result<ObjectKind>
+    {
+        self.read(wire::KIND, index, 0)
+    }
+
+    pub fn get(self, id: u64) -> Result<ObjectKind>
+    {
+        self.read(wire::KIND_ID, 0, id)
+    }
+
+    fn read(self, operation: u32, index: u64, subject: u64) -> Result<ObjectKind>
+    {
+        let mut call = wire::Call { operation,
+                                    revision: self.revision,
+                                    index,
+                                    subject,
+                                    ..Default::default() };
+        self.client.inspection(&mut call).map_err(|e| failure(e, &call))?;
+        let row = call.kind;
+        if row.reserved != 0 || row.admitting > 1 || row.id == 0
+        {
+            return Err(failure(Error::BadAbi, &call));
+        }
+        let owner_kind = match row.owner_kind
+        {
+            wire::OWNER_SYSTEM => OwnerKind::System,
+            wire::OWNER_PROCESS => OwnerKind::Process,
+            wire::OWNER_MODULE => OwnerKind::Module,
+            _ => return Err(failure(Error::BadAbi, &call))
+        };
+        let source = match row.source {
+            wire::SOURCE_RESIDENT if row.bundle == [0; 16] && row.resource_kind == [0; 4] && row.resource_id == 0 => RegistrationSource::Resident,
+            wire::SOURCE_BUNDLE_RESOURCE => RegistrationSource::BundleResource { bundle: row.bundle,
+                resource: mac_traps::types::ResourceKey::from_bytes(row.resource_kind, row.resource_id) },
+            _ => return Err(failure(Error::BadAbi, &call))
+        };
+        let label =
+            InlineText::from_reply(row.label, row.label_length).map_err(|e| failure(e, &call))?;
+        let provider = InlineText::from_reply(row.provider, row.provider_length).map_err(|e| {
+                                                                                    failure(e,
+                                                                                            &call)
+                                                                                })?;
+        let reason =
+            InlineText::from_reply(row.reason, row.reason_length).map_err(|e| failure(e, &call))?;
+        let capacity =
+            decode_capacity(row.policy, row.limit, reason).map_err(|e| failure(e, &call))?;
+        Ok(ObjectKind { id: row.id,
+                        namespace: row.namespace,
+                        release_owner: row.owner,
+                        owner_kind,
+                        label,
+                        provider,
+                        source,
+                        capacity,
+                        admitting: row.admitting != 0,
+                        uses: row.uses })
+    }
+}
+
+fn decode_capacity(policy: u32, limit: u64, reason: InlineText<{ wire::DETAIL_BYTES }>)
+                   -> core::result::Result<CapacityPolicy, Error>
+{
+    match (policy, limit, reason.as_str().is_empty())
+    {
+        (wire::CAPACITY_GROWABLE, 0, true) => Ok(CapacityPolicy::GrowableUntilMemory),
+        (wire::CAPACITY_QUOTA, slots, true) => Ok(CapacityPolicy::PerDomainQuota { slots }),
+        (wire::CAPACITY_BOUND, slots, false) =>
+        {
+            Ok(CapacityPolicy::HardBound { slots,
+                                           reason })
+        }
+        _ => Err(Error::BadAbi)
     }
 }
 /// No resident cursor or lease is allocated; abandoning a snapshot has nothing
@@ -176,6 +309,7 @@ impl<'a> Snapshot<'a>
                     live:               row.live,
                     retired:            row.retired,
                     pending:            row.pending,
+                    quarantined:        row.quarantined,
                     slots:              row.slots,
                     births:             row.births,
                     deaths:             row.deaths,
@@ -231,22 +365,15 @@ impl LedgerSnapshot<'_>
         }
         let reason =
             InlineText::from_reply(row.reason, row.reason_length).map_err(|e| failure(e, &call))?;
-        let capacity = match (row.policy, row.limit, reason.as_str().is_empty())
-        {
-            (wire::CAPACITY_GROWABLE, 0, true) => CapacityPolicy::GrowableUntilMemory,
-            (wire::CAPACITY_QUOTA, slots, true) => CapacityPolicy::PerDomainQuota { slots },
-            (wire::CAPACITY_BOUND, slots, false) =>
-            {
-                CapacityPolicy::HardBound { slots,
-                                            reason }
-            }
-            _ => return Err(failure(Error::BadAbi, &call))
-        };
-        Ok(Pool { kind: row.kind,
+        let capacity =
+            decode_capacity(row.policy, row.limit, reason).map_err(|e| failure(e, &call))?;
+        Ok(Pool { registration: (row.registration != 0).then_some(row.registration),
+                  kind: row.kind,
                   capacity,
                   live: row.live,
                   retired: row.retired,
                   pending: row.pending,
+                  quarantined: row.quarantined,
                   slots: row.slots,
                   births: row.births,
                   deaths: row.deaths,

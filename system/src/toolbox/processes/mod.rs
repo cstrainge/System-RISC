@@ -9,8 +9,23 @@ pub(crate) mod documents;
 pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
 {
     let caller = crate::context::current_thread_context().identity().app.0;
-    crate::kernel::with_desktop(|desktop| desktop.processes.inspect(caller, call))
-        .unwrap_or_else(|error| error.status())
+    crate::kernel::with_desktop(|desktop| {
+        if matches!(call.operation,
+                    mac_abi::inspection::KIND_BEGIN
+                    | mac_abi::inspection::KIND
+                    | mac_abi::inspection::KIND_ID)
+        {
+            crate::toolbox::handles::registry(|registry| {
+                crate::toolbox::inspection::registered_kinds(registry,
+                                                             desktop.processes.get(caller).is_ok(),
+                                                             call)
+            }).unwrap_or_else(|error| error.status())
+        }
+        else
+        {
+            desktop.processes.inspect(caller, call)
+        }
+    }).unwrap_or_else(|error| error.status())
 }
 pub struct Process
 {
@@ -63,12 +78,14 @@ impl Manager
 
     pub fn len(&self) -> usize
     {
-        self.entries.len()
+        self.iter().count()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Process>
     {
-        self.entries.iter().map(|entry| entry.value())
+        // Dying/quarantined domains remain inspectable until their death
+        // barrier closes, but are no longer running applications.
+        self.entries.iter().filter(|entry| entry.ledger().accepting()).map(|entry| entry.value())
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Process>
@@ -119,6 +136,10 @@ impl Manager
     pub fn activate(&mut self, id: u64) -> Result<(), Status>
     {
         self.get(id)?;
+        if !self.entries.get(id).is_some_and(|entry| entry.ledger().accepting())
+        {
+            return Err(SERVICE_BUSY);
+        }
         self.stamp += 1;
         let stamp = self.stamp;
         for p in self.values_mut()

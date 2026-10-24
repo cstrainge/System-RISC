@@ -22,15 +22,112 @@ impl mac_object_table::shared::InvocationGate for InvocationGate
 }
 pub(crate) type OwnerRef = mac_object_table::shared::OwnerRef<InvocationGate>;
 pub(crate) type Store<T> = mac_object_table::store::Store<T, InvocationGate>;
+pub(crate) type KindLease = mac_object_table::registry::KindLease<InvocationGate>;
+pub(crate) type Registry<C> = mac_object_table::registry::Registry<C, InvocationGate>;
 pub(crate) use mac_object_table::domain::{CapacityPolicy, KindCode};
+
+pub(crate) fn registry_status(error: &mac_object_table::registry::Error) -> mac_abi::Status
+{
+    use mac_abi::*;
+    use mac_object_table::{domain::PoolError, registry::Error};
+    match error
+    {
+        Error::Missing { .. }
+        | Error::Stale { .. }
+        | Error::IndexNotFound { .. }
+        | Error::RegistrationNotFound { .. } => NOT_FOUND,
+        Error::Foreign { .. } => ACCESS_DENIED,
+        Error::Busy { .. } => SERVICE_BUSY,
+        Error::SnapshotStale { .. } => SCAN_STALE,
+        Error::RevisionExhausted => NOT_SUPPORTED,
+        Error::Pool(PoolError::Storage { .. }
+                    | PoolError::IdentityExhausted
+                    | PoolError::RegistrationUsesExhausted { .. }) => NO_MEMORY,
+        Error::Pool(PoolError::RegistrationUnavailable { .. } | PoolError::Stopping { .. }) =>
+        {
+            SERVICE_BUSY
+        }
+        Error::Pool(_) | Error::Label { .. } | Error::Duplicate { .. } => BAD_ARGUMENT
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+#[derive(Debug)]
+pub(crate) enum KindAccessError
+{
+    Owner(mac_object_table::domain::IndexError),
+    Directory(DirectoryError),
+    Registry(mac_object_table::registry::Error)
+}
+#[cfg(target_arch = "riscv64")]
+impl core::fmt::Display for KindAccessError
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Owner(error) => error.fmt(f),
+            Self::Directory(error) => error.fmt(f),
+            Self::Registry(error) => error.fmt(f)
+        }
+    }
+}
+#[cfg(target_arch = "riscv64")]
+impl KindAccessError
+{
+    pub(crate) fn status(&self) -> mac_abi::Status
+    {
+        match self
+        {
+            Self::Owner(mac_object_table::domain::IndexError::Identity(_))
+            | Self::Directory(DirectoryError::Storage { .. }) => mac_abi::NO_MEMORY,
+            Self::Registry(error) => registry_status(error),
+            Self::Owner(_) | Self::Directory(_) => mac_abi::BAD_ARGUMENT
+        }
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::Desktop>) -> R)
+                          -> Result<R, KindAccessError>
+{
+    use mac_object_table::shared::InvocationGate as _;
+    type Resident = Registry<crate::toolbox::runtime::Desktop>;
+    static REGISTRY: spin::Once<spinning_top::Spinlock<Resident>> = spin::Once::new();
+    let registry = REGISTRY.try_call_once(|| {
+                               let owner = system_owner_checked()?;
+                               let mut registry = Resident::new();
+                               registry.register(&owner,
+                                         crate::toolbox::controls::objects::specification(),
+                                         crate::toolbox::controls::objects::ReleaseControls)
+                               .map_err(|error| {
+                                   serial!("KIND_REGISTRATION_REFUSED: {error}");
+                                   KindAccessError::Registry(error)
+                               })?;
+                               Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
+                           })?;
+    Ok(InvocationGate::run(|| run(&registry.lock())))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn controls_kind() -> Result<KindLease, mac_abi::Status>
+{
+    registry(|registry| registry.get(KindCode(*b"CTRL"))).map_err(|error| error.status())?
+                                                         .map_err(|error| registry_status(&error))
+}
 
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn system_owner() -> Result<OwnerRef, mac_abi::Status>
 {
+    system_owner_checked().map_err(|error| error.status())
+}
+#[cfg(target_arch = "riscv64")]
+fn system_owner_checked() -> Result<OwnerRef, KindAccessError>
+{
     static OWNER: spin::Once<OwnerRef> = spin::Once::new();
     OWNER.try_call_once(|| {
-             let index = OwnerIndex::issue(DomainKind::System).map_err(|_| mac_abi::NO_MEMORY)?;
-             OwnerRef::try_new(index).map_err(|_| mac_abi::NO_MEMORY)
+             let index = OwnerIndex::issue(DomainKind::System).map_err(KindAccessError::Owner)?;
+             OwnerRef::try_new(index).map_err(KindAccessError::Directory)
          })
          .cloned()
 }

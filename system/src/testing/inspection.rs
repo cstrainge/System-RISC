@@ -42,6 +42,81 @@ pub fn add(label: &str, authority: u64) -> u64
                                .incarnation()
                   })
 }
+
+pub struct RegisteredFixtureKind
+{
+    registrar: crate::toolbox::handles::OwnerRef,
+    kind:      KindCode,
+    id:        u64
+}
+impl RegisteredFixtureKind
+{
+    pub fn id(&self) -> u64
+    {
+        self.id
+    }
+}
+impl Drop for RegisteredFixtureKind
+{
+    fn drop(&mut self)
+    {
+        // Keep provider destruction outside the registry/session borrow.
+        let cleanup = super::SESSION.with(|slot| {
+                                        let mut slot = slot.borrow_mut();
+                                        slot.as_mut()
+                                            .unwrap()
+                                            .registry
+                                            .unregister(&self.registrar, self.kind)
+                                            .unwrap()
+                                    });
+        drop(cleanup);
+    }
+}
+pub fn register_kind(namespace: [u8; 4], provider: &str) -> RegisteredFixtureKind
+{
+    let registrar = crate::toolbox::handles::OwnerRef::try_new(OwnerIndex::issue(DomainKind::Module).unwrap()).unwrap();
+    let kind = KindCode(namespace);
+    let id = super::SESSION.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        slot.as_mut().unwrap().registry.register(&registrar,
+            mac_object_table::registry::Specification { kind, label: "Fixture object kind", provider,
+                capacity: CapacityPolicy::PerDomainQuota { slots: 16 },
+                source: mac_object_table::registry::Source::BundleResource {
+                    bundle: *b"FixtureKindData!", kind: KindCode(*b"KIND"), id: 7 } },
+            crate::toolbox::controls::objects::ReleaseControls).unwrap().id()
+    });
+    RegisteredFixtureKind { registrar,
+                            kind,
+                            id }
+}
+
+#[derive(Debug)]
+pub struct WalkOutcome
+{
+    pub report:   mac_object_table::walk::Report,
+    pub failures: std::vec::Vec<String>
+}
+/// Fault injection is only in provider resolution; publication, invalidation,
+/// quarantine, retry and destruction all use the real shared facility.
+pub fn walk_controls(owner: u64, provider_unavailable: bool, retry: bool) -> WalkOutcome
+{
+    super::SESSION.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let session = slot.as_mut().unwrap();
+        let ledger = session.inspection.get(owner).unwrap().ledger().clone();
+        let resolve = |session: &super::Session, key: mac_object_table::domain::ResourceKey| {
+            if provider_unavailable { Err(mac_object_table::registry::Error::Missing { kind: key.kind() }) }
+            else { session.registry.dispatch(key.kind()) }
+        };
+        let mut failures = std::vec::Vec::new();
+        let mut failed = |_: mac_object_table::domain::ResourceKey, error: &mac_object_table::walk::Failure<mac_object_table::registry::Error>| {
+            failures.push(std::format!("{error}"));
+        };
+        let report = if retry { mac_object_table::walk::retry(session, &ledger, resolve, &mut failed) }
+            else { mac_object_table::walk::drain(session, &ledger, resolve, &mut failed) }.unwrap();
+        WalkOutcome { report, failures }
+    })
+}
 /// Real ledger publication/invalidation, not canned inspector results.
 pub fn exercise_ledger(owner: u64)
 {

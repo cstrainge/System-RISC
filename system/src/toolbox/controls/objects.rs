@@ -4,7 +4,31 @@
 
 use mac_abi::{controls::*, *};
 
-use crate::toolbox::handles::{CapacityPolicy, KindCode, OwnerRef, Store};
+use crate::toolbox::handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store};
+
+pub(crate) fn specification() -> mac_object_table::registry::Specification<'static>
+{
+    mac_object_table::registry::Specification { kind:     KindCode(*b"CTRL"),
+                                                label:    "Managed controls",
+                                                provider: "System Control Manager",
+                                                capacity: CapacityPolicy::GrowableUntilMemory,
+                                                source:
+                                                    mac_object_table::registry::Source::Resident }
+}
+pub(crate) trait ControlHost
+{
+    fn managed_controls(&mut self) -> &mut Manager;
+}
+pub(crate) struct ReleaseControls;
+impl<C: ControlHost> mac_object_table::registry::Release<C> for ReleaseControls
+{
+    fn release(&self, context: &mut C, resource: mac_object_table::domain::ReleasedResource)
+               -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        drop(context.managed_controls().objects.release(resource)?);
+        Ok(())
+    }
+}
 
 struct Object
 {
@@ -58,11 +82,11 @@ pub struct Manager
 {
     objects: Store<Object>
 }
-impl Default for Manager
+impl Manager
 {
-    fn default() -> Self
+    pub(crate) fn new(kind: KindLease) -> Self
     {
-        Self { objects: Store::new(KindCode(*b"CTRL"), CapacityPolicy::GrowableUntilMemory) }
+        Self { objects: Store::registered(kind) }
     }
 }
 impl Manager
@@ -90,6 +114,11 @@ impl Manager
     pub fn remove_owner(&mut self, owner: u64)
     {
         self.objects.remove_owner(owner);
+    }
+
+    pub(crate) fn prune_owner_state(&mut self, owner: u64)
+    {
+        self.objects.prune_empty_owner(owner);
     }
 
     pub fn definition(&self, call: &ControlCall, owner: u64) -> Result<i16, Status>
@@ -165,8 +194,11 @@ impl Manager
                               .map_err(|error| {
                                   #[cfg(target_arch = "riscv64")]
                                   serial!("CONTROL_ADMISSION_REFUSED: {error}");
-                                  let _ = error;
-                                  NO_MEMORY
+                                  match error {
+                                      mac_object_table::domain::PoolError::RegistrationUnavailable { .. }
+                                      | mac_object_table::domain::PoolError::Stopping { .. } => SERVICE_BUSY,
+                                      _ => NO_MEMORY
+                                  }
                               })?;
             }
         }

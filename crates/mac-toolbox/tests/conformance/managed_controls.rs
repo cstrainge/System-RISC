@@ -28,6 +28,22 @@ pub fn ledger_pools(system: &System<'_>, window: WindowId) -> Result<(), Failure
         }
     }
     let (index, before) = found.ok_or(Failure::Mismatch("live controls absent from owner ledger"))?;
+    let registrations = system.inspection().object_kinds().map_err(map)?;
+    let registration = registrations.get(before.registration
+                                               .ok_or(Failure::Mismatch("control pool has no \
+                                                                         release binding"))?)
+                                    .map_err(map)?;
+    assert_eq!(registration.namespace, *b"CTRL");
+    assert_eq!(registration.provider.as_str(), "System Control Manager");
+    assert_eq!(registration.label.as_str(), "Managed controls");
+    assert!(registration.admitting && registration.uses >= before.live);
+    assert_eq!(registration.source, inspection::RegistrationSource::Resident);
+    assert_eq!(system.inspection().snapshot(inspection::Scope::All).err().unwrap().cause,
+               Error::AccessDenied,
+               "ordinary fixture must not gain cross-domain authority merely by reading \
+                registrations");
+    system.log("KIND_REGISTRATIONS_USERSPACE_PASS public=passed provider=System_Control_Manager \
+                binding=passed\n")?;
     assert!(before.live > 0 && before.slots >= before.live);
     assert_eq!(before.capacity, inspection::CapacityPolicy::GrowableUntilMemory);
     assert_eq!(ledger.at(index).map_err(map)?, before, "inspection mutated the live ledger");

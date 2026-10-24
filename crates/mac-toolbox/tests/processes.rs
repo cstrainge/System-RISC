@@ -55,6 +55,28 @@ fn independent_applications_use_timer_preemption_and_private_toolbox_state()
     assert_eq!(serial.matches("PROCESS_WORKER_INPUT_PASS\n").count(),
                4,
                "all launches must receive routed physical input:\n{serial}");
+    let workers: Vec<_> = serial.lines()
+                                .filter_map(|line| {
+                                    line.strip_prefix("PROCESS_WORKER_LEAVING_CONTROL app=")
+                                        .and_then(|tail| tail.split_once(" control="))
+                                        .map(|(app, _)| app)
+                                })
+                                .collect();
+    assert_eq!(workers.len(),
+               4,
+               "all workers must leave a live registered control for System cleanup");
+    for app in workers
+    {
+        assert!(serial.lines().any(|line| {
+                                  line
+                                  == format!("OWNER_WALK app={app} invalidated=1 released=1 \
+                                              quarantined=0 live=0 pending=0")
+                              }),
+                "registered owner walk did not reclaim the leaked worker control for \
+                 {app}:\n{serial}");
+    }
+    assert!(!serial.contains("OWNER_CLEANUP_QUARANTINED"),
+            "unexpected native cleanup refusal:\n{serial}");
     for actor in ["observer", "worker"]
     {
         assert_eq!(serial.matches(&format!("PROCESS_SYNTHETIC_EVENTS_PASS actor={actor} \

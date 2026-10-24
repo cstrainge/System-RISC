@@ -2,15 +2,18 @@
 //! protocol; incomplete model coverage is visible rather than fabricated.
 #![no_std]
 #![no_main]
-use core::fmt::{self, Write};
+use core::{cell::Cell,
+           fmt::{self, Write}};
 
 use mac_toolbox::{controls::{ScrollBox, ScrollBoxSpec, StaticText, TextAlignment, scrollbox::View},
-                  inspection::{CapacityPolicy, Domain, LedgerSnapshot, Pool, Scope, Snapshot},
+                  inspection::{CapacityPolicy, Domain, LedgerSnapshot, ObjectKind, OwnerKind,
+                               Pool, Scope, Snapshot},
                   quickdraw::{fonts::FontSelection, theme},
                   *};
 mac_toolbox::panic_handler!();
 const QUIT: u32 = u32::from_be_bytes(*b"quit");
 const REFRESH: u32 = u32::from_be_bytes(*b"rfrs");
+const POOL_DETAIL_ROWS: u32 = 6;
 const FONT: FontSelection = FontSelection { family: 3,
                                             size:   9,
                                             face:   0 };
@@ -115,7 +118,8 @@ struct Panes<'a>
     height:         i16,
     selected:       Option<Domain>,
     ledger:         Option<LedgerSnapshot<'a>>,
-    selected_index: Option<u32>
+    selected_index: Option<u32>,
+    pool_cache:     Cell<Option<(u64, Pool, Option<ObjectKind>)>>
 }
 fn spec(bounds: Rect, count: u32, palette: theme::Palette) -> ScrollBoxSpec
 {
@@ -204,7 +208,8 @@ impl<'a> Panes<'a>
                             height,
                             selected: None,
                             ledger: None,
-                            selected_index: None };
+                            selected_index: None,
+                            pool_cache: Cell::new(None) };
         result.populate(snapshot, result.domains.control().info()?)?;
         result.detail_rows(system)?;
         Ok(result)
@@ -236,7 +241,7 @@ impl<'a> Panes<'a>
     {
         u32::try_from(self.ledger.map_or(0, |ledger| ledger.len())).ok()
                                                                    .and_then(|kinds| {
-                                                                       kinds.checked_mul(4)
+                                                                       kinds.checked_mul(POOL_DETAIL_ROWS)
                                                                    })
                                                                    .and_then(|rows| {
                                                                        rows.checked_add(11)
@@ -255,9 +260,13 @@ impl<'a> Panes<'a>
     fn detail_rows(&self, system: &System<'_>) -> ToolboxResult<()>
     {
         let view = self.details.control().info()?;
-        // At most one public read per missing pool, not four per text row.
+        if view.missing.is_empty()
+        {
+            return Ok(());
+        }
+        // Read a missing pool/provider once and retain it across partial scrolls.
         // Managed row caches service repaints without re-enumerating anything.
-        let mut cached: Option<(u64, Pool)> = None;
+        let mut cached = self.pool_cache.get();
         for index in view.missing
         {
             let mut line = Line::new();
@@ -272,7 +281,10 @@ impl<'a> Panes<'a>
                     4 => write!(line, "Births / deaths: {} / {}", row.births, row.deaths),
                     5 => write!(line, "Slots / retired: {} / {}", row.slots, row.retired),
                     6 => write!(line, "Migrated kinds: {}", row.kinds),
-                    7 => write!(line, "Pending cleanup: {}", row.pending),
+                    7 =>
+                    {
+                        write!(line, "Pending: {} / quarantined: {}", row.pending, row.quarantined)
+                    }
                     8 =>
                     {
                         write!(line,
@@ -286,21 +298,43 @@ impl<'a> Panes<'a>
                     }
                     _ =>
                     {
-                        let kind_index = u64::from((index - 11) / 4);
-                        let pool = match cached
+                        let kind_index = u64::from((index - 11) / POOL_DETAIL_ROWS);
+                        let (pool, registration) = match cached
                         {
-                            Some((at, pool)) if at == kind_index => pool,
+                            Some((at, pool, registration)) if at == kind_index =>
+                            {
+                                (pool, registration)
+                            }
                             _ =>
                             {
                                 let pool = self.ledger
                                                .ok_or(Error::BadAbi)?
                                                .at(kind_index)
                                                .map_err(|e| inspection_error(system, e))?;
-                                cached = Some((kind_index, pool));
-                                pool
+                                let registration = match pool.registration
+                                {
+                                    Some(id) =>
+                                    {
+                                        match system.inspection()
+                                                    .object_kinds()
+                                                    .and_then(|snapshot| snapshot.get(id))
+                                        {
+                                            Ok(registration) => Some(registration),
+                                            Err(error) if error.cause == Error::NotFound => None,
+                                            Err(error) =>
+                                            {
+                                                return Err(inspection_error(system, error));
+                                            }
+                                        }
+                                    }
+                                    None => None
+                                };
+                                cached = Some((kind_index, pool, registration));
+                                self.pool_cache.set(cached);
+                                (pool, registration)
                             }
                         };
-                        match (index - 11) % 4
+                        match (index - 11) % POOL_DETAIL_ROWS
                         {
                             0 =>
                             {
@@ -327,11 +361,55 @@ impl<'a> Panes<'a>
                                 }
                             }
                             2 => write!(line, "Gen. headroom: {}", pool.generation_headroom),
-                            _ =>
+                            3 =>
                             {
                                 write!(line,
                                        "Slots {} / retired {}; births {} / deaths {}",
                                        pool.slots, pool.retired, pool.births, pool.deaths)
+                            }
+                            4 =>
+                            {
+                                match registration
+                                {
+                                    Some(registration) =>
+                                    {
+                                        write!(line, "Provider: {}", registration.provider.as_str())
+                                    }
+                                    None if pool.registration.is_some() =>
+                                    {
+                                        line.write_str("Provider: unavailable")
+                                    }
+                                    None => line.write_str("Provider: bootstrap metadata")
+                                }
+                            }
+                            _ =>
+                            {
+                                match registration
+                                {
+                                    Some(registration) =>
+                                    {
+                                        match registration.owner_kind
+                                        {
+                                            OwnerKind::System =>
+                                            {
+                                                line.write_str("Release owner: System")
+                                            }
+                                            OwnerKind::Module =>
+                                            {
+                                                write!(line,
+                                                       "Release module: #{}",
+                                                       registration.release_owner)
+                                            }
+                                            OwnerKind::Process =>
+                                            {
+                                                write!(line,
+                                                       "Release app: #{}",
+                                                       registration.release_owner)
+                                            }
+                                        }
+                                    }
+                                    None => line.write_str("Release owner: not registered")
+                                }
                             }
                         }
                     }
@@ -361,6 +439,7 @@ impl<'a> Panes<'a>
         {
             self.selected = None;
             self.ledger = None;
+            self.pool_cache.set(None);
             self.selected_index = None;
             for index in 0..snapshot.count
             {
@@ -408,6 +487,7 @@ impl<'a> Panes<'a>
             }
             self.selected = Some(row);
             self.ledger = Some(ledger);
+            self.pool_cache.set(None);
             self.selected_index = Some(index);
             self.set_domain_row(index, row, true)?;
             self.configure_details()?;
