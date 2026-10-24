@@ -147,3 +147,7 @@ pub const WAIT: u64 = 13;
 pub const FRAME_COPY: u64 = 14;
 #[cfg(feature = "event-trace")]
 pub const SLOW_SERVICE: u64 = 15;
+
+/// Diagnostic WINDOW operation reserved for frontbuffer drag-outline deltas.
+#[cfg(target_arch = "riscv64")]
+pub(crate) const WINDOW_OUTLINE_XOR: u64 = u64::MAX;

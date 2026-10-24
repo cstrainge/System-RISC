@@ -467,3 +467,202 @@ fn invalid_present_extents_and_empty_damage_leave_both_buffers_untouched()
         assert_eq!(scene, vec![0x123456; 32 * 32]);
     });
 }
+
+/// Independent scalar oracle: union-neighbour boundary and the frozen original
+/// indexed XOR profile. This deliberately scans pixels, unlike production.
+fn outlined_scene(scene: &[u32], width: usize, height: usize, outline: Option<(&[Rect], i32, i32)>)
+                  -> Vec<u32>
+{
+    let mut result = scene.to_vec();
+    let Some((pieces, dx, dy)) = outline
+    else
+    {
+        return result;
+    };
+    let table = include_bytes!("../../../system/assets/windows/system7-indexed-xor.bin");
+    let inside = |x: i64, y: i64| {
+        pieces.iter().any(|r| {
+                         let x = x - i64::from(dx);
+                         let y = y - i64::from(dy);
+                         x >= i64::from(r.left)
+                         && x < i64::from(r.right)
+                         && y >= i64::from(r.top)
+                         && y < i64::from(r.bottom)
+                     })
+    };
+    for y in 21..height
+    {
+        for x in 0..width
+        {
+            let (xx, yy) = (x as i64, y as i64);
+            if (x + y) & 1 == 1
+               && inside(xx, yy)
+               && (!inside(xx - 1, yy)
+                   || !inside(xx + 1, yy)
+                   || !inside(xx, yy - 1)
+                   || !inside(xx, yy + 1))
+            {
+                let rgb = scene[y * width + x];
+                result[y * width + x] =
+                    table.chunks_exact(8)
+                         .find_map(|e| {
+                             (u32::from_be_bytes(e[..4].try_into().unwrap()) == rgb)
+                        .then(|| u32::from_be_bytes(e[4..].try_into().unwrap()))
+                         })
+                         .unwrap_or(rgb ^ 0xffffff);
+            }
+        }
+    }
+    result
+}
+
+#[test]
+fn window_drag_xors_only_changed_frontbuffer_edges_and_preserves_cursor_layering()
+{
+    use mac_system::testing::presentation::{DragFrame, pointer};
+    corpus([], |system| {
+        let (width, height) = (96, 80);
+        let full = Rect::new(0, 0, 96, 80);
+        let mut colors = vec![0xffffff, 0, 0x123456, 0xedcba9, 0xa5a5a5, 0x0000ff, 0x00ffff];
+        for entry in
+            include_bytes!("../../../system/assets/windows/system7-indexed-xor.bin").chunks_exact(8)
+        {
+            let rgb = u32::from_be_bytes(entry[..4].try_into().unwrap());
+            colors.extend([rgb, rgb ^ 0xffffff]);
+        }
+        let scene: Vec<_> =
+            (0..width * height).map(|i| colors[(i * 7919) % colors.len()]).collect();
+        let original = scene.clone();
+        let pieces = [Rect::new(12, 25, 60, 65), Rect::new(30, 30, 80, 70)];
+        let mut front = vec![0; scene.len()];
+        let mut frame = DragFrame::default();
+        let cursors = system.quickdraw().cursors();
+        cursors.set(MonoCursor { image:   [0xffff; 16],
+                                 mask:    [0; 16],
+                                 hotspot: Point::default() })
+               .unwrap();
+        let mut point = Point { h: 20,
+                                v: 25 };
+        pointer(point);
+        frame.present(&scene, &mut front, width, height, [full], None, true).unwrap();
+        let mut previous_outline = None;
+        for (index, (dx, dy)) in [(0, 0),
+                                  (1, 0),
+                                  (1, 1),
+                                  (1, 1),
+                                  (-35, -20),
+                                  (40, 30),
+                                  (i32::MIN, i32::MAX),
+                                  (0, 0)].into_iter()
+                                         .enumerate()
+        {
+            let outline = Some((pieces.as_slice(), dx, dy));
+            let before = outlined_scene(&scene, width, height, previous_outline);
+            let after = outlined_scene(&scene, width, height, outline);
+            let expected_changes = before.iter().zip(&after).filter(|(a, b)| a != b).count();
+            let old_front = front.clone();
+            if index == 4
+            {
+                point = Point { h: 0,
+                                v: 0 };
+                pointer(point);
+            }
+            let (changed, copied) =
+                frame.present(&scene, &mut front, width, height, [], outline, index == 4).unwrap();
+            assert_eq!(changed, expected_changes, "perimeter symmetric difference {dx},{dy}");
+            assert!(copied.iter()
+                          .all(|r| {
+                              (r.right - r.left) as usize * (r.bottom - r.top) as usize <= 256
+                          }));
+            if previous_outline == outline && index != 4
+            {
+                assert!(copied.is_empty(), "unchanged feedback did work");
+                assert_eq!(front, old_front);
+            }
+            assert_eq!(front,
+                       expected_frame(&after, width, height, point, cursors.info().unwrap(), None));
+            assert_eq!(scene, original, "drag wrote the retained scene");
+            previous_outline = outline;
+        }
+        cursors.hide().unwrap();
+        frame.present(&scene, &mut front, width, height, [], None, true).unwrap();
+        assert_eq!(front, original, "cancelling the drag or hiding cursor left stale XOR pixels");
+    });
+}
+
+#[test]
+fn scene_damage_under_a_held_window_drag_reapplies_only_the_intersection()
+{
+    use mac_system::testing::presentation::DragFrame;
+    corpus([], |system| {
+        system.quickdraw().cursors().hide().unwrap();
+        let mut scene = vec![0xffffff; 96 * 80];
+        let mut front = vec![0; scene.len()];
+        let pieces = [Rect::new(12, 25, 80, 70)];
+        let outline = Some((pieces.as_slice(), 0, 0));
+        let mut frame = DragFrame::default();
+        frame.present(&scene, &mut front, 96, 80, [Rect::new(0, 0, 96, 80)], outline, false)
+             .unwrap();
+        let damage = Rect::new(0, 24, 40, 40);
+        let before = front.clone();
+        for y in 24..40
+        {
+            for x in 0..40
+            {
+                scene[y * 96 + x] = 0x123456;
+            }
+        }
+        let changed_scene = scene.clone();
+        let (changed, copied) =
+            frame.present(&scene, &mut front, 96, 80, [damage], outline, false).unwrap();
+        assert_eq!(changed, 0, "stationary outline was toggled again");
+        assert_eq!(copied, [damage], "damage expanded outside its rectangle");
+        assert_eq!(front, outlined_scene(&scene, 96, 80, outline));
+        for y in 0..80
+        {
+            for x in 0..96
+            {
+                if !damage.contains(Point { h: x as i16,
+                                            v: y as i16 })
+                {
+                    assert_eq!(front[y * 96 + x], before[y * 96 + x], "paint escaped damage");
+                }
+            }
+        }
+        assert_eq!(scene, changed_scene);
+        // A subsequent outline move must erase against the newly painted scene.
+        let next = Some((pieces.as_slice(), 4, 3));
+        frame.present(&scene, &mut front, 96, 80, [], next, false).unwrap();
+        assert_eq!(front, outlined_scene(&scene, 96, 80, next));
+        frame.present(&scene, &mut front, 96, 80, [], None, false).unwrap();
+        assert_eq!(front, scene);
+    });
+}
+
+#[test]
+fn invalid_window_drag_surfaces_leave_frame_and_overlay_history_unchanged()
+{
+    use mac_system::testing::presentation::DragFrame;
+    corpus([], |system| {
+        system.quickdraw().cursors().hide().unwrap();
+        let scene = vec![0x123456; 96 * 80];
+        let mut front = scene.clone();
+        let pieces = [Rect::new(12, 25, 80, 70)];
+        let mut frame = DragFrame::default();
+        for (width, height) in [(usize::MAX, 2), (96, 81), (32768, 0)]
+        {
+            assert!(frame.present(&scene,
+                                  &mut front,
+                                  width,
+                                  height,
+                                  [Rect::new(0, 0, 96, 80)],
+                                  Some((&pieces, 0, 0)),
+                                  false)
+                         .is_none());
+            assert_eq!(front, scene, "invalid dimensions partially published");
+        }
+        let (_, copies) = frame.present(&scene, &mut front, 96, 80, [], None, false).unwrap();
+        assert!(copies.is_empty());
+        assert_eq!(front, scene, "failed transition changed retained overlay state");
+    });
+}

@@ -71,35 +71,51 @@ pub fn ticks() -> u64
 }
 pub fn present(back: &[u32])
 {
-    present_rects(back, [mac_abi::Rect::new(0, 0, WIDTH as i16, HEIGHT as i16)], None);
+    present_rects(back,
+                  [mac_abi::Rect::new(0, 0, WIDTH as i16, HEIGHT as i16)],
+                  Default::default());
 }
 
-/// Publish only damaged screen rectangles. The compositor keeps a cursor-free
-/// backbuffer and supplies the previous/new cursor bounds along with scene damage.
+/// Copy real scene damage and apply frontbuffer-only cursor/drag transitions.
 pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_abi::Rect>,
-                            cursor: Option<crate::toolbox::quickdraw::presentation::CursorSprite<'_>>)
+                            overlays: crate::toolbox::quickdraw::presentation::Overlays<'_>)
 {
+    use crate::toolbox::quickdraw::presentation::{PresentEvent, present_frame};
     // The serialized compositor owns both buffers. This exclusive frontbuffer
-    // slice cannot escape; the scene is borrowed read-only for the entire copy.
+    // slice cannot escape; the scene stays read-only for the entire transition.
     let front =
         unsafe { core::slice::from_raw_parts_mut(addr_of_mut!(FRAMEBUFFER).cast::<u32>(), PIXELS) };
-    for rect in rects
-    {
-        let started = crate::trace::clock();
-        let Some(rect) = crate::toolbox::quickdraw::presentation::present_rect(back, front, WIDTH,
-                                                                               HEIGHT, rect,
-                                                                               cursor)
-        else
+    let mut started = 0;
+    let owner = crate::context::current_thread_context().identity().app.0;
+    present_frame(back, front, WIDTH, HEIGHT, rects, overlays, |event| {
+        match event
         {
-            continue;
-        };
-        crate::trace::record(crate::trace::FRAME_COPY,
-                             crate::context::current_thread_context().identity().app.0,
-                             crate::trace::clock().wrapping_sub(started),
-                             (rect.right - rect.left) as u64 * (rect.bottom - rect.top) as u64,
-                             ((rect.left as u64) << 32) | rect.top as u64,
-                             ((rect.right as u64) << 32) | rect.bottom as u64);
-    }
+            PresentEvent::CopyStarted | PresentEvent::OutlineStarted =>
+            {
+                started = crate::trace::clock()
+            }
+            PresentEvent::Copied(rect) =>
+            {
+                crate::trace::record(crate::trace::FRAME_COPY,
+                                     owner,
+                                     crate::trace::clock().wrapping_sub(started),
+                                     (rect.right - rect.left) as u64
+                                     * (rect.bottom - rect.top) as u64,
+                                     ((rect.left as u64) << 32) | rect.top as u64,
+                                     ((rect.right as u64) << 32) | rect.bottom as u64)
+            }
+            PresentEvent::OutlineChanged(pixels) if pixels != 0 =>
+            {
+                crate::trace::record(crate::trace::WINDOW,
+                                     owner,
+                                     crate::trace::WINDOW_OUTLINE_XOR,
+                                     pixels as u64,
+                                     crate::trace::clock().wrapping_sub(started),
+                                     0)
+            }
+            PresentEvent::OutlineChanged(_) => ()
+        }
+    });
     unsafe {
         asm!("fence iorw, iorw", options(nostack));
     }

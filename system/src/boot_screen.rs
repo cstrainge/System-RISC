@@ -119,7 +119,7 @@ impl BootScreen
             }
             crate::platform::present_rects(pixels,
                                            damage.into_iter().filter(|rect| !rect.is_empty()),
-                                           None);
+                                           Default::default());
             serial!("BOOT_PROGRESS completed={} total=7", value);
         }
         Ok(())

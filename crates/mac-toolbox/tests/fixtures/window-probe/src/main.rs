@@ -29,6 +29,8 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
         system.menus().install_menu_resource(mac_toolbox::ResourceScope::Application, id)?;
     }
     system.log("DESKTOP_READY: public SDK tracking fixture\n")?;
+    let mut painted = false;
+    let mut cursor_visible = false;
     loop
     {
         let event = system.events()
@@ -84,6 +86,34 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
                              "MENU_PROBE menu={} item={} command={:08x}",
                              selection.menu_id, selection.item, selection.command);
             system.log(core::str::from_utf8(&line.bytes[..line.len]).unwrap())?;
+        }
+        if event.kind == EventKind::KeyDown && event.character() == b'p'
+        {
+            painted = !painted;
+            let port = system.quickdraw().graphics(window);
+            port.colors(if painted { 0x0000ff } else { 0xffffff }, 0xffffff)?;
+            port.paint_rect(Rect::new(0, 0, 440, 60))?;
+            system.log(if painted
+                       {
+                           "WINDOW_PROBE_PAINT blue\n"
+                       }
+                       else
+                       {
+                           "WINDOW_PROBE_PAINT white\n"
+                       })?;
+        }
+        if event.kind == EventKind::KeyDown && event.character() == b'v'
+        {
+            cursor_visible = !cursor_visible;
+            if cursor_visible
+            {
+                system.quickdraw().cursors().show()?;
+            }
+            else
+            {
+                system.quickdraw().cursors().hide()?;
+            }
+            system.log("WINDOW_PROBE_CURSOR_CHANGED\n")?;
         }
         if event.kind == EventKind::Update && event.window == window.0
         {

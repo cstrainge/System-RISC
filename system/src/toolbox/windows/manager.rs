@@ -14,6 +14,7 @@ use crate::toolbox::{events::*,
                      handles::{KindLease, OwnerRef, Store, cleanup::Failure},
                      quickdraw::{Canvas, Point, Rect, SurfaceExt,
                                  geometry::{sect_rect, union_rect},
+                                 presentation::{WindowOutline, indexed_tracking_xor},
                                  region::{BooleanOp, Region}}};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i16)]
@@ -194,66 +195,6 @@ impl Window
         Point { h: point.h - self.bounds.left,
                 v: point.v - self.bounds.top }
     }
-}
-
-/// A union boundary can occur only on a constituent rectangle's perimeter.
-/// Keep the original neighbour predicate so shared/overlapping edges disappear.
-fn drag_mask(mask: &mut [u32], width: usize, height: usize, pieces: &[Rect], dx: i16, dy: i16,
-             mask_top: usize)
-{
-    let contains = |x: i32, y: i32| {
-        let x = x - i32::from(dx);
-        let y = y - i32::from(dy);
-        pieces.iter().any(|rect| {
-                         x >= i32::from(rect.left)
-                         && x < i32::from(rect.right)
-                         && y >= i32::from(rect.top)
-                         && y < i32::from(rect.bottom)
-                     })
-    };
-    let mut mark = |x: i32, y: i32| {
-        if x >= 0
-           && x < width as i32
-           && y >= 21.max(mask_top) as i32
-           && y < height as i32
-           && contains(x, y)
-           && (!contains(x - 1, y)
-               || !contains(x + 1, y)
-               || !contains(x, y - 1)
-               || !contains(x, y + 1))
-        {
-            mask[(y as usize - mask_top) * width + x as usize] = 0;
-        }
-    };
-    for piece in pieces.iter().filter(|piece| !piece.is_empty())
-    {
-        let left = i32::from(piece.left) + i32::from(dx);
-        let right = i32::from(piece.right) + i32::from(dx);
-        let top = i32::from(piece.top) + i32::from(dy);
-        let bottom = i32::from(piece.bottom) + i32::from(dy);
-        for x in left.max(0)..right.min(width as i32)
-        {
-            mark(x, top);
-            mark(x, bottom - 1);
-        }
-        for y in top.max(21.max(mask_top) as i32)..bottom.min(height as i32)
-        {
-            mark(left, y);
-            mark(right - 1, y);
-        }
-    }
-}
-
-/// Original initial indexed-device presentation. Unknown RGB32 colors use native
-/// direct-color inversion; the named reference profile has all 256 CLUT entries.
-fn indexed_tracking_xor(rgb: u32) -> u32
-{
-    const TABLE: &[u8] = include_bytes!("../../../assets/windows/system7-indexed-xor.bin");
-    let entries = TABLE.as_chunks::<8>().0;
-    entries.binary_search_by_key(&rgb, |entry| u32::from_be_bytes(entry[..4].try_into().unwrap()))
-           .map_or(rgb ^ 0xffffff, |index| {
-               u32::from_be_bytes(entries[index][4..].try_into().unwrap())
-           })
 }
 
 #[derive(Clone, Copy)]
@@ -1200,6 +1141,28 @@ impl WindowManager
         self.tracking.is_some()
     }
 
+    /// Only grow/pressed chrome still belongs to the scene compositor.
+    pub fn tracking_repaints_scene(&self) -> bool
+    {
+        matches!(self.tracking,
+                 Some(Tracking::Grow { .. } | Tracking::Close { .. } | Tracking::Zoom { .. }))
+    }
+
+    pub(crate) fn drag_outline(&self) -> Option<WindowOutline>
+    {
+        let Tracking::Drag { window,
+                             bounds,
+                             preview: Some(preview),
+                             .. } = self.tracking?
+        else
+        {
+            return None;
+        };
+        WindowOutline::new(self.window(window)?.structure_pieces(),
+                           i32::from(preview.left) - i32::from(bounds.left),
+                           i32::from(preview.top) - i32::from(bounds.top))
+    }
+
     /// Native desktop tracking policy. Command-drag leaves activation and z order
     /// unchanged; an ordinary background drag activates only after acceptance.
     pub fn start_tracking_with_modifiers(&mut self, hit: Hit, point: Point, modifiers: u16)
@@ -1690,9 +1653,9 @@ impl WindowManager
 
     fn draw_tracking_at(&self, canvas: &mut Canvas, scratch: Option<&mut [u32]>, mask_top: usize)
     {
-        let Some(tracking @ (Tracking::Grow { .. }
-                 | Tracking::Drag { preview: Some(_),
-                                   .. })) = self.tracking
+        let Some(Tracking::Grow { window,
+                                  preview,
+                                  .. }) = self.tracking
         else
         {
             return;
@@ -1718,46 +1681,17 @@ impl WindowManager
             &mut owned
         };
         mask.fill(0xffffff);
-        match tracking
+        let Some(mut window) = self.window(window).copied()
+        else
         {
-            Tracking::Grow { window,
-                             preview,
-                             .. } =>
-            {
-                let Some(mut window) = self.window(window).copied()
-                else
-                {
-                    return;
-                };
-                let mut target = Canvas::new(mask, canvas.width, mask_height);
-                target.set_origin(0, -(mask_top as i16));
-                let mut surface = Surface::from_canvas(&mut target);
-                if window.call(definition::GROW, (&preview as *const Rect) as i64, &mut surface) < 0
-                {
-                    return;
-                }
-            }
-            Tracking::Drag { window,
-                             preview: Some(preview),
-                             bounds,
-                             .. } =>
-            {
-                let Some(window) = self.window(window)
-                else
-                {
-                    return;
-                };
-                let dx = preview.left - bounds.left;
-                let dy = preview.top - bounds.top;
-                drag_mask(mask,
-                          canvas.width,
-                          canvas.height,
-                          window.structure_pieces(),
-                          dx,
-                          dy,
-                          mask_top);
-            }
-            _ => return
+            return;
+        };
+        let mut target = Canvas::new(mask, canvas.width, mask_height);
+        target.set_origin(0, -(mask_top as i16));
+        let mut surface = Surface::from_canvas(&mut target);
+        if window.call(definition::GROW, (&preview as *const Rect) as i64, &mut surface) < 0
+        {
+            return;
         }
         // Classic gray pen pattern, XORed over the composed desktop. Rebuilding
         // the retained scene erases old outlines without damaging covered ports.
@@ -1945,7 +1879,13 @@ mod tests
         let shapes = [&[Rect::new(12, 25, 80, 70)][..],
                       &[Rect::new(12, 25, 70, 60), Rect::new(30, 40, 80, 70)][..],
                       &[Rect::new(12, 25, 40, 70), Rect::new(40, 25, 80, 70)][..],
-                      &[Rect::new(12, 25, 13, 70), Rect::new(20, 30, 80, 31)][..]];
+                      &[Rect::new(12, 25, 13, 70), Rect::new(20, 30, 80, 31)][..],
+                      &[Rect::new(12, 25, 13, 26), Rect::new(13, 26, 14, 27)][..],
+                      &[Rect::new(12, 25, 80, 70), Rect::new(12, 25, 80, 70)][..],
+                      &[Rect::new(12, 25, 80, 70), Rect::new(30, 35, 40, 45)][..],
+                      &[Rect::new(12, 25, 13, 26), Rect::new(12, 25, 13, 26)][..],
+                      &[Rect::ZERO, Rect::new(12, 25, 80, 70)][..],
+                      &[Rect::new(12, 25, 80, 26), Rect::new(12, 26, 80, 27)][..]];
         for pieces in shapes
         {
             for (dx, dy) in
@@ -1963,7 +1903,8 @@ mod tests
                 {
                     for x in 0..96
                     {
-                        if contains(x, y)
+                        if (x + y) & 1 == 1
+                           && contains(x, y)
                            && (!contains(x - 1, y)
                                || !contains(x + 1, y)
                                || !contains(x, y - 1)
@@ -1973,26 +1914,28 @@ mod tests
                         }
                     }
                 }
-                drag_mask(&mut actual, 96, 80, pieces, dx, dy, 0);
+                let mut visits = 0;
+                WindowOutline::new(pieces, i32::from(dx), i32::from(dy)).unwrap()
+                    .visit(Rect::new(0,0,96,80), |x,y| {
+                        assert_eq!(actual[y * 96 + x], 0xffffff, "duplicate XOR visit");
+                        actual[y * 96 + x] = 0;
+                        visits += 1;
+                    });
+                assert_eq!(visits, expected.iter().filter(|&&p| p == 0).count());
                 assert_eq!(actual, expected, "translated structure {pieces:?} by {dx},{dy}");
             }
         }
     }
 
     #[test]
-    fn supplied_tracking_scratch_matches_owned_mask_across_drag_and_grow()
+    fn supplied_grow_tracking_scratch_matches_owned_mask()
     {
         let (mut wm, _, window, _) = make();
         let bounds = wm.window(window).unwrap().bounds;
         let mut preview = bounds;
         preview.offset(20, 10);
         let mut scratch = vec![0x123456; 640 * 480];
-        for tracking in [Tracking::Drag { window,
-                                          start: Point::default(),
-                                          bounds,
-                                          preview: Some(preview),
-                                          activate: true },
-                         Tracking::Grow { window,
+        for tracking in [Tracking::Grow { window,
                                           start: Point::default(),
                                           bounds,
                                           preview }]
@@ -2020,12 +1963,7 @@ mod tests
         preview.offset(-35, 11);
         for height in [21, 80, 480]
         {
-            for tracking in [Tracking::Drag { window,
-                                              start: Point::default(),
-                                              bounds,
-                                              preview: Some(preview),
-                                              activate: true },
-                             Tracking::Grow { window,
+            for tracking in [Tracking::Grow { window,
                                               start: Point::default(),
                                               bounds,
                                               preview }]

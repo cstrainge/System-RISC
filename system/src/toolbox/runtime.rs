@@ -70,6 +70,7 @@ pub struct Desktop
     cursor_dirty:                     bool,
     frame_incomplete:                 bool,
     cursor_bounds:                    Rect,
+    window_outline:                   Option<super::quickdraw::presentation::WindowOutline>,
     activity:                         u64,
     last_observed:                    (u64, u32, u64),
     presentations:                    u64,
@@ -342,6 +343,7 @@ impl Desktop
                   cursor_dirty: true,
                   frame_incomplete: false,
                   cursor_bounds: Rect::ZERO,
+                  window_outline: None,
                   activity: 0,
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
                   presentations: 0,
@@ -1586,6 +1588,9 @@ impl Desktop
 
     fn action(&mut self, action: Action, when: u32)
     {
+        // Held drag motion changes only the frontbuffer outline. Accepted
+        // geometry/close changes are the point where the real scene changes.
+        self.redraw |= !matches!(action, Action::CloseRequest(_));
         if let Action::Drag(id) | Action::Resize(id) = action
         {
             self.events.post_system(Event { kind: EventKind::OsEvent,
@@ -1689,7 +1694,7 @@ impl Desktop
         if !matches!(input, Input::Key { .. })
         {
             self.cursor_dirty = true;
-            self.redraw |= self.windows.is_tracking();
+            self.redraw |= self.windows.tracking_repaints_scene();
         }
         if self.crash_input(input, when)
         {
@@ -1766,13 +1771,13 @@ impl Desktop
                     if let Some(id) = hit.window
                     {
                         let active = active_before == Some(id);
-                        self.redraw |= !active
-                                       || matches!(hit.part,
-                                                   WindowPart::Drag
-                                                   | WindowPart::Grow
-                                                   | WindowPart::GoAway
-                                                   | WindowPart::ZoomIn
-                                                   | WindowPart::ZoomOut);
+                        self.redraw |= hit.part != WindowPart::Drag
+                                       && (!active
+                                           || matches!(hit.part,
+                                                       WindowPart::Grow
+                                                       | WindowPart::GoAway
+                                                       | WindowPart::ZoomIn
+                                                       | WindowPart::ZoomOut));
                         // DragWindow activates a background window only after a
                         // successful release; Command-drag preserves its plane.
                         if hit.part != WindowPart::Drag
@@ -1858,10 +1863,12 @@ impl Desktop
                         }
                         return;
                     }
+                    let active_before = self.windows.active_window();
                     if let Some(action) = self.windows.track(point, true, &mut self.events, when)
                     {
                         self.action(action, when);
                     }
+                    self.redraw |= active_before != self.windows.active_window();
                     self.events.post_system(Event { payload: 0,
                                                     kind: EventKind::MouseUp,
                                                     message: 0,
@@ -2063,7 +2070,7 @@ impl Desktop
         self.redraw |= !self.content_damage.is_empty()
                        && (self.menus.is_tracking()
                            || self.app_menu.is_tracking()
-                           || self.windows.is_tracking());
+                           || self.windows.tracking_repaints_scene());
         let full = self.redraw;
         if full || !self.content_damage.is_empty()
         {
@@ -2405,23 +2412,22 @@ impl Desktop
                 self.outline_under.paint(&mut canvas, &self.windows, desktop_outline, &damage);
             }
         }
+        let window_outline = self.windows.drag_outline();
+        let overlays =
+            super::quickdraw::presentation::Overlays { previous_cursor: self.cursor_bounds,
+                                                       cursor: sprite,
+                                                       cursor_changed,
+                                                       previous_outline: self.window_outline,
+                                                       outline: window_outline };
         if full
         {
-            platform::present_rects(canvas.pixels, [Rect::new(0, 0, 640, 480)], sprite);
+            platform::present_rects(canvas.pixels, [Rect::new(0, 0, 640, 480)], overlays);
         }
         else
         {
-            platform::present_rects(canvas.pixels,
-                                    damaged.iter().copied().chain(if cursor_changed
-                                                                  {
-                                                                      [self.cursor_bounds, bounds]
-                                                                  }
-                                                                  else
-                                                                  {
-                                                                      [Rect::ZERO; 2]
-                                                                  }),
-                                    sprite);
+            platform::present_rects(canvas.pixels, damaged.iter().copied(), overlays);
         }
+        self.window_outline = window_outline;
         if outline_visible
         {
             self.outline_under.restore(&mut canvas);

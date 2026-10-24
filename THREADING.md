@@ -33,7 +33,10 @@ reclamation. Fresh input may take one input-only turn; continuous input admits
 maintenance on alternate turns to retain I/O and cleanup progress. This priority
 does not preempt an in-flight interrupt-masked System call. Such calls must still
 bound their work; application scheduling priority cannot repair an unnecessary
-whole-window paint inside a service.
+whole-window paint inside a service. Held title-bar movement is perimeter-bounded
+frontbuffer XOR, with no scene composition, full-screen mask or visibility walk;
+release commits the real window geometry. Scene damage under a held outline
+copies only its damage and restores intersecting overlay pixels.
 The consolidated regression gate also passes the paired Pascal process traps,
 twelve caller-posted foreign-window event-isolation cases, and actual Finder/two-
 app graphical launch, focus, hide/restore, quit and relaunch tests.
@@ -185,6 +188,7 @@ address-space/object translation rather than access to resident Rust addresses.
 | Scheduler foundation | One-hart CLINT preemption, eight independent stacks/register frames, trusted identities and deferred retired-stack reclamation exist. A private RV64 observer progresses during a child's no-trap/no-yield loop on one hart; the canonical process acceptance passes. Native event wait deadlines, readiness wakes and a separate idle stack now exist; the SDK latency fixture verifies physical input during contention and that blocked apps leave the runnable rotation. General blocking primitives, worker APIs and cancellation remain open. |
 | Application launch | Finder and disk-loaded native APPLs have independent application threads, app-local UI/resource/memory state and exit cleanup. Host SDK ownership tests cover file denial/cleanup and memory generation retention; the real RV64 launch/quit/relaunch, partition/ownership, Pascal and private synthetic-event gates pass. |
 | Application switching | Resident right-hand menu and Process Manager activation/hide/restore paths exist. Private SDK and actual Finder/two-app activation/hide/input/exit tests pass, including first-click activation and background dragging. The original popup comparison passes with explicit icon/cursor masks; this establishes the captured profile, not all application behavior. |
+| Interactive latency | Held title-bar movement uses bounded frontbuffer-only XOR without scene replays or a tracking-mask scan. Canonical captures retain every decoded move, including the first; strict all-samples sub-millisecond qualification remains open on fresh Windows and Linux guests. Shared instruction paths and perimeter-intersection early-outs reduce work but do not establish a hard latency guarantee. Interrupt-masked resident calls and cold execution still need their own bounds. |
 | Reentrant service work | Existing definition-to-Surface/font/resource nesting remains supported. Stateful recursive manager calls still return Busy. General app callbacks require snapshot/callback/commit and cancellation tests. |
 | Legacy Thread Manager | Planned as [compatibility workstream P2](docs/CORE-TOOLBOX-ROADMAP.md#p2--legacy-thread-manager-cooperative-threads); not implemented. Capture the pinned extension's traps, scheduling, state, stack/global context and callbacks, then verify through SDK and translated 68k probes. Cooperative contexts remain inside their host application's OS thread and cannot replace kernel preemption, including during legacy critical sections. |
 | Multi-hart and devices | Planned as [platform workstream P1](docs/CORE-TOOLBOX-ROADMAP.md#p1--multi-hart-execution-smp); not implemented. Per-hart entry/context state, concurrent scheduling and inter-hart wakeups, migration, blocking/wakeup ordering, allocator/device synchronization and concurrent callback publication need independent evidence. |

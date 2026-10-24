@@ -373,9 +373,16 @@ presentation. Damaged rectangles copy the scene read-only to the frontbuffer;
 only their intersection with the current cursor receives its masked sprite.
 Motion, shape/visibility changes and animation publish old/new cursor rectangles
 without scene replay or cursor writes to the backing scene. Scene damage under
-a cursor updates the scene before publishing it with the current sprite. Drag
-outlines/highlights still paint and restore their temporary canvas pixels;
-their present-time migration and independent pointer scheduling remain future work.
+a cursor updates the scene before publishing it with the current sprite. Window
+title-bar drag outlines are frontbuffer-only overlays. A held move XORs the
+symmetric difference of the old/new WDEF structure perimeters. Interval
+subtraction removes common spans and shared corners before the pixel loop; it
+never runs union/neighbor tests per pixel. Common edge pixels are untouched. Indexed XOR uses the original device profile, with masks derived
+from the clean scene so erasure remains exact for every RGB value. Scene damage
+reapplies the outline only inside the copied rectangles; the cursor is above it.
+File-drag outlines/highlights still paint and restore temporary canvas pixels;
+grow tracking still uses its WDEF mask. Their present-time migration and
+independent pointer scheduling remain future work.
 The opt-in event trace records the actual framebuffer-copy rectangles, enabling
 public SDK tests to reject cursor-triggered scene replays and scroll damage
 outside the viewport/bar rather than relying only on unchanged screenshots.

@@ -64,9 +64,11 @@ window content or sweeping scene visibility. Scene damage underneath a stationar
 cursor uses the same masked blit. Monochrome inversion, color masks, clipping,
 hotspots, visibility and animation retain their original semantics.
 
-Drag outlines and highlights still temporarily paint and restore the canvas;
-they have not yet migrated to present-time compositing. Presentation remains
-serialized with the compositor; this does not establish independent pointer-path
+Title-bar drag outlines also live only in the frontbuffer. Only changed old/new
+edge pixels are XORed, with the cursor composited above them. Real scene damage
+reapplies just the intersecting outline pixels. File-drag outlines/highlights
+still temporarily paint and restore the canvas; grow feedback uses its WDEF
+mask. Presentation remains serialized with the compositor; this does not establish independent pointer-path
 scheduling or a strict input-latency guarantee. A failed scene replay suppresses
 cursor-only copies until a complete scene is available again.
 
@@ -84,3 +86,11 @@ decoded-input-to-frontbuffer latency distributions. Strict latency runs use
 `SYSTEM7_STRICT_EVENT_LATENCY=1`; ordinary profiling retains the same raw samples
 without treating its threshold as enforced. Coalesced decoded moves and input
 interarrival gaps are reported separately from presentation latency.
+
+`window_interactions.rs` retains the original drag/grow pixel comparison and
+release, cancellation and background-activation tests. Its held-drag profile
+compares every backbuffer byte, rejects scene/update/menu work, bounds XOR work
+to the changed perimeters, and verifies painting under a held outline. The
+optional `SYSTEM7_WINDOW_WINDOWS=1` transport exercises native Windows QEMU;
+`SYSTEM7_STRICT_EVENT_LATENCY=1` enforces a separate first-motion-inclusive
+one-millisecond gate. Captures retain every sample and count coalesced moves.

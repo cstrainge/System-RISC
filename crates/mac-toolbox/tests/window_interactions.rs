@@ -283,3 +283,147 @@ fn original_drag_and_grow_outline_pixels_match_through_public_sdk()
     baseline.assert_same(&frame("grow-no-motion"), "no-motion grow changed scene");
     fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","source":"public SDK-only guest probe", "original":"provenance/control-tracking-reference.json", "cases":measurements})).unwrap()).unwrap();
 }
+
+#[test]
+#[ignore = "requires optimized traced System image and a private QEMU guest"]
+fn held_window_drag_is_a_bounded_frontbuffer_xor_with_clean_backbuffer()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let output =
+        root.join("results/system7").join(format!("window-drag-profile-{}", std::process::id()));
+    let mut command = Command::new("python3");
+    command.arg(root.join("System7/scripts/capture_system7_window_tracking.py"))
+           .args(["--profile", "--output"])
+           .arg(&output)
+           .current_dir(&root);
+    if std::env::var_os("SYSTEM7_WINDOW_WINDOWS").is_some()
+    {
+        command.arg("--windows-headless");
+    }
+    let result = command.output().expect("start isolated drag profiling transport");
+    assert!(result.status.success(),
+            "drag capture failed:\n{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr));
+    let report: Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(report["disk_sha256_before"], report["disk_sha256_after"]);
+    let motion = &report["motion"];
+    for field in
+        ["scene_rev", "updates", "compositions", "menu_paints", "first", "front", "windows"]
+    {
+        assert_eq!(motion["state_before"][field], motion["state_after"][field],
+                   "held drag changed {field}");
+    }
+    let bytes = |field: &str| fs::read(output.join(motion[field].as_str().unwrap())).unwrap();
+    let before = bytes("back_before");
+    assert_eq!(before.len(), 640 * 480 * 4);
+    assert_eq!(before, bytes("back_after"), "held window drag altered the backbuffer");
+    assert_eq!(motion["trace"]["overwritten"], 0);
+    let rows = motion["trace"]["records"].as_array().unwrap();
+    let mut pending = None;
+    let mut coalesced = 0;
+    let mut latency = Vec::new();
+    let mut xor_times = Vec::new();
+    let mut xor_pixels = Vec::new();
+    let mut decoded_ticks = Vec::new();
+    for row in rows
+    {
+        assert_ne!(row[2], 7, "drag replayed a retained scene: {row}");
+        assert_ne!(row[2], 4, "held drag generated update work: {row}");
+        if row[2] == 1 && row[4] == 1
+        {
+            if pending.is_some()
+            {
+                coalesced += 1;
+            }
+            let tick = row[1].as_u64().unwrap();
+            decoded_ticks.push(tick);
+            pending =
+                Some((tick, row[5].as_u64().unwrap() - 1, row[6].as_u64().unwrap() - 1, false));
+        }
+        else if row[2] == 5 && row[4].as_u64() == Some(u64::MAX)
+        {
+            let pixels = row[5].as_u64().unwrap();
+            assert!(pixels > 0 && pixels <= 3200, "drag swept more than its edge budget: {row}");
+            xor_pixels.push(pixels);
+            xor_times.push(row[6].as_u64().unwrap() * 100);
+            if let Some(pending) = &mut pending
+            {
+                pending.3 = true;
+            }
+        }
+        else if row[2] == 14
+        {
+            assert!(row[5].as_u64().unwrap() <= 256, "held drag copied scene pixels: {row}");
+            if let Some((tick, left, top, xored)) = pending
+            {
+                let from = row[6].as_u64().unwrap();
+                let to = row[7].as_u64().unwrap();
+                if xored
+                   && from >> 32 <= left
+                   && from & 0xffff_ffff <= top
+                   && to >> 32 >= left + 16
+                   && to & 0xffff_ffff >= top + 16
+                {
+                    latency.push((row[1].as_u64().unwrap() - tick) * 100);
+                    pending = None;
+                }
+            }
+        }
+    }
+    assert!(pending.is_none(), "final drag feedback never reached the framebuffer");
+    assert!(latency.len() >= 100, "drag made insufficient sustained presentation progress");
+    assert_eq!(latency.len() + coalesced, decoded_ticks.len());
+    let distribution = |values: &[u64]| {
+        assert!(!values.is_empty());
+        let mut v = values.to_vec();
+        v.sort_unstable();
+        let p = |n: usize| v[(v.len() * n).div_ceil(100) - 1];
+        serde_json::json!({"samples":v.len(),"p50_ns":p(50),"p95_ns":p(95),"p99_ns":p(99),"max_ns":v.last()})
+    };
+    let strict = std::env::var_os("SYSTEM7_STRICT_EVENT_LATENCY").is_some();
+    let gaps: Vec<_> = decoded_ticks.windows(2).map(|p| (p[1] - p[0]) * 100).collect();
+    let profile = serde_json::json!({"submitted":motion["submitted"].as_array().unwrap().len(),
+        "decoded":decoded_ticks.len(),"coalesced":coalesced,
+        "decoded_to_outline_and_cursor":distribution(&latency),"xor":distribution(&xor_times),
+        "max_xor_pixels":xor_pixels.iter().max(),"decoded_interarrival":distribution(&gaps),
+        "strict":strict,"limit_ns":1_000_000,
+        "limits":"Every decoded motion including the first; coalescing is counted. Guest decode to completed outline XOR and cursor copy excludes host submission/polling delay and scanout. Paused snapshots are outside the stream."});
+    fs::write(output.join("drag-profile.json"),serde_json::to_vec_pretty(&profile).unwrap()).unwrap();
+    if strict
+    {
+        assert!(latency.iter().all(|&ns| ns < 1_000_000),
+                "drag exceeded strict 1ms gate: {profile}");
+    }
+    let observations = report["observations"].as_array().unwrap();
+    let frame = |name: &str| {
+        Frame::read(&output.join(observations.iter().find(|v|v["name"]==name).unwrap()["frame"].as_str().unwrap()))
+    };
+    frame("profile-baseline").assert_same(&frame("profile-cancelled"),
+                                          "cancel left stale drag or cursor pixels");
+    let held = frame("profile-held");
+    held.assert_same(&frame("profile-paint-restored-held"),
+                     "scene paint left damaged outline pixels");
+    let painted = frame("profile-painted-held");
+    let mut changed = 0;
+    for y in 0..480
+    {
+        for x in 0..640
+        {
+            if held.pixel(x, y) != painted.pixel(x, y)
+            {
+                changed += 1;
+                assert!((100..540).contains(&x) && (100..160).contains(&y),
+                        "paint escaped its damaged strip: {x},{y}");
+            }
+        }
+    }
+    assert!(changed > 1000, "paint-under-drag scenario did not change real content");
+    fs::write(
+              output.join("rust-acceptance.json"),
+              serde_json::to_vec_pretty(&serde_json::json!({
+        "status":"passed","profile":profile,"backbuffer_bytes_compared":before.len(),
+        "scene_replays_during_held_motion":0,"scene_paint_changed_pixels":changed})).unwrap()
+    ).unwrap();
+}

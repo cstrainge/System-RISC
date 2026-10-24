@@ -12,6 +12,9 @@ import json
 from pathlib import Path
 import time
 import os
+import re
+from system7_trace_capture import input_stream, snapshot as trace_snapshot
+from capture_system7_event_trace import delta
 import shutil
 import subprocess
 import system7_vm as vm
@@ -43,16 +46,18 @@ def private_probe_disk(output, menus=False, deferred=False):
     raw.unlink()
     return private
 
-def capture(output, probe=False, menus=False):
+def capture(output, probe=False, menus=False, profile=False, windows=False):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     disk = vm.DIST / 'system7.qcow2'
     disk_before = hashlib.sha256(disk.read_bytes()).hexdigest()
     if probe:
         vm.DIST = private_probe_disk(output,menus)
-    process, endpoint = vm.launch(output / 'vm')
+    options = {'frontend': 'native-headless', 'qmp_port': 4467} if windows else {}
+    process, endpoint = vm.launch(output / 'vm', **options)
     serial = output / 'vm/serial.log'
     observations = []
+    motion = None
 
     def state():
         return observer.read(endpoint, serial)
@@ -90,11 +95,59 @@ def capture(output, probe=False, menus=False):
         # Let SDK scene commits following a release reach the compositor.
         time.sleep(.12)
         path = output / f'{name}.ppm'
-        vm.qmp('screendump', {'filename': str(path)}, endpoint)
+        vm.qmp('screendump', {'filename': vm.windows_path(path) if windows else str(path)}, endpoint)
         observations.append({'name': name, 'state': state(), 'frame': path.name})
 
+    def save_backbuffer(name):
+        marker = re.search(r'DISPLAY_BUFFERS back=(\d+) front=(\d+) bytes=(\d+)', serial.read_text())
+        if not marker:
+            raise RuntimeError('System did not publish framebuffer diagnostics')
+        path = output / (name + '.bin')
+        vm.qmp('stop', endpoint=endpoint)
+        try:
+            vm.qmp('pmemsave', {'val': int(marker[1]), 'size': int(marker[3]),
+                'filename': vm.windows_path(path) if windows else str(path)}, endpoint)
+        finally:
+            vm.qmp('cont', endpoint=endpoint)
+        return path.name
+
     try:
-        if menus:
+        if profile:
+            wait(lambda _: 'WINDOW_PROBE_READY' in serial.read_text(errors='replace'))
+            key_transition('v', True); key_transition('v', False)
+            move(230,88); snapshot('profile-baseline')
+            button(True)
+            back_before = save_backbuffer('drag-back-before')
+            start_trace = trace_snapshot(endpoint, serial, output, 'drag-motion-before')
+            start_state = state()
+            submitted = []
+            with input_stream(endpoint) as stream:
+                started = time.monotonic()
+                for index in range(200):
+                    point = [231 + index % 60, 89 + index % 30] if index < 199 else [289,127]
+                    remaining = started + index * .008 - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(remaining)
+                    stream([{'type': 'abs', 'data': {'axis': 'x', 'value': (point[0]*32767+638)//639}},
+                            {'type': 'abs', 'data': {'axis': 'y', 'value': (point[1]*32767+478)//479}}])
+                    submitted.append({'point': point, 'seconds': time.monotonic()-started})
+            wait(lambda current: current['mouse'] == '289,127')
+            end_state = state()
+            end_trace = trace_snapshot(endpoint, serial, output, 'drag-motion-after')
+            back_after = save_backbuffer('drag-back-after')
+            snapshot('profile-held')
+            key_transition('p',True);key_transition('p',False)
+            wait(lambda _: 'WINDOW_PROBE_PAINT blue' in serial.read_text())
+            snapshot('profile-painted-held')
+            key_transition('p',True);key_transition('p',False)
+            wait(lambda _: 'WINDOW_PROBE_PAINT white' in serial.read_text())
+            snapshot('profile-paint-restored-held')
+            move(230,10);button(False);move(230,88)
+            snapshot('profile-cancelled')
+            motion = {'state_before': start_state, 'state_after': end_state,
+                      'submitted': submitted, 'trace': delta(start_trace,end_trace),
+                      'back_before': back_before, 'back_after': back_after}
+        elif menus:
             wait(lambda _: 'WINDOW_PROBE_READY' in serial.read_text(errors='replace'))
             move(16,444);snapshot('menu-baseline')
             move(50,10);button(True);snapshot('menu-file')
@@ -169,6 +222,7 @@ def capture(output, probe=False, menus=False):
         report = {'profile': 'native-rv64-640x480', 'observations': observations,
                   'disk_sha256_before': disk_before,
                   'disk_sha256_after': hashlib.sha256(disk.read_bytes()).hexdigest(),
+                  'motion': motion,
                   'launch': json.loads((output / 'vm/command.json').read_text()),
                   'menu_sizing_pass': 'MENU_SIZING_PASS cases=8' in serial.read_text(errors='replace'),
                   'menu_events':[line for line in serial.read_text(errors='replace').splitlines() if line.startswith('MENU_PROBE ')],
@@ -187,5 +241,7 @@ if __name__ == '__main__':
     parser.add_argument('--output', required=True)
     parser.add_argument('--probe', action='store_true', help='private application using only publicSDK')
     parser.add_argument('--menus', action='store_true')
+    parser.add_argument('--profile', action='store_true')
+    parser.add_argument('--windows-headless', action='store_true')
     args=parser.parse_args()
-    capture(args.output,args.probe or args.menus,args.menus)
+    capture(args.output,args.probe or args.menus or args.profile,args.menus,args.profile,args.windows_headless)
