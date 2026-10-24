@@ -117,7 +117,7 @@ impl super::Desktop
             let _ = self.window(CLOSE_WINDOW, &mut window_request(old));
             self.dialogs = Default::default();
         }
-        self.menus = crate::toolbox::menus::Manager::new(self.mdef, crate::machine::traps::gateway);
+        self.menus.clear();
         self.cursors = Default::default();
         // An application can panic between BeginUpdate and EndUpdate. Its
         // uncommitted pixels must never leak into a later presentation.

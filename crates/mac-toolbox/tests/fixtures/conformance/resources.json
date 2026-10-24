@@ -34,6 +34,126 @@
         "format": "file",
         "path": "../../../../../apps/finder/assets/visual/4449544c-6012.bin"
       }
+    },
+    {
+      "type": "MENU",
+      "id": 32000,
+      "symbol": "CAPACITY_MENU_0",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 32001,
+      "symbol": "CAPACITY_MENU_1",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 32002,
+      "symbol": "CAPACITY_MENU_2",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 32003,
+      "symbol": "CAPACITY_MENU_3",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 32004,
+      "symbol": "CAPACITY_MENU_4",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 32005,
+      "symbol": "CAPACITY_MENU_5",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 32006,
+      "symbol": "CAPACITY_MENU_6",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 32007,
+      "symbol": "CAPACITY_MENU_7",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 32008,
+      "symbol": "CAPACITY_MENU_8",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 32009,
+      "symbol": "CAPACITY_MENU_9",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 32010,
+      "symbol": "CAPACITY_MENU_10",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
+    },
+    {
+      "type": "MENU",
+      "id": 32011,
+      "symbol": "CAPACITY_MENU_11",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
     }
   ]
 }

@@ -12,7 +12,6 @@ use core::sync::atomic::{AtomicU16, Ordering};
 // cannot issue the same ID. The classic memory wire contract stays unchanged.
 static EDITOR_GENERATIONS: [AtomicU16; mac_abi::textedit::MAX_EDITORS] =
     [const { AtomicU16::new(0) }; mac_abi::textedit::MAX_EDITORS];
-static MENU_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static MODULE_GENERATIONS: [AtomicU16; 32] = [const { AtomicU16::new(0) }; 32];
 static DRIVER_INTERFACE_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DRIVER_REQUEST_GENERATIONS: [AtomicU16; 256] = [const { AtomicU16::new(0) }; 256];
@@ -56,7 +55,6 @@ pub enum Kind
     FileWrites,
     Volumes,
     TextEdit,
-    Menus,
     Modules,
     DriverInterfaces,
     DriverRequests,
@@ -104,7 +102,6 @@ impl Kind
             Self::Modules => 32,
             Self::DriverInterfaces => 128,
             Self::DriverRequests => 256,
-            Self::Menus => 8,
             Self::TextEdit => mac_abi::textedit::MAX_EDITORS,
             Self::Volumes => 128,
             Self::Memory => 512,
@@ -164,13 +161,12 @@ impl Kind
             {
                 Self::HostTransactions.first_slot() + Self::HostTransactions.capacity() as u32
             }
-            Self::Modules => Self::Menus.first_slot() + Self::Menus.capacity() as u32,
+            Self::Modules => Self::TextEdit.first_slot() + Self::TextEdit.capacity() as u32,
             Self::DriverInterfaces => Self::Modules.first_slot() + Self::Modules.capacity() as u32,
             Self::DriverRequests =>
             {
                 Self::DriverInterfaces.first_slot() + Self::DriverInterfaces.capacity() as u32
             }
-            Self::Menus => Self::TextEdit.first_slot() + Self::TextEdit.capacity() as u32,
             Self::TextEdit => Self::Volumes.first_slot() + Self::Volumes.capacity() as u32,
             Self::Volumes => Self::FileWrites.first_slot() + Self::FileWrites.capacity() as u32,
             Self::Memory => 1,
@@ -214,7 +210,6 @@ impl Kind
             Self::DriverInterfaces => DRIVER_INTERFACE_GENERATIONS.get(index),
             Self::DriverRequests => DRIVER_REQUEST_GENERATIONS.get(index),
             Self::TextEdit => EDITOR_GENERATIONS.get(index),
-            Self::Menus => MENU_GENERATIONS.get(index),
             _ => None
         }
     }

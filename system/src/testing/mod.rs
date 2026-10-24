@@ -14,6 +14,7 @@ use mac_abi::{traps::*, *};
 struct Session
 {
     registry:      crate::toolbox::handles::Registry<Session>,
+    menus:         RefCell<std::vec::Vec<(u64, crate::toolbox::menus::Manager)>>,
     inspection:    inspection::Domains,
     drag:          crate::toolbox::drag::Manager,
     drag_notices:  std::vec::Vec<crate::toolbox::drag::Notice>,
@@ -95,8 +96,13 @@ impl Default for Session
                               crate::toolbox::quickdraw::worlds::specification(true),
                               crate::toolbox::handles::cleanup::Complete(crate::toolbox::quickdraw::worlds::ReleaseStorage))
                     .unwrap();
+        registry.register(&registrar, crate::toolbox::menus::lifetime::specification(false),
+            crate::toolbox::handles::cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseMenus)).unwrap();
+        registry.register(&registrar, crate::toolbox::menus::lifetime::specification(true),
+            crate::toolbox::handles::cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseStorage)).unwrap();
         Self { worlds: crate::toolbox::quickdraw::worlds::Worlds::new((worlds, world_storage)).unwrap(),
                registry,
+               menus: RefCell::new(std::vec::Vec::new()),
                inspection: inspection::Domains::new(),
                drag: Default::default(),
                drag_notices: std::vec::Vec::new(),
@@ -146,8 +152,17 @@ impl Drop for Scope
     fn drop(&mut self)
     {
         SESSION.with(|slot| {
-                   slot.borrow_mut().take();
-               });
+            if let Some(mut session) = slot.borrow_mut().take() {
+                let count = session.inspection.iter().count();
+                for index in 0..count {
+                    let owner = session.inspection.iter().nth(index).unwrap().ledger().clone();
+                    let result = mac_object_table::walk::drain(&mut session, &owner,
+                        |session, key| session.registry.dispatch(key.kind()),
+                        |key, error| std::eprintln!("Host fixture cleanup retained {key:?}: {error}"));
+                    if let Err(error) = result { std::eprintln!("Host fixture cleanup barrier retained: {error}"); }
+                }
+            }
+        });
     }
 }
 /// Expose a live native service table for one host test. Each test thread gets
@@ -197,15 +212,17 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
     }
     match number
     {
+        MENU => unsafe { menus::dispatch(pointer, size) },
         INSPECTION => SESSION.with(|session| {
             let session = session.borrow();
             let session = session.as_ref().unwrap();
+            let caller = inspection::caller_identity(&session.inspection, files::current_owner());
             match unsafe { request::<mac_abi::inspection::Call>(pointer, size) }
             {
                 Ok(call) => if matches!(call.operation, mac_abi::inspection::KIND_BEGIN | mac_abi::inspection::KIND | mac_abi::inspection::KIND_ID) {
                     crate::toolbox::inspection::registered_kinds(&session.registry,
-                        session.inspection.get(files::current_owner()).is_some(), call) as i64
-                } else { crate::toolbox::inspection::request(&session.inspection, files::current_owner(), call) as i64 },
+                        caller.is_some(), call) as i64
+                } else { crate::toolbox::inspection::request(&session.inspection, caller.unwrap_or(files::current_owner()), call) as i64 },
                 Err(error) => error as i64
             }
         }),

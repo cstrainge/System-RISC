@@ -607,6 +607,25 @@ contention. These samples exclude pre-driver/frame latency and are not a hard
 real-time or MMU-isolation claim. Facility compile-fail tests also forbid extracting
 non-Copy retained payloads through cleanup-state access.
 
+Menus now follow that same registered ownership path. MENU owns the fallibly
+allocated MDEF state; MNST owns ordering, selection and tracking for one actual
+process incarnation. Current and saved application contexts dispatch release from
+the ticket's authenticated owner; explicit disposal and process teardown share the
+same release implementation. Installation reserves bar capacity before publishing
+the payload. Disposal prepares fallible reflow before invalidation, so refusal
+leaves the old menu intact. Empty/read/no-change requests do not allocate backing,
+and hovering without a highlight change does not request recomposition.
+
+Native MenuHandle is opaque u64; semantic i16 MenuId and the classic protocol stay
+separate. The old global eight-menu table and generation array are removed.
+Canonical public-SDK acceptance covers twelve simultaneous menus, sixty-four
+reuses, stale/foreign rejection and ledger accounting. A native worker abandons a
+menu plus its backing alongside the previous resources: twelve completed
+lifetimes take ten walk callbacks because two children are disposed by parent
+release. The optimized image, native original-menu comparisons, Linux/Windows
+Reactor Room, aggregate conformance and strict latency gates pass. This remains
+manager migration, not complete EXIT/rollback cleanup or live page activation.
+
 Other managers, the rest of the old EXIT roll call, module-owned KREG teardown
 and document aliases still require migration. Do not call this complete stage-3 cleanup or zero leaks across
 all Toolbox kinds. An abandoned busy registry retains its provider/root pending

@@ -21,7 +21,7 @@ identity!(Cnid, u32);
 identity!(ProcessId, u64);
 identity!(ThreadId, u64);
 identity!(MenuId, i16);
-identity!(MenuHandle, u32);
+identity!(MenuHandle, u64);
 identity!(FileHandle, u32);
 identity!(FileWriteHandle, u32);
 identity!(ResourceFileHandle, u32);

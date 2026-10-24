@@ -23,16 +23,19 @@ pub(super) struct Saved
 }
 impl Saved
 {
-    pub fn new(id: u64, mdef: DefinitionEntry) -> Self
+    pub fn try_new(id: u64, mdef: DefinitionEntry) -> Result<Self, Status>
     {
-        Self { id,
-               crash: Default::default(),
-               dialogs: Default::default(),
-               menus: crate::toolbox::menus::Manager::new(mdef, crate::machine::traps::gateway),
-               cursors: Default::default(),
-               classic_font: Default::default(),
-               events: Box::new(EventManager::new()),
-               textedit: Default::default() }
+        Ok(Self { id,
+                  crash: Default::default(),
+                  dialogs: Default::default(),
+                  menus:
+                      crate::toolbox::menus::Manager::new(crate::toolbox::handles::menu_kinds()?,
+                                                          mdef,
+                                                          crate::machine::traps::gateway)?,
+                  cursors: Default::default(),
+                  classic_font: Default::default(),
+                  events: Box::try_new(EventManager::new()).map_err(|_| NO_MEMORY)?,
+                  textedit: Default::default() })
     }
 }
 impl Desktop
@@ -558,6 +561,15 @@ impl Desktop
                                                catalog.file_type, resources)?;
         let entry = crate::kernel::reload_image(image)?;
         let id = self.processes.add(catalog.name(), call.volume, call.cnid, image)?;
+        let local = match Saved::try_new(id, self.mdef)
+        {
+            Ok(local) => local,
+            Err(error) =>
+            {
+                self.processes.remove(id)?;
+                return Err(error);
+            }
+        };
         // RAM-only pin admission closes launch-vs-transfer races. No storage
         // operation or provider callback runs under this desktop guard.
         let pinned = crate::kernel::with_files(|files| {
@@ -579,7 +591,7 @@ impl Desktop
                 return Err(e);
             }
         };
-        self.locals.push(Saved::new(id, self.mdef));
+        self.locals.push(local);
         self.processes.get_mut(id)?.info.thread = thread;
         self.activate_process(id)?;
         call.info = self.processes.snapshot(id)?;
@@ -675,5 +687,38 @@ impl Desktop
             _ => return Err(NOT_SUPPORTED)
         }
         Ok(())
+    }
+}
+
+impl crate::toolbox::menus::lifetime::MenuHost for Desktop
+{
+    fn release_menu(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                    -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        let owner = ticket.key().owner().incarnation();
+        let manager = if self.owner == owner
+        {
+            Some(&mut self.menus)
+        }
+        else
+        {
+            self.locals.iter_mut().find(|state| state.id == owner).map(|state| &mut state.menus)
+        };
+        match manager { Some(manager) => manager.release(ticket), None => Err(<mac_object_table::domain::CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket)) }
+    }
+
+    fn release_menu_storage(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                            -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        let owner = ticket.key().owner().incarnation();
+        let manager = if self.owner == owner
+        {
+            Some(&mut self.menus)
+        }
+        else
+        {
+            self.locals.iter_mut().find(|state| state.id == owner).map(|state| &mut state.menus)
+        };
+        match manager { Some(manager) => manager.release_storage(ticket), None => Err(<mac_object_table::domain::CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket)) }
     }
 }

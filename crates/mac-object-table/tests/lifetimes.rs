@@ -23,7 +23,6 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
                  Kind::FileWrites,
                  Kind::Volumes,
                  Kind::TextEdit,
-                 Kind::Menus,
                  Kind::Modules,
                  Kind::DriverInterfaces,
                  Kind::DriverRequests,

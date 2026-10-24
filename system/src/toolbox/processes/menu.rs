@@ -241,18 +241,20 @@ impl ApplicationMenu
         true
     }
 
-    pub fn hover(&mut self, point: Point)
+    pub fn hover(&mut self, point: Point) -> bool
     {
         if !self.tracking
         {
-            return;
+            return false;
         }
+        let previous = self.highlighted;
         self.highlighted = invoke(self.definition,
                                   self.gate,
                                   &mut self.state,
                                   HIT_ITEM,
                                   (((point.v as u16 as u32) << 16) | point.h as u16 as u32) as i64,
                                   core::ptr::null_mut()) as i16;
+        previous != self.highlighted
     }
 
     pub fn release(&mut self, point: Point) -> Option<Action>

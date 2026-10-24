@@ -733,6 +733,8 @@ pub fn worker(system: &System<'_>) -> Result<()>
     let mut announcement = [0; 64];
     standard_file_lifecycle(system)?;
     let leaked_world = system.quickdraw().new_gworld(8, 8)?;
+    let leaked_menu =
+        system.menus().install_owned(mac_toolbox::ResourceScope::Application, 2001)?;
     let parent_window = parse_window(system.scrap().text(&mut announcement)?, "process-observer-window:")
         .ok_or(Failure::Contract("observer window publication"))?;
     synthetic_private(system, parent_window, WORKER_SYNTHETIC)?;
@@ -794,7 +796,9 @@ pub fn worker(system: &System<'_>) -> Result<()>
                             (*b"SFDL", 0),
                             (*b"SFST", 1),
                             (*b"GWLD", 1),
-                            (*b"GWST", 1)];
+                            (*b"GWST", 1),
+                            (*b"MENU", 1),
+                            (*b"MNST", 1)];
             require(ledger.len() == expected.len() as u64,
                     "worker exit pool census missing a registered kind")?;
             for index in 0..ledger.len()
@@ -826,6 +830,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
             core::mem::forget(control);
             core::mem::forget(scroll_box);
             core::mem::forget(leaked_world);
+            core::mem::forget(leaked_menu);
             return Ok(());
         }
     }

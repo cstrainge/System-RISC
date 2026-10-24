@@ -311,7 +311,7 @@ impl Desktop
                   scroll_boxes: super::controls::scrollbox::Manager::new(super::handles::scroll_box_kinds()?)?,
                   controls: super::controls::objects::Manager::new(super::handles::controls_kinds()?)?,
                   dialogs: Default::default(),
-                  menus: super::menus::Manager::new(mdef, crate::machine::traps::gateway),
+                  menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
                   desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
                   cursors: Default::default(),
                   busy_cursor,
@@ -343,7 +343,7 @@ impl Desktop
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
                   presentations: 0,
                   compositions: 0,
-                  cdef,mdef,owner:finder,foreground:finder,locals:alloc::vec![local::Saved::new(finder,mdef)],
+                  cdef,mdef,owner:finder,foreground:finder,locals:alloc::vec![local::Saved::try_new(finder,mdef)?],
                   processes,
                   app_menu:super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,crate::kernel::resources().ok_or(NOT_SUPPORTED)?)? })
     }
@@ -370,7 +370,12 @@ impl Desktop
         {
             return self.app_menu.query(call).map_or_else(|e| e, |_| OK);
         }
-        let result = self.menus.request(call, resources);
+        let owner = match self.processes.ledger(self.owner)
+        {
+            Ok(owner) => owner,
+            Err(status) => return status
+        };
+        let result = self.menus.request(&owner, call, resources);
         if matches!(result, Ok(true)) && self.owner == self.foreground
         {
             self.menu_cache.invalidate();
@@ -1643,9 +1648,7 @@ impl Desktop
         if !matches!(input, Input::Key { .. })
         {
             self.cursor_dirty = true;
-            self.redraw |= self.windows.is_tracking()
-                           || self.menus.is_tracking()
-                           || self.app_menu.is_tracking();
+            self.redraw |= self.windows.is_tracking();
         }
         if self.crash_input(input, when)
         {
@@ -1671,12 +1674,12 @@ impl Desktop
                 self.events.mouse = point;
                 if self.app_menu.is_tracking()
                 {
-                    self.app_menu.hover(point);
+                    self.redraw |= self.app_menu.hover(point);
                     return;
                 }
                 if self.menus.is_tracking()
                 {
-                    self.menus.hover(point);
+                    self.redraw |= self.menus.hover(point);
                     return;
                 }
                 if let Some(action) = self.windows.track(point, false, &mut self.events, when)
@@ -1703,9 +1706,10 @@ impl Desktop
                         self.redraw = true;
                         return;
                     }
+                    let previous_menu = self.menus.selected_menu();
                     if self.menus.begin(point)
                     {
-                        self.redraw = true;
+                        self.redraw |= previous_menu != self.menus.selected_menu();
                         return;
                     }
                     let hit = self.windows.find_window(point);
@@ -1793,6 +1797,7 @@ impl Desktop
                 {
                     if self.app_menu.is_tracking()
                     {
+                        self.redraw = true;
                         if let Some(action) = self.app_menu.release(point)
                         {
                             self.application_action(action);
@@ -1801,7 +1806,8 @@ impl Desktop
                     }
                     if self.menus.is_tracking()
                     {
-                        if let Some(selection) = self.menus.release(point)
+                        self.redraw |= self.menus.selected_menu().is_some();
+                        if let Some(selection) = self.menus.release_tracking(point)
                         {
                             self.menu_selection(selection, when);
                         }

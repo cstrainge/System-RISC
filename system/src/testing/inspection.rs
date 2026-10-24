@@ -185,6 +185,17 @@ pub fn begin_cleanup(owner: u64) -> Cleanup
                   })
 }
 
+/// Resolve only an existing trusted fixture context; inspection never enrolls
+/// a caller or fabricates authority for an unknown scheduler label.
+pub(super) fn caller_identity(directory: &Domains, alias: u64) -> Option<u64>
+{
+    directory.get(alias)
+             .or_else(|| {
+                 directory.iter().find(|entry| entry.value().scheduler_alias == Some(alias))
+             })
+             .map(|entry| entry.ledger().owner().incarnation())
+}
+
 // Host tests may use arbitrary trusted scheduler labels (7, 8, …). Resolve them
 // to real facility-issued domains, never fabricate a DomainId from that label.
 pub(crate) fn caller_ledger(alias: u64)

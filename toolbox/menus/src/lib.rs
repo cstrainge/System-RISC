@@ -193,6 +193,10 @@ impl MenuRef<'_>
 
     fn call(self, operation: u32, item: u16, value: u32) -> Result<MenuCall>
     {
+        if self.handle.0 == 0
+        {
+            return Err(Error::NotFound);
+        }
         let mut call = MenuCall { operation,
                                   handle: self.handle.0,
                                   item,
@@ -246,6 +250,10 @@ impl MenuRef<'_>
     pub fn set_item(self, item: u16, text: &str, command: u32, enabled: bool, checked: bool)
                     -> Result<()>
     {
+        if self.handle.0 == 0
+        {
+            return Err(Error::NotFound);
+        }
         let mut replacement = MenuItemState::EMPTY;
         if text.len() > replacement.text.len()
         {

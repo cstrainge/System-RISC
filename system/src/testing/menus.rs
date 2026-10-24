@@ -1,92 +1,72 @@
-//! Real resource-based Menu Manager fixture. No behavioral expectations live here.
-use core::cell::RefCell;
-
+//! Menu tests share the production dispatch and the common owner/registry fixture.
 use mac_abi::*;
-struct Session
-{
-    memory: RefCell<crate::toolbox::memory::Manager>,
-    menus:  RefCell<crate::toolbox::menus::Manager>,
-    system: std::vec::Vec<mac_formats::resource::Resource>,
-    app:    std::vec::Vec<mac_formats::resource::Resource>,
-    fonts:  crate::toolbox::quickdraw::fonts::FontManager
-}
-std::thread_local! {static SESSION:RefCell<Option<Session>>=const{RefCell::new(None)};}
-struct Scope;
-impl Drop for Scope
-{
-    fn drop(&mut self)
-    {
-        SESSION.with(|s| {
-                   s.borrow_mut().take();
-               });
-    }
-}
+
 pub fn with_resources<R>(system: &[u8], application: &[u8], run: impl FnOnce(&SystemServices) -> R)
                          -> R
 {
-    let mut system = mac_formats::resource::decode(system).expect("system fork");
-    let app = mac_formats::resource::decode(application).expect("application fork");
-    let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system);
-    SESSION.with(|slot|{assert!(slot.borrow().is_none());*slot.borrow_mut()=Some(Session{memory:RefCell::new(Default::default()),menus:RefCell::new(crate::toolbox::menus::Manager::new(crate::test_mdef::standard_menu_definition,gate)),system,app,fonts});});
-    let _scope = Scope;
-    let services = SystemServices { header:       Header::for_type::<SystemServices>(),
-                                    trap:         gate,
-                                    capabilities: CAP_GRAPHICS };
-    run(&services)
+    super::with_resource_forks(system, application, run).expect("valid menu fixture resource forks")
 }
-unsafe extern "C" fn gate(number: u32, pointer: *mut (), size: usize) -> i64
+
+/// # Safety
+/// The host service gate lends a valid, exclusive request exactly as the native
+/// trap boundary does. Definition calls may borrow immutable font services while
+/// this per-owner Menu Manager is mutably borrowed.
+pub(super) unsafe fn dispatch(pointer: *mut (), size: usize) -> i64
 {
-    if number == traps::SURFACE
+    let call = match unsafe { super::request::<menus::MenuCall>(pointer, size) }
     {
-        return unsafe { crate::toolbox::quickdraw::surface_gate(number, pointer, size) };
+        Ok(call) => call,
+        Err(status) => return status as i64
+    };
+    let owner = match super::inspection::caller_ledger(super::files::current_owner())
+    {
+        Ok(owner) => owner,
+        Err(status) => return status as i64
+    };
+    super::SESSION.with(|slot| {
+        let session = slot.borrow();
+        let session = session.as_ref().expect("live host menu session");
+        let mut menus = match session.menus.try_borrow_mut() { Ok(menus) => menus, Err(_) => return SERVICE_BUSY as i64 };
+        let at = match menus.iter().position(|(id, _)| *id == owner.owner().incarnation()) {
+            Some(at) => at,
+            None => {
+                if menus.try_reserve(1).is_err() { return NO_MEMORY as i64; }
+                let kinds = match (session.registry.get(crate::toolbox::handles::KindCode(*b"MENU")),
+                                   session.registry.get(crate::toolbox::handles::KindCode(*b"MNST"))) {
+                    (Ok(objects), Ok(storage)) => (objects, storage),
+                    (Err(error), _) | (_, Err(error)) => return crate::toolbox::handles::registry_status(&error) as i64
+                };
+                let manager = match crate::toolbox::menus::Manager::new(kinds, crate::test_mdef::standard_menu_definition, super::host_gate) {
+                    Ok(manager) => manager, Err(status) => return status as i64
+                };
+                let at = menus.len();
+                menus.push((owner.owner().incarnation(), manager)); at
+            }
+        };
+        let resources = crate::toolbox::resources::manager::Manager::new(&session.resources, &session.application, session.fonts.resources());
+        menus[at].1.request(&owner, call, resources).map_or_else(|status| status as i64, |_| OK as i64)
+    })
+}
+
+impl crate::toolbox::menus::lifetime::MenuHost for super::Session
+{
+    fn release_menu(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                    -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        let owner = ticket.key().owner().incarnation();
+        match self.menus.get_mut().iter_mut().find(|(id, _)| *id == owner) {
+            Some((_, manager)) => manager.release(ticket),
+            None => Err(<mac_object_table::domain::CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket))
+        }
     }
-    SESSION.with(|slot| {
-               let slot = slot.borrow();
-               let Some(session) = slot.as_ref()
-               else
-               {
-                   return NOT_SUPPORTED as i64;
-               };
-               if number == traps::MEMORY
-               {
-                   let Ok(mut memory) = session.memory.try_borrow_mut()
-                   else
-                   {
-                       return SERVICE_BUSY as i64;
-                   };
-                   return unsafe {
-                       crate::toolbox::memory::native::dispatch(&mut memory, number, pointer, size)
-                   };
-               }
-               if number == traps::FONT
-               {
-                   return unsafe {
-                       crate::toolbox::quickdraw::native::dispatch(number,
-                                                                   pointer,
-                                                                   size,
-                                                                   Some(&session.fonts))
-                   };
-               }
-               if number != traps::MENU
-               {
-                   return NOT_SUPPORTED as i64;
-               }
-               if pointer.is_null()
-                  || size != core::mem::size_of::<menus::MenuCall>()
-                  || !(pointer as usize).is_multiple_of(core::mem::align_of::<menus::MenuCall>())
-               {
-                   return BAD_ARGUMENT as i64;
-               }
-               let Ok(mut menus) = session.menus.try_borrow_mut()
-               else
-               {
-                   return SERVICE_BUSY as i64;
-               };
-               let resources =
-                   crate::toolbox::resources::manager::Manager::new(&session.system,
-                                                                    &session.app,
-                                                                    session.fonts.resources());
-               menus.request(unsafe { &mut *pointer.cast::<menus::MenuCall>() }, resources)
-                    .map_or_else(|e| e as i64, |_| 0)
-           })
+
+    fn release_menu_storage(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                            -> Result<(), mac_object_table::domain::CompletionError>
+    {
+        let owner = ticket.key().owner().incarnation();
+        match self.menus.get_mut().iter_mut().find(|(id, _)| *id == owner) {
+            Some((_, manager)) => manager.release_storage(ticket),
+            None => Err(<mac_object_table::domain::CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket))
+        }
+    }
 }

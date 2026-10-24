@@ -598,13 +598,21 @@ The global 256-slot Control table and its shared generation array are removed.
 
 ## Native menu object ownership (development ABI 1)
 
-MenuCall includes a u32 generation-tagged handle after operation. INSTALL returns
+MenuCall includes an opaque u64 registered handle after operation. INSTALL returns
 that handle and the resource's semantic menu_id. MenuId is a resource property,
 not an object lifetime. A nonzero handle on a query/mutation resolves the live
 object before accessing its semantic menu number; stale and foreign handles fail.
 FIND resolves a current semantic menu number explicitly, and DISPOSE requires a
 live handle. CLEAR retains generation history. Native owners use these handles;
 classic semantic menu operations continue to use their original resource IDs.
+MENU owns each menu payload and MNST owns the per-domain ordering/tracking
+backing. Both are public-ledger kinds released by the same invalidate-first walk
+as explicit disposal. Menus grow to available memory; there is no global eight-menu
+ceiling or packed legacy namespace. A different domain may use the same semantic
+menu ID without sharing its native handle. Neither callers nor tools may infer a
+slot or generation from native handle bits. The classic semantic menu operations
+retain their original resource IDs and do not carry native tokens.
+
 All native applications, System and definition resources rebuild at ABI 1.
 
 ## Native drag transport (development ABI 1)

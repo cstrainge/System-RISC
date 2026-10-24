@@ -404,3 +404,77 @@ fn dynamic_document_items_remeasure_and_failed_changes_leave_menu_usable()
         assert_eq!(menu.set_item(1, "Stale", 0, true, false), Err(Error::NotFound));
     });
 }
+
+fn capacity_fork() -> Vec<u8>
+{
+    let resources: Vec<_> = (32000i16..32012).map(|id| {
+                                                 // Original MENU header + Pascal title + empty
+                                                 // item-list terminator.
+                                                 let mut data = id.to_be_bytes().to_vec();
+                                                 data.extend_from_slice(&[0; 6]);
+                                                 data.extend_from_slice(&1u32.to_be_bytes());
+                                                 data.extend_from_slice(&[1, b'M', 0]);
+                                                 mac_formats::resource::Resource { kind: *b"MENU",
+                                                                                   id,
+                                                                                   name: None,
+                                                                                   attributes: 0,
+                                                                                   data }
+                                             })
+                                             .collect();
+    mac_formats::resource::encode(&resources).unwrap()
+}
+
+#[test]
+fn registered_menus_grow_reuse_slots_and_reject_dead_full_width_handles()
+{
+    let fork = capacity_fork();
+    mac_system::testing::menus::with_resources(&fork, &fork, |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        conformance::ownership::menu_capacity(&system).unwrap();
+        for id in [mac_toolbox::menus::MenuHandle(0), mac_toolbox::menus::MenuHandle(u64::MAX)]
+        {
+            let error = system.menus().menu(id).item_count().unwrap_err();
+            assert_eq!(error, mac_toolbox::Error::NotFound);
+            assert!(error.to_string().contains("not found"));
+        }
+    });
+}
+
+#[test]
+fn foreign_menu_handles_cannot_cross_domains_and_the_registered_walk_releases_payload_and_backing()
+{
+    use mac_system::testing::{files::with_owner, inspection as fixture};
+    use mac_toolbox::{Error, ResourceScope, inspection::Scope};
+    let fork = capacity_fork();
+    mac_system::testing::menus::with_resources(&fork, &fork, |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let own = system.menus().install_owned(ResourceScope::Application, 32000).unwrap();
+        let other = fixture::add("Other menu owner", 0);
+        let foreign = with_owner(other, || {
+            system.menus().install_owned(ResourceScope::Application, 32000).unwrap().into_handle()
+        });
+        assert_ne!(own.handle(), foreign);
+        let error = system.menus().menu(foreign).layout().unwrap_err();
+        assert_eq!(error, Error::NotFound);
+        assert!(error.to_string().contains("not found"));
+        with_owner(other, || {
+            assert_eq!(system.menus().menu(own.handle()).item_count(), Err(Error::NotFound));
+            assert_eq!(system.menus().menu(foreign).item_count().unwrap(), 0);
+            let snapshot = system.inspection().snapshot(Scope::Own).unwrap().ledger(0).unwrap();
+            assert_eq!(snapshot.domain().live, 2);
+            assert_eq!(snapshot.len(), 2);
+            let kinds: Vec<_> = (0..snapshot.len()).map(|i| snapshot.at(i).unwrap().kind).collect();
+            assert!(kinds.contains(b"MENU") && kinds.contains(b"MNST"));
+        });
+        let outcome = fixture::walk_registered(other, false, false);
+        assert!(outcome.failures.is_empty());
+        assert_eq!((outcome.report.released, outcome.report.quarantined), (2, 0));
+        with_owner(other, || {
+            assert_eq!(system.menus().menu(foreign).layout(), Err(Error::NotFound));
+            let snapshot = system.inspection().snapshot(Scope::Own).unwrap().ledger(0).unwrap();
+            assert_eq!((snapshot.domain().live, snapshot.domain().pending), (0, 0));
+        });
+        assert!(own.layout().is_ok(), "another domain's teardown changed our menu");
+        drop(own);
+    });
+}

@@ -48,7 +48,7 @@ impl MenuIcon
 pub struct MenuCall
 {
     pub operation:    u32,
-    pub handle:       u32,
+    pub handle:       u64,
     pub scope:        i16,
     pub menu_id:      i16,
     pub item:         u16,

@@ -16,6 +16,16 @@
         "format": "pstring",
         "text": "process-worker"
       }
+    },
+    {
+      "type": "MENU",
+      "id": 2001,
+      "symbol": "EXIT_MENU",
+      "payload": {
+        "format": "menu",
+        "title": "M",
+        "items": []
+      }
     }
   ]
 }

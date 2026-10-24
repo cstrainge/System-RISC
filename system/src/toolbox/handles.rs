@@ -141,6 +141,10 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                    crate::toolbox::windows::lifetime::ReleaseWindows).map_err(KindAccessError::Registry)?;
                                registry.register(&owner, crate::toolbox::windows::lifetime::specification(true),
                                    crate::toolbox::windows::lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::menus::lifetime::specification(false),
+                                   cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseMenus)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::menus::lifetime::specification(true),
+                                   cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
                            })?;
     Ok(InvocationGate::run(|| run(&registry.lock())))
@@ -194,5 +198,12 @@ pub(crate) fn world_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 pub(crate) fn window_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"WIND"))?, registry.get(KindCode(*b"WNST"))?)))
+        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn menu_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"MENU"))?, registry.get(KindCode(*b"MNST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }

@@ -23,6 +23,11 @@ fn fail_after_creation(system: &System<'_>, identity: &mut WindowId) -> ToolboxR
 
 fn window_pool(system: &System<'_>) -> Result<mac_toolbox::inspection::Pool, Failure>
 {
+    registered_pool(system, *b"WIND")
+}
+fn registered_pool(system: &System<'_>, kind: [u8; 4])
+                   -> Result<mac_toolbox::inspection::Pool, Failure>
+{
     let map = |error: mac_toolbox::inspection::Failure| Failure::Service(error.cause.status());
     let membership =
         system.inspection().snapshot(mac_toolbox::inspection::Scope::Own).map_err(map)?;
@@ -30,12 +35,12 @@ fn window_pool(system: &System<'_>) -> Result<mac_toolbox::inspection::Pool, Fai
     for index in 0..ledger.len()
     {
         let pool = ledger.at(index).map_err(map)?;
-        if pool.kind == *b"WIND"
+        if pool.kind == kind
         {
             return Ok(pool);
         }
     }
-    Err(Failure::Mismatch("Window Manager pool missing from authoritative owner ledger"))
+    Err(Failure::Mismatch("registered object pool missing from authoritative owner ledger"))
 }
 
 fn rejected_window(system: &System<'_>, id: WindowId, gate: mac_abi::TrapGate)
@@ -213,6 +218,7 @@ pub fn graphical(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fai
     editors(system, Some(gate))?;
     system.log("OWNERSHIP_MENU_BEGIN\n")?;
     menus(system, 257)?;
+    menu_capacity(system)?;
     system.log("OWNERSHIP_ALERT_BEGIN\n")?;
     alerts(system)?;
     scroll_boxes(system, gate)?;
@@ -387,9 +393,13 @@ pub fn menus(system: &System<'_>, resource: i16) -> Result<(), Failure>
     let stale = owned.menu();
     let id = owned.id()?;
     assert_eq!(api.find(id)?.handle(), owned.handle());
+    assert!(owned.handle().0 > u64::from(u32::MAX));
     drop(owned);
+    let before = registered_pool(system, *b"MENU")?;
     let mut replacement = api.install_owned(ResourceScope::Application, resource)?;
-    assert_eq!(stale.handle().0 & 0xffff, replacement.handle().0 & 0xffff);
+    let after = registered_pool(system, *b"MENU")?;
+    assert_eq!(after.slots, before.slots, "force actual menu slot reuse");
+    assert_eq!(after.births, before.births + 1);
     assert_ne!(stale.handle(), replacement.handle());
     for result in [stale.layout().map(|_| ()),
                    stale.item_count().map(|_| ()),
@@ -402,7 +412,7 @@ pub fn menus(system: &System<'_>, resource: i16) -> Result<(), Failure>
                                                    size: 4,
                                                    ..Default::default() };
     system.client().memory(&mut memory, &[], &mut [])?;
-    assert_eq!(api.menu(MenuHandle(memory.handle)).layout(), Err(Error::NotFound));
+    assert_eq!(api.menu(MenuHandle(u64::from(memory.handle))).layout(), Err(Error::NotFound));
     memory.operation = mac_abi::memory::DISPOSE;
     system.client().memory(&mut memory, &[], &mut [])?;
     assert_eq!(replacement.id()?, id);
@@ -415,6 +425,51 @@ pub fn menus(system: &System<'_>, resource: i16) -> Result<(), Failure>
     assert!(current.layout().is_ok(), "dropping a cleared menu must not dispose its replacement");
     drop(current);
     assert!(api.find(id).is_err());
+    Ok(())
+}
+
+/// Registered menu objects grow past the old eight-object global cap. Resource
+/// menu numbers remain properties; the issued native handle controls lifetime.
+pub fn menu_capacity(system: &System<'_>) -> Result<(), Failure>
+{
+    use mac_toolbox::{ResourceScope,
+                      menus::{Menu, MenuHandle}};
+    let api = system.menus();
+    api.clear()?;
+    let mut menus: [Option<Menu<'_>>; 12] = core::array::from_fn(|_| None);
+    for (index, menu) in menus.iter_mut().enumerate()
+    {
+        *menu = Some(api.install_owned(ResourceScope::Application, 32000 + index as i16)?);
+    }
+    let live = registered_pool(system, *b"MENU")?;
+    assert_eq!(live.live, 12);
+    assert!(live.slots >= 12);
+    let stale = menus[0].as_ref().unwrap().handle();
+    for menu in &mut menus
+    {
+        drop(menu.take());
+    }
+    assert_eq!(registered_pool(system, *b"MENU")?.live, 0);
+    let before = registered_pool(system, *b"MENU")?;
+    for _ in 0..64
+    {
+        let replacement = api.install_owned(ResourceScope::Application, 32000)?;
+        assert_ne!(stale, replacement.handle());
+        assert!(replacement.handle().0 > u64::from(u32::MAX));
+        assert_eq!(api.menu(stale).layout(), Err(Error::NotFound));
+        assert!(replacement.layout().is_ok());
+    }
+    let after = registered_pool(system, *b"MENU")?;
+    assert_eq!(after.slots, before.slots);
+    assert_eq!(after.births, before.births + 64);
+    assert!(after.generation_headroom < before.generation_headroom);
+    for foreign in [MenuHandle(0), MenuHandle(u64::MAX)]
+    {
+        let error = api.menu(foreign).layout().unwrap_err();
+        assert_eq!(error, Error::NotFound);
+        assert_eq!(error.status(), mac_abi::NOT_FOUND);
+    }
+    system.log("MENU_LEDGER_USERSPACE_PASS simultaneous=12 reuse=64 full_width=passed\n")?;
     Ok(())
 }
 
