@@ -309,7 +309,10 @@ impl<'a> Panes<'a>
                     3 => write!(line, "Tracked live: {}", row.live),
                     4 => write!(line, "Births / deaths: {} / {}", row.births, row.deaths),
                     5 => write!(line, "Slots / retired: {} / {}", row.slots, row.retired),
-                    6 => write!(line, "Migrated kinds: {}", row.kinds),
+                    6 =>
+                    {
+                        write!(line, "Kinds {}; scope children {}", row.kinds, row.scoped_children)
+                    }
                     7 =>
                     {
                         write!(line,

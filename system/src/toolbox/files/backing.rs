@@ -32,7 +32,8 @@ impl Manager
         -> Result<(u32, mac_filesystem_interface::Arguments<'static>), Status>
     {
         let file = self.slot(0, handle)?;
-        let FileFork::Provider(fork) = &file.fork
+        let fork_guard = file.fork.lock();
+        let FileFork::Provider(fork) = &*fork_guard
         else
         {
             return Err(BAD_ARGUMENT);
@@ -43,6 +44,7 @@ impl Manager
         }
         // This mark is private to the source lease, never a public app mark.
         file.position.store(offset, core::sync::atomic::Ordering::Relaxed);
+        drop(fork_guard);
         self.begin_provider_file_read(0, handle, length)
     }
 
@@ -140,26 +142,28 @@ impl Manager
         {
             return Err(BAD_ARGUMENT);
         }
-        let file = self.slot(0, handle)?;
-        let FileFork::Block(fork) = &file.fork
-        else
-        {
-            return Err(NOT_SUPPORTED);
+        let (volume, mut fork) = {
+            let file = self.slot(0, handle)?;
+            let FileFork::Block(fork) = &*file.fork.lock()
+            else
+            {
+                return Err(NOT_SUPPORTED);
+            };
+            if offset > fork.length
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            (file.volume, fork.clone())
         };
-        if offset > fork.length
-        {
-            return Err(BAD_ARGUMENT);
-        }
-        let (volume, mut fork) = (file.volume, fork.clone());
         let read = self.with_volume(volume, |volume| io(volume.read(&mut fork, offset, output)))?;
-        self.slot(0, handle)?.fork = FileFork::Block(fork);
+        *self.slot(0, handle)?.fork.lock() = FileFork::Block(fork);
         Ok(read)
     }
 
     pub(crate) fn close_block_source(&mut self, handle: u32) -> Result<(), Status>
     {
         let file = self.slot(0, handle)?;
-        if !matches!(file.fork, FileFork::Block(_))
+        if !matches!(&*file.fork.lock(), FileFork::Block(_))
         {
             return Err(NOT_SUPPORTED);
         }

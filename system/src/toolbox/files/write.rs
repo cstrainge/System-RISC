@@ -22,6 +22,16 @@ impl super::objects::Payload for Pending
         }
     }
 
+    fn scope(&self) -> Option<&super::subject::Lease>
+    {
+        self.authority.scope()
+    }
+
+    fn access_allowed(&self, access: super::subject::Access<'_>) -> bool
+    {
+        self.authority.matches(self.owner, access)
+    }
+
     fn owner_stopping(&self) -> bool
     {
         !self.authority.accepting()
@@ -38,7 +48,7 @@ impl lifetime::WriteHost for Manager
 }
 pub(super) struct Pending
 {
-    pub authority:     crate::toolbox::handles::OwnerRef,
+    pub authority:     super::subject::Authority,
     pub owner:         u64,
     pub volume:        u32,
     pub parent:        u32,
@@ -163,21 +173,24 @@ impl Manager
             self.writes.reserve().map_err(|_| NO_MEMORY)?;
             let mut bytes = Vec::new();
             bytes.try_reserve_exact(call.length).map_err(|_| NO_MEMORY)?;
-            call.handle = self.writes.insert(authority,
-                                              Pending { authority: authority.clone(),
-                                                        owner,
-                                                        volume: call.volume,
-                                                        parent,
-                                                        expected_cnid: call.expected_cnid,
-                                                        file_type: call.file_type,
-                                                        creator: call.creator,
-                                                        when: call.when,
-                                                        name,
-                                                        comparison,
-                                                        length: call.length,
-                                                        data: bytes,
-                                                        provider: None,
-                                                        directory: false })?;
+            call.handle =
+                self.writes
+                    .insert(authority,
+                            Pending { authority:
+                                          super::subject::Authority::Client(authority.clone()),
+                                      owner,
+                                      volume: call.volume,
+                                      parent,
+                                      expected_cnid: call.expected_cnid,
+                                      file_type: call.file_type,
+                                      creator: call.creator,
+                                      when: call.when,
+                                      name,
+                                      comparison,
+                                      length: call.length,
+                                      data: bytes,
+                                      provider: None,
+                                      directory: false })?;
             return Ok(());
         }
         let pending = self.writes.get_mut(call.handle).ok_or(NOT_FOUND)?;

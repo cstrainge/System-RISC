@@ -16,34 +16,13 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static PUMPING: AtomicBool = AtomicBool::new(false);
 static PARKED: Spinlock<[Option<Box<State>>; Kind::FileTransfers.capacity()]> =
     Spinlock::new([const { None }; Kind::FileTransfers.capacity()]);
-// A coordinator's private I/O authorization cannot be supplied by app records.
-// It is a live transaction tag, not a process/domain identity.
-fn internal_owner(handle: u32) -> u64
-{
-    (1u64 << 63) | u64::from(handle)
-}
-
-/// Transitional coordinator authorization, not a domain identity. Resolve the
-/// full live transfer generation before using this private tag. Its I/O keeps
-/// System-backed lifetimes until transfers themselves join the owner walk.
-pub(in crate::toolbox::files) fn owns_coordinator(manager: &crate::toolbox::files::Manager,
-                                                  owner: u64)
-                                                  -> bool
-{
-    let Ok(handle) = u32::try_from(owner ^ (1u64 << 63))
-    else
-    {
-        return false;
-    };
-    internal_owner(handle) == owner && manager.transfers.completing(handle).is_some()
-}
-
 pub(in crate::toolbox::files) struct Entry
 {
     bridge:    Option<bridge::Bridge>,
     mutating:  bool,
     owner:     u64,
     authority: OwnerRef,
+    scope:     super::super::super::subject::Lease,
     record:    Spinlock<Record>
 }
 struct Record
@@ -66,14 +45,15 @@ impl Entry
         !record.closed && record.volumes.contains(&volume)
     }
 
-    pub(in crate::toolbox::files) fn protects_read(&self, handle: u32, owner: u64, volume: u32,
-                                                   id: u32)
+    pub(in crate::toolbox::files) fn protects_read(&self, _handle: u32,
+                                                   owner: crate::toolbox::files::subject::Access<'_>,
+                                                   volume: u32, id: u32)
                                                    -> bool
     {
         let record = self.record.lock();
         !record.closed
         && record.volumes.contains(&volume)
-        && internal_owner(handle) != owner
+        && !matches!(owner,crate::toolbox::files::subject::Access::Operation(scope) if self.scope.same_scope(scope))
         && record.read_protected.binary_search(&(volume, id)).is_ok()
     }
 
@@ -82,9 +62,12 @@ impl Entry
         self.mutating && self.uses(volume)
     }
 
-    pub(in crate::toolbox::files) fn permits(&self, handle: u32, owner: u64) -> bool
+    pub(in crate::toolbox::files) fn permits(&self, _handle: u32,
+                                             owner: crate::toolbox::files::subject::Access<'_>)
+                                             -> bool
     {
-        !self.mutating || internal_owner(handle) == owner
+        !self.mutating
+        || matches!(owner,crate::toolbox::files::subject::Access::Operation(scope) if self.scope.same_scope(scope))
     }
 }
 impl crate::toolbox::files::objects::Payload for Entry
@@ -103,6 +86,11 @@ impl crate::toolbox::files::objects::Payload for Entry
         record.cancel = true;
         record.abandoned = true;
         ACTIVE.store(true, Ordering::Release);
+    }
+
+    fn access_allowed(&self, access: crate::toolbox::files::subject::Access<'_>) -> bool
+    {
+        matches!(access,crate::toolbox::files::subject::Access::Client(owner) if self.owner==owner)
     }
 
     fn owner_stopping(&self) -> bool
@@ -151,7 +139,10 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
     {
         return Err(BAD_ARGUMENT);
     }
-    let mut state = Box::try_new(State::new(call, sources)?).map_err(|_| NO_MEMORY)?;
+    let reservation=mac_object_table::scope::Reservation::try_new(&authority,crate::toolbox::handles::KindCode(*b"FTXN"))
+        .map_err(|error|crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error)))?;
+    let scope = reservation.lease();
+    let mut state = Box::try_new(State::new(call, sources, scope.clone())?).map_err(|_| NO_MEMORY)?;
     state.put_away = bridge.is_some_and(|key| key.operation == PUT_AWAY);
     if let Some(key) = bridge.filter(|_| query)
     {
@@ -183,24 +174,28 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
             }
         }
         m.transfers.reserve().map_err(|_| NO_MEMORY)?;
-        let entry = Entry { mutating: bridge.is_none_or(|key| key.operation != TRASH_USAGE),
-                            bridge,
-                            owner,
-                            authority: authority.clone(),
-                            record: Spinlock::new(Record { closed: false,
-                                                           read_protected: Vec::new(),
-                                                           volumes,
-                                                           state: Some(state),
-                                                           snapshot: Snapshot::default(),
-                                                           cancel: false,
-                                                           abandoned: false,
-                                                           notice_due: false,
-                                                           notice_pending: false }) };
-        let handle = m.transfers.insert(&authority, entry)?;
-        // Admission is not allowed to lose an owned coordinator on failure.
-        let entry = m.transfers.get_mut(handle).ok_or(BAD_ABI)?;
-        let mut record = entry.record.lock();
-        record.state.as_mut().ok_or(BAD_ABI)?.handle = handle;
+        let handle =
+            m.transfers.insert_root(reservation, |handle| {
+                            state.handle = handle;
+                            Entry { mutating: bridge.is_none_or(|key| {
+                                                        key.operation != TRASH_USAGE
+                                                    }),
+                                    bridge,
+                                    owner,
+                                    authority: authority.clone(),
+                                    scope: scope.clone(),
+                                    record: Spinlock::new(Record { closed: false,
+                                                                   read_protected: Vec::new(),
+                                                                   volumes,
+                                                                   state: Some(state),
+                                                                   snapshot:
+                                                                       Snapshot::default(),
+                                                                   cancel: false,
+                                                                   abandoned: false,
+                                                                   notice_due: false,
+                                                                   notice_pending: false }) }
+                        })?;
+
         Ok(handle)
     })?;
     call.handle = handle;

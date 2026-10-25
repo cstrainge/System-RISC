@@ -75,12 +75,12 @@ pub(in crate::toolbox::files) struct Plan
 }
 impl Manager
 {
-    pub(in crate::toolbox::files) fn reserve_provider_metadata_for(&mut self, owner: u64,
-                                                                   authority:&crate::toolbox::handles::OwnerRef,
-                                                                   call: &FileCall)
-                                                                   -> Result<(u32, u32), Status>
+    pub(in crate::toolbox::files) fn reserve_provider_metadata_authorized(
+        &mut self, owner: super::super::subject::Access<'_>,
+        authority: &super::super::subject::Authority, call: &FileCall)
+        -> Result<(u32, u32), Status>
     {
-        self.validate_file_authority(owner, authority)?;
+        self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FDWR"))?;
         #[cfg(target_arch = "riscv64")]
         self.prepare_writes(crate::toolbox::handles::file_write_kinds()?)?;
         self.validate_transfer_mutation(owner, call.volume)?;
@@ -113,31 +113,32 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        let handle = self.writes.insert(authority,
-                                         Pending { authority: authority.clone(),
-                                                   owner,
-                                                   volume: call.volume,
-                                                   parent: if call.operation == MOVE_INTO
-                                                   {
-                                                       call.index
-                                                   }
-                                                   else
-                                                   {
-                                                       0
-                                                   },
-                                                   expected_cnid: call.cnid,
-                                                   file_type: [0; 4],
-                                                   creator: [0; 4],
-                                                   when: call.position,
-                                                   name: Vec::new(),
-                                                   comparison: Vec::new(),
-                                                   length: 0,
-                                                   data: Vec::new(),
-                                                   directory: false,
-                                                   provider:
-                                                       Some(State::new(provider,
-                                                                       Phase::Running,
-                                                                       Some(call.operation))) })?;
+        let handle =
+            self.writes.insert_authorized(authority,
+                                           Pending { authority:     authority.clone(),
+                                                     owner:         owner.label(),
+                                                     volume:        call.volume,
+                                                     parent:        if call.operation == MOVE_INTO
+                                                     {
+                                                         call.index
+                                                     }
+                                                     else
+                                                     {
+                                                         0
+                                                     },
+                                                     expected_cnid: call.cnid,
+                                                     file_type:     [0; 4],
+                                                     creator:       [0; 4],
+                                                     when:          call.position,
+                                                     name:          Vec::new(),
+                                                     comparison:    Vec::new(),
+                                                     length:        0,
+                                                     data:          Vec::new(),
+                                                     directory:     false,
+                                                     provider:
+                                                         Some(State::new(provider,
+                                                                         Phase::Running,
+                                                                         Some(call.operation))) })?;
         Ok((provider, handle))
     }
 
@@ -176,13 +177,13 @@ impl Manager
         Ok(entry)
     }
 
-    pub(in crate::toolbox::files) fn reserve_provider_directory_for(&mut self, owner: u64,
-                                                                    authority:&crate::toolbox::handles::OwnerRef,
-                                                                    volume: u32, parent: u32,
-                                                                    name: &str, when: u64)
-                                                                    -> Result<Plan, Status>
+    pub(in crate::toolbox::files) fn reserve_provider_directory_authorized(
+        &mut self, owner: super::super::subject::Access<'_>,
+        authority: &super::super::subject::Authority, volume: u32, parent: u32, name: &str,
+        when: u64)
+        -> Result<Plan, Status>
     {
-        self.validate_file_authority(owner, authority)?;
+        self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FDWR"))?;
         #[cfg(target_arch = "riscv64")]
         self.prepare_writes(crate::toolbox::handles::file_write_kinds()?)?;
         self.validate_transfer_mutation(owner, volume)?;
@@ -192,7 +193,7 @@ impl Manager
                                        parent,
                                        when,
                                        ..Default::default() };
-        self.reserve_provider_write_for(owner, authority, &mut call, name, provider)?;
+        self.reserve_provider_write_authorized(owner, authority, &mut call, name, provider)?;
         self.writes.get_mut(call.handle).ok_or(NOT_FOUND)?.directory = true;
         match self.prepare_provider_write(owner, call.handle)
         {
@@ -211,7 +212,17 @@ impl Manager
                                                                 name: &str, provider: u32)
                                                                 -> Result<(), Status>
     {
-        self.validate_file_authority(owner, authority)?;
+        self.reserve_provider_write_authorized(super::super::subject::Access::Client(owner),&super::super::subject::Authority::Client(authority.clone()),call,name,provider)
+    }
+
+    pub(in crate::toolbox::files) fn reserve_provider_write_authorized(&mut self,
+                                                                       owner:super::super::subject::Access<'_>,
+                                                                       authority:&super::super::subject::Authority,
+                                                                       call: &mut DataWriteCall,
+                                                                       name: &str, provider: u32)
+                                                                       -> Result<(), Status>
+    {
+        self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FDWR"))?;
         #[cfg(target_arch = "riscv64")]
         self.prepare_writes(crate::toolbox::handles::file_write_kinds()?)?;
         self.validate_transfer_mutation(owner, call.volume)?;
@@ -233,40 +244,43 @@ impl Manager
         input.extend_from_slice(name.as_bytes());
         let mut data = Vec::new();
         data.try_reserve_exact(call.length).map_err(|_| NO_MEMORY)?;
-        call.handle = self.writes.insert(authority,
-                                          Pending { authority: authority.clone(),
-                                                    owner,
-                                                    volume: call.volume,
-                                                    parent,
-                                                    expected_cnid: call.expected_cnid,
-                                                    file_type,
-                                                    creator,
-                                                    when: call.when,
-                                                    name: input,
-                                                    comparison: Vec::new(),
-                                                    length: call.length,
-                                                    data,
-                                                    directory: false,
-                                                    provider: Some(State::new(provider,
-                                                                              Phase::Staged,
-                                                                              None)) })?;
+        call.handle = self.writes.insert_authorized(authority,
+                                                     Pending { authority: authority.clone(),
+                                                               owner: owner.label(),
+                                                               volume: call.volume,
+                                                               parent,
+                                                               expected_cnid:
+                                                                   call.expected_cnid,
+                                                               file_type,
+                                                               creator,
+                                                               when: call.when,
+                                                               name: input,
+                                                               comparison: Vec::new(),
+                                                               length: call.length,
+                                                               data,
+                                                               directory: false,
+                                                               provider:
+                                                                   Some(State::new(provider,
+                                                                                   Phase::Staged,
+                                                                                   None)) })?;
         Ok(())
     }
 
-    pub(in crate::toolbox::files) fn write_provider(&self, owner: u64, handle: u32)
-                                                    -> Result<Option<u32>, Status>
+    pub(in crate::toolbox::files) fn write_provider<'a>(&self,
+                                                        owner: impl Into<super::super::subject::Access<'a>>,
+                                                        handle: u32)
+                                                        -> Result<Option<u32>, Status>
     {
-        let mark = self.writes.get(handle).ok_or(NOT_FOUND)?;
-        if mark.owner != owner
-        {
-            return Err(ACCESS_DENIED);
-        }
+        let mark = self.writes.get_for(owner.into(), handle)?;
         Ok(mark.provider.as_ref().map(|state| state.provider))
     }
 
-    pub(in crate::toolbox::files) fn prepare_provider_write(&mut self, owner: u64, handle: u32)
-                                                            -> Result<Plan, Status>
+    pub(in crate::toolbox::files) fn prepare_provider_write<'a>(&mut self,
+                                                                owner:impl Into<super::super::subject::Access<'a>>,
+                                                                handle: u32)
+                                                                -> Result<Plan, Status>
     {
+        let owner = owner.into();
         self.write_provider(owner, handle)?.ok_or(BAD_ARGUMENT)?;
         let mark = self.writes.get(handle).ok_or(NOT_FOUND)?;
         if !mark.provider.as_ref().is_some_and(State::staged)
@@ -497,7 +511,9 @@ impl Manager
         Ok((state.provider, mark.volume))
     }
 
-    pub(in crate::toolbox::files) fn next_orphaned_write(&mut self) -> Option<(u32, u32, u32)>
+    pub(in crate::toolbox::files) fn next_orphaned_write(
+        &mut self)
+        -> Option<(u32, u32, u32, super::super::subject::Subject)>
     {
         let (handle, mark) =
             self.writes.iter().find(|(_, mark)| {
@@ -509,7 +525,7 @@ impl Manager
                                })?;
         let state = mark.provider.as_ref()?;
         state.progress.lock().phase = Phase::Running;
-        Some((handle, state.provider, mark.volume))
+        Some((handle, state.provider, mark.volume, mark.authority.flight_subject(mark.owner)))
     }
 
     fn finish_write_mark(&mut self, handle: u32) -> Result<(), Status>

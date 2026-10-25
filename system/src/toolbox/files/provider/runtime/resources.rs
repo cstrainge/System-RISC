@@ -194,11 +194,11 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
                     flight.step = Step::Resource(state);
                     Progress::Pending(flight)
                 }
-                Err(error) => finish(flight.owner, state, Err(error))
+                Err(error) => finish(flight.owner.label(), state, Err(error))
             }
         }
-        Ok(None) => finish(flight.owner, state, Ok(())),
-        Err(error) => finish(flight.owner, state, Err(error))
+        Ok(None) => finish(flight.owner.label(), state, Ok(())),
+        Err(error) => finish(flight.owner.label(), state, Err(error))
     }
 }
 fn deliver(call: &mut FileResourceCall, output: &mut [u8], progress: Progress) -> Status
@@ -316,7 +316,7 @@ pub(crate) fn request(owner: u64, call: &mut FileResourceCall, name: &str, outpu
         Ok(job) =>
         {
             waiting(Flight { thread,
-                             owner,
+                             owner: owner.into(),
                              key,
                              provider,
                              step: Step::Resource(state),

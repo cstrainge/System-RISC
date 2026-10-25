@@ -270,7 +270,7 @@ ratification after measurement; no magic emergency buffer sizes are chosen now.
 | M-D08 | Port/copy definition protocol vs current raw surface/DefinitionCall ABI | Introduce host-owned port operations and bounded copies/managed buffers; remove raw app pointer access before privilege gate |
 | M-D09 | Synchronous participants vs earlier queued/deadline participant designs | **Ratified, Chloe 2026-10-23.** Synchronous participants stand; the earlier queued/deadline rule is superseded. Observers remain queued on their own execution context |
 | M-D10 | Registered payload dispatch alone did not release empty per-owner value-array/cache backing | Closed for migrated stores: CSTA/SBST register backing lifetimes; the last child completes a deferred backing release, including after quarantine retry. The explicit control pruning hook is removed. Other manager saved-state slots and EXIT cleanup remain stage-2/3 migration work |
-| M-D12 | Transfer child I/O still uses a private transaction tag and System-backed lifetimes rather than subject aliases | Interim migration only: the registered coordinator holds its app death barrier; validate the child tag against its full retained transfer generation through cleanup. Child aliases/invocation authority must replace the tag/System-ownership exception before the complete owner-walk/accounting gate; ordinary app I/O already uses its app ledger |
+| M-D12 | Transfer child lifetimes and invocation/account attribution | High-level child exception removed by resource-scoped I/O: real subject owns fork/writer/group/metadata marks, root generation authorizes stopped-owner continuation, and child-first cleanup waits for the root. Lower driver request/job/device/module ownership and full invocation/account migration still gate complete owner-walk/accounting acceptance |
 | M-D11 | Hard-bound capacity reasons are currently resident `&'static str` values, while module-sourced policies and empty pool history must survive provider unload | Required before module registration admission: retain kernel-owned bounded reason data in pool history. Never cast module text to a static reference, leak a per-registration string, or leave history pointing into unloaded code. Current resident literals are valid; this is module-phase migration work |
 
 Chloe accepted M-D01, M-D03, M-D06, M-D07 and M-D08 as migration work as
@@ -1055,8 +1055,8 @@ and Pascal entry paths capture the genuine owner authority before firmware I/O
 switches to bootstrap context; resident background coordinators resolve their
 trusted subject before taking the Files guard. A scalar alone cannot admit an
 application's fork. System-owned loader/source marks use the System ledger. Transitional transfer
-coordinators validate their full live transfer generation before using System-
-backed internal fork lifetimes; this existing rollback scope remains M-D12
+coordinators now use the resource scopes described below, replacing the earlier
+System-backed internal fork exception. Lower-layer attribution remains M-D12
 migration debt until transfers join registered ownership.
 
 The common owner walk invalidates a fork before dispatch. Block-backed marks
@@ -1107,7 +1107,7 @@ I/O; successful publication consumes the record and publishes that reserved
 revision once. Failed rollback still poisons the volume and is not reported as
 successful recovery.
 
-System-backed transfer coordinator scope remains the explicitly staged M-D12
+The later resource-scoped transfer migration removes the high-level System exception; lower-layer attribution remains staged under M-D12
 exception until transfers themselves migrate. Icon groups,
 transfers, document/image/volume/module lifetimes and full I/O quiescence remain
 unfinished; this is not full stage-2/3 cleanup or page/heap/std activation.
@@ -1182,12 +1182,10 @@ cleanup retry policy. Owner-walk disposal holds the same controller as normal
 Drop; the transfer-specific EXIT cancellation scan is removed. Blocking classic
 file operations retain their registered bridge through cancellation and replay.
 
-This is the coordinator migration, not completion of M-D12. Its private child
-I/O authorization is validated against the full retained coordinator generation;
-children still use the System-backed cleanup scope needed by the current undo
-engine. The app now remains pending through that cleanup. Subject aliases and
-account/invocation authority must replace this exception before full quiescence
-and charging are claimed. Document/image/volume/module lifetimes remain staged.
+The later resource-scoped child-I/O migration removes this coordinator slice's
+private numeric tag and System-backed child exception. Lower driver ownership,
+account/invocation authority and remaining shared aliases still gate complete
+quiescence and charging.
 
 The growing resident image also exhausted its existing physical reservation.
 Window grow-tracking scratch now occupies a dedicated page-aligned platform RAM
@@ -1235,7 +1233,7 @@ ordinary retirement checkpoint to drain. No per-input retries or new fixed
 capacity are introduced.
 
 Immutable image ownership, volume/device/module aliases,
-M-D12 child-I/O attribution and the full owner-walk/launch/recovery gate remain
+M-D12 lower-driver attribution and the full owner-walk/launch/recovery gate remain
 open. Ledger lifetimes are not byte accounting: attribution, quotas against
 committed pages and actual heap/page reclamation still need the later allocator
 and paging stages. This slice does not enable the approved heap defaults, MMU,
@@ -1284,7 +1282,7 @@ runs on physical input while waiting for I/O. Normal live-owner completion does
 not wake the process reaper. Bulk alias removal makes one metadata pass and
 stopping owners refuse new admission before allocation or value construction.
 
-Image, volume/device/module/resource aliases, M-D12 transfer child attribution,
+Image, volume/device/module/resource aliases, M-D12 lower-driver attribution,
 full I/O-scope integration and launch/Finder recovery remain staged. Byte
 accounting, dynamic process/thread/image capacity, live pages/MMU and userspace
 std are not enabled by this document migration.
@@ -1353,3 +1351,60 @@ injected or claimed. Native/classic ABI, boundaries, formatting and 52-library
 API generation pass. Packaged artifact hashes stay unchanged throughout final
 acceptance. This is a shared cleanup milestone, not completion of the remaining
 resource-scope, accounting, page-layer or privilege stages.
+
+## Resource-scoped child I/O
+
+An unpublished scope reservation carries a genuine owner and intended root kind.
+The matching native store binds its full resource key atomically with payload
+publication, and retains the unique RAII close owner. Authors hold read-only
+leases, which cannot publish, reopen or upgrade a scope into general OwnerRef
+authority. Construction errors close unpublished reservations without exposing
+children. Root destruction closes the scope after payload cleanup; an interrupted
+privileged destructor remains subject to M-D04.
+
+Scoped child admission validates the root's owner, kind, registration and complete
+generation under the same owner metadata gate as closure and publication. A
+live or pending root may finish its existing operation after ordinary admission
+stops. This never reopens ordinary admission, bypasses quota or ignores a closing
+provider registration. A closed/unpublished/foreign scope is refused with a typed
+cause before child publication. Per-slot parent identities remain until child
+cleanup completes. Public pool/domain scope counts include live and pending
+resources, including owner backing first admitted by an operation; they count
+creation attribution, not currently open scopes. Reactor Room reads those counts
+through the ordinary revisioned SDK surface.
+
+Transfers no longer authorize work with a numeric pseudo-owner or a System-owner
+exception. File background work, asynchronous replies and delayed cleanup retain
+the actual subject and operation capability. Forks, fork writers, icon groups and
+metadata writes publish in that subject's ledger. Ordinary requests cannot access
+an operation's private handle even for the same app. A root uses authenticated
+retained completion authority after owner-walk invalidation; fork cache and group
+rows remain protected state without a mutable removal-guard escape.
+
+If the walk reaches a child first, its preallocated removal guard waits for the
+actual root instead of prematurely abandoning the result needed by rollback.
+Explicit operation cleanup still consumes real lower acknowledgements. Closing
+a root triggers bounded per-kind cleanup through a change clock; an unchanged
+clock performs no object scan. Each published scope consumes a never-repeated
+native identity and closes once, so the identity space is exhausted before the
+close clock could wrap. Scope closure never synthesizes device completion.
+
+The high-level transfer tag/System-lifetime exception is removed. Lower driver
+request/job/device/module ledger migration, full invocation/account attribution,
+remaining shared aliases and the complete launch/recovery campaign still gate
+completion of the model. Native-only fixed file-protocol projections remain for
+the next capacity migration; the classic treaty remains supported. This slice
+does not enable byte budgets, physical reclamation, MMU, multihart or std.
+
+Qualification: 264 scoped host cases pass (one separate System gate), including
+publication/generation/quota/foreign scope cases and canonical SDK child-first
+walk, issued read after stop, ordinary stale/private-handle refusal, independent
+working I/O and final retirement. Eight native cases pass: both process campaigns,
+full provider copy/exit/rollback/retry, endpoint disconnections, aggregate Toolbox,
+bounded Finder updates, original-sprite cursors and Reactor Room. Real-byte copy
+exit asserts app-owned fork/writer scopes and a multi-resource pending barrier.
+Native/classic ABI, boundaries, formatting and 52-library API generation pass;
+final packaged hashes remain unchanged. The host lifetime transport controls
+root completion; native assertions exercise actual provider I/O separately.
+Arbitrary privileged-fault recovery and the remaining model stages are not
+claimed by these checks.

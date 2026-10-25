@@ -279,6 +279,7 @@ pub(super) struct Group
 }
 pub(super) struct State
 {
+    pub scope:             crate::toolbox::files::subject::Lease,
     pub handle:            u32,
     pub io:                Option<Flight>,
     pub reply:             Option<Result<Reply, Status>>,
@@ -326,7 +327,9 @@ pub(super) struct State
 }
 impl State
 {
-    pub fn new(call: &FileTransferCall, sources: &[FileTransferSource]) -> Result<Self, Status>
+    pub fn new(call: &FileTransferCall, sources: &[FileTransferSource],
+               scope: crate::toolbox::files::subject::Lease)
+               -> Result<Self, Status>
     {
         let mut roots = Vec::new();
         roots.try_reserve_exact(sources.len()).map_err(|_| NO_MEMORY)?;
@@ -345,7 +348,8 @@ impl State
                               changed:      false,
                               published:    false });
         }
-        Ok(Self { handle: 0,
+        Ok(Self { scope,
+                  handle: 0,
                   io: None,
                   reply: None,
                   tag: None,
@@ -408,9 +412,9 @@ impl State
                   private_name: String::new() })
     }
 
-    pub fn internal_owner(&self) -> u64
+    pub fn access(&self) -> crate::toolbox::files::subject::Access<'_>
     {
-        super::internal_owner(self.handle)
+        crate::toolbox::files::subject::Access::Operation(&self.scope)
     }
 
     pub fn mutation(&mut self, volume: u32)

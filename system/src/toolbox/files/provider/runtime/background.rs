@@ -40,7 +40,9 @@ fn buffer(count: usize) -> Result<Vec<u8>, Status>
     Ok(bytes)
 }
 
-pub(super) fn file(owner: u64, call: &mut FileCall, text: &str, capacity: usize) -> Progress
+pub(super) fn file(owner: crate::toolbox::files::subject::Access<'_>, call: &mut FileCall,
+                   text: &str, capacity: usize)
+                   -> Progress
 {
     call.capacity = capacity;
     let routed: Result<Option<u32>, Status> = files(|m| {
@@ -149,7 +151,7 @@ pub(super) fn file(owner: u64, call: &mut FileCall, text: &str, capacity: usize)
                     }
                 };
                 Ok(Flight { thread: 0,
-                            owner,
+                            owner: owner.owned(),
                             key,
                             provider,
                             step,
@@ -168,7 +170,9 @@ pub(super) fn file(owner: u64, call: &mut FileCall, text: &str, capacity: usize)
         _ => Progress::Done(Err(NOT_SUPPORTED))
     }
 }
-fn immediate_file(owner: u64, call: &mut FileCall, text: &str, capacity: usize) -> Progress
+fn immediate_file(owner: crate::toolbox::files::subject::Access<'_>, call: &mut FileCall,
+                  text: &str, capacity: usize)
+                  -> Progress
 {
     let result = (|| {
         let mut bytes = buffer(capacity)?;
@@ -231,16 +235,17 @@ fn immediate_file(owner: u64, call: &mut FileCall, text: &str, capacity: usize) 
         {
             if call.operation == OPEN
             {
-                let authority = crate::toolbox::files::creation_authority(owner)?;
-                let (handle, length) =
-                    files(|m| m.open_for(owner, &authority, call.volume, call.cnid, call.fork))?;
+                let authority = owner.authority()?;
+                let (handle, length) = files(|m| {
+                    m.open_authorized(owner, &authority, call.volume, call.cnid, call.fork)
+                })?;
                 call.handle = handle;
                 call.length = length;
                 call.position = 0;
             }
             else
             {
-                files(|m| m.request_owned(owner, call, text, &mut bytes))?;
+                files(|m| m.request_subject(owner, call, text, &mut bytes))?;
             }
         }
         if call.transferred > bytes.len()
@@ -267,7 +272,8 @@ fn immediate_file(owner: u64, call: &mut FileCall, text: &str, capacity: usize) 
     Progress::Done(result)
 }
 
-pub(super) fn scan(owner: u64, call: &mut FileScanCall) -> Progress
+pub(super) fn scan(owner: crate::toolbox::files::subject::Access<'_>, call: &mut FileScanCall)
+                   -> Progress
 {
     let provider = match files(|m| m.read_provider(call.volume))
     {
@@ -299,7 +305,7 @@ pub(super) fn scan(owner: u64, call: &mut FileScanCall) -> Progress
             }
         };
         Ok(Flight { thread: 0,
-                    owner,
+                    owner: owner.owned(),
                     key,
                     provider,
                     step: Step::Scan(cursor),
@@ -311,8 +317,8 @@ pub(super) fn scan(owner: u64, call: &mut FileScanCall) -> Progress
     pending(result)
 }
 
-pub(super) fn stream(owner: u64, call: &mut ForkWriteCall, name: &str, comment: &str, data: &[u8],
-                     capacity: usize)
+pub(super) fn stream(owner: crate::toolbox::files::subject::Access<'_>, call: &mut ForkWriteCall,
+                     name: &str, comment: &str, data: &[u8], capacity: usize)
                      -> Progress
 {
     call.capacity = capacity;
@@ -350,7 +356,7 @@ pub(super) fn stream(owner: u64, call: &mut ForkWriteCall, name: &str, comment: 
                 // writer already pins its authority; chunks and cleanup use it.
                 let authority = if call.operation == BEGIN_FORK_WRITE
                 {
-                    Some(super::super::super::creation_authority(owner)?)
+                    Some(owner.authority()?)
                 }
                 else
                 {
@@ -359,12 +365,18 @@ pub(super) fn stream(owner: u64, call: &mut ForkWriteCall, name: &str, comment: 
                 files(|m| {
                     if let Some(authority) = &authority
                     {
-                        m.stream_request_for(owner, authority, call, name, comment, data,
-                                             &mut bytes)
+                        m.stream_request_authorized(owner,
+                                                    Some(authority),
+                                                    call,
+                                                    name,
+                                                    comment,
+                                                    data,
+                                                    &mut bytes)
                     }
                     else
                     {
-                        m.stream_request(owner, call, name, comment, data, &mut bytes)
+                        m.stream_request_authorized(owner, None, call, name, comment, data,
+                                                    &mut bytes)
                     }
                 })?;
                 if call.transferred > bytes.len()
@@ -383,7 +395,9 @@ pub(super) fn stream(owner: u64, call: &mut ForkWriteCall, name: &str, comment: 
     }
 }
 
-pub(super) fn group(owner: u64, call: &mut IconGroupCall, rows: &[IconMove]) -> Progress
+pub(super) fn group(owner: crate::toolbox::files::subject::Access<'_>, call: &mut IconGroupCall,
+                    rows: &[IconMove])
+                    -> Progress
 {
     let provider = files(|m| {
         if call.operation == BEGIN_ICON_GROUP
@@ -407,11 +421,11 @@ pub(super) fn group(owner: u64, call: &mut IconGroupCall, rows: &[IconMove]) -> 
         }
         Ok(None) => Progress::Done((|| {
             let authority=if call.operation==BEGIN_ICON_GROUP {
-                Some(super::super::super::creation_authority(owner)?)
+                Some(owner.authority()?)
             } else { None };
             files(|m| if let Some(authority)=&authority {
-                m.group_request_for(owner,authority,call,rows)
-            } else { m.group_request(owner,call,rows) })
+                m.group_request_authorized(owner,Some(authority),call,rows)
+            } else { m.group_request_authorized(owner,None,call,rows) })
         })().and_then(|()| {
             let progress = fs::IconMoveProgress::from_words([call.phase, call.completed, call.count,
                 call.changed]).map_err(|_| BAD_ABI)?;

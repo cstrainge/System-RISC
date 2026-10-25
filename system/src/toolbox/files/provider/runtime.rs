@@ -141,7 +141,7 @@ enum Step
 struct Flight
 {
     thread:    u64,
-    owner:     u64,
+    owner:     super::super::subject::Subject,
     key:       Key,
     provider:  u32,
     step:      Step,
@@ -750,7 +750,7 @@ pub(crate) fn request_scan(owner: u64, call: &mut FileScanCall) -> Status
         }
     };
     waiting(Flight { thread,
-                     owner,
+                     owner: owner.into(),
                      key,
                      provider,
                      step: Step::Scan(cursor),
@@ -890,7 +890,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
             }
         };
         return waiting(Flight { thread,
-                                owner,
+                                owner: owner.into(),
                                 key,
                                 provider,
                                 step,
@@ -935,7 +935,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
                 Ok(startup::HostMount::Pending(volume, job)) =>
                 {
                     waiting(Flight { thread,
-                                     owner,
+                                     owner: owner.into(),
                                      key,
                                      provider,
                                      step: Step::Mount(volume),
@@ -963,7 +963,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
         }
     };
     waiting(Flight { thread,
-                     owner,
+                     owner: owner.into(),
                      key,
                      provider,
                      step,

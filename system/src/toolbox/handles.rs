@@ -321,6 +321,18 @@ pub(crate) fn projection_status(error: mac_object_table::projected::Error) -> ma
                 {
                     SERVICE_BUSY
                 }
+                PoolError::Scope { cause,
+                                   .. } =>
+                {
+                    match cause
+                    {
+                        mac_object_table::scope::Failure::ForeignOwner { .. } => ACCESS_DENIED,
+                        mac_object_table::scope::Failure::RootGone { .. } => NOT_FOUND,
+                        mac_object_table::scope::Failure::Closed
+                        | mac_object_table::scope::Failure::Unpublished => SERVICE_BUSY,
+                        mac_object_table::scope::Failure::WrongKind { .. } => BAD_ARGUMENT
+                    }
+                }
                 PoolError::ForeignOwner { .. } => ACCESS_DENIED,
                 PoolError::Stale { .. } => NOT_FOUND,
                 PoolError::InvalidBoundReason

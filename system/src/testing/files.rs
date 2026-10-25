@@ -1,6 +1,9 @@
 //! Test-only trusted application context around the real resident File Manager.
 //! The public SDK and ABI contain no caller-selected owner field.
+pub(super) mod scopes;
 use std::cell::Cell;
+
+pub use scopes::{Operation, with_operation};
 
 std::thread_local! { static OWNER: Cell<u64> = const { Cell::new(1) }; }
 

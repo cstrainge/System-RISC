@@ -642,3 +642,86 @@ fn staged_writes_are_walked_without_disturbing_another_apps_draft()
         assert!(system.files().lookup(volume, mac_toolbox::Cnid(ROOT_ID), "Draft").is_err());
     });
 }
+
+
+#[test]
+fn scoped_fork_outlives_child_first_owner_walk_and_closes_only_after_its_real_root()
+{
+    use mac_system::testing::{files::with_operation, inspection as fixture};
+    use mac_toolbox::{files::Fork, inspection::Scope};
+    with_system(|system| {
+        let owner = fixture::add("Scoped I/O owner", 0);
+        let other = fixture::add("Independent I/O owner", 0);
+        with_owner(owner, || {
+            let files = system.files();
+            let volume = files.volume_at(0).unwrap().id;
+            let entry = files.lookup(volume, mac_toolbox::Cnid(ROOT_ID), "Folder/Café").unwrap();
+            // Prepare fork/backing pools before root creation, forcing the
+            // real walk to reach its child before the pending operation root.
+            files.open(volume, entry.id, Fork::Data).unwrap().close().unwrap();
+            with_operation(|operation| {
+                let handle = operation.open(volume.0, entry.id.0, DATA_FORK).unwrap();
+                let own = system.inspection().snapshot(Scope::Own).unwrap().ledger(0).unwrap();
+                assert_eq!(own.domain().scoped_children, 1);
+                let fork = (0..own.len()).map(|at| own.at(at).unwrap())
+                                         .find(|pool| pool.kind == *b"FFRK")
+                                         .unwrap();
+                assert_eq!((fork.live, fork.scoped_children), (1, 1));
+                let mut read = FileCall { operation: READ,
+                                          handle,
+                                          ..Default::default() };
+                let mut bytes = [0; 8];
+                let refused = system.client().file(&mut read, "", &mut bytes).unwrap_err();
+                assert_eq!(refused, Error::AccessDenied);
+                assert!(refused.to_string().contains("protected"));
+                assert_eq!(operation.read(handle, &mut bytes).unwrap(), 8);
+                assert_eq!(bytes, [0, 1, 2, 3, 4, 5, 6, 7]);
+                let walk = fixture::walk_registered(owner, false, false);
+                assert!(walk.failures.is_empty(), "{:?}", walk.failures);
+                let stopped =
+                    system.inspection().snapshot(Scope::Own).unwrap().ledger(0).unwrap().domain();
+                assert!(!stopped.accepting);
+                assert_eq!((stopped.live,
+                            stopped.pending,
+                            stopped.quarantined,
+                            stopped.scoped_children),
+                           (0, 2, 0, 1));
+                let error = fixture::try_retire(owner).unwrap_err();
+                assert!(matches!(error,
+                                 fixture::RetirementError::PendingResources { pending: 2,
+                                                                              .. }));
+                assert!(error.to_string().contains("still pending"));
+                operation.validate().unwrap();
+                assert_eq!(operation.read(handle, &mut bytes).unwrap(), 8);
+                assert_eq!(bytes, [8, 9, 10, 11, 12, 13, 14, 15]);
+                assert_eq!(system.client().file(&mut read, "", &mut bytes),
+                           Err(Error::NotFound),
+                           "ordinary stale ID was resurrected");
+                with_owner(other, || {
+                    let mut independent =
+                        system.files().open(volume, entry.id, Fork::Data).unwrap();
+                    assert_eq!(independent.read(&mut bytes), Ok(8));
+                    assert_eq!(bytes, [0, 1, 2, 3, 4, 5, 6, 7]);
+                    independent.close().unwrap();
+                    assert_eq!(system.client().file(&mut read, "", &mut bytes),
+                               Err(Error::NotFound));
+                });
+                operation.finish();
+                let closed = operation.validate().unwrap_err();
+                assert!(closed.to_string().contains("resource scope is closed"));
+                assert_eq!(operation.open(volume.0, entry.id.0, DATA_FORK),
+                           Err(mac_abi::SERVICE_BUSY));
+                let done =
+                    system.inspection().snapshot(Scope::Own).unwrap().ledger(0).unwrap().domain();
+                assert_eq!((done.live, done.pending, done.scoped_children, done.completion_faults),
+                           (0, 0, 0, 0));
+                assert_eq!(system.client().file(&mut read, "", &mut bytes), Err(Error::NotFound));
+            }).unwrap();
+            fixture::try_retire(owner).unwrap();
+        });
+        with_owner(other, || {
+            assert!(fixture::walk_registered(other, false, false).failures.is_empty());
+            fixture::try_retire(other).unwrap();
+        });
+    });
+}

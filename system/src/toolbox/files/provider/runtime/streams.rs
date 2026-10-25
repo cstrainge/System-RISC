@@ -222,10 +222,11 @@ pub(crate) fn request(owner: u64, call: &mut ForkWriteCall, name: &str, comment:
     }
 }
 
-pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &ForkWriteCall, name: &str,
-                    comment: &str, data: &[u8])
-                    -> Result<Flight, Status>
+pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<'a>>, thread: u64,
+                        key: Key, call: &ForkWriteCall, name: &str, comment: &str, data: &[u8])
+                        -> Result<Flight, Status>
 {
+    let owner = owner.into();
     (|| {
         let mut input = String::new();
         input.try_reserve_exact(name.len()).map_err(|_| NO_MEMORY)?;
@@ -244,9 +245,9 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &ForkWriteCall, nam
                                  attributes: call.attributes,
                                  finder_info: call.finder_info }.encode(&mut properties)
                                                                 .map_err(|_| BAD_ARGUMENT)?;
-            let authority = super::super::super::creation_authority(owner)?;
+            let authority = owner.authority()?;
             let (provider, handle) =
-                files(|m| m.reserve_remote_stream_for(owner, &authority, call, name))?;
+                files(|m| m.reserve_remote_stream_authorized(owner, &authority, call, name))?;
             let op = if call.expected_cnid == 0
             {
                 Operation::BeginCreate
@@ -332,7 +333,7 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &ForkWriteCall, nam
             }
         };
         Ok(Flight { thread,
-                    owner,
+                    owner: owner.owned(),
                     key,
                     provider,
                     job,
@@ -352,6 +353,17 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &ForkWriteCall, nam
 }
 pub(super) fn pump_cleanup()
 {
+    if super::super::super::streams::SCOPES.pending()
+    {
+        if files(|manager| {
+               super::super::super::streams::SCOPES.observe(&mut manager.streams);
+               Ok(())
+           }).is_err()
+        {
+            return;
+        }
+    }
+
     // Reserve operation-list storage before acquiring or changing ownership.
     {
         let mut flights = FLIGHTS.lock();
@@ -386,7 +398,10 @@ pub(super) fn pump_cleanup()
                 continue;
             }
             remote.running = true;
-            return Ok(Some((handle, mark.volume, remote.provider, mark.owner)));
+            return Ok(Some((handle,
+                            mark.volume,
+                            remote.provider,
+                            mark.authority.flight_subject(mark.owner))));
         }
         Ok(None)
     });

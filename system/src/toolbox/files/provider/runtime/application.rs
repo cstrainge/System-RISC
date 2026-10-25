@@ -48,7 +48,7 @@ fn close(mut flight: Flight, mut state: Box<State>, outcome: Result<Box<Loaded>,
 {
     if state.reading
     {
-        if files(|m| m.end_resource_inspection(flight.owner, state.handle, 0, None)).is_err()
+        if files(|m| m.end_resource_inspection(flight.owner.label(), state.handle, 0, None)).is_err()
         {
             quarantine(state.handle);
             return Progress::Done(Err(ROLLBACK_FAILED));
@@ -151,7 +151,7 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
             Stage::Open =>
             {
                 let length = files(|m| m.publish_provider_file(state.handle, &bytes))?;
-                let _ = files(|m| m.begin_resource_inspection(flight.owner, state.handle))?;
+                let _ = files(|m| m.begin_resource_inspection(flight.owner.label(), state.handle))?;
                 state.reading = true;
                 state.loader =
                     Some(Loader::selected(length,state.selection.budget(),state.selection.includes()).map_err(resources_format_status)?);
@@ -272,7 +272,7 @@ pub(crate) fn request(owner: u64, volume: u32, cnid: u32,
         }
     };
     deliver(Progress::Pending(Flight { thread,
-                                       owner,
+                                       owner: owner.into(),
                                        key,
                                        provider,
                                        step: Step::Application(state),

@@ -8,6 +8,7 @@ extern crate alloc;
 pub mod projected;
 pub mod aliases;
 pub mod completion;
+pub mod scope;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
 

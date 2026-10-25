@@ -3,23 +3,21 @@ use super::{super::streams::{Progress, Remote, Stream},
             *};
 impl Manager
 {
-    pub(in crate::toolbox::files) fn stream_provider(&self, owner: u64, handle: u32)
-                                                     -> Result<Option<u32>, Status>
+    pub(in crate::toolbox::files) fn stream_provider<'a>(&self,
+                                                         owner:impl Into<super::super::subject::Access<'a>>,
+                                                         handle: u32)
+                                                         -> Result<Option<u32>, Status>
     {
-        let mark = self.streams.get(handle).ok_or(NOT_FOUND)?;
-        if mark.owner != owner
-        {
-            return Err(ACCESS_DENIED);
-        }
+        let mark = self.streams.get_for(owner.into(), handle)?;
         Ok(mark.progress.lock().remote.as_ref().map(|remote| remote.provider))
     }
 
-    pub(in crate::toolbox::files) fn reserve_remote_stream_for(&mut self, owner: u64,
-                                                               authority:&crate::toolbox::handles::OwnerRef,
-                                                               call: &ForkWriteCall, name: &str)
-                                                               -> Result<(u32, u32), Status>
+    pub(in crate::toolbox::files) fn reserve_remote_stream_authorized(
+        &mut self, owner: super::super::subject::Access<'_>,
+        authority: &super::super::subject::Authority, call: &ForkWriteCall, name: &str)
+        -> Result<(u32, u32), Status>
     {
-        self.validate_file_authority(owner, authority)?;
+        self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FSWR"))?;
         #[cfg(target_arch = "riscv64")]
         self.prepare_streams(crate::toolbox::handles::file_stream_kinds()?)?;
         self.validate_transfer_mutation(owner, call.volume)?;
@@ -60,7 +58,7 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         let handle = self.streams
-                         .insert(authority, Stream { owner,
+                         .insert_authorized(authority, Stream { owner:owner.label(),
                                           authority: authority.clone(),
                                           volume: call.volume,
                                           parent: call.parent,
@@ -111,15 +109,12 @@ impl Manager
         Ok(())
     }
 
-    pub(in crate::toolbox::files) fn remote_stream_action(
-        &mut self, owner: u64, call: &ForkWriteCall)
+    pub(in crate::toolbox::files) fn remote_stream_action<'a>(
+        &mut self, owner: impl Into<super::super::subject::Access<'a>>, call: &ForkWriteCall)
         -> Result<(u32, fs::Arguments<'static>), Status>
     {
-        let mark = self.streams.get_mut(call.handle).ok_or(NOT_FOUND)?;
-        if mark.owner != owner
-        {
-            return Err(ACCESS_DENIED);
-        }
+        let owner = owner.into();
+        let mark = self.streams.get_for(owner, call.handle)?;
         let mut progress = mark.progress.lock();
         if progress.quarantined
         {

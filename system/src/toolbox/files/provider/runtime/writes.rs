@@ -367,17 +367,19 @@ pub(super) fn folder(owner: u64, thread: u64, key: Key, call: &FileCall, name: &
     }
 }
 
-pub(super) fn folder_flight(owner: u64, thread: u64, key: Key, call: &FileCall, name: &str)
-                            -> Result<Flight, Status>
+pub(super) fn folder_flight<'a>(owner: impl Into<crate::toolbox::files::subject::Access<'a>>,
+                                thread: u64, key: Key, call: &FileCall, name: &str)
+                                -> Result<Flight, Status>
 {
+    let owner = owner.into();
     let mut input = String::new();
     input.try_reserve_exact(name.len()).map_err(|_| NO_MEMORY)?;
     input.push_str(name);
     let parent = if call.operation == TRASH_DIRECTORY { ROOT_ID } else { call.cnid };
-    let authority = crate::toolbox::files::creation_authority(owner)?;
+    let authority = owner.authority()?;
     let mut plan = files(|m| {
-        m.reserve_provider_directory_for(owner, &authority, call.volume, parent, name,
-                                         call.position)
+        m.reserve_provider_directory_authorized(owner, &authority, call.volume, parent, name,
+                                                call.position)
     })?;
     if call.operation == super::super::super::properties::CREATE_PRIVATE_DIRECTORY
     {
@@ -396,7 +398,7 @@ pub(super) fn folder_flight(owner: u64, thread: u64, key: Key, call: &FileCall, 
             return Err(error);
         }
     };
-    Ok(Flight { owner,
+    Ok(Flight { owner: owner.owned(),
                 thread,
                 key,
                 provider: plan.provider,
@@ -508,7 +510,7 @@ pub(in crate::toolbox::files) fn request(owner: u64, call: &mut DataWriteCall) -
         }
     };
     waiting(Flight { thread,
-                     owner,
+                     owner: owner.into(),
                      key,
                      provider,
                      step: Step::Write(state),
@@ -517,8 +519,21 @@ pub(in crate::toolbox::files) fn request(owner: u64, call: &mut DataWriteCall) -
                      input: String::new(),
                      path: None })
 }
+static SCOPES: crate::toolbox::files::objects::ScopeChanges =
+    crate::toolbox::files::objects::ScopeChanges::new();
 pub(super) fn pump_cleanup()
 {
+    if SCOPES.pending()
+    {
+        if files(|manager| {
+               SCOPES.observe(&mut manager.writes);
+               Ok(())
+           }).is_err()
+        {
+            return;
+        }
+    }
+
     if !WRITE_CLEANUP.load(Ordering::Acquire)
     {
         return;
@@ -543,7 +558,7 @@ pub(super) fn pump_cleanup()
         }
     }
     drop(flights);
-    let (handle, provider, volume) = match files(|manager| Ok(manager.next_orphaned_write()))
+    let (handle, provider, volume, owner) = match files(|manager| Ok(manager.next_orphaned_write()))
     {
         Ok(Some(value)) => value,
         Ok(None) => return,
@@ -563,7 +578,7 @@ pub(super) fn pump_cleanup()
         Ok(job) =>
         {
             FLIGHTS.lock().push(Flight { thread: 0,
-                                         owner: 0,
+                                         owner,
                                          key: key(ABORT_DATA_WRITE, handle, volume),
                                          provider,
                                          step: Step::Write(State { plan: None,

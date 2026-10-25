@@ -493,7 +493,10 @@ mod tests
         assert_eq!(manager.fixture_close_objects(7), 1);
         assert_eq!(manager.fixture_close_objects(7), 0);
         assert_eq!(manager.file_provider(7, handle), Err(NOT_FOUND));
-        assert_eq!(manager.next_orphaned_file().unwrap(), None);
+        assert_eq!(manager.next_orphaned_file().unwrap().map(|(id, provider, volume, subject)| {
+                                                            (id, provider, volume, subject.label())
+                                                        }),
+                   None);
         assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
         assert_eq!(manager.prepare_power(), Err(SERVICE_BUSY));
         let ledger = manager.handles.fixture_owner(7);
@@ -503,8 +506,14 @@ mod tests
         // A cancelled waiter must not advance the shared mark with undelivered
         // bytes. The actual result still releases the read before Close runs.
         assert_eq!(manager.finish_provider_file_read(handle, 0, 4, None), Ok((0, 9)));
-        assert_eq!(manager.next_orphaned_file().unwrap(), Some((handle, 77, volume)));
-        assert_eq!(manager.next_orphaned_file().unwrap(), None);
+        assert_eq!(manager.next_orphaned_file().unwrap().map(|(id, provider, volume, subject)| {
+                                                            (id, provider, volume, subject.label())
+                                                        }),
+                   Some((handle, 77, volume, 7)));
+        assert_eq!(manager.next_orphaned_file().unwrap().map(|(id, provider, volume, subject)| {
+                                                            (id, provider, volume, subject.label())
+                                                        }),
+                   None);
         assert_eq!(manager.file_provider(9, other), Ok(Some(77)));
         manager.retire_provider_file(handle).unwrap();
         assert_eq!(ledger.summary().pending, 0, "Close ACK completes both registered lifetimes");
@@ -550,13 +559,22 @@ mod tests
             assert!(failures.is_empty(), "{failures:?}");
             if closing
             {
-                assert_eq!(manager.next_orphaned_file().unwrap(),
+                assert_eq!(manager.next_orphaned_file()
+                                  .unwrap()
+                                  .map(|(id, provider, volume, subject)| {
+                                      (id, provider, volume, subject.label())
+                                  }),
                            None,
                            "terminal Close must not run twice");
             }
             else
             {
-                assert_eq!(manager.next_orphaned_file().unwrap(), Some((handle, 77, volume)));
+                assert_eq!(manager.next_orphaned_file()
+                                  .unwrap()
+                                  .map(|(id, provider, volume, subject)| {
+                                      (id, provider, volume, subject.label())
+                                  }),
+                           Some((handle, 77, volume, 7)));
                 manager.retire_provider_file(handle).unwrap();
             }
             assert_eq!(manager.handles.fixture_owner(7).summary().pending, 0);
@@ -688,8 +706,14 @@ mod tests
         assert_eq!(manager.fixture_close_objects(7), 1);
         assert_eq!(manager.fixture_close_objects(7), 0);
         assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
-        assert_eq!(manager.next_orphaned_write(), Some((handle, 77, volume)));
-        assert_eq!(manager.next_orphaned_write(), None);
+        assert_eq!(manager.next_orphaned_write().map(|(id, provider, volume, subject)| {
+                                                    (id, provider, volume, subject.label())
+                                                }),
+                   Some((handle, 77, volume, 7)));
+        assert_eq!(manager.next_orphaned_write().map(|(id, provider, volume, subject)| {
+                                                    (id, provider, volume, subject.label())
+                                                }),
+                   None);
         let root = fs::Mount::decode(&descriptor_bytes).unwrap();
         let receipt = fs::WriteReceipt { file,
                                          volume: fs::Mount { root:
@@ -760,13 +784,18 @@ mod tests
             assert!(failures.is_empty(), "{failures:?}");
             if terminal_first
             {
-                assert_eq!(manager.next_orphaned_write(),
+                assert_eq!(manager.next_orphaned_write().map(|(id, provider, volume, subject)| {
+                                                            (id, provider, volume, subject.label())
+                                                        }),
                            None,
                            "terminal ACK must not repeat Abort");
             }
             else
             {
-                assert_eq!(manager.next_orphaned_write(), Some((handle, 77, volume)));
+                assert_eq!(manager.next_orphaned_write().map(|(id, provider, volume, subject)| {
+                                                            (id, provider, volume, subject.label())
+                                                        }),
+                           Some((handle, 77, volume, 7)));
                 manager.retire_provider_write(handle).unwrap();
             }
             assert_eq!(manager.handles.fixture_owner(7).summary().pending, 0);
@@ -790,7 +819,7 @@ mod tests
                                        data_length: 3,
                                        ..Default::default() };
             let (_, handle) =
-                manager.reserve_remote_stream_for(7, &authority, &call, "Late stream").unwrap();
+                manager.reserve_remote_stream_authorized(super::subject::Access::Client(7), &super::subject::Authority::Client(authority.clone()), &call, "Late stream").unwrap();
             let (walk, failures) = manager.fixture_walk_files(7, true, false);
             assert_eq!(walk.quarantined, 2);
             assert!(failures.iter().all(|s| s.contains("FSWR") || s.contains("FSST")),
@@ -843,7 +872,11 @@ mod tests
             let mut call = IconGroupCall { operation: BEGIN_ICON_GROUP,
                                            volume,
                                            ..Default::default() };
-            manager.reserve_group_for(7, &authority, &mut call, &[]).unwrap();
+            manager.reserve_group_authorized(super::subject::Access::Client(7),
+                                             &super::subject::Authority::Client(authority.clone()),
+                                             &mut call,
+                                             &[])
+                   .unwrap();
             let handle = call.handle;
             manager.groups.get(handle).unwrap().state.lock().running = true;
             let (walk, failures) = manager.fixture_walk_files(7, true, false);

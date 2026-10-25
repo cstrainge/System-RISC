@@ -77,8 +77,11 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
                                               index: 1,
                                               position: flight.key.when,
                                               ..Default::default() };
-                        return match writes::folder_flight(flight.owner, flight.thread, flight.key,
-                                                           &call, "Trash")
+                        return match writes::folder_flight(flight.owner.access(),
+                                                           flight.thread,
+                                                           flight.key,
+                                                           &call,
+                                                           "Trash")
                         {
                             Ok(flight) => Progress::Pending(flight),
                             Err(error) => Progress::Done(Err(error))
@@ -202,9 +205,11 @@ pub(super) fn start(owner: u64, thread: u64, key: Key, call: &FileCall, name: &s
     }
 }
 
-pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &FileCall, name: &str)
-                    -> Result<Flight, Status>
+pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<'a>>, thread: u64,
+                        key: Key, call: &FileCall, name: &str)
+                        -> Result<Flight, Status>
 {
+    let owner = owner.into();
     if name.len() > super::super::super::MAX_PATH || name.contains('\0')
     {
         return Err(BAD_ARGUMENT);
@@ -257,7 +262,7 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &FileCall, name: &s
         }
     };
     Ok(Flight { thread,
-                owner,
+                owner: owner.owned(),
                 key,
                 provider,
                 step,

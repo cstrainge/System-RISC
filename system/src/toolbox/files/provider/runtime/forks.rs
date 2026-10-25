@@ -140,17 +140,17 @@ pub(super) fn advance(flight: Flight, result: Result<Vec<u8>, Status>, never_sen
         }
     }
 }
-fn prepare(owner: u64, call: &FileCall, capacity: usize)
+fn prepare(owner: crate::toolbox::files::subject::Access<'_>, call: &FileCall, capacity: usize)
            -> Result<(u32, Action, Operation, Arguments<'static>), Status>
 {
     match call.operation
     {
         OPEN =>
         {
-            let authority = crate::toolbox::files::creation_authority(owner)?;
+            let authority = owner.authority()?;
             let (provider, handle) = files(|manager| {
-                manager.reserve_provider_file_for(owner, &authority, call.volume, call.cnid,
-                                                  call.fork)
+                manager.reserve_provider_file_authorized(owner, &authority, call.volume, call.cnid,
+                                                         call.fork)
             })?;
             Ok((provider,
                 Action::Open { handle },
@@ -195,9 +195,11 @@ pub(super) fn start(owner: u64, thread: u64, key: Key, call: &mut FileCall, outp
     }
 }
 
-pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &FileCall, capacity: usize)
-                    -> Progress
+pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<'a>>, thread: u64,
+                        key: Key, call: &FileCall, capacity: usize)
+                        -> Progress
 {
+    let owner = owner.into();
     let (provider, action, operation, args) = match prepare(owner, call, capacity)
     {
         Ok(prepared) => prepared,
@@ -238,7 +240,7 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &FileCall, capacity
         }
     };
     Progress::Pending(Flight { thread,
-                               owner,
+                               owner: owner.owned(),
                                key,
                                provider,
                                step: Step::File(action),
@@ -248,8 +250,21 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &FileCall, capacity
                                path: None })
 }
 
+static SCOPES: crate::toolbox::files::objects::ScopeChanges =
+    crate::toolbox::files::objects::ScopeChanges::new();
 pub(super) fn pump_cleanup()
 {
+    if SCOPES.pending()
+    {
+        if files(|manager| {
+               SCOPES.observe(&mut manager.handles);
+               Ok(())
+           }).is_err()
+        {
+            return;
+        }
+    }
+
     if !FORK_CLEANUP.load(Ordering::Acquire)
     {
         return;
@@ -275,7 +290,7 @@ pub(super) fn pump_cleanup()
     }
     drop(flights);
     let next = files(|manager| manager.next_orphaned_file());
-    let (handle, provider, volume) = match next
+    let (handle, provider, volume, owner) = match next
     {
         Ok(Some(next)) => next,
         Ok(None) => return,
@@ -311,7 +326,7 @@ pub(super) fn pump_cleanup()
             let step = Step::File(Action::Cleanup { handle,
                                                     error: OPERATION_CANCELLED });
             FLIGHTS.lock().push(Flight { thread: 0,
-                                         owner: 0,
+                                         owner,
                                          key,
                                          provider,
                                          step,

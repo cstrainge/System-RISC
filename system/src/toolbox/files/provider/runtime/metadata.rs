@@ -185,9 +185,11 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, text: &str) -> Status
     }
 }
 
-pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &FileCall, text: &str)
-                    -> Result<Flight, Status>
+pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<'a>>, thread: u64,
+                        key: Key, call: &FileCall, text: &str)
+                        -> Result<Flight, Status>
 {
+    let owner = owner.into();
     (|| {
         let mut patch = fs::MetadataPatch::default();
         match call.operation
@@ -255,9 +257,9 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &FileCall, text: &s
         let mut input = String::new();
         input.try_reserve_exact(text.len()).map_err(|_| NO_MEMORY)?;
         input.push_str(text);
-        let authority = crate::toolbox::files::creation_authority(owner)?;
+        let authority = owner.authority()?;
         let (provider, handle) =
-            files(|m| m.reserve_provider_metadata_for(owner, &authority, call))?;
+            files(|m| m.reserve_provider_metadata_authorized(owner, &authority, call))?;
         let job = match submit_args(provider,
                                     match call.operation
                                     {
@@ -289,7 +291,7 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &FileCall, text: &s
             }
         };
         Ok::<_, Status>(Flight { thread,
-                                 owner,
+                                 owner: owner.owned(),
                                  key,
                                  provider,
                                  job,

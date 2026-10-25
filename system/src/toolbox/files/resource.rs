@@ -69,7 +69,7 @@ impl Manager
                                         -> Result<bool, Status>
     {
         let file = self.slot(owner, call.handle)?;
-        let length = match file.fork.length()
+        let length = match file.fork.lock().length()
         {
             Ok(length) => length,
             Err(SERVICE_BUSY) => return Ok(false),
@@ -99,7 +99,7 @@ impl Manager
     pub(crate) fn begin_resource_inspection(&mut self, owner: u64, handle: u32)
                                             -> Result<ProviderInspection, Status>
     {
-        let length = self.slot(owner, handle)?.fork.length()?;
+        let length = self.slot(owner, handle)?.fork.lock().length()?;
         // A composite positioned read holds the normal read lease but leaves
         // the public mark's position untouched. No provider callback runs here.
         let (provider, args) = self.begin_provider_file_read(owner, handle, 0)?;
@@ -118,7 +118,7 @@ impl Manager
     {
         self.finish_provider_file_read(handle, offset, 0, None)?;
         let file = self.slot(owner, handle)?;
-        if !file.fork.orphaned()
+        if !file.fork.lock().orphaned()
         {
             file.resource_index = index;
         }
@@ -171,7 +171,7 @@ impl Manager
         -> Result<Option<mac_formats::resource::index::Index>, Status>
     {
         let file = self.slot(owner, handle)?;
-        file.fork.length()?;
+        file.fork.lock().length()?;
         Ok(file.resource_index.take())
     }
 
@@ -180,7 +180,7 @@ impl Manager
                                          -> Result<(), Status>
     {
         let file = self.slot(owner, handle)?;
-        file.fork.length()?;
+        file.fork.lock().length()?;
         file.resource_index = Some(index);
         Ok(())
     }

@@ -193,9 +193,11 @@ pub(crate) fn request(owner: u64, call: &mut IconGroupCall, rows: &[IconMove]) -
     }
 }
 
-pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &IconGroupCall, rows: &[IconMove])
-                    -> Result<Flight, Status>
+pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<'a>>, thread: u64,
+                        key: Key, call: &IconGroupCall, rows: &[IconMove])
+                        -> Result<Flight, Status>
 {
+    let owner = owner.into();
     (|| {
         // Reject unknown wire operations before admitting or marking a group.
         let operation = match call.operation
@@ -205,14 +207,8 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &IconGroupCall, row
             CANCEL_ICON_GROUP => Operation::AbortIconMoves,
             _ => return Err(BAD_ARGUMENT)
         };
-        let authority = if call.operation == BEGIN_ICON_GROUP
-        {
-            Some(super::super::super::creation_authority(owner)?)
-        }
-        else
-        {
-            None
-        };
+        let authority =
+            if call.operation == BEGIN_ICON_GROUP { Some(owner.authority()?) } else { None };
         // All request allocations precede admission, let alone publication.
         let mut payload = Vec::new();
         if call.operation == BEGIN_ICON_GROUP
@@ -237,21 +233,17 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &IconGroupCall, row
             let handle = if call.operation == BEGIN_ICON_GROUP
             {
                 let mut initial = *call;
-                m.reserve_group_for(owner,
-                                    authority.as_ref().ok_or(ACCESS_DENIED)?,
-                                    &mut initial,
-                                    rows)?;
+                m.reserve_group_authorized(owner,
+                                           authority.as_ref().ok_or(ACCESS_DENIED)?,
+                                           &mut initial,
+                                           rows)?;
                 initial.handle
             }
             else
             {
                 call.handle
             };
-            let group = m.groups.get_mut(handle).ok_or(NOT_FOUND)?;
-            if group.owner != owner
-            {
-                return Err(ACCESS_DENIED);
-            }
+            let group = m.groups.get_for(owner, handle)?;
             let mut progress = group.state.lock();
             if progress.quarantined
             {
@@ -298,7 +290,7 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &IconGroupCall, row
             }
         };
         Ok(Flight { thread,
-                    owner,
+                    owner: owner.owned(),
                     key,
                     provider,
                     job,
@@ -316,6 +308,17 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &IconGroupCall, row
 }
 pub(super) fn pump_cleanup()
 {
+    if super::super::super::groups::SCOPES.pending()
+    {
+        if files(|manager| {
+               super::super::super::groups::SCOPES.observe(&mut manager.groups);
+               Ok(())
+           }).is_err()
+        {
+            return;
+        }
+    }
+
     {
         let mut flights = FLIGHTS.lock();
         if flights.len() >= MAX_FLIGHTS
@@ -345,7 +348,10 @@ pub(super) fn pump_cleanup()
                 continue;
             };
             state.running = true;
-            return Ok(Some((handle, group.volume, provider, group.owner)));
+            return Ok(Some((handle,
+                            group.volume,
+                            provider,
+                            group.authority.flight_subject(group.owner))));
         }
         Ok(None)
     });

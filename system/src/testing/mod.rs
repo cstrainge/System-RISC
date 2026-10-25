@@ -19,6 +19,7 @@ struct Session
     registry:      crate::toolbox::handles::Registry<Session>,
     menus:         RefCell<std::vec::Vec<(u64, crate::toolbox::menus::Manager)>>,
     inspection:    inspection::Domains,
+    scopes:        files::scopes::Scopes,
     drag:          crate::toolbox::drag::Manager,
     drag_notices:  std::vec::Vec<crate::toolbox::drag::Notice>,
     standard_file: crate::toolbox::standard_file::Manager,
@@ -69,6 +70,7 @@ impl Default for Session
         {
             registry.register(&registrar, kind.specification(), kind).unwrap();
         }
+        let scopes = files::scopes::Scopes::new(&mut registry, &registrar);
         let controls = registry.register(&registrar,
                                          crate::toolbox::controls::objects::specification(),
                                          crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseControls))
@@ -178,6 +180,7 @@ impl Default for Session
                registry,
                menus: RefCell::new(std::vec::Vec::new()),
                inspection: inspection::Domains::new(),
+               scopes,
                drag,
                drag_notices: std::vec::Vec::new(),
                controls:

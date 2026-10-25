@@ -93,7 +93,7 @@ impl State
                                   index,
                                   position: self.when,
                                   ..Default::default() };
-        let progress = background::file(self.internal_owner(), &mut call, text, capacity);
+        let progress = background::file(self.access(), &mut call, text, capacity);
         self.set_io(tag, progress);
     }
 
@@ -107,7 +107,7 @@ impl State
                                   position: self.when,
                                   entry,
                                   ..Default::default() };
-        let progress = background::file(self.internal_owner(), &mut call, comment, 0);
+        let progress = background::file(self.access(), &mut call, comment, 0);
         self.set_io(tag, progress);
     }
 
@@ -148,7 +148,7 @@ impl State
                                               directory: self.trash_directory,
                                               cursor: self.trash_cursor,
                                               ..Default::default() };
-                let progress = background::scan(self.internal_owner(), &mut call);
+                let progress = background::scan(self.access(), &mut call);
                 self.set_io(Tag::ScanTrash, progress);
             }
             Stage::SourceVolume =>
@@ -207,7 +207,7 @@ impl State
                                               directory: source.id,
                                               cursor: frame.cursor,
                                               ..Default::default() };
-                let progress = background::scan(self.internal_owner(), &mut call);
+                let progress = background::scan(self.access(), &mut call);
                 self.set_io(Tag::SourceScan, progress);
             }
             Stage::NextRoot if self.mode.is_trash_query() => self.stage = Stage::ScanTrash,
@@ -369,7 +369,7 @@ impl State
                                                attributes: properties.flags,
                                                finder_info: properties.finder_info,
                                                ..Default::default() };
-                let progress = background::stream(self.internal_owner(),
+                let progress = background::stream(self.access(),
                                                   &mut call,
                                                   self.name(self.current_node),
                                                   &node.comment,
@@ -391,7 +391,7 @@ impl State
                                               cnid: source.id,
                                               fork: self.fork,
                                               ..Default::default() };
-                    let progress = background::file(self.internal_owner(), &mut call, "", 0);
+                    let progress = background::file(self.access(), &mut call, "", 0);
                     self.set_io(Tag::OpenFork, progress);
                 }
             }
@@ -414,7 +414,7 @@ impl State
                     let mut call = FileCall { operation: READ,
                                               handle: self.reader,
                                               ..Default::default() };
-                    let progress = background::file(self.internal_owner(),
+                    let progress = background::file(self.access(),
                                                     &mut call,
                                                     "",
                                                     self.chunk_goal - self.chunk.len());
@@ -430,8 +430,7 @@ impl State
                                                ..Default::default() };
                 // Appends are sequential. Offset belongs only to the verify
                 // read; FSYS correctly rejects a nonzero WriteChunk offset.
-                let progress =
-                    background::stream(self.internal_owner(), &mut call, "", "", &self.chunk, 0);
+                let progress = background::stream(self.access(), &mut call, "", "", &self.chunk, 0);
                 self.set_io(Tag::AppendFork, progress);
             }
             Stage::VerifyFork =>
@@ -441,12 +440,8 @@ impl State
                                                fork: self.fork,
                                                offset: self.offset,
                                                ..Default::default() };
-                let progress = background::stream(self.internal_owner(),
-                                                  &mut call,
-                                                  "",
-                                                  "",
-                                                  &[],
-                                                  self.chunk.len());
+                let progress =
+                    background::stream(self.access(), &mut call, "", "", &[], self.chunk.len());
                 self.set_io(Tag::VerifyFork, progress);
             }
             Stage::CloseFork | Stage::DrainReader =>
@@ -461,7 +456,7 @@ impl State
                     let mut call = FileCall { operation: CLOSE,
                                               handle: self.reader,
                                               ..Default::default() };
-                    let progress = background::file(self.internal_owner(), &mut call, "", 0);
+                    let progress = background::file(self.access(), &mut call, "", 0);
                     self.set_io(if self.stage == Stage::CloseFork
                                 {
                                     Tag::CloseFork
@@ -491,8 +486,7 @@ impl State
                                                    },
                                                    handle: self.writer,
                                                    ..Default::default() };
-                    let progress =
-                        background::stream(self.internal_owner(), &mut call, "", "", &[], 0);
+                    let progress = background::stream(self.access(), &mut call, "", "", &[], 0);
                     self.set_io(if self.stage == Stage::CommitFile
                                 {
                                     Tag::CommitFile
@@ -711,8 +705,7 @@ impl State
                     let mut call = ForkWriteCall { operation: ABORT_FORK_WRITE,
                                                    handle: self.writer,
                                                    ..Default::default() };
-                    let progress =
-                        background::stream(self.internal_owner(), &mut call, "", "", &[], 0);
+                    let progress = background::stream(self.access(), &mut call, "", "", &[], 0);
                     self.set_io(Tag::AbortWriter, progress);
                 }
                 else if self.reader != 0
@@ -720,7 +713,7 @@ impl State
                     let mut call = FileCall { operation: CLOSE,
                                               handle: self.reader,
                                               ..Default::default() };
-                    let progress = background::file(self.internal_owner(), &mut call, "", 0);
+                    let progress = background::file(self.access(), &mut call, "", 0);
                     self.set_io(Tag::CloseReader, progress);
                 }
                 else

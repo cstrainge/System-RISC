@@ -138,6 +138,58 @@ impl<T, G: InvocationGate> Store<T, G>
         Ok(wire)
     }
 
+    pub fn insert_root(&mut self, reservation: crate::scope::Reservation<G>,
+                       make: impl FnOnce(u32) -> T)
+                       -> Result<u32, Error>
+    {
+        let wire = self.projection
+                       .access::<G, _>(|index| index.insert(0))
+                       .map_err(|_| Error::ProjectionExhausted)?;
+        let projection = ProjectionRelease::new::<G>(self.projection.clone(), wire);
+        let native = self.values
+                         .insert_root_value(reservation,
+                                            |_| {
+                                                Entry { wire,
+                                                        value: make(wire) }
+                                            },
+                                            Some(projection))
+                         .map_err(Error::Pool)?;
+        self.projection.access::<G, _>(|index| {
+                           *index.get_mut(wire).expect("exclusive unpublished root projection \
+                                                        is retained until native publication") =
+                               native;
+                       });
+        Ok(wire)
+    }
+
+    pub fn insert_in_scope(&mut self, scope: &crate::scope::Lease<G>, value: T)
+                           -> Result<u32, Error>
+    {
+        scope.admitting().map_err(|cause| {
+                              Error::Pool(PoolError::Scope { owner: scope.subject(),
+                                                             kind: self.values.kind(),
+                                                             cause })
+                          })?;
+        let wire = self.projection
+                       .access::<G, _>(|index| index.insert(0))
+                       .map_err(|_| Error::ProjectionExhausted)?;
+        let projection = ProjectionRelease::new::<G>(self.projection.clone(), wire);
+        let native = self.values
+                         .insert_scoped_value(scope,
+                                              |_| {
+                                                  Entry { wire,
+                                                          value }
+                                              },
+                                              Some(projection))
+                         .map_err(Error::Pool)?;
+        self.projection.access::<G, _>(|index| {
+                           *index.get_mut(wire).expect("exclusive unpublished child projection \
+                                                        is retained until native publication") =
+                               native;
+                       });
+        Ok(wire)
+    }
+
     pub fn get(&self, wire: u32) -> Option<&T>
     {
         let native = self.projection.access::<G, _>(|index| index.get(wire).copied())?;

@@ -12,11 +12,11 @@ pub(crate) mod lifetime;
 pub(super) struct Group
 {
     pub owner:     u64,
-    pub authority: OwnerRef,
+    pub authority: super::subject::Authority,
     pub volume:    u32,
     pub when:      u64,
     pub revision:  u64,
-    pub rows:      Vec<IconMove>,
+    pub rows:      spinning_top::Spinlock<Vec<IconMove>>,
     pub parents:   Vec<u32>,
     pub provider:  Option<u32>,
     pub state:     spinning_top::Spinlock<State>
@@ -51,6 +51,16 @@ impl super::objects::Payload for Group
         }
     }
 
+    fn scope(&self) -> Option<&super::subject::Lease>
+    {
+        self.authority.scope()
+    }
+
+    fn access_allowed(&self, access: super::subject::Access<'_>) -> bool
+    {
+        self.authority.matches(self.owner, access)
+    }
+
     fn owner_stopping(&self) -> bool
     {
         !self.authority.accepting()
@@ -70,9 +80,10 @@ pub(super) fn request_cleanup()
 {
     CLEANUP.store(true, Ordering::Release);
 }
+pub(super) static SCOPES: super::objects::ScopeChanges = super::objects::ScopeChanges::new();
 pub(super) fn needs_cleanup() -> bool
 {
-    CLEANUP.load(Ordering::Acquire)
+    SCOPES.pending() || CLEANUP.load(Ordering::Acquire)
 }
 pub(super) fn idle_cleanup()
 {
@@ -80,21 +91,19 @@ pub(super) fn idle_cleanup()
 }
 impl Manager
 {
-    pub(super) fn group_provider(&self, owner: u64, handle: u32) -> Result<Option<u32>, Status>
+    pub(super) fn group_provider<'a>(&self, owner: impl Into<super::subject::Access<'a>>,
+                                     handle: u32)
+                                     -> Result<Option<u32>, Status>
     {
-        let group = self.groups.get(handle).ok_or(NOT_FOUND)?;
-        if group.owner != owner
-        {
-            return Err(ACCESS_DENIED);
-        }
-        Ok(group.provider)
+        Ok(self.groups.get_for(owner.into(), handle)?.provider)
     }
 
-    pub(super) fn reserve_group_for(&mut self, owner: u64, authority: &OwnerRef,
-                                    call: &mut IconGroupCall, rows: &[IconMove])
-                                    -> Result<(), Status>
+    pub(super) fn reserve_group_authorized(&mut self, owner: super::subject::Access<'_>,
+                                           authority: &super::subject::Authority,
+                                           call: &mut IconGroupCall, rows: &[IconMove])
+                                           -> Result<(), Status>
     {
-        self.validate_file_authority(owner, authority)?;
+        self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FIGR"))?;
         #[cfg(target_arch = "riscv64")]
         self.prepare_groups(crate::toolbox::handles::file_group_kinds()?)?;
         if call.operation != BEGIN_ICON_GROUP
@@ -152,23 +161,27 @@ impl Manager
                                   total:     rows.len() as u32,
                                   changed:   false };
         call.handle =
-            self.groups.insert(authority,
-                                Group { owner,
-                                        authority: authority.clone(),
-                                        volume: call.volume,
-                                        when: call.when,
-                                        revision,
-                                        rows: owned,
-                                        parents,
-                                        provider,
-                                        state:
-                                            spinning_top::Spinlock::new(State { closed: false,
-                                                                                running: false,
-                                                                                abandoned: false,
-                                                                                quarantined:
-                                                                                    false,
-                                                                                published: false,
-                                                                                progress }) })?;
+            self.groups
+                .insert_authorized(authority,
+                                   Group { owner: owner.label(),
+                                           authority: authority.clone(),
+                                           volume: call.volume,
+                                           when: call.when,
+                                           revision,
+                                           rows: spinning_top::Spinlock::new(owned),
+                                           parents,
+                                           provider,
+                                           state:
+                                               spinning_top::Spinlock::new(State { closed: false,
+                                                                                   running:
+                                                                                       false,
+                                                                                   abandoned:
+                                                                                       false,
+                                                                                   quarantined:
+                                                                                       false,
+                                                                                   published:
+                                                                                       false,
+                                                                                   progress }) })?;
         fill(call, progress);
         Ok(())
     }
@@ -194,19 +207,23 @@ impl Manager
             #[cfg(any(test, target_arch = "riscv64"))]
             return self.group_request_for(owner, &authority, call, rows);
         }
-        self.group_request_inner(owner, None, call, rows)
+        self.group_request_authorized(super::subject::Access::Client(owner), None, call, rows)
     }
 
     pub(super) fn group_request_for(&mut self, owner: u64, authority: &OwnerRef,
                                     call: &mut IconGroupCall, rows: &[IconMove])
                                     -> Result<(), Status>
     {
-        self.group_request_inner(owner, Some(authority), call, rows)
+        self.group_request_authorized(super::subject::Access::Client(owner),
+                                      Some(&super::subject::Authority::Client(authority.clone())),
+                                      call,
+                                      rows)
     }
 
-    fn group_request_inner(&mut self, owner: u64, authority: Option<&OwnerRef>,
-                           call: &mut IconGroupCall, rows: &[IconMove])
-                           -> Result<(), Status>
+    pub(super) fn group_request_authorized(&mut self, owner: super::subject::Access<'_>,
+                                           authority: Option<&super::subject::Authority>,
+                                           call: &mut IconGroupCall, rows: &[IconMove])
+                                           -> Result<(), Status>
     {
         if call.reserved != 0
         {
@@ -220,13 +237,12 @@ impl Manager
             {
                 return Err(NOT_SUPPORTED);
             }
-            return self.reserve_group_for(owner, authority.ok_or(ACCESS_DENIED)?, call, rows);
+            return self.reserve_group_authorized(owner,
+                                                 authority.ok_or(ACCESS_DENIED)?,
+                                                 call,
+                                                 rows);
         }
-        let group = self.groups.get(call.handle).ok_or(NOT_FOUND)?;
-        if group.owner != owner
-        {
-            return Err(ACCESS_DENIED);
-        }
+        let group = self.groups.get_for(owner, call.handle)?;
         if call.operation == ABANDON_ICON_GROUP
         {
             return self.groups.abandon(call.handle);
@@ -261,15 +277,15 @@ impl Manager
                                                    when: group.when,
                                                    ..Default::default() };
                 let rows =
-                    core::mem::take(&mut self.groups.get_mut(call.handle).ok_or(NOT_FOUND)?.rows);
+                    core::mem::take(&mut *self.groups.get_for(owner, call.handle)?.rows.lock());
                 let result = self.move_icons(owner, &mut move_call, &rows);
                 if let Err(error) = result
                 {
                     if error == ROLLBACK_FAILED
                     {
-                        let group = self.groups.get_mut(call.handle).ok_or(NOT_FOUND)?;
+                        let group = self.groups.get_for(owner, call.handle)?;
                         group.state.lock().quarantined = true;
-                        group.rows = rows;
+                        *group.rows.lock() = rows;
                     }
                     else
                     {

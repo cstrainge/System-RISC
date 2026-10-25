@@ -31,9 +31,10 @@ pub(super) fn request_cleanup()
 {
     CLEANUP.store(true, Ordering::Release);
 }
+pub(super) static SCOPES: super::objects::ScopeChanges = super::objects::ScopeChanges::new();
 pub(super) fn needs_cleanup() -> bool
 {
-    CLEANUP.load(Ordering::Acquire)
+    SCOPES.pending() || CLEANUP.load(Ordering::Acquire)
 }
 pub(super) struct Stream
 {
@@ -41,7 +42,7 @@ pub(super) struct Stream
     pub volume:     u32,
     pub parent:     u32,
     pub expected:   u32,
-    pub authority:  OwnerRef,
+    pub authority:  super::subject::Authority,
     pub when:       u64,
     pub name:       Vec<u8>,
     pub comparison: Vec<u8>,
@@ -72,6 +73,16 @@ impl super::objects::Payload for Stream
         let mut progress = self.progress.lock();
         progress.abandoned = true;
         request_cleanup();
+    }
+
+    fn scope(&self) -> Option<&super::subject::Lease>
+    {
+        self.authority.scope()
+    }
+
+    fn access_allowed(&self, access: super::subject::Access<'_>) -> bool
+    {
+        self.authority.matches(self.owner, access)
     }
 
     fn owner_stopping(&self) -> bool
@@ -142,7 +153,13 @@ impl Manager
             #[cfg(any(test, target_arch = "riscv64"))]
             return self.stream_request_for(owner, &authority, call, name, comment, data, output);
         }
-        self.stream_request_inner(owner, None, call, name, comment, data, output)
+        self.stream_request_inner(super::subject::Access::Client(owner),
+                                  None,
+                                  call,
+                                  name,
+                                  comment,
+                                  data,
+                                  output)
     }
 
     pub(super) fn stream_request_for(&mut self, owner: u64, authority: &OwnerRef,
@@ -150,13 +167,32 @@ impl Manager
                                      data: &[u8], output: &mut [u8])
                                      -> Result<(), Status>
     {
-        self.validate_file_authority(owner, authority)?;
-        #[cfg(target_arch = "riscv64")]
-        self.prepare_streams(crate::toolbox::handles::file_stream_kinds()?)?;
-        self.stream_request_inner(owner, Some(authority), call, name, comment, data, output)
+        self.stream_request_authorized(super::subject::Access::Client(owner),
+                                       Some(&super::subject::Authority::Client(authority.clone())),
+                                       call,
+                                       name,
+                                       comment,
+                                       data,
+                                       output)
     }
 
-    fn stream_request_inner(&mut self, owner: u64, authority: Option<&OwnerRef>,
+    pub(super) fn stream_request_authorized(&mut self, owner: super::subject::Access<'_>,
+                                            authority: Option<&super::subject::Authority>,
+                                            call: &mut ForkWriteCall, name: &str, comment: &str,
+                                            data: &[u8], output: &mut [u8])
+                                            -> Result<(), Status>
+    {
+        if let Some(authority) = authority
+        {
+            self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FSWR"))?;
+        }
+        #[cfg(target_arch = "riscv64")]
+        self.prepare_streams(crate::toolbox::handles::file_stream_kinds()?)?;
+        self.stream_request_inner(owner, authority, call, name, comment, data, output)
+    }
+
+    fn stream_request_inner(&mut self, owner: super::subject::Access<'_>,
+                            authority: Option<&super::subject::Authority>,
                             call: &mut ForkWriteCall, name: &str, comment: &str, data: &[u8],
                             output: &mut [u8])
                             -> Result<(), Status>
@@ -210,7 +246,7 @@ impl Manager
             }
             self.streams.reserve().map_err(|_| NO_MEMORY)?;
             let handle = self.streams
-                             .insert(authority, Stream { owner,
+                             .insert_authorized(authority, Stream { owner:owner.label(),
                                               authority: authority.clone(),
                                               volume: call.volume,
                                               parent: call.parent,
@@ -253,11 +289,7 @@ impl Manager
             call.handle = handle;
             return Ok(());
         }
-        let mark = self.streams.get_mut(call.handle).ok_or(NOT_FOUND)?;
-        if mark.owner != owner
-        {
-            return Err(ACCESS_DENIED);
-        }
+        let mark = self.streams.get_for(owner, call.handle)?;
         if call.operation == ABANDON_FORK_WRITE
         {
             return self.streams.abandon(call.handle);

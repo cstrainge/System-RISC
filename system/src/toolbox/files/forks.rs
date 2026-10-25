@@ -13,20 +13,30 @@ impl super::objects::Payload for OpenFile
 
     fn cleanup_pending(&self) -> bool
     {
-        matches!(&self.fork,FileFork::Provider(fork) if !fork.closed())
+        matches!(&*self.fork.lock(),FileFork::Provider(fork) if !fork.closed())
     }
 
     fn begin_cleanup(&self)
     {
-        if let FileFork::Provider(fork) = &self.fork
+        if let FileFork::Provider(fork) = &*self.fork.lock()
         {
             fork.abandon();
         }
     }
 
+    fn access_allowed(&self, access: super::subject::Access<'_>) -> bool
+    {
+        self.authority.matches(self.owner, access)
+    }
+
     fn owner_stopping(&self) -> bool
     {
         OpenFile::owner_stopping(self)
+    }
+
+    fn scope(&self) -> Option<&super::subject::Lease>
+    {
+        self.authority.scope()
     }
 }
 impl lifetime::ForkHost for Manager

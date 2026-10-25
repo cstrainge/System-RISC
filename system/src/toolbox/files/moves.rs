@@ -21,8 +21,9 @@ impl Manager
         })
     }
 
-    pub(super) fn move_icons(&mut self, owner: u64, call: &mut IconMoveCall, rows: &[IconMove])
-                             -> Result<(), Status>
+    pub(super) fn move_icons<'a>(&mut self, owner: impl Into<super::subject::Access<'a>>,
+                                 call: &mut IconMoveCall, rows: &[IconMove])
+                                 -> Result<(), Status>
     {
         if call.operation != MOVE_ICONS || rows.len() > 1024
         {

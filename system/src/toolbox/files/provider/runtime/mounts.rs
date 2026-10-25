@@ -18,10 +18,10 @@ pub(super) enum Acquire
         handle: u32, status: Status
     }
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Context
 {
-    owner:     u64,
+    owner:     super::super::super::subject::Subject,
     thread:    u64,
     key:       Key,
     provider:  u32,
@@ -42,7 +42,7 @@ impl Context
         Ok(true)
     }
 
-    fn existing(self) -> Result<Option<VolumeInfo>, Status>
+    fn existing(&self) -> Result<Option<VolumeInfo>, Status>
     {
         match backing::find(self.provider, self.key.volume, self.key.cnid)?
         {
@@ -59,7 +59,7 @@ impl Context
 
     fn from(flight: &Flight) -> Self
     {
-        Self { owner:     flight.owner,
+        Self { owner:     flight.owner.clone(),
                thread:    flight.thread,
                key:       flight.key,
                provider:  flight.provider,
@@ -155,7 +155,7 @@ pub(super) fn release(flight: Flight, source: u32, volume: Option<u32>, status: 
 pub(super) fn start_file(owner: u64, thread: u64, key: Key, call: &mut FileCall, output: &mut [u8])
                          -> Status
 {
-    let mut ctx = Context { owner,
+    let mut ctx = Context { owner: owner.into(),
                             thread,
                             key,
                             provider: 0,

@@ -72,15 +72,13 @@ fn signal_cleanup()
 }
 impl Manager
 {
-    pub(in crate::toolbox::files) fn file_provider(&self, owner: u64, id: u32)
-                                                   -> Result<Option<u32>, Status>
+    pub(in crate::toolbox::files) fn file_provider<'a>(&self,
+                                                       owner: impl Into<super::super::subject::Access<'a>>,
+                                                       id: u32)
+                                                       -> Result<Option<u32>, Status>
     {
-        let file = self.handles.get(id).ok_or(NOT_FOUND)?;
-        if file.owner != owner
-        {
-            return Err(ACCESS_DENIED);
-        }
-        match &file.fork
+        let file = self.slot_access(owner.into(), id)?;
+        match &*file.fork.lock()
         {
             FileFork::Block(_) => Ok(None),
             FileFork::Provider(_) =>
@@ -97,7 +95,7 @@ impl Manager
     fn provider_file(&self, id: u32) -> Result<(&OpenFile, u32), Status>
     {
         let file = self.handles.completing(id).ok_or(NOT_FOUND)?;
-        if !matches!(file.fork, FileFork::Provider(_))
+        if !matches!(&*file.fork.lock(), FileFork::Provider(_))
         {
             return Err(BAD_ARGUMENT);
         }
@@ -110,14 +108,22 @@ impl Manager
     }
 
     pub(in crate::toolbox::files) fn reserve_provider_file_for(&mut self, owner: u64,
-                                                               authority: &crate::toolbox::handles::OwnerRef,
+                                                               authority:&crate::toolbox::handles::OwnerRef,
                                                                volume: u32, node: u32, kind: u32)
                                                                -> Result<(u32, u32), Status>
     {
-        self.validate_file_authority(owner, authority)?;
+        self.reserve_provider_file_authorized(super::super::subject::Access::Client(owner),&super::super::subject::Authority::Client(authority.clone()),volume,node,kind)
+    }
+
+    pub(in crate::toolbox::files) fn reserve_provider_file_authorized(
+        &mut self, access: super::super::subject::Access<'_>,
+        authority: &super::super::subject::Authority, volume: u32, node: u32, kind: u32)
+        -> Result<(u32, u32), Status>
+    {
+        self.validate_creation(access, authority, crate::toolbox::handles::KindCode(*b"FFRK"))?;
         #[cfg(target_arch = "riscv64")]
         self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
-        self.validate_transfer_read(owner, volume, node)?;
+        self.validate_transfer_read(access, volume, node)?;
         if node < ROOT_ID || !matches!(kind, DATA_FORK | RESOURCE_FORK)
         {
             return Err(BAD_ARGUMENT);
@@ -136,14 +142,14 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         let handle = self.handles
-                         .insert(authority, OpenFile { owner,
+                         .insert_authorized(authority, OpenFile { owner:access.label(),
                                             volume,
                                             id: node,
                                             position: core::sync::atomic::AtomicU64::new(0),
                                             authority: authority.clone(),
                                             resource_index: None,
-                                            fork: FileFork::Provider(Open { kind,
-                                                                            state: spinning_top::Spinlock::new(State { length: 0, phase: Phase::Opening, orphaned: false }) }) })
+                                            fork: spinning_top::Spinlock::new(FileFork::Provider(Open { kind,
+                                                                            state: spinning_top::Spinlock::new(State { length: 0, phase: Phase::Opening, orphaned: false }) })) })
                          ?;
         Ok((provider, handle))
     }
@@ -172,7 +178,7 @@ impl Manager
     {
         let bytes: &[u8; 16] = bytes.try_into().map_err(|_| BAD_ABI)?;
         let (file, _) = self.provider_file(id)?;
-        let FileFork::Provider(fork) = &file.fork
+        let FileFork::Provider(fork) = &*file.fork.lock()
         else
         {
             return Err(BAD_ABI);
@@ -188,16 +194,17 @@ impl Manager
         Ok(state.length)
     }
 
-    pub(in crate::toolbox::files) fn begin_provider_file_read(
-        &mut self, owner: u64, id: u32, capacity: usize)
+    pub(in crate::toolbox::files) fn begin_provider_file_read<'a>(
+        &mut self, owner: impl Into<super::super::subject::Access<'a>>, id: u32, capacity: usize)
         -> Result<(u32, fs::Arguments<'static>), Status>
     {
+        let owner = owner.into();
         let (file, provider) = self.provider_file(id)?;
-        if file.owner != owner
+        if !file.authority.matches(file.owner, owner)
         {
             return Err(ACCESS_DENIED);
         }
-        let FileFork::Provider(fork) = &file.fork
+        let FileFork::Provider(fork) = &*file.fork.lock()
         else
         {
             return Err(BAD_ABI);
@@ -224,7 +231,7 @@ impl Manager
                                                                -> Result<(u64, u64), Status>
     {
         let (file, _) = self.provider_file(id)?;
-        let FileFork::Provider(fork) = &file.fork
+        let FileFork::Provider(fork) = &*file.fork.lock()
         else
         {
             return Err(BAD_ABI);
@@ -260,15 +267,18 @@ impl Manager
         Ok(result)
     }
 
-    pub(in crate::toolbox::files) fn begin_provider_file_close(&mut self, owner: u64, id: u32)
-                                                               -> Result<(u32, u32), Status>
+    pub(in crate::toolbox::files) fn begin_provider_file_close<'a>(&mut self,
+                                                                   owner: impl Into<super::super::subject::Access<'a>>,
+                                                                   id: u32)
+                                                                   -> Result<(u32, u32), Status>
     {
+        let owner = owner.into();
         let (file, provider) = self.provider_file(id)?;
-        if file.owner != owner
+        if !file.authority.matches(file.owner, owner)
         {
             return Err(ACCESS_DENIED);
         }
-        let FileFork::Provider(fork) = &file.fork
+        let FileFork::Provider(fork) = &*file.fork.lock()
         else
         {
             return Err(BAD_ABI);
@@ -286,7 +296,7 @@ impl Manager
                                                            -> Result<u32, Status>
     {
         let (file, _) = self.provider_file(id)?;
-        let FileFork::Provider(fork) = &file.fork
+        let FileFork::Provider(fork) = &*file.fork.lock()
         else
         {
             return Err(BAD_ABI);
@@ -305,7 +315,7 @@ impl Manager
                                                               -> Result<(), Status>
     {
         let (file, _) = self.provider_file(id)?;
-        let FileFork::Provider(fork) = &file.fork
+        let FileFork::Provider(fork) = &*file.fork.lock()
         else
         {
             return Err(BAD_ABI);
@@ -319,7 +329,8 @@ impl Manager
                                                           -> Result<(), Status>
     {
         let (file, _) = self.provider_file(id)?;
-        let FileFork::Provider(fork) = &file.fork
+        let fork_guard = file.fork.lock();
+        let FileFork::Provider(fork) = &*fork_guard
         else
         {
             return Err(BAD_ABI);
@@ -331,27 +342,28 @@ impl Manager
         }
         state.phase = Phase::Closed;
         drop(state);
+        drop(fork_guard);
         self.handles.remove(id).ok_or(NOT_FOUND)?;
         Ok(())
     }
 
     pub(in crate::toolbox::files) fn next_orphaned_file(
         &mut self)
-        -> Result<Option<(u32, u32, u32)>, Status>
+        -> Result<Option<(u32, u32, u32, super::super::subject::Subject)>, Status>
     {
-        let id = self.handles.iter().find_map(|(id, file)| matches!(&file.fork, FileFork::Provider(fork) if fork.cleanup_ready()).then_some(id));
+        let id = self.handles.iter().find_map(|(id, file)| matches!(&*file.fork.lock(), FileFork::Provider(fork) if fork.cleanup_ready()).then_some(id));
         let Some(id) = id
         else
         {
             return Ok(None);
         };
         let (file, provider) = self.provider_file(id)?;
-        let FileFork::Provider(fork) = &file.fork
+        let FileFork::Provider(fork) = &*file.fork.lock()
         else
         {
             return Err(BAD_ABI);
         };
         fork.state.lock().phase = Phase::Closing;
-        Ok(Some((id, provider, file.volume)))
+        Ok(Some((id, provider, file.volume, file.authority.flight_subject(file.owner))))
     }
 }

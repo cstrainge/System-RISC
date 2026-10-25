@@ -28,17 +28,18 @@ impl<G: InvocationGate> Drop for Claim<G>
         }
     }
 }
-struct Entry<T>
+struct Entry<T, G: InvocationGate>
 {
     id:               u64,
     key:              ResourceKey,
     value:            T,
     reserve:          Reserve,
+    root:             Option<crate::scope::Owner<G>>,
     registration_use: ManuallyDrop<Option<Use>>
 }
 struct Values<T, G: InvocationGate, S>
 {
-    slots:   Vec<Option<Entry<T>>>,
+    slots:   Vec<Option<Entry<T, G>>>,
     claim:   Arc<Claim<G>>,
     stored:  usize,
     state:   Option<S>,
@@ -85,7 +86,8 @@ struct Storage<G: InvocationGate>
 }
 impl<G: InvocationGate> Storage<G>
 {
-    fn new(owner: &OwnerRef<G>, kind: &KindLease<G>) -> Result<Self, PoolError>
+    fn new(owner: &OwnerRef<G>, kind: &KindLease<G>, scope: Option<&crate::scope::State>)
+           -> Result<Self, PoolError>
     {
         let spec = kind.registration();
         let reserve = Reserve::try_new().map_err(|_| {
@@ -98,16 +100,18 @@ impl<G: InvocationGate> Storage<G>
                                         })?;
         let usage = kind.acquire(true)?;
         let slots =
-            owner.access(|index| index.attach_values(spec.code, spec.capacity, Some(kind.id())))?;
+            owner.access(|index| {
+                     index.attach_values_with(spec.code, spec.capacity, Some(kind.id()), scope)
+                 })?;
         let claim = Claim { owner:  owner.clone(),
                             kind:   spec.code,
                             active: true };
         let key = owner.access(|index| {
                            if slots == 0
                            {
-                               index.grow_values(spec.code, 1)?;
+                               index.grow_values_with(spec.code, 1, scope)?;
                            }
-                           index.allocate_value(spec.code)
+                           index.allocate_value_with(spec.code, scope)
                        })?;
         Ok(Self { _claim: claim,
                   key,
@@ -210,6 +214,11 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                   make_state })
     }
 
+    pub fn kind(&self) -> KindCode
+    {
+        self.kind
+    }
+
     fn owner_index(&self, owner: DomainId) -> Result<usize, usize>
     {
         self.owners
@@ -225,6 +234,12 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
 
     fn attach(&mut self, owner: &OwnerRef<G>) -> Result<usize, PoolError>
     {
+        self.attach_with(owner, None)
+    }
+
+    fn attach_with(&mut self, owner: &OwnerRef<G>, scope: Option<&crate::scope::State>)
+                   -> Result<usize, PoolError>
+    {
         let at = match self.owner_index(owner.owner())
         {
             Ok(at) => return Ok(at),
@@ -236,15 +251,18 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                                              kind:   self.kind,
                                              active: false }).map_err(|_| error)?;
         let registration = self.registration.as_ref().map(KindLease::id);
-        let slots =
-            owner.access(|index| index.attach_values(self.kind, self.policy, registration))?;
+        let slots = owner.access(|index| {
+                             index.attach_values_with(self.kind, self.policy, registration, scope)
+                         })?;
         Arc::get_mut(&mut claim).unwrap().active = true;
         let mut values = Vec::new();
         values.try_reserve(slots).map_err(|_| error)?;
         values.resize_with(slots, || None);
         let state = (self.make_state)(owner.owner())?;
-        let storage =
-            self.storage_registration.as_ref().map(|kind| Storage::new(owner, kind)).transpose()?;
+        let storage = self.storage_registration
+                          .as_ref()
+                          .map(|kind| Storage::new(owner, kind, scope))
+                          .transpose()?;
         self.owners.insert(at,
                            Values { claim,
                                     slots: values,
@@ -286,47 +304,89 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub fn insert_with(&mut self, owner: &OwnerRef<G>, make: impl FnOnce(u64) -> T)
                        -> Result<u64, PoolError>
     {
-        self.insert_value(owner, make, None)
+        self.insert_value(owner, make, None, None, None, None)
     }
 
     pub(crate) fn insert_projected(&mut self, owner: &OwnerRef<G>, value: T,
                                    projection: crate::projected::ProjectionRelease)
                                    -> Result<u64, PoolError>
     {
-        self.insert_value(owner, |_| value, Some(projection))
+        self.insert_value(owner, |_| value, Some(projection), None, None, None)
+    }
+
+    /// Publish a scoped root. The store owns its unique close guard; payload
+    /// authors only receive the reservation's read-only lease.
+    pub fn insert_root(&mut self, reservation: crate::scope::Reservation<G>, value: T)
+                       -> Result<u64, PoolError>
+    {
+        self.insert_root_value(reservation, |_| value, None)
+    }
+
+    pub fn insert_root_with(&mut self, reservation: crate::scope::Reservation<G>,
+                            make: impl FnOnce(u64) -> T)
+                            -> Result<u64, PoolError>
+    {
+        self.insert_root_value(reservation, make, None)
+    }
+
+    pub(crate) fn insert_root_value(&mut self, reservation: crate::scope::Reservation<G>,
+                                    make: impl FnOnce(u64) -> T,
+                                    projection: Option<crate::projected::ProjectionRelease>)
+                                    -> Result<u64, PoolError>
+    {
+        let (owner, root, binding) = reservation.into_parts(self.kind)?;
+        self.insert_value(&owner, make, projection, None, Some(root), Some(binding))
+    }
+
+    pub fn insert_in_scope(&mut self, scope: &crate::scope::Lease<G>, value: T)
+                           -> Result<u64, PoolError>
+    {
+        self.insert_scoped_value(scope, |_| value, None)
+    }
+
+    pub(crate) fn insert_scoped_value(&mut self, scope: &crate::scope::Lease<G>,
+                                      make: impl FnOnce(u64) -> T,
+                                      projection: Option<crate::projected::ProjectionRelease>)
+                                      -> Result<u64, PoolError>
+    {
+        self.insert_value(scope.owner(), make, projection, Some(scope.state()), None, None)
     }
 
     fn insert_value(&mut self, owner: &OwnerRef<G>, make: impl FnOnce(u64) -> T,
-                    projection: Option<crate::projected::ProjectionRelease>)
+                    projection: Option<crate::projected::ProjectionRelease>,
+                    scope: Option<&crate::scope::State>, root: Option<crate::scope::Owner<G>>,
+                    mut binding: Option<crate::scope::Binding>)
                     -> Result<u64, PoolError>
     {
-        if !owner.accepting()
-        {
-            return Err(PoolError::Stopping { owner: owner.owner() });
-        }
+        owner.access(|index| index.authorize(self.kind, scope))?;
         let mut registration_use =
             self.registration.as_ref().map(|kind| kind.acquire(true)).transpose()?;
-        let at = self.attach(owner)?;
+        let at = self.attach_with(owner, scope)?;
         let error = self.storage_error(owner.owner(), self.ids.len().saturating_add(1));
         self.ids.try_reserve(1).map_err(|_| error)?;
         let id = issue_native_identity().map_err(|_| PoolError::IdentityExhausted)?.get();
         let reserve = Reserve::try_new().map_err(|_| error)?.with_projection(projection);
-        let mut value = Some((make(id), reserve));
+        let mut value = Some((make(id), reserve, root));
         loop
         {
             // Publication is atomic with respect to stop/invalidate/the walk.
             // All backing capacity was reserved before this metadata lock.
             let result = owner.access(|index| {
-                             let key = index.allocate_value(self.kind)?;
+                             let key = index.allocate_value_with(self.kind, scope)?;
                              debug_assert!(self.owners[at].slots[key.slot()].is_none());
-                             let (value, reserve) =
+                             let (value, reserve, root) =
                                  value.take().expect("unpublished value is consumed only by \
                                                       successful publication");
+                             if let Some(binding) = binding.take()
+                             {
+                                 binding.publish(key);
+                             }
                              self.owners[at].slots[key.slot()] =
                                  Some(Entry { id,
                                               key,
                                               value,
                                               reserve,
+                                              root,
                                               registration_use:
                                                   ManuallyDrop::new(registration_use.take()) });
                              self.ids.insert(id, key);
@@ -348,7 +408,7 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                     let error = self.storage_error(owner.owner(), requested);
                     let slots = &mut self.owners[at].slots;
                     slots.try_reserve(requested - slots.len()).map_err(|_| error)?;
-                    owner.access(|index| index.grow_values(self.kind, requested))?;
+                    owner.access(|index| index.grow_values_with(self.kind, requested, scope))?;
                     slots.resize_with(requested, || None);
                 }
                 Err(error) => return Err(error)
@@ -467,13 +527,14 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         }
     }
 
-    fn take(&mut self, at: usize, released: ReleasedResource, entry: Entry<T>) -> Removed<T, G>
+    fn take(&mut self, at: usize, released: ReleasedResource, entry: Entry<T, G>) -> Removed<T, G>
     {
         self.owners[at].stored -= 1;
         self.ids.remove(&entry.id);
         let usage = ManuallyDrop::into_inner(entry.registration_use);
         let removed =
             Removed { value:      Some(entry.value),
+                      root:       entry.root,
                       completion:
                           entry.reserve
                                .released(self.owners[at].claim.owner.clone(), released, usage),
@@ -744,6 +805,7 @@ impl<T, G: InvocationGate, S> Drop for Store<T, G, S>
 pub struct Removed<T, G: InvocationGate>
 {
     value:      Option<T>,
+    root:       Option<crate::scope::Owner<G>>,
     completion: Completion<G>,
     _claim:     Arc<Claim<G>>
 }
@@ -760,6 +822,9 @@ impl<T, G: InvocationGate> Drop for Removed<T, G>
 {
     fn drop(&mut self)
     {
-        self.completion.run(|| drop(self.value.take()));
+        self.completion.run(|| {
+                           drop(self.value.take());
+                           drop(self.root.take());
+                       });
     }
 }

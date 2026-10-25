@@ -72,16 +72,28 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
                                      .map_err(|e| e.cause)?;
                 let ledger = snapshot.ledger(0).map_err(|e| e.cause)?;
                 let mut found = false;
+                let mut scoped = 0u64;
+                let mut owned_io = 0u32;
                 for index in 0..ledger.len()
                 {
                     let pool = ledger.at(index).map_err(|e| e.cause)?;
+                    scoped += pool.scoped_children;
+                    if [*b"FFRK", *b"FSWR"].contains(&pool.kind)
+                    {
+                        require(pool.live > 0 && pool.scoped_children == pool.live + pool.pending)?;
+                        owned_io += 1;
+                    }
                     if pool.kind == *b"FTXN"
                     {
                         require(pool.live == 1 && pool.pending == 0)?;
                         found = true;
                     }
                 }
-                require(found)?;
+                require(found
+                        && owned_io == 2
+                        && scoped >= 2
+                        && ledger.domain().scoped_children == scoped)?;
+                system.log("HOST_FS_TRANSFER_SCOPES_PASS owner=app fork=owned writer=owned\n")?;
                 system.log("HOST_FS_TRANSFER_LEDGER_PASS\n")?;
                 core::mem::forget(owner);
                 system.log("HOST_FS_EXIT_WORKER_READY\n")?;

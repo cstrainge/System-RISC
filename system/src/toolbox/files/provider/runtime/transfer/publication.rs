@@ -77,7 +77,7 @@ impl State
             self.mutation(call.volume);
             let group = self.group.as_ref().unwrap();
             let progress =
-                background::group(self.internal_owner(),
+                background::group(self.access(),
                                   &mut call,
                                   if operation == BEGIN_ICON_GROUP { &group.rows } else { &[] });
             self.set_io(tag, progress);
@@ -382,7 +382,7 @@ impl State
                            entry: CatalogInfo { modified: stamp.volume_modified.unwrap_or(0),
                                                 ..Default::default() },
                            ..Default::default() };
-            let progress = background::file(self.internal_owner(), &mut call, "", 0);
+            let progress = background::file(self.access(), &mut call, "", 0);
             self.set_io(Tag::RestoreStamp, progress);
             return Ok(());
         }

@@ -211,15 +211,23 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
     assert!(serial.contains("FILE_TRANSFER_DROP_PASS cleanup=passed retry=passed"), "{serial}");
     assert!(serial.contains("FILE_TRANSFER_EXIT_PASS cleanup=passed retry=passed"), "{serial}");
     assert!(serial.contains("HOST_FS_TRANSFER_LEDGER_PASS"), "{serial}");
+    assert!(serial.contains("HOST_FS_TRANSFER_SCOPES_PASS owner=app fork=owned writer=owned"),
+            "{serial}");
     let after_transfer = serial.split("HOST_FS_TRANSFER_LEDGER_PASS").nth(1).unwrap();
     let stopped =
         after_transfer.lines().find(|line| line.starts_with("PROCESS_STOPPED app=")).unwrap();
     let owner = stopped.split("app=").nth(1).unwrap().split_whitespace().next().unwrap();
     let prefix = format!("OWNER_WALK app={owner} ");
     let walked = after_transfer.lines().find(|line| line.starts_with(&prefix)).unwrap();
-    assert!(walked.contains("live=0 pending=1 deferred=1"),
-            "transfer exit must retain the registered coordinator until real I/O completes: \
-             {walked}\n{serial}");
+    let field = |name: &str| {
+        walked.split_whitespace()
+              .find_map(|part| part.strip_prefix(name))
+              .and_then(|value| value.parse::<usize>().ok())
+              .unwrap()
+    };
+    assert!(field("live=") == 0 && field("pending=") >= 3 && field("deferred=") >= 3,
+            "transfer exit must retain its coordinator and real scoped fork/writer until I/O \
+             completes: {walked}\n{serial}");
     let walk_at = after_transfer.find(&prefix).unwrap();
     let reclaimed_at =
         after_transfer.find(&format!("PROCESS_THREAD_RECLAIMED app={owner} ")).unwrap();

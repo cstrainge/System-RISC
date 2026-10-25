@@ -203,6 +203,12 @@ pub enum PoolError
         kind:         KindCode,
         registration: ResourceKey
     },
+    Scope
+    {
+        owner: DomainId,
+        kind:  KindCode,
+        cause: crate::scope::Failure
+    },
     InvalidBoundReason,
     ValueStorageAttached
     {
@@ -279,6 +285,9 @@ impl fmt::Display for PoolError
     {
         match self
         {
+            Self::Scope { owner,
+                          kind,
+                          cause } => write!(f, "cannot admit '{kind}' child in {owner}: {cause}"),
             Self::RegistrationUnavailable { kind,
                                             registration } =>
             {
@@ -399,6 +408,8 @@ pub struct DomainSlots
     pending:               Vec<u64>,
     quarantined:           Vec<u64>,
     generations:           Vec<u64>,
+    parents:               Vec<Option<ResourceKey>>,
+    scoped_count:          usize,
     cursor:                usize,
     live:                  usize,
     retired_count:         usize,
@@ -433,6 +444,8 @@ impl DomainSlots
                   pending: Vec::new(),
                   quarantined: Vec::new(),
                   generations: Vec::new(),
+                  parents: Vec::new(),
+                  scoped_count: 0,
                   cursor: 0,
                   live: 0,
                   retired_count: 0,
@@ -456,6 +469,11 @@ impl DomainSlots
         {
             return Err(PoolError::Stopping { owner: self.owner });
         }
+        self.grow_storage(slots)
+    }
+
+    fn grow_storage(&mut self, slots: usize) -> Result<(), PoolError>
+    {
         if slots <= self.generations.len()
         {
             return Err(PoolError::InvalidGrowth);
@@ -478,11 +496,13 @@ impl DomainSlots
         self.pending.try_reserve(words - self.pending.len()).map_err(|_| error)?;
         self.quarantined.try_reserve(words - self.quarantined.len()).map_err(|_| error)?;
         self.generations.try_reserve(slots - self.generations.len()).map_err(|_| error)?;
+        self.parents.try_reserve(slots - self.parents.len()).map_err(|_| error)?;
         self.occupied.resize(words, 0);
         self.retired.resize(words, 0);
         self.pending.resize(words, 0);
         self.quarantined.resize(words, 0);
         self.generations.resize(slots, 0);
+        self.parents.resize(slots, None);
         Ok(())
     }
 
@@ -511,8 +531,14 @@ impl DomainSlots
 
     pub fn allocate(&mut self, owner: DomainId) -> Result<ResourceKey, PoolError>
     {
+        self.allocate_child(owner, None)
+    }
+
+    fn allocate_child(&mut self, owner: DomainId, parent: Option<ResourceKey>)
+                      -> Result<ResourceKey, PoolError>
+    {
         self.check_owner(owner)?;
-        if !self.accepting
+        if !self.accepting && parent.is_none()
         {
             return Err(PoolError::Stopping { owner });
         }
@@ -535,6 +561,8 @@ impl DomainSlots
                     self.generations[slot] = generation.get();
                     self.generation_high_water = self.generation_high_water.max(generation.get());
                     self.occupied[word] |= 1 << (slot % 64);
+                    self.parents[slot] = parent;
+                    self.scoped_count += usize::from(parent.is_some());
                     self.live += 1;
                     self.births = self.births.saturating_add(1);
                     self.drain_word = self.drain_word.min(word);
@@ -624,6 +652,7 @@ impl DomainSlots
         }
         self.pending[key.slot / 64] &= !(1 << (key.slot % 64));
         self.pending_count -= 1;
+        self.scoped_count -= usize::from(self.parents[key.slot].take().is_some());
         Ok(())
     }
 
@@ -829,6 +858,7 @@ pub struct LedgerSummary
     pub pending:           usize,
     pub quarantined:       usize,
     pub completion_faults: usize,
+    pub scoped_children:   usize,
     pub slots:             usize,
     pub births:            u64,
     pub deaths:            u64,
@@ -848,6 +878,7 @@ pub struct PoolSummary
     pub pending:             usize,
     pub quarantined:         usize,
     pub completion_faults:   usize,
+    pub scoped_children:     usize,
     pub slots:               usize,
     pub births:              u64,
     pub deaths:              u64,
@@ -1193,6 +1224,7 @@ impl OwnerIndex
                          pending:             pool.pending_count,
                          quarantined:         pool.quarantined_count,
                          completion_faults:   self.completions.count_kind(pool.kind),
+                         scoped_children:     pool.scoped_count,
                          slots:               pool.generations.len(),
                          births:              pool.births,
                          deaths:              pool.deaths,
@@ -1211,6 +1243,7 @@ impl OwnerIndex
             result.live += pool.live();
             result.retired += pool.retired();
             result.pending += pool.pending();
+            result.scoped_children += pool.scoped_count;
             result.quarantined += pool.quarantined_count;
             result.slots += pool.storage_slots();
             let (births, deaths) = pool.counters();
@@ -1240,6 +1273,11 @@ impl OwnerIndex
                   revision: 1,
                   quarantine_pool_cursor: 0,
                   completions: crate::completion::Queue::new() })
+    }
+
+    pub(crate) fn note_scope_change(&mut self)
+    {
+        self.revision = self.revision.saturating_add(1);
     }
 
     pub(crate) fn retain_completion(&mut self, record: alloc::boxed::Box<crate::completion::Record>)
@@ -1291,17 +1329,33 @@ impl OwnerIndex
         Ok(self.completions.at(at))
     }
 
-    pub(crate) fn attach_values(&mut self, kind: KindCode, policy: CapacityPolicy,
-                                registration: Option<u64>)
-                                -> Result<usize, PoolError>
+    pub(crate) fn authorize(&self, kind: KindCode, scope: Option<&crate::scope::State>)
+                            -> Result<Option<ResourceKey>, PoolError>
     {
+        if let Some(scope) = scope
+        {
+            return scope.authorize(self).map(Some).map_err(|cause| {
+                                                      PoolError::Scope { owner: self.owner,
+                                                                         kind,
+                                                                         cause }
+                                                  });
+        }
         if !self.accepting
         {
             return Err(PoolError::Stopping { owner: self.owner });
         }
+        Ok(None)
+    }
+
+    pub(crate) fn attach_values_with(&mut self, kind: KindCode, policy: CapacityPolicy,
+                                     registration: Option<u64>,
+                                     scope: Option<&crate::scope::State>)
+                                     -> Result<usize, PoolError>
+    {
+        self.authorize(kind, scope)?;
         if !self.pools.iter().any(|pool| pool.kind == kind)
         {
-            self.add_pool(kind, policy)?;
+            self.add_authorized_pool(kind, policy)?;
         }
         let owner = self.owner;
         let pool = self.pool_mut(kind).unwrap();
@@ -1354,12 +1408,22 @@ impl OwnerIndex
         {
             return Err(PoolError::Stopping { owner: self.owner });
         }
+        self.add_authorized_pool(kind, policy)
+    }
+
+    fn add_authorized_pool(&mut self, kind: KindCode, policy: CapacityPolicy)
+                           -> Result<(), PoolError>
+    {
         if self.pools.iter().any(|p| p.kind == kind)
         {
             return Err(PoolError::DuplicateKind { owner: self.owner,
                                                   kind });
         }
-        let pool = DomainSlots::new(self.owner, kind, policy)?;
+        let mut pool = DomainSlots::new(self.owner, kind, policy)?;
+        if !self.accepting
+        {
+            pool.stop_admission();
+        }
         self.pools.try_reserve(1).map_err(|_| {
                                       PoolError::Storage { owner: self.owner,
                                                            kind,
@@ -1390,15 +1454,25 @@ impl OwnerIndex
 
     pub(crate) fn grow_values(&mut self, kind: KindCode, slots: usize) -> Result<(), PoolError>
     {
-        if !self.accepting
-        {
-            return Err(PoolError::Stopping { owner: self.owner });
-        }
+        self.grow_values_with(kind, slots, None)
+    }
+
+    pub(crate) fn grow_values_with(&mut self, kind: KindCode, slots: usize,
+                                   scope: Option<&crate::scope::State>)
+                                   -> Result<(), PoolError>
+    {
+        let parent = self.authorize(kind, scope)?;
         let owner = self.owner;
-        self.pool_mut(kind)
-            .ok_or(PoolError::UnregisteredKind { owner,
-                                                 kind })?
-            .grow_to(slots)?;
+        let pool = self.pool_mut(kind).ok_or(PoolError::UnregisteredKind { owner,
+                                                                            kind })?;
+        if parent.is_some()
+        {
+            pool.grow_storage(slots)?;
+        }
+        else
+        {
+            pool.grow_to(slots)?;
+        }
         self.revision = self.revision.saturating_add(1);
         Ok(())
     }
@@ -1411,17 +1485,32 @@ impl OwnerIndex
 
     pub(crate) fn allocate_value(&mut self, kind: KindCode) -> Result<ResourceKey, PoolError>
     {
-        if !self.accepting
-        {
-            return Err(PoolError::Stopping { owner: self.owner });
-        }
+        self.allocate_value_with(kind, None)
+    }
+
+    pub(crate) fn allocate_value_with(&mut self, kind: KindCode,
+                                      scope: Option<&crate::scope::State>)
+                                      -> Result<ResourceKey, PoolError>
+    {
+        let parent = self.authorize(kind, scope)?;
         let owner = self.owner;
         let key = self.pool_mut(kind)
                       .ok_or(PoolError::UnregisteredKind { owner,
                                                            kind })?
-                      .allocate(owner)?;
+                      .allocate_child(owner, parent)?;
         self.revision = self.revision.saturating_add(1);
         Ok(key)
+    }
+
+    /// Full parent identity for a live or pending child; it never validates a
+    /// stale child generation or upgrades metadata into scope authority.
+    pub fn parent(&self, key: ResourceKey) -> Option<ResourceKey>
+    {
+        if !self.contains(key) && !self.pending(key)
+        {
+            return None;
+        }
+        *self.pools.iter().find(|pool| pool.kind == key.kind())?.parents.get(key.slot())?
     }
 
     pub fn contains(&self, key: ResourceKey) -> bool

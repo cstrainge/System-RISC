@@ -32,7 +32,7 @@ fn complete(provider: u32, step: Step, job: OwnedJob) -> Result<Reply, Status>
     // Bootstrap has no application pointer or parked userspace caller. A single
     // reserved flight slot retains cancellation/cleanup if startup times out.
     let mut flight = Flight { thread: crate::context::BOOT_THREAD.0,
-                              owner: 0,
+                              owner: 0u64.into(),
                               key: Key { record:    Record::File,
                                          operation: 0,
                                          volume:    0,

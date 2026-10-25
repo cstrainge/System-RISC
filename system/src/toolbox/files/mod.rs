@@ -7,6 +7,7 @@ pub(crate) mod application;
 use alloc::{string::String, vec::Vec};
 
 mod objects;
+mod subject;
 pub(crate) mod pins;
 pub(crate) mod forks;
 mod scan;
@@ -76,12 +77,6 @@ pub(super) fn creation_authority(owner: u64) -> Result<crate::toolbox::handles::
     if current.owner().incarnation() == owner
     {
         return Ok(current);
-    }
-    if crate::kernel::with_files(|files| {
-           provider::runtime::transfer::owns_coordinator(files, owner)
-       }).map_err(|error| error.status())?
-    {
-        return crate::toolbox::handles::system_owner();
     }
     crate::kernel::with_desktop(|desktop| desktop.processes.ledger(owner)).map_err(|error| {
                                                                               error.status()
@@ -270,9 +265,9 @@ struct OpenFile
     owner:          u64,
     id:             u32,
     volume:         u32,
-    fork:           FileFork,
+    fork:           spinning_top::Spinlock<FileFork>,
     position:       core::sync::atomic::AtomicU64,
-    authority:      crate::toolbox::handles::OwnerRef,
+    authority:      subject::Authority,
     #[cfg_attr(not(any(target_arch = "riscv64", feature = "test-support")), allow(dead_code))]
     resource_index: Option<mac_formats::resource::index::Index>
 }
@@ -485,8 +480,10 @@ impl Manager
     /// Transfer leases serialize mutations, not reads, across every involved
     /// mount. This makes rollback dates and source snapshots attributable to
     /// the transaction instead of overwriting an unrelated app's later edit.
-    fn validate_transfer_mutation(&self, owner: u64, volume: u32) -> Result<(), Status>
+    fn validate_transfer_mutation<'a>(&self, owner: impl Into<subject::Access<'a>>, volume: u32)
+                                      -> Result<(), Status>
     {
+        let owner = owner.into();
         #[cfg(target_arch = "riscv64")]
         if self.transfers
                .iter()
@@ -537,8 +534,11 @@ impl Manager
         self.pins.objects().any(|pin| pin.volume == volume && pin.id == id)
     }
 
-    fn validate_transfer_read(&self, owner: u64, volume: u32, id: u32) -> Result<(), Status>
+    fn validate_transfer_read<'a>(&self, owner: impl Into<subject::Access<'a>>, volume: u32,
+                                  id: u32)
+                                  -> Result<(), Status>
     {
+        let owner = owner.into();
         #[cfg(target_arch = "riscv64")]
         if self.transfers
                .iter()
@@ -800,14 +800,69 @@ impl Manager
             })
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn fixture_scoped_open(&mut self,
+                                      scope:&mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>,
+                                      volume: u32, file: u32, fork: u32)
+                                      -> Result<(u32, u64), Status>
+    {
+        self.open_authorized(subject::Access::Operation(scope),
+                             &subject::Authority::Operation(scope.clone()),
+                             volume,
+                             file,
+                             fork)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn fixture_scoped_request(&mut self,
+                                         scope:&mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>,
+                                         call: &mut FileCall, bytes: &mut [u8])
+                                         -> Result<(), Status>
+    {
+        self.request_subject(subject::Access::Operation(scope), call, "", bytes)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn fixture_refresh_scopes(&mut self)
+    {
+        self.handles.refresh_scopes();
+    }
+
     fn slot(&mut self, owner: u64, handle: u32) -> Result<&mut OpenFile, Status>
     {
         let file = self.handles.get_mut(handle).ok_or(NOT_FOUND)?;
-        if file.owner != owner
+        if !file.authority.matches(file.owner, subject::Access::Client(owner))
         {
             return Err(ACCESS_DENIED);
         }
         Ok(file)
+    }
+
+    fn slot_access(&self, access: subject::Access<'_>, handle: u32) -> Result<&OpenFile, Status>
+    {
+        let file = match access
+                   {
+                       subject::Access::Client(_) => self.handles.get(handle),
+                       subject::Access::Operation(_) => self.handles.completing(handle)
+                   }.ok_or(NOT_FOUND)?;
+        if !file.authority.matches(file.owner, access)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(file)
+    }
+
+    fn validate_creation(&self, access: subject::Access<'_>, authority: &subject::Authority,
+                         kind: crate::toolbox::handles::KindCode)
+                         -> Result<(), Status>
+    {
+        match (access,authority) {
+            (subject::Access::Client(label),subject::Authority::Client(owner))=>self.validate_file_authority(label,owner),
+            (subject::Access::Operation(left),subject::Authority::Operation(right)) if left.same_scope(right)=>
+                left.admitting().map_err(|cause|crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(
+                    mac_object_table::domain::PoolError::Scope {owner:left.subject(),kind,cause}))),
+            _=>Err(ACCESS_DENIED)
+        }
     }
 
     fn validate_file_authority(&self, owner: u64, authority: &crate::toolbox::handles::OwnerRef)
@@ -815,10 +870,7 @@ impl Manager
     {
         #[cfg(target_arch = "riscv64")]
         {
-            if owner != 0
-               && owner != authority.owner().incarnation()
-               && !(authority.owner().kind() == mac_object_table::domain::DomainKind::System
-                    && provider::runtime::transfer::owns_coordinator(self, owner))
+            if owner != 0 && owner != authority.owner().incarnation()
             {
                 return Err(ACCESS_DENIED);
             }
@@ -832,10 +884,21 @@ impl Manager
                 id: u32, kind: u32)
                 -> Result<(u32, u64), Status>
     {
-        self.validate_file_authority(owner, authority)?;
+        self.open_authorized(subject::Access::Client(owner),
+                             &subject::Authority::Client(authority.clone()),
+                             volume,
+                             id,
+                             kind)
+    }
+
+    fn open_authorized(&mut self, access: subject::Access<'_>, authority: &subject::Authority,
+                       volume: u32, id: u32, kind: u32)
+                       -> Result<(u32, u64), Status>
+    {
+        self.validate_creation(access, authority, crate::toolbox::handles::KindCode(*b"FFRK"))?;
         #[cfg(target_arch = "riscv64")]
         self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
-        self.validate_transfer_read(owner, volume, id)?;
+        self.validate_transfer_read(access, volume, id)?;
         if self.streams.iter().any(|(_, mark)| mark.volume == volume && mark.expected == id)
         {
             return Err(SERVICE_BUSY);
@@ -852,11 +915,11 @@ impl Manager
                        _ => return Err(BAD_ARGUMENT)
                    }.ok_or(NOT_SUPPORTED)?;
         let length = fork.length;
-        let handle = self.handles.insert(authority,
-                                          OpenFile { owner,
+        let handle = self.handles.insert_authorized(authority,
+                                          OpenFile { owner:access.label(),
                                                      id,
                                                      volume,
-                                                     fork: FileFork::Block(fork),
+                                                     fork: spinning_top::Spinlock::new(FileFork::Block(fork)),
                                                      position:
                                                          core::sync::atomic::AtomicU64::new(0),
                                                      authority: authority.clone(),
@@ -1164,6 +1227,13 @@ impl Manager
     pub fn request_owned(&mut self, owner: u64, call: &mut FileCall, name: &str, output: &mut [u8])
                          -> Result<(), Status>
     {
+        self.request_subject(subject::Access::Client(owner), call, name, output)
+    }
+
+    fn request_subject(&mut self, owner: subject::Access<'_>, call: &mut FileCall, name: &str,
+                       output: &mut [u8])
+                       -> Result<(), Status>
+    {
         call.transferred = 0;
         if matches!(call.operation, WATCH_DIRECTORY | POLL_WATCH | DISPOSE_WATCH)
         {
@@ -1268,7 +1338,21 @@ impl Manager
             }
             OPEN =>
             {
-                let (handle, length) = self.open(owner, call.volume, call.cnid, call.fork)?;
+                let (handle, length) = match owner
+                {
+                    subject::Access::Client(label) =>
+                    {
+                        self.open(label, call.volume, call.cnid, call.fork)?
+                    }
+                    subject::Access::Operation(scope) =>
+                    {
+                        self.open_authorized(owner,
+                                             &subject::Authority::Operation(scope.clone()),
+                                             call.volume,
+                                             call.cnid,
+                                             call.fork)?
+                    }
+                };
                 call.handle = handle;
                 call.length = length;
                 call.position = 0;
@@ -1276,20 +1360,22 @@ impl Manager
             READ =>
             {
                 // Clone only the bounded extent descriptor; handles keep independent marks.
-                let file = self.slot(owner, call.handle)?;
-                let FileFork::Block(fork) = &file.fork
-                else
-                {
-                    return Err(NOT_SUPPORTED);
-                };
-                let (volume, position, mut fork) =
+                let (volume, position, mut fork) = {
+                    let file = self.slot_access(owner, call.handle)?;
+                    let FileFork::Block(fork) = &*file.fork.lock()
+                    else
+                    {
+                        return Err(NOT_SUPPORTED);
+                    };
+
                     (file.volume,
                      file.position.load(core::sync::atomic::Ordering::Relaxed),
-                     fork.clone());
+                     fork.clone())
+                };
                 let length = self.with_volume(volume, |v| io(v.read(&mut fork, position, output)))?;
-                let file = self.slot(owner, call.handle)?;
+                let file = self.slot_access(owner, call.handle)?;
                 let fork_length = fork.length;
-                file.fork = FileFork::Block(fork);
+                *file.fork.lock() = FileFork::Block(fork);
                 file.position.fetch_add(length as u64, core::sync::atomic::Ordering::Relaxed);
                 call.transferred = length;
                 call.position = file.position.load(core::sync::atomic::Ordering::Relaxed);
@@ -1297,8 +1383,8 @@ impl Manager
             }
             SEEK =>
             {
-                let file = self.slot(owner, call.handle)?;
-                let length = file.fork.length()?;
+                let file = self.slot_access(owner, call.handle)?;
+                let length = file.fork.lock().length()?;
                 let base = match call.whence
                 {
                     SEEK_START => 0,
@@ -1317,13 +1403,14 @@ impl Manager
             }
             TELL =>
             {
-                let file = self.slot(owner, call.handle)?;
+                let file = self.slot_access(owner, call.handle)?;
                 call.position = file.position.load(core::sync::atomic::Ordering::Relaxed);
-                call.length = file.fork.length()?;
+                call.length = file.fork.lock().length()?;
             }
             CLOSE =>
             {
-                if matches!(self.slot(owner, call.handle)?.fork, FileFork::Provider(_))
+                if matches!(&*self.slot_access(owner, call.handle)?.fork.lock(),
+                            FileFork::Provider(_))
                 {
                     return Err(NOT_SUPPORTED);
                 }
