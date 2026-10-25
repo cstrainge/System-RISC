@@ -42,6 +42,10 @@ static FLIGHTS: Spinlock<Vec<Flight>> = Spinlock::new(Vec::new());
 static REAP: AtomicBool = AtomicBool::new(false);
 static FORK_CLEANUP: AtomicBool = AtomicBool::new(false);
 static WRITE_CLEANUP: AtomicBool = AtomicBool::new(false);
+pub(crate) fn power_ready() -> bool
+{
+    FLIGHTS.lock().is_empty()
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Record
 {

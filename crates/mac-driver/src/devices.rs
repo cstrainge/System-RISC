@@ -41,6 +41,18 @@ impl DeviceService
         self.describe(wire::PROBE, ordinal)
     }
 
+    /// Inventory slots include empty bus positions; probe each slot up to this
+    /// count instead of assuming a board-specific number of devices.
+    pub fn count(self) -> Result<u32>
+    {
+        let mut output = [0; 4];
+        if self.synchronous(wire::COUNT, &[], &mut output)? != output.len()
+        {
+            return Err(Error(BAD_ABI));
+        }
+        Ok(u32::from_le_bytes(output))
+    }
+
     pub fn claim(self, ordinal: u32) -> Result<Description>
     {
         self.describe(wire::CLAIM, ordinal)

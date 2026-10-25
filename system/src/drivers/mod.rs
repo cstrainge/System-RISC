@@ -10,3 +10,17 @@ mod runtime;
 pub(crate) use runtime::*;
 #[cfg(target_arch = "riscv64")]
 pub use runtime::{OwnedJob, submit_background_job, submit_job};
+
+pub(crate) fn status(error: Error) -> mac_abi::Status
+{
+    use mac_abi::*;
+    match error
+    {
+        Error::Stale => NOT_FOUND,
+        Error::Access => ACCESS_DENIED,
+        Error::Busy | Error::State => SERVICE_BUSY,
+        Error::Exhausted => NO_MEMORY,
+        Error::Contract(_) => BAD_ABI,
+        Error::Duplicate | Error::Exclusive => BAD_ARGUMENT
+    }
+}

@@ -1,7 +1,7 @@
 //! QEMU virt board fatal shutdown. Hardware facts stay in this machine adapter.
 //! Provenance: QEMU v10.1.0 hw/riscv/virt.c VIRT_TEST and
 //! include/hw/misc/sifive_test.h / hw/misc/sifive_test.c FINISHER_FAIL.
-mod platform
+pub(super) mod platform
 {
     include!(concat!(env!("OUT_DIR"), "/platform.rs"));
 }

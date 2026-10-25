@@ -58,8 +58,14 @@ pub(crate) fn discover() -> Result<(), Status>
             }
         }
     }
-    let inventory =
-        if needs_devices { crate::machine::driver_devices::inventory()? } else { [None; 8] };
+    let inventory = if needs_devices
+    {
+        crate::machine::driver_devices::inventory()?
+    }
+    else
+    {
+        [None; crate::machine::driver_devices::DEVICE_SLOTS]
+    };
     while !waiting.is_empty()
     {
         let mut progress = false;

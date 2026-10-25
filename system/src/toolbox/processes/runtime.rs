@@ -548,6 +548,20 @@ impl Desktop
         }
     }
 
+    /// Until coordinated Quit/Cancel negotiation lands, do not discard another
+    /// application's unsaved documents or interrupt its teardown walk.
+    pub(crate) fn power_applications_ready(&self) -> Result<(), Status>
+    {
+        if self.processes.iter().any(|process| process.info.id != crate::context::finder_app().0)
+        {
+            Err(SERVICE_BUSY)
+        }
+        else
+        {
+            Ok(())
+        }
+    }
+
     pub(crate) fn activate_existing_application(&mut self, call: &mut ProcessCall)
                                                 -> Result<bool, Status>
     {

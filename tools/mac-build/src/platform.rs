@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::{Result, error};
 
 pub mod memory;
+mod devices;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,6 +18,7 @@ pub struct Platform
     pub llvm_profile:   String,
     pub qemu_cpu:       String,
     pub fatal_shutdown: FatalShutdown,
+    pub mmio_devices:   Vec<devices::Definition>,
     memory:             memory::Definition
 }
 pub const DEFAULT_PLATFORM: &str = "QemuRISC-V";
@@ -43,8 +45,7 @@ pub fn load(name: &str) -> Result<Platform>
         return Err(error(format!("platform '{name}' declares a different name '{}'",
                                  platform.name)));
     }
-    artifacts_for(&platform.fatal_shutdown)?;
-    platform.memory.check()?;
+    platform.device_artifacts()?;
     Ok(platform)
 }
 static PLATFORM: LazyLock<Platform> = LazyLock::new(|| {
@@ -158,17 +159,25 @@ mod tests
 #[serde(deny_unknown_fields)]
 pub struct FatalShutdown
 {
-    mmio_address:  String,
+    device:        String,
     failure_value: u32
 }
 pub fn guest_artifacts() -> Result<(String, String)>
 {
-    let (rust, mut linker) = artifacts_for(&current().fatal_shutdown)?;
+    let (rust, mut linker) = current().device_artifacts()?;
     linker.push_str(&current().memory()?.linker_symbols());
     Ok((rust, linker))
 }
 impl Platform
 {
+    fn device_artifacts(&self) -> Result<(String, String)>
+    {
+        let devices = devices::check(&self.mmio_devices, &self.memory()?)?;
+        let (mut rust, linker) = artifacts_for(&self.fatal_shutdown, &devices)?;
+        rust.push_str(&devices::constants(&devices));
+        Ok((rust, linker))
+    }
+
     pub fn memory(&self) -> Result<memory::Checked>
     {
         self.memory.check()
@@ -179,23 +188,16 @@ pub fn memory_artifacts() -> Result<(String, String)>
     let checked = current().memory()?;
     Ok((checked.system_constants(), checked.boot_constants()))
 }
-fn artifacts_for(device: &FatalShutdown) -> Result<(String, String)>
+fn artifacts_for(device: &FatalShutdown, devices: &[devices::Checked]) -> Result<(String, String)>
 {
-    let address =
-        device.mmio_address
-              .strip_prefix("0x")
-              .ok_or_else(|| {
-                  error("platform fatal-shutdown MMIO address must use 0x hexadecimal")
-              })?;
-    let address = u64::from_str_radix(address, 16).map_err(|cause| {
-                                                      error(format!("platform fatal-shutdown \
-                                                                     MMIO address '{}': {cause}",
-                                                                    device.mmio_address))
-                                                  })?;
-    if address == 0
-       || address % 4 != 0
-       || address.checked_add(4).is_none()
-       || device.failure_value == 0
+    let hardware = devices.iter()
+                          .find(|hardware| hardware.id == device.device)
+                          .ok_or_else(|| {
+                              error("platform fatal-shutdown device is absent from the MMIO \
+                                     inventory")
+                          })?;
+    let address = hardware.address;
+    if hardware.bytes < 4 || device.failure_value == 0
     {
         return Err(error("platform fatal-shutdown MMIO requires a nonzero aligned u32 register \
                           and failure value"));
@@ -218,11 +220,9 @@ mod artifact_tests
     fn named_platform_generates_one_consistent_device_record_and_rejects_bad_selection()
     {
         let platform = load("QemuRISC-V").unwrap();
-        let (rust, linker) = artifacts_for(&platform.fatal_shutdown).unwrap();
-        let address = u64::from_str_radix(platform.fatal_shutdown
-                                                  .mmio_address
-                                                  .trim_start_matches("0x"),
-                                          16).unwrap();
+        let (rust, linker) = platform.device_artifacts().unwrap();
+        let address =
+            devices::check(&platform.mmio_devices, &platform.memory().unwrap()).unwrap()[0].address;
         assert!(rust.contains(&format!("FATAL_FINISHER_ADDRESS: u64 = {address}")));
         assert!(linker.contains(&format!("__platform_fatal_finisher = 0x{address:x}")));
         assert!(rust.contains(&format!("FATAL_FINISHER_FAILURE: u32 = {}",
@@ -236,16 +236,20 @@ mod artifact_tests
         let error = load("NoSuchBoard").err().unwrap().to_string();
         assert!(error.contains("cannot select platform 'NoSuchBoard'")
                 && error.contains("known platform: QemuRISC-V"));
-        for text in ["0x0", "0x3", "0xffffffffffffffff", "0xgarbage", "1234"]
+        for text in ["0x0", "0x3", "0xffffffffffffffff", "0xgarbage", "1234", "0x80000000"]
         {
-            let bad = FatalShutdown { mmio_address:  text.into(),
-                                      failure_value: 1 };
-            assert!(artifacts_for(&bad).err()
-                                       .unwrap()
-                                       .to_string()
-                                       .contains("platform fatal-shutdown"));
+            let mut bad = load("QemuRISC-V").unwrap();
+            bad.mmio_devices[0].address = text.into();
+            assert!(bad.device_artifacts().err().unwrap().to_string().contains("platform MMIO"));
         }
-        assert!(artifacts_for(&FatalShutdown { mmio_address:  "0x100000".into(),
-                                               failure_value: 0 }).is_err());
+        let mut bad = load("QemuRISC-V").unwrap();
+        bad.fatal_shutdown.failure_value = 0;
+        assert!(bad.device_artifacts().is_err());
+        bad.fatal_shutdown.failure_value = 1;
+        bad.fatal_shutdown.device = "absent".into();
+        assert!(bad.device_artifacts().err().unwrap().to_string().contains("absent"));
+        let mut bad = load("QemuRISC-V").unwrap();
+        bad.mmio_devices.push(bad.mmio_devices[0].clone());
+        assert!(bad.device_artifacts().err().unwrap().to_string().contains("non-overlapping"));
     }
 }

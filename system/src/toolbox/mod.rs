@@ -8,6 +8,7 @@ pub mod windows;
 pub mod controls;
 pub mod resources;
 pub mod files;
+pub(crate) mod power;
 pub mod memory;
 pub(crate) mod inspection;
 pub(crate) mod theme;

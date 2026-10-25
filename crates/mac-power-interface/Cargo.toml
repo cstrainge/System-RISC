@@ -1,0 +1,8 @@
+[package]
+name = "mac-power-interface"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mac-module.workspace = true

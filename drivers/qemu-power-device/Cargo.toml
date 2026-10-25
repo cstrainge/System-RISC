@@ -1,0 +1,20 @@
+[package]
+name = "qemu-power-device"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+[features]
+guest = []
+[[bin]]
+name = "QemuPowerDevice"
+path = "src/main.rs"
+required-features = ["guest"]
+test = false
+bench = false
+[dependencies]
+mac-driver = { path = "../../crates/mac-driver" }
+mac-abi.workspace = true
+mac-power-interface.workspace = true
+spinning_top = "=0.2.5"
+[build-dependencies]
+mac-build.workspace = true

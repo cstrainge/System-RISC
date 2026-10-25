@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+toolbox-power = { path = "../../toolbox/power" }
 toolbox-inspection = { path = "../../toolbox/inspection" }
 toolbox-drag = { path = "../../toolbox/drag" }
 toolbox-standard-file = { path = "../../toolbox/standard-file" }
@@ -25,6 +26,7 @@ toolbox-crashes = { path = "../../toolbox/crashes" }
 toolbox-dialogs = { path = "../../toolbox/dialogs" }
 
 [target.'cfg(not(target_arch = "riscv64"))'.dev-dependencies]
+mac-power-interface.workspace = true
 mac-system = { path = "../../system", features = ["test-support"] }
 serde_json.workspace = true
 serde = { version = "1.0", features = ["derive"] }

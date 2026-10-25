@@ -311,6 +311,45 @@ impl Default for Manager
                    Default::default() }
     }
 }
+impl Manager
+{
+    /// Power triggers run in the same non-preemptible service invocation as
+    /// this barrier. Refuse unfinished publication/rollback before flushing;
+    /// provider commits already acknowledge their own durability barriers.
+    pub(crate) fn prepare_power(&mut self) -> Result<(), Status>
+    {
+        if self.writes.iter().next().is_some()
+           || self.streams.iter().next().is_some()
+           || self.groups.iter().next().is_some()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        #[cfg(target_arch = "riscv64")]
+        if self.transfers.iter().next().is_some() || !provider::runtime::power_ready()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        for volume in self.volumes.values_mut()
+        {
+            match volume
+            {
+                Mounted::Block(mounted) =>
+                {
+                    if mounted.poisoned
+                    {
+                        return Err(ROLLBACK_FAILED);
+                    }
+                    if mounted.info.read_only == 0
+                    {
+                        mounted.device.flush().map_err(|_| IO_ERROR)?;
+                    }
+                }
+                Mounted::Provider(mounted) => mounted.power_status()?
+            }
+        }
+        Ok(())
+    }
+}
 fn io<T>(result: mac_hfs::Result<T>) -> Result<T, Status>
 {
     result.map_err(|e| {

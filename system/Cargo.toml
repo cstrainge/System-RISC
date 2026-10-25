@@ -20,6 +20,7 @@ bench = false
 mac-file-types.workspace = true
 mac-module.workspace = true
 mac-device-interface.workspace = true
+mac-power-interface.workspace = true
 mac-object-table.workspace = true
 spinning_top = "=0.2.5"
 mac-abi.workspace = true

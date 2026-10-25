@@ -394,6 +394,22 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 menus::EMPTY => alerts.confirm_empty(system, &browser),
                 menus::ABOUT => open_about(system, &mut about_id),
                 menus::SHOW_CLIPBOARD => clipboard.open(system),
+                menus::RESTART | menus::SHUTDOWN =>
+                {
+                    let result = if selection.command == menus::RESTART
+                    {
+                        system.power().restart()
+                    }
+                    else
+                    {
+                        system.power().shutdown()
+                    };
+                    match result
+                    {
+                        Ok(()) => Ok(()),
+                        Err(error) => alerts.power_error(system, error)
+                    }
+                }
                 _ => Ok(())
             };
             let _ = try_action(system, &mut alerts, action)?;

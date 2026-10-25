@@ -11,6 +11,7 @@ pub const MAP: u32 = 2;
 pub const RESET: u32 = 3;
 pub const UNMAP: u32 = 4;
 pub const RELEASE: u32 = 5;
+pub const COUNT: u32 = 6;
 pub const DESCRIPTION_BYTES: usize = 48;
 pub const MAPPING_BYTES: usize = 24;
 pub const COHERENT_DMA: u32 = 1;

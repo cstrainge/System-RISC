@@ -4,8 +4,8 @@
   "llvm_profile": "rva23u64",
   "qemu_cpu": "rva23s64",
   "fatal_shutdown": {
-    "mmio_address": "0x100000",
-    "failure_value": 78643
+    "failure_value": 78643,
+    "device": "sifive-test"
   },
   "memory": {
     "page_bytes": 4096,
@@ -40,5 +40,16 @@
       "base": "0x82000000",
       "bytes": "0x1000000"
     }
-  }
+  },
+  "mmio_devices": [
+    {
+      "id": "sifive-test",
+      "bus": "MMIO",
+      "key": "7369666976652c746573743100000000",
+      "address": "0x100000",
+      "bytes": 4096,
+      "interrupt": 0,
+      "flags": 2
+    }
+  ]
 }

@@ -85,6 +85,7 @@ version = "0.1.0"
 name = "mac-build"
 version = "0.1.0"
 dependencies = [
+ "mac-device-interface",
  "mac-formats",
  "mac-module",
  "serde",
@@ -95,6 +96,13 @@ dependencies = [
 [[package]]
 name = "mac-code-resource"
 version = "0.1.0"
+
+[[package]]
+name = "mac-device-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
+]
 
 [[package]]
 name = "mac-formats"
@@ -129,6 +137,7 @@ dependencies = [
  "toolbox-inspection",
  "toolbox-memory",
  "toolbox-menus",
+ "toolbox-power",
  "toolbox-processes",
  "toolbox-quickdraw",
  "toolbox-resources",
@@ -333,6 +342,14 @@ dependencies = [
  "mac-abi",
  "mac-traps",
  "toolbox-events",
+]
+
+[[package]]
+name = "toolbox-power"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-traps",
 ]
 
 [[package]]

@@ -1,0 +1,29 @@
+{
+  "identity": "7731a000000000000000000000000040",
+  "stack_bytes": 16384,
+  "interfaces": [
+    {
+      "class": "POWR",
+      "version": 1,
+      "request_schema": 1,
+      "reply_schema": 1,
+      "max_request": 0,
+      "max_reply": 0,
+      "serialized": true,
+      "capabilities": 3
+    }
+  ],
+  "services": [
+    {
+      "class": "VDEV",
+      "version": 1
+    }
+  ],
+  "matches": [
+    {
+      "bus": "MMIO",
+      "value": "7369666976652c746573743100000000",
+      "mask": "ffffffffffffffffffffffffffffffff"
+    }
+  ]
+}

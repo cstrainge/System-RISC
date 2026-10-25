@@ -52,8 +52,12 @@ def capture(output, cases):
             if name != 'host-device-absent':
                 # Malformed/synthetic module cases need an isolated discovery
                 # set. The host-device case exercises the image's installation.
-                for driver in ['Host Transport', 'Host Filesystem', 'StuffIt Filesystem']:
-                    image.remove('/System Folder/Drivers/' + driver)
+                # Enumerate the private installation, so every future external
+                # driver is excluded from these deliberately synthetic cases.
+                for line in image.run('list', '/System Folder/Drivers').splitlines():
+                    entry = json.loads(line)
+                    if not entry['directory']:
+                        image.remove(entry['id'])
             for file in case['files']:
                 image.import_macbinary(Path(file['source']), file['directory'])
             shutil.copyfile(original / 'bootrom.bin', dist / 'bootrom.bin')

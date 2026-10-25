@@ -126,6 +126,12 @@ The resident right-hand application menu uses live Process Manager state. It
 switches foreground windows, ordinary menus and keyboard event ownership and
 provides Hide, Hide Others and Show All. The menu belongs to System rather than
 Finder. Background applications retain independently scheduled execution.
+
+New hardware drivers default to external packages in `System Folder/Drivers`.
+Applications request System services; resident policy selects driver interfaces
+by capability and contract rather than package names. The power service and
+external Qemu Power Device are described in [POWER.md](docs/POWER.md), including
+durability barriers and the remaining coordinated application-quit gate.
 Original presentation and actual multi-app input behavior have their own
 [launch-slice acceptance gate](TOOLBOX-PLAN.md#first-native-application-launch-slice).
 

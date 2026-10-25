@@ -9,7 +9,21 @@ use mac_module::{ClassId, Offer, abi};
 use crate::{drivers::{self, ResidentCall, ResidentCompletion,
                       devices::{Bus, Devices}},
             state::TryState};
-struct VirtioBus;
+struct PlatformBus;
+pub(crate) const DEVICE_SLOTS: usize = 8 + super::power::platform::PLATFORM_MMIO_DEVICES.len();
+fn board_device(ordinal: u32) -> Result<Description, Status>
+{
+    let index = ordinal.checked_sub(8).ok_or(NOT_FOUND)? as usize;
+    let &(bus, key, registers, register_bytes, interrupt, flags) =
+        super::power::platform::PLATFORM_MMIO_DEVICES.get(index).ok_or(NOT_FOUND)?;
+    Ok(Description { handle: 0,
+                     bus: ClassId(bus),
+                     key,
+                     registers,
+                     register_bytes,
+                     interrupt,
+                     flags })
+}
 fn base(ordinal: u32) -> Result<usize, Status>
 {
     if ordinal >= 8
@@ -23,10 +37,14 @@ fn read(base: usize, offset: usize) -> u32
     // Only board-described 4 KiB virtio MMIO windows reach this adapter.
     unsafe { u32::from_le(read_volatile((base + offset) as *const u32)) }
 }
-impl Bus for VirtioBus
+impl Bus for PlatformBus
 {
     fn probe(&mut self, ordinal: u32) -> Result<Description, Status>
     {
+        if ordinal >= 8
+        {
+            return board_device(ordinal);
+        }
         let address = base(ordinal)?;
         if read(address, 0) != 0x7472_6976 || read(address, 4) != 2
         {
@@ -54,6 +72,17 @@ impl Bus for VirtioBus
 
     fn request_reset(&mut self, ordinal: u32) -> Result<(), Status>
     {
+        if ordinal >= 8
+        {
+            return if board_device(ordinal)?.flags & wire::COHERENT_DMA == 0
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(NOT_SUPPORTED)
+            };
+        }
         let address = base(ordinal)?;
         unsafe {
             write_volatile((address + 0x70) as *mut u32, 0);
@@ -64,16 +93,27 @@ impl Bus for VirtioBus
 
     fn stopped(&mut self, ordinal: u32) -> Result<bool, Status>
     {
+        if ordinal >= 8
+        {
+            return if board_device(ordinal)?.flags & wire::COHERENT_DMA == 0
+            {
+                Ok(true)
+            }
+            else
+            {
+                Err(NOT_SUPPORTED)
+            };
+        }
         Ok(read(base(ordinal)?, 0x70) == 0)
     }
 }
-static DEVICES: TryState<Devices<VirtioBus>> = TryState::new();
+static DEVICES: TryState<Devices<PlatformBus>> = TryState::new();
 /// Boot discovery takes one bounded snapshot. Match policy stays in the generic
 /// loader; only this adapter knows the board's MMIO slots.
-pub(crate) fn inventory() -> Result<[Option<Description>; 8], Status>
+pub(crate) fn inventory() -> Result<[Option<Description>; DEVICE_SLOTS], Status>
 {
     with(|devices| {
-        let mut result = [None; 8];
+        let mut result = [None; DEVICE_SLOTS];
         for (ordinal, slot) in result.iter_mut().enumerate()
         {
             match devices.probe(ordinal as u32)
@@ -86,7 +126,7 @@ pub(crate) fn inventory() -> Result<[Option<Description>; 8], Status>
         Ok(result)
     })
 }
-fn with<R>(call: impl FnOnce(&mut Devices<VirtioBus>) -> Result<R, Status>) -> Result<R, Status>
+fn with<R>(call: impl FnOnce(&mut Devices<PlatformBus>) -> Result<R, Status>) -> Result<R, Status>
 {
     DEVICES.with(call).map_err(crate::state::AccessError::status)?
 }
@@ -96,7 +136,7 @@ fn word(input: &[u8]) -> Result<u32, Status>
 }
 pub(crate) fn initialize() -> Result<(), Status>
 {
-    DEVICES.publish(Devices::new(VirtioBus)).map_err(crate::state::AccessError::status)?;
+    DEVICES.publish(Devices::new(PlatformBus)).map_err(crate::state::AccessError::status)?;
     drivers::register_service(Offer { class:          wire::CLASS,
                                       version:        wire::VERSION,
                                       request_schema: 1,
@@ -131,6 +171,15 @@ fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompleti
     }
     match call.operation
     {
+        wire::COUNT =>
+        {
+            if !call.input.is_empty() || output.len() < 4
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            output[..4].copy_from_slice(&(DEVICE_SLOTS as u32).to_le_bytes());
+            Ok(ResidentCompletion::Complete(4))
+        }
         wire::PROBE | wire::CLAIM =>
         {
             if output.len() < wire::DESCRIPTION_BYTES

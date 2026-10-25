@@ -199,6 +199,11 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
     }
     match number
     {
+        POWER =>
+        {
+            let call = read_request!(mac_abi::power::PowerCall);
+            toolbox::power::native(call).map_or_else(|error| error, |_| OK) as i64
+        }
         LOG =>
         {
             let call = read_request!(LogCall);

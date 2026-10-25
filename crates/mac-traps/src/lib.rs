@@ -472,6 +472,11 @@ pub struct RegionCommand<'a>
 }
 impl Client<'_>
 {
+    pub fn power(self, call: &mut mac_abi::power::PowerCall) -> Result<()>
+    {
+        status(self.invoke(traps::POWER, call))
+    }
+
     pub fn graphics(self, target: quickdraw::DrawingTarget, state: &mut quickdraw::PortState,
                     command: GraphicsCommand<'_>)
                     -> Result<()>

@@ -174,6 +174,18 @@ impl<'a> Alerts<'a>
         self.modal_menus(system, false)
     }
 
+    pub fn power_error(&mut self, system: &System<'a>, failure: mac_toolbox::power::Error)
+                       -> Result<(), Error>
+    {
+        let mut body = crate::browser::Text::<1024>::default();
+        write!(&mut body, "{failure}").map_err(|_| Error::BadArgument)?;
+        system.log(body.as_str())?;
+        self.alert =
+            Some(system.dialogs().alert_owned(resources::APPLICATION, 2001, body.as_str())?);
+        self.empty = false;
+        self.modal_menus(system, false)
+    }
+
     pub fn transfer_recovery(&mut self, system: &System<'a>, recovery: files::TransferRecovery)
                              -> Result<(), Error>
     {

@@ -2,7 +2,21 @@
 //! this module is the narrow, audited C/pointer boundary. This is not an app SDK.
 #![no_std]
 pub mod devices;
+#[doc(hidden)]
+pub mod runtime;
 pub mod file_sources;
+/// Platform panic scaffold: diagnostics followed by System's loud privileged
+/// fault shutdown. This does not claim an unproven module unwind contract.
+#[macro_export]
+macro_rules! driver_panic_handler {
+    () => {
+        #[panic_handler]
+        fn __driver_panic(info: &core::panic::PanicInfo<'_>) -> !
+        {
+            $crate::runtime::panic(info)
+        }
+    };
+}
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, NOT_SUPPORTED, OK, Status};
 pub use mac_module::{ClassId, Offer, abi};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

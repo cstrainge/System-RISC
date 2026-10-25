@@ -94,7 +94,11 @@ impl Workspace
                         | "native-progress-bar-cdef"
                         | "native-static-text-cdef"
                         | "native-mdef")
-               || matches!(*package, "vhost-transport" | "vhost-filesystem" | "stuffit-filesystem")
+               || matches!(*package,
+                           "vhost-transport"
+                           | "vhost-filesystem"
+                           | "stuffit-filesystem"
+                           | "qemu-power-device")
             {
                 command.arg("--features").arg(format!("{package}/guest"));
             }
@@ -119,7 +123,7 @@ impl Workspace
                            "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef"])?;
         self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "cursor-test",
                            "panic-test", "resedit", "reactor", "bootrom", "vhost-transport",
-                           "vhost-filesystem", "stuffit-filesystem"])?;
+                           "vhost-filesystem", "stuffit-filesystem", "qemu-power-device"])?;
         // Keep userspace's allocation-free serde graph independent of the
         // resident System's alloc-enabled serde. Cargo feature unification
         // across the kernel and an app must not impose a userspace heap.
@@ -137,7 +141,8 @@ impl Workspace
              ("apps/reactor", "Reactor Room", "Reactor"),
              ("drivers/vhost-transport", "Host Transport", "HostTransport"),
              ("drivers/vhost-filesystem", "Host Filesystem", "HostFilesystem"),
-             ("drivers/stuffit-filesystem", "StuffIt Filesystem", "StuffItFilesystem")]
+             ("drivers/stuffit-filesystem", "StuffIt Filesystem", "StuffItFilesystem"),
+             ("drivers/qemu-power-device", "Qemu Power Device", "QemuPowerDevice")]
         {
             let report = package::build(&self.root.join(directory).join("resources.json"),
                                         &self.build

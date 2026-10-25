@@ -47,6 +47,11 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
 - Install native driver packages in the blessed `System Folder/Drivers` directory
   and System extensions in `System Folder/Extensions`. Shared module machinery
   does not merge their discovery paths or package/entry contracts.
+- Prefer external packages for all future drivers. Keep hardware-specific
+  behavior in those packages and resident code focused on generic services,
+  admission/lifetimes and the bootstrap support needed to load them. Applications
+  call System services; System selects a compatible driver by its declared
+  interface and capabilities, never by a driver filename.
 - Canonical new Toolbox compatibility assertions belong in
   `crates/mac-toolbox/tests` and exercise the public SDK through real services.
   Capture scripts may collect evidence; Rust owns new acceptance decisions.

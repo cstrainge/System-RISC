@@ -85,6 +85,7 @@ version = "0.1.0"
 name = "mac-build"
 version = "0.1.0"
 dependencies = [
+ "mac-device-interface",
  "mac-formats",
  "mac-module",
  "serde",
@@ -104,6 +105,13 @@ dependencies = [
  "mac-traps",
  "toolbox-controls",
  "toolbox-quickdraw",
+]
+
+[[package]]
+name = "mac-device-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
 ]
 
 [[package]]

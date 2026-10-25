@@ -365,3 +365,35 @@ fn cancellation_during_contended_admission_never_retries_the_unsent_start()
     assert!(!q.has_ready());
     assert_eq!(q.take(OWNER, id).unwrap().unwrap().result.unwrap_err(), Failure::Cancelled);
 }
+
+#[test]
+fn exact_dispatch_preserves_other_work_and_rejects_foreign_cancelled_or_stale_jobs()
+{
+    let mut q = Queue::new();
+    let earlier = q.submit(OWNER, work(8)).unwrap();
+    let immediate = q.submit(Owner::Kernel, Work::new(2, CLASS, 9, vec![], 0).unwrap()).unwrap();
+    assert_eq!(q.dispatch_for(OWNER, immediate).unwrap_err(), ACCESS_DENIED);
+    let mut selected = q.dispatch_for(Owner::Kernel, immediate).unwrap().unwrap();
+    selected.invoke(&mut Script(|call: Call<'_>| {
+                        assert_eq!(call.provider, 2);
+                        assert_eq!(call.operation, 9);
+                        Outcome::Complete(0)
+                    }));
+    q.finish(selected).unwrap();
+    assert!(q.dispatch_for(Owner::Kernel, immediate).unwrap().is_none());
+    assert!(q.take(OWNER, earlier).unwrap().is_none(), "exact dispatch ran an unrelated callback");
+    q.take(Owner::Kernel, immediate).unwrap().unwrap();
+    assert_eq!(q.dispatch_for(Owner::Kernel, immediate).unwrap_err(), NOT_FOUND);
+    let cancelled = q.submit(Owner::Kernel, work(0)).unwrap();
+    q.cancel(Owner::Kernel, cancelled).unwrap();
+    assert!(q.dispatch_for(Owner::Kernel, cancelled).unwrap().is_none());
+    assert_eq!(step(&mut q, |call| {
+                   assert_eq!(call.owner, OWNER);
+                   Outcome::Complete(0)
+               }).unwrap()
+                 .job,
+               earlier);
+    q.take(OWNER, earlier).unwrap().unwrap();
+    q.take(Owner::Kernel, cancelled).unwrap().unwrap();
+    assert!(q.next_dispatch().is_none());
+}

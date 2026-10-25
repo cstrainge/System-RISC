@@ -85,6 +85,7 @@ version = "0.1.0"
 name = "mac-build"
 version = "0.1.0"
 dependencies = [
+ "mac-device-interface",
  "mac-formats",
  "mac-module",
  "serde",

@@ -1,5 +1,10 @@
 # Built-in block storage and loadable kernel drivers
 
+Future drivers default to external packages in `System Folder/Drivers`.
+Applications use generic System APIs; resident services select compatible driver
+interfaces by capabilities. [Power services](POWER.md) and the external Qemu
+Power Device provide the shutdown/restart example of this boundary.
+
 Status: the initial class-neutral contract/registry/relocating module loader is
 implemented; storage class providers and deferred I/O remain in progress, tracked as [P14](CORE-TOOLBOX-ROADMAP.md#p14--loadable-kernel-drivers).
 The minimal block-device path remains built into System for boot/storage access.

@@ -7,6 +7,7 @@ pub mod scrap;
 pub mod drag;
 pub mod inspection;
 pub mod presentation;
+pub mod power;
 mod worlds;
 mod textedit;
 use core::cell::RefCell;
@@ -34,6 +35,7 @@ struct Session
     started:       std::time::Instant,
     memory:        crate::toolbox::memory::Manager,
     files:         crate::toolbox::files::Manager,
+    power:         power::State,
     fonts:         crate::toolbox::quickdraw::fonts::FontManager,
     resources:     std::vec::Vec<mac_formats::resource::Resource>,
     application:   std::vec::Vec<mac_formats::resource::Resource>
@@ -155,6 +157,7 @@ impl Default for Session
                started: std::time::Instant::now(),
                memory: crate::toolbox::memory::Manager::new((memory, memory_storage)).unwrap(),
                files: Default::default(),
+               power: Default::default(),
                fonts,
                resources,
                application: std::vec::Vec::new() }
@@ -248,6 +251,13 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
     }
     match number
     {
+        POWER => SESSION.with(|session| {
+            let mut session=session.borrow_mut();
+            let Session {power,files,..}=session.as_mut().unwrap();
+            let result=unsafe {request::<mac_abi::power::PowerCall>(pointer,size)}
+                .and_then(|call|power.request(files,call));
+            result.err().unwrap_or(OK) as i64
+        }),
         MENU => unsafe { menus::dispatch(pointer, size) },
         INSPECTION => SESSION.with(|session| {
             let session = session.borrow();

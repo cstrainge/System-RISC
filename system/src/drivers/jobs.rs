@@ -346,6 +346,24 @@ impl Queue
         None
     }
 
+    /// Claim one exact owned ready job without running unrelated callbacks.
+    /// Dispatch ownership and completion use the ordinary queue protocol.
+    pub fn dispatch_for(&mut self, owner: Owner, id: u32) -> Result<Option<Dispatch>, Status>
+    {
+        if !matches!(self.owned(owner, id)?.state, State::Ready(_))
+        {
+            return Ok(None);
+        }
+        let Some(index) = self.ready.iter().position(|ready| *ready == id)
+        else
+        {
+            return Ok(None);
+        };
+        self.ready.remove(index);
+        self.ready.push_front(id);
+        Ok(self.next_dispatch())
+    }
+
     /// A rejected/foreign completion returns its owned dispatch to the caller;
     /// a still-live broker ticket and its buffers must never be silently dropped.
     pub fn finish(&mut self, mut dispatch: Dispatch) -> Result<Option<CompletionNotice>, Dispatch>

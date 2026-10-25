@@ -1,6 +1,7 @@
 //! Native RV64 service ABI. This is separate from the future 32-bit 68k ABI.
 #![no_std]
 #![forbid(unsafe_code)]
+pub mod power;
 
 pub const ABI_VERSION: u32 = 1;
 pub type Status = i32;

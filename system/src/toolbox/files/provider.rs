@@ -33,6 +33,16 @@ pub(super) struct Mounted
 
 impl Mounted
 {
+    pub(super) fn power_status(&self) -> Result<(), Status>
+    {
+        match self.phase
+        {
+            Phase::Quarantined => Err(ROLLBACK_FAILED),
+            Phase::Live if self.reads == 0 => Ok(()),
+            _ => Err(SERVICE_BUSY)
+        }
+    }
+
     pub(super) fn end_read(&mut self) -> Result<(), Status>
     {
         self.reads = self.reads.checked_sub(1).ok_or(BAD_ABI)?;

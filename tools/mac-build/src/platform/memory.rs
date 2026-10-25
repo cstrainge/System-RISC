@@ -177,6 +177,11 @@ impl Definition
 }
 impl Checked
 {
+    pub(super) fn permits_mmio(&self, range: core::ops::Range<u64>) -> bool
+    {
+        !overlaps(&range, &self.ram) && !overlaps(&range, &self.flash)
+    }
+
     pub fn validate_image(&self, role: mac_formats::native::Role, base: u64, limit: u64)
                           -> Result<()>
     {

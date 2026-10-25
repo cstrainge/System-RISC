@@ -7,7 +7,7 @@ use mac_abi::{ACCESS_DENIED, BAD_ABI, BAD_ARGUMENT, NO_MEMORY, NOT_FOUND, NOT_SU
 use mac_formats::{module::Package, native::image, resource::Resource};
 use mac_module::{ClassId, PackageKind, Target, abi};
 
-use super::{Error, Registry};
+use super::{Error, Registry, status};
 use crate::state::TryState;
 mod discovery;
 mod file_handlers;
@@ -124,18 +124,6 @@ pub(crate) fn owns_memory(module: u32, base: u64, length: u64) -> Result<(), Sta
            .map_err(crate::state::AccessError::status)?
 }
 
-fn status(error: Error) -> Status
-{
-    match error
-    {
-        Error::Stale => NOT_FOUND,
-        Error::Access => ACCESS_DENIED,
-        Error::Busy | Error::State => SERVICE_BUSY,
-        Error::Exhausted => NO_MEMORY,
-        Error::Contract(_) => BAD_ABI,
-        Error::Duplicate | Error::Exclusive => BAD_ARGUMENT
-    }
-}
 pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result<(), Status>
 {
     if arena.start >= arena.end || arena.start & 4095 != 0 || arena.end & 4095 != 0
@@ -616,17 +604,23 @@ pub(crate) fn discard_thread_jobs(thread: u64)
 /// atomic load, with no registry lookup, allocation or device access.
 pub(crate) fn pump_jobs()
 {
-    use core::sync::atomic::Ordering::{Acquire, Release};
+    use core::sync::atomic::Ordering::Acquire;
     if !JOBS_READY.load(Acquire)
     {
         return;
     }
     let dispatch = { JOBS.lock().next_dispatch() };
-    let Some(mut dispatch) = dispatch
+    let Some(dispatch) = dispatch
     else
     {
         return;
     };
+    dispatch_job(dispatch);
+}
+
+fn dispatch_job(mut dispatch: super::jobs::Dispatch)
+{
+    use core::sync::atomic::Ordering::Release;
     dispatch.invoke(&mut NativeBroker);
     let completed = {
         let mut queue = JOBS.lock();
@@ -664,6 +658,18 @@ pub struct OwnedJob
 }
 impl OwnedJob
 {
+    /// Run one bounded callback of this job immediately. Pending work remains
+    /// owned by this guard; Drop requests cancellation through the same queue.
+    pub(crate) fn run_once(&mut self) -> Result<Option<super::jobs::Completed>, Status>
+    {
+        let dispatch = JOBS.lock().dispatch_for(self.owner, self.id)?;
+        if let Some(dispatch) = dispatch
+        {
+            dispatch_job(dispatch);
+        }
+        self.poll()
+    }
+
     pub fn poll(&mut self) -> Result<Option<super::jobs::Completed>, Status>
     {
         if self.id == 0

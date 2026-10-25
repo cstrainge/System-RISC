@@ -22,6 +22,7 @@ pub use toolbox_events as events;
 pub use toolbox_files as files;
 pub use toolbox_memory as memory;
 pub use toolbox_menus as menus;
+pub use toolbox_power as power;
 pub use toolbox_processes as processes;
 pub use toolbox_quickdraw as quickdraw;
 pub use toolbox_resources as resources;
@@ -38,6 +39,11 @@ pub struct System<'a>
 }
 impl<'a> System<'a>
 {
+    pub fn power(&self) -> power::Power<'a>
+    {
+        power::Power::new(self.client)
+    }
+
     pub fn inspection(&self) -> inspection::Inspection<'a>
     {
         inspection::Inspection::new(self.client)
