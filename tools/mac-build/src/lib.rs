@@ -42,11 +42,11 @@ pub fn build_guest() -> Result<()>
     let out = env::var("OUT_DIR")?;
     let out = Path::new(&out);
     println!("cargo:rerun-if-changed={}", path.display());
-    // Cargo places build-script output below the selected target/profile's
-    // build/<package>/out. Definition artifacts are siblings of the main ELF,
-    // including for private profiles; no normal-build path is read here.
-    let artifacts =
-        out.ancestors().nth(3).ok_or_else(|| error("unexpected Cargo OUT_DIR layout"))?;
+    // Cargo may add package/hash directories below profile/build. Resolve
+    // that boundary instead of assuming a fixed OUT_DIR ancestor depth.
+    // Watching nonexistent definition paths makes every build dirty and also
+    // misses the actual artifacts on a changed definition.
+    let artifacts = paths::artifact_profile(out)?;
     for source in manifest.source_files(&path, artifacts)
     {
         println!("cargo:rerun-if-changed={}", source.display());

@@ -113,6 +113,11 @@ Rebuilding or starting the normal desktop can run alongside the checks. Build
 profiles reject concurrent writers to the same output directory. Cleanup keeps
 each profile's current installation and removes obsolete fixture disks.
 
+Guest build scripts watch definition executables in the selected Cargo target
+and profile. They resolve that profile from Cargo's build-directory boundary,
+including package/hash nesting, so unchanged definitions leave System cached
+and changed definitions invalidate its build dependency.
+
 Override the build/media root when needed (paths with spaces are supported):
 
 ```sh
