@@ -25,15 +25,18 @@ static INPUT_PRIORITY: crate::toolbox::events::priority::InputPriority =
     crate::toolbox::events::priority::InputPriority::new();
 struct Thread
 {
-    id:       u32,
-    _stack:   Box<[u128]>,
-    frame:    usize,
-    live:     bool,
-    retired:  bool,
-    image:    usize,
-    switches: u64,
-    waiting:  Option<Wait>,
-    woken:    u8
+    id:         u32,
+    // Rust drops fields in declaration order: reclaim the actual stack before
+    // releasing code-use exclusion, even when this record is dropped on error.
+    _stack:     Box<[u128]>,
+    _execution: Option<mac_kernel_model::image::ExecutionPin>,
+    frame:      usize,
+    live:       bool,
+    retired:    bool,
+    image:      usize,
+    switches:   u64,
+    waiting:    Option<Wait>,
+    woken:      u8
 }
 #[derive(Clone, Copy)]
 enum Wait
@@ -105,9 +108,10 @@ pub(crate) fn has_threads(app: u64) -> bool
              .enumerate()
              .any(|(index, thread)| thread.is_some() && CONTEXTS[index].identity().app.0 == app)
 }
-pub fn spawn(owner: crate::toolbox::handles::OwnerRef, image: usize, entry: usize)
+pub fn spawn(owner: crate::toolbox::handles::OwnerRef, loaded: crate::kernel::LoadedImage)
              -> Result<u64, mac_abi::Status>
 {
+    let (image, entry, execution) = loaded.into_parts();
     let mut scheduler = SCHEDULER.lock();
     let slot = scheduler.threads.iter().position(|t| t.is_none()).ok_or(mac_abi::NO_MEMORY)?;
     let context_bytes = super::traps::frame_reservation_bytes();
@@ -143,6 +147,7 @@ pub fn spawn(owner: crate::toolbox::handles::OwnerRef, image: usize, entry: usiz
     }
     scheduler.threads[slot] = Some(Thread { id,
                                             _stack: stack,
+                                            _execution: Some(execution),
                                             frame: frame as usize,
                                             live: true,
                                             retired: false,
@@ -188,15 +193,16 @@ pub fn start() -> !
     unsafe {
         idle_frame.write(initial);
     }
-    scheduler.idle = Some(Thread { id:       0,
-                                   _stack:   stack,
-                                   frame:    idle_frame as usize,
-                                   live:     true,
-                                   retired:  false,
-                                   image:    0,
-                                   switches: 0,
-                                   waiting:  None,
-                                   woken:    0 });
+    scheduler.idle = Some(Thread { id:         0,
+                                   _stack:     stack,
+                                   _execution: None,
+                                   frame:      idle_frame as usize,
+                                   live:       true,
+                                   retired:    false,
+                                   image:      0,
+                                   switches:   0,
+                                   waiting:    None,
+                                   woken:      0 });
     let t = scheduler.threads[0].as_mut().expect("Finder thread");
     let frame = t.frame as *mut TrapFrame;
     t.switches += 1;

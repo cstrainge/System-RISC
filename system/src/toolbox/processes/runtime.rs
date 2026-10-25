@@ -55,9 +55,10 @@ impl Desktop
         }
     }
 
-    pub(crate) fn spawn_process(&self, id: u64, image: usize, entry: usize) -> Result<u64, Status>
+    pub(crate) fn spawn_process(&self, id: u64, loaded: crate::kernel::LoadedImage)
+                                -> Result<u64, Status>
     {
-        crate::machine::scheduler::spawn(self.processes.ledger(id)?, image, entry)
+        crate::machine::scheduler::spawn(self.processes.ledger(id)?, loaded)
     }
 
     pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
@@ -597,9 +598,9 @@ impl Desktop
         self.locals.try_reserve(1).map_err(|_| NO_MEMORY)?;
         let crate::toolbox::files::application::Loaded { catalog,
                                                          resources } = loaded;
-        let image = crate::kernel::cache_image(call.volume, call.cnid, catalog.creator,
-                                               catalog.file_type, resources)?;
-        let entry = crate::kernel::reload_image(image)?;
+        let loaded = crate::kernel::load_application(call.volume, call.cnid, catalog.creator,
+                                                     catalog.file_type, resources)?;
+        let image = loaded.image();
         let id = self.processes.add(catalog.name(), call.volume, call.cnid, image)?;
         let local = match Saved::try_new(self.processes.ledger(id)?, self.mdef)
         {
@@ -623,7 +624,7 @@ impl Desktop
             self.retire_unstarted(id)?;
             return Err(error);
         }
-        let thread = match self.spawn_process(id, image, entry)
+        let thread = match self.spawn_process(id, loaded)
         {
             Ok(t) => t,
             Err(e) =>

@@ -517,6 +517,7 @@ dependencies = [
  "mac-formats",
  "mac-hfs",
  "mac-hfs-b",
+ "mac-kernel-model",
  "mac-module",
  "mac-object-table",
  "mac-power-interface",

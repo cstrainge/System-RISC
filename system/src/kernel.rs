@@ -46,7 +46,40 @@ pub(crate) struct AppImage
     pub creator:   [u8; 4],
     pub file_type: [u8; 4],
     pub base:      u64,
-    pub limit:     u64
+    pub limit:     u64,
+    execution:     mac_kernel_model::image::ExecutionGate
+}
+/// Initialized entry and its held execution use travel together. Launch errors
+/// drop the pin; successful admission transfers it to the scheduler record.
+pub(crate) struct LoadedImage
+{
+    image: usize,
+    entry: usize,
+    pin:   mac_kernel_model::image::ExecutionPin
+}
+impl LoadedImage
+{
+    pub(crate) fn image(&self) -> usize
+    {
+        self.image
+    }
+
+    pub(crate) fn into_parts(self) -> (usize, usize, mac_kernel_model::image::ExecutionPin)
+    {
+        (self.image, self.entry, self.pin)
+    }
+}
+
+fn execution_status(error: mac_kernel_model::image::Error) -> Status
+{
+    match error
+    {
+        mac_kernel_model::image::Error::Allocation | mac_kernel_model::image::Error::PinLimit =>
+        {
+            NO_MEMORY
+        }
+        mac_kernel_model::image::Error::Busy => SERVICE_BUSY
+    }
 }
 static IMAGES: [Once<AppImage>; 8] = [const { Once::new() }; 8];
 /// Read scope only: the callback cannot return a borrow of this image. Actual
@@ -64,9 +97,9 @@ impl crate::toolbox::resources::manager::ImageCatalog for ImageCatalog<'_>
         Some(&self.0.get(index)?.get()?.resources)
     }
 }
-pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [u8; 4],
-                          resources: alloc::vec::Vec<mac_formats::resource::Resource>)
-                          -> Result<usize, Status>
+pub(crate) fn load_application(volume: u32, cnid: u32, creator: [u8; 4], file_type: [u8; 4],
+                               resources: alloc::vec::Vec<mac_formats::resource::Resource>)
+                               -> Result<LoadedImage, Status>
 {
     if let Some((i, _)) = IMAGES.iter().enumerate().find(|(_, slot)| {
                                                        slot.get().is_some_and(|image| {
@@ -78,7 +111,7 @@ pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [
                                                                  })
                                                    })
     {
-        return Ok(i);
+        return reload_image(i);
     }
     let (preferred, _) = crate::loader::reservation(&resources).map_err(crate::loader::status)?;
     let extent = crate::loader::application_extent(&resources).map_err(crate::loader::status)?;
@@ -116,7 +149,12 @@ pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [
     let limit = base + extent;
     let slot = IMAGES.iter().position(|i| i.get().is_none()).ok_or(NO_MEMORY)?;
     let authority = application_authority(&resources)?;
-    crate::loader::application_at(&resources, base).map_err(crate::loader::status)?;
+    let execution = mac_kernel_model::image::ExecutionGate::try_new().map_err(execution_status)?;
+    let loading = execution.begin_load().map_err(execution_status)?;
+    // Validate and load before cache publication: a malformed application must
+    // not consume a permanent slot. New admissions write their code only once.
+    let entry = crate::loader::application_at(&resources, base).map_err(crate::loader::status)?;
+    let pin = loading.finish();
     IMAGES[slot].call_once(|| {
                     AppImage { resources,
                                authority,
@@ -125,9 +163,12 @@ pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [
                                creator,
                                file_type,
                                base,
-                               limit }
+                               limit,
+                               execution }
                 });
-    Ok(slot)
+    Ok(LoadedImage { image: slot,
+                     entry,
+                     pin })
 }
 
 fn application_authority(resources: &[mac_formats::resource::Resource]) -> Result<u64, Status>
@@ -257,10 +298,15 @@ pub(crate) fn with_scrap<R>(call: impl FnOnce(&mut crate::toolbox::scrap::Manage
 {
     SCRAP.with(call)
 }
-pub(crate) fn reload_image(index: usize) -> Result<usize, Status>
+fn reload_image(index: usize) -> Result<LoadedImage, Status>
 {
     with_image(index, |image| {
-        crate::loader::application_at(&image.resources, image.base).map_err(crate::loader::status)
+        let loading = image.execution.begin_load().map_err(|error| {
+            serial!("APPLICATION_RELOAD_REFUSED image={index}: {error}");
+            execution_status(error)
+        })?;
+        let entry = crate::loader::application_at(&image.resources, image.base).map_err(crate::loader::status)?;
+        Ok(LoadedImage { image: index, entry, pin: loading.finish() })
     }).ok_or(NOT_FOUND)?
 }
 pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontManager>
@@ -352,7 +398,21 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     crate::drivers::file_sources::runtime::initialize().map_err(|_| mac_formats::Error::Malformed("backing-file service initialization failed"))?;
     let mut system = crate::loader::read_startup("System")?;
     let finder = crate::loader::read_startup("Finder")?;
+    let finder_execution = mac_kernel_model::image::ExecutionGate::try_new().map_err(|_| {
+                               mac_formats::Error::AllocationFailed("Finder execution gate \
+                                                                     allocation failed")
+                           })?;
+    // Bootstrap owns this unpublished, disjoint reservation exclusively. Pin
+    // initialized code before publishing its image or admitting the first thread.
     let finder_entry = crate::loader::application(&finder)?;
+    let finder_pin =
+        finder_execution.pin().map_err(|_| {
+                                   mac_formats::Error::Malformed("unpublished Finder execution \
+                                                                  gate refused its first pin")
+                               })?;
+    let finder_loaded = LoadedImage { image: 0,
+                                      entry: finder_entry,
+                                      pin:   finder_pin };
     let (base, limit) = crate::loader::reservation(&finder)?;
     let authority = policy_authority(&system, &finder).map_err(|_| {
                         mac_formats::Error::Malformed("invalid application authority policy while \
@@ -366,7 +426,8 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                             creator: *b"MACS",
                             file_type: *b"FNDR",
                             base,
-                            limit }
+                            limit,
+                            execution: finder_execution }
              });
     let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system);
     serial!("FONTS_READY: families={} resources loaded from System", fonts.catalog().len());
@@ -414,7 +475,7 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
     let thread =
         with_desktop(|desktop| {
-            desktop.spawn_process(crate::context::finder_app().0, 0, finder_entry)
+            desktop.spawn_process(crate::context::finder_app().0, finder_loaded)
         }).map_err(|_| mac_formats::Error::Malformed("Finder owner directory is unavailable"))?
           .map_err(|status| {
               serial!("FINDER_THREAD_CREATION_FAILED status={status}");

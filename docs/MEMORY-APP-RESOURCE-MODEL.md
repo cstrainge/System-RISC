@@ -11,8 +11,9 @@ architectural decisions and remaining migration gates.
 The `no_std`, `forbid(unsafe_code)` **mac-kernel-model** crate is internal
 kernel infrastructure, not an application SDK. Keeping pure structures in a
 host-buildable crate permits checking arithmetic, ownership and allocation
-without emulating a CPU or adding test-only System traps. System will consume it
-as the §13.2 services migrate; it is deliberately not an unused System dependency.
+without emulating a CPU or adding test-only System traps. System now consumes
+its execution-use gate; other families remain staged until their resident
+consumers land. Linking the crate does not activate its page or allocator model.
 
 | §13.1 family | Code | Current scope |
 |---|---|---|
@@ -22,6 +23,7 @@ as the §13.2 services migrate; it is deliberately not an unused System dependen
 | Facility v2 | `mac-object-table/src/domain.rs` | Owner-index-authorized per-kind bitmap pools, generations, rotation, retirement, capacity policy, release tickets and registration shapes; managed controls use owner-backed value storage |
 | Shared aliases | `mac-object-table/src/aliases.rs` | System-owned targets and per-process registered aliases, validated sharing, last-alias release and retained target cleanup; executable pins are the first resident consumer |
 | Process/thread | `…/process.rs` | Address-space, image/memory/legacy capabilities, dynamic threads, saved manager slots, backend frame, vector marker and discovered save-area layout |
+| Execution use | `…/image.rs` | Nonblocking load exclusion, fallible gate allocation, atomic load-to-pin handoff; real scheduler records retain pins until stack reclamation |
 | Control zone | `…/zone.rs` | Same-owner instance/zone binding, configured zone header, host-forwarding allocator contract; no allocator installed |
 | Uniform layout | `…/policy.rs` | One checked range record emits named linker symbols; no unapproved addresses or duplicate linker constants |
 | TE2 rope | `…/text.rs` | Immutable balanced chunk tree, byte/hard-break augmentation, shared snapshot roots, logarithmic chunk lookup; no edit/rebalance/control/file-provider migration yet |
@@ -1700,3 +1702,44 @@ and actual QEMU application switching, aggregate public SDK, cursor/boot visuals
 host-volume and complete panic-report/recovery campaigns pass. Compiled Toolbox
 boundaries, formatting and public API documentation also pass. These checks do
 not qualify image reclamation or dynamic process capacity.
+
+### Execution pins survive thread retirement
+
+Each current application execution reservation owns an architecture-neutral
+execution gate. Atomic admission excludes code writes while any execution pin
+exists and refuses immediately during another load. A successful load publishes
+its first pin in the same transition that ends exclusive loading; there is no
+unpinned interval before thread admission. The private loaded-entry value keeps
+the entry and pin together until the scheduler consumes them. Finder's initial
+bootstrap load is pinned before its image or thread is published.
+
+The scheduler stores the pin beside the actual stack, with stack destruction
+ordered before pin release. EXIT marks the thread retired without dropping that
+record. Another thread's interrupt-masked reclamation checkpoint releases the
+saved context and stack, then the execution pin. Allocation/admission refusal
+drops the unstarted pin; loader refusal drops exclusive admission without
+publishing one. A load or pin never waits on a manager lock, allocates per event,
+or adds work to input handling. Only initial gate creation allocates metadata.
+
+New applications validate and write their execution bytes once before cache
+publication. Malformed code cannot consume a cache slot. Cached relaunches must
+acquire the same load exclusion. Existing owner checks and the stopping-process
+barrier still protect quarantined callbacks after thread reclamation.
+
+This closes thread execution versus reload exclusion on the current flat
+reservations. It does not make source images reclaimable or replace their fixed
+cache, register image aliases, pin definition origins, share immutable frames,
+account page charges, enable dynamic thread capacity or activate the MMU.
+Those remain required model migrations. The gate is a use counter, not another
+object-ID issuer or a substitute for ledger completion authority.
+
+Qualification passes 575 host cases (67 VM-dependent cases excluded from that
+run), including exclusion, concurrent admission, counter exhaustion, failed-load
+retry, atomic handoff and contained host-unwind cleanup. Both real process
+campaigns pass, including malformed-dialog recovery, private state, repeated
+exit/relaunch and stop/walk/stack-reclamation/domain-retirement ordering. The
+optimized installation, application UI, aggregate public SDK and full panic
+report/recovery checks pass, as do compiled boundaries, formatting and public
+API documentation. Process fixtures now respect the checked display reservation
+and compare original menu geometry relative to public desktop bounds. These are
+current flat-reservation checks, not image-alias or paging acceptance.

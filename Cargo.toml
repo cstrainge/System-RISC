@@ -48,6 +48,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+mac-kernel-model = { path = "crates/mac-kernel-model" }
 mac-definition = { path = "crates/mac-definition" }
 mac-file-types = { path = "crates/mac-file-types" }
 mac-module = { path = "crates/mac-module" }
