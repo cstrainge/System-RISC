@@ -190,7 +190,13 @@ pub(crate) fn poll_waiting_events() -> bool
     let waiting = crate::machine::scheduler::waiting();
     let _scope = crate::context::current_thread_context().traps.enter();
     let Ok((ready, foreground, fresh_input)) =
-        DESKTOP.with(|desktop| desktop.wake_waiters(&waiting))
+        DESKTOP.with(|desktop| {
+                   if crate::toolbox::inspection::take_membership_change()
+                   {
+                       desktop.notify_inspectors();
+                   }
+                   desktop.wake_waiters(&waiting)
+               })
     else
     {
         return false;

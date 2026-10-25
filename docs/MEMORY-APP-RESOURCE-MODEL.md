@@ -74,7 +74,7 @@ existing mutation points. Reads allocate nothing and never scan object values.
 Cross-domain detail is authorized by a generated System ACAP policy bound to
 canonical application resource digests; ordinary callers retain own-domain reads.
 The policy is not a gate on public chain/claim/mapping registry existence.
-Reactor Room explicitly reports process-only/partial-ledger coverage. See
+Reactor Room explicitly reports process/module domains with partial-ledger coverage. See
 [Reactor Room staging](REACTOR.md) and [the policy wire format](../FORMAT.md#application-authority-policy-acap-0-development-abi-1).
 
 This is the start of §13.2/2, not completion: other managers do not yet insert
@@ -1529,3 +1529,58 @@ malformed media. Native/classic ABI, architecture boundaries, formatting and
 executable resource hashes remain identical to the native-tested artifacts and
 the final disk is read again. Initial startup-budget, host link and stale fixture
 failures are retained in private evidence.
+
+
+### Module identity domains and authoritative inspection
+
+Loaded-module metadata now lives beside its genuine Module owner ledger in the
+shared domain directory. The same boot-wide incarnation issuer used by processes
+provides the complete u64 identity; the former 32-slot Modules projection and its
+generation array are removed. Driver entry descriptors, dependency calls,
+provider ownership, job owner tags, device ownership and backing-file ownership
+carry that complete incarnation. Their separate interface/request/job/device/
+source object handles still use the existing facility tables until their own
+ledger migration; a wider owner token does not complete their attribution.
+
+Quiescence closes the module ledger's ordinary admission. Rollback can retire a
+domain only when the directory's real live/pending/completion barrier is empty;
+refusal keeps its metadata and authority available for completion. Initialization
+allocation is fallible and a refused cleanup is reported and retained. Module
+code and failed-module diagnostic records still stay pinned until reboot. Actual
+image unloading, module-page/account ownership, the four-part invocation context
+and M-D12 lower-I/O attribution remain open. Arbitrary privileged-fault containment
+is unproven (M-D04), a required future gate.
+
+The native Host descriptor is 48 bytes and carries a u64 module incarnation. Its
+layout fingerprint changes while the development ABI remains 1. All modules and
+System rebuild together; old layout declarations are rejected before entry.
+
+Public inspection borrows the actual process and module directories through one
+reader; no copied owner or ledger catalogue is introduced. An All snapshot holds
+both exact directory epochs, represented by the SDK's opaque MembershipRevision.
+Changing either included membership invalidates continuation. Own-process reads
+carry no module epoch, so unrelated module admission does not invalidate them.
+Rows expose a typed domain kind, real contract label and the same ledger's
+counters. Module interfaces/requests/devices remain unmigrated and are never
+invented as tracked counts. Cross-domain detail keeps the existing System policy
+grant; ordinary own-domain and public registration access remain available.
+
+Reactor Room displays App/Module labels using its existing managed row cache and
+bounded selection/detail drawing. Module membership changes coalesce an advisory
+notice without calling the desktop while the module registry is borrowed. The
+normal event pump consumes that notice only after acquiring the desktop; no
+sampling timer or per-input directory scan is added.
+
+Qualification: 419 scoped host cases pass, including the actual-disk read,
+forty module domains through the public SDK, exact epoch and policy refusals,
+live/pending module-retirement barriers and full-width/stale driver entry checks.
+Eleven native checks pass: module admission and dependency ordering, provider
+copy/exit/disconnect/retry, two process campaigns, aggregate Toolbox, bounded
+Finder updates, original cursor sprites, Reactor Room's module selection, power
+restart/shutdown/refusal and StuffIt. The module campaign includes explicit
+rejection of the obsolete 40-byte Host declaration before entry. All seventeen
+ROM checks, native/classic ABI, boundaries, formatting and 52-library docs pass.
+Executable resources remain unchanged across final verification; the boot gate
+regenerates catalog timestamps and the final disk is read again. These checks
+qualify module identity and inspection, not complete driver-ledger adoption or
+module fault recovery.

@@ -39,7 +39,7 @@ fn reactor_uses_public_policy_grants_and_managed_views_without_selection_repaint
     assert_eq!(report["owned_vm_exited"], true);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert!(serial.contains("name=Reactor Room\n"));
-    assert!(serial.contains("REACTOR_READY coverage=process-domains,partial-ledgers \
+    assert!(serial.contains("REACTOR_READY coverage=process-and-module-domains,partial-ledgers \
                              authority=system-policy\n"));
     for failure in ["REACTOR_ERROR", "REACTOR_INSPECTION_ERROR", "SYSTEM_PANIC:", "SYSTEM_TRAP:",
                     "SYSTEM_ALLOCATION_FAILED:"]
@@ -75,6 +75,13 @@ fn reactor_uses_public_policy_grants_and_managed_views_without_selection_repaint
     assert!(scrolled == frame(&output.join("scrolled-refreshed.ppm")),
             "refreshing a scrolled domain changed its authoritative detail rows");
 
+    let module = frame(&output.join("selected-module.ppm"));
+    assert_ne!(module, second,
+               "selecting a loaded module did not change the managed domain/details panes");
+    assert_eq!(module,
+               frame(&output.join("module-refreshed.ppm")),
+               "refresh did not preserve the selected module incarnation");
+
     // The native All-domain read above is admitted by this exact resource
     // content, not its filename/creator. Shared codec tests cover tampering.
     let dist = mac_build::paths::dist_dir(&root);
@@ -86,5 +93,5 @@ fn reactor_uses_public_policy_grants_and_managed_views_without_selection_repaint
                        .find(|r| r.kind == mac_formats::authority::RESOURCE_KIND && r.id == 0)
                        .unwrap();
     assert_eq!(mac_formats::authority::granted(&policy.data,mac_formats::authority::image_digest(&application).unwrap()).unwrap(),mac_formats::authority::INSPECT_DOMAINS);
-    fs::write(output.join("rust-acceptance.json"),b"{\"result\":\"pass\",\"coverage\":\"initial process-domain view, policy grant, selection damage, resize and quit\"}\n").unwrap();
+    fs::write(output.join("rust-acceptance.json"),b"{\"result\":\"pass\",\"coverage\":\"process/module-domain view, policy grant, selection damage, resize and quit\"}\n").unwrap();
 }

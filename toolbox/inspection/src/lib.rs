@@ -46,6 +46,7 @@ fn failure(cause: Error, call: &wire::Call) -> Failure
 #[derive(Clone, Copy, Debug)]
 pub struct Domain
 {
+    pub kind:               OwnerKind,
     pub incarnation:        u64,
     pub accepting:          bool,
     pub foreground:         bool,
@@ -137,7 +138,8 @@ impl<'a> Inspection<'a>
         self.client.inspection(&mut call).map_err(|error| failure(error, &call))?;
         Ok(Snapshot { client:   self.client,
                       scope:    call.scope,
-                      revision: call.revision,
+                      revision: MembershipRevision { processes: call.revision,
+                                                     modules:   call.module_revision },
                       count:    call.count,
                       coverage: call.coverage })
     }
@@ -259,6 +261,15 @@ fn decode_capacity(policy: u32, limit: u64, reason: InlineText<{ wire::DETAIL_BY
         _ => Err(Error::BadAbi)
     }
 }
+/// Exact membership epochs for the process and module directories. Equality
+/// compares both; neither epoch is truncated or combined through a hash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MembershipRevision
+{
+    processes: u64,
+    modules:   u64
+}
+
 /// No resident cursor or lease is allocated; abandoning a snapshot has nothing
 /// to clean up. Caller authentication is repeated on every read.
 #[derive(Clone, Copy)]
@@ -266,7 +277,7 @@ pub struct Snapshot<'a>
 {
     client:       Client<'a>,
     scope:        u32,
-    pub revision: u64,
+    pub revision: MembershipRevision,
     pub count:    u64,
     coverage:     u64
 }
@@ -289,41 +300,53 @@ impl<'a> Snapshot<'a>
 
     pub fn process_domains_only(self) -> bool
     {
-        self.coverage & wire::PROCESS_DOMAINS != 0
+        self.coverage & (wire::PROCESS_DOMAINS | wire::MODULE_DOMAINS) == wire::PROCESS_DOMAINS
+    }
+
+    pub fn includes_module_domains(self) -> bool
+    {
+        self.coverage & wire::MODULE_DOMAINS != 0
     }
 
     pub fn at(self, index: u64) -> Result<Domain>
     {
         let mut call = wire::Call { operation: wire::DOMAIN,
                                     scope: self.scope,
-                                    revision: self.revision,
+                                    revision: self.revision.processes,
+                                    module_revision: self.revision.modules,
                                     index,
                                     ..Default::default() };
         self.client.inspection(&mut call).map_err(|error| failure(error, &call))?;
         let row = call.domain;
-        if row.kind != wire::PROCESS || row.reserved != 0
+        if row.reserved != 0
         {
             return Err(failure(Error::BadAbi, &call));
         }
-        Ok(Domain { incarnation:        row.incarnation,
-                    accepting:          row.flags & wire::ACCEPTING != 0,
-                    foreground:         row.flags & wire::FOREGROUND != 0,
-                    ledger_revision:    row.ledger_revision,
-                    kinds:              row.kinds,
-                    live:               row.live,
-                    retired:            row.retired,
-                    pending:            row.pending,
-                    quarantined:        row.quarantined,
-                    completion_faults:  row.completion_faults,
-                    scoped_children:    row.scoped_children,
-                    slots:              row.slots,
-                    births:             row.births,
-                    deaths:             row.deaths,
+        let kind = match row.kind
+        {
+            wire::PROCESS => OwnerKind::Process,
+            wire::MODULE => OwnerKind::Module,
+            _ => return Err(failure(Error::BadAbi, &call))
+        };
+        Ok(Domain { kind,
+                    incarnation: row.incarnation,
+                    accepting: row.flags & wire::ACCEPTING != 0,
+                    foreground: row.flags & wire::FOREGROUND != 0,
+                    ledger_revision: row.ledger_revision,
+                    kinds: row.kinds,
+                    live: row.live,
+                    retired: row.retired,
+                    pending: row.pending,
+                    quarantined: row.quarantined,
+                    completion_faults: row.completion_faults,
+                    scoped_children: row.scoped_children,
+                    slots: row.slots,
+                    births: row.births,
+                    deaths: row.deaths,
                     counters_saturated: row.flags & wire::COUNTERS_SATURATED != 0,
-                    name:
-                        InlineText::from_reply(row.name, row.name_length).map_err(|e| {
-                                                                             failure(e, &call)
-                                                                         })? })
+                    name: InlineText::from_reply(row.name, row.name_length).map_err(|e| {
+                                                                               failure(e, &call)
+                                                                           })? })
     }
 }
 
@@ -404,7 +427,8 @@ impl LedgerSnapshot<'_>
     {
         let mut call = wire::Call { operation: wire::COMPLETION_FAULT,
                                     scope: self.membership.scope,
-                                    revision: self.membership.revision,
+                                    revision: self.membership.revision.processes,
+                                    module_revision: self.membership.revision.modules,
                                     index: self.index,
                                     ledger_revision: self.domain.ledger_revision,
                                     subject: self.domain.incarnation,
@@ -435,7 +459,8 @@ impl LedgerSnapshot<'_>
     {
         let mut call = wire::Call { operation: wire::LEDGER_POOL,
                                     scope: self.membership.scope,
-                                    revision: self.membership.revision,
+                                    revision: self.membership.revision.processes,
+                                    module_revision: self.membership.revision.modules,
                                     index: self.index,
                                     ledger_revision: self.domain.ledger_revision,
                                     subject: self.domain.incarnation,

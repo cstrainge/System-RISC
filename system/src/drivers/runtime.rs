@@ -24,7 +24,7 @@ struct Runtime
 }
 struct Binding
 {
-    module:        u32,
+    module:        u64,
     base:          u64,
     limit:         u64,
     _host:         Box<abi::Host>,
@@ -35,7 +35,7 @@ struct Binding
 /// guards. They may return Pending but cannot retain either borrowed buffer.
 pub(crate) struct ResidentCall<'a>
 {
-    pub caller:    u32,
+    pub caller:    u64,
     pub ticket:    u32,
     pub phase:     u32,
     pub operation: u32,
@@ -60,6 +60,29 @@ enum DispatchTarget
     Resident(ResidentCallback)
 }
 
+pub(crate) fn inspect<T: crate::toolbox::inspection::Subject>(processes:&mac_object_table::domain::Directory<T,crate::toolbox::handles::InvocationGate>,
+                                                              caller: u64,
+                                                              call: &mut mac_abi::inspection::Call)
+                                                              -> Status
+{
+    match RUNTIME.with(|runtime| runtime.registry.inspect(processes, caller, call))
+    {
+        Ok(status) => status,
+        Err(crate::state::AccessError::Unavailable) =>
+        {
+            crate::toolbox::inspection::request(processes, caller, call)
+        }
+        Err(error) =>
+        {
+            let detail =
+                "module lifetime registry is serving another invocation; retry this inspection";
+            call.detail[..detail.len()].copy_from_slice(detail.as_bytes());
+            call.detail_length = detail.len() as u32;
+            error.status()
+        }
+    }
+}
+
 pub(crate) fn register_service(offer: mac_module::Offer, callback: ResidentCallback)
                                -> Result<u32, Status>
 {
@@ -73,13 +96,13 @@ pub(crate) fn register_service(offer: mac_module::Offer, callback: ResidentCallb
            .map_err(crate::state::AccessError::status)?
 }
 
-pub(crate) fn device_allowed(module: u32, bus: ClassId, key: [u8; 16]) -> Result<(), Status>
+pub(crate) fn device_allowed(module: u64, bus: ClassId, key: [u8; 16]) -> Result<(), Status>
 {
     RUNTIME.with(|runtime| runtime.registry.device_allowed(module, bus, key).map_err(status))
            .map_err(crate::state::AccessError::status)?
 }
 
-pub(crate) fn provider_module(interface: u32) -> Result<u32, Status>
+pub(crate) fn provider_module(interface: u32) -> Result<u64, Status>
 {
     RUNTIME.with(|runtime| {
                let module = runtime.registry.interface(interface).map_err(status)?.module;
@@ -105,7 +128,7 @@ pub(crate) fn provider_serialized(interface: u32) -> Result<bool, Status>
 
 /// Only the admitted module's pinned load reservation can be offered for DMA.
 /// The bus adapter still checks device ownership and maps it for that device.
-pub(crate) fn owns_memory(module: u32, base: u64, length: u64) -> Result<(), Status>
+pub(crate) fn owns_memory(module: u64, base: u64, length: u64) -> Result<(), Status>
 {
     let end = base.checked_add(length).ok_or(BAD_ARGUMENT)?;
     if length == 0
@@ -139,7 +162,7 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
 }
 
 pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: PackageKind)
-                   -> Result<u32, Status>
+                   -> Result<u64, Status>
 {
     // Complete structure/hash/relocation checks before changing RAM or entry.
     let package = Package::inspect(resources, file_type).map_err(|error| {
@@ -172,15 +195,29 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
                                        .map_err(status)?;
                    if let Err(error) = runtime.registry.install_file_handlers(module, rules)
                    {
-                       let _ = runtime.registry.rollback(module);
+                       if let Err(cleanup) = runtime.registry.rollback(module)
+                       {
+                           serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} cleanup={}",
+                                   module, error, cleanup);
+                           return Err(status(cleanup));
+                       }
                        return Err(status(error));
                    }
-                   let host = Box::new(abi::Host { header: abi::Header::of::<abi::Host>(),
-                                                   module,
-                                                   reserved: 0,
-                                                   context: u64::from(module),
-                                                   call: Some(broker),
-                                                   resolve: Some(resolve) });
+                   let host = Box::try_new(abi::Host { header: abi::Header::of::<abi::Host>(),
+                                                       module,
+                                                       reserved: 0,
+                                                       context: u64::from(module),
+                                                       call: Some(broker),
+                                                       resolve: Some(resolve) });
+                   let host = match host
+                   {
+                       Ok(host) => host,
+                       Err(_) =>
+                       {
+                           runtime.registry.rollback(module).map_err(status)?;
+                           return Err(NO_MEMORY);
+                       }
+                   };
                    let pointer = &*host as *const abi::Host;
                    // This allocator owns this whole disjoint RAM reservation until reboot.
                    let output =
@@ -229,7 +266,12 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
                binding.instance = Some(instance);
                if let Err(error) = runtime.registry.commit(module)
                {
-                   let _ = runtime.registry.rollback(module);
+                   if let Err(cleanup) = runtime.registry.rollback(module)
+                   {
+                       serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} cleanup={}",
+                               module, error, cleanup);
+                       return Err(status(cleanup));
+                   }
                    return Err(status(error));
                }
                serial!("MODULE_READY id={} kind={} entry=0x{:x} base=0x{:x}",
@@ -381,9 +423,7 @@ unsafe fn invoke(caller: u64, provider: u32, pointer: *mut abi::Call) -> Result<
                     core::slice::from_raw_parts_mut(call.output, call.output_capacity as usize)
                 }
             };
-            match callback(ResidentCall { caller: u32::try_from(caller).map_err(|_| {
-                                                                           ACCESS_DENIED
-                                                                       })?,
+            match callback(ResidentCall { caller,
                                           ticket,
                                           phase: call.phase,
                                           operation: call.operation,

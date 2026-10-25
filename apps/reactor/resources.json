@@ -122,8 +122,8 @@
       "payload": {
         "format": "strings",
         "strings": [
-          "Process domains; partial ledgers; reserve unavailable",
-          "Select a process domain.",
+          "Process + module domains; partial ledgers; reserve unavailable",
+          "Select a lifetime domain.",
           "Memory accounting is not live.",
           "Module domains are not live.",
           "Domains",

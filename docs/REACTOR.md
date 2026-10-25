@@ -31,12 +31,14 @@ obtains a fresh snapshot. No sampling timer runs in this slice. Selection change
 only the old/new visible rows and detail pane; resizing configures the same owned
 objects. The palette comes from resident theme roles.
 
-Current coverage is deliberately partial: only process domains are enumerated,
+Current coverage is deliberately partial: process and module domains are enumerated,
 and their ledgers contain migrated controls, scroll boxes, Standard File dialogs,
 offscreen QuickDraw worlds, windows, menus, memory blocks/zones, TextEdit,
 Alerts, Drag sessions/receivers, directory watches, open forks, staged data writes and their
 backing/saved state. Pool details include readable release providers from the public kind
-registry. System/bootstrap/module domains, individual object detail,
+registry. Module rows come directly from their owner directory and carry their real
+incarnation, label and ledger; driver requests/interfaces/devices are still
+unmigrated and are not fabricated as ledger counts. System/bootstrap domains, individual object detail,
 CPU/account/page/service data, Kill/Restart,
 journal, preferences and the four new native controls remain staged work. There
 is no claim of zero total handles, zero leaks or an armed emergency reserve.

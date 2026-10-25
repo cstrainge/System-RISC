@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use mac_module::{Available, ClassId, Contract, Offer, PackageKind, Policy, Service, Target};
 
 use crate::toolbox::handles::{Kind, Table};
+mod modules;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error
@@ -17,7 +18,10 @@ pub enum Error
     Stale,
     State,
     Access,
-    Busy
+    Busy,
+    Domain(mac_object_table::domain::DirectoryError),
+    Identity(mac_object_table::domain::IncarnationsExhausted),
+    Owner(mac_object_table::domain::PoolError)
 }
 impl From<mac_module::Error> for Error
 {
@@ -25,6 +29,49 @@ impl From<mac_module::Error> for Error
     {
         Self::Contract(value)
     }
+}
+impl core::fmt::Display for Error
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Contract(error) =>
+            {
+                write!(f,
+                       "module contract refused: {error:?}; rebuild the package against the \
+                        current System contract")
+            }
+            Self::Duplicate => f.write_str("module identity or registration is already installed"),
+            Self::Exclusive =>
+            {
+                f.write_str("an exclusive service already has an installed provider")
+            }
+            Self::Exhausted => f.write_str("module registry could not reserve metadata storage"),
+            Self::Stale =>
+            {
+                f.write_str("module, interface or request identity is absent, foreign or retired; \
+                             resolve the current provider")
+            }
+            Self::State => f.write_str("module lifecycle state does not permit this operation"),
+            Self::Access =>
+            {
+                f.write_str("module caller is absent or its contract does not authorize this \
+                             service")
+            }
+            Self::Busy =>
+            {
+                f.write_str("module still owns outstanding or active requests; wait for actual \
+                             completion before retrying")
+            }
+            Self::Domain(error) => error.fmt(f),
+            Self::Identity(error) => error.fmt(f),
+            Self::Owner(error) => error.fmt(f)
+        }
+    }
+}
+impl core::error::Error for Error
+{
 }
 pub type Result<T> = core::result::Result<T, Error>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +84,7 @@ pub enum State
 }
 struct Module
 {
+    name:          alloc::string::String,
     identity:      [u8; 16],
     kind:          PackageKind,
     state:         State,
@@ -51,13 +99,13 @@ struct Module
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Interface
 {
-    pub module: u32,
+    pub module: u64,
     pub offer:  Offer
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Request
 {
-    pub module:    u32,
+    pub module:    u64,
     pub interface: u32,
     pub caller:    u64,
     pub class:     ClassId,
@@ -65,9 +113,26 @@ pub struct Request
     pub max_reply: u32,
     active:        bool
 }
+impl crate::toolbox::inspection::Subject for Module
+{
+    fn label(&self) -> &str
+    {
+        &self.name
+    }
+
+    fn foreground(&self) -> bool
+    {
+        false
+    }
+
+    fn authority(&self) -> u64
+    {
+        0
+    }
+}
 pub struct Registry
 {
-    modules:    Table<Module>,
+    modules:    modules::Modules<Module>,
     interfaces: Table<Interface>,
     requests:   Table<Request>,
     target:     Target,
@@ -75,9 +140,21 @@ pub struct Registry
 }
 impl Registry
 {
+    pub(crate) fn inspect<T: crate::toolbox::inspection::Subject>(&self,
+                                                                  processes:&mac_object_table::domain::Directory<T,crate::toolbox::handles::InvocationGate>,
+                                                                  caller: u64,
+                                                                  call:&mut mac_abi::inspection::Call)
+                                                                  -> mac_abi::Status
+    {
+        crate::toolbox::inspection::request_with_modules(processes,
+                                                         self.modules.directory(),
+                                                         caller,
+                                                         call)
+    }
+
     pub fn new(target: Target) -> Self
     {
-        Self { modules: Table::new(Kind::Modules),
+        Self { modules: modules::Modules::new(),
                interfaces: Table::new(Kind::DriverInterfaces),
                requests: Table::new(Kind::DriverRequests),
                target,
@@ -128,7 +205,7 @@ impl Registry
         Ok(id)
     }
 
-    pub fn device_allowed(&self, module: u32, bus: ClassId, key: [u8; 16]) -> Result<()>
+    pub fn device_allowed(&self, module: u64, bus: ClassId, key: [u8; 16]) -> Result<()>
     {
         let record = self.modules.get(module).ok_or(Error::Stale)?;
         if !matches!(record.state, State::Initializing | State::Ready)
@@ -195,7 +272,7 @@ impl Registry
     /// Stage only validated metadata. Loading bytes and entering code are the
     /// caller's next steps; neither can publish interfaces before commit().
     pub fn stage(&mut self, contract: Contract<'_>, directory: PackageKind, file_type: [u8; 4])
-                 -> Result<u32>
+                 -> Result<u64>
     {
         self.admit(contract, directory, file_type)?;
         let offers = contract.offers().collect::<mac_module::Result<Vec<_>>>()?;
@@ -222,23 +299,25 @@ impl Registry
         let dependencies = contract.dependencies().collect::<mac_module::Result<Vec<_>>>()?;
         let services = contract.services().collect::<mac_module::Result<Vec<_>>>()?;
         let devices = contract.devices().collect::<mac_module::Result<Vec<_>>>()?;
-        self.modules
-            .insert(Module { identity: contract.identity,
-                             kind: contract.kind,
-                             state: State::Initializing,
-                             offers,
-                             dependencies,
-                             services,
-                             devices,
-                             interfaces: Vec::new(),
-                             requests: 0,
-                             file_handlers: Vec::new() })
-            .map_err(|_| Error::Exhausted)
+        let mut name = alloc::string::String::new();
+        name.try_reserve_exact(contract.name.len()).map_err(|_| Error::Exhausted)?;
+        name.push_str(contract.name);
+        self.modules.insert(Module { name,
+                                     identity: contract.identity,
+                                     kind: contract.kind,
+                                     state: State::Initializing,
+                                     offers,
+                                     dependencies,
+                                     services,
+                                     devices,
+                                     interfaces: Vec::new(),
+                                     requests: 0,
+                                     file_handlers: Vec::new() })
     }
 
     /// Transactional publication: reserve every interface first and roll back
     /// temporary registrations on exhaustion. Initializing modules stay hidden.
-    pub fn commit(&mut self, module: u32) -> Result<()>
+    pub fn commit(&mut self, module: u64) -> Result<()>
     {
         let record = self.modules.get(module).ok_or(Error::Stale)?;
         if record.state != State::Initializing
@@ -273,7 +352,7 @@ impl Registry
         Ok(())
     }
 
-    pub fn rollback(&mut self, module: u32) -> Result<()>
+    pub fn rollback(&mut self, module: u64) -> Result<()>
     {
         let record = self.modules.get(module).ok_or(Error::Stale)?;
         if record.state != State::Initializing
@@ -283,25 +362,26 @@ impl Registry
         if self.requests.iter().any(|(_, r)| r.caller == u64::from(module))
         {
             self.modules.get_mut(module).ok_or(Error::Stale)?.state = State::Quiescing;
+            self.modules.stop(module)?;
             return Err(Error::Busy);
         }
-        self.modules.remove(module);
+        self.modules.remove(module)?;
         Ok(())
     }
 
-    pub fn state(&self, module: u32) -> Result<State>
+    pub fn state(&self, module: u64) -> Result<State>
     {
         Ok(self.modules.get(module).ok_or(Error::Stale)?.state)
     }
 
-    pub fn kind(&self, module: u32) -> Result<PackageKind>
+    pub fn kind(&self, module: u64) -> Result<PackageKind>
     {
         Ok(self.modules.get(module).ok_or(Error::Stale)?.kind)
     }
 
     /// Metadata is staged with its module. Matching never sees an initializing,
     /// failed or quiescing owner, including after generation-tagged slot reuse.
-    pub fn install_file_handlers(&mut self, module: u32,
+    pub fn install_file_handlers(&mut self, module: u64,
                                  rules: Vec<mac_module::file_handlers::Rule>)
                                  -> Result<()>
     {
@@ -333,7 +413,7 @@ impl Registry
     }
 
     pub fn file_handler(&self, file_type: [u8; 4])
-                        -> Option<(u32, mac_module::file_handlers::Rule)>
+                        -> Option<(u64, mac_module::file_handlers::Rule)>
     {
         for (id, module) in self.modules.iter().filter(|(_, m)| m.state == State::Ready)
         {
@@ -390,9 +470,7 @@ impl Registry
         {
             return self.find(class, version).next().map(|(id, _)| id).ok_or(Error::Stale);
         }
-        let module = self.modules
-                         .get(u32::try_from(caller).map_err(|_| Error::Access)?)
-                         .ok_or(Error::Access)?;
+        let module = self.modules.get(caller).ok_or(Error::Access)?;
         if !matches!(module.state, State::Initializing | State::Ready)
         {
             return Err(Error::State);
@@ -450,9 +528,7 @@ impl Registry
         }
         if caller != 0
         {
-            let owner = self.modules
-                            .get(u32::try_from(caller).map_err(|_| Error::Access)?)
-                            .ok_or(Error::Access)?;
+            let owner = self.modules.get(caller).ok_or(Error::Access)?;
             if !matches!(owner.state, State::Initializing | State::Ready)
             {
                 return Err(Error::State);
@@ -521,9 +597,16 @@ impl Registry
         {
             return Err(Error::Access);
         }
-        if caller!=0 && self.modules.get(u32::try_from(caller).map_err(|_|Error::Access)?)
-            .is_none_or(|m|!matches!(m.state,State::Initializing|State::Ready|State::Quiescing))
-        {return Err(Error::Access);}
+        if caller != 0
+           && self.modules.get(caller).is_none_or(|m| {
+                                          !matches!(m.state,
+                                                    State::Initializing
+                                                    | State::Ready
+                                                    | State::Quiescing)
+                                      })
+        {
+            return Err(Error::Access);
+        }
 
         if request.module != 0
            && self.modules
@@ -586,7 +669,7 @@ impl Registry
     }
 
     /// Withdraw before asking the module to quiesce; no new requests enter.
-    pub fn quiesce(&mut self, module: u32) -> Result<()>
+    pub fn quiesce(&mut self, module: u64) -> Result<()>
     {
         let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
         if record.state != State::Ready
@@ -594,12 +677,13 @@ impl Registry
             return Err(Error::State);
         }
         record.state = State::Quiescing;
+        self.modules.stop(module)?;
         Ok(())
     }
 
     /// Pin code until reboot even after failure. Outstanding requests require
     /// terminal cancellation before failure is finalized.
-    pub fn finish_quiesce(&mut self, module: u32) -> Result<()>
+    pub fn finish_quiesce(&mut self, module: u64) -> Result<()>
     {
         let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
         if record.state != State::Quiescing
@@ -622,6 +706,8 @@ impl Registry
 #[cfg(test)]
 mod tests
 {
+    use alloc::string::ToString;
+
     use mac_module::{BROKER_ABI, Spec};
 
     use super::*;
@@ -662,10 +748,46 @@ mod tests
         spec.encode(&mut bytes).unwrap();
         bytes
     }
-    fn stage(registry: &mut Registry, bytes: &[u8]) -> u32
+    fn stage(registry: &mut Registry, bytes: &[u8]) -> u64
     {
         registry.stage(Contract::decode(bytes).unwrap(), PackageKind::Driver, *b"DRVR").unwrap()
     }
+    #[test]
+    fn module_domain_retirement_preserves_live_and_pending_resource_authority()
+    {
+        use mac_object_table::domain::{CapacityPolicy, DirectoryError, DomainKind, KindCode};
+        let bytes = metadata(*b"domain-test-uuid", &[], &[]);
+        let mut registry = Registry::new(Target::RVA23U64);
+        let id = stage(&mut registry, &bytes);
+        assert!(id > u64::from(u32::MAX));
+        let owner = registry.modules.directory().get(id).unwrap().ledger().clone();
+        assert_eq!(owner.owner().kind(), DomainKind::Module);
+        let kind = KindCode(*b"MTST");
+        owner.add_pool(kind, CapacityPolicy::GrowableUntilMemory).unwrap();
+        owner.grow(kind, 1).unwrap();
+        let key = owner.allocate(kind).unwrap();
+        let refused = registry.rollback(id).unwrap_err();
+        assert!(matches!(refused,
+                         Error::Domain(DirectoryError::LiveResources { live: 1,
+                                                                       .. })));
+        assert!(refused.to_string().contains("live ledger resources remain"));
+        assert_eq!(registry.state(id), Ok(State::Initializing));
+        let ticket = owner.invalidate(key).unwrap();
+        let pending = registry.rollback(id).unwrap_err();
+        assert!(matches!(pending,
+                         Error::Domain(DirectoryError::PendingResources { pending: 1,
+                                                                          .. })));
+        assert!(pending.to_string().contains("still pending"));
+        owner.complete_release(ticket).unwrap();
+        registry.rollback(id).unwrap();
+        assert!(!owner.accepting());
+        assert_eq!(registry.state(id), Err(Error::Stale));
+        let fresh = stage(&mut registry, &bytes);
+        assert_ne!(fresh, id);
+        assert_eq!(registry.state(id), Err(Error::Stale));
+        assert_eq!(registry.state(fresh), Ok(State::Initializing));
+    }
+
     #[test]
     fn file_associations_follow_module_publication_and_withdrawal()
     {
@@ -715,8 +837,9 @@ mod tests
         assert_eq!(registry.find(OFFER.class, 1).count(), 1);
         assert_eq!(registry.rollback(live), Err(Error::State));
         let (interface, _) = registry.find(OFFER.class, 1).next().unwrap();
-        assert_eq!(registry.interface(live), Err(Error::Stale));
-        assert_eq!(registry.state(interface), Err(Error::Stale));
+        assert!(u32::try_from(live).is_err(),
+                "module incarnation was narrowed to a projected interface handle");
+        assert_eq!(registry.state(u64::from(interface)), Err(Error::Stale));
     }
     #[test]
     fn request_reuse_foreign_completions_and_quiesce_are_checked()

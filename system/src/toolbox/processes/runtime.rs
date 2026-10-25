@@ -399,7 +399,7 @@ impl Desktop
     /// One coalesced notice per membership change. No timers, subscriptions to
     /// raw input, or per-inspector snapshot allocation. Background apps leave
     /// the advisory notice queued until their next foreground refresh.
-    fn notify_inspectors(&mut self)
+    pub(crate) fn notify_inspectors(&mut self)
     {
         use crate::toolbox::inspection::Subject;
         let event = Event { kind: EventKind::OsEvent,

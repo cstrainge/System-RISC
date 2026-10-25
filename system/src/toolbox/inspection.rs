@@ -160,6 +160,94 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
                                                      call: &mut Call)
                                                      -> Status
 {
+    request_sources(Sources::<T, T, G> { processes: directory,
+                                         modules:   None },
+                    caller,
+                    call)
+}
+
+pub(crate) fn request_with_modules<T: Subject, M: Subject, G: InvocationGate>(processes:&Directory<T,G>,
+                                                                              modules:&Directory<M,G>,
+                                                                              caller: u64,
+                                                                              call: &mut Call)
+                                                                              -> Status
+{
+    request_sources(Sources { processes,
+                              modules: Some(modules) },
+                    caller,
+                    call)
+}
+struct Entry<'a, G: InvocationGate>
+{
+    ledger:  &'a mac_object_table::shared::OwnerRef<G>,
+    subject: &'a dyn Subject
+}
+impl<'a, G: InvocationGate> Entry<'a, G>
+{
+    fn owner(&self) -> mac_object_table::domain::DomainId
+    {
+        self.ledger.owner()
+    }
+
+    fn ledger(&self) -> &mac_object_table::shared::OwnerRef<G>
+    {
+        self.ledger
+    }
+
+    fn value(&self) -> &dyn Subject
+    {
+        self.subject
+    }
+}
+fn entry<T: Subject, G: InvocationGate>(entry: &mac_object_table::domain::DomainEntry<T, G>)
+                                        -> Entry<'_, G>
+{
+    Entry { ledger:  entry.ledger(),
+            subject: entry.value() }
+}
+struct Sources<'a, T: Subject, M: Subject, G: InvocationGate>
+{
+    processes: &'a Directory<T, G>,
+    modules:   Option<&'a Directory<M, G>>
+}
+impl<T: Subject, M: Subject, G: InvocationGate> Sources<'_, T, M, G>
+{
+    fn caller(&self, caller: u64) -> Option<Entry<'_, G>>
+    {
+        self.processes.get(caller).map(entry)
+    }
+
+    fn revision(&self) -> u64
+    {
+        self.processes.revision()
+    }
+
+    fn module_revision(&self, scope: u32) -> u64
+    {
+        if scope == SELF { 0 } else { self.modules.map_or(0, Directory::revision) }
+    }
+
+    fn count(&self) -> usize
+    {
+        self.processes.len() + self.modules.map_or(0, Directory::len)
+    }
+
+    fn at(&self, index: usize) -> Option<Entry<'_, G>>
+    {
+        if index < self.processes.len()
+        {
+            self.processes.iter().nth(index).map(entry)
+        }
+        else
+        {
+            self.modules?.iter().nth(index - self.processes.len()).map(entry)
+        }
+    }
+}
+fn request_sources<T: Subject, M: Subject, G: InvocationGate>(source: Sources<'_, T, M, G>,
+                                                              caller: u64, call: &mut Call)
+                                                              -> Status
+{
     call.detail_length = 0;
     call.detail.fill(0);
     call.domain = Domain::default();
@@ -170,7 +258,7 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
     {
         return reject(call, BAD_ARGUMENT, "invalid inspection scope or reserved field");
     }
-    let Some(subject) = directory.get(caller)
+    let Some(subject) = source.caller(caller)
     else
     {
         return reject(call, ACCESS_DENIED, "inspection caller has no live process domain");
@@ -182,30 +270,35 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
                       "cross-domain inspection requires a System policy grant; own-domain \
                        inspection remains available");
     }
-    if directory.revision() == u64::MAX
+    if source.revision() == u64::MAX || source.module_revision(call.scope) == u64::MAX
     {
         return reject(call,
                       NOT_SUPPORTED,
                       "inspection membership revision exhausted; restart System to obtain new \
                        snapshots");
     }
-    call.coverage = PROCESS_DOMAINS | PARTIAL_LEDGERS;
+    call.coverage =
+        PROCESS_DOMAINS
+        | PARTIAL_LEDGERS
+        | if source.modules.is_some() && call.scope == ALL { MODULE_DOMAINS } else { 0 };
     match call.operation
     {
         BEGIN =>
         {
-            call.revision = directory.revision();
-            call.count = if call.scope == SELF { 1 } else { directory.len() as u64 };
+            call.revision = source.revision();
+            call.module_revision = source.module_revision(call.scope);
+            call.count = if call.scope == SELF { 1 } else { source.count() as u64 };
             OK
         }
         DOMAIN | LEDGER_POOL | COMPLETION_FAULT =>
         {
-            if call.revision != directory.revision()
+            if call.revision != source.revision()
+               || call.module_revision != source.module_revision(call.scope)
             {
                 return reject(call,
                               SCAN_STALE,
-                              "process membership changed during inspection; obtain a new \
-                               snapshot and retry");
+                              "lifetime-domain membership changed during inspection; obtain a \
+                               new snapshot and retry");
             }
             let entry = if call.scope == SELF
             {
@@ -213,17 +306,19 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
             }
             else
             {
-                usize::try_from(call.index).ok().and_then(|i| directory.iter().nth(i))
+                usize::try_from(call.index).ok().and_then(|i| source.at(i))
             };
             let Some(entry) = entry
             else
             {
                 return reject(call, NOT_FOUND, "domain index is outside this inspection snapshot");
             };
-            if entry.owner().kind() != DomainKind::Process
+            if !matches!(entry.owner().kind(), DomainKind::Process | DomainKind::Module)
             {
-                return reject(call, NOT_SUPPORTED,
-                              "this inspection source does not describe a process domain");
+                return reject(call,
+                              NOT_SUPPORTED,
+                              "this inspection source does not describe the requested lifetime \
+                               domain");
             }
             if matches!(call.operation, LEDGER_POOL | COMPLETION_FAULT)
             {
@@ -374,7 +469,12 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
             }
             call.domain =
                 Domain { incarnation: entry.owner().incarnation(),
-                         kind: PROCESS,
+                         kind: match entry.owner().kind()
+                         {
+                             DomainKind::Process => PROCESS,
+                             DomainKind::Module => MODULE,
+                             DomainKind::System => OWNER_SYSTEM
+                         },
                          flags: if ledger.accepting { ACCEPTING } else { 0 }
                                 | if entry.value().foreground() { FOREGROUND } else { 0 }
                                 | if ledger.births == u64::MAX || ledger.deaths == u64::MAX
@@ -431,4 +531,20 @@ impl core::fmt::Write for FaultText<'_>
         self.truncated = length != text.len();
         Ok(())
     }
+}
+
+
+#[cfg(target_arch = "riscv64")]
+static MEMBERSHIP_CHANGED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn membership_changed()
+{
+    MEMBERSHIP_CHANGED.store(true, core::sync::atomic::Ordering::Release);
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn take_membership_change() -> bool
+{
+    MEMBERSHIP_CHANGED.load(core::sync::atomic::Ordering::Acquire)
+    && MEMBERSHIP_CHANGED.swap(false, core::sync::atomic::Ordering::AcqRel)
 }

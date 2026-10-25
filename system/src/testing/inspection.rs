@@ -320,3 +320,40 @@ pub fn interrupt_cleanup(owner: u64, backing: bool) -> InterruptedCleanup
                          kind,
                          registration }
 }
+
+
+/// Stage real module metadata and its shared-facility domain. Host tests do
+/// not execute a guest driver; native campaigns exercise the entry separately.
+pub fn stage_module(identity: [u8; 16], name: &str) -> u64
+{
+    let spec = mac_module::Spec { kind: mac_module::PackageKind::Driver,
+                                  kernel_abi: mac_abi::ABI_VERSION,
+                                  target: mac_module::Target::RVA23U64,
+                                  identity,
+                                  code_id: 0,
+                                  code_digest: [0; 32],
+                                  heap_bytes: 0,
+                                  stack_bytes: 4096,
+                                  name,
+                                  version: "0.1.0",
+                                  provenance: "inspection fixture",
+                                  offers: &[],
+                                  dependencies: &[],
+                                  services: &[],
+                                  devices: &[] };
+    let mut bytes = std::vec![0;spec.encoded_len().unwrap()];
+    spec.encode(&mut bytes).unwrap();
+    let contract = mac_module::Contract::decode(&bytes).unwrap();
+    super::SESSION.with(|slot| {
+                      slot.borrow_mut()
+                          .as_mut()
+                          .unwrap()
+                          .modules
+                          .stage(contract, mac_module::PackageKind::Driver, *b"DRVR")
+                          .unwrap()
+                  })
+}
+pub fn retire_module(module: u64) -> Result<(), crate::drivers::Error>
+{
+    super::SESSION.with(|slot| slot.borrow_mut().as_mut().unwrap().modules.rollback(module))
+}

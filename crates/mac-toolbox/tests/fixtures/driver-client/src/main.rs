@@ -4,18 +4,12 @@ use mac_driver::{ClassId, Client, Completion, Driver, Error, Phase, Request, Res
 struct Device;
 static DEVICE: Device = Device;
 mac_driver::export_driver!(DEVICE);
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo<'_>) -> !
-{
-    loop
-    {
-        core::hint::spin_loop();
-    }
-}
+mac_driver::driver_panic_handler!();
 impl Driver for Device
 {
     fn initialize(&self, host: Client) -> Result<()>
     {
+        if host.module()<=u64::from(u32::MAX) { return Err(Error(-1)); }
         let provider = host.resolve(ClassId(*b"TEST"), 1)?;
         let mut output = [0; 32];
         let mut ticket = 0;

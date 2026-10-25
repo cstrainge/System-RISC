@@ -10,7 +10,7 @@ use crate::drivers::{ResidentCall, ResidentCompletion};
 mod reads;
 pub(crate) struct Closing
 {
-    owner:   u32,
+    owner:   u64,
     source:  u32,
     backing: u32
 }

@@ -771,7 +771,7 @@ classic resource fork remains big-endian):
 
 The fingerprint encodes pointer width (bits 0..7), Host size (bits 8..23), Instance
 size (bits 24..39), and Call size (bits 40..55); bits 56..63 are zero. Current RV64
-sizes are 64,40,24,56 respectively. Compile-time SDK assertions and the resident
+sizes are 64,48,24,56 respectively. Compile-time SDK assertions and the resident
 reject a mismatch. Changing these layouts requires rebuilding all modules; there
 is no alternate old layout decoder.
 
@@ -815,7 +815,7 @@ is build evidence; ELF section tables/headers never enter a native resource fork
 LLVM's GNU retained-section OSABI marker is accepted by the build-time extractor.
 
 The generic C entry receives a borrowed Host descriptor and initializes Instance.
-Host exposes module identity, dependency resolution and broker invocation; it and
+Host exposes the full u64 boot-unique module incarnation, dependency resolution and broker invocation; it and
 the code stay pinned until reboot. Instance carries an opaque u64 state and a
 module-local executable dispatch address, validated before publication. Rust
 traits, String/Vec, allocator ownership and private struct layouts never cross
@@ -1638,8 +1638,9 @@ codec is the build tool and resident loader's single implementation. Resource
 fork offsets, container timestamps and ordering do not affect identity.
 
 Native trap `INSPECTION` (0x10024) authenticates the current process on every
-call. BEGIN returns a process-directory membership revision/count and explicit
-coverage flags. DOMAIN requires that revision; membership changes return
+call. BEGIN returns exact independent process/module directory membership revisions,
+a combined count and explicit coverage flags. DOMAIN carries both revisions;
+changes in either included directory return
 SCAN_STALE with a restart explanation. Each row is a locked ledger snapshot
 with a separate revision and cumulative successful births/deaths. Each row
 includes both live objects and invalidated objects whose cleanup is pending.
@@ -1647,10 +1648,10 @@ Invalidation revokes an ID immediately; its slot remains unavailable until the
 unique cleanup ticket completes. A domain cannot retire while either count is
 nonzero. Refused completion retains the ticket for retry against its proper
 owner; it never acknowledges cleanup implicitly. Counters and
-revisions never wrap; saturated revisions refuse snapshots. The initial coverage
-is process domains and partial ledgers, not all objects or all lifetime domains.
+revisions never wrap; saturated revisions refuse snapshots. Coverage includes process and module domains with partial ledgers; System
+and bootstrap domains and unmigrated objects remain outside this census.
 Snapshot values allocate no resident session object and convey no authority to a
-foreign caller. Coalesced OsEvent 0x11000000 advises process membership changes. This tag is
+foreign caller. Coalesced OsEvent 0x11000000 advises process/module membership changes. This tag is
 distinct from the Window Manager geometry notification.
 THEME (0x10025) returns a resident role-palette snapshot; applications cache its
 revision rather than embedding palette choices.

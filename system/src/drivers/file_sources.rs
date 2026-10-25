@@ -27,7 +27,7 @@ enum Phase
 }
 struct Source<B>
 {
-    owner:    u32,
+    owner:    u64,
     identity: Identity,
     backing:  B,
     length:   u64,
@@ -58,7 +58,7 @@ impl<B: Copy> Sources<B>
         Self { entries: Table::new(Kind::FileSources) }
     }
 
-    fn owned(&self, owner: u32, source: u32) -> Result<&Source<B>, Status>
+    fn owned(&self, owner: u64, source: u32) -> Result<&Source<B>, Status>
     {
         let source = self.entries.get(source).ok_or(NOT_FOUND)?;
         if owner == 0 || source.owner != owner
@@ -80,7 +80,7 @@ impl<B: Copy> Sources<B>
 
     /// Capture the mounted-volume generation and persistent file/fork identity.
     /// A renamed source retains the same capability; a copied file does not.
-    pub fn find(&self, owner: u32, identity: Identity) -> Result<Option<u32>, Status>
+    pub fn find(&self, owner: u64, identity: Identity) -> Result<Option<u32>, Status>
     {
         if owner == 0
         {
@@ -100,7 +100,7 @@ impl<B: Copy> Sources<B>
 
     /// Call only after the adapter has an acknowledged, owned backing read
     /// lease. On failure the adapter still owns and must release that lease.
-    pub fn publish(&mut self, owner: u32, identity: Identity, backing: B, length: u64)
+    pub fn publish(&mut self, owner: u64, identity: Identity, backing: B, length: u64)
                    -> Result<u32, Status>
     {
         if owner == 0
@@ -125,7 +125,7 @@ impl<B: Copy> Sources<B>
     }
 
     /// Metadata remains available during a read, without entering the backend.
-    pub fn info(&self, owner: u32, source: u32) -> Result<Info, Status>
+    pub fn info(&self, owner: u64, source: u32) -> Result<Info, Status>
     {
         let source = self.owned(owner, source)?;
         Self::accessible(source)?;
@@ -134,7 +134,7 @@ impl<B: Copy> Sources<B>
 
     /// The ticket is issued/validated by the generic request broker. This core
     /// records it to prevent a different request from acknowledging this read.
-    pub fn begin_read(&mut self, owner: u32, source: u32, ticket: u32, offset: u64,
+    pub fn begin_read(&mut self, owner: u64, source: u32, ticket: u32, offset: u64,
                       capacity: usize)
                       -> Result<Read<B>, Status>
     {
@@ -158,7 +158,7 @@ impl<B: Copy> Sources<B>
     }
 
     /// A read error/cancellation also waits for actual backend acknowledgement.
-    pub fn finish_read(&mut self, owner: u32, source: u32, ticket: u32) -> Result<(), Status>
+    pub fn finish_read(&mut self, owner: u64, source: u32, ticket: u32) -> Result<(), Status>
     {
         if self.owned(owner, source)?.phase != Phase::Reading(ticket)
         {
@@ -170,7 +170,7 @@ impl<B: Copy> Sources<B>
 
     /// An adapter lost evidence of the lower completion. Retain the binding;
     /// an uncertain read must never make its backing mark reusable.
-    pub fn quarantine_read(&mut self, owner: u32, source: u32, ticket: u32) -> Result<(), Status>
+    pub fn quarantine_read(&mut self, owner: u64, source: u32, ticket: u32) -> Result<(), Status>
     {
         if self.owned(owner, source)?.phase != Phase::Reading(ticket)
         {
@@ -181,7 +181,7 @@ impl<B: Copy> Sources<B>
     }
 
     /// Return an owned token, retaining its source identity until Close ACK.
-    pub fn begin_close(&mut self, owner: u32, source: u32) -> Result<B, Status>
+    pub fn begin_close(&mut self, owner: u64, source: u32) -> Result<B, Status>
     {
         let entry = self.owned(owner, source)?;
         Self::accessible(entry)?;
@@ -195,7 +195,7 @@ impl<B: Copy> Sources<B>
     }
 
     /// Failure to establish teardown leaves a pinned, explicit failure state.
-    pub fn quarantine(&mut self, owner: u32, source: u32) -> Result<(), Status>
+    pub fn quarantine(&mut self, owner: u64, source: u32) -> Result<(), Status>
     {
         if self.owned(owner, source)?.phase != Phase::Closing
         {
@@ -207,7 +207,7 @@ impl<B: Copy> Sources<B>
 
     /// A later real Close/reset ACK may settle a quarantined record. Never use
     /// this as timeout cleanup or evidence that a remote operation did not run.
-    pub fn finish_close(&mut self, owner: u32, source: u32) -> Result<(), Status>
+    pub fn finish_close(&mut self, owner: u64, source: u32) -> Result<(), Status>
     {
         if !matches!(self.owned(owner, source)?.phase, Phase::Closing | Phase::Quarantined)
         {

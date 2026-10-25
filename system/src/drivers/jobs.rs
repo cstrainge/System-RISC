@@ -16,7 +16,7 @@ pub enum Owner
 {
     Kernel,
     Thread(u64),
-    Module(u32)
+    Module(u64)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase

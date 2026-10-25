@@ -24,7 +24,6 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
     let kinds = [Kind::Memory,
                  Kind::Files,
                  Kind::Volumes,
-                 Kind::Modules,
                  Kind::DriverInterfaces,
                  Kind::DriverRequests,
                  Kind::HostFiles,

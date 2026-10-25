@@ -444,7 +444,7 @@ fn interrupted_cleanup_is_publicly_inspectable_and_cannot_retire_or_unpin_its_pr
                     assert!(matches!(system.controls().control(id).info(), Err(Error::NotFound)));
                     let error = snapshot.completion_fault_at(0).unwrap_err();
                     assert_eq!(error.cause, Error::ScanStale); // membership changed first
-                    assert!(error.to_string().contains("process membership changed"));
+                    assert!(error.to_string().contains("lifetime-domain membership changed"));
                 });
                 let renewed = system.inspection().snapshot(Scope::Own).unwrap().ledger(0).unwrap();
                 with_owner(healthy, || {
@@ -467,4 +467,64 @@ fn interrupted_cleanup_is_publicly_inspectable_and_cannot_retire_or_unpin_its_pr
             });
         });
     }
+}
+
+#[test]
+fn actual_module_domains_are_full_width_public_sdk_rows_with_exact_membership_epochs()
+{
+    use mac_toolbox::inspection::OwnerKind;
+    with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let reader = fixture::add("Module inspector", mac_abi::inspection::INSPECT_DOMAINS);
+        with_owner(reader, || {
+            let own = system.inspection().snapshot(Scope::Own).unwrap();
+            let before = system.inspection().snapshot(Scope::All).unwrap();
+            let mut ids = Vec::new();
+            for number in 1u128..=40
+            {
+                let name = format!("Loaded module {number}");
+                let id = fixture::stage_module(number.to_le_bytes(), &name);
+                assert!(id > u64::from(u32::MAX),
+                        "module incarnation was truncated to a slot projection");
+                ids.push(id);
+            }
+            assert_eq!(own.at(0).unwrap().incarnation,
+                       reader,
+                       "unrelated module changes invalidated own-process membership");
+            let stale = before.at(0).unwrap_err();
+            assert_eq!(stale.cause, Error::ScanStale);
+            assert!(stale.to_string().contains("membership changed"));
+            let current = system.inspection().snapshot(Scope::All).unwrap();
+            assert!(current.includes_module_domains());
+            assert!(!current.process_domains_only());
+            assert_ne!(before.revision, current.revision,
+                       "module epoch was discarded from the membership token");
+            assert_eq!(current.count, 41);
+            for (index, id) in ids.iter().copied().enumerate()
+            {
+                let ledger = current.ledger(index as u64 + 1).unwrap();
+                let row = ledger.domain();
+                assert_eq!((row.kind, row.incarnation), (OwnerKind::Module, id));
+                assert_eq!(row.name.as_str(), format!("Loaded module {}", index + 1));
+                assert!(row.accepting);
+                assert_eq!((row.live, row.pending, ledger.len()),
+                           (0, 0, 0),
+                           "unmigrated driver objects must not be invented as ledger resources");
+                let error = ledger.at(0).unwrap_err();
+                assert_eq!(error.cause, Error::NotFound);
+                assert!(error.to_string().contains("outside this ledger snapshot"));
+            }
+            fixture::retire_module(ids[0]).unwrap();
+            assert_eq!(current.at(1).unwrap_err().cause, Error::ScanStale);
+            let missing = fixture::retire_module(ids[0]).unwrap_err();
+            assert!(missing.to_string().contains("absent")
+                    || missing.to_string().contains("not found"));
+            let next = system.inspection().snapshot(Scope::All).unwrap();
+            assert_eq!(next.count, 40);
+            for i in 0..next.count
+            {
+                assert_ne!(next.at(i).unwrap().incarnation, ids[0]);
+            }
+        });
+    });
 }

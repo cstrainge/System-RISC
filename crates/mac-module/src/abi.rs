@@ -32,8 +32,8 @@ pub type Broker = unsafe extern "C" fn(u64, u32, *mut Call) -> i32;
 pub struct Host
 {
     pub header:   Header,
-    pub module:   u32,
-    pub reserved: u32,
+    pub module:   u64,
+    pub reserved: u64,
     pub context:  u64,
     pub call:     Option<Broker>,
     pub resolve:  Option<Resolve>
@@ -82,10 +82,10 @@ pub const QUIESCE: u32 = 4;
 pub const PENDING: i32 = 1;
 /// Exact layout fingerprint includes all four boundary sizes and pointer width.
 /// Generated metadata and the resident reject a mismatch before entry.
-pub const LAYOUT_ID: u64 = 64 | (40 << 8) | (24 << 24) | (56 << 40);
+pub const LAYOUT_ID: u64 = 64 | (48 << 8) | (24 << 24) | (56 << 40);
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(core::mem::size_of::<Host>() == 40);
+    assert!(core::mem::size_of::<Host>() == 48);
     assert!(core::mem::size_of::<Instance>() == 24);
     assert!(core::mem::size_of::<Call>() == 56);
 };

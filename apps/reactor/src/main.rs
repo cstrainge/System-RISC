@@ -262,7 +262,17 @@ impl<'a> Panes<'a>
     fn set_domain_row(&self, index: u32, row: Domain, selected: bool) -> ToolboxResult<()>
     {
         let mut text = Line::new();
-        write!(text, "{}  #{}   {} tracked", row.name.as_str(), row.incarnation, row.live).map_err(|_| Error::BadArgument)?;
+        write!(text,
+               "{} {}  #{}   {} tracked",
+               match row.kind
+               {
+                   OwnerKind::System => "System",
+                   OwnerKind::Process => "App",
+                   OwnerKind::Module => "Module"
+               },
+               row.name.as_str(),
+               row.incarnation,
+               row.live).map_err(|_| Error::BadArgument)?;
         self.domains.control().set_row(index, text.text(), selected)
     }
 
@@ -658,7 +668,12 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
                                current,
                                palette)?;
     panes.draw(system, window, palette)?;
-    system.log("REACTOR_READY coverage=process-domains,partial-ledgers authority=system-policy\n")?;
+    if !current.includes_module_domains()
+    {
+        return Err(Error::NotSupported);
+    }
+    system.log("REACTOR_READY coverage=process-and-module-domains,partial-ledgers \
+                authority=system-policy\n")?;
     let mut front = true;
     let mut dirty = false;
     let mut stale = false;

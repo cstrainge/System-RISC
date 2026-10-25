@@ -63,7 +63,7 @@ pub struct Client
 }
 impl Client
 {
-    pub fn module(self) -> u32
+    pub fn module(self) -> u64
     {
         self.host.module
     }
@@ -339,4 +339,54 @@ macro_rules! export_driver {
             unsafe { $crate::dispatch(&$driver, state, call) }
         }
     };
+}
+
+#[cfg(test)]
+mod entry_tests
+{
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+    struct Probe
+    {
+        module: AtomicU64
+    }
+    impl Driver for Probe
+    {
+        fn initialize(&self, client: Client) -> Result<()>
+        {
+            self.module.store(client.module(), Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn request(&self, _: Request<'_>, _: &mut [u8]) -> Result<Completion>
+        {
+            Err(Error(NOT_SUPPORTED))
+        }
+    }
+    unsafe extern "C" fn dispatch(_: u64, _: *mut abi::Call) -> Status
+    {
+        NOT_SUPPORTED
+    }
+    #[test]
+    fn entry_preserves_full_module_incarnation_and_rejects_a_stale_host_layout_before_author_code()
+    {
+        let probe = Probe { module: AtomicU64::new(0) };
+        let module = (1u64 << 47) | 0x1234;
+        let mut host = abi::Host { header: abi::Header::of::<abi::Host>(),
+                                   module,
+                                   reserved: 0,
+                                   context: module,
+                                   call: None,
+                                   resolve: None };
+        let mut instance = abi::Instance::default();
+        assert_eq!(unsafe { entry(&probe, &host, &mut instance, dispatch) }, OK);
+        assert_eq!(probe.module.load(Ordering::Relaxed), module);
+        probe.module.store(0, Ordering::Relaxed);
+        host.header.size = 40;
+        assert_eq!(unsafe { entry(&probe, &host, &mut instance, dispatch) }, BAD_ABI);
+        assert_eq!(probe.module.load(Ordering::Relaxed),
+                   0,
+                   "stale descriptor reached module author initialization");
+    }
 }

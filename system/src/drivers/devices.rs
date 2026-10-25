@@ -13,14 +13,14 @@ pub trait Bus
 }
 struct Claim
 {
-    owner:       u32,
+    owner:       u64,
     ordinal:     u32,
     description: Description,
     reset:       Option<u32>
 }
 struct Dma
 {
-    owner:   u32,
+    owner:   u64,
     device:  u32,
     mapping: Mapping
 }
@@ -44,7 +44,7 @@ impl<B: Bus> Devices<B>
         self.bus.probe(ordinal)
     }
 
-    fn owned(&self, owner: u32, device: u32) -> Result<&Claim, Status>
+    fn owned(&self, owner: u64, device: u32) -> Result<&Claim, Status>
     {
         let claim = self.claims.get(device).ok_or(NOT_FOUND)?;
         if owner == 0 || claim.owner != owner
@@ -56,7 +56,7 @@ impl<B: Bus> Devices<B>
 
     /// Authorization has checked this exact bus/match key against the admitted
     /// contract. Re-probe before publication so changed hardware is not claimed.
-    pub fn claim(&mut self, owner: u32, ordinal: u32, expected: Description)
+    pub fn claim(&mut self, owner: u64, ordinal: u32, expected: Description)
                  -> Result<Description, Status>
     {
         if owner == 0 || expected.flags & mac_device_interface::RESIDENT_OWNED != 0
@@ -84,7 +84,7 @@ impl<B: Bus> Devices<B>
     /// The caller checked the whole RAM range against its pinned module image.
     /// This board uses coherent identity DMA; another bus supplies its mapping
     /// adapter without changing the module entry or driver request ABI.
-    pub fn map(&mut self, owner: u32, device: u32, address: u64, length: u64)
+    pub fn map(&mut self, owner: u64, device: u32, address: u64, length: u64)
                -> Result<Mapping, Status>
     {
         let claim = self.owned(owner, device)?;
@@ -112,7 +112,7 @@ impl<B: Bus> Devices<B>
         Ok(self.maps.get(id).ok_or(NOT_FOUND)?.mapping)
     }
 
-    pub fn reset(&mut self, owner: u32, device: u32, ticket: u32, start: bool)
+    pub fn reset(&mut self, owner: u64, device: u32, ticket: u32, start: bool)
                  -> Result<bool, Status>
     {
         if ticket == 0
@@ -156,7 +156,7 @@ impl<B: Bus> Devices<B>
         }
     }
 
-    pub fn reset_pending(&mut self, owner: u32, ticket: u32) -> Result<bool, Status>
+    pub fn reset_pending(&mut self, owner: u64, ticket: u32) -> Result<bool, Status>
     {
         let device = self.claims
                          .iter()
@@ -166,7 +166,7 @@ impl<B: Bus> Devices<B>
         self.reset(owner, device, ticket, false)
     }
 
-    pub fn unmap(&mut self, owner: u32, mapping: u32) -> Result<(), Status>
+    pub fn unmap(&mut self, owner: u64, mapping: u32) -> Result<(), Status>
     {
         let dma = self.maps.get(mapping).ok_or(NOT_FOUND)?;
         if dma.owner != owner
@@ -187,7 +187,7 @@ impl<B: Bus> Devices<B>
         Ok(())
     }
 
-    pub fn release(&mut self, owner: u32, device: u32) -> Result<(), Status>
+    pub fn release(&mut self, owner: u64, device: u32) -> Result<(), Status>
     {
         let claim = self.owned(owner, device)?;
         if claim.reset.is_some() || self.maps.iter().any(|(_, m)| m.device == device)

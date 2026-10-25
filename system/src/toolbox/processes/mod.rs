@@ -84,7 +84,7 @@ impl Manager
 {
     pub(crate) fn inspect(&self, caller: u64, call: &mut mac_abi::inspection::Call) -> Status
     {
-        crate::toolbox::inspection::request(&self.entries, caller, call)
+        crate::drivers::inspect(&self.entries, caller, call)
     }
 
     pub fn new() -> Self

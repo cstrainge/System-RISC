@@ -17,7 +17,6 @@ use core::sync::atomic::{AtomicU16, Ordering};
 static FILE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
 static VOLUME_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static MEMORY_GENERATIONS: [AtomicU16; 512] = [const { AtomicU16::new(0) }; 512];
-static MODULE_GENERATIONS: [AtomicU16; 32] = [const { AtomicU16::new(0) }; 32];
 static DRIVER_INTERFACE_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DRIVER_REQUEST_GENERATIONS: [AtomicU16; 256] = [const { AtomicU16::new(0) }; 256];
 
@@ -54,7 +53,6 @@ pub enum Kind
     Memory,
     Files,
     Volumes,
-    Modules,
     DriverInterfaces,
     DriverRequests,
     HostFiles,
@@ -90,7 +88,6 @@ impl Kind
             Self::HostDirectories => 256,
             Self::HostTransactions => 64,
             Self::HostSessions => 16,
-            Self::Modules => 32,
             Self::DriverInterfaces => 128,
             Self::DriverRequests => 256,
             Self::Volumes => 128,
@@ -134,8 +131,7 @@ impl Kind
             {
                 Self::HostTransactions.first_slot() + Self::HostTransactions.capacity() as u32
             }
-            Self::Modules => Self::Volumes.first_slot() + Self::Volumes.capacity() as u32,
-            Self::DriverInterfaces => Self::Modules.first_slot() + Self::Modules.capacity() as u32,
+            Self::DriverInterfaces => Self::Volumes.first_slot() + Self::Volumes.capacity() as u32,
             Self::DriverRequests =>
             {
                 Self::DriverInterfaces.first_slot() + Self::DriverInterfaces.capacity() as u32
@@ -176,7 +172,6 @@ impl Kind
             Self::HostDirectories => &HOST_DIRECTORY_GENERATIONS[index],
             Self::HostTransactions => &HOST_TRANSACTION_GENERATIONS[index],
             Self::HostSessions => &HOST_SESSION_GENERATIONS[index],
-            Self::Modules => &MODULE_GENERATIONS[index],
             Self::DriverInterfaces => &DRIVER_INTERFACE_GENERATIONS[index],
             Self::DriverRequests => &DRIVER_REQUEST_GENERATIONS[index]
         }

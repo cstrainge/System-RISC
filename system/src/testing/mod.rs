@@ -20,6 +20,7 @@ struct Session
     registry:      crate::toolbox::handles::Registry<Session>,
     menus:         RefCell<std::vec::Vec<(u64, crate::toolbox::menus::Manager)>>,
     inspection:    inspection::Domains,
+    modules:       crate::drivers::Registry,
     scopes:        files::scopes::Scopes,
     drag:          crate::toolbox::drag::Manager,
     drag_notices:  std::vec::Vec<crate::toolbox::drag::Notice>,
@@ -181,6 +182,7 @@ impl Default for Session
                registry,
                menus: RefCell::new(std::vec::Vec::new()),
                inspection: inspection::Domains::new(),
+               modules: crate::drivers::Registry::new(mac_module::Target::RVA23U64),
                scopes,
                drag,
                drag_notices: std::vec::Vec::new(),
@@ -291,32 +293,65 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
     }
     match number
     {
-        POWER => SESSION.with(|session| {
-            let mut session=session.borrow_mut();
-            let Session {power,files,..}=session.as_mut().unwrap();
-            let result=unsafe {request::<mac_abi::power::PowerCall>(pointer,size)}
+        POWER =>
+        {
+            SESSION.with(|session| {
+                       let mut session = session.borrow_mut();
+                       let Session { power,
+                                     files,
+                                     .. } = session.as_mut().unwrap();
+                       let result=unsafe {request::<mac_abi::power::PowerCall>(pointer,size)}
                 .and_then(|call|power.request(files,call));
-            result.err().unwrap_or(OK) as i64
-        }),
-        MENU => unsafe { menus::dispatch(pointer, size) },
-        INSPECTION => SESSION.with(|session| {
-            let session = session.borrow();
-            let session = session.as_ref().unwrap();
-            let caller = inspection::caller_identity(&session.inspection, files::current_owner());
-            match unsafe { request::<mac_abi::inspection::Call>(pointer, size) }
+                       result.err().unwrap_or(OK) as i64
+                   })
+        }
+        MENU =>
+        unsafe { menus::dispatch(pointer, size) },
+        INSPECTION =>
+        {
+            SESSION.with(|session| {
+                       let session = session.borrow();
+                       let session = session.as_ref().unwrap();
+                       let caller =
+                           inspection::caller_identity(&session.inspection, files::current_owner());
+                       match unsafe { request::<mac_abi::inspection::Call>(pointer, size) }
+                       {
+                           Ok(call) =>
+                           {
+                               if matches!(call.operation,
+                                           mac_abi::inspection::KIND_BEGIN
+                                           | mac_abi::inspection::KIND
+                                           | mac_abi::inspection::KIND_ID)
+                               {
+                                   crate::toolbox::inspection::registered_kinds(&session.registry,
+                                                                                caller.is_some(),
+                                                                                call)
+                                   as i64
+                               }
+                               else
+                               {
+                                   session.modules.inspect(&session.inspection,
+                                                           caller.unwrap_or(files::current_owner()),
+                                                           call)
+                                   as i64
+                               }
+                           }
+                           Err(error) => error as i64
+                       }
+                   })
+        }
+        THEME =>
+        {
+            match unsafe { request::<mac_abi::theme::Palette>(pointer, size) }
             {
-                Ok(call) => if matches!(call.operation, mac_abi::inspection::KIND_BEGIN | mac_abi::inspection::KIND | mac_abi::inspection::KIND_ID) {
-                    crate::toolbox::inspection::registered_kinds(&session.registry,
-                        caller.is_some(), call) as i64
-                } else { crate::toolbox::inspection::request(&session.inspection, caller.unwrap_or(files::current_owner()), call) as i64 },
+                Ok(palette) =>
+                {
+                    *palette = crate::toolbox::theme::palette();
+                    OK as i64
+                }
                 Err(error) => error as i64
             }
-        }),
-        THEME => match unsafe { request::<mac_abi::theme::Palette>(pointer, size) }
-        {
-            Ok(palette) => { *palette = crate::toolbox::theme::palette(); OK as i64 },
-            Err(error) => error as i64
-        },
+        }
         LOG =>
         {
             let call = match unsafe { request::<LogCall>(pointer, size) }
@@ -347,33 +382,72 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                 Err(_) => IO_ERROR as i64
             }
         }
-        DRAG => unsafe { crate::toolbox::drag::native::dispatch(pointer,size, |call,input,output| {
-            let owner = inspection::caller_ledger(files::current_owner())?;
-            SESSION.with(|slot| { let mut s=slot.borrow_mut(); let s=s.as_mut().unwrap();
-                drag::request(s,&owner,call,input,output)
+        DRAG =>
+        unsafe {
+            crate::toolbox::drag::native::dispatch(pointer, size, |call, input, output| {
+                let owner = inspection::caller_ledger(files::current_owner())?;
+                SESSION.with(|slot| {
+                           let mut s = slot.borrow_mut();
+                           let s = s.as_mut().unwrap();
+                           drag::request(s, &owner, call, input, output)
+                       })
             })
-        }) },
-        CLASSIC => {
-            let owner = match inspection::caller_ledger(files::current_owner()) {
-                Ok(owner) => owner, Err(status) => return status as i64
+        },
+        CLASSIC =>
+        {
+            let owner = match inspection::caller_ledger(files::current_owner())
+            {
+                Ok(owner) => owner,
+                Err(status) => return status as i64
             };
-            let call = match unsafe { request::<ClassicCall>(pointer,size) } { Ok(c)=>c, Err(s)=>return s as i64 };
-            if call.memory.is_null() || call.memory_length > 128*1024*1024
-                || u64::from(call.guest_base) + call.memory_length as u64 > u64::from(u32::MAX)+1 { return BAD_ARGUMENT as i64; }
-            let memory=unsafe { core::slice::from_raw_parts_mut(call.memory,call.memory_length) };
-            SESSION.with(|slot| { let mut s=slot.borrow_mut(); let s=s.as_mut().unwrap();
-                crate::toolbox::classic::dispatch(call.instruction,&mut call.registers,call.guest_base,memory,&mut drag::Services(s, &owner)) as i64
-            })
+            let call = match unsafe { request::<ClassicCall>(pointer, size) }
+            {
+                Ok(c) => c,
+                Err(s) => return s as i64
+            };
+            if call.memory.is_null()
+               || call.memory_length > 128 * 1024 * 1024
+               || u64::from(call.guest_base) + call.memory_length as u64 > u64::from(u32::MAX) + 1
+            {
+                return BAD_ARGUMENT as i64;
+            }
+            let memory =
+                unsafe { core::slice::from_raw_parts_mut(call.memory, call.memory_length) };
+            SESSION.with(|slot| {
+                       let mut s = slot.borrow_mut();
+                       let s = s.as_mut().unwrap();
+                       crate::toolbox::classic::dispatch(call.instruction,
+                                                         &mut call.registers,
+                                                         call.guest_base,
+                                                         memory,
+                                                         &mut drag::Services(s, &owner))
+                       as i64
+                   })
         }
-        STANDARD_FILE => {
-            let ledger = match inspection::caller_ledger(files::current_owner()) {
-                Ok(ledger) => ledger, Err(status) => return status as i64
+        STANDARD_FILE =>
+        {
+            let ledger = match inspection::caller_ledger(files::current_owner())
+            {
+                Ok(ledger) => ledger,
+                Err(status) => return status as i64
             };
-            let call = unsafe { request::<mac_abi::standard_file::StandardFileCall>(pointer,size) };
-            match call { Err(e)=>e as i64, Ok(call)=>SESSION.with(|slot| {
-                let mut session=slot.borrow_mut();let session=session.as_mut().unwrap();
-                session.standard_file.request(&ledger,call,&mut session.files).err().unwrap_or(OK) as i64
-            }) }
+            let call =
+                unsafe { request::<mac_abi::standard_file::StandardFileCall>(pointer, size) };
+            match call
+            {
+                Err(e) => e as i64,
+                Ok(call) =>
+                {
+                    SESSION.with(|slot| {
+                               let mut session = slot.borrow_mut();
+                               let session = session.as_mut().unwrap();
+                               session.standard_file
+                                      .request(&ledger, call, &mut session.files)
+                                      .err()
+                                      .unwrap_or(OK) as i64
+                           })
+                }
+            }
         }
         DIALOG =>
         {
@@ -416,8 +490,8 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                         Ok(time) =>
                         {
                             call.unix_seconds = time.as_secs() as i64;
-                            call.microseconds=time.subsec_micros();
-                            call.reserved=0;
+                            call.microseconds = time.subsec_micros();
+                            call.reserved = 0;
                             OK as i64
                         }
                         Err(_) => NOT_SUPPORTED as i64
@@ -428,36 +502,78 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
         }
         FILE =>
         {
-            let watch_operation = if size == size_of::<mac_abi::files::FileCall>() {
-                match unsafe { request::<mac_abi::files::FileCall>(pointer, size) } {
-                    Ok(call) if matches!(call.operation, mac_abi::files::OPEN | mac_abi::files::WATCH_DIRECTORY | mac_abi::files::POLL_WATCH | mac_abi::files::DISPOSE_WATCH) => Some(call.operation),
+            let watch_operation = if size == size_of::<mac_abi::files::FileCall>()
+            {
+                match unsafe { request::<mac_abi::files::FileCall>(pointer, size) }
+                {
+                    Ok(call)
+                        if matches!(call.operation,
+                                    mac_abi::files::OPEN
+                                    | mac_abi::files::WATCH_DIRECTORY
+                                    | mac_abi::files::POLL_WATCH
+                                    | mac_abi::files::DISPOSE_WATCH) =>
+                    {
+                        Some(call.operation)
+                    }
                     Ok(_) => None,
                     Err(status) => return status as i64
                 }
-            } else { None };
-            let write_admission=if size==size_of::<mac_abi::files::DataWriteCall>() {
-                match unsafe {request::<mac_abi::files::DataWriteCall>(pointer,size)} {
-                    Ok(call)=>call.operation==mac_abi::files::BEGIN_DATA_WRITE,
-                    Err(status)=>return status as i64
+            }
+            else
+            {
+                None
+            };
+            let write_admission = if size == size_of::<mac_abi::files::DataWriteCall>()
+            {
+                match unsafe { request::<mac_abi::files::DataWriteCall>(pointer, size) }
+                {
+                    Ok(call) => call.operation == mac_abi::files::BEGIN_DATA_WRITE,
+                    Err(status) => return status as i64
                 }
-            } else {false};
-            let stream_admission = if size == size_of::<mac_abi::files::ForkWriteCall>() {
-                match unsafe { request::<mac_abi::files::ForkWriteCall>(pointer,size) } {
+            }
+            else
+            {
+                false
+            };
+            let stream_admission = if size == size_of::<mac_abi::files::ForkWriteCall>()
+            {
+                match unsafe { request::<mac_abi::files::ForkWriteCall>(pointer, size) }
+                {
                     Ok(call) => call.operation == mac_abi::files::BEGIN_FORK_WRITE,
                     Err(status) => return status as i64
                 }
-            } else { false };
-            let group_admission = if size==size_of::<mac_abi::files::IconGroupCall>() {
-                match unsafe {request::<mac_abi::files::IconGroupCall>(pointer,size)} {
-                    Ok(call)=>call.operation==mac_abi::files::BEGIN_ICON_GROUP,
-                    Err(status)=>return status as i64
+            }
+            else
+            {
+                false
+            };
+            let group_admission = if size == size_of::<mac_abi::files::IconGroupCall>()
+            {
+                match unsafe { request::<mac_abi::files::IconGroupCall>(pointer, size) }
+                {
+                    Ok(call) => call.operation == mac_abi::files::BEGIN_ICON_GROUP,
+                    Err(status) => return status as i64
                 }
-            } else {false};
-            let authority = if watch_operation.is_some() || write_admission || stream_admission || group_admission {
-                match inspection::caller_ledger(files::current_owner()) {
-                    Ok(owner) => Some(owner), Err(status) => return status as i64
+            }
+            else
+            {
+                false
+            };
+            let authority = if watch_operation.is_some()
+                               || write_admission
+                               || stream_admission
+                               || group_admission
+            {
+                match inspection::caller_ledger(files::current_owner())
+                {
+                    Ok(owner) => Some(owner),
+                    Err(status) => return status as i64
                 }
-            } else { None };
+            }
+            else
+            {
+                None
+            };
             SESSION.with(|slot| {
                        let mut session = slot.borrow_mut();
                        let session = session.as_mut().expect("session");
@@ -496,42 +612,91 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        }
                    })
         }
-        TEXTEDIT => unsafe { textedit::dispatch(number, pointer, size) },
-        POSITIONED_EVENT => SESSION.with(|slot| {
-            let mut session = slot.borrow_mut();
-            let s = session.as_mut().unwrap();
-            let drag_owner = inspection::caller_identity(&s.inspection, files::current_owner());
-            let call = match unsafe { request::<events::PositionedEventCall>(pointer, size) } { Ok(call) => call, Err(status) => return status as i64 };
-            let ticks = (s.started.elapsed().as_nanos() * 60 / 1_000_000_000) as u64;
-            call.waited = 0;
-            // This scoped host harness has no Window Manager. It still uses the
-            // real native queue; coordinate/ownership assertions run in RV64.
-            match call.operation {
-                events::POSITION_NEXT | events::POSITION_WAIT | events::POSITION_PEEK => {
-                    let remove = call.operation != events::POSITION_PEEK;
-                    let notice = if call.mask & (1 << EventKind::OsEvent as u16) != 0 {
-                        s.drag_notices.iter().position(|n| Some(n.owner) == drag_owner)
-                    } else { None };
-                    let found = if let Some(index) = notice {
-                        let event = s.drag_notices[index].event;
-                        if remove { s.drag_notices.remove(index); }
-                        Some((event, Default::default()))
-                    } else { s.events.positioned_matching(call.mask, remove) };
-                    if let Some((event, position)) = found { call.event = event; call.position = position; call.present = 1; }
-                    else {
-                        if call.operation == events::POSITION_WAIT && call.timeout_ticks != 0 { return NOT_SUPPORTED as i64; }
-                        call.event = s.events.null_event(ticks as u32); call.position = Default::default(); call.present = 0;
-                    }
-                }
-                events::POSITION_LOCATE => { call.position = Default::default(); call.present = 1; }
-                events::POSITION_INPUT => {
-                    if call.window != 0 { return NOT_FOUND as i64; }
-                    call.event = s.events.null_event(ticks as u32); call.position = Default::default(); call.present = 0;
-                }
-                _ => return BAD_ARGUMENT as i64
-            }
-            OK as i64
-        }),
+        TEXTEDIT =>
+        unsafe { textedit::dispatch(number, pointer, size) },
+        POSITIONED_EVENT =>
+        {
+            SESSION.with(|slot| {
+                       let mut session = slot.borrow_mut();
+                       let s = session.as_mut().unwrap();
+                       let drag_owner =
+                           inspection::caller_identity(&s.inspection, files::current_owner());
+                       let call =
+                           match unsafe { request::<events::PositionedEventCall>(pointer, size) }
+                           {
+                               Ok(call) => call,
+                               Err(status) => return status as i64
+                           };
+                       let ticks = (s.started.elapsed().as_nanos() * 60 / 1_000_000_000) as u64;
+                       call.waited = 0;
+                       // This scoped host harness has no Window Manager. It still uses the
+                       // real native queue; coordinate/ownership assertions run in RV64.
+                       match call.operation
+                       {
+                           events::POSITION_NEXT
+                           | events::POSITION_WAIT
+                           | events::POSITION_PEEK =>
+                           {
+                               let remove = call.operation != events::POSITION_PEEK;
+                               let notice = if call.mask & (1 << EventKind::OsEvent as u16) != 0
+                               {
+                                   s.drag_notices.iter().position(|n| Some(n.owner) == drag_owner)
+                               }
+                               else
+                               {
+                                   None
+                               };
+                               let found = if let Some(index) = notice
+                               {
+                                   let event = s.drag_notices[index].event;
+                                   if remove
+                                   {
+                                       s.drag_notices.remove(index);
+                                   }
+                                   Some((event, Default::default()))
+                               }
+                               else
+                               {
+                                   s.events.positioned_matching(call.mask, remove)
+                               };
+                               if let Some((event, position)) = found
+                               {
+                                   call.event = event;
+                                   call.position = position;
+                                   call.present = 1;
+                               }
+                               else
+                               {
+                                   if call.operation == events::POSITION_WAIT
+                                      && call.timeout_ticks != 0
+                                   {
+                                       return NOT_SUPPORTED as i64;
+                                   }
+                                   call.event = s.events.null_event(ticks as u32);
+                                   call.position = Default::default();
+                                   call.present = 0;
+                               }
+                           }
+                           events::POSITION_LOCATE =>
+                           {
+                               call.position = Default::default();
+                               call.present = 1;
+                           }
+                           events::POSITION_INPUT =>
+                           {
+                               if call.window != 0
+                               {
+                                   return NOT_FOUND as i64;
+                               }
+                               call.event = s.events.null_event(ticks as u32);
+                               call.position = Default::default();
+                               call.present = 0;
+                           }
+                           _ => return BAD_ARGUMENT as i64
+                       }
+                       OK as i64
+                   })
+        }
         EVENTS | NEXT_EVENT | SCRAP =>
         {
             SESSION.with(|slot| {
@@ -554,7 +719,8 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        }
                        let ticks =
                            (session.started.elapsed().as_nanos() * 60 / 1_000_000_000) as u64;
-                       let drag_owner = inspection::caller_identity(&session.inspection, files::current_owner());
+                       let drag_owner =
+                           inspection::caller_identity(&session.inspection, files::current_owner());
                        if number == NEXT_EVENT
                        {
                            return match unsafe { request::<NextEventCall>(pointer, size) }
@@ -562,8 +728,13 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                                Ok(call) =>
                                {
                                    if call.mask & (1 << EventKind::OsEvent as u16) != 0
-                                      && let Some(index) = session.drag_notices.iter().position(|n| Some(n.owner) == drag_owner) {
-                                        call.event = session.drag_notices.remove(index).event; return OK as i64;
+                                      && let Some(index) =
+                                          session.drag_notices
+                                                 .iter()
+                                                 .position(|n| Some(n.owner) == drag_owner)
+                                   {
+                                       call.event = session.drag_notices.remove(index).event;
+                                       return OK as i64;
                                    }
                                    call.event = session.events
                                                        .next_matching(call.mask)
@@ -577,47 +748,83 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        }
                        match unsafe { request::<events::EventCall>(pointer, size) }
                        {
-                           Ok(call) => {
+                           Ok(call) =>
+                           {
                                if call.operation == events::NATIVE_PEEK
                                   && call.mask & (1 << EventKind::OsEvent as u16) != 0
-                                  && let Some(notice) = session.drag_notices.iter().find(|n| Some(n.owner) == drag_owner)
+                                  && let Some(notice) =
+                                      session.drag_notices
+                                             .iter()
+                                             .find(|n| Some(n.owner) == drag_owner)
                                {
                                    call.event = notice.event;
                                    call.present = 1;
                                    return OK as i64;
                                }
                                session.events.service(call, ticks as u32, ticks) as i64
-                           },
+                           }
                            Err(status) => status as i64
                        }
                    })
         }
         CRASH =>
         {
-            let call = match unsafe { request::<mac_abi::crashes::CrashCall>(pointer, size) } {
-                Ok(call) => call, Err(status) => return status as i64
+            let call = match unsafe { request::<mac_abi::crashes::CrashCall>(pointer, size) }
+            {
+                Ok(call) => call,
+                Err(status) => return status as i64
             };
             if call.length > mac_abi::crashes::MAX_REPORT_BYTES
                || call.capacity > mac_abi::crashes::MAX_REPORT_BYTES
                || (call.length != 0 && call.data.is_null())
                || (call.capacity != 0 && call.output.is_null())
-            { return BAD_ARGUMENT as i64; }
-            let bytes = if call.length == 0 { &[][..] } else {
+            {
+                return BAD_ARGUMENT as i64;
+            }
+            let bytes = if call.length == 0
+            {
+                &[][..]
+            }
+            else
+            {
                 unsafe { core::slice::from_raw_parts(call.data, call.length) }
             };
-            let Ok(input) = core::str::from_utf8(bytes) else { return BAD_ARGUMENT as i64; };
-            let output = if call.capacity == 0 { &mut [][..] } else {
+            let Ok(input) = core::str::from_utf8(bytes)
+            else
+            {
+                return BAD_ARGUMENT as i64;
+            };
+            let output = if call.capacity == 0
+            {
+                &mut [][..]
+            }
+            else
+            {
                 unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
             };
             SESSION.with(|slot| {
-                let Ok(mut session) = slot.try_borrow_mut() else { return SERVICE_BUSY as i64; };
-                let Some(session) = session.as_mut() else { return NOT_SUPPORTED as i64; };
-                session.crashes.request(call, input, output).map_or_else(|status| status, |_| OK) as i64
-            })
+                       let Ok(mut session) = slot.try_borrow_mut()
+                       else
+                       {
+                           return SERVICE_BUSY as i64;
+                       };
+                       let Some(session) = session.as_mut()
+                       else
+                       {
+                           return NOT_SUPPORTED as i64;
+                       };
+                       session.crashes
+                              .request(call, input, output)
+                              .map_or_else(|status| status, |_| OK) as i64
+                   })
         }
         MEMORY =>
         {
-            let owner = match inspection::caller_ledger(files::current_owner()) { Ok(owner) => owner, Err(status) => return status as i64 };
+            let owner = match inspection::caller_ledger(files::current_owner())
+            {
+                Ok(owner) => owner,
+                Err(status) => return status as i64
+            };
             SESSION.with(|slot| {
                        let Ok(mut session) = slot.try_borrow_mut()
                        else
@@ -630,8 +837,8 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                            return NOT_SUPPORTED as i64;
                        };
                        unsafe {
-                           crate::toolbox::memory::native::dispatch(&mut session.memory, &owner, number,
-                                                                    pointer, size)
+                           crate::toolbox::memory::native::dispatch(&mut session.memory, &owner,
+                                                                    number, pointer, size)
                        }
                    })
         }
@@ -639,33 +846,53 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
         CURSOR =>
         {
             let result = SESSION.with(|slot| {
-                let mut session = slot.borrow_mut();
-                let session = session.as_mut().unwrap();
-                let mouse = session.events.mouse;
-                if size == size_of::<quickdraw::CursorResourceCall>()
-                {
-                    let call = unsafe { request::<quickdraw::CursorResourceCall>(pointer, size) }?;
-                    let resources = crate::toolbox::resources::manager::Manager::new(
+                             let mut session = slot.borrow_mut();
+                             let session = session.as_mut().unwrap();
+                             let mouse = session.events.mouse;
+                             if size == size_of::<quickdraw::CursorResourceCall>()
+                             {
+                                 let call = unsafe {
+                                     request::<quickdraw::CursorResourceCall>(pointer, size)
+                                 }?;
+                                 let resources = crate::toolbox::resources::manager::Manager::new(
                         &session.resources, &session.application, session.fonts.resources());
-                    let now = (session.started.elapsed().as_nanos() * 60 / 1_000_000_000) as u32;
-                    session.cursors.resource_request(call, mouse, now, |kind, id, scope| {
-                        resources.get(scope, ResourceKey { kind, id }).ok()
-                            .map(|(_, resource)| resource.data.clone())
-                    }).map(|_| ())
-                }
-                else
-                {
-                    let call = unsafe { request::<quickdraw::CursorCall>(pointer, size) }?;
-                    if call.color_count != 0 && (call.colors.is_null() || call.color_count != 256
-                        || !(call.colors as usize).is_multiple_of(align_of::<u32>()))
-                    {
-                        return Err(BAD_ARGUMENT);
-                    }
-                    let colors = if call.color_count == 0 { &[][..] }
-                    else { unsafe { core::slice::from_raw_parts(call.colors, call.color_count) } };
-                    session.cursors.request(call, colors, mouse).map(|_| ())
-                }
-            });
+                                 let now = (session.started.elapsed().as_nanos() * 60
+                                            / 1_000_000_000)
+                                           as u32;
+                                 session.cursors
+                                        .resource_request(call, mouse, now, |kind, id, scope| {
+                                            resources.get(scope,
+                                                          ResourceKey { kind,
+                                                                        id })
+                                                     .ok()
+                                                     .map(|(_, resource)| resource.data.clone())
+                                        })
+                                        .map(|_| ())
+                             }
+                             else
+                             {
+                                 let call =
+                                     unsafe { request::<quickdraw::CursorCall>(pointer, size) }?;
+                                 if call.color_count != 0
+                                  && (call.colors.is_null()
+                                      || call.color_count != 256
+                                      || !(call.colors as usize).is_multiple_of(align_of::<u32>()))
+                               {
+                                   return Err(BAD_ARGUMENT);
+                               }
+                                 let colors = if call.color_count == 0
+                                 {
+                                     &[][..]
+                                 }
+                                 else
+                                 {
+                                     unsafe {
+                                         core::slice::from_raw_parts(call.colors, call.color_count)
+                                     }
+                                 };
+                                 session.cursors.request(call, colors, mouse).map(|_| ())
+                             }
+                         });
             result.err().unwrap_or(OK) as i64
         }
         ICON =>
@@ -712,18 +939,32 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
         }
         RESOURCE =>
         {
-            if size == size_of::<resources::FileResourceCall>() {
+            if size == size_of::<resources::FileResourceCall>()
+            {
                 return SESSION.with(|slot| {
-                    let mut session = slot.borrow_mut();
-                    unsafe { crate::toolbox::resources::inspect::dispatch(&mut session.as_mut().unwrap().files, files::current_owner(), pointer, size) }
-                });
+                           let mut session = slot.borrow_mut();
+                           unsafe {
+                               crate::toolbox::resources::inspect::dispatch(&mut session.as_mut()
+                                                                                        .unwrap()
+                                                                                        .files,
+                                                                            files::current_owner(),
+                                                                            pointer,
+                                                                            size)
+                           }
+                       });
             }
             if size == size_of::<resources::FileVersionCall>()
             {
                 return SESSION.with(|slot| {
-                    let mut session = slot.borrow_mut();
-                    unsafe {crate::toolbox::resources::file::dispatch(&mut session.as_mut().unwrap().files,pointer,size)}
-                });
+                           let mut session = slot.borrow_mut();
+                           unsafe {
+                               crate::toolbox::resources::file::dispatch(&mut session.as_mut()
+                                                                                     .unwrap()
+                                                                                     .files,
+                                                                         pointer,
+                                                                         size)
+                           }
+                       });
             }
             SESSION.with(|slot| {
                        let session = slot.borrow();
@@ -738,41 +979,78 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        }
                    })
         }
-        SCROLL_BOX => {
-            let ledger = match inspection::caller_ledger(files::current_owner()) {
-                Ok(ledger) => ledger, Err(status) => return status as i64
+        SCROLL_BOX =>
+        {
+            let ledger = match inspection::caller_ledger(files::current_owner())
+            {
+                Ok(ledger) => ledger,
+                Err(status) => return status as i64
             };
-            unsafe {crate::toolbox::controls::scrollbox_native::dispatch(pointer,size,|call|SESSION.with(|slot|{
-            let mut session=slot.borrow_mut();let session=session.as_mut().unwrap();
-            if call.operation==scrollbox::CREATE && call.window!=0{return Err(NOT_SUPPORTED);}
-            session.scroll_boxes.request(&ledger,call,&session.fonts,crate::test_scrollbar::scrollbar_definition,host_gate)
-        }))}},
+            unsafe {
+                crate::toolbox::controls::scrollbox_native::dispatch(pointer, size, |call| {
+                    SESSION.with(|slot| {
+                               let mut session = slot.borrow_mut();
+                               let session = session.as_mut().unwrap();
+                               if call.operation == scrollbox::CREATE && call.window != 0
+                               {
+                                   return Err(NOT_SUPPORTED);
+                               }
+                               session.scroll_boxes
+                                      .request(&ledger,
+                                               call,
+                                               &session.fonts,
+                                               crate::test_scrollbar::scrollbar_definition,
+                                               host_gate)
+                           })
+                })
+            }
+        }
         CONTROL =>
         unsafe {
-            let call = match request::<mac_abi::controls::ControlCall>(pointer, size) {
-                Ok(c) => c, Err(e) => return e as i64,
+            let call = match request::<mac_abi::controls::ControlCall>(pointer, size)
+            {
+                Ok(c) => c,
+                Err(e) => return e as i64
             };
-            if call.operation >= mac_abi::controls::CREATE_STANDARD {
-                let ledger = match inspection::caller_ledger(files::current_owner()) {
-                    Ok(ledger) => ledger, Err(status) => return status as i64
+            if call.operation >= mac_abi::controls::CREATE_STANDARD
+            {
+                let ledger = match inspection::caller_ledger(files::current_owner())
+                {
+                    Ok(ledger) => ledger,
+                    Err(status) => return status as i64
                 };
                 return SESSION.with(|slot| {
-                    let session = slot.borrow();
-                    let Some(session) = session.as_ref() else { return NOT_SUPPORTED as i64; };
-                    let Ok(mut manager) = session.controls.try_borrow_mut() else { return SERVICE_BUSY as i64; };
-                    let owner = ledger.owner().incarnation();
-                    let result = (|| {
-                        let entry = match manager.definition(call, owner)? {
-                            0 => crate::test_cdef::standard_control_definition,
-                            1 => crate::test_scrollbar::scrollbar_definition,
-                            mac_abi::controls::CDEF_PROGRESS_BAR => crate::test_progress_bar::progress_bar_definition,
-                            mac_abi::controls::CDEF_STATIC_TEXT => crate::test_static_text::static_text_definition,
-                            _ => return Err(NOT_FOUND)
-                        };
-                        manager.request(&ledger, call, entry, host_gate).map(|_| ())
-                    })();
-                    result.map_or_else(|e| e as i64, |_| 0)
-                });
+                                  let session = slot.borrow();
+                                  let Some(session) = session.as_ref()
+                                  else
+                                  {
+                                      return NOT_SUPPORTED as i64;
+                                  };
+                                  let Ok(mut manager) = session.controls.try_borrow_mut()
+                                  else
+                                  {
+                                      return SERVICE_BUSY as i64;
+                                  };
+                                  let owner = ledger.owner().incarnation();
+                                  let result = (|| {
+                                      let entry = match manager.definition(call, owner)?
+                                      {
+                                          0 => crate::test_cdef::standard_control_definition,
+                                          1 => crate::test_scrollbar::scrollbar_definition,
+                                          mac_abi::controls::CDEF_PROGRESS_BAR =>
+                                          {
+                                              crate::test_progress_bar::progress_bar_definition
+                                          }
+                                          mac_abi::controls::CDEF_STATIC_TEXT =>
+                                          {
+                                              crate::test_static_text::static_text_definition
+                                          }
+                                          _ => return Err(NOT_FOUND)
+                                      };
+                                      manager.request(&ledger, call, entry, host_gate).map(|_| ())
+                                  })();
+                                  result.map_or_else(|e| e as i64, |_| 0)
+                              });
             }
             crate::toolbox::controls::native::dispatch(number,
                                                        pointer,
