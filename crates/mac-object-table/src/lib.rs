@@ -6,6 +6,7 @@
 #![feature(allocator_ext)]
 extern crate alloc;
 pub mod projected;
+pub mod aliases;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
 

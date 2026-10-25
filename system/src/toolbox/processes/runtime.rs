@@ -597,6 +597,7 @@ impl Desktop
         {
             return Ok(());
         }
+        self.locals.try_reserve(1).map_err(|_| NO_MEMORY)?;
         let crate::toolbox::files::application::Loaded { catalog,
                                                          resources } = loaded;
         let image = crate::kernel::cache_image(call.volume, call.cnid, catalog.creator,
@@ -608,19 +609,21 @@ impl Desktop
             Ok(local) => local,
             Err(error) =>
             {
-                self.processes.remove(id)?;
+                self.retire_unstarted(id)?;
                 return Err(error);
             }
         };
         // RAM-only pin admission closes launch-vs-transfer races. No storage
         // operation or provider callback runs under this desktop guard.
+        let authority = self.processes.ledger(id)?;
         let pinned = crate::kernel::with_files(|files| {
-                         files.pin_executable(id, call.volume, call.cnid)
+                         files.pin_executable(&authority, call.volume, call.cnid)
                      }).map_err(crate::state::AccessError::status)
                        .and_then(|r| r);
         if let Err(error) = pinned
         {
-            self.processes.remove(id)?;
+            self.locals.push(local);
+            self.retire_unstarted(id)?;
             return Err(error);
         }
         let thread = match self.spawn_process(id, image, entry)
@@ -628,8 +631,10 @@ impl Desktop
             Ok(t) => t,
             Err(e) =>
             {
-                self.processes.remove(id)?;
-                let _ = crate::kernel::with_files(|files| files.close_all(id));
+                // Keep saved managers reachable for the same owner walk used
+                // by EXIT. A refused cleanup retains its domain for retry.
+                self.locals.push(local);
+                self.retire_unstarted(id)?;
                 return Err(e);
             }
         };
@@ -640,6 +645,53 @@ impl Desktop
         self.notify_finder_file_state(call.volume, call.cnid, true);
         serial!("PROCESS_LAUNCHED app={} thread={} name={}", id, thread, catalog.name());
         Ok(())
+    }
+
+    fn retire_unstarted(&mut self, owner: u64) -> Result<(), Status>
+    {
+        let ledger = self.processes.ledger(owner)?;
+        ledger.stop_admission();
+        let checkpoint = self.processes.cleanup_checkpoint(owner)?;
+        let binding = self.processes.resource_binding(owner)?;
+        match crate::kernel::with_process_resources(&binding, || {
+                  checkpoint.run(&ledger, || self.walk_owner(&ledger, false))
+              })
+        {
+            Ok(Ok(_)) => (),
+            Ok(Err(error)) =>
+            {
+                serial!("LAUNCH_CLEANUP_RETAINED: owner={owner} {error}; {checkpoint}")
+            }
+            Err(status) =>
+            {
+                serial!("LAUNCH_CLEANUP_RETAINED: owner={owner} status={status}; subject resource \
+                         context unavailable")
+            }
+        }
+        crate::toolbox::processes::retirement::resources_released();
+        Ok(())
+    }
+
+    fn walk_owner(&mut self, owner: &crate::toolbox::handles::OwnerRef, retry: bool)
+                  -> Result<mac_object_table::walk::Report, mac_object_table::walk::Stopped>
+    {
+        let resolve = |_: &Self, key: mac_object_table::domain::ResourceKey| {
+            crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
+                .and_then(|result| result.map_err(crate::toolbox::handles::KindAccessError::Registry))
+        };
+        let failed = |key: mac_object_table::domain::ResourceKey, error: &mac_object_table::walk::Failure<
+            crate::toolbox::handles::KindAccessError, crate::toolbox::handles::cleanup::Cause>| {
+            serial!("OWNER_CLEANUP_QUARANTINED: owner={} kind={} slot={} generation={} {error}",
+                key.owner(), key.kind(), key.slot(), key.generation());
+        };
+        if retry
+        {
+            mac_object_table::walk::retry(self, owner, resolve, failed)
+        }
+        else
+        {
+            mac_object_table::walk::drain(self, owner, resolve, failed)
+        }
     }
 
     pub fn process(&mut self, call: &mut ProcessCall) -> Status
@@ -691,11 +743,7 @@ impl Desktop
                 serial!("PROCESS_STOPPED app={caller} thread={}", file.thread);
                 let before_walk = ledger.summary();
                 let checkpoint = self.processes.cleanup_checkpoint(caller)?;
-                let walk = checkpoint.run(&ledger, || mac_object_table::walk::drain(self, &ledger,
-                    |_, key| crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
-                        .and_then(|result| result.map_err(crate::toolbox::handles::KindAccessError::Registry)),
-                    |key, error| serial!("OWNER_CLEANUP_QUARANTINED: owner={} kind={} slot={} generation={} {error}",
-                        key.owner(), key.kind(), key.slot(), key.generation())));
+                let walk = checkpoint.run(&ledger, || self.walk_owner(&ledger, false));
                 match walk
                 {
                     Ok(walk) =>
@@ -722,7 +770,6 @@ impl Desktop
                 self.enter(previous);
                 self.notify_finder_file_state(file.volume, file.cnid, false);
                 super::super::processes::documents::close_owner(&mut self.processes, caller);
-                let _ = crate::kernel::with_files(|files| files.close_all(caller));
                 if self.foreground == caller
                 {
                     self.activate_process(previous)?;
@@ -762,7 +809,8 @@ impl Desktop
             {
                 continue;
             };
-            if !checkpoint.settled() || ledger.summary().quarantined != 0
+            let remaining = ledger.summary();
+            if !checkpoint.settled() || remaining.quarantined != 0 || remaining.live != 0
             {
                 let binding = match self.processes.resource_binding(owner)
                 {
@@ -775,23 +823,15 @@ impl Desktop
                     }
                 };
                 let retry = crate::kernel::with_process_resources(&binding, || {
-                    checkpoint.run(&ledger, || mac_object_table::walk::retry(
-                                                  self,
-                                                  &ledger,
-                                                  |_, key| {
-                                                      crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
-                        .and_then(|result| result.map_err(crate::toolbox::handles::KindAccessError::Registry))
-                                                  },
-                                                  |key, error| {
-                                                      serial!("OWNER_CLEANUP_QUARANTINED: \
-                                                               owner={} kind={} slot={} \
-                                                               generation={} {error}",
-                                                              key.owner(),
-                                                              key.kind(),
-                                                              key.slot(),
-                                                              key.generation())
-                                                  }
-                    ))
+                    if remaining.live != 0
+                    {
+                        // A refused initial invocation may leave both live
+                        // objects and older quarantined tickets. Drain the
+                        // live part, then retry quarantine once in this same
+                        // genuine checkpoint; neither half needs input to run.
+                        checkpoint.run(&ledger, || self.walk_owner(&ledger, false))?;
+                    }
+                    checkpoint.run(&ledger, || self.walk_owner(&ledger, true))
                 });
                 match retry
                 {
@@ -1032,6 +1072,25 @@ impl crate::toolbox::files::transfer_lifetime::TransferHost for Desktop
                   crate::toolbox::files::transfer_lifetime::TransferHost::release_file_transfer(files,
                                                                                          ticket,
                                                                                          storage)
+              })
+        {
+            Ok(result) => result,
+            Err((error, ticket)) =>
+            {
+                Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(ticket, error))
+            }
+        }
+    }
+}
+
+impl crate::toolbox::files::pins::PinHost for Desktop
+{
+    fn release_file_pin(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                        kind: crate::toolbox::files::pins::Registration)
+                        -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        match crate::kernel::with_files_owned(ticket, |ticket, files| {
+                  crate::toolbox::files::pins::PinHost::release_file_pin(files, ticket, kind)
               })
         {
             Ok(result) => result,

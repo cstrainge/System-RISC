@@ -729,7 +729,7 @@ impl State
                     .iter()
                     .any(|(_, file)| protected.binary_search(&(file.volume, file.id)).is_ok())
                    || m.executables
-                       .iter()
+                       .objects()
                        .any(|pin| protected.binary_search(&(pin.volume, pin.id)).is_ok())
                    || m.document_pins
                        .iter()

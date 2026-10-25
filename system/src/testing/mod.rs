@@ -65,6 +65,10 @@ impl Default for Session
         let registrar = crate::toolbox::handles::OwnerRef::try_new(
             mac_object_table::domain::OwnerIndex::issue(mac_object_table::domain::DomainKind::Module).unwrap()).unwrap();
         let mut registry = crate::toolbox::handles::Registry::<Session>::new();
+        for kind in crate::toolbox::files::pins::Registration::ALL
+        {
+            registry.register(&registrar, kind.specification(), kind).unwrap();
+        }
         let controls = registry.register(&registrar,
                                          crate::toolbox::controls::objects::specification(),
                                          crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseControls))
@@ -1138,5 +1142,15 @@ impl crate::toolbox::files::groups::lifetime::GroupHost for Session
     {
         crate::toolbox::files::groups::lifetime::GroupHost::release_file_group(&mut self.files,
                                                                                ticket, storage)
+    }
+}
+
+impl crate::toolbox::files::pins::PinHost for Session
+{
+    fn release_file_pin(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                        kind: crate::toolbox::files::pins::Registration)
+                        -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        crate::toolbox::files::pins::PinHost::release_file_pin(&mut self.files, ticket, kind)
     }
 }

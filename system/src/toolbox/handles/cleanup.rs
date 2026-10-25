@@ -7,6 +7,7 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 pub(crate) enum Cause
 {
     Facility(PoolError),
+    Alias(mac_object_table::aliases::ReleaseCause),
     FileRetirementStorage
     {
         owner:    mac_object_table::domain::DomainId,
@@ -37,6 +38,7 @@ impl core::fmt::Display for Cause
         match self
         {
             Self::Facility(error) => error.fmt(f),
+            Self::Alias(error) => error.fmt(f),
             Self::FileRetirementStorage { owner,
                                           kind,
                                           pending,
@@ -144,6 +146,15 @@ impl From<CompletionError> for Failure
     {
         Self { cause:  Cause::Facility(error.cause()),
                ticket: error.into_ticket() }
+    }
+}
+impl From<mac_object_table::aliases::ReleaseError> for Failure
+{
+    fn from(error: mac_object_table::aliases::ReleaseError) -> Self
+    {
+        let (ticket, cause) = error.into_parts();
+        Self { ticket,
+               cause: Cause::Alias(cause) }
     }
 }
 impl CleanupFailure for Failure

@@ -7,6 +7,7 @@ pub(crate) mod application;
 use alloc::{string::String, vec::Vec};
 
 mod objects;
+pub(crate) mod pins;
 pub(crate) mod forks;
 mod scan;
 mod properties;
@@ -303,17 +304,11 @@ impl FileFork
         matches!(self, Self::Provider(fork) if fork.orphaned())
     }
 }
-struct ExecutablePin
-{
-    owner:  u64,
-    volume: u32,
-    id:     u32
-}
 pub struct Manager
 {
     #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
     file_icons:           icon_cache::Cache,
-    executables:          Vec<ExecutablePin>,
+    executables:          pins::Pins,
     document_pins:        Vec<(u32, u32, u32)>,
     volumes:              Table<Mounted>,
     handles:              objects::Objects<OpenFile>,
@@ -330,7 +325,8 @@ impl Default for Manager
     fn default() -> Self
     {
         Self { document_pins:                                                             Vec::new(),
-               executables:                                                               Vec::new(),
+               executables:
+                   pins::Pins::new(),
                volumes:
                    Table::new(Kind::Volumes),
                handles:
@@ -531,7 +527,7 @@ impl Manager
 
     fn file_pinned(&self, volume: u32, id: u32) -> bool
     {
-        self.executables.iter().any(|pin| pin.volume == volume && pin.id == id)
+        self.executables.objects().any(|pin| pin.volume == volume && pin.id == id)
         || self.document_pins.iter().any(|(_, mount, file)| *mount == volume && *file == id)
     }
 
@@ -548,11 +544,12 @@ impl Manager
         Ok(())
     }
 
-    /// Process IDs come from the shared process table. This is a reverse
-    /// reference, not a second identity scheme or an open-fork handle.
-    pub(crate) fn pin_executable(&mut self, owner: u64, volume: u32, id: u32)
+    /// The caller supplies its directory-minted ledger before storage entry.
+    pub(crate) fn pin_executable(&mut self, authority: &crate::toolbox::handles::OwnerRef,
+                                 volume: u32, id: u32)
                                  -> Result<(), Status>
     {
+        let owner = authority.owner().incarnation();
         self.validate_transfer_read(owner, volume, id)?;
         if self.writes.iter().any(|(_, write)| write.volume == volume && write.expected_cnid == id)
            || self.streams
@@ -561,15 +558,10 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        if self.executables.iter().any(|pin| pin.owner == owner)
-        {
-            return Err(BAD_ABI);
-        }
-        self.executables.try_reserve(1).map_err(|_| NO_MEMORY)?;
-        self.executables.push(ExecutablePin { owner,
-                                              volume,
-                                              id });
-        Ok(())
+        #[cfg(target_arch = "riscv64")]
+        self.prepare_executable_pins(crate::toolbox::handles::system_owner()?,
+                                     crate::toolbox::handles::file_pin_kinds()?)?;
+        self.executables.insert(authority, volume, id)
     }
 
     /// Discover all valid classic HFS partitions on each firmware device.
@@ -950,7 +942,7 @@ impl Manager
                                      .filter(|(_, volume, _)| *volume == call.volume)
                                      .map(|(_, _, id)| *id));
                 protected.extend(self.executables
-                                     .iter()
+                                     .objects()
                                      .filter(|pin| pin.volume == call.volume)
                                      .map(|pin| pin.id));
             }
@@ -1164,14 +1156,6 @@ impl Manager
                    -> Result<(), Status>
     {
         self.request_owned(0, call, name, output)
-    }
-
-    /// Transitional cleanup for file kinds still awaiting ledger migration.
-    /// Open forks and watches are exclusively released by their registered walk.
-    pub fn close_all(&mut self, owner: u64) -> usize
-    {
-        self.executables.retain(|pin| pin.owner != owner);
-        0
     }
 
     /// `owner` is trusted execution context captured before any I/O handoff. It

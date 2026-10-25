@@ -92,8 +92,9 @@ captures that identity before switching to the storage thread and passes it to
 `dispatch_owned` / `request_owned`; `FileCall` cannot choose an owner. Reading,
 seeking, inspecting or closing another application's live handle returns
 `ACCESS_DENIED` and preserves the owner's mark and destination buffer. Closing
-an application invokes `close_all(owner)`, which releases its block marks and
-schedules acknowledged provider cleanup without resetting slot generations.
+an application uses the registered owner walk for open forks, watches, staged
+writes, icon groups, transfers and executable aliases. Provider cleanup remains
+pinned until its actual acknowledgement; invalidation never resets generations.
 A relaunched application therefore cannot reuse a
 stale handle. Owner zero is the separate trusted loader/bootstrap namespace used
 by internal `request` calls, rather than an application bypass.
@@ -246,3 +247,11 @@ existing-database writes. Failed rollback poisons the mounted volume. Comments
 also participate in the shared three-boot real guest persistence case. No
 Desktop DF support, old FCMT fallback, complete Desktop Manager API or power-loss
 journal is claimed.
+
+
+Executable pins are per-process FPIN/FPST aliases of System-owned FPOB/FPOS
+catalog targets, using `mac-object-table::aliases`. They protect mutations and
+unmounts through invalidation/quarantine; only the actual last-alias cleanup
+releases the target. Document delivery's separate pin list is still staged
+migration work. Neither cleanup nor target sharing depends on a numeric owner
+selected in an application request.

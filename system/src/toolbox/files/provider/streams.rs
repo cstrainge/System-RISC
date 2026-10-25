@@ -25,7 +25,7 @@ impl Manager
         self.validate_transfer_mutation(owner, call.volume)?;
         if call.expected_cnid != 0
            && self.executables
-                  .iter()
+                  .objects()
                   .any(|pin| pin.volume == call.volume && pin.id == call.expected_cnid)
         {
             return Err(SERVICE_BUSY);

@@ -73,16 +73,9 @@ pub fn close_owner(owner: u64) -> usize
                                        })
                                        .map(|pool| pool.live)
                                        .sum::<usize>();
-    let other = super::SESSION.with(|session| {
-                                  session.borrow_mut()
-                                         .as_mut()
-                                         .expect("live file service session")
-                                         .files
-                                         .close_all(owner)
-                              });
     let walked = super::inspection::walk_registered(ledger.owner().incarnation(), false, false);
     assert!(walked.failures.is_empty(), "{}", walked.failures.join("; "));
-    fork_count + other
+    fork_count
 }
 
 /// One real bounded native rollback step, in place of the guest scheduler's
@@ -96,4 +89,26 @@ pub fn pump_stream_cleanup()
                              .files
                              .pump_stream_cleanup();
                   });
+}
+
+/// Supply launch's trusted ledger binding to the real executable-pin service.
+/// No public trap admits a caller-chosen process owner or target alias ID.
+pub fn pin_executable(volume: u32, file: u32) -> Result<(), mac_abi::Status>
+{
+    use crate::toolbox::handles::{KindCode, OwnerRef};
+    static SYSTEM: std::sync::OnceLock<OwnerRef> = std::sync::OnceLock::new();
+    let system = SYSTEM.get_or_init(|| OwnerRef::try_new(
+        mac_object_table::domain::OwnerIndex::issue(mac_object_table::domain::DomainKind::System).unwrap()).unwrap());
+    let owner = super::inspection::caller_ledger(current_owner())?;
+    super::SESSION.with(|slot| {
+                      let mut slot = slot.borrow_mut();
+                      let session = slot.as_mut().unwrap();
+                      let kinds = [*b"FPIN", *b"FPST", *b"FPOB", *b"FPOS"].map(|code| {
+                                                                              session.registry
+                                                                             .get(KindCode(code))
+                                                                             .unwrap()
+                                                                          });
+                      session.files.prepare_executable_pins(system.clone(), kinds)?;
+                      session.files.pin_executable(&owner, volume, file)
+                  })
 }

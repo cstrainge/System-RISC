@@ -20,6 +20,7 @@ as the §13.2 services migrate; it is deliberately not an unused System dependen
 | Page layer | `…/pages.rs` | Platform geometry, typed addresses, permissions/ownership, borrowed boot reservations, largest-leaf mapping plan, reserved `PageBox`/address-space root |
 | Domains/accounts | `…/policy.rs`, `mac-object-table/src/domain.rs` | Boot-monotonic incarnation, account/reserve records, checked registry construction; no live allocator charges yet |
 | Facility v2 | `mac-object-table/src/domain.rs` | Owner-index-authorized per-kind bitmap pools, generations, rotation, retirement, capacity policy, release tickets and registration shapes; managed controls use owner-backed value storage |
+| Shared aliases | `mac-object-table/src/aliases.rs` | System-owned targets and per-process registered aliases, validated sharing, last-alias release and retained target cleanup; executable pins are the first resident consumer |
 | Process/thread | `…/process.rs` | Address-space, image/memory/legacy capabilities, dynamic threads, saved manager slots, backend frame, vector marker and discovered save-area layout |
 | Control zone | `…/zone.rs` | Same-owner instance/zone binding, configured zone header, host-forwarding allocator contract; no allocator installed |
 | Uniform layout | `…/policy.rs` | One checked range record emits named linker symbols; no unapproved addresses or duplicate linker constants |
@@ -1158,9 +1159,8 @@ ID. Transfer error handling checks retained group state rather than treating an
 invalid public ID as a rollback acknowledgement. Unknown provider operations
 are rejected before admission or setting the running flag.
 
-The icon-group EXIT loop is removed. The remaining transitional File helper
-handles executable pins and transfer cancellation; these are still explicit
-migration work. Canonical public SDK tests cover foreign/stale/reused IDs,
+The icon-group and transfer EXIT loops are removed. Executable pins now use
+registered shared aliases; document delivery remains staged migration work. Canonical public SDK tests cover foreign/stale/reused IDs,
 no-change abandonment, real guard Drop, owner-walk refusal/retry and a fresh
 group committing after cleanup. Native process workers deliberately leave an
 actual group and its backing among their 35 registered resources. Complete
@@ -1202,3 +1202,54 @@ an explicit scratch loan, validated against the selected reserved range before
 heap use; a stale header or mismatched/unreserved loan is rejected with rebuild
 instructions. The development ABI remains version 1. This remains a direct identity-mapped device
 boundary until the page layer supplies its supervisor mapping.
+
+
+## Executable aliases and launch-failure cleanup
+
+`mac-object-table::aliases` owns both sides of a shared reference: a wide native
+System target and a separately registered process alias. Both namespaces and
+backing stores are registry capabilities, with configurable capacity policy.
+Targets are immutable; resolution checks the complete alias owner/generation and
+the target generation on each use. A resolved borrow cannot outlive that
+validation without keeping the store borrowed. Sharing requires genuine source
+and recipient ledgers and publishes a distinct recipient alias. Refused sharing
+leaves the source and reference count unchanged. A caller cannot construct a
+target key, reassign an existing alias's owner or supply cleanup authority by ID.
+
+The File Manager's executable pins are this facility's first resident consumer:
+FPIN/FPST belong to the process, FPOB/FPOS to System. Equal catalog references
+share a target. Removing the last alias drops that target; invalidating an alias
+alone does not. Mutation and unmount protection enumerate retained System targets,
+including those whose aliases await a refused cleanup dispatcher. If System
+invalidates a target first, further ordinary resolution fails and target cleanup
+retains its unique ticket until every alias is released. Store destruction also
+retains targets referenced by a pending dispatcher instead of pretending that
+abandonment acknowledged cleanup. No payload destructor runs under a ledger lock.
+
+Executable teardown no longer needs a File Manager EXIT hook. Pre-thread launch
+failures stop admission and use the same owner walk as EXIT, keeping saved manager
+state reachable until its barrier closes. The cleanup resource binding is minted
+from the subject's directory entry; cleanup never borrows the launcher's image as
+its subject. A failure before the walk can enter leaves live resources for the
+ordinary retirement checkpoint to drain. No per-input retries or new fixed
+capacity are introduced.
+
+Document batches/pins, immutable image ownership, volume/device/module aliases,
+M-D12 child-I/O attribution and the full owner-walk/launch/recovery gate remain
+open. Ledger lifetimes are not byte accounting: attribution, quotas against
+committed pages and actual heap/page reclamation still need the later allocator
+and paging stages. This slice does not enable the approved heap defaults, MMU,
+process isolation, multihart scheduling or userspace std.
+
+Qualification: 68 shared-facility cases (including compile-fail), 154 System
+cases and 27 scoped public-SDK cases pass, with one separate System gate. The
+alias test forces a one-slot reuse, rejects stale/foreign IDs, refuses stopped
+or over-quota recipients without extra targets, and retains a target's unique
+ticket when System invalidates before its aliases. Canonical HFS-B acceptance
+keeps mutation protection across independent owner exits and a quarantined
+last-alias dispatcher, then permits deletion after the actual retry. Six native
+checks pass: both 37-resource process campaigns, full provider workflow,
+aggregate Toolbox, bounded Finder selection/drag and original-sprite cursors.
+Native/classic ABI smoke, boundaries, formatting and 52-library API generation
+pass; tested packaged image hashes remain unchanged through ABI packaging.
+These checks do not yet exercise injected failure of native thread creation.
