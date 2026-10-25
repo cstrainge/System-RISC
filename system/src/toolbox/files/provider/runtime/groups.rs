@@ -14,7 +14,7 @@ pub(super) struct State
 }
 fn retire(handle: u32) -> Result<(), Status>
 {
-    files(|m| m.groups.remove(handle).map(|_| ()).ok_or(NOT_FOUND))
+    files(|m| m.retire_group(handle))
 }
 fn quarantine(handle: u32)
 {
@@ -36,9 +36,10 @@ fn failed(mut flight: Flight, mut state: State, error: Status) -> Progress
         state.error = error;
     }
     if files(|m| {
-           let group = m.groups.get_mut(state.handle).ok_or(NOT_FOUND)?;
-           group.running = true;
-           group.abandoned |= flight.abandoned;
+           let group = m.groups.completing(state.handle).ok_or(NOT_FOUND)?;
+           let mut progress = group.state.lock();
+           progress.running = true;
+           progress.abandoned |= flight.abandoned;
            Ok(())
        }).is_err()
     {
@@ -109,11 +110,11 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
         m.ready_group(state.handle, progress)?;
         if progress.terminal()
         {
-            m.groups.remove(state.handle).ok_or(NOT_FOUND)?;
+            m.retire_group(state.handle)?;
         }
         else if state.draining || flight.abandoned
         {
-            m.groups.get_mut(state.handle).ok_or(NOT_FOUND)?.running = true;
+            m.groups.completing(state.handle).ok_or(NOT_FOUND)?.state.lock().running = true;
         }
         Ok(())
     })
@@ -196,6 +197,22 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &IconGroupCall, row
                     -> Result<Flight, Status>
 {
     (|| {
+        // Reject unknown wire operations before admitting or marking a group.
+        let operation = match call.operation
+        {
+            BEGIN_ICON_GROUP => Operation::BeginIconMoves,
+            STEP_ICON_GROUP => Operation::StepIconMoves,
+            CANCEL_ICON_GROUP => Operation::AbortIconMoves,
+            _ => return Err(BAD_ARGUMENT)
+        };
+        let authority = if call.operation == BEGIN_ICON_GROUP
+        {
+            Some(super::super::super::creation_authority(owner)?)
+        }
+        else
+        {
+            None
+        };
         // All request allocations precede admission, let alone publication.
         let mut payload = Vec::new();
         if call.operation == BEGIN_ICON_GROUP
@@ -220,7 +237,10 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &IconGroupCall, row
             let handle = if call.operation == BEGIN_ICON_GROUP
             {
                 let mut initial = *call;
-                m.reserve_group(owner, &mut initial, rows)?;
+                m.reserve_group_for(owner,
+                                    authority.as_ref().ok_or(ACCESS_DENIED)?,
+                                    &mut initial,
+                                    rows)?;
                 initial.handle
             }
             else
@@ -232,24 +252,18 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &IconGroupCall, row
             {
                 return Err(ACCESS_DENIED);
             }
-            if group.quarantined
+            let mut progress = group.state.lock();
+            if progress.quarantined
             {
                 return Err(ROLLBACK_FAILED);
             }
-            if group.running
+            if progress.running
             {
                 return Err(SERVICE_BUSY);
             }
-            group.running = true;
+            progress.running = true;
             Ok((group.provider.ok_or(BAD_ABI)?, handle, group.volume, group.when))
         })?;
-        let operation = match call.operation
-        {
-            BEGIN_ICON_GROUP => Operation::BeginIconMoves,
-            STEP_ICON_GROUP => Operation::StepIconMoves,
-            CANCEL_ICON_GROUP => Operation::AbortIconMoves,
-            _ => return Err(BAD_ARGUMENT)
-        };
         let submitted = submit_args(provider,
                                     operation,
                                     Arguments { volume,
@@ -276,7 +290,7 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &IconGroupCall, row
                 else
                 {
                     let _ = files(|m| {
-                        m.groups.get_mut(handle).ok_or(NOT_FOUND)?.running = false;
+                        m.groups.completing(handle).ok_or(NOT_FOUND)?.state.lock().running = false;
                         Ok(())
                     });
                 }
@@ -318,27 +332,41 @@ pub(super) fn pump_cleanup()
         }
     }
     let prepared = files(|m| {
-        let mark = m.groups.iter().find(|(_, group)| {
-                                      group.abandoned
-                                      && !group.running
-                                      && !group.quarantined
-                                      && group.provider.is_some()
-                                  });
-        let Some((handle, group)) = mark
-        else
+        for (handle, group) in m.groups.iter()
         {
-            return Ok(None);
-        };
-        let values = (handle, group.volume, group.provider.unwrap(), group.owner);
-        m.groups.get_mut(handle).ok_or(NOT_FOUND)?.running = true;
-        Ok(Some(values))
+            let mut state = group.state.lock();
+            if !state.abandoned || state.running || state.quarantined || state.closed
+            {
+                continue;
+            }
+            let Some(provider) = group.provider
+            else
+            {
+                continue;
+            };
+            state.running = true;
+            return Ok(Some((handle, group.volume, provider, group.owner)));
+        }
+        Ok(None)
     });
     let (handle, volume, provider, owner) = match prepared
     {
         Ok(Some(values)) => values,
         Ok(None) =>
         {
-            super::super::super::groups::idle_cleanup();
+            let pending = files(|m| {
+                Ok(m.groups.iter().any(|(_, group)| {
+                                      let state = group.state.lock();
+                                      state.abandoned
+                                      && !state.closed
+                                      && !state.quarantined
+                                      && group.provider.is_some()
+                                  }))
+            });
+            if pending == Ok(false)
+            {
+                super::super::super::groups::idle_cleanup();
+            }
             return;
         }
         Err(_) => return

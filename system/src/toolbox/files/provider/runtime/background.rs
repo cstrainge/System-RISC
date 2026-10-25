@@ -405,7 +405,14 @@ pub(super) fn group(owner: u64, call: &mut IconGroupCall, rows: &[IconMove]) -> 
             key.when = call.when;
             pending(groups::begin(owner, 0, key, call, rows))
         }
-        Ok(None) => Progress::Done(files(|m| m.group_request(owner, call, rows)).and_then(|()| {
+        Ok(None) => Progress::Done((|| {
+            let authority=if call.operation==BEGIN_ICON_GROUP {
+                Some(super::super::super::creation_authority(owner)?)
+            } else { None };
+            files(|m| if let Some(authority)=&authority {
+                m.group_request_for(owner,authority,call,rows)
+            } else { m.group_request(owner,call,rows) })
+        })().and_then(|()| {
             let progress = fs::IconMoveProgress::from_words([call.phase, call.completed, call.count,
                 call.changed]).map_err(|_| BAD_ABI)?;
             Ok(Reply::Group {handle:call.handle, progress})

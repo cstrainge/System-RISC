@@ -15,7 +15,7 @@ mod cache;
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
 mod icon_cache;
 pub(crate) mod streams;
-mod groups;
+pub(crate) mod groups;
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
 mod stream_native;
 mod provider;
@@ -317,7 +317,7 @@ pub struct Manager
     handles:              objects::Objects<OpenFile>,
     writes:               objects::Objects<write::Pending>,
     streams:              objects::Objects<streams::Stream>,
-    groups:               Table<groups::Group>,
+    groups:               objects::Objects<groups::Group>,
     #[cfg(target_arch = "riscv64")]
     transfers:            Table<provider::runtime::transfer::Entry>,
     watches:              watch::Watches,
@@ -338,7 +338,7 @@ impl Default for Manager
                streams:
                    objects::Objects::new(),
                groups:
-                   Table::new(Kind::FileGroups),
+                   objects::Objects::new(),
                #[cfg(target_arch = "riscv64")]
                transfers:
                    Table::new(Kind::FileTransfers),
@@ -374,6 +374,14 @@ impl Manager
                                   -> Result<(), Status>
     {
         self.streams.prepare(kinds)
+    }
+
+    pub(crate) fn prepare_groups(&mut self,
+                                 kinds: (crate::toolbox::handles::KindLease,
+                                  crate::toolbox::handles::KindLease))
+                                 -> Result<(), Status>
+    {
+        self.groups.prepare(kinds)
     }
 
     /// Power triggers run in the same non-preemptible service invocation as
@@ -1163,33 +1171,7 @@ impl Manager
         self.executables.retain(|pin| pin.owner != owner);
         #[cfg(target_arch = "riscv64")]
         provider::runtime::transfer::abandon(self, owner);
-        let mut count = 0;
-        for group in self.groups.values_mut().filter(|group| group.owner == owner)
-        {
-            group.abandoned = true;
-            if group.provider.is_some()
-            {
-                groups::request_cleanup();
-            }
-        }
-        loop
-        {
-            let id = self.groups.iter().find_map(|(id, group)| {
-                                           (group.owner == owner
-                                            && group.provider.is_none()
-                                            && !group.quarantined)
-                                                                  .then_some(id)
-                                       });
-            let Some(id) = id
-            else
-            {
-                break;
-            };
-            // Native groups have no side effects until their atomic step.
-            self.groups.remove(id);
-            count += 1;
-        }
-        count
+        0
     }
 
     /// `owner` is trusted execution context captured before any I/O handoff. It

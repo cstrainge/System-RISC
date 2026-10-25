@@ -68,7 +68,8 @@ pub fn close_owner(owner: u64) -> usize
                                        .filter(|pool| {
                                            [mac_object_table::domain::KindCode(*b"FFRK"),
                                mac_object_table::domain::KindCode(*b"FDWR"),
-                               mac_object_table::domain::KindCode(*b"FSWR")].contains(&pool.kind)
+                               mac_object_table::domain::KindCode(*b"FSWR"),
+                               crate::toolbox::handles::KindCode(*b"FIGR")].contains(&pool.kind)
                                        })
                                        .map(|pool| pool.live)
                                        .sum::<usize>();

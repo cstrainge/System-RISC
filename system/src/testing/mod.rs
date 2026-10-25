@@ -149,6 +149,14 @@ impl Default for Session
                           crate::toolbox::files::streams::lifetime::specification(true),
                           crate::toolbox::files::streams::lifetime::ReleaseStorage)
                 .unwrap();
+        registry.register(&registrar,
+                          crate::toolbox::files::groups::lifetime::specification(false),
+                          crate::toolbox::files::groups::lifetime::ReleaseGroups)
+                .unwrap();
+        registry.register(&registrar,
+                          crate::toolbox::files::groups::lifetime::specification(true),
+                          crate::toolbox::files::groups::lifetime::ReleaseStorage)
+                .unwrap();
         use crate::toolbox::drag::lifetime::{Registration, ReleaseKind};
         for kind in [Registration::Sessions,
                      Registration::SessionStorage,
@@ -431,7 +439,13 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                     Err(status) => return status as i64
                 }
             } else { false };
-            let authority = if watch_operation.is_some() || write_admission || stream_admission {
+            let group_admission = if size==size_of::<mac_abi::files::IconGroupCall>() {
+                match unsafe {request::<mac_abi::files::IconGroupCall>(pointer,size)} {
+                    Ok(call)=>call.operation==mac_abi::files::BEGIN_ICON_GROUP,
+                    Err(status)=>return status as i64
+                }
+            } else {false};
+            let authority = if watch_operation.is_some() || write_admission || stream_admission || group_admission {
                 match inspection::caller_ledger(files::current_owner()) {
                     Ok(owner) => Some(owner), Err(status) => return status as i64
                 }
@@ -453,6 +467,11 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                            if let Err(status)=session.files.prepare_streams((
                                session.registry.get(crate::toolbox::handles::KindCode(*b"FSWR")).unwrap(),
                                session.registry.get(crate::toolbox::handles::KindCode(*b"FSST")).unwrap())) { return status as i64; }
+                       }
+                       if group_admission {
+                           if let Err(status)=session.files.prepare_groups((
+                               session.registry.get(crate::toolbox::handles::KindCode(*b"FIGR")).unwrap(),
+                               session.registry.get(crate::toolbox::handles::KindCode(*b"FIGS")).unwrap())) {return status as i64;}
                        }
                        let watch = authority.map(|owner| crate::toolbox::files::Caller {
                            owner,
@@ -1106,5 +1125,16 @@ impl crate::toolbox::files::streams::lifetime::StreamHost for Session
     {
         crate::toolbox::files::streams::lifetime::StreamHost::release_file_stream(&mut self.files,
                                                                                   ticket, storage)
+    }
+}
+
+impl crate::toolbox::files::groups::lifetime::GroupHost for Session
+{
+    fn release_file_group(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                          storage: bool)
+                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        crate::toolbox::files::groups::lifetime::GroupHost::release_file_group(&mut self.files,
+                                                                               ticket, storage)
     }
 }

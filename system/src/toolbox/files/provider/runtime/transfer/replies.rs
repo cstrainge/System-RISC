@@ -119,8 +119,9 @@ impl State
                 {
                     if let Some(group) = &self.group
                     {
-                        if group.handle != 0
-                           && files(|m| Ok(m.groups.get(group.handle).is_none())).unwrap_or(false)
+                        if group.handle != 0 && files(|m| {
+                                                    Ok(m.groups.completing(group.handle).is_none())
+                                                }).unwrap_or(false)
                         {
                             self.group = None;
                         }

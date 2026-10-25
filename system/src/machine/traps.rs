@@ -415,6 +415,8 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                       && read_request!(files::DataWriteCall).operation == files::BEGIN_DATA_WRITE
                       || size == size_of::<files::ForkWriteCall>()
                          && read_request!(files::ForkWriteCall).operation == files::BEGIN_FORK_WRITE
+                      || size == size_of::<files::IconGroupCall>()
+                         && read_request!(files::IconGroupCall).operation == files::BEGIN_ICON_GROUP
             {
                 let authority = match crate::context::current_owner()
                 {

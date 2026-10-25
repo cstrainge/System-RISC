@@ -801,6 +801,11 @@ pub fn worker(system: &System<'_>) -> Result<()>
             let leaked_fork = system.files().open(process_file.volume,
                                                    process_file.cnid,
                                                    mac_toolbox::files::Fork::Resource)?;
+            let file_entry = system.files().catalog(process_file.volume, process_file.cnid)?;
+            let leaked_group=system.files().begin_icon_moves(process_file.volume,&[
+                mac_toolbox::files::IconMove { id:process_file.cnid, expected_parent:file_entry.parent,
+                    parent:file_entry.parent,placement:mac_toolbox::files::Placement::Keep,to_trash:false }
+            ])?;
             let mut leaked_writer=system.files().create_data(mac_toolbox::files::DataFileSpec {
                 volume:watch_volume,parent:Cnid::ROOT,name:"Worker unpublished draft",replacing:None,
                 file_type:mac_toolbox::TypeCode::new(*b"TEXT"),creator:mac_toolbox::TypeCode::new(*b"TEST")
@@ -837,7 +842,9 @@ pub fn worker(system: &System<'_>) -> Result<()>
                             (*b"FFRK", 1),
                             (*b"FFST", 1),
                             (*b"FDWR", 1),
-                            (*b"FDST", 1)];
+                            (*b"FDST", 1),
+                            (*b"FIGR", 1),
+                            (*b"FIGS", 1)];
             require(ledger.len() == expected.len() as u64,
                     "worker exit pool census missing a registered kind")?;
             for index in 0..ledger.len()
@@ -872,6 +879,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
             core::mem::forget(leaked_watch);
             core::mem::forget(leaked_fork);
             core::mem::forget(leaked_writer);
+            core::mem::forget(leaked_group);
             core::mem::forget(leaked_editor);
             core::mem::forget(leaked_alert);
             core::mem::forget(leaked_menu);

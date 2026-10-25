@@ -833,6 +833,74 @@ mod tests
     }
 
     #[test]
+    fn icon_group_reply_after_invalidation_retains_real_acknowledgement_and_parent_notices()
+    {
+        for terminal_first in [false, true]
+        {
+            let mut manager = Manager::default();
+            let volume = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
+            manager.publish_provider_mount(volume, &descriptor()).unwrap();
+            let authority = manager.fixture_group_owner(7);
+            let mut call = IconGroupCall { operation: BEGIN_ICON_GROUP,
+                                           volume,
+                                           ..Default::default() };
+            manager.reserve_group_for(7, &authority, &mut call, &[]).unwrap();
+            let handle = call.handle;
+            manager.groups.get(handle).unwrap().state.lock().running = true;
+            let (walk, failures) = manager.fixture_walk_files(7, true, false);
+            assert_eq!(walk.quarantined, 2);
+            assert!(failures.iter().all(|s| s.contains("FIGR") || s.contains("FIGS")),
+                    "{failures:?}");
+            assert_eq!(manager.group_provider(7, handle), Err(NOT_FOUND));
+            assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+            assert_eq!(manager.prepare_power(), Err(SERVICE_BUSY));
+            let phase = if terminal_first
+            {
+                fs::IconMovePhase::Aborted
+            }
+            else
+            {
+                fs::IconMovePhase::Applying
+            };
+            manager.ready_group(handle,
+                                fs::IconMoveProgress { phase,
+                                                       completed: 0,
+                                                       total: 0,
+                                                       changed: false })
+                   .unwrap();
+            if terminal_first
+            {
+                manager.retire_group(handle).unwrap();
+            }
+            let (_, failures) = manager.fixture_walk_files(7, false, true);
+            assert!(failures.is_empty(), "{failures:?}");
+            if terminal_first
+            {
+                assert!(manager.groups.iter().next().is_none(),
+                        "terminal ACK must not repeat AbortIconMoves");
+            }
+            else
+            {
+                let state = manager.groups.completing(handle).unwrap().state.lock();
+                assert!(state.abandoned);
+                assert!(!state.running);
+                drop(state);
+                assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+                manager.ready_group(handle,
+                                    fs::IconMoveProgress { phase:     fs::IconMovePhase::Aborted,
+                                                           completed: 0,
+                                                           total:     0,
+                                                           changed:   false })
+                       .unwrap();
+                manager.retire_group(handle).unwrap();
+            }
+            assert_eq!(authority.summary().pending, 0);
+            assert_eq!(manager.group_provider(7, handle), Err(NOT_FOUND));
+            manager.begin_provider_unmount(volume).unwrap();
+        }
+    }
+
+    #[test]
     fn mount_publication_is_validated_and_ack_retirement_preserves_generations()
     {
         let mut manager = Manager::default();

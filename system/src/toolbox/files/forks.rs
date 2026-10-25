@@ -81,7 +81,8 @@ impl Manager
                                       .filter(|pool| {
                                           [crate::toolbox::handles::KindCode(*b"FFRK"),
                                    crate::toolbox::handles::KindCode(*b"FDWR"),
-                                   crate::toolbox::handles::KindCode(*b"FSWR")].contains(&pool.kind)
+                                   crate::toolbox::handles::KindCode(*b"FSWR"),
+                                   crate::toolbox::handles::KindCode(*b"FIGR")].contains(&pool.kind)
                                       })
                                       .map(|pool| pool.live)
                                       .sum();

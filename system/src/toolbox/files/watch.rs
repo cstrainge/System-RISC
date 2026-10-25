@@ -419,7 +419,7 @@ impl Manager
     pub(super) fn notify_group_at(&mut self, volume: u32, group: u32, revision: u64)
     {
         let held = self.transfer_holds_notices(volume);
-        let Some(mark) = self.groups.get(group)
+        let Some(mark) = self.groups.completing(group)
         else
         {
             return;

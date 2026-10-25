@@ -1138,3 +1138,30 @@ owner-walk refusal/retry and another writer continuing independently. Provider
 unit checks also cover a late reply before cleanup dispatch. This does not yet
 complete icon-group, transfer, mount or module lifetime migration; the M-D12
 coordinator exception still applies until registered transfers replace it.
+
+## Icon-move groups use the registered file-object walk
+
+FIGR and FIGS register icon-move payloads and per-owner backing. Admission
+captures the actual owner before firmware I/O; native and provider paths use
+the same checked projection and authority. The explicit Drop/ABANDON path
+invalidates first. Native groups have no filesystem side effects before their
+atomic step and can release unapplied rows immediately. Provider groups retain
+rows, affected parents, tokens and charges until a validated terminal apply/undo
+reply. Native rollback failures still retain quarantine state; this does not
+claim that a poisoned volume has been repaired.
+
+Private progress is synchronized and late callbacks use pre-invalidation
+completion authority. A terminal acknowledgement records Closed before the
+retained guard is dropped, including when cleanup dispatch was refused first.
+Notifications can inspect the retained parent set without reviving the ordinary
+ID. Transfer error handling checks retained group state rather than treating an
+invalid public ID as a rollback acknowledgement. Unknown provider operations
+are rejected before admission or setting the running flag.
+
+The icon-group EXIT loop is removed. The remaining transitional File helper
+handles executable pins and transfer cancellation; these are still explicit
+migration work. Canonical public SDK tests cover foreign/stale/reused IDs,
+no-change abandonment, real guard Drop, owner-walk refusal/retry and a fresh
+group committing after cleanup. Native process workers deliberately leave an
+actual group and its backing among their 35 registered resources. Complete
+transfer/alias and I/O quiescence gates remain open, including M-D12.

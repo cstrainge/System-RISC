@@ -39,7 +39,17 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
                     Ok(None) =>
                     {
                         crate::kernel::with_files(|manager| {
-                            manager.group_request(owner, call, rows)
+                            if call.operation == files::BEGIN_ICON_GROUP
+                            {
+                                manager.group_request_for(owner,
+                                                          &caller.ok_or(ACCESS_DENIED)?.owner,
+                                                          call,
+                                                          rows)
+                            }
+                            else
+                            {
+                                manager.group_request(owner, call, rows)
+                            }
                         }).map_err(crate::state::AccessError::status)
                           .and_then(|result| result)
                           .err()
@@ -521,7 +531,18 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
     {
         return unsafe {
             checked_icon_group(pointer, size, |call, rows| {
-                manager.group_request(owner, call, rows).err().unwrap_or(OK) as i64
+                let result = if call.operation == files::BEGIN_ICON_GROUP
+                {
+                    watch.ok_or(ACCESS_DENIED)
+                         .and_then(|caller| {
+                             manager.group_request_for(owner, &caller.owner, call, rows)
+                         })
+                }
+                else
+                {
+                    manager.group_request(owner, call, rows)
+                };
+                result.err().unwrap_or(OK) as i64
             })
         };
     }
