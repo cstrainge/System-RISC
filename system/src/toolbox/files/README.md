@@ -249,9 +249,11 @@ Desktop DF support, old FCMT fallback, complete Desktop Manager API or power-los
 journal is claimed.
 
 
-Executable pins are per-process FPIN/FPST aliases of System-owned FPOB/FPOS
-catalog targets, using `mac-object-table::aliases`. They protect mutations and
-unmounts through invalidation/quarantine; only the actual last-alias cleanup
-releases the target. Document delivery's separate pin list is still staged
-migration work. Neither cleanup nor target sharing depends on a numeric owner
+Executable and document pins are per-process FPIN/FPST aliases of System-owned
+FPOB/FPOS catalog targets, using `mac-object-table::aliases`. They protect
+mutations and unmounts through invalidation, deferred completion and quarantine;
+only actual last-alias cleanup releases the target. A document batch owns its
+scope, and aliases retain read-only scope leases. Owner-walk alias guards stay
+pending until the batch's lower I/O completes; the registered DBAT/DBST lifetime
+replaces the old document EXIT scan and separate pin list. Neither cleanup nor target sharing depends on a numeric owner
 selected in an application request.

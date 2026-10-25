@@ -44,6 +44,19 @@
         "format": "file",
         "path": "../../../../../apps/finder/assets/visual/4449544c-6012.bin"
       }
+    },
+    {
+      "type": "open",
+      "id": 128,
+      "name": "Accepted document types",
+      "symbol": "OPEN_TYPES",
+      "payload": {
+        "format": "open_types",
+        "signature": "PRTS",
+        "types": [
+          "TEXT"
+        ]
+      }
     }
   ]
 }

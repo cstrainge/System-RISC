@@ -81,7 +81,7 @@ pub struct DocumentCall
 {
     pub drag:               u32,
     pub operation:          u32,
-    pub handle:             u32,
+    pub handle:             u64,
     pub application_volume: u32,
     pub application_cnid:   u32,
     pub volume:             u32,
@@ -93,4 +93,20 @@ pub struct DocumentCall
     pub reserved:           [u32; 2],
     pub entry:              crate::files::CatalogInfo,
     pub process:            ProcessInfo
+}
+
+#[cfg(test)]
+mod document_layout_tests
+{
+    use super::*;
+    #[test]
+    fn native_document_ids_have_full_width_and_distinct_request_layout()
+    {
+        assert_eq!(core::mem::offset_of!(DocumentCall, handle), 8);
+        assert_eq!(core::mem::offset_of!(DocumentCall, application_volume), 16);
+        assert_ne!(core::mem::size_of::<DocumentCall>(), core::mem::size_of::<ProcessCall>());
+        let call = DocumentCall { handle: u64::from(u32::MAX) + 1,
+                                  ..Default::default() };
+        assert!(call.handle > u64::from(u32::MAX));
+    }
 }

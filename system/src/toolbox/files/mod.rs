@@ -308,8 +308,7 @@ pub struct Manager
 {
     #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
     file_icons:           icon_cache::Cache,
-    executables:          pins::Pins,
-    document_pins:        Vec<(u32, u32, u32)>,
+    pins:                 pins::Pins,
     volumes:              Table<Mounted>,
     handles:              objects::Objects<OpenFile>,
     writes:               objects::Objects<write::Pending>,
@@ -324,8 +323,7 @@ impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { document_pins:                                                             Vec::new(),
-               executables:
+        Self { pins:
                    pins::Pins::new(),
                volumes:
                    Table::new(Kind::Volumes),
@@ -500,9 +498,11 @@ impl Manager
         Ok(())
     }
 
-    pub(crate) fn pin_document(&mut self, owner: u64, batch: u32, volume: u32, id: u32)
+    pub(crate) fn pin_document(&mut self, authority: &crate::toolbox::handles::OwnerRef,
+                               batch: u64, scope: pins::ScopeLease, volume: u32, id: u32)
                                -> Result<(), Status>
     {
+        let owner = authority.owner().incarnation();
         self.read_provider(volume)?;
         self.validate_transfer_read(owner, volume, id)?;
         if self.writes.iter().any(|(_, write)| write.volume == volume && write.expected_cnid == id)
@@ -512,23 +512,29 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        if !self.document_pins.contains(&(batch, volume, id))
-        {
-            self.document_pins.try_reserve(1).map_err(|_| NO_MEMORY)?;
-            self.document_pins.push((batch, volume, id));
-        }
-        Ok(())
+        #[cfg(target_arch = "riscv64")]
+        self.prepare_executable_pins(crate::toolbox::handles::system_owner()?,
+                                     crate::toolbox::handles::file_pin_kinds()?)?;
+        self.pins.document(authority, batch, scope, volume, id)
     }
 
-    pub(crate) fn unpin_documents(&mut self, batch: u32)
+    pub(crate) fn unpin_documents(&mut self, batch: u64)
     {
-        self.document_pins.retain(|(id, _, _)| *id != batch);
+        self.pins.unpin_documents(batch);
+    }
+
+    pub(crate) fn handoff_documents(&mut self, sender: &crate::toolbox::handles::OwnerRef,
+                                    old: u64, receiver: &crate::toolbox::handles::OwnerRef,
+                                    new: u64, scope: pins::ScopeLease,
+                                    publish: impl FnOnce() -> Result<(), Status>)
+                                    -> Result<(), Status>
+    {
+        self.pins.handoff(sender, old, receiver, new, scope, publish)
     }
 
     fn file_pinned(&self, volume: u32, id: u32) -> bool
     {
-        self.executables.objects().any(|pin| pin.volume == volume && pin.id == id)
-        || self.document_pins.iter().any(|(_, mount, file)| *mount == volume && *file == id)
+        self.pins.objects().any(|pin| pin.volume == volume && pin.id == id)
     }
 
     fn validate_transfer_read(&self, owner: u64, volume: u32, id: u32) -> Result<(), Status>
@@ -561,7 +567,7 @@ impl Manager
         #[cfg(target_arch = "riscv64")]
         self.prepare_executable_pins(crate::toolbox::handles::system_owner()?,
                                      crate::toolbox::handles::file_pin_kinds()?)?;
-        self.executables.insert(authority, volume, id)
+        self.pins.insert(authority, volume, id)
     }
 
     /// Discover all valid classic HFS partitions on each firmware device.
@@ -932,16 +938,11 @@ impl Manager
             protected.try_reserve_exact(MAX_OPEN_FILES
                                         + self.writes.len()
                                         + self.streams.len()
-                                        + self.executables.len()
-                                        + self.document_pins.len())
+                                        + self.pins.len())
                      .map_err(|_| NO_MEMORY)?;
             if matches!(call.operation, EMPTY_TRASH | REMOVE)
             {
-                protected.extend(self.document_pins
-                                     .iter()
-                                     .filter(|(_, volume, _)| *volume == call.volume)
-                                     .map(|(_, _, id)| *id));
-                protected.extend(self.executables
+                protected.extend(self.pins
                                      .objects()
                                      .filter(|pin| pin.volume == call.volume)
                                      .map(|pin| pin.id));

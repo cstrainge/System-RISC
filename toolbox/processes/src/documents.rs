@@ -48,13 +48,16 @@ impl<'a> Processes<'a>
                                       drag,
                                       ..Default::default() };
         self.client.document(&mut call)?;
+        let batch = DocumentOpen { client:     self.client,
+                                   id:         DocumentBatchId(call.handle),
+                                   type_count: call.count };
         if call.handle == 0 || call.count == 0 || call.count > 256
         {
+            // Even a malformed successful reply cannot strand an issued ID.
+            // The same owned guard performs abandonment on every error path.
             return Err(mac_traps::Error::BadAbi);
         }
-        Ok(DocumentOpen { client:     self.client,
-                          id:         DocumentBatchId(call.handle),
-                          type_count: call.count })
+        Ok(batch)
     }
 
     pub fn open_documents(self, application: DocumentRef, documents: &[DocumentRef])

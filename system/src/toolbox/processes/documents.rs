@@ -2,14 +2,31 @@
 //! queue owns stable file references and volume pins until its receiver finishes.
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 static CLEANUP: AtomicBool = AtomicBool::new(false);
+static WAITING: AtomicBool = AtomicBool::new(false);
+static CLEANUP_REVISION: AtomicU64 = AtomicU64::new(1);
+fn request_cleanup()
+{
+    CLEANUP_REVISION.fetch_add(1, Ordering::AcqRel);
+    CLEANUP.store(true, Ordering::Release);
+}
+/// A matching lower-flight retirement is a change, not a physical input event.
+pub(crate) fn io_changed()
+{
+    if WAITING.load(Ordering::Acquire)
+    {
+        request_cleanup();
+    }
+}
 
 use mac_abi::{files::{CatalogInfo, FILE, ROOT_ID},
               processes::*,
               *};
 
-use crate::toolbox::files::application;
+use crate::toolbox::{files::{application, pins::ScopeOwner},
+                     handles::OwnerRef};
+pub(crate) mod storage;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase
 {
@@ -29,14 +46,66 @@ struct Pending
 pub(super) struct Batch
 {
     sequence:    u64,
-    owner:       u64,
+    id:          u64,
+    authority:   OwnerRef,
+    scope:       ScopeOwner,
     application: (u32, u32),
     drag:        Option<u32>,
     types:       Vec<[u8; 4]>,
     documents:   Vec<CatalogInfo>,
     phase:       Phase,
     pending:     Option<Pending>,
-    abandoned:   bool
+    abandoned:   AtomicBool
+}
+impl Batch
+{
+    fn new(authority: OwnerRef, application: (u32, u32), drag: Option<u32>,
+           pending: Option<Pending>)
+           -> Result<Self, Status>
+    {
+        let scope = ScopeOwner::new(&authority)?;
+        Ok(Self { id: 0,
+                  sequence: 0,
+                  authority,
+                  scope,
+                  application,
+                  drag,
+                  types: Vec::new(),
+                  documents: Vec::new(),
+                  phase: Phase::Probing,
+                  pending,
+                  abandoned: AtomicBool::new(false) })
+    }
+
+    fn owner(&self) -> u64
+    {
+        self.authority.owner().incarnation()
+    }
+
+    fn abandon(&self)
+    {
+        if !self.abandoned.swap(true, Ordering::AcqRel)
+        {
+            request_cleanup();
+        }
+    }
+
+    fn abandoned(&self) -> bool
+    {
+        self.abandoned.load(Ordering::Acquire)
+    }
+
+    fn receiver(&self, owner: OwnerRef, sequence: u64) -> Result<Self, Status>
+    {
+        let mut result = Self::new(owner, self.application, None, None)?;
+        result.types.try_reserve_exact(self.types.len()).map_err(|_| NO_MEMORY)?;
+        result.documents.try_reserve_exact(self.documents.len()).map_err(|_| NO_MEMORY)?;
+        result.types.extend_from_slice(&self.types);
+        result.documents.extend_from_slice(&self.documents);
+        result.phase = Phase::Queued;
+        result.sequence = sequence;
+        Ok(result)
+    }
 }
 fn desktop<T>(action: impl FnOnce(&mut crate::toolbox::runtime::Desktop) -> Result<T, Status>)
               -> Result<T, Status>
@@ -78,15 +147,15 @@ fn declarations(creator: [u8; 4], resources: &[mac_formats::resource::Resource])
     }
     Ok(types)
 }
-fn owned<'a>(manager: &'a mut super::Manager, owner: u64, handle: u32)
+fn owned<'a>(manager: &'a mut super::Manager, owner: u64, handle: u64)
              -> Result<&'a mut Batch, Status>
 {
     let batch = manager.documents.get_mut(handle).ok_or(NOT_FOUND)?;
-    if batch.owner != owner
+    if batch.owner() != owner
     {
         return Err(ACCESS_DENIED);
     }
-    if batch.abandoned
+    if batch.abandoned()
     {
         return Err(OPERATION_CANCELLED);
     }
@@ -126,7 +195,7 @@ fn prepare(manager: &mut super::Manager, owner: u64, call: &DocumentCall)
     batch.pending = Some(pending);
     Ok(batch.application)
 }
-fn activate_existing(d: &mut crate::toolbox::runtime::Desktop, owner: u64, handle: u32,
+fn activate_existing(d: &mut crate::toolbox::runtime::Desktop, owner: u64, handle: u64,
                      launch: &mut ProcessCall)
                      -> Result<bool, Status>
 {
@@ -149,7 +218,7 @@ fn activate_existing(d: &mut crate::toolbox::runtime::Desktop, owner: u64, handl
     }
     d.activate_existing_application(launch)
 }
-fn clear_pending(owner: u64, handle: u32)
+fn clear_pending(owner: u64, handle: u64)
 {
     let _ = desktop(|d| {
         if let Ok(batch) = owned(&mut d.processes, owner, handle)
@@ -163,15 +232,11 @@ fn pending_io() -> bool
 {
     crate::toolbox::files::current_io_pending()
 }
-fn unpin(handle: u32) -> Result<(), Status>
-{
-    crate::kernel::with_files(|files|files.unpin_documents(handle)).map_err(crate::state::AccessError::status)
-}
-fn dispose(manager: &mut super::Manager, owner: u64, handle: u32, preparing: bool)
+fn dispose(manager: &mut super::Manager, owner: u64, handle: u64, preparing: bool)
            -> Result<(), Status>
 {
-    let batch = manager.documents.get_mut(handle).ok_or(NOT_FOUND)?;
-    if batch.owner != owner
+    let batch = manager.documents.get(handle).ok_or(NOT_FOUND)?;
+    if batch.owner() != owner
     {
         return Err(ACCESS_DENIED);
     }
@@ -179,17 +244,7 @@ fn dispose(manager: &mut super::Manager, owner: u64, handle: u32, preparing: boo
     {
         return Err(BAD_ARGUMENT);
     }
-    if batch.pending.is_some()
-    {
-        batch.abandoned = true;
-        CLEANUP.store(true, Ordering::Release);
-        return Ok(());
-    }
-    batch.abandoned = true;
-    CLEANUP.store(true, Ordering::Release);
-    unpin(handle)?;
-    manager.documents.remove(handle).ok_or(NOT_FOUND)?;
-    Ok(())
+    manager.documents.abandon(handle)
 }
 pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
 {
@@ -197,6 +252,12 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
     {
         return BAD_ARGUMENT;
     }
+    let authority = match crate::context::current_owner()
+    {
+        Ok(authority) if authority.owner().incarnation() == owner => authority,
+        Ok(_) => return ACCESS_DENIED,
+        Err(status) => return status
+    };
     let result = (|| {
         match call.operation
         {
@@ -219,17 +280,12 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                         }
                         d.processes
                          .documents
-                         .insert(Batch { sequence: 0,
-                                         owner,
-                                         application: (call.application_volume,
-                                                       call.application_cnid),
-                                         drag: (call.drag != 0).then_some(call.drag),
-                                         types: Vec::new(),
-                                         documents: Vec::new(),
-                                         phase: Phase::Probing,
-                                         pending: Some(pending),
-                                         abandoned: false })
-                         .map_err(|_| NO_MEMORY)
+                         .prepare(crate::toolbox::handles::document_batch_kinds()?)?;
+                        let batch = Batch::new(authority.clone(),
+                                               (call.application_volume, call.application_cnid),
+                                               (call.drag != 0).then_some(call.drag),
+                                               Some(pending))?;
+                        d.processes.documents.insert(batch)
                     })?;
                 }
                 else
@@ -245,8 +301,10 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                         Ok(())
                     })?;
                 }
+                let scope =
+                    desktop(|d| Ok(owned(&mut d.processes, owner, call.handle)?.scope.lease()))?;
                 crate::kernel::with_files(|files| {
-                    files.pin_document(owner, call.handle, call.application_volume,
+                    files.pin_document(&authority, call.handle, scope, call.application_volume,
                                        call.application_cnid)
                 }).map_err(crate::state::AccessError::status)??;
                 let cached = if application::pending()
@@ -327,8 +385,11 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                     clear_pending(owner, call.handle);
                     return Err(error);
                 }
+                let scope =
+                    desktop(|d| Ok(owned(&mut d.processes, owner, call.handle)?.scope.lease()))?;
                 let pinned = crate::kernel::with_files(|files| {
-                                 files.pin_document(owner, call.handle, call.volume, call.cnid)
+                                 files.pin_document(&authority, call.handle, scope, call.volume,
+                                                    call.cnid)
                              }).map_err(crate::state::AccessError::status)?;
                 if let Err(error) = pinned
                 {
@@ -414,26 +475,45 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                 }
                 desktop(|d| {
                     d.processes.get(launch.info.id)?;
-                    d.processes.document_sequence =
-                        d.processes.document_sequence.checked_add(1).ok_or(NO_MEMORY)?;
-                    let sequence = d.processes.document_sequence;
-                    let batch = owned(&mut d.processes, owner, call.handle)?;
-                    batch.sequence = sequence;
-                    batch.owner = launch.info.id;
-                    batch.phase = Phase::Queued;
-                    batch.drag = None;
-                    batch.pending = None;
-                    if let Err(error) = d.notify_document_batch(launch.info.id, call.handle)
+                    let recipient = d.processes.ledger(launch.info.id)?;
+                    let sequence = d.processes.document_sequence.checked_add(1).ok_or(NO_MEMORY)?;
+                    let batch =
+                        owned(&mut d.processes, owner, call.handle)?.receiver(recipient.clone(),
+                                                                              sequence)?;
+                    let scope = batch.scope.lease();
+                    let receiver = d.processes.documents.insert(batch)?;
+                    let sent = crate::kernel::with_files(|files| {
+                                   files.handoff_documents(&authority,
+                                                           call.handle,
+                                                           &recipient,
+                                                           receiver,
+                                                           scope,
+                                                           || {
+                                                               d.notify_document_batch(launch.info
+                                                                                             .id,
+                                                                                       receiver)
+                                                           })
+                               }).map_err(crate::state::AccessError::status)
+                                 .and_then(|result| result);
+                    if let Err(error) = sent
                     {
-                        let batch = d.processes.documents.get_mut(call.handle).ok_or(BAD_ABI)?;
-                        batch.owner = owner;
-                        batch.phase = Phase::Preparing;
+                        if d.processes.documents.abandon(receiver).is_err()
+                        {
+                            if let Some(batch) = d.processes.documents.get(receiver)
+                            {
+                                batch.abandon();
+                            }
+                        }
                         return Err(error);
                     }
+                    d.processes.document_sequence = sequence;
+                    d.processes.documents.finish(call.handle);
+                    call.handle = 0;
                     call.process = launch.info;
                     Ok(())
                 })?;
             }
+
             DOCUMENT_ABORT => desktop(|d| dispose(&mut d.processes, owner, call.handle, true))?,
             DOCUMENT_NEXT =>
             {
@@ -446,9 +526,9 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                                 .documents
                                 .iter()
                                 .filter(|(_, batch)| {
-                                    batch.owner == owner
+                                    batch.owner() == owner
                                     && batch.phase == Phase::Queued
-                                    && !batch.abandoned
+                                    && !batch.abandoned()
                                 })
                                 .min_by_key(|(_, batch)| batch.sequence)
                                 .map(|(handle, _)| handle);
@@ -498,101 +578,109 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
     }
     result.err().unwrap_or(OK)
 }
-pub(in crate::toolbox) fn close_owner(manager: &mut super::Manager, owner: u64)
-{
-    // Exit already abandons the owner's provider flights. Pins are RAM-only;
-    // remove the borrowed batch IDs before retiring their process generation.
-    loop
-    {
-        let Some(handle) =
-            manager.documents.iter().find_map(|(id, batch)| (batch.owner == owner).then_some(id))
-        else
-        {
-            break;
-        };
-        if unpin(handle).is_err()
-        {
-            if let Some(batch) = manager.documents.get_mut(handle)
-            {
-                batch.abandoned = true;
-                CLEANUP.store(true, Ordering::Release);
-            }
-            break;
-        }
-        manager.documents.remove(handle);
-    }
-}
-
 /// Abandonment is independent of the dying sender's event loop. Matching lower
 /// continuations drain their own I/O; a later unrelated trap is never cancelled.
 pub(crate) fn pump()
 {
-    if !CLEANUP.load(Ordering::Acquire)
+    if !CLEANUP.swap(false, Ordering::AcqRel)
     {
         return;
     }
     let mark = desktop(|d| {
-        let mark = d.processes.documents.iter().find_map(|(id, batch)| {
-                                                   batch.abandoned.then_some((id,
-                                                                              batch.owner,
-                                                                              batch.pending,
-                                                                              batch.application))
-                                               });
-        if mark.is_none()
+        let revision = CLEANUP_REVISION.load(Ordering::Acquire);
+        let batches = &mut d.processes.documents;
+        if batches.cleanup_revision != revision
         {
-            CLEANUP.store(false, Ordering::Release);
+            batches.cleanup_revision = revision;
+            batches.cleanup_after = 0;
         }
-        Ok(mark)
-    });
-    let Ok(Some((handle, owner, pending, application))) = mark
-    else
-    {
-        return;
-    };
-    if let Some(pending) = pending
-    {
-        let (volume, cnid) = if matches!(pending.operation, DOCUMENT_BEGIN | DOCUMENT_COMMIT)
+        let mark =
+            batches.retained()
+                   .filter(|(id, batch)| {
+                       *id > batches.cleanup_after && batch.abandoned() && !batch.scope.closed()
+                   })
+                   .min_by_key(|(id, _)| *id)
+                   .map(|(id, batch)| (id, batch.owner(), batch.pending, batch.application));
+        if let Some((id, _, _, _)) = mark
         {
-            application
+            batches.cleanup_after = id;
         }
         else
         {
-            (pending.volume, pending.cnid)
-        };
-        if crate::toolbox::files::abandon_document_io(owner,
-                                                      pending.thread,
-                                                      volume,
-                                                      cnid,
-                                                      matches!(pending.operation,
-                                                               DOCUMENT_BEGIN | DOCUMENT_COMMIT))
+            WAITING.store(batches.retained()
+                                 .any(|(_, batch)| batch.abandoned() && !batch.scope.closed()),
+                          Ordering::Release);
+        }
+        Ok(mark)
+    });
+    let (handle, owner, pending, application) = match mark
+    {
+        Ok(Some(mark)) => mark,
+        Ok(None) => return,
+        Err(_) =>
+        {
+            request_cleanup();
+            return;
+        }
+    };
+    // Continue this change's bounded pass over the other pending batches.
+    // A waiting flight is visited once, then only after a completion wake.
+    CLEANUP.store(true, Ordering::Release);
+    if let Some(pending) = pending
+    {
+        let is_application = matches!(pending.operation, DOCUMENT_BEGIN | DOCUMENT_COMMIT);
+        let (volume, cnid) =
+            if is_application { application } else { (pending.volume, pending.cnid) };
+        WAITING.store(true, Ordering::Release);
+        if crate::toolbox::files::abandon_document_io(owner, pending.thread, volume, cnid,
+                                                      is_application)
         {
             return;
         }
     }
-    if unpin(handle).is_err()
-    {
-        return;
-    }
-    let _ = desktop(|d| {
-        if d.processes
-            .documents
-            .get(handle)
-            .is_some_and(|batch| batch.abandoned && batch.owner == owner)
+    let cleaned = desktop(|d| {
+        let batch = d.processes.documents.completing(handle).ok_or(NOT_FOUND)?;
+        if !batch.abandoned() || batch.owner() != owner
         {
-            d.processes.documents.remove(handle);
+            return Err(BAD_ABI);
         }
+        // No provider callback/I/O here: close the private scope and retire
+        // live aliases only after the real Files service admits this cleanup.
+        crate::kernel::with_files(|files| {
+            batch.scope.close();
+            files.unpin_documents(handle);
+        }).map_err(crate::state::AccessError::status)?;
+        d.processes.documents.finish(handle);
         Ok(())
     });
+    if cleaned.is_err()
+    {
+        request_cleanup();
+    }
 }
 
 pub(in crate::toolbox) fn cancel_drag(manager: &mut super::Manager, drag: u32)
 {
-    for batch in manager.documents.values_mut()
+    loop
     {
-        if batch.drag == Some(drag) && matches!(batch.phase, Phase::Probing | Phase::Preparing)
+        let next = manager.documents.iter().find_map(|(id, batch)| {
+                                               (batch.drag == Some(drag)
+                                                && matches!(batch.phase,
+                                                            Phase::Probing | Phase::Preparing)
+                                                && !batch.abandoned()).then_some(id)
+                                           });
+        let Some(id) = next
+        else
         {
-            batch.abandoned = true;
-            CLEANUP.store(true, Ordering::Release);
+            break;
+        };
+        if manager.documents.abandon(id).is_err()
+        {
+            if let Some(batch) = manager.documents.get(id)
+            {
+                batch.abandon();
+            }
+            break;
         }
     }
 }

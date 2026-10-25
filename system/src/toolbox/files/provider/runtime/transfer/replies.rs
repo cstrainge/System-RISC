@@ -728,12 +728,9 @@ impl State
                 if m.handles
                     .iter()
                     .any(|(_, file)| protected.binary_search(&(file.volume, file.id)).is_ok())
-                   || m.executables
+                   || m.pins
                        .objects()
                        .any(|pin| protected.binary_search(&(pin.volume, pin.id)).is_ok())
-                   || m.document_pins
-                       .iter()
-                       .any(|(_, volume, id)| protected.binary_search(&(*volume, *id)).is_ok())
                 {
                     return Err(SERVICE_BUSY);
                 }

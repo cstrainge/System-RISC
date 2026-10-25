@@ -167,6 +167,13 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                registry.register(&owner,crate::toolbox::files::groups::lifetime::specification(true),crate::toolbox::files::groups::lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::files::transfer_lifetime::specification(false),crate::toolbox::files::transfer_lifetime::ReleaseTransfers).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::files::transfer_lifetime::specification(true),crate::toolbox::files::transfer_lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
+                               for storage in [false,true]
+                               {
+                                   registry.register(&owner,
+                                       crate::toolbox::processes::documents::storage::specification(storage),
+                                       crate::toolbox::processes::documents::storage::ReleaseBatches(storage))
+                                       .map_err(KindAccessError::Registry)?;
+                               }
                                for kind in crate::toolbox::files::pins::Registration::ALL
                                {
                                    registry.register(&owner, kind.specification(), kind)
@@ -365,4 +372,11 @@ pub(crate) fn file_pin_kinds() -> Result<[KindLease; 4], mac_abi::Status>
             registry.get(KindCode(*b"FPOS"))?])
     }).map_err(|error| error.status())?
       .map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn document_batch_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"DBAT"))?,registry.get(KindCode(*b"DBST"))?)))
+        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }

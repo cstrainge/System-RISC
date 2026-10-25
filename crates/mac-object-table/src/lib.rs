@@ -27,7 +27,6 @@ static HOST_SESSION_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) };
 
 static DEVICE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
 static FILE_STREAM_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
-static DOCUMENT_BATCH_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
 static FILE_TRANSFER_GENERATIONS: [AtomicU16; 4] = [const { AtomicU16::new(0) }; 4];
 static FILE_GROUP_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static THREAD_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
@@ -76,8 +75,7 @@ pub enum Kind
     DragReceivers,
     FileStreams,
     FileGroups,
-    FileTransfers,
-    DocumentBatches
+    FileTransfers
 }
 impl Kind
 {
@@ -85,7 +83,6 @@ impl Kind
     {
         match self
         {
-            Self::DocumentBatches => 16,
             Self::FileTransfers => 4,
             Self::FileGroups => 8,
             Self::FileStreams => 8,
@@ -116,10 +113,6 @@ impl Kind
     {
         match self
         {
-            Self::DocumentBatches =>
-            {
-                Self::FileTransfers.first_slot() + Self::FileTransfers.capacity() as u32
-            }
             Self::FileTransfers =>
             {
                 Self::FileGroups.first_slot() + Self::FileGroups.capacity() as u32
@@ -194,7 +187,6 @@ impl Kind
             Self::Files => &FILE_GENERATIONS[index],
             Self::FileWrites => &FILE_WRITE_GENERATIONS[index],
             Self::Volumes => &VOLUME_GENERATIONS[index],
-            Self::DocumentBatches => &DOCUMENT_BATCH_GENERATIONS[index],
             Self::FileTransfers => &FILE_TRANSFER_GENERATIONS[index],
             Self::FileGroups => &FILE_GROUP_GENERATIONS[index],
             Self::FileStreams => &FILE_STREAM_GENERATIONS[index],

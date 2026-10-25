@@ -548,10 +548,7 @@ impl Desktop
                             super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
                             super::handles::cleanup::Cause::Alias(_) => SERVICE_BUSY,
                             super::handles::cleanup::Cause::DragEffectStorage { .. }
-                            | super::handles::cleanup::Cause::FileRetirementStorage { .. } =>
-                            {
-                                NO_MEMORY
-                            }
+                            | super::handles::cleanup::Cause::RetirementStorage { .. } => NO_MEMORY,
                             super::handles::cleanup::Cause::MemoryManagerUnavailable(error)
                             | super::handles::cleanup::Cause::FileManagerUnavailable(error) =>
                             {

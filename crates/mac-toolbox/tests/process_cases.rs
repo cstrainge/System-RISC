@@ -8,6 +8,8 @@ use mac_toolbox::{Cnid, ProcessId, Rect, System, VolumeId, WindowId,
                   processes::ProcessInfo,
                   windows::WindowSpec};
 
+#[path = "process_document_cases.rs"]
+mod document_lifetimes;
 #[path = "riscv_context_cases.rs"]
 mod architecture_context;
 #[derive(Debug)]
@@ -539,6 +541,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
     system.log("PROCESS_INCARNATIONS_PASS native=passed legacy=passed foreign=passed \
                 relaunch=passed\n")?;
     copies(system, volume, worker.id, own_window)?;
+    document_lifetimes::send(system, volume, worker.id)?;
     handle.dispose()?;
     system.windows().close(own_front)?;
     system.windows().close(own_window)?;
@@ -696,6 +699,10 @@ fn standard_file_lifecycle(system: &System<'_>) -> Result<()>
 
 pub fn worker(system: &System<'_>) -> Result<()>
 {
+    if document_lifetimes::receive(system)?
+    {
+        return Ok(());
+    }
     static ENTERED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
     require(!ENTERED.swap(true, core::sync::atomic::Ordering::Relaxed),
             "relaunch did not initialize application BSS")?;

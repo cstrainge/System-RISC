@@ -76,7 +76,7 @@ impl crate::toolbox::inspection::Subject for Process
 pub struct Manager
 {
     entries:           Directory<Process>,
-    documents:         crate::toolbox::handles::Table<documents::Batch>,
+    documents:         documents::storage::Batches,
     document_sequence: u64,
     stamp:             u64
 }
@@ -89,9 +89,10 @@ impl Manager
 
     pub fn new() -> Self
     {
-        Self { entries: Directory::new(),
-               documents:crate::toolbox::handles::Table::new(crate::toolbox::handles::Kind::DocumentBatches),document_sequence:0,
-               stamp:   0 }
+        Self { entries:           Directory::new(),
+               documents:         documents::storage::Batches::new(),
+               document_sequence: 0,
+               stamp:             0 }
     }
 
     pub(crate) fn ledger(&self, id: u64) -> Result<crate::toolbox::handles::OwnerRef, Status>

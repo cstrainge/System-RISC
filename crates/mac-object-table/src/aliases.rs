@@ -2,6 +2,7 @@
 //! by the facility; a caller never supplies a target key or changes an owner.
 //! All operations borrow the store, so a resolved payload cannot outlive the
 //! alias validation without holding that borrow. Destructors run outside locks.
+use alloc::vec::Vec;
 use core::{fmt,
            sync::atomic::{AtomicUsize, Ordering}};
 
@@ -77,6 +78,11 @@ pub enum ReleaseCause
     Referenced
     {
         aliases: usize
+    },
+    RetirementStorage
+    {
+        pending:  usize,
+        reserved: usize
     }
 }
 impl fmt::Display for ReleaseCause
@@ -86,6 +92,13 @@ impl fmt::Display for ReleaseCause
         match self
         {
             Self::Facility(error) => error.fmt(f),
+            Self::RetirementStorage { pending,
+                                      reserved } =>
+            {
+                write!(f,
+                       "alias retirement storage is full ({pending} pending, {reserved} \
+                        reserved); unique cleanup ticket remains owned for retry")
+            }
             Self::Referenced { aliases } =>
             {
                 write!(f,
@@ -155,9 +168,11 @@ struct Alias<S>
 /// objects/backing. Policy and release authority come from checked leases.
 pub struct Store<T, G: InvocationGate, S = ()>
 {
-    aliases: store::Store<Alias<S>, G>,
-    objects: store::Store<Object<T>, G>,
-    system:  OwnerRef<G>
+    alias_kind: crate::domain::KindCode,
+    deferred:   Vec<store::Removed<Alias<S>, G>>,
+    aliases:    store::Store<Alias<S>, G>,
+    objects:    store::Store<Object<T>, G>,
+    system:     OwnerRef<G>
 }
 impl<T, G: InvocationGate, S> Store<T, G, S>
 {
@@ -182,7 +197,9 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                                                                   kind:  kinds[at] }));
             }
         }
-        Ok(Self { aliases: store::Store::owned(aliases.0, aliases.1).map_err(Error::Pool)?,
+        Ok(Self { alias_kind: kinds[0],
+                  deferred: Vec::new(),
+                  aliases: store::Store::owned(aliases.0, aliases.1).map_err(Error::Pool)?,
                   objects: store::Store::owned(objects.0, objects.1).map_err(Error::Pool)?,
                   system })
     }
@@ -211,6 +228,10 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub fn insert(&mut self, owner: &OwnerRef<G>, value: T, tag: S) -> Result<u64, Error>
         where T: PartialEq
     {
+        if !owner.accepting()
+        {
+            return Err(Error::Pool(PoolError::Stopping { owner: owner.owner() }));
+        }
         let existing =
             self.objects.iter().find_map(|(id, object)| (object.value == value).then_some(id));
         let (id, fresh) = if let Some(id) = existing
@@ -247,10 +268,20 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
 
     fn admit(&mut self, owner: &OwnerRef<G>, target: Target, tag: S) -> Result<u64, Error>
     {
+        if !owner.accepting()
+        {
+            return Err(Error::Pool(PoolError::Stopping { owner: owner.owner() }));
+        }
         if !self.system.accepting()
         {
             return Err(Error::Pool(PoolError::Stopping { owner: self.system.owner() }));
         }
+        let live = self.aliases.stored_len();
+        self.deferred.try_reserve(live.saturating_add(1)).map_err(|_| {
+                                                              Error::Pool(PoolError::Storage {
+            owner: owner.owner(), kind: self.alias_kind, used: live,
+            requested_slots: live.saturating_add(1), limit: None })
+                                                          })?;
         let object = self.objects.get(target.id).ok_or(Error::TargetGone { alias: 0 })?;
         let count = object.references.load(Ordering::Acquire);
         let next = count.checked_add(1).ok_or(Error::ReferenceLimit { alias: 0 })?;
@@ -290,9 +321,14 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
 
     fn forget(&mut self, target: Target)
     {
+        Self::forget_target(&mut self.objects, target);
+    }
+
+    fn forget_target(objects: &mut store::Store<Object<T>, G>, target: Target)
+    {
         // A target may itself be quarantined by the System-domain walk. Its
         // opaque completion key permits ref release, never ordinary access.
-        if let Some(object) = self.objects.completing(&target.completion)
+        if let Some(object) = objects.completing(&target.completion)
         {
             let count = object.references.load(Ordering::Acquire);
             if count != 0
@@ -300,7 +336,7 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                 object.references.store(count - 1, Ordering::Release);
                 if count == 1
                 {
-                    drop(self.objects.remove(target.id));
+                    drop(objects.remove(target.id));
                 }
             }
         }
@@ -322,6 +358,72 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         self.forget(target);
         drop(removed);
         Ok(())
+    }
+
+    /// Retain an invalidated alias until a real protocol acknowledgement.
+    /// Capacity is reserved before publication; no allocation is needed here.
+    pub fn defer_alias(&mut self, ticket: ReleasedResource) -> Result<(), ReleaseError>
+    {
+        if self.aliases.releasing(&ticket).is_none()
+        {
+            return Err(ReleaseError::registration_mismatch(ticket));
+        }
+        if self.deferred.len() == self.deferred.capacity()
+        {
+            return Err(ReleaseError { ticket,
+                                      cause: ReleaseCause::RetirementStorage { pending:
+                                                                                   self.deferred
+                                                                                       .len(),
+                                                                               reserved:
+                                                                                   self.deferred
+                                                                                       .capacity() } });
+        }
+        self.deferred.push(self.aliases.release(ticket)?);
+        Ok(())
+    }
+
+    /// Called only when the manager's protocol state changes. Each retained
+    /// alias still owns its unique native removal guard and target reference.
+    pub fn finish_deferred(&mut self, mut ready: impl FnMut(&S) -> bool) -> usize
+    {
+        let mut at = 0;
+        let mut released = 0;
+        while at < self.deferred.len()
+        {
+            if ready(&self.deferred[at].tag)
+            {
+                let mark = self.deferred.swap_remove(at);
+                self.forget(mark.target);
+                drop(mark);
+                released += 1;
+            }
+            else
+            {
+                at += 1;
+            }
+        }
+        released
+    }
+
+    /// Cleanup inspects a retained alias only through its unique invalidate-
+    /// first ticket. A target's completion key is private to the alias store.
+    pub fn releasing(&self, ticket: &ReleasedResource) -> Option<(&T, &S)>
+    {
+        let alias = self.aliases.releasing(ticket)?;
+        let object = self.objects.completing(&alias.target.completion)?;
+        Some((&object.value, &alias.tag))
+    }
+
+    /// Trusted manager bookkeeping, without allocating an ID array. Each
+    /// removal still consumes the facility's matching live alias identity.
+    pub fn remove_where(&mut self, mut predicate: impl FnMut(DomainId, &S) -> bool)
+    {
+        let objects = &mut self.objects;
+        self.aliases.remove_where_with(|owner, alias| predicate(owner, &alias.tag),
+                                       |removed| {
+                                           Self::forget_target(objects, removed.target);
+                                           drop(removed);
+                                       });
     }
 
     pub fn release_object(&mut self, ticket: ReleasedResource) -> Result<(), ReleaseError>
@@ -355,22 +457,14 @@ impl<T, G: InvocationGate, S> Drop for Store<T, G, S>
     {
         // Drain ordinary aliases with their ref accounting. Invalidated ones
         // still belong to a dispatcher; destruction is not its acknowledgement.
-        loop
+        self.remove_where(|_, _| true);
+        // Destruction is not a protocol acknowledgement. Guards and their
+        // target references remain pending if the owning manager disappears.
+        if !self.deferred.is_empty()
         {
-            let next = self.aliases.iter().next().map(|(id, _)| id);
-            let Some(id) = next
-            else
-            {
-                break;
-            };
-            let Some(removed) = self.aliases.remove(id)
-            else
-            {
-                break;
-            };
-            self.forget(removed.target);
-            drop(removed);
+            core::mem::forget(core::mem::take(&mut self.deferred));
         }
+
         loop
         {
             let next = self.objects.iter().find_map(|(id, object)|

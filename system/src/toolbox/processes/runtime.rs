@@ -79,7 +79,7 @@ impl Desktop
         }
     }
 
-    pub(crate) fn notify_document_batch(&mut self, owner: u64, handle: u32) -> Result<(), Status>
+    pub(crate) fn notify_document_batch(&mut self, owner: u64, handle: u64) -> Result<(), Status>
     {
         let event = Event { kind: EventKind::OsEvent,
                             message: mac_abi::processes::DOCUMENT_AVAILABLE,
@@ -769,7 +769,6 @@ impl Desktop
                 let previous = self.processes.previous(caller);
                 self.enter(previous);
                 self.notify_finder_file_state(file.volume, file.cnid, false);
-                super::super::processes::documents::close_owner(&mut self.processes, caller);
                 if self.foreground == caller
                 {
                     self.activate_process(previous)?;

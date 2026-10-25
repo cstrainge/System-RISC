@@ -1505,15 +1505,28 @@ acknowledged cleanup, including cancellation and application exit.
 
 ## Native document delivery and transfers (development ABI 1)
 
-Size-distinct `DocumentCall` records use the Process trap. Begin reserves a shared
-generation-tagged batch before declaration I/O. Classic `open` resources supply
+Size-distinct `DocumentCall` records use the Process trap. Native handles and
+`DocumentBatchId` are opaque u64 identities; no classic projection or fixed
+sixteen-batch quota applies. Begin reserves a registered owner-bound batch before
+declaration I/O. Classic `open` resources supply
 creator-checked accepted FourCCs; compatibility probes load only those payloads,
 not CODE. Push validates and pins each exact volume/CNID; Commit validates the
 complete set against the executable actually launched and queues it to that
-exact file instance. Queued/receiving owners retain references and mount pins
-until Finish or process cleanup. Probing/preparing owners abort through RAII;
+exact file instance. Commit issues a distinct receiver-owned batch ID, admits
+its catalog aliases before notification, then invalidates the sender ID. A
+refused handoff keeps the original sender batch intact. Queued/receiving owners
+retain references and mount pins until Finish or process cleanup. Probing/preparing owners abort through RAII;
 a drag-bound batch is also abandoned on drag cancellation. Native OsEvent
-`0x10000000` announces queued documents, with the full batch ID in payload.
+`0x10000000` announces queued documents, with the full u64 batch ID in payload.
+
+DBAT/DBST register batches and per-owner backing. Catalog pins use FPIN/FPST
+process aliases of FPOB/FPOS System targets. Document scopes are owned, private
+lifetime objects; alias leases cannot close them. On cancellation/owner death,
+ordinary batch IDs invalidate immediately but lower I/O and catalog references
+remain retained until actual completion. Scoped alias cleanup uses preallocated
+linear removal guards and is ordinary deferral, not a failed cleanup. Releasing
+a public ID is never acknowledgement that its file is unpinned. Declaration
+I/O completion wakes the cleanup pass; physical input does not rescan it.
 
 Size-distinct `FileTransferCall` records use the File trap (472 bytes on RV64,
 including four reserved zero u32 words). File record sizes are compile-time

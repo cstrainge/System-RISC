@@ -76,6 +76,8 @@ fn run(malformed: bool)
          "PROCESS_INCARNATIONS_PASS native=passed legacy=passed foreign=passed relaunch=passed",
          "PROCESS_FILE_IDENTITIES_PASS copies=2 concurrent=passed statics=private rename=passed \
           move=passed foreground=passed exit=passed",
+         "PROCESS_DOCUMENT_LIFETIMES_PASS capacity=20 handoff=passed foreign=passed stale=passed \
+          exit=passed",
          "PROCESS_USERSPACE_PASS preemption=passed launch=passed invalid=5 relaunch=passed \
           windows=passed resources=passed memory=passed events=passed focus=passed hide=passed \
           appmenu=passed"]
@@ -174,8 +176,38 @@ fn run(malformed: bool)
     }
     assert!(!serial.contains("OWNER_CLEANUP_QUARANTINED"),
             "unexpected native cleanup refusal:\n{serial}");
-    assert!(!serial.contains("PROCESS_RETIRE_RETAINED"),
-            "ordinary exits must not strand saved manager state:\n{serial}");
+    let document_app =
+        serial.lines()
+              .find_map(|line| {
+                  line.strip_prefix("PROCESS_DOCUMENT_SCOPE_EXIT app=")
+                      .and_then(|tail| tail.split_once(" batch="))
+                      .map(|(app, _)| app)
+              })
+              .expect("document receiver did not leave its real batch for System cleanup");
+    let walked =
+        serial.lines()
+              .position(|line| {
+                  line.starts_with(&format!("OWNER_WALK app={document_app} "))
+                  && line.contains("quarantined=0 live=0 pending=4 ")
+              })
+              .expect("document root and three pin aliases must retain their real pending death \
+                       barrier");
+    let reclaimed = serial.lines()
+                          .position(|line| {
+                              line.starts_with(&format!("PROCESS_THREAD_RECLAIMED \
+                                                         app={document_app} "))
+                          })
+                          .expect("document receiver thread was not reclaimed elsewhere");
+    let retired = serial.lines()
+                        .position(|line| line == format!("PROCESS_EXIT app={document_app}"))
+                        .expect("document batch or alias left its process stuck after cleanup");
+    assert!(walked < reclaimed && reclaimed < retired,
+            "document process bypassed stack or scoped-I/O retirement barrier: {serial}");
+    for line in serial.lines().filter(|line| line.starts_with("PROCESS_RETIRE_RETAINED"))
+    {
+        assert!(line.starts_with(&format!("PROCESS_RETIRE_RETAINED app={document_app} ")),
+                "ordinary worker stranded saved state: {line}");
+    }
     for actor in ["observer", "worker"]
     {
         assert_eq!(serial.matches(&format!("PROCESS_SYNTHETIC_EVENTS_PASS actor={actor} \
@@ -193,7 +225,7 @@ fn run(malformed: bool)
     {
         assert_eq!(serial.matches(marker).count(), 2, "missing multiwindow scenario {marker}");
     }
-    let acceptance = serde_json::json!({"status":"passed","acceptance":"mac-toolbox/tests/process_cases.rs plus process_pascal_cases.rs and conformance/application_menu.rs","single_hart_timer_preemption":true,"worker_launches":4,"concurrent_copies":2,"identical_copy_filenames":"passed","relocated_statics_and_pointers":"passed","file_identity_rename_and_move":"passed","invalid_launches":5,"typed_format_status_cases":4,"boot_unique_process_incarnations":"passed","stale_native_and_legacy_ids_after_relaunch":"passed","pascal_conversion_cases":5,"caller_posted_foreign_window_events":12,"atomic_activation_cases":10,"background_creation_cases":4,"background_selection_cases":4,"background_desktop_cases":6,"multiwindow_exit_cases":4,"resource_and_memory_partitions":"passed","window_ownership":"passed","private_and_physical_events":"passed","hide_focus_and_exit":"passed","capture":report,"limits":["validated RV64 relocation types only","one OS thread per app","shared address space; no MMU process isolation claim","bounded worker window/handle exit cleanup exercised four times","native UTF8 process services, no 68k Process Manager adapter"]});
+    let acceptance = serde_json::json!({"status":"passed","acceptance":"mac-toolbox/tests/process_cases.rs plus process_pascal_cases.rs and conformance/application_menu.rs","single_hart_timer_preemption":true,"worker_launches":4,"concurrent_copies":2,"identical_copy_filenames":"passed","relocated_statics_and_pointers":"passed","file_identity_rename_and_move":"passed","invalid_launches":5,"typed_format_status_cases":4,"boot_unique_process_incarnations":"passed","stale_native_and_legacy_ids_after_relaunch":"passed","pascal_conversion_cases":5,"caller_posted_foreign_window_events":12,"atomic_activation_cases":10,"background_creation_cases":4,"background_selection_cases":4,"background_desktop_cases":6,"multiwindow_exit_cases":4,"resource_and_memory_partitions":"passed","window_ownership":"passed","private_and_physical_events":"passed","hide_focus_and_exit":"passed","document_batch_capacity":20,"document_handoff":"new receiver identity, stale sender and foreign disposal rejected","document_scope_exit":"four pending resources drain before actual process retirement","capture":report,"limits":["validated RV64 relocation types only","one OS thread per app","shared address space; no MMU process isolation claim","bounded worker window/handle exit cleanup exercised four times","native UTF8 process services, no 68k Process Manager adapter"]});
     fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join("results/system7/process-checks.json"),
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();

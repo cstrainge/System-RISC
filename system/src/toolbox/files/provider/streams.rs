@@ -24,7 +24,7 @@ impl Manager
         self.prepare_streams(crate::toolbox::handles::file_stream_kinds()?)?;
         self.validate_transfer_mutation(owner, call.volume)?;
         if call.expected_cnid != 0
-           && self.executables
+           && self.pins
                   .objects()
                   .any(|pin| pin.volume == call.volume && pin.id == call.expected_cnid)
         {

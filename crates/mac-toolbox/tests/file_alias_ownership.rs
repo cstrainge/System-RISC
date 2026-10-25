@@ -8,8 +8,12 @@ use mac_abi::files::*;
 use mac_system::testing::files::with_owner;
 use mac_toolbox::{Error, System};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+static BOOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn disk(run: impl FnOnce(&System<'_>))
 {
+    // These fixtures temporarily install different managers under the one
+    // authentic System-domain bootstrap ledger. Their lifetimes cannot overlap.
+    let _boot = BOOT.lock().unwrap_or_else(|error| error.into_inner());
     struct Disk(PathBuf);
     impl Drop for Disk
     {
@@ -80,6 +84,41 @@ fn executable_aliases_hold_mutation_protection_through_invalidation_and_cleanup_
         fixture::try_retire(second).unwrap();
         // Last alias, rather than ID invalidation or the first process's exit,
         // releases the common target and makes deletion safe again.
+        files.remove(volume, item.id).unwrap();
+        assert_eq!(files.catalog(volume, item.id).err(), Some(Error::NotFound));
+    });
+}
+
+#[test]
+fn document_scope_retains_pins_until_real_io_completion_after_owner_invalidation()
+{
+    use mac_system::testing::{files::with_pending_document_pin, inspection as fixture};
+    disk(|system| {
+        let files = system.files();
+        let volume = files.volume_at(0).unwrap().id;
+        let mut writer = files.create_data(mac_toolbox::files::DataFileSpec {
+            volume, parent: mac_toolbox::Cnid(ROOT_ID), name: "Pending document", replacing: None,
+            file_type: mac_toolbox::TypeCode::new(*b"TEXT"), creator: mac_toolbox::TypeCode::new(*b"TEST")
+        }, 3).unwrap();
+        writer.write_all(b"doc").unwrap();
+        let item = writer.finish().unwrap();
+        let owner = fixture::add("Document scope subject", 0);
+        with_owner(owner, || {
+            with_pending_document_pin(volume.0, item.id.0, || {
+                assert_eq!(pool(system, *b"FPIN").live, 1);
+                let walked = fixture::walk_registered(owner, false, false);
+                assert!(walked.failures.is_empty());
+                assert_eq!(pool(system, *b"FPIN").live, 0);
+                assert_eq!(pool(system, *b"FPIN").pending, 1);
+                assert!(fixture::try_retire(owner).unwrap_err().to_string().contains("pending"));
+                let error = files.remove(volume, item.id).unwrap_err();
+                assert_eq!(error, Error::ServiceBusy);
+                assert!(error.to_string().contains("busy"));
+                assert_eq!(files.catalog(volume, item.id).unwrap().id, item.id);
+            }).unwrap()
+        });
+        with_owner(owner, || assert_eq!(pool(system, *b"FPIN").pending, 0));
+        fixture::try_retire(owner).unwrap();
         files.remove(volume, item.id).unwrap();
         assert_eq!(files.catalog(volume, item.id).err(), Some(Error::NotFound));
     });

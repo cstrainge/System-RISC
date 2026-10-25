@@ -283,6 +283,10 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub fn insert_with(&mut self, owner: &OwnerRef<G>, make: impl FnOnce(u64) -> T)
                        -> Result<u64, PoolError>
     {
+        if !owner.accepting()
+        {
+            return Err(PoolError::Stopping { owner: owner.owner() });
+        }
         let mut registration_use =
             self.registration.as_ref().map(|kind| kind.acquire(true)).transpose()?;
         let at = self.attach(owner)?;
@@ -555,6 +559,13 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         }
         self.owners.remove(at);
         true
+    }
+
+    /// Backing reservation count, including invalidated payloads awaiting their
+    /// unique cleanup dispatcher. This is not an ordinary live-ID query.
+    pub(crate) fn stored_len(&self) -> usize
+    {
+        self.ids.len()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (u64, &T)>

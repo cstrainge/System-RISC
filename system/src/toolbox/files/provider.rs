@@ -253,8 +253,7 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        if self.document_pins.iter().any(|(_, volume, _)| *volume == id)
-           || self.executables.objects().any(|pin| pin.volume == id)
+        if self.pins.objects().any(|pin| pin.volume == id)
            || self.handles.iter().any(|(_, file)| file.volume == id)
            || self.writes.iter().any(|(_, write)| write.volume == id)
            || self.streams.iter().any(|(_, stream)| stream.volume == id)

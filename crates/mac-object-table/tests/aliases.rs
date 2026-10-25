@@ -82,12 +82,19 @@ fn shared_objects_are_generation_checked_and_retained_through_each_alias_death()
                 let error = aliases.release_object(ticket).unwrap_err();
                 let (ticket, cause) = error.into_parts();
                 assert!(matches!(cause, ReleaseCause::Facility(_)));
-                aliases.release_alias(ticket).unwrap();
+                aliases.defer_alias(ticket).unwrap();
             }
             code if code == *b"ALST" => aliases.release_alias_storage(ticket).unwrap(),
             _ => panic!("unexpected cleanup kind")
         }
     }
+    assert_eq!(source.summary().pending,
+               1,
+               "deferred alias was acknowledged before protocol completion");
+    assert_eq!(aliases.finish_deferred(|_| false), 0);
+    assert_eq!(source.summary().pending, 1);
+    assert_eq!(aliases.objects().count(), 1);
+    assert_eq!(aliases.finish_deferred(|_| true), 1);
     assert_eq!(source.summary().pending, 0);
     assert_eq!(aliases.get(&receiver, second).unwrap().0, "shared");
     aliases.remove(&receiver, second).unwrap();

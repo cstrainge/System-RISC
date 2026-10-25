@@ -8,8 +8,9 @@ pub(crate) enum Cause
 {
     Facility(PoolError),
     Alias(mac_object_table::aliases::ReleaseCause),
-    FileRetirementStorage
+    RetirementStorage
     {
+        provider: &'static str,
         owner:    mac_object_table::domain::DomainId,
         kind:     mac_object_table::domain::KindCode,
         pending:  usize,
@@ -39,15 +40,16 @@ impl core::fmt::Display for Cause
         {
             Self::Facility(error) => error.fmt(f),
             Self::Alias(error) => error.fmt(f),
-            Self::FileRetirementStorage { owner,
-                                          kind,
-                                          pending,
-                                          capacity } =>
+            Self::RetirementStorage { provider,
+                                      owner,
+                                      kind,
+                                      pending,
+                                      capacity } =>
             {
                 write!(f,
-                       "File Manager {kind} cleanup for {owner} cannot retain another \
-                        asynchronous object: {pending} pending, reserved capacity {capacity}; \
-                        payload, provider token and cleanup ticket remain owned for retry")
+                       "{provider} {kind} cleanup for {owner} cannot retain another asynchronous \
+                        object: {pending} pending, reserved capacity {capacity}; payload, \
+                        provider token and cleanup ticket remain owned for retry")
             }
             Self::DragEffectStorage { pending,
                                       requested } =>
@@ -95,16 +97,30 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    pub(crate) fn document_retirement_storage(ticket: ReleasedResource, pending: usize,
+                                              capacity: usize)
+                                              -> Self
+    {
+        let key = ticket.key();
+        Self { ticket,
+               cause: Cause::RetirementStorage { provider: "Process Manager",
+                                                 owner: key.owner(),
+                                                 kind: key.kind(),
+                                                 pending,
+                                                 capacity } }
+    }
+
     pub(crate) fn file_retirement_storage(ticket: ReleasedResource, pending: usize,
                                           capacity: usize)
                                           -> Self
     {
         let key = ticket.key();
         Self { ticket,
-               cause: Cause::FileRetirementStorage { owner: key.owner(),
-                                                     kind: key.kind(),
-                                                     pending,
-                                                     capacity } }
+               cause: Cause::RetirementStorage { provider: "File Manager",
+                                                 owner: key.owner(),
+                                                 kind: key.kind(),
+                                                 pending,
+                                                 capacity } }
     }
 
     pub(crate) fn drag_effect_storage(ticket: ReleasedResource, pending: usize) -> Self

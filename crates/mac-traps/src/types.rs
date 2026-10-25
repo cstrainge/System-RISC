@@ -330,7 +330,7 @@ pub enum SurfaceOperation
     DrawText    = 6
 }
 
-identity!(DocumentBatchId, u32);
+identity!(DocumentBatchId, u64);
 identity!(FileTransferId, u32);
 /// A frozen source reference for a resident file transfer. The resident checks
 /// its volume generation, identity and expected parent before any mutation.

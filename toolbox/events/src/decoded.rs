@@ -265,8 +265,7 @@ impl<'a> From<raw::Event> for Event<'a>
             }
             raw::EventKind::OsEvent if event.message == mac_abi::processes::DOCUMENT_AVAILABLE =>
             {
-                Self::DocumentsAvailable { batch: mac_traps::DocumentBatchId(event.payload
-                                                                             as u32),
+                Self::DocumentsAvailable { batch: mac_traps::DocumentBatchId(event.payload),
                                            input }
             }
             raw::EventKind::OsEvent if event.message == raw::FILE_TRANSFER_CHANGED =>

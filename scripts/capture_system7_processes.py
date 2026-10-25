@@ -75,7 +75,8 @@ def capture(output, frontend='headless', vector_bits=None, malformed_standard_fi
 
     try:
         for marker in ['PROCESS_READY_FOR_INPUT_1', 'PROCESS_READY_FOR_INPUT_2',
-                       'PROCESS_READY_FOR_COPY_INPUT_1', 'PROCESS_READY_FOR_COPY_INPUT_2']:
+                       'PROCESS_READY_FOR_COPY_INPUT_1', 'PROCESS_READY_FOR_COPY_INPUT_2',
+                       'PROCESS_DOCUMENT_READY_FOR_INPUT']:
             wait(marker + '\n')
             # A child is foreground. Input travels through the real virtio device.
             events = [{'type': 'key', 'data': {'key': {'type': 'qcode', 'data': 'x'},

@@ -1016,8 +1016,17 @@ pub(crate) fn pump()
     let flight = flights.swap_remove(at);
     drop(flights);
     // No manager, queue or operation-list guard survives completion processing.
-    if let Progress::Pending(flight) = advance(flight)
+    let document = flight.key.record == Record::Application
+                   || flight.key.record == Record::File && flight.key.operation == CATALOG;
+    match advance(flight)
     {
-        FLIGHTS.lock().push(flight);
+        Progress::Pending(flight) => FLIGHTS.lock().push(flight),
+        Progress::Done(_) =>
+        {
+            if document
+            {
+                crate::toolbox::processes::documents::io_changed();
+            }
+        }
     }
 }

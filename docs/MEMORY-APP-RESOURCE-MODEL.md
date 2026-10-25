@@ -1160,11 +1160,11 @@ invalid public ID as a rollback acknowledgement. Unknown provider operations
 are rejected before admission or setting the running flag.
 
 The icon-group and transfer EXIT loops are removed. Executable pins now use
-registered shared aliases; document delivery remains staged migration work. Canonical public SDK tests cover foreign/stale/reused IDs,
+registered shared aliases; document delivery now uses its own registered batch/scoped-alias lifetime. Canonical public SDK tests cover foreign/stale/reused IDs,
 no-change abandonment, real guard Drop, owner-walk refusal/retry and a fresh
 group committing after cleanup. Native process workers deliberately leave an
 actual group and its backing among their 35 registered resources. Complete
-transfer/alias and I/O quiescence gates remain open, including M-D12.
+remaining alias and I/O quiescence gates remain open, including M-D12.
 
 ## Transfer coordinators hold the process I/O death barrier
 
@@ -1234,7 +1234,7 @@ its subject. A failure before the walk can enter leaves live resources for the
 ordinary retirement checkpoint to drain. No per-input retries or new fixed
 capacity are introduced.
 
-Document batches/pins, immutable image ownership, volume/device/module aliases,
+Immutable image ownership, volume/device/module aliases,
 M-D12 child-I/O attribution and the full owner-walk/launch/recovery gate remain
 open. Ledger lifetimes are not byte accounting: attribution, quotas against
 committed pages and actual heap/page reclamation still need the later allocator
@@ -1253,3 +1253,56 @@ aggregate Toolbox, bounded Finder selection/drag and original-sprite cursors.
 Native/classic ABI smoke, boundaries, formatting and 52-library API generation
 pass; tested packaged image hashes remain unchanged through ABI packaging.
 These checks do not yet exercise injected failure of native thread creation.
+
+
+## Document batches and scoped catalog aliases
+
+Document delivery now uses registered DBAT/DBST native storage with opaque u64
+IDs and grow-until-memory policy. The native-only sixteen-batch projection is
+removed. Neither a batch nor a file alias can change its authenticated owner.
+Commit clones the bounded delivery snapshot into a new receiver-owned batch,
+shares catalog aliases to the receiver, publishes its notification, and releases
+the sender. Refusal leaves the source set intact and schedules cleanup of any
+unpublished receiver state. The native event decoder preserves the full ID.
+The development ABI remains 1 and all producers/consumers rebuild together;
+the classic treaty and its other projection namespaces are unchanged.
+
+Executable and document references share the catalog-alias store. A document
+batch owns a non-cloneable scope; its pin aliases hold read-only scope leases.
+The owner walk can visit aliases before their batch's I/O finishes: preallocated
+native removal guards retain those aliases, their target references and the
+process barrier until the actual scope closes. This is successful deferral, not
+a quarantine error. The real File service admits unpinning only after matching
+lower I/O has drained. Closing the scope releases ready guards; backing and
+process retirement still follow their own unique tickets. Ordinary document
+Drop/Abort invalidates immediately while cleanup remains retained.
+
+The document-specific EXIT scan and hand-maintained pin list are deleted.
+Cancellation and lower-flight terminal completion publish a cleanup revision;
+a bounded pass visits each waiting batch once for that change. No document scan
+runs on physical input while waiting for I/O. Normal live-owner completion does
+not wake the process reaper. Bulk alias removal makes one metadata pass and
+stopping owners refuse new admission before allocation or value construction.
+
+Image, volume/device/module/resource aliases, M-D12 transfer child attribution,
+full I/O-scope integration and launch/Finder recovery remain staged. Byte
+accounting, dynamic process/thread/image capacity, live pages/MMU and userspace
+std are not enabled by this document migration.
+
+Qualification: 255 scoped host cases pass (one separate System gate), including
+wide request layout, shared-facility deferral/quota/reuse and canonical SDK
+protection through a held asynchronous scope. Nine native cases pass: both
+process campaigns, provider workflow, real external Finder document drops,
+Text Edit preference documents/open/save, both disconnected endpoints,
+aggregate Toolbox, bounded Finder selection/drag and original-sprite cursors.
+Native actors hold 20 batches, exercise stale/foreign/unsupported/duplicate
+requests with readable diagnostics, check the full-width typed notification,
+and return with a real receiving batch and three scoped pins pending. Rust
+asserts their four-resource barrier and stack-reclaim/retirement ordering;
+ordinary process campaigns retain their 37-resource census. Revisioned
+inspection retries reacquire snapshots after typed stale-read refusals.
+Native/classic ABI, boundaries, formatting and 52-library API generation pass;
+tested packaged image hashes remain unchanged through ABI packaging. Delayed
+document I/O is held by the trusted host scope fixture; native process exit
+exercises actual batch/pin deferral, and provider tests exercise real I/O
+separately. This is not the full child-I/O attribution or fault-containment gate.
