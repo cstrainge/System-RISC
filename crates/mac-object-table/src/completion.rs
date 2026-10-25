@@ -137,6 +137,11 @@ pub(crate) struct Completion<G: InvocationGate>
 }
 impl<G: InvocationGate> Completion<G>
 {
+    pub(crate) fn key(&self) -> ResourceKey
+    {
+        self.key
+    }
+
     pub(crate) fn receive(&mut self, ticket: ReleasedResource) -> Result<(), CompletionError>
     {
         if self.key != ticket.key()

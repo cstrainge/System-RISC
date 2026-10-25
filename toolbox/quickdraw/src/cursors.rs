@@ -22,7 +22,7 @@ use crate::{Client, Point, Rect, Result};
 pub struct Cursors<'a>
 {
     client: Client<'a>,
-    scope:  i16
+    scope:  mac_abi::resources::Scope
 }
 impl<'a> Cursors<'a>
 {

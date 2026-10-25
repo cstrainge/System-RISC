@@ -4,6 +4,34 @@ mod support;
 mod conformance;
 
 #[test]
+fn native_resource_scopes_preserve_full_ids_and_reject_malformed_tags()
+{
+    use mac_abi::resources::{self as wire, Scope};
+    use mac_toolbox::ResourceScope;
+    for raw in [wire::SYSTEM, wire::CHAIN, wire::APPLICATION, Scope::image(0xfedc_ba98_7654_3210)]
+    {
+        assert!(raw.valid());
+        assert_eq!(ResourceScope::from_raw(raw).unwrap().raw(), raw);
+    }
+    for raw in [Scope::image(0),
+                Scope { kind:     4,
+                        reserved: 0,
+                        image:    1 },
+                Scope { kind:     2,
+                        reserved: 0,
+                        image:    1 },
+                Scope { kind:     3,
+                        reserved: 1,
+                        image:    1 }]
+    {
+        assert!(!raw.valid());
+        let error = ResourceScope::from_raw(raw).unwrap_err();
+        assert_eq!(error, mac_toolbox::Error::BadArgument);
+        assert!(!error.to_string().is_empty());
+    }
+}
+
+#[test]
 fn native_events_and_errors_are_decoded_through_real_services()
 {
     support::with_system(|system| conformance::rust_api::events_and_errors(system).unwrap());

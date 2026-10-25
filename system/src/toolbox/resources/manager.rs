@@ -12,7 +12,7 @@ pub struct Files
 /// outlives their own borrow; no global image reference escapes this surface.
 pub(crate) trait ImageCatalog: Sync
 {
-    fn resources(&self, index: usize) -> Option<&[Resource]>;
+    fn resources(&self, index: u64) -> Option<&[Resource]>;
 }
 #[derive(Clone, Copy)]
 pub struct Manager<'a>
@@ -22,7 +22,9 @@ pub struct Manager<'a>
     fonts:              &'a [Resource],
     images:             Option<&'a dyn ImageCatalog>,
     #[cfg(target_arch = "riscv64")]
-    application_origin: u64
+    application_origin: u64,
+    #[cfg(target_arch = "riscv64")]
+    image_pin:          Option<&'a crate::images::Read>
 }
 impl<'a> Manager<'a>
 {
@@ -34,32 +36,47 @@ impl<'a> Manager<'a>
                fonts,
                images: None,
                #[cfg(target_arch = "riscv64")]
-               application_origin: 0 }
+               application_origin: 0,
+               #[cfg(target_arch = "riscv64")]
+               image_pin: None }
     }
 
     #[cfg(target_arch = "riscv64")]
-    pub(crate) fn with_images(mut self, images: &'a dyn ImageCatalog, application_origin: u64)
+    pub(crate) fn with_images(mut self, images: &'a dyn ImageCatalog, application_origin: u64,
+                              image_pin: Option<&'a crate::images::Read>)
                               -> Self
     {
         self.images = Some(images);
         self.application_origin = application_origin;
+        self.image_pin = image_pin;
         self
     }
 
     #[cfg(target_arch = "riscv64")]
-    pub(crate) fn application_origin(self) -> u64
+    pub(crate) fn retain_origin(self) -> Result<Option<crate::images::Read>, Status>
     {
-        self.application_origin
+        self.image_pin.map(crate::images::Read::retain).transpose()
     }
 
-    pub fn all(self, scope: i16) -> Result<Vec<(i16, &'a Resource)>, Status>
+    /// A returned application resource captures its actual source identity;
+    /// keeping the logical view must never retarget it to a later application.
+    pub(crate) fn resolved_scope(self, scope: Scope) -> Scope
     {
-        if scope >= LOADED_IMAGE_BASE
+        #[cfg(target_arch = "riscv64")]
+        if scope == APPLICATION && self.application_origin != 0
         {
-            let resources = self.images
-                                .ok_or(BAD_ARGUMENT)?
-                                .resources((scope - LOADED_IMAGE_BASE) as usize)
-                                .ok_or(BAD_ARGUMENT)?;
+            return Scope::image(self.application_origin);
+        }
+        scope
+    }
+
+    pub fn all(self, scope: mac_abi::resources::Scope)
+               -> Result<Vec<(Scope, &'a Resource)>, Status>
+    {
+        if let Some(image) = scope.image_id()
+        {
+            let resources =
+                self.images.ok_or(BAD_ARGUMENT)?.resources(image).ok_or(BAD_ARGUMENT)?;
             return Ok(resources.iter().map(|resource| (scope, resource)).collect());
         }
         if ![CHAIN, SYSTEM, APPLICATION].contains(&scope)
@@ -71,7 +88,7 @@ impl<'a> Manager<'a>
         {
             for r in self.application
             {
-                resources.push((APPLICATION, r));
+                resources.push((self.resolved_scope(APPLICATION), r));
             }
         }
         if scope == CHAIN || scope == SYSTEM
@@ -84,14 +101,13 @@ impl<'a> Manager<'a>
         Ok(resources)
     }
 
-    pub fn get(self, scope: i16, key: ResourceKey) -> Result<(i16, &'a Resource), Status>
+    pub fn get(self, scope: mac_abi::resources::Scope, key: ResourceKey)
+               -> Result<(Scope, &'a Resource), Status>
     {
-        if scope >= LOADED_IMAGE_BASE
+        if let Some(image) = scope.image_id()
         {
-            let resources = self.images
-                                .ok_or(BAD_ARGUMENT)?
-                                .resources((scope - LOADED_IMAGE_BASE) as usize)
-                                .ok_or(BAD_ARGUMENT)?;
+            let resources =
+                self.images.ok_or(BAD_ARGUMENT)?.resources(image).ok_or(BAD_ARGUMENT)?;
             return resources.iter()
                             .find(|resource| resource.kind == key.kind && resource.id == key.id)
                             .map(|resource| (scope, resource))
@@ -101,7 +117,7 @@ impl<'a> Manager<'a>
         if (scope == CHAIN || scope == APPLICATION)
            && let Some(r) = self.application.iter().find(|r| r.kind == key.kind && r.id == key.id)
         {
-            return Ok((APPLICATION, r));
+            return Ok((self.resolved_scope(APPLICATION), r));
         }
         if (scope == CHAIN || scope == SYSTEM)
            && let Some(r) =
@@ -119,8 +135,8 @@ impl<'a> Manager<'a>
         }
     }
 
-    pub fn named(self, scope: i16, kind: [u8; 4], name: &str)
-                 -> Result<(i16, &'a Resource), Status>
+    pub fn named(self, scope: mac_abi::resources::Scope, kind: [u8; 4], name: &str)
+                 -> Result<(Scope, &'a Resource), Status>
     {
         self.all(scope)?
             .into_iter()
@@ -130,7 +146,7 @@ impl<'a> Manager<'a>
             .ok_or(NOT_FOUND)
     }
 
-    pub fn info(origin: i16, resource: &Resource) -> ResourceInfo
+    pub fn info(origin: mac_abi::resources::Scope, resource: &Resource) -> ResourceInfo
     {
         let mut info = ResourceInfo { key: ResourceKey { kind: resource.kind,
                                                          id:   resource.id },
@@ -152,11 +168,17 @@ impl<'a> Manager<'a>
         info
     }
 
-    /// All shipped resources are resident and pinned. Release drops a caller's
-    /// logical reference; it does not purge OS fonts or loaded definition data.
+    /// Resource views carry a source identity, not a persistent image pin.
+    /// Each request borrows retained source data for its own duration; release
+    /// drops the caller's logical view without purging System fonts.
     pub fn request(self, call: &mut ResourceCall, name: &str, output: &mut [u8])
                    -> Result<(), Status>
     {
+        if !call.scope.valid()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+
         match call.operation
         {
             COUNT =>

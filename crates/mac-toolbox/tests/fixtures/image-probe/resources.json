@@ -1,0 +1,21 @@
+{
+  "name": "ImageProbe",
+  "file_type": "APPL",
+  "creator": "IMGT",
+  "role": "application",
+  "abi_version": 1,
+  "load_base": "0x85000000",
+  "load_limit": "0x86000000",
+  "description": "Public image lifetime acceptance",
+  "resources": [
+    {
+      "type": "STR ",
+      "id": 2000,
+      "symbol": "APPLICATION_SCOPE",
+      "payload": {
+        "format": "pstring",
+        "text": "image-probe"
+      }
+    }
+  ]
+}

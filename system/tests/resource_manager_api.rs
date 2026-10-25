@@ -275,7 +275,10 @@ fn low_level_client_rejects_invalid_scopes_operations_and_absent_keys()
                               id:   -32510 };
     for operation in [GET, INFO, READ, LOAD, RELEASE, COUNT, COUNT_TYPES, TYPE_INDEX, INDEX, NAMED]
     {
-        assert!(matches!(client().resource(request(operation, 123, known), &mut []),
+        let invalid = Scope { kind:     123,
+                              reserved: 0,
+                              image:    0 };
+        assert!(matches!(client().resource(request(operation, invalid, known), &mut []),
                          Err(Error::BadArgument)));
     }
     assert!(matches!(client().resource(request(999, CHAIN, known), &mut []),

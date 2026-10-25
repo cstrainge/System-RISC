@@ -175,6 +175,10 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                        crate::drivers::registry::interfaces::ReleaseInterfaces(storage))
                                        .map_err(KindAccessError::Registry)?;
                                }
+                               for kind in crate::images::Registration::ALL {
+                                   registry.register(&owner, kind.specification(), cleanup::context::Desktop(kind))
+                                       .map_err(KindAccessError::Registry)?;
+                               }
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
                            })?;
     Ok(InvocationGate::run(|| run(&registry.lock())))
@@ -185,6 +189,18 @@ pub(crate) fn controls_kinds() -> Result<(KindLease, KindLease), mac_abi::Status
 {
     registry(|registry| Ok((registry.get(KindCode(*b"CTRL"))?, registry.get(KindCode(*b"CSTA"))?))).map_err(|error| error.status())?
                                                          .map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn image_kinds() -> Result<[KindLease; 4], mac_abi::Status>
+{
+    registry(|registry| {
+        Ok([registry.get(KindCode(*b"IMAG"))?,
+            registry.get(KindCode(*b"IMST"))?,
+            registry.get(KindCode(*b"IMOB"))?,
+            registry.get(KindCode(*b"IMOS"))?])
+    }).map_err(|error| error.status())?
+      .map_err(|error| registry_status(&error))
 }
 
 #[cfg(target_arch = "riscv64")]

@@ -1,11 +1,44 @@
 //! Read-only native Resource Manager contracts for resident resource forks.
 use crate::ResourceKey;
-pub const CHAIN: i16 = -1;
-pub const SYSTEM: i16 = 0;
-pub const APPLICATION: i16 = 1;
-/// Read-only pinned image scopes advertised by resident services. They never
-/// select an execution identity or grant access to mutable application objects.
-pub const LOADED_IMAGE_BASE: i16 = 256;
+/// Native selection keeps its tag separate from the full facility-issued image
+/// ID. Classic resource selectors are converted at their own trap boundary.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Scope
+{
+    pub kind:     u32,
+    pub reserved: u32,
+    pub image:    u64
+}
+impl Scope
+{
+    pub const fn image(id: u64) -> Self
+    {
+        Self { kind:     3,
+               reserved: 0,
+               image:    id }
+    }
+
+    pub const fn valid(self) -> bool
+    {
+        self.reserved == 0
+        && ((self.kind <= 2 && self.image == 0) || (self.kind == 3 && self.image != 0))
+    }
+
+    pub const fn image_id(self) -> Option<u64>
+    {
+        if self.valid() && self.kind == 3 { Some(self.image) } else { None }
+    }
+}
+pub const CHAIN: Scope = Scope { kind:     1,
+                                 reserved: 0,
+                                 image:    0 };
+pub const SYSTEM: Scope = Scope { kind:     0,
+                                  reserved: 0,
+                                  image:    0 };
+pub const APPLICATION: Scope = Scope { kind:     2,
+                                       reserved: 0,
+                                       image:    0 };
 pub const GET: u32 = 0;
 pub const NAMED: u32 = 1;
 pub const COUNT: u32 = 2;
@@ -75,7 +108,7 @@ pub struct FileVersionCall
 pub struct ResourceInfo
 {
     pub key:         ResourceKey,
-    pub origin:      i16,
+    pub origin:      crate::resources::Scope,
     pub attributes:  u16,
     pub length:      usize,
     pub name_length: u32,
@@ -106,7 +139,7 @@ impl ResourceInfo
 pub struct ResourceCall
 {
     pub operation:   u32,
-    pub scope:       i16,
+    pub scope:       crate::resources::Scope,
     pub reserved:    u16,
     pub key:         ResourceKey,
     pub index:       u32,

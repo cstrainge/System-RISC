@@ -84,6 +84,8 @@ fn run(malformed: bool)
     for marker in
         ["TRAPS_READY: resident ecall dispatcher ABI=1",
          "PROCESS_INVALID_LAUNCH_PASS",
+         "PROCESS_IMAGE_LIFETIMES_PASS distinct-files=16 full-width=passed foreign=passed \
+          stale=passed",
          "PROCESS_PROVISIONAL_CLEANUP_PASS cases=32 resource-context=restored retry=passed",
          "FORMAT_ERROR_STATUS_PASS budget=no-memory corrupt=corrupt-data missing=not-found \
           translation=translation-required retry=passed",
@@ -130,6 +132,61 @@ fn run(malformed: bool)
                             });
         assert!(stopped < retired, "provisional domain retired before cleanup: {serial}");
     }
+    assert_eq!(serial.lines().filter(|line| *line == "IMAGE_PROBE_PASS").count(),
+               16,
+               "all distinct-file image probes must execute: {serial}");
+    assert_eq!(serial.lines().filter(|line| *line == "IMAGE_PROBE_DEFINITION_PASS").count(),
+               16,
+               "all probes must draw through their application-owned CDEF: {serial}");
+    let definitions: Vec<_> = serial.lines()
+                                    .filter(|line| line.starts_with("CODE_LOADED CDEF-32759 "))
+                                    .filter_map(|line| {
+                                        let (_, tail) = line.split_once(" origin=")?;
+                                        let (origin, tail) = tail.split_once(" linked=")?;
+                                        let origin = origin.parse::<u64>().ok()?;
+                                        let (_, base) = tail.split_once(" actual=")?;
+                                        (origin != 0).then_some((origin, base))
+                                    })
+                                    .collect();
+    assert_eq!(definitions.len(), 16, "definition source was lost or substituted: {serial}");
+    assert!(definitions.iter().all(|(origin, _)| *origin > u64::from(u32::MAX)));
+    assert_eq!(definitions.iter()
+                          .map(|(origin, _)| origin)
+                          .collect::<std::collections::BTreeSet<_>>()
+                          .len(),
+               16,
+               "definition binding retargeted a previous source");
+    assert_eq!(definitions.iter()
+                          .map(|(_, base)| base)
+                          .collect::<std::collections::BTreeSet<_>>()
+                          .len(),
+               1,
+               "retired application definitions did not release their physical reservation");
+    let probes: Vec<_> = serial.lines()
+                               .filter_map(|line| {
+                                   let tail = line.strip_prefix("PROCESS_LAUNCHED app=")?;
+                                   let (app, tail) = tail.split_once(" thread=")?;
+                                   let (_, name) = tail.split_once(" name=")?;
+                                   name.starts_with("ImageProbe ").then_some(app)
+                               })
+                               .collect();
+    assert_eq!(probes.len(), 16);
+    for app in probes
+    {
+        let stack =
+            serial.lines()
+                  .position(|line| {
+                      line.starts_with(&format!("PROCESS_THREAD_RECLAIMED app={app} "))
+                  })
+                  .unwrap_or_else(|| panic!("image probe {app} retained its stack: {serial}"));
+        let retired = serial.lines()
+                            .position(|line| line == format!("PROCESS_EXIT app={app}"))
+                            .unwrap_or_else(|| {
+                                panic!("image probe {app} left image aliases/backing pending: \
+                                        {serial}")
+                            });
+        assert!(stack < retired, "image source retired before its execution stack: {serial}");
+    }
     let start = serial.find("PROCESS_SPIN_STARTED\n").expect("spinner never started");
     let progress =
         serial.find("PROCESS_OBSERVER_PROGRESS_DURING_SPIN\n").expect("observer made no progress");
@@ -170,7 +227,9 @@ fn run(malformed: bool)
         assert!(stopped < walked && walked < reclaimed && reclaimed < retired,
                 "{app} must retain saved state until another stack reclaims its thread, then \
                  pass the ledger barrier: {serial}");
-        for (kind, live) in [("WIND", 3),
+        for (kind, live) in [("IMAG", 1),
+                             ("IMST", 1),
+                             ("WIND", 3),
                              ("WNST", 1),
                              ("CTRL", 3),
                              ("CSTA", 1),
@@ -213,12 +272,12 @@ fn run(malformed: bool)
         }
         assert!(serial.lines().any(|line| {
                                   line
-                                  == format!("OWNER_WALK app={app} invalidated=29 released=29 \
-                                              quarantined=0 live=0 pending=0 deferred=0 \
-                                              completed=37")
+                                  == format!("OWNER_WALK app={app} invalidated=31 released=30 \
+                                              quarantined=0 live=0 pending=1 deferred=1 \
+                                              completed=39")
                               }),
-                "registered owner walk did not complete all thirty-seven leaked worker resources \
-                 for {app}:\n{serial}");
+                "registered owner walk did not complete all ordinary worker resources while \
+                 retaining its image through stack reclamation for {app}:\n{serial}");
     }
     assert!(!serial.contains("OWNER_CLEANUP_QUARANTINED"),
             "unexpected native cleanup refusal:\n{serial}");
@@ -234,10 +293,10 @@ fn run(malformed: bool)
         serial.lines()
               .position(|line| {
                   line.starts_with(&format!("OWNER_WALK app={document_app} "))
-                  && line.contains("quarantined=0 live=0 pending=4 ")
+                  && line.contains("quarantined=0 live=0 pending=5 ")
               })
-              .expect("document root and three pin aliases must retain their real pending death \
-                       barrier");
+              .expect("document root, three pin aliases and execution image must retain their \
+                       real pending death barrier");
     let reclaimed = serial.lines()
                           .position(|line| {
                               line.starts_with(&format!("PROCESS_THREAD_RECLAIMED \
@@ -271,7 +330,7 @@ fn run(malformed: bool)
     {
         assert_eq!(serial.matches(marker).count(), 2, "missing multiwindow scenario {marker}");
     }
-    let acceptance = serde_json::json!({"status":"passed","acceptance":"mac-toolbox/tests/process_cases.rs plus process_pascal_cases.rs and conformance/application_menu.rs","single_hart_timer_preemption":true,"worker_launches":4,"concurrent_copies":2,"identical_copy_filenames":"passed","relocated_statics_and_pointers":"passed","file_identity_rename_and_move":"passed","invalid_launches":5,"typed_format_status_cases":4,"boot_unique_process_incarnations":"passed","stale_native_and_legacy_ids_after_relaunch":"passed","pascal_conversion_cases":5,"caller_posted_foreign_window_events":12,"atomic_activation_cases":10,"background_creation_cases":4,"background_selection_cases":4,"background_desktop_cases":6,"multiwindow_exit_cases":4,"resource_and_memory_partitions":"passed","window_ownership":"passed","private_and_physical_events":"passed","hide_focus_and_exit":"passed","document_batch_capacity":20,"document_handoff":"new receiver identity, stale sender and foreign disposal rejected","document_scope_exit":"four pending resources drain before actual process retirement","capture":report,"limits":["validated RV64 relocation types only","one OS thread per app","shared address space; no MMU process isolation claim","bounded worker window/handle exit cleanup exercised four times","native UTF8 process services, no 68k Process Manager adapter"]});
+    let acceptance = serde_json::json!({"status":"passed","acceptance":"mac-toolbox/tests/process_cases.rs plus process_pascal_cases.rs and conformance/application_menu.rs","single_hart_timer_preemption":true,"worker_launches":4,"concurrent_copies":2,"identical_copy_filenames":"passed","relocated_statics_and_pointers":"passed","file_identity_rename_and_move":"passed","invalid_launches":5,"typed_format_status_cases":4,"boot_unique_process_incarnations":"passed","stale_native_and_legacy_ids_after_relaunch":"passed","pascal_conversion_cases":5,"caller_posted_foreign_window_events":12,"atomic_activation_cases":10,"background_creation_cases":4,"background_selection_cases":4,"background_desktop_cases":6,"multiwindow_exit_cases":4,"resource_and_memory_partitions":"passed","image_sources":{"distinct_files":16,"full_width":true,"stale_after_reuse":true,"foreign_kind_rejected":true,"saved_view_after_exit":"not-found","stack_before_source_retirement":true},"window_ownership":"passed","private_and_physical_events":"passed","hide_focus_and_exit":"passed","document_batch_capacity":20,"document_handoff":"new receiver identity, stale sender and foreign disposal rejected","document_scope_exit":"document root, three pin aliases and image drain before actual process retirement","capture":report,"limits":["validated RV64 relocation types only","one OS thread per app","shared address space; no MMU process isolation claim","bounded worker window/handle exit cleanup exercised four times","native UTF8 process services, no 68k Process Manager adapter"]});
     fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
     fs::write(root.join("results/system7/process-checks.json"),
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();

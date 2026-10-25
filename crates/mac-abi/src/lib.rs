@@ -4,6 +4,42 @@
 pub mod power;
 
 pub const ABI_VERSION: u32 = 1;
+/// Compile-time layout contract, independent of the unreleased ABI version.
+/// Native descriptors carry this fingerprint so stale packages fail before
+/// entry rather than interpreting new payloads with an older struct layout.
+pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
+    let words = [core::mem::size_of::<usize>(),
+                 core::mem::size_of::<resources::Scope>(),
+                 core::mem::offset_of!(resources::Scope, image),
+                 core::mem::size_of::<resources::ResourceCall>(),
+                 core::mem::size_of::<resources::ResourceInfo>(),
+                 core::mem::size_of::<processes::ProcessInfo>(),
+                 core::mem::offset_of!(processes::ProcessInfo, image),
+                 core::mem::size_of::<processes::ProcessCall>(),
+                 core::mem::size_of::<quickdraw::IconCall>(),
+                 core::mem::size_of::<quickdraw::PictureCall>(),
+                 core::mem::size_of::<quickdraw::CursorResourceCall>(),
+                 core::mem::size_of::<menus::MenuCall>(),
+                 core::mem::size_of::<menus::MenuDefinitionState>(),
+                 resources::SYSTEM.kind as usize,
+                 resources::CHAIN.kind as usize,
+                 resources::APPLICATION.kind as usize,
+                 resources::Scope::image(1).kind as usize];
+    let mut hash = 2166136261u32;
+    let mut at = 0;
+    while at < words.len()
+    {
+        let bytes = (words[at] as u64).to_le_bytes();
+        let mut byte = 0;
+        while byte < bytes.len()
+        {
+            hash = (hash ^ bytes[byte] as u32).wrapping_mul(16777619);
+            byte += 1;
+        }
+        at += 1;
+    }
+    hash | 1
+};
 pub type Status = i32;
 pub const OK: Status = 0;
 pub const BAD_ABI: Status = -1;

@@ -187,6 +187,19 @@ impl<G: InvocationGate> OwnerRef<G>
         self.access(|index| index.summary())
     }
 
+    /// Atomic root-release barrier. Unknown future kinds count automatically;
+    /// a manager excludes only its own root/backing, never a cleanup roll call.
+    pub fn has_resources_outside(&self, excluded: &[KindCode]) -> bool
+    {
+        self.access(|index| {
+                index.pools().any(|pool| {
+                                 !excluded.contains(&pool.kind())
+                                 && (pool.live() != 0 || pool.pending() != 0)
+                             })
+                || index.summary().completion_faults != 0
+            })
+    }
+
     /// The revision check and value copy share the same invocation/metadata
     /// lock. Callers receive neither a mutable pool nor an escaping guard.
     pub fn pool_at(&self, revision: u64, at: usize) -> Result<PoolSummary, LedgerReadError>

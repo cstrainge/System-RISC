@@ -347,11 +347,15 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     return if status == 0 { Ok(()) } else { Err(status as Status) };
                 }
                 #[cfg(target_arch = "riscv64")]
-                return crate::kernel::with_resources(|manager| unsafe {
-                           crate::toolbox::resources::native::dispatch(manager, pointer, size)
-                       }).map_or(Err(NOT_SUPPORTED), |status| {
-                             if status == 0 { Ok(()) } else { Err(status as Status) }
-                         });
+                {
+                    let call =
+                        unsafe { request::<mac_abi::resources::ResourceCall>(pointer, size) }?;
+                    return crate::kernel::with_resources_in(call.scope, |manager| unsafe {
+                               crate::toolbox::resources::native::dispatch(manager, pointer, size)
+                           }).map_or_else(Err, |status| {
+                                 if status == 0 { Ok(()) } else { Err(status as Status) }
+                             });
+                }
                 #[cfg(not(target_arch = "riscv64"))]
                 return Err(NOT_SUPPORTED);
             }
@@ -378,13 +382,13 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 #[cfg(target_arch = "riscv64")]
                 let drawing = if call.operation == PICTURE_RESOURCE
                 {
-                    crate::kernel::with_resources(|resources| {
+                    crate::kernel::with_resources_in(call.scope, |resources| {
                         decode(&resources.get(call.scope,
                                               ResourceKey { kind: *b"PICT",
                                                             id:   call.id })?
                                          .1
                                          .data)
-                    }).ok_or(NOT_SUPPORTED)??
+                    })??
                 }
                 else
                 {
@@ -519,24 +523,24 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 }
                 #[cfg(target_arch = "riscv64")]
                 {
-                    crate::kernel::with_resources(|manager| {
-                    if call.operation != ICON_PLOT
-                    {
-                        return super::icons_service::query(manager, call);
-                    }
-                    let drawing = super::icons_service::Drawing::new(manager,
-                                                                     call,
-                                                                     service::Port::default())?;
-                    if call.surface.is_null()
-                    {
-                        return crate::kernel::with_desktop(|d|d.icon(call,drawing)).unwrap_or_else(|error|Err(error.status()));
-                    }
-                    let surface = unsafe {
-                        request::<Surface>(call.surface.cast(), core::mem::size_of::<Surface>())
-                    }?;
-                    let mut canvas = unsafe { surface.canvas() }.ok_or(BAD_ARGUMENT)?;
-                    drawing.paint(&mut canvas)
-                    }).ok_or(NOT_SUPPORTED)?
+                    crate::kernel::with_resources_in(call.scope, |manager| {
+                        if call.operation != ICON_PLOT
+                        {
+                            return super::icons_service::query(manager, call);
+                        }
+                        let drawing = super::icons_service::Drawing::new(manager,
+                                                                         call,
+                                                                         service::Port::default())?;
+                        if call.surface.is_null()
+                        {
+                            return crate::kernel::with_desktop(|d|d.icon(call,drawing)).unwrap_or_else(|error|Err(error.status()));
+                        }
+                        let surface = unsafe {
+                            request::<Surface>(call.surface.cast(), core::mem::size_of::<Surface>())
+                        }?;
+                        let mut canvas = unsafe { surface.canvas() }.ok_or(BAD_ARGUMENT)?;
+                        drawing.paint(&mut canvas)
+                    })?
                 }
             }
             _ => Err(NOT_SUPPORTED)

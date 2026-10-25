@@ -21,7 +21,7 @@ consumers land. Linking the crate does not activate its page or allocator model.
 | Page layer | `…/pages.rs` | Platform geometry, typed addresses, permissions/ownership, borrowed boot reservations, largest-leaf mapping plan, reserved `PageBox`/address-space root |
 | Domains/accounts | `…/policy.rs`, `mac-object-table/src/domain.rs` | Boot-monotonic incarnation, account/reserve records, checked registry construction; no live allocator charges yet |
 | Facility v2 | `mac-object-table/src/domain.rs` | Owner-index-authorized per-kind bitmap pools, generations, rotation, retirement, capacity policy, release tickets and registration shapes; managed controls use owner-backed value storage |
-| Shared aliases | `mac-object-table/src/aliases.rs` | System-owned targets and per-process registered aliases, validated sharing, last-alias release and retained target cleanup; executable pins are the first resident consumer |
+| Shared aliases | `mac-object-table/src/aliases.rs`, `system/src/images.rs` | System-owned immutable image sources and registered process aliases; source reads, definition bindings and execution pins retain backing through actual cleanup |
 | Process/thread | `…/process.rs` | Address-space, image/memory/legacy capabilities, dynamic threads, saved manager slots, backend frame, vector marker and discovered save-area layout |
 | Execution use | `…/image.rs` | Nonblocking load exclusion, fallible gate allocation, atomic load-to-pin handoff; real scheduler records retain pins until stack reclamation |
 | Control zone | `…/zone.rs` | Same-owner instance/zone binding, configured zone header, host-forwarding allocator contract; no allocator installed |
@@ -79,9 +79,10 @@ The policy is not a gate on public chain/claim/mapping registry existence.
 Reactor Room explicitly reports process/module domains with partial-ledger coverage. See
 [Reactor Room staging](REACTOR.md) and [the policy wire format](../FORMAT.md#application-authority-policy-acap-0-development-abi-1).
 
-This is the start of §13.2/2, not completion: other managers do not yet insert
-their objects into process ledgers, and the EXIT/rollback cleanup lists and
-fixed-eight scheduler/heap/image storage still exist. The real process fixture
+The following sections record successive §13.2 migrations and their remaining
+gates; they do not claim the complete model. Registered image aliases replace
+the fixed source cache, while fixed concurrent scheduler capacity and static
+heap backing still remain. The real process fixture
 checks native and Pascal stale IDs across relaunch, fresh incarnations, shared
 app-menu actions and full-width window resource ownership. The directory's
 greater-than-eight test is host metadata coverage, not a claim of greater-than-
@@ -1800,3 +1801,59 @@ ordering), application UI, aggregate SDK, cursor/boot visuals, panic recovery
 and host-volume workflow. Boundaries, formatting and public API docs pass.
 The private lifecycle campaign caught the scheduler-lock recursion in an initial
 capture implementation; current-context reads now avoid that lock entirely.
+
+### Registered immutable sources and retained image aliases
+
+The fixed eight-entry, never-evicted source cache is replaced by the shared
+alias facility. Immutable source resources are System-owned targets (IMOB/IMOS);
+each process admits its own generation-checked image alias and backing
+(IMAG/IMST) under its existing genuine owner. Identical sources share immutable
+resource storage, while execution reservations remain private. The initial
+policy is resident-with-image: releasing the final alias drops the source;
+there is no warm source cache.
+
+Admission returns the actual registered completion receipt. Thread context and
+process records carry that receipt rather than recreating authority from an ID.
+Resource operations hold a scoped read through their complete invocation;
+cached application definitions retain their source until the process has no
+remaining non-image resources or executing threads. The final image cleanup
+uses a System-only selection so it cannot retain its own last source pin.
+Stopping invalidates public aliases immediately; retained completion reads
+remain available only through the original receipt. Physical placement includes
+pending and deferred reservations, preventing reuse before quiescence.
+
+The scheduler destroys the saved stack before releasing execution and source
+pins. Retirement acknowledges the actual deferred alias only after its readers,
+threads and other registered resources are gone. Failed loads remain owned by
+the provisional process and follow that same walk. Cleanup allocates no new
+tickets and does not scan active images on input events.
+
+Native resource scopes carry a separate selection tag and the complete 64-bit
+image ID. Returned resource views record their actual source; keeping a view
+does not keep an exited application alive or redirect a later read into another
+application. Public process snapshots expose the read-only image identity.
+Native descriptors validate a generated ABI-layout fingerprint while the
+unreleased ABI stays at version 1; stale native packages require a world rebuild.
+Classic resource-fork bytes and classic calling conventions are unaffected.
+
+This closes registered source ownership and flat execution reservation reuse.
+Shared read-only executable frames, private writable page mappings, byte charges,
+dynamic concurrent process/thread capacity and MMU activation remain separate
+gates. Source sharing alone is not executable-frame sharing or process isolation.
+
+Qualification passes 578 scoped host cases (67 VM-dependent cases excluded),
+including one-slot alias reuse and retained completion authority. Both native
+lifecycle campaigns launch 16 distinct files, reject full-width stale and
+foreign-kind image IDs, reject saved resource views after exit, and verify
+stack reclamation precedes domain retirement. Each probe draws through its own
+application CDEF; all 16 source identities remain distinct while the reclaimed
+definition reservation is reused. The preemption fixture now waits for the
+child's explicit public start handshake and fresh switches, excluding startup
+switches from its no-trap progress evidence.
+
+The optimized installation, application UI, aggregate SDK, cursor/boot visuals,
+panic recovery and writable host-volume workflow pass. Native/classic ABI smoke,
+all 17 ROM boot/rejection cases, compiled boundaries, formatting and public
+documentation (52 crates) pass. The code-resource codec consumes only the
+allocation-free ABI contract to validate its layout fingerprint; the compiled
+boundary gate still forbids service or allocator implementations in clients.

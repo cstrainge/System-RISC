@@ -137,6 +137,18 @@ pub struct CompletionKey
     id:  u64,
     key: ResourceKey
 }
+impl CompletionKey
+{
+    pub fn id(self) -> u64
+    {
+        self.id
+    }
+
+    pub fn owner(self) -> DomainId
+    {
+        self.key.owner()
+    }
+}
 
 /// Publication returns its authenticated completion key from the same owner
 /// transaction that installs the payload. Invalidation immediately after that
@@ -750,6 +762,13 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         self.owners.iter().flat_map(Values::iter)
     }
 
+    /// Trusted retained metadata, including invalidated payloads awaiting their
+    /// unique release ticket. This does not validate any ordinary object ID.
+    pub fn retained_values(&self) -> impl Iterator<Item = &T>
+    {
+        self.owners.iter().flat_map(|owner| owner.slots.iter().flatten().map(|entry| &entry.value))
+    }
+
     /// Borrow only live payloads. Validation finishes before the caller can
     /// mutate a value; no owner lock or temporary identity array is retained.
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T>
@@ -911,6 +930,14 @@ pub struct Removed<T, G: InvocationGate>
 }
 impl<T, G: InvocationGate> Removed<T, G>
 {
+    /// Read only through the original admission receipt after invalidation.
+    /// Matching an ID alone never upgrades a removal guard into live authority.
+    pub fn completing(&self, receipt: &CompletionKey) -> Option<&T>
+    {
+        (receipt.id == self.id && receipt.key == self.completion.key()).then(|| self.value.as_ref())
+                                                                       .flatten()
+    }
+
     /// Ordinary identity metadata; removal has already invalidated it.
     pub fn id(&self) -> u64
     {

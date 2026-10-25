@@ -180,7 +180,11 @@ def check(args):
         [nm, '--defined-only', '--demangle', str(release / 'System')], text=True)
     assert 'mac_system::toolbox' in system_symbols, 'System symbols missing; rebuild without stripping'
     assert 'mac_formats::elf::' not in system_symbols, 'System must not contain an ELF loader'
-    assert not normal_dependencies(by_name['mac-code-resource']), 'wire codec must remain allocation-free and independent of services'
+    # NABI validates the actual native wire-layout fingerprint. mac-abi is the
+    # allocation-free, implementation-independent contract checked above; the
+    # codec may consume that contract, never a service or allocator backend.
+    assert normal_dependencies(by_name['mac-code-resource']) == ['mac-abi'], \
+        'wire codec may depend only on the allocation-free ABI contract'
     assert 'standard_window_definition' not in system_symbols, 'WDEF implementation belongs to the resource'
     assert 'standard_control_definition' not in system_symbols, 'CDEF implementation belongs to the resource'
     assert 'standard_menu_definition' not in system_symbols, 'MDEF implementation belongs to the resource'

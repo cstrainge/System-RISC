@@ -377,9 +377,9 @@ impl Desktop
             Ok(owner) => owner,
             Err(status) => return status
         };
-        let result = crate::kernel::with_resources(|resources| {
+        let result = crate::kernel::with_resources_in(call.scope, |resources| {
                          self.menus.request(&owner, call, resources)
-                     }).unwrap_or(Err(NOT_SUPPORTED));
+                     }).unwrap_or_else(Err);
         if matches!(result, Ok(true)) && self.owner == self.foreground
         {
             self.menu_cache.invalidate();
@@ -1419,20 +1419,18 @@ impl Desktop
     pub fn cursor_resource(&mut self, call: &mut mac_abi::quickdraw::CursorResourceCall)
                            -> Result<(), Status>
     {
-        let changed = crate::kernel::with_resources(|resources| {
-                          self.cursors.resource_request(call,
-                                                        self.events.mouse,
-                                                        Self::when(),
-                                                        |kind, id, scope| {
-                                                            resources.get(scope,
-                                                                          ResourceKey { kind,
-                                                                                        id })
-                                                                     .ok()
-                                                                     .map(|(_, resource)| {
-                                                                         resource.data.clone()
-                                                                     })
-                                                        })
-                      }).ok_or(NOT_SUPPORTED)??;
+        let changed = crate::kernel::with_resources_in(call.scope, |resources| {
+            self.cursors.resource_request(call,
+                                          self.events.mouse,
+                                          Self::when(),
+                                          |kind, id, scope| {
+                                              resources.get(scope,
+                                                            ResourceKey { kind,
+                                                                          id })
+                                                       .ok()
+                                                       .map(|(_, resource)| resource.data.clone())
+                                          })
+        })??;
         self.cursor_dirty |= changed && self.owner == self.foreground;
         Ok(())
     }

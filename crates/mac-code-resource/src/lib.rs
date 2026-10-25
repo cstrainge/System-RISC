@@ -44,6 +44,7 @@ impl Descriptor
         bytes[4..6].copy_from_slice(&FORMAT_VERSION.to_be_bytes());
         bytes[6..8].copy_from_slice(&(self.role as u16).to_be_bytes());
         bytes[8..12].copy_from_slice(&self.abi_version.to_be_bytes());
+        bytes[12..16].copy_from_slice(&mac_abi::NATIVE_LAYOUT_FINGERPRINT.to_be_bytes());
         bytes[16..24].copy_from_slice(&self.load_base.to_be_bytes());
         bytes[24..32].copy_from_slice(&self.load_limit.to_be_bytes());
         bytes[32..40].copy_from_slice(&self.entry.to_be_bytes());
@@ -59,9 +60,12 @@ impl Descriptor
         if bytes.len() != DESCRIPTOR_SIZE
            || slice(bytes, 0, 4)? != b"RVN1"
            || be16(bytes, 4)? != FORMAT_VERSION
-           || be32(bytes, 12)? != 0
         {
             return Err(Error("invalid native ABI descriptor header"));
+        }
+        if be32(bytes, 12)? != mac_abi::NATIVE_LAYOUT_FINGERPRINT
+        {
+            return Err(Error("native ABI layout differs; rebuild System and all native packages"));
         }
         let role = match be16(bytes, 6)?
         {
@@ -121,11 +125,18 @@ mod tests
                              entry:       0x80200000 };
         let bytes = d.encode().unwrap();
         assert_eq!(Descriptor::decode(&bytes).unwrap(), d);
-        for (offset, value) in [(4, 2), (7, 4), (8, 2), (12, 1)]
+        for (offset, value) in [(4, 2), (7, 4), (8, 2)]
         {
             let mut bad = bytes;
             bad[offset] = value;
             assert!(Descriptor::decode(&bad).is_err());
         }
+        let mut old = bytes;
+        old[12..16].fill(0);
+        assert_eq!(Descriptor::decode(&old).unwrap_err().0,
+                   "native ABI layout differs; rebuild System and all native packages");
+        let mut wrong = bytes;
+        wrong[12] ^= 1;
+        assert!(Descriptor::decode(&wrong).is_err());
     }
 }

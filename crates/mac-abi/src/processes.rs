@@ -20,6 +20,8 @@ pub struct ProcessInfo
 {
     pub id:          u64,
     pub thread:      u64,
+    /// Readonly image alias identity; zero while image admission is incomplete.
+    pub image:       u64,
     pub volume:      u32,
     pub cnid:        u32,
     pub foreground:  u32,
@@ -34,6 +36,7 @@ impl Default for ProcessInfo
     {
         Self { id:          0,
                thread:      0,
+               image:       0,
                volume:      0,
                cnid:        0,
                foreground:  0,

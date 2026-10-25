@@ -228,6 +228,15 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub fn insert(&mut self, owner: &OwnerRef<G>, value: T, tag: S) -> Result<u64, Error>
         where T: PartialEq
     {
+        self.insert_with_receipt(owner, value, tag).map(store::Publication::id)
+    }
+
+    /// Receipt authority is minted atomically with the alias, not rediscovered
+    /// through an ordinary lookup which could already have been invalidated.
+    pub fn insert_with_receipt(&mut self, owner: &OwnerRef<G>, value: T, tag: S)
+                               -> Result<store::Publication, Error>
+        where T: PartialEq
+    {
         if !owner.accepting()
         {
             return Err(Error::Pool(PoolError::Stopping { owner: owner.owner() }));
@@ -262,7 +271,8 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         result
     }
 
-    fn admit(&mut self, owner: &OwnerRef<G>, target: Target, tag: S) -> Result<u64, Error>
+    fn admit(&mut self, owner: &OwnerRef<G>, target: Target, tag: S)
+             -> Result<store::Publication, Error>
     {
         if !owner.accepting()
         {
@@ -282,9 +292,10 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         let count = object.references.load(Ordering::Acquire);
         let next = count.checked_add(1).ok_or(Error::ReferenceLimit { alias: 0 })?;
         let id = self.aliases
-                     .insert(owner,
-                             Alias { target,
-                                     tag })
+                     .insert_with_receipt(owner, |_| {
+                         Alias { target,
+                                 tag }
+                     })
                      .map_err(Error::Pool)?;
         object.references.store(next, Ordering::Release);
         Ok(id)
@@ -296,7 +307,43 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                  -> Result<u64, Error>
     {
         let target = self.owned(source, id)?.target;
-        self.admit(recipient, target, tag)
+        self.admit(recipient, target, tag).map(store::Publication::id)
+    }
+
+    /// A System broker may expose readonly source data using the existing
+    /// alias access policy. The actual full owner/kind/generation is checked.
+    pub fn get_with_owner(&self, id: u64) -> Option<(DomainId, &T, &S)>
+    {
+        let (owner, alias) = self.aliases.get_with_owner(id)?;
+        Some((owner, &self.objects.get(alias.target.id)?.value, &alias.tag))
+    }
+
+    pub fn completing(&self, receipt: &store::CompletionKey) -> Option<(&T, &S)>
+    {
+        let alias = self.aliases.completing(receipt).or_else(|| {
+                                                         self.deferred.iter().find_map(|removed| {
+                                                                         removed.completing(receipt)
+                                                                     })
+                                                     })?;
+        Some((&self.objects.completing(&alias.target.completion)?.value, &alias.tag))
+    }
+
+    /// Physical reservations must include pending/deferred uses, not just live
+    /// aliases. No ordinary ID or mutable payload authority escapes this view.
+    pub fn retained(&self) -> impl Iterator<Item = (&T, &S)>
+    {
+        self.aliases
+            .retained_values()
+            .chain(self.deferred.iter().map(|removed| &**removed))
+            .filter_map(|alias| {
+                Some((&self.objects.completing(&alias.target.completion)?.value, &alias.tag))
+            })
+    }
+
+    /// Per-change retirement bookkeeping visits only genuinely deferred uses.
+    pub fn deferred_tags(&self) -> impl Iterator<Item = &S>
+    {
+        self.deferred.iter().map(|removed| &removed.tag)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (u64, DomainId, &T, &S)>

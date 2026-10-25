@@ -28,14 +28,14 @@ pub const APPLICATION_PROFILE: u16 = 1;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MenuIcon
 {
-    pub scope:   i16,
+    pub scope:   crate::resources::Scope,
     pub id:      i16,
     pub flags:   u16,
     pub present: u16
 }
 impl MenuIcon
 {
-    pub const fn new(scope: i16, id: i16) -> Self
+    pub const fn new(scope: crate::resources::Scope, id: i16) -> Self
     {
         Self { scope,
                id,
@@ -49,7 +49,7 @@ pub struct MenuCall
 {
     pub operation:    u32,
     pub handle:       u64,
-    pub scope:        i16,
+    pub scope:        crate::resources::Scope,
     pub menu_id:      i16,
     pub item:         u16,
     pub reserved:     u16,
@@ -101,7 +101,7 @@ impl MenuItemState
                                    mark:        0,
                                    style:       0,
                                    separator:   0,
-                                   icon:        MenuIcon { scope:   0,
+                                   icon:        MenuIcon { scope:   crate::resources::SYSTEM,
                                                            id:      0,
                                                            flags:   0,
                                                            present: 0 } };

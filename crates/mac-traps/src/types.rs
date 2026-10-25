@@ -210,22 +210,15 @@ macro_rules! native_flags {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ImageScope(i16);
+pub struct ImageScope(u64);
 impl ImageScope
 {
-    pub const fn from_raw(value: i16) -> Result<Self>
+    pub const fn from_raw(value: u64) -> Result<Self>
     {
-        if value >= mac_abi::resources::LOADED_IMAGE_BASE
-        {
-            Ok(Self(value))
-        }
-        else
-        {
-            Err(Error::BadArgument)
-        }
+        if value != 0 { Ok(Self(value)) } else { Err(Error::BadArgument) }
     }
 
-    pub const fn raw(self) -> i16
+    pub const fn raw(self) -> u64
     {
         self.0
     }
@@ -241,19 +234,23 @@ pub enum ResourceScope
 }
 impl ResourceScope
 {
-    pub const fn raw(self) -> i16
+    pub const fn raw(self) -> mac_abi::resources::Scope
     {
         match self
         {
             Self::SearchChain => mac_abi::resources::CHAIN,
             Self::System => mac_abi::resources::SYSTEM,
             Self::Application => mac_abi::resources::APPLICATION,
-            Self::Image(scope) => scope.raw()
+            Self::Image(scope) => mac_abi::resources::Scope::image(scope.raw())
         }
     }
 
-    pub const fn from_raw(value: i16) -> Result<Self>
+    pub const fn from_raw(value: mac_abi::resources::Scope) -> Result<Self>
     {
+        if !value.valid()
+        {
+            return Err(Error::BadArgument);
+        }
         match value
         {
             mac_abi::resources::CHAIN => Ok(Self::SearchChain),
@@ -261,7 +258,7 @@ impl ResourceScope
             mac_abi::resources::APPLICATION => Ok(Self::Application),
             _ =>
             {
-                match ImageScope::from_raw(value)
+                match ImageScope::from_raw(value.image)
                 {
                     Ok(scope) => Ok(Self::Image(scope)),
                     Err(error) => Err(error)

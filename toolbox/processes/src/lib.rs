@@ -10,6 +10,8 @@ pub struct ProcessInfo
 {
     pub id:         ProcessId,
     pub thread:     ThreadId,
+    /// Advisory source identity, not an owning pin. Stale after process exit.
+    pub image:      Option<mac_traps::types::ImageScope>,
     pub volume:     VolumeId,
     pub cnid:       Cnid,
     pub foreground: bool,
@@ -32,6 +34,14 @@ impl TryFrom<mac_abi::processes::ProcessInfo> for ProcessInfo
     {
         Ok(Self { id:         ProcessId(info.id),
                   thread:     ThreadId(info.thread),
+                  image:      if info.image == 0
+                  {
+                      None
+                  }
+                  else
+                  {
+                      Some(mac_traps::types::ImageScope::from_raw(info.image).map_err(|_| mac_traps::Error::BadAbi)?)
+                  },
                   volume:     VolumeId(info.volume),
                   cnid:       Cnid(info.cnid),
                   foreground: info.foreground != 0,

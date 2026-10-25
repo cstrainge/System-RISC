@@ -129,9 +129,9 @@ impl super::Desktop
         {
             OPEN_ALERT | VALIDATE_ALERT =>
             {
-                let mut alert = crate::kernel::with_resources(|resources| {
-                                    dialogs::load(resources, call)
-                                }).ok_or(NOT_SUPPORTED)??;
+                let mut alert = crate::kernel::with_resources_in(call.scope, |resources| {
+                    dialogs::load(resources, call)
+                })??;
                 call.item = alert.items.len() as u16;
                 if call.operation == VALIDATE_ALERT
                 {

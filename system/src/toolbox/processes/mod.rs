@@ -30,10 +30,10 @@ pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
 }
 pub struct Process
 {
-    pub info:  ProcessInfo,
-    pub image: Option<usize>,
-    pub stamp: u64,
-    cleanup:   crate::toolbox::handles::cleanup::Checkpoint
+    pub info:         ProcessInfo,
+    pub(crate) image: Option<crate::images::Binding>,
+    pub stamp:        u64,
+    cleanup:          crate::toolbox::handles::cleanup::Checkpoint
 }
 
 /// A cleanup resource context is minted from one directory entry, never from
@@ -42,16 +42,21 @@ pub struct Process
 pub(crate) struct ResourceBinding
 {
     owner: crate::toolbox::handles::OwnerRef,
-    image: Option<usize>
+    image: Option<crate::images::Binding>
 }
 impl ResourceBinding
 {
+    pub(crate) fn ledger(&self) -> &crate::toolbox::handles::OwnerRef
+    {
+        &self.owner
+    }
+
     pub(crate) fn owner(&self) -> u64
     {
         self.owner.owner().incarnation()
     }
 
-    pub(crate) fn image(&self) -> Option<usize>
+    pub(crate) fn image(&self) -> Option<crate::images::Binding>
     {
         self.image
     }
@@ -143,8 +148,13 @@ impl Manager
         self.entries.values_mut()
     }
 
-    pub(crate) fn bind_image(&mut self, id: u64, image: usize) -> Result<(), Status>
+    pub(crate) fn bind_image(&mut self, id: u64, image: crate::images::Binding)
+                             -> Result<(), Status>
     {
+        if image.owner() != id
+        {
+            return Err(ACCESS_DENIED);
+        }
         if !self.ledger(id)?.accepting()
         {
             return Err(SERVICE_BUSY);
@@ -269,6 +279,7 @@ impl Manager
     {
         let mut info = self.get(id)?.info;
         info.switches = crate::machine::scheduler::switches(id);
+        info.image = self.get(id)?.image.map_or(0, crate::images::Binding::id);
         Ok(info)
     }
 }

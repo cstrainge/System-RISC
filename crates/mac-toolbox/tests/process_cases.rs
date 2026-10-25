@@ -12,6 +12,8 @@ use mac_toolbox::{Cnid, ProcessId, Rect, System, VolumeId, WindowId,
 mod document_lifetimes;
 #[path = "riscv_context_cases.rs"]
 mod architecture_context;
+#[path = "image_lifetimes_cases.rs"]
+mod image_lifetimes;
 #[derive(Debug)]
 pub enum Failure
 {
@@ -94,6 +96,15 @@ fn require(value: bool, message: &'static str) -> Result<()>
 }
 pub fn resource(system: &System<'_>, expected: &str) -> Result<()>
 {
+    let image = system.processes()
+                      .current()?
+                      .image
+                      .ok_or(Failure::Contract("current process image is unbound"))?;
+    let view = system.resources()
+                     .application()
+                     .get(mac_toolbox::ResourceKey::from_bytes(*b"STR ", 2000))?;
+    require(view.home() == mac_toolbox::ResourceScope::Image(image),
+            "resource view did not capture its full source identity")?;
     let mut output = [0; 64];
     require(system.resources().application().string(2000, &mut output)? == expected,
             "application resource partition")?;
@@ -263,6 +274,11 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
     let own_window =
         system.windows()
               .create(WindowSpec::new(Rect::new(30, 60, 320, 170), "Process Observer"))?;
+    let own_image =
+        me.image.ok_or(Failure::Contract("process snapshot omitted its image alias"))?;
+    image_lifetimes::string(system, own_image, "process-observer")?;
+    let wrong_kind = mac_toolbox::resources::ImageScope::from_raw(own_window.0)?;
+    image_lifetimes::stale(system, wrong_kind)?;
     for foreign in [mac_toolbox::ProcessId(u64::from(own_window.0)),
                     mac_toolbox::ProcessId(me.id.0 | (1u64 << 40))]
     {
@@ -347,15 +363,47 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
     }
     system.log("PROCESS_PROVISIONAL_CLEANUP_PASS cases=32 resource-context=restored \
                 retry=passed\n")?;
+    let mut old_image = None;
+    for index in 0..16
+    {
+        let mut path = crate::LogBuffer::new();
+        use core::fmt::Write;
+        let _ = write!(path, "Applications/ImageProbe {index:02}");
+        let file = system.files().lookup(volume, Cnid::ROOT, path.text())?;
+        let process = processes.launch(volume, file.id)?;
+        let image = process.image.ok_or(Failure::Contract("probe source alias missing"))?;
+        require(image.raw() > u64::from(u32::MAX), "image alias was narrowed into a legacy slot")?;
+        if let Some(previous) = old_image
+        {
+            require(image != previous, "new process reused a stale image identity")?;
+            image_lifetimes::stale(system, previous)?;
+        }
+        wait(system, || Ok(find(system, process.id)?.is_none()))?;
+        old_image = Some(image);
+        image_lifetimes::string(system, own_image, "process-observer")?;
+    }
+    system.log("PROCESS_IMAGE_LIFETIMES_PASS distinct-files=16 full-width=passed foreign=passed \
+                stale=passed\n")?;
     system.log("PROCESS_INVALID_LAUNCH_PASS\n")?;
     architecture_context::probe(0, 0x1111_1111_1111_1111, false).map_err(Failure::Architecture)?;
     system.log("RVA23_PROBE_BASELINE_PASS\n")?;
     let spinner =
         system.files().lookup(volume, mac_toolbox::Cnid(2), "Applications/ProcessSpinner")?;
+    system.scrap().clear()?;
     let busy = processes.launch(volume, spinner.id)?;
     require(busy.id != me.id && busy.thread != me.thread,
             "spinner is not an independent OS thread")?;
-    wait(system, || Ok(find(system, busy.id)?.is_some_and(|info| info.switches >= 4)))?;
+    // Startup resource calls can consume several timer slices. Observe the
+    // child's explicit start, then require two fresh switches; lifetime totals
+    // alone do not establish progress during its no-trap interval.
+    wait(system, || {
+        let mut bytes = [0; 64];
+        Ok(system.scrap().text(&mut bytes).is_ok_and(|text| text == "process-spinner-active"))
+    })?;
+    let started = state(system, busy.id)?.switches;
+    let threshold =
+        started.checked_add(2).ok_or(Failure::Contract("spinner switch count exhausted"))?;
+    wait(system, || Ok(find(system, busy.id)?.is_some_and(|info| info.switches >= threshold)))?;
     memory(&handle, b"observer-owned memory")?;
     require(processes.current()?.id == me.id && processes.current()?.thread == me.thread,
             "scheduler did not restore observer identity")?;
@@ -386,6 +434,17 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
                                       message: 0x1111aaaa,
                                       ..Default::default() }.into())?;
         let child = processes.launch(volume, worker.id)?;
+        image_lifetimes::string(system,
+                                child.image
+                                     .ok_or(Failure::Contract("worker image alias missing"))?,
+                                "process-worker")?;
+        let child_view =
+            system.resources()
+                  .image(child.image.ok_or(Failure::Contract("worker image alias missing"))?)
+                  .get(mac_toolbox::ResourceKey::from_bytes(*b"STR ", 2000))?;
+        let mut child_bytes = [0; 64];
+        require(child_view.read(0, &mut child_bytes)? > 0,
+                "live child resource view could not read its source")?;
         require(child.id != me.id && child.thread != me.thread,
                 "worker is not an independent OS thread")?;
         if let Some((id, thread)) = prior
@@ -544,6 +603,11 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
         wait_mask(system,
                   || Ok(find(system, child.id)?.is_none()),
                   EVERY_EVENT & !(activation_mask | (1 << EventKind::Application1 as u16)))?;
+        require(child_view.read(0, &mut child_bytes) == Err(mac_toolbox::Error::NotFound),
+                "saved resource view retargeted or retained a retired application")?;
+        image_lifetimes::stale(system,
+                               child.image
+                                    .ok_or(Failure::Contract("worker image alias missing"))?)?;
         let final_activation =
             system.events()
                   .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
@@ -852,7 +916,9 @@ pub fn worker(system: &System<'_>) -> Result<()>
             let ledger = membership.ledger(0).map_err(|e| Failure::Service(e.cause.status()))?;
             require(ledger.completion_fault_count() == 0,
                     "normal worker census must have no retained cleanup completions")?;
-            let expected = [(*b"WIND", 3),
+            let expected = [(*b"IMAG", 1),
+                            (*b"IMST", 1),
+                            (*b"WIND", 3),
                             (*b"WNST", 1),
                             (*b"CTRL", 3),
                             (*b"CSTA", 1),
@@ -934,6 +1000,7 @@ pub fn spinner(system: &System<'_>, clock: impl Fn() -> u64) -> Result<()>
 {
     resource(system, "process-spinner")?;
     system.log("PROCESS_SPIN_STARTED\n")?;
+    system.scrap().put_text("process-spinner-active")?;
     let start = clock();
     let bytes=architecture_context::probe(30_000_000,0x5a5a_5a5a_5a5a_5a5a,false).map_err(Failure::Architecture)?;
     require(clock().wrapping_sub(start) >= 30_000_000,

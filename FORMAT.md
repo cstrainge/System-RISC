@@ -22,9 +22,32 @@ and regenerate project artifacts when changing a layout; maintaining previous
 System RISC layouts, automatic migrations or fallback decoders is not required.
 Keep validation and clear rebuild/recreate diagnostics for incompatible input.
 
+## Native image resource scopes (development ABI 1)
+
+Native resource selection is a 16-byte C-layout record: `kind: u32`, zero
+`reserved: u32`, and `image: u64`. Kinds are System (0), search chain (1),
+application (2), and explicit image (3). The first three require image zero;
+explicit images require a nonzero facility-issued alias ID. These values never
+select an execution identity or grant access to mutable application state.
+Classic selectors are translated at the classic boundary; native scopes never
+encode slot indices or generations in a signed field.
+
+ProcessInfo carries the readonly image alias ID, zero while admission is
+incomplete; the Rust SDK exposes an optional ImageScope. Application resource
+replies capture the actual image scope so a saved view cannot silently retarget
+another image. Ordinary lookup rejects invalidated aliases immediately, while
+an authentic retained invocation may finish through its original admission
+receipt. A scope value itself does not pin source bytes.
+
 ## NABI descriptor
 
-NABI has exactly 40 bytes. All numeric fields are big endian:
+NABI has exactly 40 bytes. All numeric fields are big endian.
+
+The ABI number remains 1 during unreleased development. Its layout fingerprint
+is computed from the actual native wire sizes, offsets and scope tags in one
+shared crate. A mismatch, including the old zero field, is rejected before entry
+with an explicit whole-world rebuild error. It is a compatibility check, not
+code authentication or an execution permission.
 
 | Offset | Size | Field |
 | --- | --- | --- |
@@ -32,14 +55,14 @@ NABI has exactly 40 bytes. All numeric fields are big endian:
 | 4 | 2 | Format version: 1 |
 | 6 | 2 | Role: 1 = resident System, 2 = application, 3 = code resource |
 | 8 | 4 | Native System service ABI version: 1 until the first proper release |
-| 12 | 4 | Reserved, must be zero |
+| 12 | 4 | Native ABI layout fingerprint (`mac-abi::NATIVE_LAYOUT_FINGERPRINT`) |
 | 16 | 8 | Inclusive preferred load reservation base |
 | 24 | 8 | Exclusive preferred load reservation limit |
 | 32 | 8 | Linked entry point |
 
 The role, ABI and reservation meanings are unchanged. Entry is explicit because
 there is no ELF header at runtime. It must be even and lie inside initialized
-executable segment bytes. Versions, reserved fields, lengths, address overflows
+executable segment bytes. Versions, layout fingerprints, lengths, address overflows
 and roles are checked. The obsolete 32-byte NABI layout is rejected with a rebuild
 error. There is no fallback to ELF.
 

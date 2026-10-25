@@ -349,15 +349,15 @@ impl Desktop
         }
     }
 
-    fn application_icon(index: Option<usize>) -> mac_abi::menus::MenuIcon
+    fn application_icon(index: Option<crate::images::Binding>) -> mac_abi::menus::MenuIcon
     {
-        let fallback = mac_abi::menus::MenuIcon::new(0, -3996);
+        let fallback = mac_abi::menus::MenuIcon::new(mac_abi::resources::SYSTEM, -3996);
         let Some(index) = index
         else
         {
             return fallback;
         };
-        let scope = mac_abi::resources::LOADED_IMAGE_BASE + index as i16;
+        let scope = mac_abi::resources::Scope::image(index.id());
         crate::kernel::with_image(index, |image| {
             if let Ok(id) = crate::toolbox::quickdraw::icons_service::file_id(&image.resources,
                                                                               image.creator,
@@ -609,9 +609,9 @@ impl Desktop
         let id = self.processes.provision(catalog.name(), call.volume, call.cnid)?;
         let prepared = (|| {
             let authority = self.processes.ledger(id)?;
-            let loaded = crate::kernel::load_application(call.volume, call.cnid, catalog.creator,
+            let loaded = crate::kernel::load_application(&authority, catalog.creator,
                                                          catalog.file_type, resources)?;
-            self.processes.bind_image(id, loaded.image())?;
+            self.processes.bind_image(id, loaded.binding())?;
             let local = Saved::try_new(authority.clone(), self.mdef)?;
             Ok::<_, Status>((loaded, local, authority))
         })();
@@ -798,8 +798,14 @@ impl Desktop
         Ok(())
     }
 
+    pub(crate) fn evict_image_origin(&mut self, origin: u64)
+    {
+        self.definitions.evict_origin(origin);
+    }
+
     pub(crate) fn reap_processes(&mut self)
     {
+        crate::kernel::finish_image_origins(self);
         let mut previous = 0;
         while let Some(owner) = self.processes.stopping_after(previous)
         {

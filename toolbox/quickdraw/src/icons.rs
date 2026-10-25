@@ -28,7 +28,7 @@ impl IconFlags
 pub struct Icons<'a>
 {
     client: Client<'a>,
-    scope:  i16
+    scope:  mac_abi::resources::Scope
 }
 impl<'a> Icons<'a>
 {

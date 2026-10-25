@@ -32,7 +32,7 @@ fn original_alert_items_are_loaded_through_public_resource_and_dialog_services()
                    Err(Error::NotFound));
         let mut legacy = mac_abi::dialogs::DialogCall { operation:
                                                             mac_abi::dialogs::VALIDATE_ALERT,
-                                                        scope: 1,
+                                                        scope: mac_abi::resources::APPLICATION,
                                                         resource: 6012,
                                                         text_length: 5,
                                                         ..Default::default() };
@@ -105,7 +105,7 @@ fn string_resources_are_utf8_in_rust_and_pascal_only_at_legacy_trap()
                    Err(Error::NoMemory));
         assert_eq!(short, [0xa5; 2]);
         let mut call = mac_abi::resources::ResourceCall { operation: mac_abi::resources::STRING,
-                                                          scope: 1,
+                                                          scope: mac_abi::resources::APPLICATION,
                                                           key: mac_abi::ResourceKey { kind:
                                                                                           *b"STR#",
                                                                                       id:   2000 },
@@ -137,7 +137,7 @@ fn malformed_default_ring_and_reserved_requests_are_rejected_before_opening()
         let validate = |services: &mac_abi::SystemServices| {
             let mut call = mac_abi::dialogs::DialogCall { operation:
                                                               mac_abi::dialogs::VALIDATE_ALERT,
-                                                          scope: 1,
+                                                          scope: mac_abi::resources::APPLICATION,
                                                           resource: 6012,
                                                           reserved,
                                                           ..Default::default() };

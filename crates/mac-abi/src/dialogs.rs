@@ -10,7 +10,7 @@ pub const DRAW: u32 = 3;
 pub struct DialogCall
 {
     pub operation:   u32,
-    pub scope:       i16,
+    pub scope:       crate::resources::Scope,
     pub resource:    i16,
     pub window:      u64,
     pub event:       Event,
@@ -25,7 +25,7 @@ impl Default for DialogCall
     fn default() -> Self
     {
         Self { operation:   0,
-               scope:       0,
+               scope:       crate::resources::SYSTEM,
                resource:    0,
                window:      0,
                event:       Event::default(),

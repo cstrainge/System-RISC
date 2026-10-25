@@ -25,7 +25,7 @@ pub struct Cursors
     deferred_hide:     Option<Point>,
     animation:         Option<Animation>,
     resource_id:       i16,
-    scope:             i16
+    scope:             mac_abi::resources::Scope
 }
 impl Default for Cursors
 {
@@ -101,7 +101,8 @@ impl Cursors
                          scope:       self.scope }
     }
 
-    fn select(&mut self, image: MonoCursor, colors: Vec<u32>, automatic: bool, id: i16, scope: i16)
+    fn select(&mut self, image: MonoCursor, colors: Vec<u32>, automatic: bool, id: i16,
+              scope: mac_abi::resources::Scope)
     {
         self.image = image;
         self.effective_hotspot = image.hotspot;
@@ -174,7 +175,10 @@ impl Cursors
 
     /// Resolve every animation frame before committing, so bad resources leave state unchanged.
     pub fn resource_request(&mut self, call: &mut CursorResourceCall, mouse: Point, now: u32,
-                            mut lookup: impl FnMut([u8; 4], i16, i16) -> Option<Vec<u8>>)
+                            mut lookup: impl FnMut([u8; 4],
+                                  i16,
+                                  mac_abi::resources::Scope)
+                                  -> Option<Vec<u8>>)
                             -> Result<bool, Status>
     {
         let before = self.snapshot(mouse);

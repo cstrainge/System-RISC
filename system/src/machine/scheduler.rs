@@ -29,7 +29,7 @@ struct Thread
     // Rust drops fields in declaration order: reclaim the actual stack before
     // releasing code-use exclusion, even when this record is dropped on error.
     _stack:     Box<[u128]>,
-    _execution: Option<mac_kernel_model::image::ExecutionPin>,
+    _execution: Option<crate::images::Execution>,
     frame:      usize,
     live:       bool,
     retired:    bool,
@@ -500,7 +500,7 @@ pub fn retired() -> bool
     SCHEDULER.lock().threads.get(index).and_then(Option::as_ref).is_some_and(|t| t.retired)
 }
 
-pub fn image_for(app: u64) -> Option<usize>
+pub fn image_for(app: u64) -> Option<crate::images::Binding>
 {
     let s = SCHEDULER.lock();
     s.threads.iter().enumerate().find_map(|(index, thread)| {

@@ -1,0 +1,36 @@
+[package]
+name = "toolbox-image-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[workspace]
+
+[[bin]]
+name = "ImageProbe"
+path = "src/main.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "package"
+path = "src/package.rs"
+test = false
+bench = false
+
+[dependencies]
+mac-toolbox = { path = "../../.." }
+
+[target.'cfg(not(target_arch = "riscv64"))'.dependencies]
+mac-build = { path = "../../../../../tools/mac-build" }
+mac-formats = { path = "../../../../mac-formats" }
+
+[build-dependencies]
+mac-build = { path = "../../../../../tools/mac-build" }
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = 3
+codegen-units = 1

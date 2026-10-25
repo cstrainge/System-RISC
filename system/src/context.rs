@@ -135,12 +135,17 @@ impl Drop for TrapScope<'_>
     }
 }
 #[cfg(target_arch = "riscv64")]
+struct ThreadOwner
+{
+    owner: crate::toolbox::handles::OwnerRef,
+    image: crate::images::Binding
+}
+#[cfg(target_arch = "riscv64")]
 pub struct ThreadContext
 {
     app:             core::sync::atomic::AtomicU64,
     thread:          core::sync::atomic::AtomicU64,
-    image:           core::sync::atomic::AtomicUsize,
-    owner:           spinning_top::Spinlock<Option<crate::toolbox::handles::OwnerRef>>,
+    owner:           spinning_top::Spinlock<Option<ThreadOwner>>,
     resources:       selection::ScopedSelection<crate::kernel::ResourceSelection>,
     pub traps:       ThreadTrapState,
     pub definitions: DefinitionInvocations
@@ -152,7 +157,6 @@ impl ThreadContext
     {
         Self { app:         core::sync::atomic::AtomicU64::new(0),
                thread:      core::sync::atomic::AtomicU64::new(1),
-               image:       core::sync::atomic::AtomicUsize::new(usize::MAX),
                owner:       spinning_top::Spinlock::new(None),
                resources:   selection::ScopedSelection::new(BOOT_THREAD),
                traps:       ThreadTrapState::new(),
@@ -169,21 +173,23 @@ impl ThreadContext
     /// Admission initializes this before publication; reclamation clears it
     /// only after the context is quiescent. Current-context reads never need
     /// the scheduler lock, including its completion-before-park path.
-    pub(crate) fn image(&self) -> Option<usize>
+    pub(crate) fn image(&self) -> Option<crate::images::Binding>
     {
-        let image = self.image.load(core::sync::atomic::Ordering::Relaxed);
-        (image != usize::MAX).then_some(image)
+        use mac_object_table::shared::InvocationGate as _;
+        crate::toolbox::handles::InvocationGate::run(|| {
+            self.owner.lock().as_ref().map(|binding| binding.image)
+        })
     }
 
     pub(crate) fn assign(&self, owner: crate::toolbox::handles::OwnerRef, thread: u64,
-                         image: usize)
+                         image: crate::images::Binding)
                          -> Result<(), mac_abi::Status>
     {
         use core::sync::atomic::Ordering::Relaxed;
 
         use mac_object_table::shared::InvocationGate as _;
         if thread == 0
-           || image == usize::MAX
+           || image.owner() != owner.owner().incarnation()
            || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
         {
             return Err(mac_abi::BAD_ARGUMENT);
@@ -201,8 +207,8 @@ impl ThreadContext
             self.resources.reset(ThreadId(thread));
             self.app.store(owner.owner().incarnation(), Relaxed);
             self.thread.store(thread, Relaxed);
-            self.image.store(image, Relaxed);
-            *binding = Some(owner);
+            *binding = Some(ThreadOwner { owner,
+                                          image });
             Ok(())
         })
     }
@@ -215,7 +221,6 @@ impl ThreadContext
             self.resources.reset(ThreadId(0));
             self.app.store(0, core::sync::atomic::Ordering::Relaxed);
             self.thread.store(0, core::sync::atomic::Ordering::Relaxed);
-            self.image.store(usize::MAX, core::sync::atomic::Ordering::Relaxed);
             drop(owner);
         });
     }
@@ -224,7 +229,11 @@ impl ThreadContext
     {
         use mac_object_table::shared::InvocationGate as _;
         crate::toolbox::handles::InvocationGate::run(|| {
-            self.owner.lock().clone().ok_or(mac_abi::WRONG_THREAD)
+            self.owner
+                .lock()
+                .as_ref()
+                .map(|binding| binding.owner.clone())
+                .ok_or(mac_abi::WRONG_THREAD)
         })
     }
 }

@@ -312,14 +312,14 @@ pub struct CursorSnapshot
     /// Zero selects explicitly advanced animation. Other values are 60 Hz ticks.
     pub interval:    u32,
     pub resource_id: i16,
-    pub scope:       i16
+    pub scope:       crate::resources::Scope
 }
 #[repr(C)]
 #[derive(Default)]
 pub struct CursorResourceCall
 {
     pub operation: u32,
-    pub scope:     i16,
+    pub scope:     crate::resources::Scope,
     pub id:        i16,
     pub interval:  u32,
     /// Arrow=0, I-beam=1, crosshair=2, plus=3, watch=4.
@@ -354,7 +354,7 @@ pub struct PictureCall
     pub operation:     u32,
     pub target:        Target,
     pub surface:       *mut Surface,
-    pub scope:         i16,
+    pub scope:         crate::resources::Scope,
     pub id:            i16,
     pub data:          *const u8,
     pub length:        usize,
@@ -419,11 +419,11 @@ pub struct IconCall
     pub operation:   u32,
     pub target:      Target,
     pub surface:     *mut Surface,
-    pub scope:       i16,
+    pub scope:       crate::resources::Scope,
     pub id:          i16,
     pub destination: Rect,
     pub flags:       u16,
-    pub origin:      i16,
+    pub origin:      crate::resources::Scope,
     pub index:       u32,
     pub creator:     [u8; 4],
     pub file_type:   [u8; 4]

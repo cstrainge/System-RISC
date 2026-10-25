@@ -33,6 +33,14 @@ impl<'a> Resources<'a>
                ..self }
     }
 
+    /// Select a resident image's readonly identity. This borrows its scope and
+    /// does not keep the process or its source alive after exit.
+    pub const fn image(self, scope: ImageScope) -> Self
+    {
+        Self { scope: ResourceScope::Image(scope),
+               ..self }
+    }
+
     pub const fn search_chain(self) -> Self
     {
         Self { scope: CHAIN,

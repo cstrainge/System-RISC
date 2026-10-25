@@ -87,6 +87,9 @@ dependencies = [
 [[package]]
 name = "mac-code-resource"
 version = "0.1.0"
+dependencies = [
+ "mac-abi",
+]
 
 [[package]]
 name = "mac-device-interface"

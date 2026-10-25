@@ -64,11 +64,6 @@ pub fn application_extent(resources: &[Resource]) -> Result<u64>
     let (descriptor, _, _) = application_parts(resources)?;
     Ok(descriptor.load_limit - descriptor.load_base)
 }
-pub fn application(resources: &[Resource]) -> Result<usize>
-{
-    let (descriptor, _, _) = application_parts(resources)?;
-    application_at(resources, descriptor.load_base)
-}
 pub fn application_at(resources: &[Resource], destination: u64) -> Result<usize>
 {
     let (descriptor, bytes, _) = application_parts(resources)?;
@@ -100,12 +95,13 @@ fn load(descriptor: &Descriptor, bytes: &[u8], relocations: Option<&[u8]>, desti
 
 struct Binding
 {
-    kind:   [u8; 4],
-    id:     i16,
-    origin: u64,
-    base:   u64,
-    limit:  u64,
-    entry:  DefinitionEntry
+    kind:    [u8; 4],
+    id:      i16,
+    origin:  u64,
+    base:    u64,
+    limit:   u64,
+    entry:   DefinitionEntry,
+    _source: Option<crate::images::Read>
 }
 pub struct Definitions
 {
@@ -120,6 +116,11 @@ impl Definitions
                bindings: Vec::new() }
     }
 
+    pub(crate) fn evict_origin(&mut self, origin: u64)
+    {
+        self.bindings.retain(|binding| binding.origin != origin);
+    }
+
     pub fn resolve(&mut self, kind: [u8; 4], id: i16) -> Result<DefinitionEntry>
     {
         crate::kernel::with_resources(|manager| {
@@ -128,14 +129,7 @@ impl Definitions
                             mac_abi::ResourceKey { kind,
                                                    id })
                        .map_err(|_| Error::Missing("definition resource is missing"))?;
-            let origin = if scope == mac_abi::resources::APPLICATION
-            {
-                manager.application_origin()
-            }
-            else
-            {
-                0
-            };
+            let origin = scope.image_id().unwrap_or(0);
             if let Some(binding) =
                 self.bindings.iter().find(|b| b.kind == kind && b.id == id && b.origin == origin)
             {
@@ -171,6 +165,20 @@ impl Definitions
                             .checked_sub(extent)
                             .ok_or(Error::Malformed("code resource placement overflow"))?;
             }
+            // Reserve publication storage and retain the source before touching
+            // executable memory. Refusal leaves no half-published definition.
+            self.bindings
+                .try_reserve(1)
+                .map_err(|_| Error::AllocationFailed("definition binding allocation failed"))?;
+            let source = if origin == 0
+            {
+                None
+            }
+            else
+            {
+                manager.retain_origin()
+                       .map_err(|_| Error::AllocationFailed("definition source pin refused"))?
+            };
             let address = load(d, &code.code, Some(&code.relocations), base)?;
             let entry: DefinitionEntry = unsafe { core::mem::transmute(address) };
             self.bindings.push(Binding { kind,
@@ -178,7 +186,8 @@ impl Definitions
                                          origin,
                                          base,
                                          limit: base + extent,
-                                         entry });
+                                         entry,
+                                         _source: source });
             serial!("CODE_LOADED {}{} entry=0x{:x} origin={} linked=0x{:x} actual=0x{:x}",
                     text::decode(&kind),
                     id,

@@ -37,138 +37,93 @@ static MEMORY: TryState<crate::toolbox::memory::Manager> = TryState::new();
 // They remain non-Send, including after application scheduling begins.
 static FILES: OwnerState<crate::toolbox::files::Manager> =
     unsafe { OwnerState::new(crate::context::BOOT_THREAD, crate::context::current_thread) };
-pub(crate) struct AppImage
-{
-    pub authority: u64,
-    pub resources: alloc::vec::Vec<mac_formats::resource::Resource>,
-    pub volume:    u32,
-    pub cnid:      u32,
-    pub creator:   [u8; 4],
-    pub file_type: [u8; 4],
-    pub base:      u64,
-    pub limit:     u64,
-    execution:     mac_kernel_model::image::ExecutionGate
-}
-/// Initialized entry and its held execution use travel together. Launch errors
-/// drop the pin; successful admission transfers it to the scheduler record.
-pub(crate) struct LoadedImage
-{
-    image: usize,
-    entry: usize,
-    pin:   mac_kernel_model::image::ExecutionPin
-}
-impl LoadedImage
-{
-    pub(crate) fn image(&self) -> usize
-    {
-        self.image
-    }
+pub(crate) use crate::images::{Loaded as LoadedImage, Source as AppImage};
+static IMAGES: TryState<crate::images::Manager> = TryState::new();
 
-    pub(crate) fn into_parts(self) -> (usize, usize, mac_kernel_model::image::ExecutionPin)
-    {
-        (self.image, self.entry, self.pin)
-    }
-}
-
-fn execution_status(error: mac_kernel_model::image::Error) -> Status
-{
-    match error
-    {
-        mac_kernel_model::image::Error::Allocation | mac_kernel_model::image::Error::PinLimit =>
-        {
-            NO_MEMORY
-        }
-        mac_kernel_model::image::Error::Busy => SERVICE_BUSY
-    }
-}
-static IMAGES: [Once<AppImage>; 8] = [const { Once::new() }; 8];
-/// Read scope only: the callback cannot return a borrow of this image. Actual
-/// backing still lives in the fixed cache until its registered migration.
-pub(crate) fn with_image<R>(index: usize, call: impl for<'a> FnOnce(&'a AppImage) -> R)
+pub(crate) fn with_image<R>(binding: crate::images::Binding,
+                            call: impl for<'a> FnOnce(&'a AppImage) -> R)
                             -> Option<R>
 {
-    Some(call(IMAGES.get(index)?.get()?))
+    let read = IMAGES.with(|images| images.read(binding)).ok()?.ok()?;
+    Some(call(read.source()))
 }
-struct ImageCatalog<'a>(&'a [Once<AppImage>]);
+struct ImageCatalog<'a>
+{
+    primary: Option<&'a crate::images::Read>,
+    extra:   Option<&'a crate::images::Read>
+}
 impl crate::toolbox::resources::manager::ImageCatalog for ImageCatalog<'_>
 {
-    fn resources(&self, index: usize) -> Option<&[mac_formats::resource::Resource]>
+    fn resources(&self, id: u64) -> Option<&[mac_formats::resource::Resource]>
     {
-        Some(&self.0.get(index)?.get()?.resources)
+        self.primary
+            .into_iter()
+            .chain(self.extra)
+            .find(|read| read.binding().id() == id)
+            .map(|read| &read.source().resources[..])
     }
 }
-pub(crate) fn load_application(volume: u32, cnid: u32, creator: [u8; 4], file_type: [u8; 4],
+pub(crate) fn load_application(owner: &crate::toolbox::handles::OwnerRef, creator: [u8; 4],
+                               file_type: [u8; 4],
                                resources: alloc::vec::Vec<mac_formats::resource::Resource>)
                                -> Result<LoadedImage, Status>
 {
-    if let Some((i, _)) = IMAGES.iter().enumerate().find(|(_, slot)| {
-                                                       slot.get().is_some_and(|image| {
-                                                                     image.volume == volume
-                                                                     && image.cnid == cnid
-                                                                     && image.creator == creator
-                                                                     && image.file_type == file_type
-                                                                     && image.resources == resources
-                                                                 })
-                                                   })
-    {
-        return reload_image(i);
-    }
-    let (preferred, _) = crate::loader::reservation(&resources).map_err(crate::loader::status)?;
-    let extent = crate::loader::application_extent(&resources).map_err(crate::loader::status)?;
-    let overlaps = |base: u64| {
-        IMAGES.iter().filter_map(Once::get).any(|i| base < i.limit && i.base < base + extent)
-    };
-    let base = if !overlaps(preferred)
-    {
-        preferred
-    }
-    else
-    {
-        let mut regions: alloc::vec::Vec<_> =
-            IMAGES.iter()
-                  .filter_map(Once::get)
-                  .filter(|i| i.limit > crate::machine::memory::APPLICATION_RELOCATION_BASE)
-                  .map(|i| (i.base, i.limit))
-                  .collect();
-        regions.sort_unstable();
-        let mut candidate = crate::machine::memory::APPLICATION_RELOCATION_BASE;
-        for (start, end) in regions
-        {
-            if candidate + extent <= start
-            {
-                break;
-            }
-            candidate = candidate.max(end);
-        }
-        if candidate.checked_add(extent).is_none_or(|end| end > crate::machine::memory::IMAGE_LIMIT)
-        {
-            return Err(NO_MEMORY);
-        }
-        candidate
-    };
-    let limit = base + extent;
-    let slot = IMAGES.iter().position(|i| i.get().is_none()).ok_or(NO_MEMORY)?;
     let authority = application_authority(&resources)?;
-    let execution = mac_kernel_model::image::ExecutionGate::try_new().map_err(execution_status)?;
-    let loading = execution.begin_load().map_err(execution_status)?;
-    // Validate and load before cache publication: a malformed application must
-    // not consume a permanent slot. New admissions write their code only once.
-    let entry = crate::loader::application_at(&resources, base).map_err(crate::loader::status)?;
-    let pin = loading.finish();
-    IMAGES[slot].call_once(|| {
-                    AppImage { resources,
-                               authority,
-                               volume,
-                               cnid,
-                               creator,
-                               file_type,
-                               base,
-                               limit,
-                               execution }
-                });
-    Ok(LoadedImage { image: slot,
-                     entry,
-                     pin })
+    admit_image(owner,
+                AppImage { authority,
+                           resources,
+                           creator,
+                           file_type })
+}
+fn admit_image(owner: &crate::toolbox::handles::OwnerRef, source: AppImage)
+               -> Result<LoadedImage, Status>
+{
+    let (preferred, _) =
+        crate::loader::reservation(&source.resources).map_err(crate::loader::status)?;
+    let extent =
+        crate::loader::application_extent(&source.resources).map_err(crate::loader::status)?;
+    IMAGES.with(|images| {
+              images.load(owner,
+                          source,
+                          preferred,
+                          extent,
+                          crate::machine::memory::APPLICATION_RELOCATION_BASE,
+                          crate::machine::memory::IMAGE_LIMIT,
+                          |resources, base| {
+                              crate::loader::application_at(resources, base).map_err(|error| {
+                                  serial!("APPLICATION_IMAGE_REFUSED: {error}");
+                                  crate::loader::status(error)
+                              })
+                          })
+          })
+          .map_err(AccessError::status)?
+}
+pub(crate) fn release_image(ticket: mac_object_table::domain::ReleasedResource,
+                            registration: crate::images::Registration)
+                            -> Result<(), crate::toolbox::handles::cleanup::Failure>
+{
+    match IMAGES.with_owned(ticket, |ticket, images| images.release(ticket, registration))
+    {
+        Ok(result) => result,
+        Err((_, ticket)) =>
+        {
+            Err(crate::toolbox::handles::cleanup::Failure::context_unavailable(ticket,
+                                                                               "image manager"))
+        }
+    }
+}
+pub(crate) fn finish_image_origins(desktop: &mut crate::toolbox::runtime::Desktop)
+{
+    let mut previous = 0;
+    while let Ok(Some((owner, origin))) = IMAGES.with(|images| images.next_retiring(previous))
+    {
+        previous = owner;
+        if !crate::machine::scheduler::has_threads(owner)
+        {
+            desktop.evict_image_origin(origin);
+        }
+    }
+    let _ = IMAGES.with(|images| images.finish_retiring());
 }
 
 fn application_authority(resources: &[mac_formats::resource::Resource]) -> Result<u64, Status>
@@ -298,17 +253,6 @@ pub(crate) fn with_scrap<R>(call: impl FnOnce(&mut crate::toolbox::scrap::Manage
 {
     SCRAP.with(call)
 }
-fn reload_image(index: usize) -> Result<LoadedImage, Status>
-{
-    with_image(index, |image| {
-        let loading = image.execution.begin_load().map_err(|error| {
-            serial!("APPLICATION_RELOAD_REFUSED image={index}: {error}");
-            execution_status(error)
-        })?;
-        let entry = crate::loader::application_at(&image.resources, image.base).map_err(crate::loader::status)?;
-        Ok(LoadedImage { image: index, entry, pin: loading.finish() })
-    }).ok_or(NOT_FOUND)?
-}
 pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontManager>
 {
     FONTS.get()
@@ -319,13 +263,13 @@ pub(crate) fn heap_available() -> usize
 {
     HEAP.available()
 }
-/// Resource-selection metadata only. The immutable image cache still owns the
-/// actual backing until image leases migrate; this is not a new lifetime pin.
+/// Authenticated source-selection metadata. Resource invocations retain a Read
+/// for their complete borrow; carrying this receipt alone is not a lifetime pin.
 #[derive(Clone, Copy)]
 pub(crate) struct ResourceSelection
 {
     owner: u64,
-    image: Option<usize>
+    image: Option<crate::images::Binding>
 }
 /// Capture source identity before an I/O handoff changes the executor. This is
 /// selection metadata, not an image lease; invocation callers mask preemption.
@@ -358,16 +302,30 @@ pub(crate) fn with_process_resources<R>(binding: &crate::toolbox::processes::Res
                                         call: impl FnOnce() -> R)
                                         -> Result<R, Status>
 {
-    with_resource_binding(binding.owner(), binding.image(), call)
+    with_resource_binding(binding.owner(),
+                          if crate::images::Manager::root_only(binding.ledger())
+                          {
+                              None
+                          }
+                          else
+                          {
+                              binding.image()
+                          },
+                          call)
 }
 
-fn with_resource_binding<R>(app: u64, index: Option<usize>, call: impl FnOnce() -> R)
+fn with_resource_binding<R>(app: u64, index: Option<crate::images::Binding>,
+                            call: impl FnOnce() -> R)
                             -> Result<R, Status>
 {
-    if let Some(index) = index
+    let _read = match index
     {
-        with_image(index, |_| ()).ok_or(NOT_FOUND)?;
-    }
+        Some(binding) =>
+        {
+            Some(IMAGES.with(|images| images.read(binding)).map_err(AccessError::status)??)
+        }
+        None => None
+    };
     crate::context::with_selected_resources(ResourceSelection { owner: app,
                                                                 image: index },
                                             call).map_err(|error| {
@@ -381,20 +339,52 @@ pub(crate) fn with_resources<R>(call: impl for<'a> FnOnce(crate::toolbox::resour
                                                -> R)
                                 -> Option<R>
 {
-    let files = RESOURCE_FILES.get()?;
-    let ResourceSelection { image: index,
-                            owner: origin } = current_resource_selection();
-    let images = ImageCatalog(&IMAGES);
-    // A provisional process has not admitted an image. Its common cleanup walk
-    // resolves System resources only, never the launcher's application chain.
-    let application = match index
+    with_resources_in(mac_abi::resources::CHAIN, call).ok()
+}
+
+pub(crate) fn with_resources_in<R>(scope: mac_abi::resources::Scope,
+                                   call: impl for<'a> FnOnce(crate::toolbox::resources::manager::Manager<'a>) -> R)
+                                   -> Result<R, Status>
+{
+    if !scope.valid()
     {
-        Some(index) => &IMAGES.get(index)?.get()?.resources[..],
-        None => &[]
+        return Err(BAD_ARGUMENT);
+    }
+    let files = RESOURCE_FILES.get().ok_or(NOT_SUPPORTED)?;
+    let selection = current_resource_selection();
+    let needs_primary = scope != mac_abi::resources::SYSTEM;
+    let primary = if needs_primary
+    {
+        match selection.image
+        {
+            Some(binding) =>
+            {
+                Some(IMAGES.with(|images| images.read(binding)).map_err(AccessError::status)??)
+            }
+            None => None
+        }
+    }
+    else
+    {
+        None
     };
-    Some(call(crate::toolbox::resources::manager::Manager::new(&files.system,
-                                                               application,
-                                                               fonts()?.resources()).with_images(&images, origin)))
+    let extra =
+        match scope.image_id()
+                   .filter(|id| primary.as_ref().is_none_or(|read| read.binding().id() != *id))
+        {
+            Some(id) =>
+            {
+                Some(IMAGES.with(|images| images.public_read(id))
+                           .map_err(AccessError::status)??)
+            }
+            None => None
+        };
+    let catalog = ImageCatalog { primary: primary.as_ref(),
+                                 extra:   extra.as_ref() };
+    let application = primary.as_ref().map_or(&[][..], |read| &read.source().resources[..]);
+    let origin = primary.as_ref().map_or(0, |read| read.binding().id());
+    Ok(call(crate::toolbox::resources::manager::Manager::new(&files.system, application,
+        fonts().ok_or(NOT_SUPPORTED)?.resources()).with_images(&catalog, origin, primary.as_ref())))
 }
 
 fn launch(info: &BootInfo) -> mac_formats::Result<()>
@@ -420,42 +410,29 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
         mac_formats::Error::AllocationFailed("Finder lifetime domain admission failed")
     })?;
     serial!("BOOT_FINDER_DOMAIN app={finder_id}");
-    let finder_execution = mac_kernel_model::image::ExecutionGate::try_new().map_err(|_| {
-                               mac_formats::Error::AllocationFailed("Finder execution gate \
-                                                                     allocation failed")
-                           })?;
-    // Bootstrap owns this unpublished, disjoint reservation exclusively. Pin
-    // initialized code before publishing its image or admitting the first thread.
-    let finder_entry = crate::loader::application(&finder)?;
-    let finder_pin =
-        finder_execution.pin().map_err(|_| {
-                                   mac_formats::Error::Malformed("unpublished Finder execution \
-                                                                  gate refused its first pin")
-                               })?;
-    let finder_loaded = LoadedImage { image: 0,
-                                      entry: finder_entry,
-                                      pin:   finder_pin };
-    let (base, limit) = crate::loader::reservation(&finder)?;
-    let authority = policy_authority(&system, &finder).map_err(|_| {
-                        mac_formats::Error::Malformed("invalid application authority policy while \
-                                                       admitting Finder")
-                    })?;
-    IMAGES[0].call_once(|| {
-                 AppImage { resources: finder,
-                            authority,
-                            volume: 0,
-                            cnid: 0,
-                            creator: *b"MACS",
-                            file_type: *b"FNDR",
-                            base,
-                            limit,
-                            execution: finder_execution }
-             });
-    processes.bind_image(finder_id, 0).map_err(|_| {
-                                           mac_formats::Error::Malformed("Finder lifetime domain \
-                                                                          could not bind its \
-                                                                          admitted image")
-                                       })?;
+    let finder_owner =
+        processes.ledger(finder_id)
+                 .map_err(|_| mac_formats::Error::Malformed("Finder owner unavailable"))?;
+    let kinds = crate::toolbox::handles::image_kinds().map_err(|_| mac_formats::Error::AllocationFailed("image kind admission failed"))?;
+    IMAGES.publish(crate::images::Manager::new(crate::toolbox::handles::system_owner().map_err(|_| mac_formats::Error::AllocationFailed("System image owner unavailable"))?, kinds)
+        .map_err(|_| mac_formats::Error::AllocationFailed("image manager allocation failed"))?)
+        .map_err(|_| mac_formats::Error::Malformed("image manager already published"))?;
+    let authority =
+        policy_authority(&system, &finder).map_err(|_| {
+                                              mac_formats::Error::Malformed("invalid Finder \
+                                                                             authority policy")
+                                          })?;
+    let finder_loaded = admit_image(&finder_owner,
+                                    AppImage { resources: finder,
+                                               authority,
+                                               creator: *b"MACS",
+                                               file_type: *b"FNDR" }).map_err(|status| {
+                            serial!("FINDER_IMAGE_REFUSED status={status}");
+                            mac_formats::Error::Malformed("Finder image admission failed")
+                        })?;
+    processes.bind_image(finder_id, finder_loaded.binding())
+             .map_err(|_| mac_formats::Error::Malformed("Finder image binding failed"))?;
+    drop(finder_owner);
     processes.activate(finder_id)
              .map_err(|_| {
                  mac_formats::Error::Malformed("Finder lifetime domain could not become foreground")
@@ -487,7 +464,7 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
                       processes: crate::toolbox::processes::Manager, finder_loaded: LoadedImage)
                       -> mac_formats::Result<()>
 {
-    let finder_entry = finder_loaded.entry;
+    let finder_entry = finder_loaded.entry();
     let finder_owner = processes.ledger(crate::context::finder_app().0).map_err(|_| {
         mac_formats::Error::Malformed("Finder bootstrap owner is unavailable")
     })?;

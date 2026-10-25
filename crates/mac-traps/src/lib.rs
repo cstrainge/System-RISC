@@ -811,7 +811,7 @@ impl Client<'_>
 pub struct ResourceRequest<'a>
 {
     pub operation: u32,
-    pub scope:     i16,
+    pub scope:     mac_abi::resources::Scope,
     pub key:       ResourceKey,
     pub index:     u32,
     pub name:      &'a str,
@@ -887,8 +887,8 @@ impl Client<'_>
         status(self.invoke(PICTURE, &mut call))
     }
 
-    pub fn picture_resource(self, target: quickdraw::DrawingTarget, scope: i16, id: i16,
-                            destination: Rect)
+    pub fn picture_resource(self, target: quickdraw::DrawingTarget,
+                            scope: mac_abi::resources::Scope, id: i16, destination: Rect)
                             -> Result<()>
     {
         status(self.invoke(PICTURE,
@@ -955,7 +955,9 @@ impl SurfaceConnection<'_>
         })
     }
 
-    pub fn icon(&mut self, scope: i16, id: i16, destination: Rect, flags: u16) -> Result<()>
+    pub fn icon(&mut self, scope: mac_abi::resources::Scope, id: i16, destination: Rect,
+                flags: u16)
+                -> Result<()>
     {
         let mut call = quickdraw::IconCall { surface: self.surface,
                                              scope,

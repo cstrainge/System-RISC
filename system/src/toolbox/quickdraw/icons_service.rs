@@ -36,7 +36,8 @@ pub fn status(error: icons::IconError) -> Status
         _ => BAD_ARGUMENT
     }
 }
-pub fn family(manager: Manager<'_>, scope: i16, id: i16) -> Result<IconFamily, Status>
+pub fn family(manager: Manager<'_>, scope: mac_abi::resources::Scope, id: i16)
+              -> Result<IconFamily, Status>
 {
     IconFamily::from_lookup(id, |kind, rid| {
         manager.get(if kind == *b"clut" { SYSTEM } else { scope },
@@ -117,7 +118,7 @@ pub fn query(manager: Manager<'_>, call: &mut IconCall) -> Result<(), Status>
                     Ok(id) =>
                     {
                         call.id = id;
-                        call.origin = scope;
+                        call.origin = manager.resolved_scope(scope);
                         return Ok(());
                     }
                     Err(icons::IconError::NotFound) =>

@@ -5,6 +5,7 @@ use mac_object_table::{aliases::{self, ReleaseCause},
                        shared::{InvocationGate, OwnerRef}};
 
 struct Gate;
+static CASES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 impl InvocationGate for Gate
 {
     fn run<R>(f: impl FnOnce() -> R) -> R
@@ -14,6 +15,12 @@ impl InvocationGate for Gate
 }
 fn owner(kind: DomainKind) -> OwnerRef<Gate>
 {
+    if kind == DomainKind::System
+    {
+        static SYSTEM: std::sync::OnceLock<OwnerRef<Gate>> = std::sync::OnceLock::new();
+        return SYSTEM.get_or_init(|| OwnerRef::try_new(OwnerIndex::issue(kind).unwrap()).unwrap())
+                     .clone();
+    }
     OwnerRef::try_new(OwnerIndex::issue(kind).unwrap()).unwrap()
 }
 struct Retain;
@@ -24,9 +31,75 @@ impl Release<()> for Retain
         Err(CompletionError::registration_mismatch(ticket))
     }
 }
+
+#[test]
+fn admission_receipts_cover_deferred_death_and_reject_a_reused_single_slot()
+{
+    let _serial = CASES.lock().unwrap();
+    let system = owner(DomainKind::System);
+    let app = owner(DomainKind::Process);
+    let mut registry = Registry::new();
+    let mut kind = |code, capacity| {
+        registry.register(&system,
+                          Specification { kind: KindCode(code),
+                                          label: "Image receipt fixture",
+                                          provider: "Fixture",
+                                          capacity,
+                                          source: Source::Resident },
+                          Retain)
+                .unwrap()
+    };
+    let a = kind(*b"IRAL", CapacityPolicy::PerDomainQuota { slots: 1 });
+    let b = kind(*b"IRAS", CapacityPolicy::GrowableUntilMemory);
+    let o = kind(*b"IRSO", CapacityPolicy::GrowableUntilMemory);
+    let s = kind(*b"IRSS", CapacityPolicy::GrowableUntilMemory);
+    let mut aliases = aliases::Store::new(system.clone(), (a, b), (o, s)).unwrap();
+    let (first, receipt) = aliases.insert_with_receipt(&app, "source", 10).unwrap().into_parts();
+    assert_eq!(receipt.owner(), app.owner());
+    assert_eq!(aliases.completing(&receipt), Some((&"source", &10)));
+    let mut alias_ticket = None;
+    let mut backing_tickets = Vec::new();
+    while let Some(ticket) = app.invalidate_next()
+    {
+        if ticket.key().kind() == KindCode(*b"IRAL")
+        {
+            alias_ticket = Some(ticket);
+        }
+        else
+        {
+            backing_tickets.push(ticket);
+        }
+    }
+    let ticket = alias_ticket.expect("fixture admitted one real alias");
+    assert!(aliases.get_with_owner(first).is_none());
+    assert_eq!(aliases.completing(&receipt), Some((&"source", &10)));
+    aliases.defer_alias(ticket).unwrap();
+    assert_eq!(aliases.completing(&receipt), Some((&"source", &10)));
+    assert_eq!(aliases.retained().count(), 1);
+    assert_eq!(aliases.deferred_tags().copied().collect::<Vec<_>>(), vec![10]);
+    let refused = aliases.insert(&app, "premature reuse", 20).unwrap_err();
+    assert!(matches!(refused, aliases::Error::Pool(_)));
+    assert!(refused.to_string().contains("IRAL"));
+    assert_eq!(aliases.finish_deferred(|_| true), 1);
+    for ticket in backing_tickets
+    {
+        aliases.release_alias_storage(ticket).unwrap();
+    }
+    assert!(aliases.completing(&receipt).is_none());
+    let (second, next) = aliases.insert_with_receipt(&app, "replacement", 30).unwrap().into_parts();
+    assert_ne!(first, second);
+    assert!(aliases.completing(&receipt).is_none());
+    assert_eq!(aliases.completing(&next), Some((&"replacement", &30)));
+    let mut unrelated = mac_object_table::store::Store::new(KindCode(*b"WRNG"),
+                                                            CapacityPolicy::GrowableUntilMemory);
+    let (_, foreign) = unrelated.insert_with_receipt(&app, |_| 0).unwrap().into_parts();
+    assert!(aliases.completing(&foreign).is_none());
+    aliases.remove(&app, second).unwrap();
+}
 #[test]
 fn shared_objects_are_generation_checked_and_retained_through_each_alias_death()
 {
+    let _serial = CASES.lock().unwrap();
     let system = owner(DomainKind::System);
     let registrar = owner(DomainKind::Module);
     let source = owner(DomainKind::Process);

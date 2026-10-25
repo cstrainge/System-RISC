@@ -24,9 +24,10 @@ def child(output, fixture, binary):
                     '--bin', binary, '--target-dir', str(target)], cwd=vm.ROOT, env=guest_env(), check=True)
     elf = target / 'riscv64imac-unknown-none-elf/release' / binary
     package = output / fixture
+    extra = [str(vm.DIST / 'System.rsrc')] if fixture == 'image-probe' else []
     subprocess.run(['cargo', 'run', '--manifest-path', str(manifest), '--locked',
                     '--bin', 'package', '--target-dir', str(target), '--', str(elf),
-                    str(package)], cwd=vm.ROOT, check=True)
+                    str(package), *extra], cwd=vm.ROOT, check=True)
     return package / (binary + '.bin'), elf
 
 
@@ -40,7 +41,8 @@ def capture(output, frontend='headless', vector_bits=None, malformed_standard_fi
     private, observer = packaging.private_disk(output, 'process-observer', package_arguments=extra)
     children = [child(output, fixture, binary)
                 for fixture, binary in [('process-worker', 'ProcessWorker'),
-                                        ('process-spinner', 'ProcessSpinner')]]
+                                        ('process-spinner', 'ProcessSpinner'),
+                                        ('image-probe', 'ImageProbe')]]
 
     raw = private / 'conformance.raw'
     fs = NativeImage(raw)
@@ -52,6 +54,8 @@ def capture(output, frontend='headless', vector_bits=None, malformed_standard_fi
         fs.import_macbinary(package, '/Applications')
     for name in ['Budget App', 'Corrupt App', 'Missing Code', 'Malformed Code']:
         fs.import_macbinary(output / 'package' / (name + '.bin'), '/Applications')
+    for index in range(16):
+        fs.import_macbinary(output / 'image-probe' / f'ImageProbe {index:02}.bin', '/Applications')
     fs.mkdir('/Copies')
     fs.import_macbinary(children[0][0], '/Copies')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
