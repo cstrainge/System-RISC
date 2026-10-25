@@ -70,7 +70,7 @@ impl crate::toolbox::inspection::Subject for Process
 
     fn authority(&self) -> u64
     {
-        crate::kernel::image(self.image).map_or(0, |image| image.authority)
+        crate::kernel::with_image(self.image, |image| image.authority).unwrap_or(0)
     }
 }
 pub struct Manager

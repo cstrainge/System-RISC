@@ -1667,3 +1667,36 @@ resolver outputs without writing their canary buffer, then succeeds through the
 ordinary safe SDK. Provider output validation follows the pointer's type rather
 than a duplicated alignment constant. Lower request/job/device ownership and
 module-code reclamation are not claimed by these gates.
+
+
+### Scoped image reads before backing reclamation
+
+Resident services no longer receive a static AppImage reference or a static
+Resource Manager search chain. Higher-ranked callbacks limit image and catalogue
+borrows to the service invocation. Loaded-image lookup goes through the same
+borrowed catalogue; parsed pictures, icon families, dialog descriptions, menu
+state and document declarations leave it as owned values. The catalogue remains
+Sync and the scope adds no allocation or extra service query.
+
+Each native resource view captures the selected image and its complete owner
+incarnation together. Definition provenance uses that captured source context,
+including helper-thread and stopping-process reads, rather than inferring the
+source from the thread that happens to execute the callback. Definition bindings
+and translation requests retain all 64 bits of the origin. System resources keep
+their existing origin convention. Standard File icon preparation keeps its owner
+selection around the complete synchronous read and parsing operation.
+
+This is a borrowing prerequisite, not a reclaimable-image implementation. The
+fixed eight Once-backed image slots and advertised loaded-image scope projection
+still exist. Genuine source aliases, private execution instances, retained
+completion authority, code-origin pins, thread-stack quiescence and dynamic image
+capacity remain M-D06 migration work. A scoped callback is not itself a lifetime
+pin, a resource charge or proof of immutable-frame sharing.
+
+
+The scoped-read prerequisite passes 471 host cases, including captured-context
+selection and full-width translation origins. The optimized native installation
+and actual QEMU application switching, aggregate public SDK, cursor/boot visuals,
+host-volume and complete panic-report/recovery campaigns pass. Compiled Toolbox
+boundaries, formatting and public API documentation also pass. These checks do
+not qualify image reclamation or dynamic process capacity.

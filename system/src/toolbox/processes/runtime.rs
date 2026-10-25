@@ -351,29 +351,26 @@ impl Desktop
     fn application_icon(index: usize) -> mac_abi::menus::MenuIcon
     {
         let scope = mac_abi::resources::LOADED_IMAGE_BASE + index as i16;
-        if let Some(image) = crate::kernel::image(index)
-        {
+        let fallback = mac_abi::menus::MenuIcon::new(0, -3996);
+        crate::kernel::with_image(index, |image| {
             if let Ok(id) = crate::toolbox::quickdraw::icons_service::file_id(&image.resources,
                                                                               image.creator,
                                                                               image.file_type)
             {
                 return mac_abi::menus::MenuIcon::new(scope, id);
             }
-            if let Some(manager) = crate::kernel::resources()
-            {
+            crate::kernel::with_resources(|manager| {
                 let mut call = mac_abi::quickdraw::IconCall { operation:
                                                                   mac_abi::quickdraw::ICON_FILE,
                                                               scope: mac_abi::resources::SYSTEM,
                                                               creator: image.creator,
                                                               file_type: image.file_type,
                                                               ..Default::default() };
-                if crate::toolbox::quickdraw::icons_service::query(manager, &mut call).is_ok()
-                {
-                    return mac_abi::menus::MenuIcon::new(call.origin, call.id);
-                }
-            }
-        }
-        mac_abi::menus::MenuIcon::new(0, -3996)
+                crate::toolbox::quickdraw::icons_service::query(manager, &mut call).ok()
+                    .map(|_| mac_abi::menus::MenuIcon::new(call.origin, call.id))
+            }).flatten()
+              .unwrap_or(fallback)
+        }).unwrap_or(fallback)
     }
 
     /// Lifecycle changes notify file identity; Finder damages only that icon.

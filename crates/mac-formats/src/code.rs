@@ -10,7 +10,7 @@ use crate::{Error, Result,
 pub struct TranslationRequest<'a>
 {
     pub resource:   &'a Resource,
-    pub origin:     u32,
+    pub origin:     u64,
     pub convention: CallingConvention
 }
 
@@ -83,7 +83,7 @@ impl CodeRegistry
              })
     }
 
-    pub fn prepare(&self, resource: &Resource, origin: u32, translator: &mut impl CodeTranslator)
+    pub fn prepare(&self, resource: &Resource, origin: u64, translator: &mut impl CodeTranslator)
                    -> Result<NativeCode>
     {
         let convention = self.convention(resource.kind, resource.id)
@@ -140,13 +140,15 @@ mod tests
     use super::*;
     struct Translator
     {
-        calls: usize
+        calls:  usize,
+        origin: u64
     }
     impl CodeTranslator for Translator
     {
         fn translate(&mut self, request: TranslationRequest<'_>) -> Result<Vec<u8>>
         {
             self.calls += 1;
+            self.origin = request.origin;
             if request.resource.kind == *b"CODE"
             {
                 assert_eq!(request.convention, CallingConvention::CodeJumpTable);
@@ -167,7 +169,9 @@ mod tests
     fn every_registered_family_automatically_requests_translation_but_data_does_not()
     {
         let mut registry = CodeRegistry::new();
-        let mut translator = Translator { calls: 0 };
+        let mut translator = Translator { calls:  0,
+                                          origin: 0 };
+        let origin = (1u64 << 48) | 1;
         for &(kind, _) in STANDARD_CODE_TYPES
         {
             let resource = Resource { kind,
@@ -175,7 +179,8 @@ mod tests
                                       name: None,
                                       attributes: 0,
                                       data: alloc::vec![0x4e, 0x75] };
-            assert!(registry.prepare(&resource, 1, &mut translator).is_ok());
+            assert!(registry.prepare(&resource, origin, &mut translator).is_ok());
+            assert_eq!(translator.origin, origin, "translation lost the source incarnation");
         }
         assert_eq!(translator.calls, STANDARD_CODE_TYPES.len());
         for kind in [*b"WIND", *b"CNTL", *b"MENU", *b"DITL", *b"thng"]

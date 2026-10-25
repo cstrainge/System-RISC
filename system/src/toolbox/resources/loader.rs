@@ -102,7 +102,7 @@ struct Binding
 {
     kind:   [u8; 4],
     id:     i16,
-    origin: u32,
+    origin: u64,
     base:   u64,
     limit:  u64,
     entry:  DefinitionEntry
@@ -122,71 +122,72 @@ impl Definitions
 
     pub fn resolve(&mut self, kind: [u8; 4], id: i16) -> Result<DefinitionEntry>
     {
-        let manager =
-            crate::kernel::resources().ok_or(Error::Missing("resource catalog is missing"))?;
-        let (scope, resource) =
-            manager.get(mac_abi::resources::CHAIN,
-                        mac_abi::ResourceKey { kind,
-                                               id })
-                   .map_err(|_| Error::Missing("definition resource is missing"))?;
-        let origin = if scope == mac_abi::resources::APPLICATION
-        {
-            crate::context::current_thread_context().identity().app.0 as u32
-        }
-        else
-        {
-            0
-        };
-        if let Some(binding) =
-            self.bindings.iter().find(|b| b.kind == kind && b.id == id && b.origin == origin)
-        {
-            return Ok(binding.entry);
-        }
-        let code = self.registry.prepare(resource, origin, &mut NoTranslator)?;
-        let d = &code.descriptor;
-        let extent = d.load_limit - d.load_base;
-        if extent
-           > crate::machine::memory::DEFINITION_LIMIT - crate::machine::memory::DEFINITION_BASE
-           || extent & 4095 != 0
-           || d.load_base & 4095 != 0
-        {
-            return Err(Error::Malformed("invalid code resource reservation"));
-        }
-        // Definition resources are independently relocatable modules. Allocate
-        // top-down rather than depending on their build-time preferred addresses.
-        let mut base = crate::machine::memory::DEFINITION_LIMIT - extent;
-        loop
-        {
-            if base < crate::machine::memory::DEFINITION_BASE
+        crate::kernel::with_resources(|manager| {
+            let (scope, resource) =
+                manager.get(mac_abi::resources::CHAIN,
+                            mac_abi::ResourceKey { kind,
+                                                   id })
+                       .map_err(|_| Error::Missing("definition resource is missing"))?;
+            let origin = if scope == mac_abi::resources::APPLICATION
             {
-                return Err(Error::BudgetExceeded("code resource address space exhausted"));
+                manager.application_origin()
             }
-            let overlap = self.bindings.iter().find(|b| base < b.limit && b.base < base + extent);
-            let Some(other) = overlap
             else
             {
-                break;
+                0
             };
-            base = other.base
-                        .checked_sub(extent)
-                        .ok_or(Error::Malformed("code resource placement overflow"))?;
-        }
-        let address = load(d, &code.code, Some(&code.relocations), base)?;
-        let entry: DefinitionEntry = unsafe { core::mem::transmute(address) };
-        self.bindings.push(Binding { kind,
-                                     id,
-                                     origin,
-                                     base,
-                                     limit: base + extent,
-                                     entry });
-        serial!("CODE_LOADED {}{} entry=0x{:x} origin={} linked=0x{:x} actual=0x{:x}",
-                text::decode(&kind),
-                id,
-                address,
-                origin,
-                d.load_base,
-                base);
-        Ok(entry)
+            if let Some(binding) =
+                self.bindings.iter().find(|b| b.kind == kind && b.id == id && b.origin == origin)
+            {
+                return Ok(binding.entry);
+            }
+            let code = self.registry.prepare(resource, origin, &mut NoTranslator)?;
+            let d = &code.descriptor;
+            let extent = d.load_limit - d.load_base;
+            if extent
+               > crate::machine::memory::DEFINITION_LIMIT - crate::machine::memory::DEFINITION_BASE
+               || extent & 4095 != 0
+               || d.load_base & 4095 != 0
+            {
+                return Err(Error::Malformed("invalid code resource reservation"));
+            }
+            // Definition resources are independently relocatable modules. Allocate
+            // top-down rather than depending on their build-time preferred addresses.
+            let mut base = crate::machine::memory::DEFINITION_LIMIT - extent;
+            loop
+            {
+                if base < crate::machine::memory::DEFINITION_BASE
+                {
+                    return Err(Error::BudgetExceeded("code resource address space exhausted"));
+                }
+                let overlap =
+                    self.bindings.iter().find(|b| base < b.limit && b.base < base + extent);
+                let Some(other) = overlap
+                else
+                {
+                    break;
+                };
+                base = other.base
+                            .checked_sub(extent)
+                            .ok_or(Error::Malformed("code resource placement overflow"))?;
+            }
+            let address = load(d, &code.code, Some(&code.relocations), base)?;
+            let entry: DefinitionEntry = unsafe { core::mem::transmute(address) };
+            self.bindings.push(Binding { kind,
+                                         id,
+                                         origin,
+                                         base,
+                                         limit: base + extent,
+                                         entry });
+            serial!("CODE_LOADED {}{} entry=0x{:x} origin={} linked=0x{:x} actual=0x{:x}",
+                    text::decode(&kind),
+                    id,
+                    address,
+                    origin,
+                    d.load_base,
+                    base);
+            Ok(entry)
+        }).ok_or(Error::Missing("resource catalog is missing"))?
     }
 }
 

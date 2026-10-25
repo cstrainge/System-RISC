@@ -347,12 +347,11 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     return if status == 0 { Ok(()) } else { Err(status as Status) };
                 }
                 #[cfg(target_arch = "riscv64")]
-                return crate::kernel::resources().map(|manager| unsafe {
+                return crate::kernel::with_resources(|manager| unsafe {
                            crate::toolbox::resources::native::dispatch(manager, pointer, size)
-                       })
-                       .map_or(Err(NOT_SUPPORTED), |status| {
-                           if status == 0 { Ok(()) } else { Err(status as Status) }
-                       });
+                       }).map_or(Err(NOT_SUPPORTED), |status| {
+                             if status == 0 { Ok(()) } else { Err(status as Status) }
+                         });
                 #[cfg(not(target_arch = "riscv64"))]
                 return Err(NOT_SUPPORTED);
             }
@@ -366,29 +365,33 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 }
                 let fonts = fonts.ok_or(NOT_SUPPORTED)?;
                 let bytes = unsafe { input(call.data, call.length, 2 * 1024 * 1024) }?;
-                #[cfg(target_arch = "riscv64")]
-                let bytes = if call.operation == PICTURE_RESOURCE
-                {
-                    crate::kernel::resources().ok_or(NOT_SUPPORTED)?
-                                              .get(call.scope,
-                                                   ResourceKey { kind: *b"PICT",
-                                                                 id:   call.id })?
-                                              .1
-                                              .data
-                                              .as_slice()
-                }
-                else
-                {
-                    bytes
-                };
                 if call.operation > PICTURE_INFO
                 {
                     return Err(NOT_SUPPORTED);
                 }
-                let drawing = super::pictures_service::Drawing::new(bytes,
-                                                                    call.destination,
-                                                                    service::Port::default(),
-                                                                    fonts)?;
+                let decode = |bytes: &[u8]| {
+                    super::pictures_service::Drawing::new(bytes,
+                                                          call.destination,
+                                                          service::Port::default(),
+                                                          fonts)
+                };
+                #[cfg(target_arch = "riscv64")]
+                let drawing = if call.operation == PICTURE_RESOURCE
+                {
+                    crate::kernel::with_resources(|resources| {
+                        decode(&resources.get(call.scope,
+                                              ResourceKey { kind: *b"PICT",
+                                                            id:   call.id })?
+                                         .1
+                                         .data)
+                    }).ok_or(NOT_SUPPORTED)??
+                }
+                else
+                {
+                    decode(bytes)?
+                };
+                #[cfg(not(target_arch = "riscv64"))]
+                let drawing = decode(bytes)?;
                 call.bounds = drawing.picture.bounds;
                 call.command_count = drawing.picture.commands.len() as u32;
                 if call.operation == PICTURE_INFO
@@ -478,16 +481,19 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     {
                         return Err(BAD_ARGUMENT);
                     }
-                    let manager = crate::kernel::resources().ok_or(NOT_SUPPORTED)?;
                     if call.operation == ICON_LOAD_FILE
                     {
-                        return crate::kernel::with_files(|files| {
-                                   super::icons_service::load_file(files, manager, call)
-                               }).map_err(|e| e.status())?;
+                        return crate::kernel::with_resources(|manager| {
+                                   crate::kernel::with_files(|files| {
+                                       super::icons_service::load_file(files, manager, call)
+                                   }).map_err(|e| e.status())?
+                               }).ok_or(NOT_SUPPORTED)?;
                     }
-                    let drawing = crate::kernel::with_files(|files| {
-                                      super::icons_service::Drawing::file(files, manager, call)
-                                  }).map_err(|e| e.status())??;
+                    let drawing = crate::kernel::with_resources(|manager| {
+                                      crate::kernel::with_files(|files| {
+                                          super::icons_service::Drawing::file(files, manager, call)
+                                      }).map_err(|e| e.status())?
+                                  }).ok_or(NOT_SUPPORTED)??;
                     if call.surface.is_null()
                     {
                         let target = IconCall { target: call.target,
@@ -513,7 +519,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 }
                 #[cfg(target_arch = "riscv64")]
                 {
-                    let manager = crate::kernel::resources().ok_or(NOT_SUPPORTED)?;
+                    crate::kernel::with_resources(|manager| {
                     if call.operation != ICON_PLOT
                     {
                         return super::icons_service::query(manager, call);
@@ -530,6 +536,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     }?;
                     let mut canvas = unsafe { surface.canvas() }.ok_or(BAD_ARGUMENT)?;
                     drawing.paint(&mut canvas)
+                    }).ok_or(NOT_SUPPORTED)?
                 }
             }
             _ => Err(NOT_SUPPORTED)

@@ -129,8 +129,9 @@ impl super::Desktop
         {
             OPEN_ALERT | VALIDATE_ALERT =>
             {
-                let resources = crate::kernel::resources().ok_or(NOT_SUPPORTED)?;
-                let mut alert = dialogs::load(resources, call)?;
+                let mut alert = crate::kernel::with_resources(|resources| {
+                                    dialogs::load(resources, call)
+                                }).ok_or(NOT_SUPPORTED)??;
                 call.item = alert.items.len() as u16;
                 if call.operation == VALIDATE_ALERT
                 {
@@ -535,7 +536,11 @@ impl super::Desktop
                                        id: item.icon,
                                        destination: item.bounds,
                                        ..Default::default() };
-                        let drawing=icons_service::Drawing::new(crate::kernel::resources().ok_or(NOT_SUPPORTED)?,&call,service::Port::default())?;
+                        let drawing = crate::kernel::with_resources(|resources| {
+                                          icons_service::Drawing::new(resources,
+                                                                      &call,
+                                                                      service::Port::default())
+                                      }).ok_or(NOT_SUPPORTED)??;
                         self.icon(&call, drawing)?;
                     }
                     _ => return Err(NOT_SUPPORTED)

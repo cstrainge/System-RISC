@@ -35,7 +35,7 @@ fn label(index: u32) -> Result<String, Status>
                                                                 id:   RESOURCE_ID },
                                              index,
                                              ..Default::default() };
-    crate::kernel::resources().ok_or(NOT_SUPPORTED)?.request(&mut call, "", &mut bytes)?;
+    crate::kernel::with_resources(|resources| resources.request(&mut call, "", &mut bytes)).ok_or(NOT_SUPPORTED)??;
     let mut text = String::new();
     let value = core::str::from_utf8(&bytes[..call.transferred]).map_err(|_| BAD_ARGUMENT)?;
     text.try_reserve(value.len()).map_err(|_| NO_MEMORY)?;
@@ -146,20 +146,22 @@ impl super::Desktop
             checked(self.window(SELECT_WINDOW, &mut window_request(old)))?;
             return self.draw_crash_report();
         }
-        let resources = crate::kernel::resources().ok_or(NOT_SUPPORTED)?;
-        let (_, resource) = resources.get(resources::SYSTEM,
-                                          ResourceKey { kind: *b"WIND",
-                                                        id:   RESOURCE_ID })?;
-        let bytes = &resource.data;
-        let word = |at: usize| -> Result<i16, Status> {
-            Ok(i16::from_be_bytes(bytes.get(at..at + 2)
-                                       .ok_or(BAD_ARGUMENT)?
-                                       .try_into()
-                                       .map_err(|_| BAD_ARGUMENT)?))
-        };
-        let mut request = window_request(WindowId(0));
-        request.bounds = Rect::new(word(2)?, word(0)?, word(6)?, word(4)?);
-        request.procedure = word(8)?;
+        let mut request = crate::kernel::with_resources(|resources| {
+                              let (_, resource) = resources.get(resources::SYSTEM,
+                                                                ResourceKey { kind: *b"WIND",
+                                                                              id:   RESOURCE_ID })?;
+                              let bytes = &resource.data;
+                              let word = |at: usize| -> Result<i16, Status> {
+                                  Ok(i16::from_be_bytes(bytes.get(at..at + 2)
+                                                             .ok_or(BAD_ARGUMENT)?
+                                                             .try_into()
+                                                             .map_err(|_| BAD_ARGUMENT)?))
+                              };
+                              let mut request = window_request(WindowId(0));
+                              request.bounds = Rect::new(word(2)?, word(0)?, word(6)?, word(4)?);
+                              request.procedure = word(8)?;
+                              Ok::<_, Status>(request)
+                          }).ok_or(NOT_SUPPORTED)??;
         let title = label(0)?;
         request.title[..title.len()].copy_from_slice(title.as_bytes());
         request.title_length = title.len() as u32;
@@ -233,9 +235,9 @@ impl super::Desktop
                                   destination: Rect::new(18, 14, 50, 46),
                                   ..Default::default() };
             let drawing =
-                icons_service::Drawing::new(crate::kernel::resources().ok_or(NOT_SUPPORTED)?,
-                                            &call,
-                                            service::Port::default())?;
+                crate::kernel::with_resources(|resources| {
+                    icons_service::Drawing::new(resources, &call, service::Port::default())
+                }).ok_or(NOT_SUPPORTED)??;
             self.icon(&call, drawing)?;
             self.crash_text(window, FontSelection::default(), 64, 29, &label(0)?)?;
             self.crash_text(window,

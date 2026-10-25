@@ -274,9 +274,14 @@ impl Desktop
             serial!("INPUT_UNAVAILABLE devices={}", devices);
             return Err(NOT_SUPPORTED);
         }
-        let text_cursor = super::quickdraw::cursors::decode_mono(
-            &crate::kernel::resources().ok_or(NOT_SUPPORTED)?
-                .get(mac_abi::resources::SYSTEM, ResourceKey { kind: *b"CURS", id: 1 })?.1.data)?;
+        let text_cursor =
+            crate::kernel::with_resources(|resources| {
+                super::quickdraw::cursors::decode_mono(&resources.get(mac_abi::resources::SYSTEM,
+                                                                      ResourceKey { kind: *b"CURS",
+                                                                                    id:   1 })?
+                                                                 .1
+                                                                 .data)
+            }).ok_or(NOT_SUPPORTED)??;
         serial!("VIRTIO_INPUT=READY devices={}", devices);
         let mut busy_cursor = super::quickdraw::cursors::Cursors::default();
         busy_cursor.resource_request(&mut mac_abi::quickdraw::CursorResourceCall {
@@ -286,8 +291,8 @@ impl Desktop
             interval: 6,
             ..Default::default()
         }, Point::default(), Self::when(), |kind, id, scope| {
-            crate::kernel::resources()?.get(scope, ResourceKey { kind, id }).ok()
-                .map(|(_, resource)| resource.data.to_vec())
+            crate::kernel::with_resources(|resources| resources.get(scope, ResourceKey { kind, id }).ok()
+                .map(|(_, resource)| resource.data.to_vec())).flatten()
         })?;
         serial!("UI_OBSERVER address={} bytes=128 version=1",
                 super::quickdraw::observer::address());
@@ -343,7 +348,7 @@ impl Desktop
                   compositions: 0,
                   cdef,mdef,owner:finder,foreground:finder,locals:alloc::vec![local::Saved::try_new(processes.ledger(finder)?,mdef)?],
                   processes,
-                  app_menu:super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,crate::kernel::resources().ok_or(NOT_SUPPORTED)?)? })
+                  app_menu:crate::kernel::with_resources(|resources| super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,resources)).ok_or(NOT_SUPPORTED)?? })
     }
 
     fn uptime() -> u64
@@ -359,11 +364,6 @@ impl Desktop
 
     pub fn menu(&mut self, call: &mut mac_abi::menus::MenuCall) -> Status
     {
-        let Some(resources) = crate::kernel::resources()
-        else
-        {
-            return NOT_SUPPORTED;
-        };
         if call.handle == 0 && call.menu_id == super::processes::menu::MENU_ID
         {
             return self.app_menu.query(call).map_or_else(|e| e, |_| OK);
@@ -373,7 +373,9 @@ impl Desktop
             Ok(owner) => owner,
             Err(status) => return status
         };
-        let result = self.menus.request(&owner, call, resources);
+        let result = crate::kernel::with_resources(|resources| {
+                         self.menus.request(&owner, call, resources)
+                     }).unwrap_or(Err(NOT_SUPPORTED));
         if matches!(result, Ok(true)) && self.owner == self.foreground
         {
             self.menu_cache.invalidate();
@@ -1413,18 +1415,20 @@ impl Desktop
     pub fn cursor_resource(&mut self, call: &mut mac_abi::quickdraw::CursorResourceCall)
                            -> Result<(), Status>
     {
-        let resources = crate::kernel::resources().ok_or(NOT_SUPPORTED)?;
-        let changed =
-            self.cursors.resource_request(call,
-                                           self.events.mouse,
-                                           Self::when(),
-                                           |kind, id, scope| {
-                                               resources.get(scope,
-                                                             ResourceKey { kind,
-                                                                           id })
-                                                        .ok()
-                                                        .map(|(_, resource)| resource.data.clone())
-                                           })?;
+        let changed = crate::kernel::with_resources(|resources| {
+                          self.cursors.resource_request(call,
+                                                        self.events.mouse,
+                                                        Self::when(),
+                                                        |kind, id, scope| {
+                                                            resources.get(scope,
+                                                                          ResourceKey { kind,
+                                                                                        id })
+                                                                     .ok()
+                                                                     .map(|(_, resource)| {
+                                                                         resource.data.clone()
+                                                                     })
+                                                        })
+                      }).ok_or(NOT_SUPPORTED)??;
         self.cursor_dirty |= changed && self.owner == self.foreground;
         Ok(())
     }

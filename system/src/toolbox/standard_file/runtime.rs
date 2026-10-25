@@ -28,14 +28,15 @@ fn layout(mode: u32, sheet: Sheet) -> Result<Layout, Status>
         Sheet::Replace => -6045,
         Sheet::Error => -6044
     };
-    let r = crate::kernel::resources().ok_or(NOT_SUPPORTED)?;
-    let (_, d) = r.get(resources::SYSTEM,
-                       ResourceKey { kind: *b"DLOG",
-                                     id })?;
-    let (_, l) = r.get(resources::SYSTEM,
-                       ResourceKey { kind: *b"DITL",
-                                     id })?;
-    Layout::parse(&d.data, &l.data)
+    crate::kernel::with_resources(|r| {
+        let (_, d) = r.get(resources::SYSTEM,
+                           ResourceKey { kind: *b"DLOG",
+                                         id })?;
+        let (_, l) = r.get(resources::SYSTEM,
+                           ResourceKey { kind: *b"DITL",
+                                         id })?;
+        Layout::parse(&d.data, &l.data)
+    }).ok_or(NOT_SUPPORTED)?
 }
 fn request(id: WindowId) -> WindowRequest
 {
@@ -57,7 +58,7 @@ fn label(index: u32) -> Result<String, Status>
                                                              id:   -16490 },
                                           index,
                                           ..Default::default() };
-    crate::kernel::resources().ok_or(NOT_SUPPORTED)?.request(&mut c, "", &mut bytes)?;
+    crate::kernel::with_resources(|resources| resources.request(&mut c, "", &mut bytes)).ok_or(NOT_SUPPORTED)??;
     Ok(String::from(core::str::from_utf8(&bytes[..c.transferred]).map_err(|_| BAD_ARGUMENT)?))
 }
 // Initialization owns the published record until every window/font/drawing
@@ -375,73 +376,77 @@ impl super::Desktop
             drawing.destination = destination;
             return Ok(drawing);
         }
-        let resources = crate::kernel::with_resource_owner(dialog.owner, crate::kernel::resources)?
-                            .ok_or(NOT_SUPPORTED)?;
-        let mut call = IconCall { target:
-                                      mac_abi::quickdraw::Target::window(WindowId(dialog.window.0)),
-                                  scope: resources::SYSTEM,
-                                  id: if entry.is_directory() { -3999 } else { -4000 },
-                                  destination,
-                                  ..Default::default() };
-        let actual = if entry.resource_length != 0 && !entry.is_directory()
-        {
-            crate::kernel::with_files(|files| {
-                Drawing::file(files,
-                              resources,
-                              &FileIconCall { operation: ICON_PLOT_FILE,
-                                              volume: entry.volume,
-                                              cnid: entry.id,
-                                              destination,
-                                              ..Default::default() })
-            }).ok()
-              .and_then(Result::ok)
-        }
-        else
-        {
-            None
-        };
-        let actual =
-            actual.or_else(|| {
-                      if entry.is_directory()
-                      {
-                          None
-                      }
-                      else
-                      {
-                          Drawing::file_default(entry.file_type, entry.name(), destination, 0).ok()
-                      }
-                  });
-        let drawing =
-            if let Some(drawing) = actual
-            {
-                drawing
-            }
-            else
-            {
-                if !entry.is_directory()
+        crate::kernel::with_resource_owner(dialog.owner, || {
+            crate::kernel::with_resources(|resources| {
+                let mut call =
+                    IconCall { target:
+                                   mac_abi::quickdraw::Target::window(WindowId(dialog.window.0)),
+                               scope: resources::SYSTEM,
+                               id: if entry.is_directory() { -3999 } else { -4000 },
+                               destination,
+                               ..Default::default() };
+                let actual = if entry.resource_length != 0 && !entry.is_directory()
                 {
-                    let mut lookup = IconCall { operation: ICON_FILE,
-                                                scope: resources::CHAIN,
-                                                creator: entry.creator,
-                                                file_type: entry.file_type,
-                                                ..Default::default() };
-                    if icons_service::query(resources, &mut lookup).is_ok()
-                    {
-                        call.id = lookup.id;
-                        call.scope = lookup.origin;
-                    }
+                    crate::kernel::with_files(|files| {
+                        Drawing::file(files,
+                                      resources,
+                                      &FileIconCall { operation: ICON_PLOT_FILE,
+                                                      volume: entry.volume,
+                                                      cnid: entry.id,
+                                                      destination,
+                                                      ..Default::default() })
+                    }).ok()
+                      .and_then(Result::ok)
                 }
-                Drawing::new(resources, &call, Default::default()).or_else(|_| {
-                    call.scope = resources::SYSTEM;
-                    call.id = if entry.is_directory() { -3999 } else { -4000 };
-                    Drawing::new(resources, &call, Default::default())
-                })?
-            };
-        // Retain only visible rows. Immutable families are shared with retained
-        // drawing commands, so selection/caret updates do no disk I/O or decoding.
-        dialog.icons.try_reserve(1).map_err(|_| NO_MEMORY)?;
-        dialog.icons.push((entry, drawing.clone()));
-        Ok(drawing)
+                else
+                {
+                    None
+                };
+                let actual = actual.or_else(|| {
+                                       if entry.is_directory()
+                                       {
+                                           None
+                                       }
+                                       else
+                                       {
+                                           Drawing::file_default(entry.file_type,
+                                                                 entry.name(),
+                                                                 destination,
+                                                                 0).ok()
+                                       }
+                                   });
+                let drawing = if let Some(drawing) = actual
+                {
+                    drawing
+                }
+                else
+                {
+                    if !entry.is_directory()
+                    {
+                        let mut lookup = IconCall { operation: ICON_FILE,
+                                                    scope: resources::CHAIN,
+                                                    creator: entry.creator,
+                                                    file_type: entry.file_type,
+                                                    ..Default::default() };
+                        if icons_service::query(resources, &mut lookup).is_ok()
+                        {
+                            call.id = lookup.id;
+                            call.scope = lookup.origin;
+                        }
+                    }
+                    Drawing::new(resources, &call, Default::default()).or_else(|_| {
+                        call.scope = resources::SYSTEM;
+                        call.id = if entry.is_directory() { -3999 } else { -4000 };
+                        Drawing::new(resources, &call, Default::default())
+                    })?
+                };
+                // Retain only visible rows. Immutable families are shared with retained
+                // drawing commands, so selection/caret updates do no disk I/O or decoding.
+                dialog.icons.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                dialog.icons.push((entry, drawing.clone()));
+                Ok(drawing)
+            }).ok_or(NOT_SUPPORTED)?
+        })?
     }
 
     fn standard_file_draw(&mut self, id: u64) -> Result<(), Status>

@@ -209,8 +209,9 @@ fn activate_existing(d: &mut crate::toolbox::runtime::Desktop, owner: u64, handl
     {
         return Ok(false);
     };
-    let image = crate::kernel::image(image).ok_or(BAD_ABI)?;
-    let actual = declarations(image.creator, &image.resources)?;
+    let actual = crate::kernel::with_image(image, |image| {
+                     declarations(image.creator, &image.resources)
+                 }).ok_or(BAD_ABI)??;
     let batch = owned(&mut d.processes, owner, handle)?;
     if batch.documents.iter().any(|document| actual.binary_search(&document.file_type).is_err())
     {
@@ -323,9 +324,14 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                             .map(|process| process.image))
                     })?
                 };
-                let types = if let Some(image) = cached.and_then(crate::kernel::image)
+                let types = if let Some(types) = cached.and_then(|index| {
+                                                     crate::kernel::with_image(index, |image| {
+                                                         declarations(image.creator,
+                                                                      &image.resources)
+                                                     })
+                                                 })
                 {
-                    declarations(image.creator, &image.resources)?
+                    types?
                 }
                 else
                 {

@@ -55,23 +55,26 @@ pub(super) fn prepare(resources: &[Resource], contract: Contract<'_>) -> Result<
         }
         else
         {
-            let resident = crate::kernel::resources().ok_or(NOT_SUPPORTED)?;
-            Some(Arc::new(IconFamily::from_lookup(rule.icon, |kind, id| {
-                              if kind == *b"clut"
-                              {
-                                  resident.get(mac_abi::resources::SYSTEM,
-                                               mac_abi::ResourceKey { kind,
-                                                                      id })
-                                          .ok()
-                                          .map(|(_, r)| r.data.as_slice())
-                              }
-                              else
-                              {
-                                  resources.iter()
-                                           .find(|r| r.kind == kind && r.id == id)
-                                           .map(|r| r.data.as_slice())
-                              }
-                          }).map_err(icons_service::status)?))
+            let family = crate::kernel::with_resources(|resident| {
+                             IconFamily::from_lookup(rule.icon, |kind, id| {
+                                 if kind == *b"clut"
+                                 {
+                                     resident.get(mac_abi::resources::SYSTEM,
+                                                  mac_abi::ResourceKey { kind,
+                                                                         id })
+                                             .ok()
+                                             .map(|(_, r)| r.data.as_slice())
+                                 }
+                                 else
+                                 {
+                                     resources.iter()
+                                              .find(|r| r.kind == kind && r.id == id)
+                                              .map(|r| r.data.as_slice())
+                                 }
+                             })
+                         }).ok_or(NOT_SUPPORTED)?
+                           .map_err(icons_service::status)?;
+            Some(Arc::new(family))
         };
         handlers.push(Icon { rule,
                              family });

@@ -8,12 +8,21 @@ pub struct Files
 {
     pub system: Vec<Resource>
 }
+/// Borrowed catalogue access. Implementations cannot supply a resource that
+/// outlives their own borrow; no global image reference escapes this surface.
+pub(crate) trait ImageCatalog: Sync
+{
+    fn resources(&self, index: usize) -> Option<&[Resource]>;
+}
 #[derive(Clone, Copy)]
 pub struct Manager<'a>
 {
-    system:      &'a [Resource],
-    application: &'a [Resource],
-    fonts:       &'a [Resource]
+    system:             &'a [Resource],
+    application:        &'a [Resource],
+    fonts:              &'a [Resource],
+    images:             Option<&'a dyn ImageCatalog>,
+    #[cfg(target_arch = "riscv64")]
+    application_origin: u64
 }
 impl<'a> Manager<'a>
 {
@@ -22,17 +31,36 @@ impl<'a> Manager<'a>
     {
         Self { system,
                application,
-               fonts }
+               fonts,
+               images: None,
+               #[cfg(target_arch = "riscv64")]
+               application_origin: 0 }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn with_images(mut self, images: &'a dyn ImageCatalog, application_origin: u64)
+                              -> Self
+    {
+        self.images = Some(images);
+        self.application_origin = application_origin;
+        self
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn application_origin(self) -> u64
+    {
+        self.application_origin
     }
 
     pub fn all(self, scope: i16) -> Result<Vec<(i16, &'a Resource)>, Status>
     {
-        #[cfg(target_arch = "riscv64")]
         if scope >= LOADED_IMAGE_BASE
         {
-            let image =
-                crate::kernel::image((scope - LOADED_IMAGE_BASE) as usize).ok_or(BAD_ARGUMENT)?;
-            return Ok(image.resources.iter().map(|resource| (scope, resource)).collect());
+            let resources = self.images
+                                .ok_or(BAD_ARGUMENT)?
+                                .resources((scope - LOADED_IMAGE_BASE) as usize)
+                                .ok_or(BAD_ARGUMENT)?;
+            return Ok(resources.iter().map(|resource| (scope, resource)).collect());
         }
         if ![CHAIN, SYSTEM, APPLICATION].contains(&scope)
         {
@@ -58,16 +86,16 @@ impl<'a> Manager<'a>
 
     pub fn get(self, scope: i16, key: ResourceKey) -> Result<(i16, &'a Resource), Status>
     {
-        #[cfg(target_arch = "riscv64")]
         if scope >= LOADED_IMAGE_BASE
         {
-            let image =
-                crate::kernel::image((scope - LOADED_IMAGE_BASE) as usize).ok_or(BAD_ARGUMENT)?;
-            return image.resources
-                        .iter()
-                        .find(|resource| resource.kind == key.kind && resource.id == key.id)
-                        .map(|resource| (scope, resource))
-                        .ok_or(NOT_FOUND);
+            let resources = self.images
+                                .ok_or(BAD_ARGUMENT)?
+                                .resources((scope - LOADED_IMAGE_BASE) as usize)
+                                .ok_or(BAD_ARGUMENT)?;
+            return resources.iter()
+                            .find(|resource| resource.kind == key.kind && resource.id == key.id)
+                            .map(|resource| (scope, resource))
+                            .ok_or(NOT_FOUND);
         }
         // Lookup is allocation-free, including nested manager/resource requests.
         if (scope == CHAIN || scope == APPLICATION)

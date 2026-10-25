@@ -49,9 +49,20 @@ pub(crate) struct AppImage
     pub limit:     u64
 }
 static IMAGES: [Once<AppImage>; 8] = [const { Once::new() }; 8];
-pub(crate) fn image(index: usize) -> Option<&'static AppImage>
+/// Read scope only: the callback cannot return a borrow of this image. Actual
+/// backing still lives in the fixed cache until its registered migration.
+pub(crate) fn with_image<R>(index: usize, call: impl for<'a> FnOnce(&'a AppImage) -> R)
+                            -> Option<R>
 {
-    IMAGES.get(index)?.get()
+    Some(call(IMAGES.get(index)?.get()?))
+}
+struct ImageCatalog<'a>(&'a [Once<AppImage>]);
+impl crate::toolbox::resources::manager::ImageCatalog for ImageCatalog<'_>
+{
+    fn resources(&self, index: usize) -> Option<&[mac_formats::resource::Resource]>
+    {
+        Some(&self.0.get(index)?.get()?.resources)
+    }
 }
 pub(crate) fn cache_image(volume: u32, cnid: u32, creator: [u8; 4], file_type: [u8; 4],
                           resources: alloc::vec::Vec<mac_formats::resource::Resource>)
@@ -248,8 +259,9 @@ pub(crate) fn with_scrap<R>(call: impl FnOnce(&mut crate::toolbox::scrap::Manage
 }
 pub(crate) fn reload_image(index: usize) -> Result<usize, Status>
 {
-    let image = image(index).ok_or(NOT_FOUND)?;
-    crate::loader::application_at(&image.resources, image.base).map_err(crate::loader::status)
+    with_image(index, |image| {
+        crate::loader::application_at(&image.resources, image.base).map_err(crate::loader::status)
+    }).ok_or(NOT_FOUND)?
 }
 pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontManager>
 {
@@ -292,7 +304,7 @@ pub(crate) fn with_process_resources<R>(binding: &crate::toolbox::processes::Res
 
 fn with_resource_binding<R>(app: u64, index: usize, call: impl FnOnce() -> R) -> Result<R, Status>
 {
-    image(index).ok_or(NOT_FOUND)?;
+    with_image(index, |_| ()).ok_or(NOT_FOUND)?;
     crate::context::with_selected_resources(ResourceSelection { owner: app,
                                                                 image: index },
                                             call).map_err(|error| {
@@ -300,14 +312,27 @@ fn with_resource_binding<R>(app: u64, index: usize, call: impl FnOnce() -> R) ->
                                                      WRONG_THREAD
                                                  })
 }
-pub(crate) fn resources() -> Option<crate::toolbox::resources::manager::Manager<'static>>
+/// Image/catalog borrows end with this synchronous read. The higher-ranked
+/// callback cannot smuggle resource references into a retained manager record.
+pub(crate) fn with_resources<R>(call: impl for<'a> FnOnce(crate::toolbox::resources::manager::Manager<'a>)
+                                               -> R)
+                                -> Option<R>
 {
     let files = RESOURCE_FILES.get()?;
-    let index = crate::context::selected_resources().map_or_else(crate::machine::scheduler::image,
-                                                                 |selection| selection.image);
-    Some(crate::toolbox::resources::manager::Manager::new(&files.system,
-                                                          &image(index)?.resources,
-                                                          fonts()?.resources()))
+    let (index, origin) = match crate::context::selected_resources()
+    {
+        Some(selection) => (selection.image, selection.owner),
+        None =>
+        {
+            (crate::machine::scheduler::image(),
+             crate::context::current_thread_context().identity().app.0)
+        }
+    };
+    let images = ImageCatalog(&IMAGES);
+    let application = &IMAGES.get(index)?.get()?.resources;
+    Some(call(crate::toolbox::resources::manager::Manager::new(&files.system,
+                                                               application,
+                                                               fonts()?.resources()).with_images(&images, origin)))
 }
 
 fn launch(info: &BootInfo) -> mac_formats::Result<()>
