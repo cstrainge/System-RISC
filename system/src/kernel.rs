@@ -255,19 +255,21 @@ pub(crate) fn heap_available() -> usize
 {
     HEAP.available()
 }
-static RESOURCE_IMAGE: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(usize::MAX);
-static RESOURCE_OWNER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Resource-selection metadata only. The immutable image cache still owns the
+/// actual backing until image leases migrate; this is not a new lifetime pin.
+#[derive(Clone, Copy)]
+pub(crate) struct ResourceSelection
+{
+    owner: u64,
+    image: usize
+}
 pub(crate) fn with_resource_owner<R>(app: u64, call: impl FnOnce() -> R) -> Result<R, Status>
 {
-    use core::sync::atomic::Ordering::Relaxed;
-    let index = if RESOURCE_OWNER.load(Relaxed) == app
+    let selected = crate::context::selected_resources();
+    let index = match selected.filter(|selection| selection.owner == app)
     {
-        RESOURCE_IMAGE.load(Relaxed)
-    }
-    else
-    {
-        crate::machine::scheduler::image_for(app).ok_or(NOT_FOUND)?
+        Some(selection) => selection.image,
+        None => crate::machine::scheduler::image_for(app).ok_or(NOT_FOUND)?
     };
     with_resource_binding(app, index, call)
 }
@@ -284,37 +286,19 @@ pub(crate) fn with_process_resources<R>(binding: &crate::toolbox::processes::Res
 
 fn with_resource_binding<R>(app: u64, index: usize, call: impl FnOnce() -> R) -> Result<R, Status>
 {
-    use core::sync::atomic::Ordering::Relaxed;
     image(index).ok_or(NOT_FOUND)?;
-    struct Restore
-    {
-        image: usize,
-        owner: u64
-    }
-    impl Drop for Restore
-    {
-        fn drop(&mut self)
-        {
-            RESOURCE_IMAGE.store(self.image, core::sync::atomic::Ordering::Relaxed);
-            RESOURCE_OWNER.store(self.owner, core::sync::atomic::Ordering::Relaxed);
-        }
-    }
-    let _restore = Restore { image: RESOURCE_IMAGE.swap(index, Relaxed),
-                             owner: RESOURCE_OWNER.swap(app, Relaxed) };
-    Ok(call())
+    crate::context::with_selected_resources(ResourceSelection { owner: app,
+                                                                image: index },
+                                            call).map_err(|error| {
+                                                     serial!("RESOURCE_CONTEXT_REFUSED: {error}");
+                                                     WRONG_THREAD
+                                                 })
 }
 pub(crate) fn resources() -> Option<crate::toolbox::resources::manager::Manager<'static>>
 {
     let files = RESOURCE_FILES.get()?;
-    let override_image = RESOURCE_IMAGE.load(core::sync::atomic::Ordering::Relaxed);
-    let index = if override_image == usize::MAX
-    {
-        crate::machine::scheduler::image()
-    }
-    else
-    {
-        override_image
-    };
+    let index = crate::context::selected_resources().map_or_else(crate::machine::scheduler::image,
+                                                                 |selection| selection.image);
     Some(crate::toolbox::resources::manager::Manager::new(&files.system,
                                                           &image(index)?.resources,
                                                           fonts()?.resources()))
@@ -498,7 +482,7 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
     }
     if let Err(error) = launch(info)
     {
-        serial!("FINDER_LOAD_FAILED: {}", error);
+        serial!("SYSTEM_STARTUP_FAILED: {}", error);
         return ptr::null();
     }
     &SERVICES

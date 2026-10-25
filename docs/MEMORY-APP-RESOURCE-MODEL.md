@@ -1482,3 +1482,50 @@ Nine native checks pass across provider copy/exit/disconnect/retry, process and
 document lifetimes, aggregate Toolbox, bounded Finder, cursor, Reactor Room and
 StuffIt. Native/classic ABI, architecture boundaries, formatting and 52-library
 API documentation pass; the tested packaged installation remains unchanged.
+
+
+### Scheduled-thread resource selection
+
+Resource search overrides are one coherent owner/image pair in the scheduled
+thread's context, rather than independent machine-global atomics. A scoped
+restore touches only its original generation-tagged thread. Assignment clears
+the previous selection; actual quiescent reclamation clears it before releasing
+the owner. Reusing the context cannot let an abandoned old restore publish the
+previous application's resource search chain into a new thread.
+
+The architecture I/O wrapper snapshots explicit resource selection before its
+synchronous bootstrap-stack handoff and restores it around the callback. This
+transports the subject's resource search context without pretending that the
+callback executes on the application's thread. The permanent bootstrap selector
+has no reclamation operation, so this cleanup/paint handoff needs neither a
+panic nor a fallible fallback. Its private one-shot closure move is confined to
+the existing audited architecture stack-switch boundary.
+
+Selections are Copy metadata, allocate nothing per call, and hold no payload or
+image lifetime lease on a potentially abandoned application stack. Immutable
+images remain in the existing resident cache. Image aliases/pins, resource
+origin lifetimes, full four-part module invocation context and dynamic image/
+thread capacity remain required migrations; this slice does not reclaim image
+backing or enable MMU, multihart, byte accounting or userspace std.
+
+The expanded System bundle crossed the ordinary 4 MiB application resource
+payload limit during qualification. Trusted startup resource admission now
+uses available resident heap backing as its payload bound, with the existing
+map/count bounds and fallible allocations intact. Ordinary application resource
+limits are unchanged. Startup refusal reports the file, status and available
+backing; exhaustion, missing and translation-required cases retain typed format
+identity. The outer boot failure describes System startup rather than claiming
+every failure occurred while loading Finder. This is transitional startup
+admission on the existing allocator, not enforcement of the approved later
+process budgets or recovery reserve.
+
+Qualification: 376 scoped host cases pass, including five selector cases and
+the separately gated actual-disk read. Nine public-SDK native checks pass across
+provider copy/exit/disconnect/retry, two process campaigns, aggregate Toolbox,
+bounded Finder updates, original cursor sprites, Reactor Room and StuffIt. All
+17 cold-ROM cases pass, including an enlarged System payload and missing or
+malformed media. Native/classic ABI, architecture boundaries, formatting and
+52-library API documentation pass. The boot gate recreates catalog timestamps;
+executable resource hashes remain identical to the native-tested artifacts and
+the final disk is read again. Initial startup-budget, host link and stale fixture
+failures are retained in private evidence.

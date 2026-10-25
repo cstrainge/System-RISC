@@ -11,15 +11,35 @@ use mac_formats::{Error, Result,
 
 pub fn read_startup(name: &str) -> Result<Vec<Resource>>
 {
-    crate::kernel::with_files(|files| files.startup_resources(name)).map_err(|_| {
-                                                                        Error::Malformed("startup filesystem \
-                                                                               service is \
-                                                                               unavailable")
-                                                                    })?
-                                                                    .map_err(|_| {
-                                                                        Error::Malformed("startup resource \
-                                                                               loading failed")
-                                                                    })
+    crate::kernel::with_files(|files| {
+        files.startup_resources(name, crate::kernel::heap_available())
+    }).map_err(|error| {
+          serial!("STARTUP_RESOURCE_SERVICE_REFUSED name={} cause={:?}", name, error);
+          Error::Malformed("startup filesystem service is unavailable")
+      })?
+      .map_err(|status| {
+          serial!("STARTUP_RESOURCE_LOAD_REFUSED name={} status={} heap_available={}",
+                  name,
+                  status,
+                  crate::kernel::heap_available());
+          match status
+          {
+              mac_abi::NO_MEMORY =>
+              {
+                  Error::AllocationFailed("startup resource budget or allocation exhausted")
+              }
+              mac_abi::NOT_FOUND => Error::Missing("startup file or resource is missing"),
+              mac_abi::TRANSLATION_REQUIRED =>
+              {
+                  Error::TranslationRequired("startup code requires translation")
+              }
+              _ =>
+              {
+                  Error::Malformed("startup resource loading failed; see the named file and \
+                                    status in the boot log")
+              }
+          }
+      })
 }
 
 fn application_parts(resources: &[Resource]) -> Result<(Descriptor, &[u8], image::Image)>

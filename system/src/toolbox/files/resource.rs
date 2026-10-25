@@ -187,7 +187,7 @@ impl Manager
 
     /// Startup reads use the same mounted filesystem service as later launches.
     /// ROM supplies block I/O, never an opaque whole-fork copying callback.
-    pub(crate) fn startup_resources(&mut self, name: &str)
+    pub(crate) fn startup_resources(&mut self, name: &str, payload_bytes: usize)
                                     -> Result<Vec<mac_formats::resource::Resource>, Status>
     {
         let id = self.volumes
@@ -198,17 +198,15 @@ impl Manager
         self.with_volume(id, |volume| {
                 let folder = io(volume.blessed_folder())?;
                 let file = io(volume.find_file(folder.id, name.as_bytes()))?;
-                Self::load_resources(volume, file.resources)
+                // Trusted boot bundles grow with the System. Bound payload admission
+                // by current backing availability, not the ordinary application cap.
+                // Parser metadata stays bounded and every allocation remains fallible.
+                Self::load_selected_resources(volume,
+                                              file.resources,
+                                              |_, _| true,
+                                              mac_formats::resource::stream::Budget { payload_bytes,
+                                                                                      ..Default::default() })
             })
-    }
-
-    fn load_resources(volume: &mut Volume<'_, Device>, fork: Fork)
-                      -> Result<Vec<mac_formats::resource::Resource>, Status>
-    {
-        Self::load_selected_resources(volume,
-                                      fork,
-                                      |_, _| true,
-                                      mac_formats::resource::stream::Budget::default())
     }
 
     fn load_selected_resources(volume: &mut Volume<'_, Device>, mut fork: Fork,

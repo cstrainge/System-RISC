@@ -126,8 +126,8 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, disks: &[(&Path, &s
            || log.contains("BOOT_ALLOCATION_FAILED:")
            || log.contains("SYSTEM_PANIC:")
            || log.contains("SYSTEM_ALLOCATION_FAILED:")
-           || (log.contains("FINDER_LOAD_FAILED:")
-               && !expected.iter().any(|marker| marker.contains("FINDER_LOAD_FAILED:")))
+           || (log.contains("SYSTEM_STARTUP_FAILED:")
+               && !expected.iter().any(|marker| marker.contains("SYSTEM_STARTUP_FAILED:")))
            || Instant::now() >= deadline
            || child.0.try_wait()?.is_some()
         {
@@ -142,7 +142,7 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, disks: &[(&Path, &s
        || log.contains("DESKTOP_READY:") != boots
        || (!boots
            && log.contains("BOOT: entering System")
-           && !expected.iter().any(|marker| marker.contains("FINDER_LOAD_FAILED:")))
+           && !expected.iter().any(|marker| marker.contains("SYSTEM_STARTUP_FAILED:")))
     {
         return Err(error(format!("unexpected ROM result for {name}:\n{log}")));
     }
@@ -171,23 +171,10 @@ fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alterat
             // Grow actual resident payloads as well as the fork's unused tail.
             // ROM selects executable resources; System must load this additional
             // resource within its explicit selected-payload memory budget.
-            let payload_bytes = resources.iter().try_fold(0usize, |total, resource| {
-                                                     total.checked_add(resource.data.len())
-                                                          .ok_or_else(|| {
-                                                              error("large-fork fixture payload \
-                                                                     length overflow")
-                                                          })
-                                                 })?;
-            let budget = resource::stream::Budget::default().payload_bytes;
-            let extra = budget.checked_sub(payload_bytes)
-                              .map(|headroom| headroom / 2)
-                              .filter(|extra| *extra >= 64 * 1024)
-                              .ok_or_else(|| {
-                                  error("large-fork fixture needs at least 128 KiB of \
-                                         selected-payload budget headroom; inspect System \
-                                         resources before changing the loader budget")
-                              })?
-                              .min(1024 * 1024);
+            // A fixed fixture increment is not a production quota. Startup now
+            // admits against available resident backing, so this test must not
+            // derive its payload from the unrelated ordinary-app decode cap.
+            let extra = 64 * 1024;
             resources.push(resource::Resource { kind:       *b"TEST",
                                                 id:         32760,
                                                 name:

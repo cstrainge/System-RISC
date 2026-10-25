@@ -59,19 +59,33 @@ fn run_masked<F: FnOnce() -> R, R>(function: F) -> R
     }
     struct Call<F, R>
     {
-        function: Option<F>,
-        result:   MaybeUninit<R>
+        function:  MaybeUninit<F>,
+        resources: Option<crate::kernel::ResourceSelection>,
+        result:    MaybeUninit<R>
     }
     unsafe extern "C" fn invoke<F: FnOnce() -> R, R>(pointer: *mut ())
     {
         let call = unsafe { &mut *pointer.cast::<Call<F, R>>() };
-        let previous = super::scheduler::io_enter();
-        let result = call.function.take().unwrap()();
-        super::scheduler::io_leave(previous);
+        struct RestoreIo(bool);
+        impl Drop for RestoreIo
+        {
+            fn drop(&mut self)
+            {
+                super::scheduler::io_leave(self.0);
+            }
+        }
+        let _restore = RestoreIo(super::scheduler::io_enter());
+        // SAFETY: __system_io_switch invokes this private entry exactly once.
+        // Call initializes F before switching and never reads/drops it again;
+        // MaybeUninit prevents a second destructor after this move. The caller
+        // and every borrow captured by F stay alive until the switch returns.
+        let function = unsafe { call.function.assume_init_read() };
+        let result = crate::context::with_bootstrap_resources(call.resources, function);
         call.result.write(result);
     }
-    let mut call = Call { function: Some(function),
-                          result:   MaybeUninit::uninit() };
+    let mut call = Call { function:  MaybeUninit::new(function),
+                          resources: crate::context::selected_resources(),
+                          result:    MaybeUninit::uninit() };
     // Exclusive entry is guaranteed by the interrupt-masked native trap boundary.
     unsafe {
         let top = core::ptr::addr_of_mut!(STACK).cast::<u8>().add(256 * 1024);

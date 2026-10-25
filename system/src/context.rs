@@ -1,6 +1,8 @@
 //! Execution identity. Active classic state belongs to its resident services.
 //! Identity must come
 //! from the kernel scheduler, not from untrusted request fields.
+#[cfg(any(target_arch = "riscv64", test))]
+mod selection;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +140,7 @@ pub struct ThreadContext
     app:             core::sync::atomic::AtomicU64,
     thread:          core::sync::atomic::AtomicU64,
     owner:           spinning_top::Spinlock<Option<crate::toolbox::handles::OwnerRef>>,
+    resources:       selection::ScopedSelection<crate::kernel::ResourceSelection>,
     pub traps:       ThreadTrapState,
     pub definitions: DefinitionInvocations
 }
@@ -149,6 +152,7 @@ impl ThreadContext
         Self { app:         core::sync::atomic::AtomicU64::new(0),
                thread:      core::sync::atomic::AtomicU64::new(1),
                owner:       spinning_top::Spinlock::new(None),
+               resources:   selection::ScopedSelection::new(BOOT_THREAD),
                traps:       ThreadTrapState::new(),
                definitions: DefinitionInvocations::new() }
     }
@@ -180,6 +184,7 @@ impl ThreadContext
             {
                 return Err(mac_abi::SERVICE_BUSY);
             }
+            self.resources.reset(ThreadId(thread));
             self.app.store(owner.owner().incarnation(), Relaxed);
             self.thread.store(thread, Relaxed);
             *binding = Some(owner);
@@ -192,6 +197,7 @@ impl ThreadContext
         use mac_object_table::shared::InvocationGate as _;
         crate::toolbox::handles::InvocationGate::run(|| {
             let owner = self.owner.lock().take();
+            self.resources.reset(ThreadId(0));
             self.app.store(0, core::sync::atomic::Ordering::Relaxed);
             self.thread.store(0, core::sync::atomic::Ordering::Relaxed);
             drop(owner);
@@ -208,6 +214,48 @@ impl ThreadContext
 }
 #[cfg(target_arch = "riscv64")]
 static BOOTSTRAP_CONTEXT: ThreadContext = ThreadContext::new();
+#[cfg(target_arch = "riscv64")]
+static BOOT_RESOURCES: selection::PermanentSelection<crate::kernel::ResourceSelection> =
+    selection::PermanentSelection::new(BOOT_THREAD);
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn selected_resources() -> Option<crate::kernel::ResourceSelection>
+{
+    let context = current_thread_context();
+    if core::ptr::eq(context, boot_context())
+    {
+        BOOT_RESOURCES.current()
+    }
+    else
+    {
+        context.resources.current()
+    }
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_selected_resources<R>(selection: crate::kernel::ResourceSelection,
+                                         call: impl FnOnce() -> R)
+                                         -> Result<R, selection::Reclaimed>
+{
+    let context = current_thread_context();
+    if core::ptr::eq(context, boot_context())
+    {
+        Ok(BOOT_RESOURCES.with(Some(selection), call))
+    }
+    else
+    {
+        context.resources.with(selection, call)
+    }
+}
+/// The native I/O wrapper has entered the permanent bootstrap execution
+/// context. Transport selection metadata without changing executor identity.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_bootstrap_resources<R>(selection: Option<crate::kernel::ResourceSelection>,
+                                          call: impl FnOnce() -> R)
+                                          -> R
+{
+    BOOT_RESOURCES.with(selection, call)
+}
+
 #[cfg(target_arch = "riscv64")]
 pub fn current_thread_context() -> &'static ThreadContext
 {
