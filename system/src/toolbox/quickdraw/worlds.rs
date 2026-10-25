@@ -111,7 +111,7 @@ impl Worlds
         }
         let size = width as usize * height as usize;
         let used = self.worlds.state(owner.owner().incarnation()).map_or(0, |state| state.pixels);
-        if size > 640 * 480 || used + size > MAX_PIXELS
+        if size > crate::display::PIXELS || used + size > MAX_PIXELS
         {
             return Err(NO_MEMORY);
         }

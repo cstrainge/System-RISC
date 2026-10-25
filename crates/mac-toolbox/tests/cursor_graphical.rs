@@ -1,5 +1,7 @@
 //! Real Finder launch, native cursor compositing and automatic editor hover.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{collections::BTreeSet,
           fs,
           path::{Path, PathBuf},
@@ -10,9 +12,9 @@ use serde_json::Value;
 fn frame(path: &Path) -> Vec<u8>
 {
     let bytes = fs::read(path).unwrap();
-    let header = b"P6\n640 480\n255\n";
-    assert!(bytes.starts_with(header));
-    assert_eq!(bytes.len(), header.len() + 640 * 480 * 3);
+    let header = display::header();
+    assert!(bytes.starts_with(&header));
+    assert_eq!(bytes.len(), header.len() + display::width() * display::height() * 3);
     bytes[header.len()..].to_vec()
 }
 
@@ -25,7 +27,7 @@ fn sprite(base: &[u8], shown: &[u8], point: [usize; 2], bytes: &[u8]) -> bool
     {
         for x in point[0] - 16..point[0] + 16
         {
-            let at = (y * 640 + x) * 3;
+            let at = (y * display::width() + x) * 3;
             let column = x as isize - point[0] as isize + hotspot[0] as isize;
             let row = y as isize - point[1] as isize + hotspot[1] as isize;
             let mut expected: [u8; 3] = base[at..at + 3].try_into().unwrap();
@@ -55,7 +57,7 @@ fn sprite(base: &[u8], shown: &[u8], point: [usize; 2], bytes: &[u8]) -> bool
 fn clear(base: &[u8], shown: &[u8], [x, y]: [usize; 2]) -> bool
 {
     (y - 16..y + 16).all(|row| {
-                        let at = (row * 640 + x - 16) * 3;
+                        let at = (row * display::width() + x - 16) * 3;
                         base[at..at + 32 * 3] == shown[at..at + 32 * 3]
                     })
 }
@@ -196,7 +198,7 @@ fn installed_cursor_app_and_automatic_text_regions_render_original_sprites()
     let pointer = &report["pointer_present"];
     let scene_before = fs::read(output.join(pointer["before"].as_str().unwrap())).unwrap();
     let scene_after = fs::read(output.join(pointer["after"].as_str().unwrap())).unwrap();
-    assert_eq!(scene_before.len(), 640 * 480 * 4);
+    assert_eq!(scene_before.len(), display::width() * display::height() * 4);
     assert_eq!(scene_before, scene_after, "pure pointer motion wrote the backbuffer");
     for field in ["scene_rev", "compositions", "updates", "menu_paints"]
     {
@@ -214,14 +216,14 @@ fn installed_cursor_app_and_automatic_text_regions_render_original_sprites()
     assert!(sprite(&clean_scene, &moved, [143, 126], &arrow),
             "present-time sprite differs from the original arrow over the actual scene");
     let previous = load("pointer-before");
-    for y in 0..480
+    for y in 0..display::height()
     {
-        for x in 0..640
+        for x in 0..display::width()
         {
             // Both original and new 16x16 cursor boxes, hotspot (1,1).
             if !(141..158).contains(&x) || !(125..141).contains(&y)
             {
-                let at = (y * 640 + x) * 3;
+                let at = (y * display::width() + x) * 3;
                 assert_eq!(previous[at..at + 3],
                            moved[at..at + 3],
                            "pointer movement changed unrelated pixel {x},{y}");

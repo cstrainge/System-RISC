@@ -3,6 +3,7 @@
 
 Rust owns assertions and inspects the final disk through the public Files SDK.
 """
+from system7_platform import tablet_axis
 import argparse
 import json
 import os
@@ -141,8 +142,8 @@ def capture(output, windows=False):
                 point=[221+i%12,161+i%9] if i<199 else [235,175]
                 remaining=started+i*.008-time.monotonic()
                 if remaining>0:time.sleep(remaining)
-                send([{'type':'abs','data':{'axis':'x','value':(point[0]*32767+638)//639}},
-                      {'type':'abs','data':{'axis':'y','value':(point[1]*32767+478)//479}}])
+                send([{'type':'abs','data':{'axis':'x','value':tablet_axis(point[0], 'x')}},
+                      {'type':'abs','data':{'axis':'y','value':tablet_axis(point[1], 'y')}}])
                 submitted.append({'point':point,'seconds':time.monotonic()-started})
         driver.wait_state(lambda state:state['mouse']=='235,175')
         after_trace, after_state = trace('tracking-after'), driver.state()

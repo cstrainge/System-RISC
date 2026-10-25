@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Collect real resident/Finder typing traces. Rust owns acceptance, not Python."""
+from system7_platform import tablet_axis
 import argparse
 import json
 import re
@@ -65,8 +66,8 @@ def capture(output, windows_headless=False):
 
     def move(x, y):
         send([{'type': 'abs', 'data': {'axis': axis, 'value': value}}
-              for axis, value in [('x', (x * 32767 + 638) // 639),
-                                  ('y', (y * 32767 + 478) // 479)]])
+              for axis, value in [('x', tablet_axis(x, 'x')),
+                                  ('y', tablet_axis(y, 'y'))]])
         time.sleep(.05)
 
     def button(down):

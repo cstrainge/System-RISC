@@ -101,7 +101,13 @@ fn fence()
 }
 fn now() -> u64
 {
-    unsafe { read_volatile(0x0200bff8 as *const u64) }
+    // The architectural time counter shares the board timebase without an
+    // MMIO/BQL round trip on every outstanding-request poll.
+    let ticks;
+    unsafe {
+        asm!("rdtime {value}", value = out(reg) ticks, options(nomem, nostack));
+    }
+    ticks
 }
 pub fn is_block(base: usize) -> bool
 {
@@ -299,26 +305,45 @@ impl Disk
         fence();
         self.write(0x50, 0);
         let start = now();
+        let mut next_status_check = 10_000; // At most once per pending millisecond.
         loop
         {
-            let used = unsafe { u16::from_le(read_volatile(addr_of_mut!(self.queue.used.index))) };
-            if used == self.index
+            let result = bootrom::completion::poll(self.index,
+                                                   || unsafe {
+                                                       u16::from_le(read_volatile(core::ptr::addr_of!(self.queue.used.index)))
+                                                   },
+                                                   || {
+                                                       let elapsed = now().wrapping_sub(start);
+                                                       if elapsed < next_status_check
+                                                       {
+                                                           return None;
+                                                       }
+                                                       next_status_check =
+                                                           elapsed.saturating_add(10_000);
+                                                       if self.read(0x70) & 0xc0 != 0
+                                                       {
+                                                           Some("virtio block device failed")
+                                                       }
+                                                       else if elapsed > 10_000_000
+                                                       {
+                                                           Some("virtio block request timed out")
+                                                       }
+                                                       else
+                                                       {
+                                                           None
+                                                       }
+                                                   });
+            match result
             {
-                break;
+                bootrom::completion::Poll::Ready => break,
+                bootrom::completion::Poll::Pending => core::hint::spin_loop(),
+                bootrom::completion::Poll::Failed(reason) =>
+                {
+                    // Only an actually incomplete request poisons the queue.
+                    // Do not reuse DMA storage before acknowledged completion.
+                    return Err(self.request_error(kind, sector, start, reason, true));
+                }
             }
-            if self.read(0x70) & 0xc0 != 0
-            {
-                return Err(self.request_error(kind, sector, start, "virtio block device failed",
-                                              true));
-            }
-            if now().wrapping_sub(start) > 10_000_000
-            {
-                // DMA completion is uncertain. Never reuse its descriptors or data;
-                // rollback will fail truthfully rather than race an in-flight write.
-                return Err(self.request_error(kind, sector, start,
-                                              "virtio block request timed out", true));
-            }
-            core::hint::spin_loop();
         }
         fence();
         let q = &mut *self.queue;

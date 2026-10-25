@@ -959,18 +959,19 @@ impl Browser
                          .iter()
                          .position(|saved| saved.is_some_and(|s| s.location == location));
         let saved = queued.and_then(|at| self.closed_states[at].map(|s| s.state)).or(persisted);
+        let desktop = system.quickdraw().desktop().bounds()?;
         let bounds =
             saved.map(|state| {
                      let w =
                          (i32::from(state.bounds.right) - i32::from(state.bounds.left)).clamp(180,
-                                                                                              640)
+                                                                                              i32::from(desktop.right))
                          as i16;
                      let h =
                          (i32::from(state.bounds.bottom) - i32::from(state.bounds.top)).clamp(100,
-                                                                                              438)
+                                                                                              i32::from(desktop.bottom) - 42)
                          as i16;
-                     let x = state.bounds.left.clamp(0, 640 - w);
-                     let y = state.bounds.top.clamp(42, 480 - h);
+                     let x = state.bounds.left.clamp(0, desktop.right - w);
+                     let y = state.bounds.top.clamp(42, desktop.bottom - h);
                      Rect::new(x, y, x + w, y + h)
                  })
                  .unwrap_or(Rect::new(8 + offset, 46 + offset, 412 + offset, 234 + offset));
@@ -1779,7 +1780,7 @@ impl Browser
             window.zoom_restore = Some((old_frame,
                                         Point { h: window.scroll_h,
                                                 v: window.scroll }));
-            let (_, origin) = icon_view::fitted_window(extent, old_frame);
+            let (_, origin) = icon_view::fitted_window(extent, old_frame, desktop::bounds());
             window.scroll_h = origin.h;
             window.scroll = origin.v;
         }
@@ -2046,8 +2047,9 @@ impl Browser
     fn configure_zoom(&self, system: &System<'_>, slot: usize) -> Result<(), Error>
     {
         let window = self.windows[slot].ok_or(Error::NotFound)?;
-        let bounds =
-            cache::with(slot, |folder| icon_view::fitted_window(folder.extent, folder.frame).0);
+        let bounds = cache::with(slot, |folder| {
+            icon_view::fitted_window(folder.extent, folder.frame, desktop::bounds()).0
+        });
         system.windows().set_standard_bounds(window.window, Some(bounds))
     }
 

@@ -6,7 +6,7 @@
   "role": "application",
   "abi_version": 1,
   "load_base": "0x86800000",
-  "load_limit": "0x87000000",
+  "load_limit": "0x86c56000",
   "description": "System RISC read-only resource browser",
   "resources": [
     {

@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use super::Canvas;
-pub const BYTES: usize = 640 * 21 * 4;
+pub const BYTES: usize = crate::display::WIDTH * 21 * 4;
 
 #[derive(Default)]
 pub struct MenuBarCache

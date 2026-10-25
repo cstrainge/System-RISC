@@ -530,3 +530,18 @@ HFS-B/qcow2 installation and boot ROM under the selected external build director
 build report and propagated to guest builds and VM helpers. Unknown names fail
 before creating installation output. QemuRISC-V is currently the supported
 platform; future Pi partitioned-media and ARM backends remain roadmap work.
+
+The QemuRISC-V platform currently defaults to an 800×600 guest framebuffer.
+`memory.display` in the platform JSON fixes the build-time width and height;
+mac-build validates geometry and scratch capacity before emitting the boot and
+System constants. Shared host conformance code uses that same checked record.
+The native launcher retains 2× zoom, giving a 1600×1200 guest viewport. Runtime
+mode switching is not implemented: rebuild the complete image after changing
+platform geometry. Window limits, pointer mapping, desktop placement and display
+buffers use the configured size; original Macintosh reference images retain
+those references' recorded sizes.
+
+Graphical launches enable OpenGL at 2× zoom. The software-scaled frontend can
+hold up virtual-disk progress at this viewport size; GPU presentation keeps
+storage and the display responsive. Native Windows GTK and Linux GTK launches
+are both checked; headless checks do not require a graphics context.

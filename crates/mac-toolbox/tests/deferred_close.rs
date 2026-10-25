@@ -1,5 +1,7 @@
 //! Real close-box input, public Window SDK observations and retained pixel checks.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs,
           path::{Path, PathBuf},
           process::Command};
@@ -8,11 +10,15 @@ use serde_json::Value;
 fn content(path: &Path) -> Vec<u8>
 {
     let bytes = fs::read(path).unwrap();
-    let header = b"P6\n640 480\n255\n";
-    assert!(bytes.starts_with(header));
+    let header = display::header();
+    assert!(bytes.starts_with(&header));
     let rgb = &bytes[header.len()..];
-    assert_eq!(rgb.len(), 640 * 480 * 3);
-    (100..400).flat_map(|y| rgb[(y * 640 + 100) * 3..(y * 640 + 540) * 3].iter().copied()).collect()
+    assert_eq!(rgb.len(), display::width() * display::height() * 3);
+    (100..400).flat_map(|y| {
+                  rgb[(y * display::width() + 100) * 3..(y * display::width() + 540) * 3].iter()
+                                                                                         .copied()
+              })
+              .collect()
 }
 #[test]
 #[ignore = "requires freshly built System image and private graphical QEMU"]

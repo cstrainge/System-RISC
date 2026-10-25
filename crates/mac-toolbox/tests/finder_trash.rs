@@ -1,5 +1,7 @@
 //! Actual Finder -> facade -> ECALL -> resource managers -> writable virtio HFS.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs,
           path::{Path, PathBuf},
           process::Command};
@@ -8,9 +10,9 @@ use serde_json::Value;
 fn frame(path: &Path) -> Vec<u8>
 {
     let bytes = fs::read(path).unwrap();
-    let header = b"P6\n640 480\n255\n";
-    assert!(bytes.starts_with(header));
-    assert_eq!(bytes.len(), header.len() + 640 * 480 * 3);
+    let header = display::header();
+    assert!(bytes.starts_with(&header));
+    assert_eq!(bytes.len(), header.len() + display::width() * display::height() * 3);
     bytes[header.len()..].to_vec()
 }
 fn crop(frame: &[u8], left: usize, top: usize, width: usize, height: usize) -> Vec<u8>
@@ -18,7 +20,8 @@ fn crop(frame: &[u8], left: usize, top: usize, width: usize, height: usize) -> V
     let mut result = Vec::new();
     for y in top..top + height
     {
-        result.extend_from_slice(&frame[(y * 640 + left) * 3..(y * 640 + left + width) * 3]);
+        result.extend_from_slice(&frame[(y * display::width() + left) * 3
+                                        ..(y * display::width() + left + width) * 3]);
     }
     result
 }
@@ -92,7 +95,7 @@ fn finder_menus_and_trash_are_resource_based_and_persist_across_disk_boots()
         [("ok-held", [0, 0, 0]), ("ok-left", [255, 255, 255]), ("ok-reentered", [0, 0, 0])]
     {
         let frame = image(name);
-        let at = (173 * 640 + 440) * 3;
+        let at = (173 * display::width() + 440) * 3;
         assert_eq!(&frame[at..at + 3],
                    &color,
                    "{name}: actual CDEF highlight must follow pointer before release");

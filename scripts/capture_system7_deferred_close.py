@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Drive a private public-SDK close fixture; Rust owns every acceptance decision."""
+from system7_platform import tablet_axis
 import argparse,hashlib,json,re,shutil,time
 from pathlib import Path
 import system7_vm as vm
@@ -23,8 +24,8 @@ def capture(output):
         raise TimeoutError('Deferred close transport timed out:\n'+text()[-3000:])
     def send(events):vm.qmp('input-send-event',{'events':events},endpoint)
     def move(x,y):
-        send([{'type':'abs','data':{'axis':'x','value':(x*32767+638)//639}},
-              {'type':'abs','data':{'axis':'y','value':(y*32767+478)//479}}])
+        send([{'type':'abs','data':{'axis':'x','value':tablet_axis(x, 'x')}},
+              {'type':'abs','data':{'axis':'y','value':tablet_axis(y, 'y')}}])
         wait(lambda:observer.read(endpoint,serial)['mouse']==f'{x},{y}')
     def button(down):
         previous=int(observer.read(endpoint,serial)['input_seq'])

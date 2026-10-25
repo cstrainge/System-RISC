@@ -1,11 +1,13 @@
 //! Foreground stalls observed through real SDK applications and original sprites.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{collections::BTreeSet, fs, path::PathBuf, process::Command};
 
 fn matches(frame: &[u8], cursor: &[u8], point: [usize; 2], checker: bool) -> bool
 {
-    let header = b"P6\n640 480\n255\n";
-    assert!(frame.starts_with(header));
+    let header = display::header();
+    assert!(frame.starts_with(&header));
     let pixels = &frame[header.len()..];
     let word = |at| u16::from_be_bytes([cursor[at], cursor[at + 1]]);
     for y in point[1] - 16..point[1] + 16
@@ -33,7 +35,7 @@ fn matches(frame: &[u8], cursor: &[u8], point: [usize; 2], checker: bool) -> boo
                     }
                 }
             }
-            if pixels[(y * 640 + x) * 3..(y * 640 + x) * 3 + 3] != rgb
+            if pixels[(y * display::width() + x) * 3..(y * display::width() + x) * 3 + 3] != rgb
             {
                 return false;
             }
@@ -116,16 +118,16 @@ fn foreground_stalls_animate_without_app_cooperation_or_scene_repaints()
                            "watch animation recomposed the scene");
                 assert_eq!(f["state"]["menu_paints"], entry("spin-0")["state"]["menu_paints"]);
             }
-            let header = b"P6\n640 480\n255\n".len();
-            for y in 0..480
+            let header = display::header().len();
+            for y in 0..display::height()
             {
-                for x in 0..640
+                for x in 0..display::width()
                 {
                     if (334..366).contains(&x) && (284..316).contains(&y)
                     {
                         continue;
                     }
-                    let at = header + (y * 640 + x) * 3;
+                    let at = header + (y * display::width() + x) * 3;
                     assert_eq!(&pixels[at..at + 3],
                                &reference[at..at + 3],
                                "{name}: cursor damaged unrelated pixels at {x},{y}");

@@ -2,12 +2,12 @@
 //! boot hart enters here; callbacks retained by System never touch this storage.
 use mac_boot_screen::Raster;
 
-use crate::memory::{DISPLAY_SCRATCH_BASE, DISPLAY_SCRATCH_BYTES};
-const WIDTH: usize = 640;
-const HEIGHT: usize = 480;
-// One checked platform reservation serves the boot framebuffer, then the
-// resident tracking raster after System installs its own framebuffer. Firmware
-// storage callbacks never access this range after handoff.
+use crate::memory::{DISPLAY_HEIGHT, DISPLAY_SCRATCH_BASE, DISPLAY_SCRATCH_BYTES, DISPLAY_WIDTH};
+const WIDTH: usize = DISPLAY_WIDTH as usize;
+const HEIGHT: usize = DISPLAY_HEIGHT as usize;
+// The checked platform range contains boot/front pixels followed by separate
+// resident tracking scratch. System retains the frontbuffer after handoff;
+// firmware storage callbacks never access display memory afterward.
 const _: () = assert!(DISPLAY_SCRATCH_BYTES >= (WIDTH * HEIGHT * size_of::<u32>()) as u64);
 fn raster() -> Option<Raster<'static>>
 {
@@ -37,13 +37,13 @@ pub fn happy()
 {
     if let Some(mut canvas) = raster()
     {
-        canvas.icon(mac_boot_screen::HAPPY, 304, 224, 1);
+        canvas.icon(mac_boot_screen::HAPPY, (WIDTH as i16 - 32) / 2, (HEIGHT as i16 - 32) / 2, 1);
     }
 }
 pub fn missing()
 {
     if let Some(mut canvas) = raster()
     {
-        canvas.icon(mac_boot_screen::MISSING, 304, 224, 1);
+        canvas.icon(mac_boot_screen::MISSING, (WIDTH as i16 - 32) / 2, (HEIGHT as i16 - 32) / 2, 1);
     }
 }

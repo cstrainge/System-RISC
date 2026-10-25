@@ -4,6 +4,7 @@
 This file sends physical QMP input and retains serial/frames. Canonical Rust
 tests own acceptance decisions. It never changes the visible desktop VM.
 """
+from system7_platform import tablet_axis, display_size
 from hfs_b_tool import Image as NativeImage
 import argparse
 import json
@@ -93,8 +94,8 @@ class Driver:
         vm.qmp('input-send-event', {'events': events}, self.endpoint)
 
     def move(self, x, y):
-        self.send([{'type': 'abs', 'data': {'axis': 'x', 'value': (x * 32767 + 638) // 639}},
-                   {'type': 'abs', 'data': {'axis': 'y', 'value': (y * 32767 + 478) // 479}}])
+        self.send([{'type': 'abs', 'data': {'axis': 'x', 'value': tablet_axis(x, 'x')}},
+                   {'type': 'abs', 'data': {'axis': 'y', 'value': tablet_axis(y, 'y')}}])
         self.wait_state(lambda state: state['mouse'] == f'{x},{y}')
 
     def button(self, down):
@@ -130,8 +131,11 @@ class Driver:
         self.key('q' if quit else 'w', ('ctrl',))
         self.wait_state(lambda state: int(state['windows']) > before)
         # System positions the 366x136 Save Changes ALRT in the upper fifth.
-        # Content origin is137,89; Don't Save is local20,96..124,118.
-        self.click(193, 196)
+        # The reference 640x480 content origin is137,89; Don't Save is
+        # local20,96..124,118. Follow the structure's centered/upper-fifth
+        # placement as the checked display grows.
+        width, height = display_size()
+        self.click(193 + (width - 640) // 2, 196 + (height - 480) // 5)
 
     def menu(self, x, row_y, popup_x=None):
         self.move(x, 10)
@@ -228,7 +232,7 @@ def capture(output, remap_icon=False, windows=False):
 
     def activate(row, app):
         previous = driver.log().count(f'PROCESS_ACTIVE app={app}\n')
-        driver.menu(618, 93 + row * 18, popup_x=580)
+        driver.menu(display_size()[0]-22, 93 + row * 18, popup_x=display_size()[0]-60)
         driver.wait(f'PROCESS_ACTIVE app={app}\n', previous)
 
     def editor_key(name, modifiers=()):
@@ -238,7 +242,7 @@ def capture(output, remap_icon=False, windows=False):
 
     try:
         frame('finder-initial')
-        driver.move(618, 10)
+        driver.move(display_size()[0]-22, 10)
         driver.button(True)
         frame('finder-only-menu')
         driver.button(False)
@@ -279,17 +283,17 @@ def capture(output, remap_icon=False, windows=False):
         driver.key('c')
         driver.wait('FINDER_TEXTEDIT_STATE length=3 selection=3..3\n')
         frame('textedit-abc')
-        driver.move(618, 10)
+        driver.move(display_size()[0]-22, 10)
         driver.button(True)
         frame('three-app-menu')
         driver.button(False)
-        driver.menu(618, 44, popup_x=580)  # Hide Others.
+        driver.menu(display_size()[0]-22, 44, popup_x=display_size()[0]-60)  # Hide Others.
         frame('hide-others')
         folder_id = re.search(r'FINDER_FOLDER_OPEN .* window=(\d+) name=Applications',
                               driver.log())[1]
         restored_ready = f'FINDER_FOLDER_READY window={folder_id}\n'
         restored_count = driver.log().count(restored_ready)
-        driver.menu(618, 60, popup_x=580)  # Show All, foreground unchanged.
+        driver.menu(display_size()[0]-22, 60, popup_x=display_size()[0]-60)  # Show All, foreground unchanged.
         # Restoring hidden windows posts real application updates. Capture
         # their completed drawing, not the still-visible tracking popup while
         # those updates are waiting for their application threads to run.

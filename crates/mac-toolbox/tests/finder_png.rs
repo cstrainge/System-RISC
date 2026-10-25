@@ -1,6 +1,8 @@
 //! Native PNG extension, tested through Finder -> public Toolbox -> resident
 //! retained drawing, real disk boot, and actual framebuffer pixels.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs, path::PathBuf, process::Command};
 #[test]
 #[ignore = "requires cargo xtask image and real QEMU graphical guest"]
@@ -26,12 +28,12 @@ fn finder_png_resource_composites_and_scales_through_the_resident_service()
     assert!(serial.contains("QD_DEMO_READY page=10 png"));
     assert!(!serial.contains("FINDER_ACTION_FAILED"));
     let frame = fs::read(output.join("finder-png.ppm")).unwrap();
-    let header = b"P6\n640 480\n255\n";
-    assert!(frame.starts_with(header));
+    let header = display::header();
+    assert!(frame.starts_with(&header));
     let rgb = &frame[header.len()..];
-    assert_eq!(rgb.len(), 640 * 480 * 3);
+    assert_eq!(rgb.len(), display::width() * display::height() * 3);
     let pixel = |x: usize, y: usize| -> u32 {
-        let i = (y * 640 + x) * 3;
+        let i = (y * display::width() + x) * 3;
         (rgb[i] as u32) << 16 | (rgb[i + 1] as u32) << 8 | rgb[i + 2] as u32
     };
     // Independent source sample formula used to encode the bundled PNG. This

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the disk-booted System7 desktop using QMP's real virtio input path."""
+from system7_platform import tablet_axis, display_size
 import json
 from pathlib import Path
 import time
@@ -35,8 +36,8 @@ def check_events(endpoint, serial_path, results):
         vm.qmp('input-send-event', {'events': events}, endpoint)
 
     def move(x, y):
-        send([{'type': 'abs', 'data': {'axis': 'x', 'value': (x * 32767 + 638) // 639}},
-              {'type': 'abs', 'data': {'axis': 'y', 'value': (y * 32767 + 478) // 479}}])
+        send([{'type': 'abs', 'data': {'axis': 'x', 'value': tablet_axis(x, 'x')}},
+              {'type': 'abs', 'data': {'axis': 'y', 'value': tablet_axis(y, 'y')}}])
         wait(lambda s: s['mouse'] == f'{x},{y}', 'absolute pointer motion')
 
     def button(down):
@@ -69,7 +70,7 @@ def check_events(endpoint, serial_path, results):
         path = (results / name).resolve()
         vm.qmp('screendump', {'filename': str(path), 'format': 'png'}, endpoint)
         with Image.open(path) as image:
-            assert image.size == (640, 480), f'unexpected framebuffer dimensions {image.size}'
+            assert image.size == display_size(), f'unexpected framebuffer dimensions {image.size}'
             return image.convert('RGB')
 
     def demo_key(code, page):
@@ -223,7 +224,7 @@ def check_events(endpoint, serial_path, results):
         passed('fresh root folder closes back to the desktop',window_count(0,0))
         move(16,444)
         roundtrip=screenshot('finder-empty-roundtrip.png')
-        assert ImageChops.difference(empty.crop((0,21,640,480)),roundtrip.crop((0,21,640,480))).getbbox() is None,'folder new/close left stale desktop pixels'
+        assert ImageChops.difference(empty.crop((0,21,*display_size())),roundtrip.crop((0,21,*display_size()))).getbbox() is None,'folder new/close left stale desktop pixels'
         records.append({'check':'retained desktop is restored exactly after folder open/close', 'status':'passed'})
         click(600,50);click(600,50)
         passed('double-click mounted volume desktop icon reopens its real root',lambda s:s['windows']=='1' and int(s['front']) != fresh_id)

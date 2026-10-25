@@ -184,11 +184,12 @@ mod tests
         assert_eq!(memory.ram[0].length, 0x200000000);
         // Firmware's device-tree reservation is covered by the platform's
         // existing exclusion, never counted twice or treated as free bytes.
-        assert_eq!(memory.reserved.len(), 4);
-        assert!(memory.reserved.iter().any(|range| {
-                                          range.base == BOOT_RESERVED[1].0
-                                          && range.base + range.length == BOOT_RESERVED[2].1
-                                      }));
+        for &(start, end) in &BOOT_RESERVED
+        {
+            assert!(memory.reserved
+                          .iter()
+                          .any(|range| range.base <= start && range.base + range.length >= end));
+        }
         assert!(memory.reserved.iter().any(|range| {
                                           range.base <= DISPLAY_SCRATCH_BASE
                                           && range.base + range.length

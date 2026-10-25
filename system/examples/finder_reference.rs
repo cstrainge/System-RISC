@@ -108,7 +108,11 @@ fn main()
                 Caption::measure_with_limit(name, 60, |text| draw.text_width(text)).unwrap();
             icon_view::draw_item_measured(&mut draw,
                                           24000,
-                                          icon_view::volume_bounds(index),
+                                          icon_view::volume_bounds((index / 7) as i16,
+                                                                   28
+                                                                   + (index % 7) as i16
+                                                                     * icon_view::GRID_HEIGHT,
+                                                                   Rect::new(0, 21, 640, 480)),
                                           name,
                                           caption,
                                           State { active: true,
@@ -120,7 +124,7 @@ fn main()
             Caption::measure_with_limit("Trash", 60, |text| draw.text_width(text)).unwrap();
         icon_view::draw_item_measured(&mut draw,
                                       -3993,
-                                      icon_view::TRASH_BOUNDS,
+                                      icon_view::trash_bounds(Rect::new(0, 21, 640, 480)),
                                       "Trash",
                                       caption,
                                       State { active: true,

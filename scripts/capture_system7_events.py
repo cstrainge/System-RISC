@@ -4,6 +4,7 @@
 Python synchronizes input and retains observations. Rust owns every acceptance
 decision, including physical key bits, raw OS events and menu-consumed keys.
 """
+from system7_platform import tablet_axis
 import argparse
 import json
 from pathlib import Path
@@ -72,8 +73,8 @@ def capture(output):
         key('ctrl', False)
         snapshot('command-a-up', lambda s: s['keys'] == '00' * 16)
         x, y = 241, 180
-        send([{'type': 'abs', 'data': {'axis': 'x', 'value': (x * 32767 + 638) // 639}},
-              {'type': 'abs', 'data': {'axis': 'y', 'value': (y * 32767 + 478) // 479}}])
+        send([{'type': 'abs', 'data': {'axis': 'x', 'value': tablet_axis(x, 'x')}},
+              {'type': 'abs', 'data': {'axis': 'y', 'value': tablet_axis(y, 'y')}}])
         snapshot('mouse-moved', lambda s: (s['x'], s['y']) == (x, y))
         send([{'type': 'btn', 'data': {'button': 'left', 'down': True}}])
         snapshot('mouse-held', lambda s: not s['modifiers'] & 128)

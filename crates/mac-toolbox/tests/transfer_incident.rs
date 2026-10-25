@@ -1,5 +1,7 @@
 //! Real Finder behavior against ordinary host entries and a broken container.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs, path::PathBuf, process::Command};
 
 fn capture(corrupt: bool) -> (PathBuf, String)
@@ -81,8 +83,8 @@ fn provider_error_names_operation_subject_and_cause_and_alert_stays_responsive()
 
 fn assert_arrow(frame: &[u8], cursor: &[u8], point: [usize; 2])
 {
-    let header = b"P6\n640 480\n255\n";
-    assert!(frame.starts_with(header));
+    let header = display::header();
+    assert!(frame.starts_with(&header));
     let pixels = &frame[header.len()..];
     let word = |at| u16::from_be_bytes([cursor[at], cursor[at + 1]]);
     // Check the opaque sprite pixels. The background is allowed to be a folder
@@ -99,7 +101,7 @@ fn assert_arrow(frame: &[u8], cursor: &[u8], point: [usize; 2])
             let x = point[0] + column - word(66) as usize;
             let y = point[1] + row - word(64) as usize;
             let expected = if word(row * 2) & bit != 0 { 0 } else { 255 };
-            let at = (y * 640 + x) * 3;
+            let at = (y * display::width() + x) * 3;
             assert_eq!(&pixels[at..at + 3],
                        &[expected; 3],
                        "cursor is not responsive arrow at {x},{y}");

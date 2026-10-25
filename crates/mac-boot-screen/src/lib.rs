@@ -107,17 +107,35 @@ impl<'a> Raster<'a>
         }
     }
 }
-pub const PANEL: Rect = Rect::new(170, 150, 470, 326);
-pub const PROGRESS: Rect = Rect::new(204, 289, 436, 305);
-pub const TITLE_BASELINE: i16 = 271;
+/// Welcome geometry preserves the original 300x176 panel and 4px shadow;
+/// placement is centered on the actual framebuffer rather than a fixed mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PanelLayout
+{
+    pub bounds:         Rect,
+    pub progress:       Rect,
+    pub title_baseline: i16
+}
+impl PanelLayout
+{
+    pub fn new(width: i16, height: i16) -> Self
+    {
+        let left = (width - 300) / 2;
+        let top = (height - 180) / 2;
+        Self { bounds:         Rect::new(left, top, left + 300, top + 176),
+               progress:       Rect::new(left + 34, top + 139, left + 266, top + 155),
+               title_baseline: top + 121 }
+    }
+}
 /// Draw only the welcome panel. Progress is a resource-backed managed control
 /// owned by System; the ROM never carries a duplicate progress implementation.
 pub fn draw_panel(raster: &mut Raster<'_>, happy: &[u8; 256])
 {
+    let panel = PanelLayout::new(raster.width as i16, raster.height as i16).bounds;
     raster.background();
-    raster.fill(Rect::new(PANEL.left + 4, PANEL.top + 4, PANEL.right + 4, PANEL.bottom + 4), 0);
-    raster.fill(PANEL, 0);
-    raster.fill(Rect::new(PANEL.left + 2, PANEL.top + 2, PANEL.right - 2, PANEL.bottom - 2),
+    raster.fill(Rect::new(panel.left + 4, panel.top + 4, panel.right + 4, panel.bottom + 4), 0);
+    raster.fill(panel, 0);
+    raster.fill(Rect::new(panel.left + 2, panel.top + 2, panel.right - 2, panel.bottom - 2),
                 0xffffff);
-    raster.icon(happy, 288, 170, 2);
+    raster.icon(happy, panel.left + 118, panel.top + 20, 2);
 }

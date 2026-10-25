@@ -1,5 +1,7 @@
 //! Actual Finder launch and system app-switching interaction over physical input.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs,
           path::{Path, PathBuf},
           process::Command};
@@ -11,16 +13,18 @@ mod process_trace;
 fn frame(path: &Path) -> Vec<u8>
 {
     let bytes = fs::read(path).unwrap();
-    let header = b"P6\n640 480\n255\n";
-    assert!(bytes.starts_with(header));
-    assert_eq!(bytes.len(), header.len() + 640 * 480 * 3);
+    let header = display::header();
+    assert!(bytes.starts_with(&header));
+    assert_eq!(bytes.len(), header.len() + display::width() * display::height() * 3);
     bytes[header.len()..].to_vec()
 }
 
 fn region(bytes: &[u8], left: usize, top: usize, right: usize, bottom: usize) -> Vec<u8>
 {
-    (top..bottom).flat_map(|y| bytes[(y * 640 + left) * 3..(y * 640 + right) * 3].iter().copied())
-                 .collect()
+    (top..bottom).flat_map(|y| {
+        bytes[(y * display::width() + left) * 3..(y * display::width() + right) * 3].iter().copied()
+    })
+    .collect()
 }
 
 /// Render a known resource through the public SDK, independently of Finder's
@@ -149,13 +153,21 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     let popup = image("three-app-menu");
     // The right-aligned popup sizes to its current resource titles. Renaming
     // TextEdit Exerciser to Text Edit legitimately changes its left edge.
-    let popup_left = (400..630).find(|&x| {
-                                   (21..137).all(|y| {
-                                                popup[(y * 640 + x) * 3..(y * 640 + x) * 3 + 3]
-                                                == [0, 0, 0]
-                                            })
-                               })
-                               .expect("application menu left border");
+    let popup_left =
+        (display::width() - 240..display::width() - 10).find(|&x| {
+                                                           (21..137).all(|y| {
+                                                                        popup[(y * display::width()
+                                                                               + x)
+                                                                              * 3
+                                                                              ..(y
+                                                                                 * display::width()
+                                                                                 + x)
+                                                                                * 3
+                                                                                + 3]
+                                                                        == [0, 0, 0]
+                                                                    })
+                                                       })
+                                                       .expect("application menu left border");
     for (package, id, top) in
         [("System", 3, 85), ("QuickDraw Test", 128, 103), ("Text Edit", 128, 121)]
     {
@@ -167,7 +179,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
                                  ("quickdraw-launched", "QuickDraw Test", 128),
                                  ("textedit-abc", "Text Edit", 128)]
     {
-        assert_eq!(region(&image(frame), 610, 1, 626, 17),
+        assert_eq!(region(&image(frame), display::width() - 30, 1, display::width() - 14, 17),
                    icon(&root, package, id, 16),
                    "application menu title did not follow foreground {package}");
     }
@@ -189,7 +201,7 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
         for x in 576..630
         {
             let expected = if (x + y) % 2 == 0 { 0x87 } else { 0xc0 };
-            let at = (y * 640 + x) * 3;
+            let at = (y * display::width() + x) * 3;
             assert_eq!(&hidden[at..at + 3],
                        &[expected; 3],
                        "Hide Others left another app's desktop pixels at{x},{y}");
@@ -269,15 +281,16 @@ fn finder_launches_real_apps_and_application_menu_switches_hides_and_restores_th
     let mut differences = Vec::new();
     for y in 20..103
     {
-        for x in 533..634
+        for source_x in 533..634
         {
-            if (550..566).contains(&x) && (85..101).contains(&y)
-               || (620..625).contains(&x) && y < 23
+            let x = source_x + display::width() - 640;
+            if (550..566).contains(&source_x) && (85..101).contains(&y)
+               || (620..625).contains(&source_x) && y < 23
             {
                 continue;
             }
-            let at = (y * 640 + x) * 3;
-            let reference = ((y - 20) * 103 + x - 532) * 3;
+            let at = (y * display::width() + x) * 3;
+            let reference = ((y - 20) * 103 + source_x - 532) * 3;
             if actual[at..at + 3] != golden[reference..reference + 3]
             {
                 differences.push((x, y));

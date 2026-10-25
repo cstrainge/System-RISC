@@ -4,6 +4,7 @@
 This transport launches the installed Cursor Test through Finder. Rust owns
 pixel/behavior acceptance; no input is sent to the user's visible desktop.
 """
+from system7_platform import tablet_axis
 import argparse
 import json
 from pathlib import Path
@@ -92,8 +93,8 @@ def capture(output, windows=False):
                         if remaining > 0:
                             time.sleep(remaining)
                         send([
-                            {'type': 'abs', 'data': {'axis': 'x', 'value': (point[0] * 32767 + 638) // 639}},
-                            {'type': 'abs', 'data': {'axis': 'y', 'value': (point[1] * 32767 + 478) // 479}}])
+                            {'type': 'abs', 'data': {'axis': 'x', 'value': tablet_axis(point[0], 'x')}},
+                            {'type': 'abs', 'data': {'axis': 'y', 'value': tablet_axis(point[1], 'y')}}])
                         submitted.append({'point': point, 'seconds': time.monotonic() - start_time})
                 driver.wait_state(lambda state: state['mouse'] == f'{point[0]},{point[1]}')
                 end_state = driver.state()
@@ -148,8 +149,8 @@ def capture(output, windows=False):
         # Separate input syncs preserve both observed positions, with no wait
         # for a framebuffer between them.
         def axis(x, y):
-            return [{'type': 'abs', 'data': {'axis': 'x', 'value': (x * 32767 + 638) // 639}},
-                    {'type': 'abs', 'data': {'axis': 'y', 'value': (y * 32767 + 478) // 479}}]
+            return [{'type': 'abs', 'data': {'axis': 'x', 'value': tablet_axis(x, 'x')}},
+                    {'type': 'abs', 'data': {'axis': 'y', 'value': tablet_axis(y, 'y')}}]
         previous = int(driver.state()['input_seq'])
         driver.send(axis(352, 350))
         driver.send(axis(351, 350))

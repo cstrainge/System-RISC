@@ -1,4 +1,4 @@
-use mac_boot_screen::{HAPPY, PROGRESS, Raster};
+use mac_boot_screen::{HAPPY, PanelLayout, Raster};
 #[test]
 fn welcome_panel_leaves_progress_to_the_control_manager()
 {
@@ -6,9 +6,10 @@ fn welcome_panel_leaves_progress_to_the_control_manager()
     mac_boot_screen::draw_panel(&mut Raster::new(&mut pixels, 640, 480).unwrap(), HAPPY);
     assert_eq!(pixels[0], 0x878787);
     assert_eq!(pixels[1], 0xc0c0c0);
-    for y in PROGRESS.top..PROGRESS.bottom
+    let progress = PanelLayout::new(640, 480).progress;
+    for y in progress.top..progress.bottom
     {
-        for x in PROGRESS.left..PROGRESS.right
+        for x in progress.left..progress.right
         {
             assert_eq!(pixels[y as usize * 640 + x as usize], 0xffffff);
         }
@@ -77,6 +78,28 @@ fn clipped_background_restores_only_requested_pixels_with_global_pattern_phase()
                                0x123456
                            });
             }
+        }
+    }
+}
+
+#[test]
+fn welcome_panel_translates_without_changing_its_pixels_or_control_geometry()
+{
+    let mut small = vec![0; 640 * 480];
+    let mut large = vec![0; 800 * 600];
+    mac_boot_screen::draw_panel(&mut Raster::new(&mut small, 640, 480).unwrap(), HAPPY);
+    mac_boot_screen::draw_panel(&mut Raster::new(&mut large, 800, 600).unwrap(), HAPPY);
+    let a = PanelLayout::new(640, 480);
+    let b = PanelLayout::new(800, 600);
+    assert_eq!(b.bounds, mac_abi::Rect::new(250, 210, 550, 386));
+    assert_eq!(b.progress, mac_abi::Rect::new(284, 349, 516, 365));
+    assert_eq!(b.title_baseline, a.title_baseline + 60);
+    for y in a.bounds.top..a.bounds.bottom + 4
+    {
+        for x in a.bounds.left..a.bounds.right + 4
+        {
+            assert_eq!(small[y as usize * 640 + x as usize],
+                       large[(y as usize + 60) * 800 + x as usize + 80]);
         }
     }
 }

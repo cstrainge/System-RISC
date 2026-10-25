@@ -1,5 +1,7 @@
 //! Real Finder Get Info through resident Files and external filesystem drivers.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs, path::PathBuf, process::Command};
 
 #[test]
@@ -37,7 +39,7 @@ fn host_mount_roots_and_native_and_plain_items_open_get_info()
         assert!(seen.insert((mount, name)), "duplicate Info target: {observation}");
         assert_eq!(opened.contains(" folder=1 "), !matches!(name, "B File" | "D File"));
         let frame = fs::read(output.join(observation["frame"].as_str().unwrap())).unwrap();
-        assert!(frame.starts_with(b"P6\n640 480\n255\n"));
+        assert!(frame.starts_with(&display::header()));
     }
     for mount in ["Writable", "Readonly"]
     {

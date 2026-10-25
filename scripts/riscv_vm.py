@@ -79,8 +79,8 @@ def launch(state, frontend='headless', animate=True):
     monitor = 'tcp:127.0.0.1:4446,server=on,wait=off' if native else f'unix:{socket_path},server=on,wait=off'
     # GTK owns both zoom and input scaling. SDL's 2D renderer and QEMU each
     # scale absolute coordinates, confining a 2x window's input to half the guest.
-    display = {'native':'gtk,zoom-to-fit=off,scale=2,show-menubar=off',
-               'gtk':'gtk,zoom-to-fit=off,scale=2', 'headless':'none'}[frontend]
+    display = {'native':'gtk,gl=on,zoom-to-fit=off,scale=2,show-menubar=off',
+               'gtk':'gtk,gl=on,zoom-to-fit=off,scale=2', 'headless':'none'}[frontend]
     serial = state / 'serial.log'
     serial.write_text('')
     args = [executable, '-name', 'REA - RISC-V QuickDraw', '-machine', 'virt', '-cpu', 'rv64',
@@ -151,14 +151,14 @@ def check():
         assert f'FIRST_FRAME_FNV1A={checksum}' in guest_log
         with Image.open(host_frame) as expected, Image.open(screenshot) as actual:
             expected = expected.convert('RGB'); actual = actual.convert('RGB')
-            assert expected.size == actual.size == (640,480)
+            assert expected.size == actual.size == (800,600)
             assert ImageChops.difference(expected, actual).getbbox() is None, 'host and guest pixels differ'
         from check_riscv_windows import check_events
         window_checks=check_events(endpoint,results/'static-vm/serial.log',results)
         record = {'kernel':str(KERNEL.relative_to(ROOT)), 'kernel_sha256':hashlib.sha256(KERNEL.read_bytes()).hexdigest(),
                   'qemu':subprocess.check_output(['qemu-system-riscv64','--version'],text=True).splitlines()[0],
                   'host_unit_tests':'passed', 'guest_self_checks':'passed', 'cold_boot':'passed',
-                  'framebuffer_pixels':'all 307200 RGB pixels match host reference',
+                  'framebuffer_pixels':'all 480000 RGB pixels match host reference',
                   'framebuffer_fnv1a':checksum, 'screenshot':str(screenshot.relative_to(ROOT)),
                   'window_event_checks':{'passed':len(window_checks),'results':str((results/'window-checks.json').relative_to(ROOT))},
                   'sources':['https://www.qemu.org/docs/master/specs/fw_cfg.html',

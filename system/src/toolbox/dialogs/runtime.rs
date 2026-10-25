@@ -165,8 +165,13 @@ impl super::Desktop
                         return Err(status as Status);
                     }
                     let r = state.structure;
-                    alert.bounds.offset((640 - (r.right - r.left)) / 2 - r.left,
-                                        20 + (460 - (r.bottom - r.top)) / 5 - r.top);
+                    alert.bounds.offset((crate::display::WIDTH as i16 - (r.right - r.left)) / 2
+                                        - r.left,
+                                        20
+                                        + ((crate::display::HEIGHT as i16 - 20)
+                                           - (r.bottom - r.top))
+                                          / 5
+                                        - r.top);
                 }
                 let previous = self.windows.active_window();
                 self.dialogs.begin(alert, previous)?;

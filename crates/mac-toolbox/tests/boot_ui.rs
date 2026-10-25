@@ -1,5 +1,7 @@
 //! Real boot rasters and volume Info compared with public SDK rendering.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs,
           path::{Path, PathBuf},
           process::Command};
@@ -9,15 +11,18 @@ use mac_toolbox::{Point, Rect,
 fn frame(path: &Path) -> Vec<u8>
 {
     let bytes = fs::read(path).unwrap();
-    let header = b"P6\n640 480\n255\n";
-    assert!(bytes.starts_with(header));
-    assert_eq!(bytes.len(), header.len() + 640 * 480 * 3);
+    let header = display::header();
+    assert!(bytes.starts_with(&header));
+    assert_eq!(bytes.len(), header.len() + display::width() * display::height() * 3);
     bytes[header.len()..].to_vec()
 }
 fn region(bytes: &[u8], left: usize, top: usize, width: usize, height: usize) -> Vec<u8>
 {
     (top..top + height).flat_map(|y| {
-                           bytes[(y * 640 + left) * 3..(y * 640 + left + width) * 3].iter().copied()
+                           bytes[(y * display::width() + left) * 3
+                                 ..(y * display::width() + left + width) * 3]
+                                                                             .iter()
+                                                                             .copied()
                        })
                        .collect()
 }
@@ -78,7 +83,11 @@ fn boot_art_panel_and_mounted_volume_info_match_public_toolbox_services()
                         Default::default())
              .unwrap()
         });
-        assert_eq!(region(&actual, 304, 224, 32, 32),
+        assert_eq!(region(&actual,
+                          (display::width() - 32) / 2,
+                          (display::height() - 32) / 2,
+                          32,
+                          32),
                    expected,
                    "{name} ROM art differs from System's public icon resource");
         for y in 0..64
@@ -86,15 +95,18 @@ fn boot_art_panel_and_mounted_volume_info_match_public_toolbox_services()
             for x in 0..64
             {
                 let value = if (x + y) & 1 == 0 { 0x87 } else { 0xc0 };
-                assert_eq!(&actual[(y * 640 + x) * 3..(y * 640 + x) * 3 + 3],
+                assert_eq!(&actual[(y * display::width() + x) * 3
+                                   ..(y * display::width() + x) * 3 + 3],
                            &[value; 3],
                            "boot background differs from desktop pattern");
             }
         }
     }
     let panel = frame(&output.join("panel.ppm"));
-    assert_eq!(region(&panel, 170, 150, 300, 1), vec![0; 300 * 3]);
-    assert_eq!(region(&panel, 174, 326, 300, 4), vec![0; 300 * 4 * 3], "panel shadow");
+    let dx = (display::width() - 640) / 2;
+    let dy = (display::height() - 480) / 2;
+    assert_eq!(region(&panel, 170 + dx, 150 + dy, 300, 1), vec![0; 300 * 3]);
+    assert_eq!(region(&panel, 174 + dx, 326 + dy, 300, 4), vec![0; 300 * 4 * 3], "panel shadow");
     let happy = render(&root, 64, 64, vec![0xffffff; 64 * 64], |p| {
         p.plot_icon(mac_toolbox::ResourceScope::from_raw(mac_abi::resources::SYSTEM).unwrap(),
                     32740,
@@ -102,12 +114,12 @@ fn boot_art_panel_and_mounted_volume_info_match_public_toolbox_services()
                     Default::default())
          .unwrap()
     });
-    assert_eq!(region(&panel, 288, 170, 64, 64), happy);
+    assert_eq!(region(&panel, 288 + dx, 170 + dy, 64, 64), happy);
     let title = render(&root, 296, 20, vec![0xffffff; 296 * 20], |p| {
         let width = p.styled_width(0, "Welcome to System RISC").unwrap();
         p.styled_text(0, 148 - width / 2, 19, "Welcome to System RISC", 0).unwrap();
     });
-    same(region(&panel, 172, 252, 296, 20), title, "welcome text must use System's font");
+    same(region(&panel, 172 + dx, 252 + dy, 296, 20), title, "welcome text must use System's font");
     let log = fs::read_to_string(output.join("boot/serial.log")).unwrap();
     for stage in 1..=7
     {

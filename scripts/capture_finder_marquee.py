@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Physical Finder marquee gestures; paused traces are evidence for SDK tests."""
+from system7_platform import tablet_axis
 import argparse
 import json
 from pathlib import Path
@@ -41,8 +42,8 @@ def capture(output, windows=False):
                     remaining = start + i * .008 - time.monotonic()
                     if remaining > 0:
                         time.sleep(remaining)
-                    send([{'type': 'abs', 'data': {'axis': 'x', 'value': (x * 32767 + 638) // 639}},
-                          {'type': 'abs', 'data': {'axis': 'y', 'value': (y * 32767 + 478) // 479}}])
+                    send([{'type': 'abs', 'data': {'axis': 'x', 'value': tablet_axis(x, 'x')}},
+                          {'type': 'abs', 'data': {'axis': 'y', 'value': tablet_axis(y, 'y')}}])
             driver.wait_state(lambda state: state['mouse'] == '%s,%s' % points[-1])
             time.sleep(.15)
             after = snapshot(endpoint, driver.serial, output, name + '-after')

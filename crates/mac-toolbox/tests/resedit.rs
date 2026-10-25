@@ -3,6 +3,8 @@
 extern crate alloc;
 #[path = "support/process_trace.rs"]
 mod process_trace;
+#[path = "support/display.rs"]
+mod display;
 use std::{fs, path::PathBuf, process::Command};
 
 use mac_formats::{macbinary::{self, MacFile},
@@ -223,14 +225,17 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
 fn pixels(path: &std::path::Path) -> Vec<u8>
 {
     let bytes = fs::read(path).unwrap();
-    let header = b"P6\n640 480\n255\n";
-    assert!(bytes.starts_with(header));
+    let header = display::header();
+    assert!(bytes.starts_with(&header));
     bytes[header.len()..].to_vec()
 }
 fn crop(bytes: &[u8], left: usize, top: usize, size: usize) -> Vec<u8>
 {
     (top..top + size).flat_map(|y| {
-                         bytes[(y * 640 + left) * 3..(y * 640 + left + size) * 3].iter().copied()
+                         bytes[(y * display::width() + left) * 3
+                               ..(y * display::width() + left + size) * 3]
+                                                                          .iter()
+                                                                          .copied()
                      })
                      .collect()
 }
@@ -316,10 +321,15 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                                                      as usize;
                                                  let frame =
                                                      pixels(&output.join("system-new-folder.ppm"));
-                                                 let caret_x = (640 - 204) / 2 + 12 + width;
+                                                 let caret_x =
+                                                     (display::width() - 204) / 2 + 12 + width;
                                                  assert!((134..148).all(|y| {
-                                                                       frame[(y * 640 + caret_x) * 3
-                                                                             ..(y * 640 + caret_x)
+                                                                       frame[(y * display::width()
+                                                                              + caret_x)
+                                                                             * 3
+                                                                             ..(y
+                                                                                * display::width()
+                                                                                + caret_x)
                                                                                * 3
                                                                                + 3]
                                                                        == [0; 3]
@@ -450,7 +460,8 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                            kind.iter().map(|byte| format!("{byte:02x}")).collect::<String>());
         let row = frames.iter().find(|row| row["name"] == name).unwrap();
         let image = pixels(&output.join(row["frame"].as_str().unwrap()));
-        assert_eq!(&image[(80 * 640 + 500) * 3..(80 * 640 + 500) * 3 + 3],
+        assert_eq!(&image
+                       [(80 * display::width() + 500) * 3..(80 * display::width() + 500) * 3 + 3],
                    &[255; 3],
                    "browser background must be white");
         let bytes =
@@ -496,11 +507,12 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                 connection.font_draw(mac_toolbox::quickdraw::fonts::FontSelection{family:4,size:9,face:0},mac_toolbox::Point{h:0,v:12+line*14},text,0).unwrap();line+=1;
             });
         }).unwrap();
-        let actual: Vec<_> = (227..423).flat_map(|y| {
-                                           image[(y * 640 + 295) * 3..(y * 640 + 583) * 3].iter()
-                                                                                          .copied()
-                                       })
-                                       .collect();
+        let actual: Vec<_> =
+            (227..423).flat_map(|y| {
+                image[(y * display::width() + 295) * 3..(y * display::width() + 583) * 3].iter()
+                                                                                         .copied()
+            })
+            .collect();
         let expected: Vec<_> =
             expected.into_iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, p as u8]).collect();
         assert!(actual == expected,
@@ -520,8 +532,10 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         let new_pixels = pixels(&output.join(after["frame"].as_str().unwrap()));
         for y in 48..425
         {
-            assert_eq!(&old_pixels[(y * 640 + 13) * 3..(y * 640 + 612) * 3],
-                       &new_pixels[(y * 640 + 13) * 3..(y * 640 + 612) * 3],
+            assert_eq!(&old_pixels
+                           [(y * display::width() + 13) * 3..(y * display::width() + 612) * 3],
+                       &new_pixels
+                           [(y * display::width() + 13) * 3..(y * display::width() + 612) * 3],
                        "{after_name}: save/status changed a resource pane at y={y}");
         }
     }
@@ -551,21 +565,21 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                     let compared_width=if is_hex && pressed {width-8}else{width};
                     for y in 0..21 {for x in 0..compared_width {
                         let pixel=expected[y*width+x];
-                        assert_eq!(&image[((y+50)*640+left+x)*3..((y+50)*640+left+x)*3+3],&[(pixel>>16) as u8,(pixel>>8) as u8,pixel as u8],"{name} {title} at {x},{y}");
+                        assert_eq!(&image[((y+50)*display::width()+left+x)*3..((y+50)*display::width()+left+x)*3+3],&[(pixel>>16) as u8,(pixel>>8) as u8,pixel as u8],"{name} {title} at {x},{y}");
                     }}
                 }
             }
             let before=pixels(&output.join(observation(&format!("{package}-hex"))["frame"].as_str().unwrap()));
             let after=pixels(&output.join(observation(&format!("{package}-hex-down"))["frame"].as_str().unwrap()));
             for y in 48..425 {
-                assert_eq!(&before[(y*640+13)*3..(y*640+291)*3],&after[(y*640+13)*3..(y*640+291)*3],"{package}: scrolling preview changed navigation panes");
+                assert_eq!(&before[(y*display::width()+13)*3..(y*display::width()+291)*3],&after[(y*display::width()+13)*3..(y*display::width()+291)*3],"{package}: scrolling preview changed navigation panes");
             }
             // Header metadata, entry point and NABI/RLOC summary never scroll.
             for y in 48..227 {
-                assert_eq!(&before[(y*640+291)*3..(y*640+612)*3],&after[(y*640+291)*3..(y*640+612)*3],"{package}: code header scrolled with the bytes");
+                assert_eq!(&before[(y*display::width()+291)*3..(y*display::width()+612)*3],&after[(y*display::width()+291)*3..(y*display::width()+612)*3],"{package}: code header scrolled with the bytes");
             }
             for y in 228..410 {
-                assert_eq!(&before[((y+14)*640+292)*3..((y+14)*640+596)*3],&after[(y*640+292)*3..(y*640+596)*3],"{package}: cached rows did not shift exactly one line");
+                assert_eq!(&before[((y+14)*display::width()+292)*3..((y+14)*display::width()+596)*3],&after[(y*display::width()+292)*3..(y*display::width()+596)*3],"{package}: cached rows did not shift exactly one line");
             }
         }
     }).unwrap();
@@ -632,7 +646,7 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
             connection.font_draw(font,mac_toolbox::Point{h:0,v:metrics.ascent+1},title,0).unwrap();
             let actual=pixels(&output.join(observation(name)["frame"].as_str().unwrap()));let x=12+(616-width)/2;
             // Compare the glyph mask only, independent of the WDEF fill colors.
-            for y in 0..16 {for col in 0..width {assert_eq!(actual[((30+y)*640+x+col)*3..((30+y)*640+x+col)*3+3]==[0;3],expected[y*width+col]==0,"filename title {title} at {col},{y}");}}
+            for y in 0..16 {for col in 0..width {assert_eq!(actual[((30+y)*display::width()+x+col)*3..((30+y)*display::width()+x+col)*3+3]==[0;3],expected[y*width+col]==0,"filename title {title} at {col},{y}");}}
         }
     }).unwrap();
     // No window-level bottom scrollbar: the WDEF may draw only the size
@@ -645,24 +659,18 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
         let y = 48 + height - 15;
         for x in 12 + 100..12 + width - 16
         {
-            assert_eq!(&image[(y * 640 + x) * 3..(y * 640 + x) * 3 + 3],
+            assert_eq!(&image[(y * display::width() + x) * 3..(y * display::width() + x) * 3 + 3],
                        &[255; 3],
                        "{name}: stray horizontal grow separator");
         }
         // The classic size handle must remain visible and usable.
         assert!((48 + height - 15..48 + height).any(|row| {
                                                    (12 + width - 15..12 + width).any(|col| {
-                                                                                    image[(row
-                                                                                           * 640
-                                                                                           + col)
-                                                                                          * 3
-                                                                                          ..(row
-                                                                                             * 640
-                                                                                             + col)
-                                                                                            * 3
-                                                                                            + 3]
-                                                                                    == [0; 3]
-                                                                                })
+                                                       image[(row * display::width() + col) * 3
+                                                             ..(row * display::width() + col) * 3
+                                                               + 3]
+                                                       == [0; 3]
+                                                   })
                                                }),
                 "{name}: size handle disappeared");
     }
@@ -718,11 +726,12 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
             for (row,line) in instructions.iter().enumerate(){connection.font_draw(mac_toolbox::quickdraw::fonts::FontSelection{family:4,size:9,face:0},mac_toolbox::Point{h:0,v:12+row as i16*14},line,0).unwrap();}
         }).unwrap();
         let image = pixels(&output.join(observation(&name)["frame"].as_str().unwrap()));
-        let actual: Vec<_> = (227..339).flat_map(|y| {
-                                           image[(y * 640 + 295) * 3..(y * 640 + 583) * 3].iter()
-                                                                                          .copied()
-                                       })
-                                       .collect();
+        let actual: Vec<_> =
+            (227..339).flat_map(|y| {
+                image[(y * display::width() + 295) * 3..(y * display::width() + 583) * 3].iter()
+                                                                                         .copied()
+            })
+            .collect();
         let expected: Vec<_> =
             expected.into_iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, p as u8]).collect();
         assert!(actual == expected, "{package} native instructions must use Monaco");
@@ -791,11 +800,12 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
             for (row,line) in lines.iter().enumerate(){connection.font_draw(mac_toolbox::quickdraw::fonts::FontSelection{family:4,size:9,face:0},mac_toolbox::Point{h:0,v:12+row as i16*14},line,0).unwrap();}
         }).unwrap();
         let actual = pixels(&output.join(frame["frame"].as_str().unwrap()));
-        let actual: Vec<_> = (227..339).flat_map(|y| {
-                                           actual[(y * 640 + 295) * 3..(y * 640 + 583) * 3].iter()
-                                                                                           .copied()
-                                       })
-                                       .collect();
+        let actual: Vec<_> =
+            (227..339).flat_map(|y| {
+                actual[(y * display::width() + 295) * 3..(y * display::width() + 583) * 3].iter()
+                                                                                          .copied()
+            })
+            .collect();
         let expected: Vec<_> =
             expected.into_iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, p as u8]).collect();
         assert_eq!(actual, expected,

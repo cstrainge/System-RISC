@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Cold-boot real HFS-B/HFS volumes and compare native Finder icons with System7."""
+from system7_platform import tablet_axis
 import hashlib,json,os,re,struct,subprocess,time
 from pathlib import Path
 from PIL import Image,ImageChops
@@ -71,7 +72,7 @@ def main():
   raise AssertionError(name+' timed out: '+log()[-3000:])
  def send(events):vm.qmp('input-send-event',{'events':events},endpoint)
  def move(x,y):
-  send([{'type':'abs','data':{'axis':'x','value':(x*32767+638)//639}},{'type':'abs','data':{'axis':'y','value':(y*32767+478)//479}}]);wait(lambda s:s.get('mouse')==f'{x},{y}','motion')
+  send([{'type':'abs','data':{'axis':'x','value':tablet_axis(x, 'x')}},{'type':'abs','data':{'axis':'y','value':tablet_axis(y, 'y')}}]);wait(lambda s:s.get('mouse')==f'{x},{y}','motion')
  def click(x,y,handled=False):
   previous=log().count("FINDER_CLICK_HANDLED")
   move(x,y)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Private boot/display transport. Rust owns pixel and SDK acceptance."""
+from system7_platform import display_size
 from system7_platform import CPU
 import argparse
 import json
@@ -74,7 +75,7 @@ def capture(output):
                 frame('panel')
                 wait('DESKTOP_READY')
                 driver = Driver(endpoint, serial)
-                driver.click(600, 44)
+                driver.click(display_size()[0] - 40, 44)
                 driver.key('i', ['ctrl'])
                 driver.wait('FINDER_INFO_OPEN')
                 driver.move(630, 460)

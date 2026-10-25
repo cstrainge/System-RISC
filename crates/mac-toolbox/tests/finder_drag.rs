@@ -2,6 +2,8 @@
 #![cfg(not(target_arch = "riscv64"))]
 #[path = "support/process_trace.rs"]
 mod process_trace;
+#[path = "support/display.rs"]
+mod display;
 use std::{collections::BTreeMap,
           fs,
           path::{Path, PathBuf},
@@ -105,10 +107,10 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
         for selected in ["panic", "cursor", "quickdraw"]
         {
             let frame = fs::read(output.join(format!("{scenario}-{selected}.ppm"))).unwrap();
-            let pixels = frame.strip_prefix(b"P6\n640 480\n255\n").unwrap();
+            let pixels = frame.strip_prefix(display::header().as_slice()).unwrap();
             for (item, x) in [("panic", 96), ("cursor", 31), ("quickdraw", 146)]
             {
-                let offset = (122 * 640 + x) * 3;
+                let offset = (122 * display::width() + x) * 3;
                 let expected = if item == selected { [0; 3] } else { [255; 3] };
                 assert_eq!(&pixels[offset..offset + 3],
                            &expected,
@@ -125,10 +127,10 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
         for selected in ["cursor", "panic", "quickdraw"]
         {
             let frame = fs::read(output.join(format!("{scenario}-{selected}.ppm"))).unwrap();
-            let pixels = frame.strip_prefix(b"P6\n640 480\n255\n").unwrap();
+            let pixels = frame.strip_prefix(display::header().as_slice()).unwrap();
             for (item, x, y) in [("panic", 96, 122), ("cursor", 71, 162), ("quickdraw", 222, 216)]
             {
-                let offset = ((y + dy) * 640 + x + dx) * 3;
+                let offset = ((y + dy) * display::width() + x + dx) * 3;
                 let expected = if item == selected { [0; 3] } else { [255; 3] };
                 assert_eq!(&pixels[offset..offset + 3],
                            &expected,
@@ -147,7 +149,7 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
                    "tracking changed {key}");
     }
     let before = fs::read(output.join(report["tracking_back_before"].as_str().unwrap())).unwrap();
-    assert_eq!(before.len(), 640 * 480 * 4);
+    assert_eq!(before.len(), display::width() * display::height() * 4);
     assert_eq!(before,
                fs::read(output.join(report["tracking_back_after"].as_str().unwrap())).unwrap(),
                "file drag feedback modified the retained scene");
@@ -178,7 +180,8 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
         else if row[2] == 5 && row[4].as_u64() == Some(u64::MAX)
         {
             xors += 1;
-            assert!(row[5].as_u64().unwrap() <= 12 * (640 + 480),
+            assert!(row[5].as_u64().unwrap()
+                    <= 12 * (display::width() + display::height()) as u64 as u64,
                     "file drag exceeded its perimeter budget: {row}");
             xor_ns.push(row[6].as_u64().unwrap() * 100);
             if let Some(pending) = &mut pending

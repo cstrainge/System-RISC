@@ -17,8 +17,8 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
     {
         if state.first != 0
         {
-            canvas.paint_rect(Rect::new(0, 0, 640, 20), 0xffffff)?;
-            canvas.paint_rect(Rect::new(0, 19, 640, 20), 0)?;
+            canvas.paint_rect(state.bar_bounds, 0xffffff)?;
+            canvas.paint_rect(Rect::new(state.bar_bounds.left, 19, state.bar_bounds.right, 20), 0)?;
         }
         if state.title_length == 0
         {
@@ -199,10 +199,9 @@ fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_tra
     let title = text(&state.title, state.title_length).map_err(mac_traps::Error::from_status)?;
     if state.profile == APPLICATION_PROFILE
     {
-        // System 7.6.1 MBDF: right application title begins at601 on640-wide
-        // screens. Its popup's right interior edge is633, before the bar margin.
-        state.title_bounds.left = 601;
-        state.title_bounds.right = 634;
+        // Preserve System7.6.1's title width and right margin on any screen.
+        state.title_bounds.left = state.bar_bounds.right - 39;
+        state.title_bounds.right = state.bar_bounds.right - 6;
     }
     else
     {
@@ -234,12 +233,12 @@ fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_tra
     }
     let left = if state.profile == APPLICATION_PROFILE
     {
-        width = width.min(632);
-        633 - width
+        width = width.min(state.bar_bounds.right - 8);
+        state.bar_bounds.right - 7 - width
     }
     else
     {
-        state.title_bounds.left.min(638 - width)
+        state.title_bounds.left.min(state.bar_bounds.right - 2 - width)
     };
     let mut y = 20;
     for item in &mut state.items[..state.item_count as usize]
