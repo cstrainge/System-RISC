@@ -225,7 +225,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
             WORLD =>
             {
                 let call = unsafe { request::<WorldCall>(pointer, size) }?;
-                if call.pixel_length > 640 * 480
+                if call.pixel_length > crate::display::PIXELS
                 {
                     return Err(BAD_ARGUMENT);
                 }

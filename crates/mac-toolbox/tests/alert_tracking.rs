@@ -1,5 +1,7 @@
 //! Real managed Alert controls: bounded pixels, no-change work and cancellation.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs, path::PathBuf, process::Command};
 
 #[test]
@@ -25,9 +27,9 @@ fn alert_tracking_repaints_only_its_control_and_early_outs_when_unchanged()
     assert_eq!(stages.len(), 6);
     let frame = |name: &str| {
         let bytes = fs::read(output.join(format!("{name}.ppm"))).unwrap();
-        let header = b"P6\n640 480\n255\n";
-        assert!(bytes.starts_with(header));
-        assert_eq!(bytes.len(), header.len() + 640 * 480 * 3);
+        let header = display::header();
+        assert!(bytes.starts_with(&header));
+        assert_eq!(bytes.len(), header.len() + display::width() * display::height() * 3);
         bytes[header.len()..].to_vec()
     };
     let base = frame("base");
@@ -41,11 +43,11 @@ fn alert_tracking_repaints_only_its_control_and_early_outs_when_unchanged()
         stages[0]["bounds"].as_array().unwrap().iter().map(|n| n.as_i64().unwrap()).collect();
     let contains =
         |x: i64, y: i64| bounds[0] <= x && x < bounds[2] && bounds[1] <= y && y < bounds[3];
-    for y in 0..480
+    for y in 0..display::height()
     {
-        for x in 0..640
+        for x in 0..display::width()
         {
-            let at = (y * 640 + x) * 3;
+            let at = (y * display::width() + x) * 3;
             if base[at..at + 3] != pressed[at..at + 3]
             {
                 assert!(contains(x as i64, y as i64), "button repainted unrelated pixel {x},{y}");

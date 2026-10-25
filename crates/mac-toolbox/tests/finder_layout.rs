@@ -221,16 +221,20 @@ fn scroll_ranges_include_one_pixel_label_overflow_and_reset_at_the_new_view()
 #[test]
 fn zoom_fits_complete_labels_and_chrome_within_the_desktop()
 {
-    let (bounds, origin) =
-        icon_view::fitted_window(Rect::new(-4, 28, 300, 180), Rect::new(400, 350, 600, 470));
+    let (bounds, origin) = icon_view::fitted_window(Rect::new(-4, 28, 300, 180),
+                                                    Rect::new(400, 350, 600, 470),
+                                                    Rect::new(0, 21, 640, 480));
     assert_eq!(bounds.right - bounds.left, 335);
     assert_eq!(bounds.bottom - bounds.top, 203);
     assert_eq!((origin.h, origin.v), (-12, 0));
     assert!(bounds.left >= 4 && bounds.top >= 44 && bounds.right <= 636 && bounds.bottom <= 458);
-    let (small, _) =
-        icon_view::fitted_window(Rect::new(12, 28, 52, 72), Rect::new(8, 46, 412, 234));
+    let (small, _) = icon_view::fitted_window(Rect::new(12, 28, 52, 72),
+                                              Rect::new(8, 46, 412, 234),
+                                              Rect::new(0, 21, 640, 480));
     assert_eq!((small.right - small.left, small.bottom - small.top), (180, 100));
-    let (large, _) = icon_view::fitted_window(Rect::new(0, 20, 32000, 32000), Rect::ZERO);
+    let (large, _) = icon_view::fitted_window(Rect::new(0, 20, 32000, 32000),
+                                              Rect::ZERO,
+                                              Rect::new(0, 21, 640, 480));
     assert_eq!(large, Rect::new(4, 44, 636, 457));
 }
 

@@ -82,10 +82,11 @@ fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Error>
     let word = |at| i16::from_be_bytes([data[at], data[at + 1]]);
     let bounds = Rect::new(word(2), word(0), word(6), word(4));
     let procedure = word(8);
+    let desktop = system.quickdraw().desktop().bounds()?;
     if bounds.left < 0
        || bounds.top < 20
-       || bounds.right > 640
-       || bounds.bottom > 480
+       || bounds.right > desktop.right
+       || bounds.bottom > desktop.bottom
        || bounds.right - bounds.left < 160
        || bounds.bottom - bounds.top < 80
        || procedure != 8

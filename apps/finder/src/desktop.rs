@@ -132,7 +132,7 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
             let info = system.files().volume_at(index as u32)?;
             mounted[index] = info.id;
             let icon = crate::browser::volume_icon(&info);
-            (info.id, info.name, icon, crate::icon_view::volume_bounds(index as u32))
+            (info.id, info.name, icon, Rect::ZERO)
         }
         else
         {
@@ -147,7 +147,7 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
             (VolumeId::NONE,
              InlineText::from_reply(name, text.len() as u32)?,
              mac_toolbox::quickdraw::icons::standard::TRASH,
-             crate::icon_view::TRASH_BOUNDS)
+             crate::icon_view::trash_bounds(bounds))
         };
         let caption = Caption::measure_with_limit(name.as_str(), 60, |text| {
             system.quickdraw().fonts().text_width(FontSelection { family: 3,
@@ -159,7 +159,7 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
         {
             let bottom = if column == 0
             {
-                crate::icon_view::TRASH_BOUNDS.top - 8
+                crate::icon_view::trash_bounds(bounds).top - 8
             }
             else
             {
@@ -171,8 +171,7 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
                 top = 28;
                 row = 0;
             }
-            let left = 584 - column * crate::icon_view::GRID_WIDTH;
-            icon_bounds = Rect::new(left, top, left + 32, top + 32);
+            icon_bounds = crate::icon_view::volume_bounds(column, top, bounds);
             top += (32 + caption.height() + 8).max(crate::icon_view::GRID_HEIGHT);
             row += 1;
         }

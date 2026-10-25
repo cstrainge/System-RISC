@@ -5,6 +5,7 @@ Only the guest's monotonic clock is used for dispatch samples. Host QMP arrival,
 Windows/WSL transport and host display presentation are outside those intervals.
 Python supplies input and observations; Rust owns correctness acceptance.
 """
+from system7_platform import tablet_axis
 from hfs_b_tool import Image as NativeImage
 import argparse
 import json
@@ -64,8 +65,8 @@ def capture(output, windows=False):
             # Transport handshake lets the guest register its wait before motion;
             # this host pause is not included in any guest latency measurement.
             time.sleep(.05)
-            send([{'type': 'abs', 'data': {'axis': 'x', 'value': (241 * 32767 + 638) // 639}},
-                  {'type': 'abs', 'data': {'axis': 'y', 'value': (180 * 32767 + 478) // 479}}],
+            send([{'type': 'abs', 'data': {'axis': 'x', 'value': tablet_axis(241, 'x')}},
+                  {'type': 'abs', 'data': {'axis': 'y', 'value': tablet_axis(180, 'y')}}],
                  'EVENT_LATENCY_READY_POINTER')
         for scenario in ['IDLE', 'MASKED_KEY', 'BUSY']:
             marker = ('EVENT_LATENCY_READY_MASKED_KEY' if scenario == 'MASKED_KEY'

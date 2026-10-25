@@ -3,6 +3,7 @@
 
 Only transport synchronization lives here. Aggregate Rust tests judge the evidence.
 """
+from system7_platform import tablet_axis
 import argparse
 import hashlib
 import json
@@ -30,8 +31,8 @@ def capture(output):
         raise TimeoutError('Input acknowledgement timed out: '+str(state()))
     def send(events):vm.qmp('input-send-event',{'events':events},endpoint)
     def move(x,y):
-        send([{'type':'abs','data':{'axis':'x','value':(x*32767+638)//639}},
-              {'type':'abs','data':{'axis':'y','value':(y*32767+478)//479}}])
+        send([{'type':'abs','data':{'axis':'x','value':tablet_axis(x, 'x')}},
+              {'type':'abs','data':{'axis':'y','value':tablet_axis(y, 'y')}}])
         wait(lambda s:s.get('mouse')==f'{x},{y}')
     def button(down):
         before=int(state()['input_seq']);send([{'type':'btn','data':{'button':'left','down':down}}])

@@ -1,5 +1,7 @@
 //! Original Finder viewer pixels, using the same Finder source over real ECALLs.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs,
           path::{Path, PathBuf},
           process::Command};
@@ -9,9 +11,9 @@ use serde_json::Value;
 fn frame(path: &Path) -> Vec<u8>
 {
     let bytes = fs::read(path).unwrap();
-    let header = b"P6\n640 480\n255\n";
-    assert!(bytes.starts_with(header));
-    assert_eq!(bytes.len(), header.len() + 640 * 480 * 3);
+    let header = display::header();
+    assert!(bytes.starts_with(&header));
+    assert_eq!(bytes.len(), header.len() + display::width() * display::height() * 3);
     bytes[header.len()..].to_vec()
 }
 
@@ -79,7 +81,7 @@ fn resource_based_finder_clipboard_matches_original_empty_and_text_pixels()
         {
             for x in left..right
             {
-                let at = (y * 640 + x) * 3;
+                let at = (y * display::width() + x) * 3;
                 let reference = ((y - top) * (right - left) + x - left) * 3;
                 if actual[at..at + 3] != expected[reference..reference + 3]
                 {

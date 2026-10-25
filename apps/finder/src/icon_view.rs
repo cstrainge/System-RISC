@@ -6,7 +6,10 @@ pub const GRID_WIDTH: i16 = 64;
 pub const GRID_HEIGHT: i16 = 52;
 pub const INFO_HEIGHT: i16 = 20;
 pub const SCROLLBAR: i16 = 15;
-pub const TRASH_BOUNDS: Rect = Rect::new(576, 420, 608, 452);
+pub fn trash_bounds(desktop: Rect) -> Rect
+{
+    Rect::new(desktop.right - 64, desktop.bottom - 60, desktop.right - 32, desktop.bottom - 28)
+}
 
 /// Saved cells whose entire icon is above/left of the usable canvas cannot be
 /// recovered by the classic view. Archives sometimes contain stale desktop
@@ -74,9 +77,9 @@ impl ScrollRange
 
 /// Fit the complete cached icon/label extent and chrome into the usable screen.
 /// The returned origin changes only when the user actually enters standard state.
-pub fn fitted_window(extent: Rect, current: Rect) -> (Rect, Point)
+pub fn fitted_window(extent: Rect, current: Rect, desktop: Rect) -> (Rect, Point)
 {
-    let area = Rect::new(4, 44, 636, 457);
+    let area = Rect::new(4, 44, desktop.right - 4, desktop.bottom - 23);
     let width = (i32::from(extent.right) - i32::from(extent.left) + 16 + i32::from(SCROLLBAR))
         .clamp(180, i32::from(area.right - area.left)) as i16;
     let height = (i32::from(extent.bottom) - i32::from(extent.top)
@@ -91,13 +94,10 @@ pub fn fitted_window(extent: Rect, current: Rect) -> (Rect, Point)
              v: extent.top.saturating_sub(INFO_HEIGHT + 8) })
 }
 
-pub fn volume_bounds(index: u32) -> Rect
+pub fn volume_bounds(column: i16, top: i16, desktop: Rect) -> Rect
 {
-    let column = (index / 7) as i16;
-    let row = (index % 7) as i16;
-    let x = 584 - column * 64;
-    let y = 28 + row * GRID_HEIGHT;
-    Rect::new(x, y, x + 32, y + 32)
+    let left = desktop.right - 56 - column * GRID_WIDTH;
+    Rect::new(left, top, left + 32, top + 32)
 }
 
 /// Maximum ink width of a filename caption, excluding its 2px selection inset.

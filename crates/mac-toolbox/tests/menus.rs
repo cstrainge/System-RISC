@@ -1,5 +1,7 @@
 //! Menu Manager compatibility through public SDK and real resource handlers.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use mac_toolbox::{Event, System, abi::EventKind};
 #[path = "conformance/menu_sizing.rs"]
 mod menu_sizing;
@@ -137,9 +139,9 @@ fn original_menu_records_install_and_mutate_through_public_sdk()
 fn frame(path: &std::path::Path) -> Vec<u8>
 {
     let bytes = std::fs::read(path).unwrap();
-    let prefix = b"P6\n640 480\n255\n";
-    assert!(bytes.starts_with(prefix), "unexpected QMP PPM header");
-    assert_eq!(bytes.len(), prefix.len() + 640 * 480 * 3);
+    let prefix = display::header();
+    assert!(bytes.starts_with(&prefix), "unexpected QMP PPM header");
+    assert_eq!(bytes.len(), prefix.len() + display::width() * display::height() * 3);
     bytes[prefix.len()..].to_vec()
 }
 #[test]
@@ -216,7 +218,7 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
     {
         for x in 24..24 + width
         {
-            let at = (y * 640 + x) * 3;
+            let at = (y * display::width() + x) * 3;
             let reference = ((y + 108) * 640 + x + 92) * 3;
             assert_eq!(&keyless[at..at + 3],
                        &baseline[reference..reference + 3],
@@ -233,7 +235,7 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
     {
         for x in 24..115
         {
-            let actual = (y * 640 + x) * 3;
+            let actual = (y * display::width() + x) * 3;
             let reference = ((y + 133) * 640 + x + 92) * 3;
             assert_eq!(&keyed[actual..actual + 3],
                        &baseline[reference..reference + 3],
@@ -241,12 +243,12 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
         }
         for x in 115..125
         {
-            let actual = (y * 640 + x) * 3;
+            let actual = (y * display::width() + x) * 3;
             assert_eq!(&keyed[actual..actual + 3], &[255, 255, 255], "shortcut gap ({x},{y})");
         }
         for x in 125..149
         {
-            let actual = (y * 640 + x) * 3;
+            let actual = (y * display::width() + x) * 3;
             let reference = ((y + 158) * 640 + x - 9) * 3;
             assert_eq!(&keyed[actual..actual + 3],
                        &baseline[reference..reference + 3],
@@ -258,7 +260,7 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
     {
         for x in 10..34
         {
-            let at = (y * 640 + x) * 3;
+            let at = (y * display::width() + x) * 3;
             let original = (y * 24 + x - 10) * 3;
             assert_eq!(&file[at..at + 3],
                        &apple[original..original + 3],
@@ -270,7 +272,7 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
     {
         for x in 33..74
         {
-            let at = (y * 640 + x) * 3;
+            let at = (y * display::width() + x) * 3;
             let original = (y * 41 + x - 33) * 3;
             assert_eq!(&file[at..at + 3],
                        &file_title[original..original + 3],
@@ -289,7 +291,7 @@ fn real_menu_tracking_and_keyboard_equivalents_reach_same_command_path()
             for x in 33..175
             {
                 let expected_at = ((y - 20) * 142 + x - 33) * 3;
-                let at = (y * 640 + x) * 3;
+                let at = (y * display::width() + x) * 3;
                 if actual[at..at + 3] != expected[expected_at..expected_at + 3]
                 {
                     different.push((x, y));

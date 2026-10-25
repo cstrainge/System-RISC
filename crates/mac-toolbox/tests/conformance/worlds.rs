@@ -54,7 +54,7 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                Point { h: 8,
                        v: 8 });
     assert!(matches!(q.new_gworld(0, 8), Err(Error::BadArgument)));
-    assert!(matches!(q.new_gworld(641, 480), Err(Error::NoMemory)));
+    assert!(matches!(q.new_gworld(i16::MAX, i16::MAX), Err(Error::NoMemory)));
     system.log("GWORLD_USERSPACE_PASS pixels=passed full_width=passed stale=passed \
                 recovery=passed\n")?;
     Ok(())

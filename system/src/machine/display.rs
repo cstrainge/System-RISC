@@ -2,13 +2,18 @@
 use core::{arch::asm,
            ptr::{addr_of_mut, read_volatile},
            sync::atomic::{AtomicBool, Ordering}};
-pub const WIDTH: usize = 640;
-pub const HEIGHT: usize = 480;
-pub const PIXELS: usize = WIDTH * HEIGHT;
+
+/// Display size in pixels, from the build-time platform record
+/// (`platforms/<platform>.json`, `memory.display`). This is the single source
+/// of display geometry: every consumer reads these constants.
+/// Control Panel hook: a future Display Control Panel changes the size by
+/// backing these with a runtime preference instead of the platform record;
+/// runtime switching also requires dynamic framebuffers, caches and scratch,
+/// not just this value.
+pub(crate) use crate::display::{HEIGHT, PIXELS, WIDTH};
 const MTIME: usize = 0x0200bff8;
 #[repr(C, align(4096))]
 struct Pixels([u32; PIXELS]);
-static mut FRAMEBUFFER: Pixels = Pixels([0; PIXELS]);
 static mut BACKBUFFER: Pixels = Pixels([0; PIXELS]);
 // Window tracking never paints the menu bar's first 21 rows.
 const TRACKING_PIXELS: usize = WIDTH * (HEIGHT - 21);
@@ -16,7 +21,8 @@ const TRACKING_PIXELS: usize = WIDTH * (HEIGHT - 21);
 // platform record as the loader arena and BootInfo reservations. It is not
 // image BSS and cannot be allocated by the later physical page pool.
 const _: () =
-    assert!(super::memory::DISPLAY_SCRATCH_BYTES >= (TRACKING_PIXELS * size_of::<u32>()) as u64);
+    assert!(super::memory::DISPLAY_TRACKING_BASE + (TRACKING_PIXELS * size_of::<u32>()) as u64
+            <= super::memory::DISPLAY_SCRATCH_BASE + super::memory::DISPLAY_SCRATCH_BYTES);
 static TRACKING_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static TRACKING_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static TRACKING_BORROWED: AtomicBool = AtomicBool::new(false);
@@ -44,7 +50,7 @@ pub fn with_tracking_mask<R>(call: impl FnOnce(Option<&mut [u32]>) -> R) -> R
         }
     }
     let _borrow = Borrow;
-    let pointer = super::memory::DISPLAY_SCRATCH_BASE as *mut u32;
+    let pointer = super::memory::DISPLAY_TRACKING_BASE as *mut u32;
     // Only this serialized device boundary accesses the dedicated RAM range.
     // Initialize bytes before publishing a reference, once per boot; subsequent
     // frames reuse the same pinned storage without allocation or clearing here.
@@ -67,8 +73,8 @@ pub fn back_buffer() -> &'static mut [u32]
 }
 pub fn setup_framebuffer() -> bool
 {
-    let address = addr_of_mut!(FRAMEBUFFER) as u64;
-    // The static framebuffer is pinned for System's lifetime; bootstrap owns
+    let address = super::memory::DISPLAY_FRONTBUFFER_BASE;
+    // The checked platform frontbuffer reservation is pinned for System's lifetime; bootstrap owns
     // exclusive fw_cfg access, before any application or secondary hart starts.
     let ready = unsafe { mac_boot_screen::ramfb::configure(address, WIDTH, HEIGHT) };
     if ready
@@ -101,8 +107,9 @@ pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_ab
     use crate::toolbox::quickdraw::presentation::{PresentEvent, present_frame};
     // The serialized compositor owns both buffers. This exclusive frontbuffer
     // slice cannot escape; the scene stays read-only for the entire transition.
-    let front =
-        unsafe { core::slice::from_raw_parts_mut(addr_of_mut!(FRAMEBUFFER).cast::<u32>(), PIXELS) };
+    let front = unsafe {
+        core::slice::from_raw_parts_mut(super::memory::DISPLAY_FRONTBUFFER_BASE as *mut u32, PIXELS)
+    };
     let mut started = 0;
     let owner = crate::context::current_thread_context().identity().app.0;
     present_frame(back, front, WIDTH, HEIGHT, rects, overlays, |event| {

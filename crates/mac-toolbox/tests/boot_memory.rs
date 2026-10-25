@@ -108,8 +108,8 @@ fn scratch_handoff_requires_the_selected_reserved_range_and_explains_stale_boots
                                              - core::mem::size_of::<BootMemoryRange>())
                                             as u32 };
     assert!(!stale_header.supports::<mac_toolbox::abi::BootInfo>());
-    let scratch = BootMemoryRange { base:   0x80000000,
-                                    length: 0x130000 };
+    let scratch = BootMemoryRange { base:   0x86c56000,
+                                    length: 0x3aa000 };
     let ram = BootMemoryRange { base:   0x80000000,
                                 length: 128 * 1024 * 1024 };
     let memory = Memory { ram:          &[ram],

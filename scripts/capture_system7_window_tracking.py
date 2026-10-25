@@ -4,6 +4,7 @@
 This launches a fresh read-only headless guest, never the user's visible VM.
 Waiting for input acknowledgements is transport synchronization, not an oracle.
 """
+from system7_platform import tablet_axis
 from hfs_b_tool import Image as NativeImage
 from system7_platform import guest_env
 import argparse
@@ -77,8 +78,8 @@ def capture(output, probe=False, menus=False, profile=False, windows=False):
         vm.qmp('input-send-event', {'events': events}, endpoint)
 
     def move(x, y):
-        send([{'type': 'abs', 'data': {'axis': 'x', 'value': (x * 32767 + 638) // 639}},
-              {'type': 'abs', 'data': {'axis': 'y', 'value': (y * 32767 + 478) // 479}}])
+        send([{'type': 'abs', 'data': {'axis': 'x', 'value': tablet_axis(x, 'x')}},
+              {'type': 'abs', 'data': {'axis': 'y', 'value': tablet_axis(y, 'y')}}])
         wait(lambda current: current.get('mouse') == f'{x},{y}')
 
     def button(down):
@@ -128,8 +129,8 @@ def capture(output, probe=False, menus=False, profile=False, windows=False):
                     remaining = started + index * .008 - time.monotonic()
                     if remaining > 0:
                         time.sleep(remaining)
-                    stream([{'type': 'abs', 'data': {'axis': 'x', 'value': (point[0]*32767+638)//639}},
-                            {'type': 'abs', 'data': {'axis': 'y', 'value': (point[1]*32767+478)//479}}])
+                    stream([{'type': 'abs', 'data': {'axis': 'x', 'value': tablet_axis(point[0], 'x')}},
+                            {'type': 'abs', 'data': {'axis': 'y', 'value': tablet_axis(point[1], 'y')}}])
                     submitted.append({'point': point, 'seconds': time.monotonic()-started})
             wait(lambda current: current['mouse'] == '289,127')
             end_state = state()

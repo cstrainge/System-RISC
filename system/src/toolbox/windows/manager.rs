@@ -638,8 +638,8 @@ impl WindowManager
         if bounds.is_empty()
            || bounds.left < 1
            || bounds.top < 25
-           || bounds.right > 638
-           || bounds.bottom > 478
+           || bounds.right > crate::display::WIDTH as i16 - 2
+           || bounds.bottom > crate::display::HEIGHT as i16 - 2
            || bounds.right - bounds.left < min_width
            || bounds.bottom - bounds.top < min_height
         {
@@ -703,8 +703,8 @@ impl WindowManager
         if structure.is_empty()
            || structure.left < 0
            || structure.top < 25
-           || structure.right > 640
-           || structure.bottom > 480
+           || structure.right > crate::display::WIDTH as i16
+           || structure.bottom > crate::display::HEIGHT as i16
         {
             return Err(CreationError::Geometry { procedure });
         }
@@ -1260,8 +1260,9 @@ impl WindowManager
                             w.standard_bounds.unwrap_or_else(|| {
                                                  Rect::new(w.bounds.left - structure.left,
                                                            25 + w.bounds.top - structure.top,
-                                                           640 - (structure.right - w.bounds.right),
-                                                           459
+                                                           crate::display::WIDTH as i16
+                                                           - (structure.right - w.bounds.right),
+                                                           (crate::display::HEIGHT as i16 - 21)
                                                            - (structure.bottom - w.bounds.bottom))
                                              });
                         w.state.zoomed = 1;
@@ -1278,7 +1279,7 @@ impl WindowManager
             {
                 // DragWindow constrains the cursor, not the entire window. A
                 // release outside the desktop cancels, including activation.
-                let preview = Rect::new(0, 21, 640, 480).contains(point).then(|| {
+                let preview = Rect::new(0, 21, crate::display::WIDTH as i16, crate::display::HEIGHT as i16).contains(point).then(|| {
                     let dx = i32::from(point.h) - i32::from(start.h);
                     let dy = i32::from(point.v) - i32::from(start.v);
                     Rect::new((i32::from(bounds.left) + dx) as i16,
@@ -1317,13 +1318,13 @@ impl WindowManager
                 let structure = w.structure();
                 let width = (i32::from(bounds.right - bounds.left) + i32::from(point.h)
                              - i32::from(start.h)).clamp(i32::from(w.min_width),
-                                                       i32::from(640
+                                                       i32::from(crate::display::WIDTH as i16
                                                                  - (structure.right - w.bounds.right)
                                                                  - bounds.left).max(i32::from(w.min_width)))
                             as i16;
                 let height = (i32::from(bounds.bottom - bounds.top) + i32::from(point.v)
                               - i32::from(start.v)).clamp(i32::from(w.min_height),
-                                                         i32::from(480
+                                                         i32::from(crate::display::HEIGHT as i16
                                                                    - (structure.bottom - w.bounds.bottom)
                                                                    - bounds.top).max(i32::from(w.min_height)))
                              as i16;
@@ -1398,8 +1399,8 @@ impl WindowManager
             return Region::new();
         };
         let mut visible =
-            Region::from_rect(window.bounds).combine(&Region::from_rect(Rect::new(0, 20, 640,
-                                                                                  480)),
+            Region::from_rect(window.bounds).combine(&Region::from_rect(Rect::new(0, 20, crate::display::WIDTH as i16,
+                                                                                  crate::display::HEIGHT as i16)),
                                                      BooleanOp::Intersection);
         for front in &order[index + 1..]
         {
@@ -1571,8 +1572,8 @@ impl WindowManager
             let structure = proposed.structure();
             if structure.left < 0
                || structure.top < 25
-               || structure.right > 640
-               || structure.bottom > 459
+               || structure.right > crate::display::WIDTH as i16
+               || structure.bottom > (crate::display::HEIGHT as i16 - 21)
             {
                 return Err(BAD_ARGUMENT);
             }
@@ -1769,6 +1770,30 @@ mod tests
         manager.dispose_window(b, &mut events, 4).unwrap();
         assert_eq!(manager.front_for_owner(owner), None);
         assert_eq!(manager.front_for_owner(other_owner), Some(other));
+    }
+
+    #[test]
+    fn window_admission_uses_the_configured_right_and_bottom_edges()
+    {
+        let (mut wm, mut events, _, _) = make();
+        let right = crate::display::WIDTH as i16;
+        let bottom = crate::display::HEIGHT as i16;
+        let id = wm.new_window(Rect::new(right - 140, bottom - 100, right - 12, bottom - 12),
+                               "Platform corner",
+                               99,
+                               (20, 20),
+                               &mut events,
+                               0)
+                   .unwrap();
+        let structure = wm.window(id).unwrap().structure();
+        assert!(structure.right <= right && structure.bottom <= bottom);
+        assert!(wm.new_window(Rect::new(right - 100, bottom - 100, right + 1, bottom - 10),
+                              "Outside platform",
+                              99,
+                              (20, 20),
+                              &mut events,
+                              0)
+                  .is_none());
     }
 
     #[test]

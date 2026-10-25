@@ -1,5 +1,7 @@
 //! Public-SDK frame atomicity while two actual native app threads poll events.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs, path::PathBuf, process::Command};
 
 fn cursor_on_white(frame: &[u8], point: [usize; 2], cursor: &[u8], stage: &str)
@@ -7,9 +9,9 @@ fn cursor_on_white(frame: &[u8], point: [usize; 2], cursor: &[u8], stage: &str)
     assert_eq!(cursor.len(), 68);
     let word = |at| u16::from_be_bytes([cursor[at], cursor[at + 1]]);
     let hotspot = [word(66) as isize, word(64) as isize];
-    let header = b"P6\n640 480\n255\n";
-    assert!(frame.starts_with(header));
-    assert_eq!(frame.len(), header.len() + 640 * 480 * 3);
+    let header = display::header();
+    assert!(frame.starts_with(&header));
+    assert_eq!(frame.len(), header.len() + display::width() * display::height() * 3);
     for y in point[1] - 16..point[1] + 16
     {
         for x in point[0] - 16..point[0] + 16
@@ -31,7 +33,7 @@ fn cursor_on_white(frame: &[u8], point: [usize; 2], cursor: &[u8], stage: &str)
                     expected.fill(0);
                 }
             }
-            let offset = header.len() + (y * 640 + x) * 3;
+            let offset = header.len() + (y * display::width() + x) * 3;
             assert_eq!(&frame[offset..offset + 3],
                        expected,
                        "{stage}: incorrect committed cursor at ({x},{y}), hover {point:?}");
@@ -66,7 +68,7 @@ fn staged_window_drawing_stays_private_until_end_update()
             "{serial}");
     let stages = report["stages"].as_array().unwrap();
     assert_eq!(stages.len(), 42);
-    let header = b"P6\n640 480\n255\n";
+    let header = display::header();
     let mut checked = 0;
     let mut cursor_pixels = 0;
     for stage in stages
@@ -108,8 +110,8 @@ fn staged_window_drawing_stays_private_until_end_update()
             continue;
         }
         let frame = fs::read(output.join(stage["frame"].as_str().unwrap())).unwrap();
-        assert!(frame.starts_with(header));
-        assert_eq!(frame.len(), header.len() + 640 * 480 * 3);
+        assert!(frame.starts_with(&header));
+        assert_eq!(frame.len(), header.len() + display::width() * display::height() * 3);
         if name.starts_with("desktop-patch-")
         {
             let reference = |name: &str| {
@@ -129,11 +131,11 @@ fn staged_window_drawing_stays_private_until_end_update()
                            stages.iter().find(|s| s["stage"] == "desktop-patch-covered").unwrap()
                                ["state"]["menu_paints"]);
                 let mut changes = 0;
-                for y in 0..480
+                for y in 0..display::height()
                 {
-                    for x in 0..640
+                    for x in 0..display::width()
                     {
-                        let at = header.len() + (y * 640 + x) * 3;
+                        let at = header.len() + (y * display::width() + x) * 3;
                         if frame[at..at + 3] != before[at..at + 3]
                         {
                             assert!((80..300).contains(&x) && (180..280).contains(&y),
@@ -150,11 +152,11 @@ fn staged_window_drawing_stays_private_until_end_update()
             else if matches!(name, "desktop-patch-revealed" | "desktop-patch-transparent")
             {
                 let before = reference("desktop-patch-baseline");
-                for y in 0..480
+                for y in 0..display::height()
                 {
-                    for x in 0..640
+                    for x in 0..display::width()
                     {
-                        let at = header.len() + (y * 640 + x) * 3;
+                        let at = header.len() + (y * display::width() + x) * 3;
                         let expected: &[u8] = if (80..300).contains(&x) && (180..280).contains(&y)
                         {
                             if name == "desktop-patch-transparent"
@@ -202,11 +204,11 @@ fn staged_window_drawing_stays_private_until_end_update()
             let original = fs::read(output.join(baseline["frame"].as_str().unwrap())).unwrap();
             assert_eq!(stage["state"]["menu_paints"], baseline["state"]["menu_paints"],
                        "mask update repainted menus");
-            for y in 0..480
+            for y in 0..display::height()
             {
-                for x in 0..640
+                for x in 0..display::width()
                 {
-                    let at = header.len() + (y * 640 + x) * 3;
+                    let at = header.len() + (y * display::width() + x) * 3;
                     let expected: &[u8] = if name != "mask-pending-cyan"
                                              && (470..530).contains(&x)
                                              && (365..415).contains(&y)
@@ -239,7 +241,7 @@ fn staged_window_drawing_stays_private_until_end_update()
                 {
                     for x in 365..585
                     {
-                        let offset = header.len() + (y * 640 + x) * 3;
+                        let offset = header.len() + (y * display::width() + x) * 3;
                         assert_eq!(&frame[offset..offset + 3],
                                    expected,
                                    "{name}: shared row snapshot changed at {x},{y}");
@@ -293,7 +295,7 @@ fn staged_window_drawing_stays_private_until_end_update()
                     }
                     _ => panic!("unexpected checkpoint {name}")
                 };
-                let offset = header.len() + (y * 640 + x) * 3;
+                let offset = header.len() + (y * display::width() + x) * 3;
                 assert_eq!(&frame[offset..offset + 3],
                            expected,
                            "{name}: pending drawing exposed or committed scene missing at \
@@ -315,7 +317,7 @@ fn staged_window_drawing_stays_private_until_end_update()
             {
                 for x in 100..270
                 {
-                    let offset = header.len() + (y * 640 + x) * 3;
+                    let offset = header.len() + (y * display::width() + x) * 3;
                     assert_eq!(&frame[offset..offset + 3],
                                expected,
                                "{name}: incorrect desktop commit/cache/exposure at ({x},{y})");

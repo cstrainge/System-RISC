@@ -302,7 +302,10 @@ impl Desktop
                   controls: super::controls::objects::Manager::new(super::handles::controls_kinds()?)?,
                   dialogs: super::dialogs::Alerts::new(super::handles::alert_kinds()?, processes.ledger(finder)?)?,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
-                  desktop: DesktopLayer::new(Rect::new(0, 21, 640, 480)),
+                  desktop: DesktopLayer::new(Rect::new(0,
+                                                        21,
+                                                        crate::display::WIDTH as i16,
+                                                        crate::display::HEIGHT as i16)),
                   cursors: Default::default(),
                   busy_cursor,
                   responsiveness: Default::default(),
@@ -2096,7 +2099,7 @@ impl Desktop
             let started = crate::trace::clock();
             let updating = self.windows.back_to_front().filter(|w| w.updating).count();
             let back = platform::back_buffer();
-            let mut canvas = Canvas::new(back, 640, 480);
+            let mut canvas = Canvas::new(back, crate::display::WIDTH, crate::display::HEIGHT);
             background(&mut canvas);
             let cdef = self.cdef;
             let fonts = crate::kernel::fonts();
@@ -2220,7 +2223,8 @@ impl Desktop
             let fonts = crate::kernel::fonts();
             let cdef = self.cdef;
             let cache = &mut self.content_cache;
-            let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
+            let mut canvas =
+                Canvas::new(platform::back_buffer(), crate::display::WIDTH, crate::display::HEIGHT);
             let mut paint_failed = false;
             for (id, region) in &damage
             {
@@ -2444,7 +2448,12 @@ impl Desktop
         let back = platform::back_buffer();
         if full
         {
-            platform::present_rects(back, [Rect::new(0, 0, 640, 480)], overlays);
+            platform::present_rects(back,
+                                    [Rect::new(0,
+                                               0,
+                                               crate::display::WIDTH as i16,
+                                               crate::display::HEIGHT as i16)],
+                                    overlays);
         }
         else
         {

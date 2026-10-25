@@ -31,3 +31,18 @@ def guest_env():
     flags.extend(['-C', 'target-feature=+' + PLATFORM['llvm_profile']])
     env['CARGO_ENCODED_RUSTFLAGS'] = '\x1f'.join(flags)
     return env
+
+
+def display_size():
+    record = PLATFORM['memory']['display']
+    width, height = record['width'], record['height']
+    if type(width) is not int or type(height) is not int or not 0 < width <= 32767 or not 21 < height <= 32767:
+        raise ValueError('Platform display must be positive, taller than 21 and fit signed 16-bit geometry')
+    return width, height
+
+
+def tablet_axis(pixel, axis):
+    extent = display_size()[{'x': 0, 'y': 1}[axis]]
+    if not 0 <= pixel < extent:
+        raise ValueError(f'Tablet {axis} pixel {pixel} is outside the configured {extent}-pixel display')
+    return 0 if extent == 1 else (pixel * 32767 + extent - 2) // (extent - 1)

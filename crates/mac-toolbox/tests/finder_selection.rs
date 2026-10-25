@@ -1,5 +1,7 @@
 //! Canonical end-to-end Finder set/geometry/performance acceptance.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs, path::PathBuf, process::Command};
 #[test]
 #[ignore = "requires current private image and Linux QEMU"]
@@ -77,8 +79,8 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
     let frame = |name: &str| -> Vec<u8> {
         let stage = stages.iter().find(|stage| stage["name"] == name).unwrap();
         let bytes = fs::read(output.join(stage["frame"].as_str().unwrap())).unwrap();
-        assert!(bytes.starts_with(b"P6\n640 480\n255\n"));
-        bytes[b"P6\n640 480\n255\n".len()..].to_vec()
+        assert!(bytes.starts_with(&display::header()));
+        bytes[display::header().len()..].to_vec()
     };
     assert_eq!(frame("shift-add"), frame("selected-noop"), "no-change click changed pixels");
     assert_eq!(frame("select-all"),
@@ -101,7 +103,7 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
                            && (x >= coords[2] - 15 || y >= coords[3] - 15);
             if !departed && !header && !controls
             {
-                let at = (y as usize * 640 + x as usize) * 3;
+                let at = (y as usize * display::width() + x as usize) * 3;
                 assert_eq!(&before[at..at + 3],
                            &after[at..at + 3],
                            "source refresh changed unrelated pixel {x},{y}");
@@ -127,7 +129,9 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
         {
             for x in 0..640i16
             {
-                let offset = (usize::try_from(y).unwrap() * 640 + usize::try_from(x).unwrap()) * 3;
+                let offset = (usize::try_from(y).unwrap() * display::width()
+                              + usize::try_from(x).unwrap())
+                             * 3;
                 if before[offset..offset + 3] != after[offset..offset + 3]
                 {
                     assert!(mask.iter().any(|r| x >= r[0] && y >= r[1] && x < r[2] && y < r[3]),
@@ -158,7 +162,7 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
     {
         for x in 0..640i16
         {
-            let offset = (y as usize * 640 + x as usize) * 3;
+            let offset = (y as usize * display::width() + x as usize) * 3;
             if before[offset..offset + 3] != after[offset..offset + 3]
             {
                 assert!(x >= wrapped_bounds[0]
@@ -191,7 +195,7 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
     {
         for x in 0..640i16
         {
-            let at = (y as usize * 640 + x as usize) * 3;
+            let at = (y as usize * display::width() + x as usize) * 3;
             if before[at..at + 3] != after[at..at + 3]
             {
                 assert!(x >= trash[0] && y >= trash[1] && x < trash[2] && y < trash[3],
@@ -295,7 +299,8 @@ fn physical_marquee_motion_uses_cached_items_and_frontbuffer_feedback()
                         latency.push((row[1] - inputs[index].0) * 100);
                         published = index + 1;
                     }
-                    assert!(row[5] <= 12 * (640 + 480), "marquee exceeded its perimeter budget");
+                    assert!(row[5] <= 12 * (display::width() + display::height()) as u64,
+                            "marquee exceeded its perimeter budget");
                 }
                 7 => render_count += 1,
                 4 => panic!("marquee generated a synthetic window update"),

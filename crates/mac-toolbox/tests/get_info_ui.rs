@@ -1,5 +1,7 @@
 //! Finder Info through actual public SDK windows/editors/files and physical input.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs,
           path::{Path, PathBuf},
           process::Command};
@@ -24,16 +26,18 @@ impl Drop for DiskSnapshots
 fn frame(path: &Path) -> Vec<u8>
 {
     let bytes = fs::read(path).unwrap();
-    let header = b"P6\n640 480\n255\n";
-    assert!(bytes.starts_with(header));
-    assert_eq!(bytes.len(), header.len() + 640 * 480 * 3);
+    let header = display::header();
+    assert!(bytes.starts_with(&header));
+    assert_eq!(bytes.len(), header.len() + display::width() * display::height() * 3);
     bytes[header.len()..].to_vec()
 }
 fn region(bytes: &[u8], bounds: [usize; 4]) -> Vec<u8>
 {
     let [left, top, right, bottom] = bounds;
-    (top..bottom).flat_map(|y| bytes[(y * 640 + left) * 3..(y * 640 + right) * 3].iter().copied())
-                 .collect()
+    (top..bottom).flat_map(|y| {
+        bytes[(y * display::width() + left) * 3..(y * display::width() + right) * 3].iter().copied()
+    })
+    .collect()
 }
 fn fields(line: &str) -> std::collections::HashMap<&str, &str>
 {

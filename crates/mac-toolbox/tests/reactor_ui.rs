@@ -1,5 +1,7 @@
 //! Reactor Room is the first visible customer of public lifetime inspection.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs,
           path::{Path, PathBuf},
           process::Command};
@@ -7,9 +9,9 @@ use std::{fs,
 fn frame(path: &Path) -> Vec<u8>
 {
     let bytes = fs::read(path).unwrap();
-    let header = b"P6\n640 480\n255\n";
-    assert!(bytes.starts_with(header));
-    assert_eq!(bytes.len(), header.len() + 640 * 480 * 3);
+    let header = display::header();
+    assert!(bytes.starts_with(&header));
+    assert_eq!(bytes.len(), header.len() + display::width() * display::height() * 3);
     bytes[header.len()..].to_vec()
 }
 #[test]
@@ -51,13 +53,13 @@ fn reactor_uses_public_policy_grants_and_managed_views_without_selection_repaint
     assert_eq!(first, again, "reselecting the same domain changed pixels");
     let second = frame(&output.join("selected-second.ppm"));
     assert_ne!(first, second, "selecting another domain did not update its managed list/details");
-    for y in 0..480
+    for y in 0..display::height()
     {
-        for x in 0..640
+        for x in 0..display::width()
         {
             if !(24..616).contains(&x) || !(88..391).contains(&y)
             {
-                let at = (y * 640 + x) * 3;
+                let at = (y * display::width() + x) * 3;
                 assert_eq!(first[at..at + 3],
                            second[at..at + 3],
                            "domain selection damaged unrelated pixel {x},{y}");

@@ -43,20 +43,22 @@ impl BootScreen
                                    .map_err(|_| Error::Malformed("invalid boot icon resource"))?;
         let entry = definitions.resolve(*b"CDEF", CDEF_PROGRESS_BAR)?;
         let pixels = crate::platform::back_buffer();
-        mac_boot_screen::draw_panel(&mut mac_boot_screen::Raster::new(pixels, 640, 480)
+        mac_boot_screen::draw_panel(&mut mac_boot_screen::Raster::new(pixels, crate::display::WIDTH, crate::display::HEIGHT)
             .ok_or(Error::Malformed("invalid boot framebuffer"))?, icon);
+        let layout = mac_boot_screen::PanelLayout::new(crate::display::WIDTH as i16,
+                                                       crate::display::HEIGHT as i16);
         let font = FontSelection::default();
         let width = fonts.text_width(font, &title)
                          .map_err(|_| Error::Malformed("boot title font unavailable"))?;
-        let mut canvas = Canvas::new(pixels, 640, 480);
+        let mut canvas = Canvas::new(pixels, crate::display::WIDTH, crate::display::HEIGHT);
         fonts.draw(font,
                    &mut canvas,
-                   Point { h: 320 - width / 2,
-                           v: mac_boot_screen::TITLE_BASELINE },
+                   Point { h: crate::display::WIDTH as i16 / 2 - width / 2,
+                           v: layout.title_baseline },
                    &title,
                    0)
              .map_err(|_| Error::Malformed("boot title drawing failed"))?;
-        let state = ControlDefinitionState { bounds: mac_boot_screen::PROGRESS,
+        let state = ControlDefinitionState { bounds: layout.progress,
                                              progress: ProgressRange { total: 7,
                                                                        determinate: 1,
                                                                        ..Default::default() },
@@ -110,7 +112,7 @@ impl BootScreen
         if let Some(drawing) = drawing
         {
             let pixels = crate::platform::back_buffer();
-            let mut canvas = Canvas::new(pixels, 640, 480);
+            let mut canvas = Canvas::new(pixels, crate::display::WIDTH, crate::display::HEIGHT);
             let damage = drawing.damage();
             for rect in damage.into_iter().filter(|rect| !rect.is_empty())
             {

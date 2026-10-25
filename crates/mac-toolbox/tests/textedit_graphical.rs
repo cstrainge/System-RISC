@@ -1,5 +1,7 @@
 //! Original 1-bit GWorld TextEdit pixels compared against actual resident SDK calls.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/display.rs"]
+mod display;
 use std::{fs, path::PathBuf, process::Command};
 
 use serde_json::Value;
@@ -66,9 +68,9 @@ fn resident_textedit_matches_original_text_selection_clipping_caret_and_scroll()
                                 .find(|r| r["case"] == "pixels" && r["operation"] == name)
                                 .unwrap();
         let frame = fs::read(output.join(snapshot["frame"].as_str().unwrap())).unwrap();
-        let header = b"P6\n640 480\n255\n";
-        assert!(frame.starts_with(header));
-        assert_eq!(frame.len(), header.len() + 640 * 480 * 3);
+        let header = display::header();
+        assert!(frame.starts_with(&header));
+        assert_eq!(frame.len(), header.len() + display::width() * display::height() * 3);
         let mut differences = Vec::new();
         for (y, row) in reference["rows"].as_array().unwrap().iter().enumerate()
         {
@@ -78,7 +80,7 @@ fn resident_textedit_matches_original_text_selection_clipping_caret_and_scroll()
             {
                 let byte = u8::from_str_radix(&row[x / 8 * 2..x / 8 * 2 + 2], 16).unwrap();
                 let expected = if byte & (0x80 >> (x % 8)) == 0 { 255 } else { 0 };
-                let at = header.len() + ((100 + y) * 640 + 100 + x) * 3;
+                let at = header.len() + ((100 + y) * display::width() + 100 + x) * 3;
                 if frame[at..at + 3] != [expected; 3]
                 {
                     differences.push((x, y, frame[at..at + 3].to_vec(), expected));
@@ -111,16 +113,16 @@ fn resident_textedit_matches_original_text_selection_clipping_caret_and_scroll()
         let pair = native.iter().find(|pair| pair["name"] == name).unwrap();
         let base = fs::read(output.join(pair["base"].as_str().unwrap())).unwrap();
         let caret = fs::read(output.join(pair["caret"].as_str().unwrap())).unwrap();
-        let header = b"P6\n640 480\n255\n";
-        assert!(base.starts_with(header) && caret.starts_with(header));
-        assert_eq!(base.len(), header.len() + 640 * 480 * 3);
+        let header = display::header();
+        assert!(base.starts_with(&header) && caret.starts_with(&header));
+        assert_eq!(base.len(), header.len() + display::width() * display::height() * 3);
         assert_eq!(caret.len(), base.len());
         let mut differences = Vec::new();
         for y in 0..96
         {
             for x in 0..128
             {
-                let at = header.len() + ((100 + y) * 640 + 100 + x) * 3;
+                let at = header.len() + ((100 + y) * display::width() + 100 + x) * 3;
                 let expected = if x == left && (top..top + 16).contains(&y) { 255 } else { 0 };
                 if (0..3).any(|channel| base[at + channel] ^ caret[at + channel] != expected)
                 {

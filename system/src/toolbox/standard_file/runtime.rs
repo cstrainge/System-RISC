@@ -322,7 +322,7 @@ impl super::Desktop
                 let width = l.bounds.right - l.bounds.left;
                 let height = l.bounds.bottom - l.bounds.top;
                 let mut w = request(WindowId(0));
-                let left = (640 - width) / 2;
+                let left = (crate::display::WIDTH as i16 - width) / 2;
                 w.bounds = Rect::new(left, 100, left + width, 100 + height);
                 w.procedure = l.procedure;
                 checked(self.window(NEW_WINDOW, &mut w))?;

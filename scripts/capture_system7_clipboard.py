@@ -3,6 +3,7 @@
 
 This supplies packaging, real input and frame transport. Rust owns acceptance.
 """
+from system7_platform import tablet_axis
 import argparse
 import json
 from pathlib import Path
@@ -49,8 +50,8 @@ def capture(output):
 
     def move(x, y):
         vm.qmp('input-send-event', {'events': [
-            {'type': 'abs', 'data': {'axis': 'x', 'value': (x * 32767 + 638) // 639}},
-            {'type': 'abs', 'data': {'axis': 'y', 'value': (y * 32767 + 478) // 479}}]}, endpoint)
+            {'type': 'abs', 'data': {'axis': 'x', 'value': tablet_axis(x, 'x')}},
+            {'type': 'abs', 'data': {'axis': 'y', 'value': tablet_axis(y, 'y')}}]}, endpoint)
 
     def button(down):
         vm.qmp('input-send-event', {'events': [
@@ -95,8 +96,8 @@ def capture(output):
 
     def move(x, y):
         vm.qmp('input-send-event', {'events': [
-            {'type': 'abs', 'data': {'axis': 'x', 'value': (x * 32767 + 638) // 639}},
-            {'type': 'abs', 'data': {'axis': 'y', 'value': (y * 32767 + 478) // 479}}]}, endpoint)
+            {'type': 'abs', 'data': {'axis': 'x', 'value': tablet_axis(x, 'x')}},
+            {'type': 'abs', 'data': {'axis': 'y', 'value': tablet_axis(y, 'y')}}]}, endpoint)
         time.sleep(.05)
 
     def button(down):

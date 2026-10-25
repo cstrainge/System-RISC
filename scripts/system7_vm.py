@@ -85,8 +85,8 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     monitor = (f'tcp:127.0.0.1:{qmp_port},server=on,wait=off' if native
                else f'unix:{socket_path},server=on,wait=off')
     # GTK keeps host absolute input and the 2x guest viewport in the same space.
-    display = {'native': 'gtk,zoom-to-fit=off,scale=2,show-menubar=off',
-               'gtk': 'gtk,zoom-to-fit=off,scale=2', 'headless': 'none',
+    display = {'native': 'gtk,gl=on,zoom-to-fit=off,scale=2,show-menubar=off',
+               'gtk': 'gtk,gl=on,zoom-to-fit=off,scale=2', 'headless': 'none',
                'native-headless': 'none'}[frontend]
     serial = state / 'serial.log'
     serial.write_text('')

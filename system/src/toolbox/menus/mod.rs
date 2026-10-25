@@ -112,6 +112,7 @@ impl Manager
 
     fn measure(&self, state: &mut MenuDefinitionState) -> Result<(), Status>
     {
+        state.bar_bounds = Rect::new(0, 0, crate::display::WIDTH as i16, 20);
         let mut pixel = [0u32];
         let mut canvas = Canvas::new(&mut pixel, 1, 1);
         let mut surface = Surface::from_canvas(&mut canvas);
@@ -726,6 +727,7 @@ fn parse_fmnu(bytes: &[u8], state: &mut MenuDefinitionState) -> Result<(), Statu
 fn draw_empty(entry: DefinitionEntry, gate: TrapGate, canvas: &mut Canvas)
 {
     let mut state = MenuDefinitionState { first: 1,
+                                          bar_bounds: Rect::new(0, 0, canvas.width as i16, 20),
                                           ..Default::default() };
     let mut surface = Surface::from_canvas(canvas);
     invoke(entry, gate, &mut state, DRAW_BAR, 0, &mut surface);

@@ -99,8 +99,9 @@ impl super::Desktop
             return Ok(());
         }
         let window = self.windows.window(call.window).ok_or(NOT_FOUND)?;
-        let mut canvas =
-            crate::toolbox::quickdraw::Canvas::new(crate::platform::back_buffer(), 640, 480);
+        let mut canvas = crate::toolbox::quickdraw::Canvas::new(crate::platform::back_buffer(),
+                                                                crate::display::WIDTH,
+                                                                crate::display::HEIGHT);
         for band in region.bands()
         {
             for span in &band.spans

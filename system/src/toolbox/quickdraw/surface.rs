@@ -28,7 +28,7 @@ impl SurfaceExt for Surface
         let length = (self.width as usize).checked_mul(self.height as usize)?;
         if self.pixels.is_null()
            || !(self.pixels as usize).is_multiple_of(4)
-           || length > 640 * 480
+           || length > crate::display::PIXELS
            || self.width == 0
            || self.height == 0
            || self.width > i16::MAX as u32

@@ -152,7 +152,11 @@ impl VisibilityCache
         }
         else
         {
-            windows.for_each_desktop_rect(Rect::new(0, 21, 640, 480), &mut collect);
+            windows.for_each_desktop_rect(Rect::new(0,
+                                                    21,
+                                                    crate::display::WIDTH as i16,
+                                                    crate::display::HEIGHT as i16),
+                                          &mut collect);
         }
         if exhausted
         {

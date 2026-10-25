@@ -89,8 +89,16 @@ impl Decoder
     {
         match (kind, code)
         {
-            (3, 0) => self.pending.h = ((value.min(32767) as u64 * 639) / 32767) as i16,
-            (3, 1) => self.pending.v = ((value.min(32767) as u64 * 479) / 32767) as i16,
+            (3, 0) =>
+            {
+                self.pending.h =
+                    ((value.min(32767) as u64 * (crate::display::WIDTH as u64 - 1)) / 32767) as i16
+            }
+            (3, 1) =>
+            {
+                self.pending.v =
+                    ((value.min(32767) as u64 * (crate::display::HEIGHT as u64 - 1)) / 32767) as i16
+            }
             (1, 0x110) => self.button = Some(value != 0),
             (0, 0) =>
             {
@@ -260,11 +268,11 @@ mod tests
         decoder.feed(0, 0, 0, &mut emit);
         assert_eq!(len, 2);
         assert_eq!(output[0],
-                   Some(Input::Move(Point { h: 639,
-                                            v: 479 })));
+                   Some(Input::Move(Point { h: crate::display::WIDTH as i16 - 1,
+                                            v: crate::display::HEIGHT as i16 - 1 })));
         assert_eq!(output[1],
-                   Some(Input::Button { point: Point { h: 639,
-                                                       v: 479 },
+                   Some(Input::Button { point: Point { h: crate::display::WIDTH as i16 - 1,
+                                                       v: crate::display::HEIGHT as i16 - 1 },
                                         down:  true }));
     }
     #[test]
