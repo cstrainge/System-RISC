@@ -10,7 +10,7 @@ The transport packages three separate RV64 ELF/resource applications:
 | --- | --- | --- |
 | Finder observer | 0x81000000..0x82000000 | Native service assertions and background progress |
 | ProcessWorker | 0x85000000..0x86000000 | Private resources/memory/events, owned window, physical input, return |
-| ProcessSpinner | 0x86000000..0x87000000 | Three-second pure hardware-counter loop without service calls/yields |
+| ProcessSpinner | 0x86000000..0x86c56000 | Three-second pure hardware-counter loop without service calls/yields |
 
 The spinner's `rdtime` instruction is contained in its loader/architecture shim.
 The canonical spinner body calls no Toolbox service between START and FINISHED.

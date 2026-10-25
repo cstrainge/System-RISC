@@ -5,7 +5,7 @@
   "role": "application",
   "abi_version": 1,
   "load_base": "0x86000000",
-  "load_limit": "0x87000000",
+  "load_limit": "0x86c56000",
   "description": "Public Process Manager acceptance fixture",
   "resources": [
     {

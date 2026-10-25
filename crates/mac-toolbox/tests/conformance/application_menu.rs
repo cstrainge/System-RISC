@@ -35,13 +35,16 @@ pub fn snapshot(system: &System<'_>) -> Result<usize, Failure>
            });
     let menus = system.menus();
     let layout = menus.layout(MENU)?;
-    require(layout.title == Rect::new(601, 0, 634, 20),
+    // The reference capture is 640 wide. Preserve its pixel dimensions and
+    // margins while anchoring to the actual display reported by the SDK.
+    let desktop = system.quickdraw().desktop().bounds()?;
+    require(layout.title == Rect::new(desktop.right - 39, 0, desktop.right - 6, 20),
             "captured right-side application title bounds")?;
-    require(layout.popup.top == 20 && layout.popup.right == 633,
+    require(layout.popup.top == 20 && layout.popup.right == desktop.right - 7,
             "captured application popup anchor")?;
     require(layout.popup.bottom - layout.popup.top == 64 + count as i16 * 18,
             "captured command and application row heights")?;
-    require(layout.popup.left >= 1 && layout.popup.bottom <= 476,
+    require(layout.popup.left >= 1 && layout.popup.bottom <= desktop.bottom - 4,
             "application popup and shadow stay within screen")?;
     require(menus.item_count(MENU)? == count as u16 + 4,
             "application menu includes every process")?;
