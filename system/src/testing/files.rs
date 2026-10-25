@@ -67,7 +67,8 @@ pub fn close_owner(owner: u64) -> usize
     let fork_count = (0..summary.kinds).map(|at| ledger.pool_at(summary.revision, at).unwrap())
                                        .filter(|pool| {
                                            [mac_object_table::domain::KindCode(*b"FFRK"),
-                               mac_object_table::domain::KindCode(*b"FDWR")].contains(&pool.kind)
+                               mac_object_table::domain::KindCode(*b"FDWR"),
+                               mac_object_table::domain::KindCode(*b"FSWR")].contains(&pool.kind)
                                        })
                                        .map(|pool| pool.live)
                                        .sum::<usize>();
@@ -81,4 +82,17 @@ pub fn close_owner(owner: u64) -> usize
     let walked = super::inspection::walk_registered(ledger.owner().incarnation(), false, false);
     assert!(walked.failures.is_empty(), "{}", walked.failures.join("; "));
     fork_count + other
+}
+
+/// One real bounded native rollback step, in place of the guest scheduler's
+/// cleanup checkpoint. Tests cannot supply completion or edit the writer state.
+pub fn pump_stream_cleanup()
+{
+    super::SESSION.with(|session| {
+                      session.borrow_mut()
+                             .as_mut()
+                             .expect("live streamed-write fixture session")
+                             .files
+                             .pump_stream_cleanup();
+                  });
 }

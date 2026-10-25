@@ -1,5 +1,5 @@
 //! Provider streaming marks share the native writer's resident object table.
-use super::{super::streams::{Remote, Stream},
+use super::{super::streams::{Progress, Remote, Stream},
             *};
 impl Manager
 {
@@ -11,13 +11,17 @@ impl Manager
         {
             return Err(ACCESS_DENIED);
         }
-        Ok(mark.remote.as_ref().map(|remote| remote.provider))
+        Ok(mark.progress.lock().remote.as_ref().map(|remote| remote.provider))
     }
 
-    pub(in crate::toolbox::files) fn reserve_remote_stream(&mut self, owner: u64,
-                                                           call: &ForkWriteCall, name: &str)
-                                                           -> Result<(u32, u32), Status>
+    pub(in crate::toolbox::files) fn reserve_remote_stream_for(&mut self, owner: u64,
+                                                               authority:&crate::toolbox::handles::OwnerRef,
+                                                               call: &ForkWriteCall, name: &str)
+                                                               -> Result<(u32, u32), Status>
     {
+        self.validate_file_authority(owner, authority)?;
+        #[cfg(target_arch = "riscv64")]
+        self.prepare_streams(crate::toolbox::handles::file_stream_kinds()?)?;
         self.validate_transfer_mutation(owner, call.volume)?;
         if call.expected_cnid != 0
            && self.executables
@@ -56,24 +60,24 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         let handle = self.streams
-                         .insert(Stream { owner,
+                         .insert(authority, Stream { owner,
+                                          authority: authority.clone(),
                                           volume: call.volume,
                                           parent: call.parent,
                                           expected: call.expected_cnid,
-                                          abandoned: false,
-                                          quarantined: false,
                                           when: call.when,
                                           name,
                                           comparison,
-                                          state: None,
-                                          published: None,
-                                          remote: Some(Remote { provider,
+                                          progress: spinning_top::Spinlock::new(Progress {
+                                            abandoned: false, quarantined: false, closed:false,
+                                            state: None, published: None,
+                                            remote: Some(Remote { provider,
                                                                 running: true,
                                                                 confirmed: None,
                                                                 lengths: [call.data_length,
                                                                           call.resource_length],
-                                                                written: [0; 2] }) })
-                         .map_err(|_| NO_MEMORY)?;
+                                                                written: [0; 2] }) }) })
+                         ?;
         Ok((provider, handle))
     }
 
@@ -81,8 +85,9 @@ impl Manager
                                                          properties: fs::FileProperties<'_>)
                                                          -> Result<(), Status>
     {
-        let mark = self.streams.get_mut(handle).ok_or(NOT_FOUND)?;
-        let remote = mark.remote.as_mut().ok_or(BAD_ARGUMENT)?;
+        let mark = self.streams.completing(handle).ok_or(NOT_FOUND)?;
+        let mut progress = mark.progress.lock();
+        let remote = progress.remote.as_mut().ok_or(BAD_ARGUMENT)?;
         let entry = catalog(mark.volume,
                             bytes,
                             (mark.expected != 0).then_some(mark.expected),
@@ -115,15 +120,16 @@ impl Manager
         {
             return Err(ACCESS_DENIED);
         }
-        if mark.quarantined
+        let mut progress = mark.progress.lock();
+        if progress.quarantined
         {
             return Err(ROLLBACK_FAILED);
         }
-        if mark.abandoned
+        if progress.abandoned
         {
             return Err(OPERATION_CANCELLED);
         }
-        let remote = mark.remote.as_mut().ok_or(BAD_ARGUMENT)?;
+        let remote = progress.remote.as_mut().ok_or(BAD_ARGUMENT)?;
         if remote.running
         {
             return Err(SERVICE_BUSY);
@@ -178,8 +184,9 @@ impl Manager
                                                          count: usize)
                                                          -> Result<(), Status>
     {
-        let remote =
-            self.streams.get_mut(handle).ok_or(NOT_FOUND)?.remote.as_mut().ok_or(BAD_ARGUMENT)?;
+        let mark = self.streams.completing(handle).ok_or(NOT_FOUND)?;
+        let mut progress = mark.progress.lock();
+        let remote = progress.remote.as_mut().ok_or(BAD_ARGUMENT)?;
         let written = remote.written.get_mut(fork as usize).ok_or(BAD_ARGUMENT)?;
         *written = written.checked_add(count as u64).ok_or(BAD_ABI)?;
         remote.running = false;
@@ -190,8 +197,9 @@ impl Manager
                                                            receipt: fs::WriteReceipt<'_>)
                                                            -> Result<CatalogInfo, Status>
     {
-        let mark = self.streams.get(handle).ok_or(NOT_FOUND)?;
-        let remote = mark.remote.as_ref().ok_or(BAD_ARGUMENT)?;
+        let mark = self.streams.completing(handle).ok_or(NOT_FOUND)?;
+        let progress = mark.progress.lock();
+        let remote = progress.remote.as_ref().ok_or(BAD_ARGUMENT)?;
         if receipt.file.id != remote.confirmed.ok_or(BAD_ABI)?.id
         {
             return Err(BAD_ABI);
@@ -205,6 +213,8 @@ impl Manager
         }
         let (volume, parent) = (mark.volume, mark.parent);
         let info = volume_info(volume, receipt.volume);
+        drop(progress);
+        let revision = super::super::scan::next_revision()?;
         let mounted = self.provider_mount(volume)?;
         let prior = mounted.info.ok_or(BAD_ABI)?;
         if info.filesystem != prior.filesystem
@@ -213,11 +223,15 @@ impl Manager
             return Err(BAD_ABI);
         }
         mounted.info = Some(info);
-        mounted.revision = super::super::scan::next_revision()?;
+        mounted.revision = revision;
         // Keep the mark until notification succeeds; a failed acknowledgement
         // must not turn a committed file into a vanished owner.
-        self.streams.get_mut(handle).unwrap().published = Some(entry);
-        self.notify_directory(volume, parent)?;
+        let mark = self.streams.completing(handle).ok_or(NOT_FOUND)?;
+        let mut progress = mark.progress.lock();
+        progress.published = Some(entry);
+        progress.closed = true;
+        drop(progress);
+        self.notify_directory_at(volume, parent, revision);
         self.streams.remove(handle).ok_or(NOT_FOUND)?;
         Ok(entry)
     }
@@ -225,19 +239,23 @@ impl Manager
     pub(in crate::toolbox::files) fn retire_remote_stream(&mut self, handle: u32)
                                                           -> Result<(), Status>
     {
-        if self.streams.get(handle).ok_or(NOT_FOUND)?.remote.is_none()
+        let mark = self.streams.completing(handle).ok_or(NOT_FOUND)?;
+        let mut progress = mark.progress.lock();
+        if progress.remote.is_none()
         {
             return Err(BAD_ARGUMENT);
         }
+        progress.closed = true;
+        drop(progress);
         self.streams.remove(handle).ok_or(NOT_FOUND)?;
         Ok(())
     }
 
     pub(in crate::toolbox::files) fn quarantine_remote_stream(&mut self, handle: u32)
     {
-        if let Some(mark) = self.streams.get_mut(handle)
+        if let Some(mark) = self.streams.completing(handle)
         {
-            mark.quarantined = true;
+            mark.progress.lock().quarantined = true;
         }
     }
 }

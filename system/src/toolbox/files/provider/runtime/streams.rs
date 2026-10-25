@@ -35,7 +35,7 @@ fn failed(mut flight: Flight, mut state: State, error: Status) -> Progress
 {
     state.aborting = true;
     state.error = error;
-    let volume = match files(|m| Ok(m.streams.get(state.handle).ok_or(NOT_FOUND)?.volume))
+    let volume = match files(|m| Ok(m.streams.completing(state.handle).ok_or(NOT_FOUND)?.volume))
     {
         Ok(v) => v,
         Err(error) => return Progress::Done(Err(error))
@@ -244,7 +244,9 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &ForkWriteCall, nam
                                  attributes: call.attributes,
                                  finder_info: call.finder_info }.encode(&mut properties)
                                                                 .map_err(|_| BAD_ARGUMENT)?;
-            let (provider, handle) = files(|m| m.reserve_remote_stream(owner, call, name))?;
+            let authority = super::super::super::creation_authority(owner)?;
+            let (provider, handle) =
+                files(|m| m.reserve_remote_stream_for(owner, &authority, call, name))?;
             let op = if call.expected_cnid == 0
             {
                 Operation::BeginCreate
@@ -285,12 +287,9 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &ForkWriteCall, nam
             let count = if call.operation == READ_FORK_WRITE
             {
                 files(|m| {
-                    let remote = m.streams
-                                  .get(call.handle)
-                                  .ok_or(NOT_FOUND)?
-                                  .remote
-                                  .as_ref()
-                                  .ok_or(BAD_ABI)?;
+                    let mark = m.streams.get(call.handle).ok_or(NOT_FOUND)?;
+                    let progress = mark.progress.lock();
+                    let remote = progress.remote.as_ref().ok_or(BAD_ABI)?;
                     Ok((remote.written[call.fork as usize] - call.offset).min(call.capacity as u64)
                        as usize)
                 })?
@@ -370,20 +369,26 @@ pub(super) fn pump_cleanup()
         }
     }
     let prepared = files(|m| {
-        let Some((handle, mark)) =
-            m.streams.iter().find(|(_, mark)| {
-                                mark.abandoned
-                                && !mark.quarantined
-                                && mark.remote.as_ref().is_some_and(|r| !r.running)
-                            })
-        else
+        for (handle, mark) in m.streams.iter()
         {
-            return Ok(None);
-        };
-        let (volume, provider, owner) =
-            (mark.volume, mark.remote.as_ref().unwrap().provider, mark.owner);
-        m.streams.get_mut(handle).unwrap().remote.as_mut().unwrap().running = true;
-        Ok(Some((handle, volume, provider, owner)))
+            let mut progress = mark.progress.lock();
+            if !progress.abandoned || progress.quarantined || progress.closed
+            {
+                continue;
+            }
+            let Some(remote) = progress.remote.as_mut()
+            else
+            {
+                continue;
+            };
+            if remote.running
+            {
+                continue;
+            }
+            remote.running = true;
+            return Ok(Some((handle, mark.volume, remote.provider, mark.owner)));
+        }
+        Ok(None)
     });
     let Ok(Some((handle, volume, provider, owner))) = prepared
     else

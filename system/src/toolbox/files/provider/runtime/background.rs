@@ -346,7 +346,27 @@ pub(super) fn stream(owner: u64, call: &mut ForkWriteCall, name: &str, comment: 
         {
             let result = (|| {
                 let mut bytes = buffer(capacity)?;
-                files(|m| m.stream_request(owner, call, name, comment, data, &mut bytes))?;
+                // Only admission needs a new ledger binding. An existing
+                // writer already pins its authority; chunks and cleanup use it.
+                let authority = if call.operation == BEGIN_FORK_WRITE
+                {
+                    Some(super::super::super::creation_authority(owner)?)
+                }
+                else
+                {
+                    None
+                };
+                files(|m| {
+                    if let Some(authority) = &authority
+                    {
+                        m.stream_request_for(owner, authority, call, name, comment, data,
+                                             &mut bytes)
+                    }
+                    else
+                    {
+                        m.stream_request(owner, call, name, comment, data, &mut bytes)
+                    }
+                })?;
                 if call.transferred > bytes.len()
                 {
                     return Err(BAD_ABI);

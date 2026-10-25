@@ -138,6 +138,29 @@ impl<T: Payload> Objects<T>
         self.retiring.try_reserve(self.len() + 1).map_err(|_| NO_MEMORY)
     }
 
+    /// Explicit nonblocking disposal invalidates before scheduling storage
+    /// cleanup. Reserve first: refusal leaves the ordinary object untouched.
+    pub(super) fn abandon(&mut self, id: u32) -> Result<(), Status>
+    {
+        let pending = self.get(id).ok_or(NOT_FOUND)?.cleanup_pending();
+        if pending
+        {
+            self.retiring.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        }
+        let mark = self.objects.as_mut().ok_or(NOT_FOUND)?.remove(id).ok_or(NOT_FOUND)?;
+        if pending
+        {
+            mark.begin_cleanup();
+            self.retiring.push(mark);
+        }
+        else
+        {
+            drop(mark);
+            self.forget_completion(id);
+        }
+        Ok(())
+    }
+
     pub(super) fn remove(&mut self, id: u32) -> Option<()>
     {
         if let Some(index) = self.retiring.iter().position(|mark| mark.wire() == id)

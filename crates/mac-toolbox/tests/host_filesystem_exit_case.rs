@@ -92,6 +92,16 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
                                                              creator: (*b"TEST").into() },
                           3)?;
     writer.write_all(b"abc")?;
+    let mut metadata = mac_toolbox::files::CatalogInfo::EMPTY;
+    metadata.created = mac_toolbox::Timestamp::from_mac_microseconds(3_875_171_696_123_456);
+    metadata.modified = metadata.created;
+    let mut streamed = files.begin_fork_write(mac_toolbox::files::ForkWriteSpec {
+        volume, parent: ROOT_ID, name: "Exit fork staging", replace: None,
+        data_length: 3, resource_length: 0,
+        metadata: mac_toolbox::files::ForkMetadata::from_catalog(&metadata, "")
+    })?;
+    streamed.write_chunk(Fork::Data, b"ack")?;
+    core::mem::forget(streamed);
     core::mem::forget(writer);
     core::mem::forget(files.watch_directory(volume, ROOT_ID)?);
     core::mem::forget(data);

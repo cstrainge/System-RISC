@@ -179,11 +179,20 @@ every mid-call module fault.
 The unsafe backing-pointer bridge belongs to one audited allocator
 adapter; accounting/free-list policy stays safe.
 
-## Proposed profiles, not active defaults
+## Configurable starting defaults and remaining profile proposals
 
-Every figure below is a **review proposal**, not a shipped constant or a quota
-chosen implicitly by the structures. Evaluate with real image/control/account
-usage, including Res Edit and a 200 MB Text Edit document, before enabling.
+The initial configurable defaults approved on 2026-10-24 are **8 GiB native
+release VM RAM, 512 MiB fixed System heap, 32 MiB protected recovery reserve,
+16 MiB per-process kernel budget and 64 MiB app committed-heap budget**. These
+are selections for the later page/heap stage, not claims that those budgets are
+active on the current 8 MiB allocator. They remain tunable and must pass the
+cross-profile validator and live accounting/recovery gates before activation.
+
+Other values, including the proposed minimum/maximum ranges below, remain
+**review proposals**. Evaluate them with real image/control/account usage,
+including Res Edit and a 200 MB Text Edit document, before enabling. Approval of
+the five starting defaults does not select virtual addresses, stack/control-space
+sizes, Finder's recovery share, or emergency-kit concurrency.
 
 | Configured policy | Minimum / initial default / maximum proposal | Reason |
 |---|---|---|
@@ -1098,6 +1107,34 @@ revision once. Failed rollback still poisons the volume and is not reported as
 successful recovery.
 
 System-backed transfer coordinator scope remains the explicitly staged M-D12
-exception until transfers themselves migrate. Streamed fork writers, icon groups,
+exception until transfers themselves migrate. Icon groups,
 transfers, document/image/volume/module lifetimes and full I/O quiescence remain
 unfinished; this is not full stage-2/3 cleanup or page/heap/std activation.
+
+## Streamed fork writers retain storage through acknowledged cleanup
+
+FSWR and FSST register streamed two-fork writes and their per-owner value
+storage through the same File Manager lifetime facility. Native admission
+captures the real owner before firmware stack handoff. Drop/ABANDON invalidates
+the ordinary projection immediately; the same projection generation stays
+reserved by a retained guard until storage confirms the final cleanup step.
+Explicit abort remains a pollable live operation until its terminal reply.
+
+The common owner walk schedules native bounded rollback or provider AbortWrite.
+It does not free a provisional StagedFile, provider token or process charge just
+because the ordinary handle is invalid. Internal progress lives behind a private
+lock; only opaque, pre-invalidation completion authority can reach a pending
+object. A terminal reply records Closed before disposal, including during
+pre-dispatch quarantine, so later cleanup does not repeat an acknowledged Abort.
+Unmount, conflicting mutations and normal power remain blocked while any such
+payload is retained. A cleanup failure keeps its payload owned and reports the
+existing rollback failure; it cannot manufacture a successful retirement.
+
+The streamed-write scan is removed from the transitional EXIT helper. Native
+publication reserves its change revision before writing and reuses it for
+catalog/watch publication. Public SDK conformance covers stale/foreign IDs,
+immediate abandonment invalidation, forced slot reuse only after real rollback,
+owner-walk refusal/retry and another writer continuing independently. Provider
+unit checks also cover a late reply before cleanup dispatch. This does not yet
+complete icon-group, transfer, mount or module lifetime migration; the M-D12
+coordinator exception still applies until registered transfers replace it.

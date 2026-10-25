@@ -2,12 +2,26 @@
 use super::*;
 /// # Safety
 /// The request and its declared ranges are live and nonaliasing for this trap.
-pub(super) unsafe fn dispatch(manager: &mut Manager, owner: u64, pointer: *mut (), size: usize)
+pub(super) unsafe fn dispatch(manager: &mut Manager, owner: u64,
+                              authority: Option<&crate::toolbox::handles::OwnerRef>,
+                              pointer: *mut (), size: usize)
                               -> i64
 {
     unsafe {
         checked(pointer, size, |call, name, comment, data, output| {
-            manager.stream_request(owner, call, name, comment, data, output).err().unwrap_or(OK)
+            let result = if call.operation == BEGIN_FORK_WRITE
+            {
+                authority.ok_or(ACCESS_DENIED).and_then(|authority| {
+                                                  manager.stream_request_for(owner, authority,
+                                                                             call, name, comment,
+                                                                             data, output)
+                                              })
+            }
+            else
+            {
+                manager.stream_request(owner, call, name, comment, data, output)
+            };
+            result.err().unwrap_or(OK)
         })
     }
 }

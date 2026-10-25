@@ -161,6 +161,8 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                    crate::toolbox::files::forks::lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::files::write::lifetime::specification(false),crate::toolbox::files::write::lifetime::ReleaseWrites).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::files::write::lifetime::specification(true),crate::toolbox::files::write::lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::streams::lifetime::specification(false),crate::toolbox::files::streams::lifetime::ReleaseStreams).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::streams::lifetime::specification(true),crate::toolbox::files::streams::lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
                                use crate::toolbox::drag::lifetime::{Registration, ReleaseKind};
                                registry.register(&owner, crate::toolbox::files::watch::lifetime::specification(false),
                                    crate::toolbox::files::watch::lifetime::ReleaseWatches).map_err(KindAccessError::Registry)?;
@@ -320,5 +322,12 @@ pub(crate) fn projection_status(error: mac_object_table::projected::Error) -> ma
 pub(crate) fn file_write_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry|Ok((registry.get(KindCode(*b"FDWR"))?,registry.get(KindCode(*b"FDST"))?)))
+        .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn file_stream_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry|Ok((registry.get(KindCode(*b"FSWR"))?,registry.get(KindCode(*b"FSST"))?)))
         .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }

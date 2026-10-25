@@ -777,6 +777,62 @@ mod tests
     }
 
     #[test]
+    fn streamed_reply_after_invalidation_keeps_cleanup_authority_and_volume_protection()
+    {
+        for terminal_first in [false, true]
+        {
+            let mut manager = Manager::default();
+            let volume = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
+            manager.publish_provider_mount(volume, &descriptor()).unwrap();
+            let authority = manager.fixture_stream_owner(7);
+            let call = ForkWriteCall { operation: BEGIN_FORK_WRITE,
+                                       volume,
+                                       parent: ROOT_ID,
+                                       data_length: 3,
+                                       ..Default::default() };
+            let (_, handle) =
+                manager.reserve_remote_stream_for(7, &authority, &call, "Late stream").unwrap();
+            let (walk, failures) = manager.fixture_walk_files(7, true, false);
+            assert_eq!(walk.quarantined, 2);
+            assert!(failures.iter().all(|s| s.contains("FSWR") || s.contains("FSST")),
+                    "{failures:?}");
+            assert_eq!(manager.stream_provider(7, handle), Err(NOT_FOUND));
+            assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+            assert_eq!(manager.prepare_power(), Err(SERVICE_BUSY));
+            if terminal_first
+            {
+                manager.retire_remote_stream(handle).unwrap();
+            }
+            else
+            {
+                // A real job's completion can arrive before its cleanup
+                // provider has been dispatched; it must not revive the wire ID.
+                manager.remote_stream_ready(handle, DATA_FORK, 3).unwrap();
+            }
+            let (_, failures) = manager.fixture_walk_files(7, false, true);
+            assert!(failures.is_empty(), "{failures:?}");
+            if terminal_first
+            {
+                assert!(manager.streams.iter().next().is_none(),
+                        "terminal ACK must not repeat Abort");
+            }
+            else
+            {
+                let progress = manager.streams.completing(handle).unwrap().progress.lock();
+                assert!(progress.abandoned);
+                assert_eq!(progress.remote.as_ref().unwrap().written, [3, 0]);
+                assert!(!progress.remote.as_ref().unwrap().running);
+                drop(progress);
+                assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+                manager.retire_remote_stream(handle).unwrap();
+            }
+            assert_eq!(authority.summary().pending, 0);
+            assert_eq!(manager.stream_provider(7, handle), Err(NOT_FOUND));
+            manager.begin_provider_unmount(volume).unwrap();
+        }
+    }
+
+    #[test]
     fn mount_publication_is_validated_and_ack_retirement_preserves_generations()
     {
         let mut manager = Manager::default();

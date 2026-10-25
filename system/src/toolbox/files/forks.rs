@@ -80,7 +80,8 @@ impl Manager
         let count = (0..summary.kinds).map(|at| ledger.pool_at(summary.revision, at).unwrap())
                                       .filter(|pool| {
                                           [crate::toolbox::handles::KindCode(*b"FFRK"),
-                                   crate::toolbox::handles::KindCode(*b"FDWR")].contains(&pool.kind)
+                                   crate::toolbox::handles::KindCode(*b"FDWR"),
+                                   crate::toolbox::handles::KindCode(*b"FSWR")].contains(&pool.kind)
                                       })
                                       .map(|pool| pool.live)
                                       .sum();

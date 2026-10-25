@@ -413,6 +413,8 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             }
             else if size == size_of::<files::DataWriteCall>()
                       && read_request!(files::DataWriteCall).operation == files::BEGIN_DATA_WRITE
+                      || size == size_of::<files::ForkWriteCall>()
+                         && read_request!(files::ForkWriteCall).operation == files::BEGIN_FORK_WRITE
             {
                 let authority = match crate::context::current_owner()
                 {

@@ -74,7 +74,17 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
                     Ok(Ok(None)) =>
                     {
                         crate::kernel::with_files(|manager| {
-                            manager.stream_request(owner, call, name, comment, data, output)
+                            if call.operation == files::BEGIN_FORK_WRITE
+                            {
+                                let authority =
+                                    caller.map(|caller| &caller.owner).ok_or(ACCESS_DENIED)?;
+                                manager.stream_request_for(owner, authority, call, name, comment,
+                                                           data, output)
+                            }
+                            else
+                            {
+                                manager.stream_request(owner, call, name, comment, data, output)
+                            }
                         }).map_or_else(|e| e.status(), |r| r.err().unwrap_or(OK))
                     }
                     Ok(Err(error)) => error,
@@ -517,7 +527,13 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
     }
     if size == size_of::<files::ForkWriteCall>()
     {
-        return unsafe { super::stream_native::dispatch(manager, owner, pointer, size) };
+        return unsafe {
+            super::stream_native::dispatch(manager,
+                                           owner,
+                                           watch.map(|caller| &caller.owner),
+                                           pointer,
+                                           size)
+        };
     }
     if size == size_of::<files::IconMoveCall>()
     {

@@ -14,7 +14,7 @@ pub(crate) mod watch;
 mod cache;
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
 mod icon_cache;
-mod streams;
+pub(crate) mod streams;
 mod groups;
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
 mod stream_native;
@@ -316,11 +316,10 @@ pub struct Manager
     volumes:              Table<Mounted>,
     handles:              objects::Objects<OpenFile>,
     writes:               objects::Objects<write::Pending>,
-    streams:              Table<streams::Stream>,
+    streams:              objects::Objects<streams::Stream>,
     groups:               Table<groups::Group>,
     #[cfg(target_arch = "riscv64")]
     transfers:            Table<provider::runtime::transfer::Entry>,
-    stream_cleanup:       bool,
     watches:              watch::Watches,
     pub rejected_volumes: u32
 }
@@ -337,13 +336,12 @@ impl Default for Manager
                writes:
                    objects::Objects::new(),
                streams:
-                   Table::new(Kind::FileStreams),
+                   objects::Objects::new(),
                groups:
                    Table::new(Kind::FileGroups),
                #[cfg(target_arch = "riscv64")]
                transfers:
                    Table::new(Kind::FileTransfers),
-               stream_cleanup:                                                            false,
                watches:
                    watch::Watches::new(),
                rejected_volumes:                                                          0,
@@ -368,6 +366,14 @@ impl Manager
                                  -> Result<(), Status>
     {
         self.writes.prepare(kinds)
+    }
+
+    pub(crate) fn prepare_streams(&mut self,
+                                  kinds: (crate::toolbox::handles::KindLease,
+                                   crate::toolbox::handles::KindLease))
+                                  -> Result<(), Status>
+    {
+        self.streams.prepare(kinds)
     }
 
     /// Power triggers run in the same non-preemptible service invocation as
@@ -1157,12 +1163,6 @@ impl Manager
         self.executables.retain(|pin| pin.owner != owner);
         #[cfg(target_arch = "riscv64")]
         provider::runtime::transfer::abandon(self, owner);
-        for stream in self.streams.values_mut().filter(|stream| stream.owner == owner)
-        {
-            stream.abandoned = true;
-            self.stream_cleanup = true;
-            streams::request_cleanup();
-        }
         let mut count = 0;
         for group in self.groups.values_mut().filter(|group| group.owner == owner)
         {

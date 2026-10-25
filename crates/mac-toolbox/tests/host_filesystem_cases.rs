@@ -268,6 +268,8 @@ pub fn check(system: &System<'_>, gate: mac_toolbox::abi::TrapGate) -> Result<()
     let replacement = files.mount_host_export(0)?;
     require(files.lookup(replacement.id, mac_toolbox::files::ROOT_ID, "Exit staging")
             == Err(Error::NotFound))?;
+    require(files.lookup(replacement.id, mac_toolbox::files::ROOT_ID, "Exit fork staging")
+            == Err(Error::NotFound))?;
     require(files.scan_directory(replacement.id, mac_toolbox::files::ROOT_ID, &mut prior_scan)
             == Err(Error::BadArgument))?;
     require(replacement.id != writable.id && replacement.id.0 & 0xffff == writable.id.0 & 0xffff)?;
