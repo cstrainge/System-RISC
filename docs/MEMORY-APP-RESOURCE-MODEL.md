@@ -1768,3 +1768,35 @@ checking typed errors and their messages, no child publication, preserved caller
 identity and restored resource selection. Rust also checks each provisional
 domain's actual retirement after its common-walk marker and absence of any child
 thread. Boundaries, formatting and public API documentation pass.
+
+### Finder bootstrap uses its existing process owner
+
+Finder now provisions its process domain before image admission too. Bootstrap
+binds the image and passes the same process directory and genuine owner into
+Desktop construction. The old constructor that created an already-imaged process
+is removed. A directory-minted resource selection encloses desktop initialization;
+the helper returns, drops its guards and restores the System-only bootstrap
+selection before the scheduler permanently leaves that stack. Bootstrap checks
+that the selection was released, rather than keeping an owned admission guard
+on a stack that will never unwind.
+
+Current image-selection metadata now lives in the actual thread context, assigned
+before publication and cleared only after quiescence. It is removed from the
+scheduler record. Synchronous I/O captures complete default or explicit source
+selection before changing executor. It does not reacquire the scheduler lock:
+file-transfer completion-before-park already holds that lock while checking I/O
+readiness. System/idle contexts without an explicit source see only System
+resources, rather than implicitly selecting Finder through slot zero.
+
+This is coherent source selection and owner-first admission, not registered
+image ownership. Image aliases/eviction, dynamic capacity, four-part module
+invocation, page/account enforcement and MMU activation remain staged gates.
+Boot initialization failure remains fatal; this does not claim Finder restart
+or arbitrary privileged-fault recovery.
+
+Qualification passes 494 host cases, the optimized world build, both real
+process campaigns (including concurrent-copy rename/move and bootstrap scope
+ordering), application UI, aggregate SDK, cursor/boot visuals, panic recovery
+and host-volume workflow. Boundaries, formatting and public API docs pass.
+The private lifecycle campaign caught the scheduler-lock recursion in an initial
+capture implementation; current-context reads now avoid that lock entirely.

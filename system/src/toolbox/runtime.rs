@@ -263,8 +263,16 @@ impl Desktop
         Ok(())
     }
 
-    pub fn new(mut definitions: Definitions) -> Result<Self, Status>
+    pub fn new(mut definitions: Definitions, processes: super::processes::Manager,
+               finder_owner: super::handles::OwnerRef)
+               -> Result<Self, Status>
     {
+        let finder = finder_owner.owner().incarnation();
+        if processes.ledger(finder)?.owner() != finder_owner.owner()
+           || processes.get(finder)?.image.is_none()
+        {
+            return Err(BAD_ABI);
+        }
         definitions.resolve(*b"WDEF", 0).map_err(crate::loader::status)?;
         let cdef = definitions.resolve(*b"CDEF", 0).map_err(crate::loader::status)?;
         let mdef = definitions.resolve(*b"MDEF", 0).map_err(crate::loader::status)?;
@@ -296,10 +304,6 @@ impl Desktop
         })?;
         serial!("UI_OBSERVER address={} bytes=128 version=1",
                 super::quickdraw::observer::address());
-        let mut processes = super::processes::Manager::new();
-        let finder = processes.add("Finder", 0, 0, 0)?;
-        processes.activate(finder)?;
-        crate::context::set_finder_app(finder);
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
                   standard_file: super::standard_file::Manager::new(super::handles::file_dialog_kinds()?)?,

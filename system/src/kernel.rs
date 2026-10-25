@@ -327,6 +327,19 @@ pub(crate) struct ResourceSelection
     owner: u64,
     image: Option<usize>
 }
+/// Capture source identity before an I/O handoff changes the executor. This is
+/// selection metadata, not an image lease; invocation callers mask preemption.
+pub(crate) fn current_resource_selection() -> ResourceSelection
+{
+    if let Some(selection) = crate::context::selected_resources()
+    {
+        return selection;
+    }
+    let context = crate::context::current_thread_context();
+    let owner = context.identity().app.0;
+    ResourceSelection { owner,
+                        image: if owner == 0 { None } else { context.image() } }
+}
 pub(crate) fn with_resource_owner<R>(app: u64, call: impl FnOnce() -> R) -> Result<R, Status>
 {
     let selected = crate::context::selected_resources();
@@ -369,15 +382,8 @@ pub(crate) fn with_resources<R>(call: impl for<'a> FnOnce(crate::toolbox::resour
                                 -> Option<R>
 {
     let files = RESOURCE_FILES.get()?;
-    let (index, origin) = match crate::context::selected_resources()
-    {
-        Some(selection) => (selection.image, selection.owner),
-        None =>
-        {
-            (Some(crate::machine::scheduler::image()),
-             crate::context::current_thread_context().identity().app.0)
-        }
-    };
+    let ResourceSelection { image: index,
+                            owner: origin } = current_resource_selection();
     let images = ImageCatalog(&IMAGES);
     // A provisional process has not admitted an image. Its common cleanup walk
     // resolves System resources only, never the launcher's application chain.
@@ -406,8 +412,14 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                                                                                    failed")
                                                 })?;
     crate::drivers::file_sources::runtime::initialize().map_err(|_| mac_formats::Error::Malformed("backing-file service initialization failed"))?;
-    let mut system = crate::loader::read_startup("System")?;
+    let system = crate::loader::read_startup("System")?;
     let finder = crate::loader::read_startup("Finder")?;
+    let mut processes = crate::toolbox::processes::Manager::new();
+    let finder_id = processes.provision("Finder", 0, 0).map_err(|status| {
+        serial!("FINDER_DOMAIN_REFUSED status={status}");
+        mac_formats::Error::AllocationFailed("Finder lifetime domain admission failed")
+    })?;
+    serial!("BOOT_FINDER_DOMAIN app={finder_id}");
     let finder_execution = mac_kernel_model::image::ExecutionGate::try_new().map_err(|_| {
                                mac_formats::Error::AllocationFailed("Finder execution gate \
                                                                      allocation failed")
@@ -439,6 +451,46 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                             limit,
                             execution: finder_execution }
              });
+    processes.bind_image(finder_id, 0).map_err(|_| {
+                                           mac_formats::Error::Malformed("Finder lifetime domain \
+                                                                          could not bind its \
+                                                                          admitted image")
+                                       })?;
+    processes.activate(finder_id)
+             .map_err(|_| {
+                 mac_formats::Error::Malformed("Finder lifetime domain could not become foreground")
+             })?;
+    let selection = {
+        let binding = processes.resource_binding(finder_id).map_err(|_| {
+            mac_formats::Error::Malformed("Finder bootstrap resource binding is unavailable")
+        })?;
+        ResourceSelection { owner: binding.owner(),
+                            image: binding.image() }
+    };
+    crate::context::set_finder_app(finder_id);
+    crate::context::with_bootstrap_resources(Some(selection), || {
+        initialize_desktop(system, processes, finder_loaded)
+    })?;
+    let released = current_resource_selection();
+    if released.owner != 0 || released.image.is_some()
+    {
+        return Err(mac_formats::Error::Malformed("bootstrap resource scope survived desktop \
+                                                  initialization"));
+    }
+    serial!("BOOT_RESOURCE_SCOPE_RELEASED");
+    // End the bootstrap resource scope and drop all admission guards before
+    // leaving this stack permanently. Scheduled threads own their actual pins.
+    crate::machine::scheduler::start()
+}
+
+fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resource>,
+                      processes: crate::toolbox::processes::Manager, finder_loaded: LoadedImage)
+                      -> mac_formats::Result<()>
+{
+    let finder_entry = finder_loaded.entry;
+    let finder_owner = processes.ledger(crate::context::finder_app().0).map_err(|_| {
+        mac_formats::Error::Malformed("Finder bootstrap owner is unavailable")
+    })?;
     let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system);
     serial!("FONTS_READY: families={} resources loaded from System", fonts.catalog().len());
     // Progress uses the real loaded CDEF before any application loop exists.
@@ -474,7 +526,7 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     }
     boot_screen.completed(3)?;
     let runtime =
-        crate::toolbox::runtime::Desktop::new(definitions).map_err(|_| {
+        crate::toolbox::runtime::Desktop::new(definitions, processes, finder_owner).map_err(|_| {
                                               mac_formats::Error::Malformed("Toolbox initialization failed")
                                           })?;
     boot_screen.completed(4)?;
@@ -499,7 +551,7 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                                                       })?;
     boot_screen.completed(7)?;
     drop(boot_screen);
-    crate::machine::scheduler::start()
+    Ok(())
 }
 
 /// # Safety

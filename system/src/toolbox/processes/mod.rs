@@ -102,7 +102,7 @@ impl Manager
         self.entries.get(id).map(|entry| entry.ledger().clone()).ok_or(NOT_FOUND)
     }
 
-    pub(super) fn resource_binding(&self, id: u64) -> Result<ResourceBinding, Status>
+    pub(crate) fn resource_binding(&self, id: u64) -> Result<ResourceBinding, Status>
     {
         let entry = self.entries.get(id).ok_or(NOT_FOUND)?;
         Ok(ResourceBinding { owner: entry.ledger().clone(),
@@ -143,17 +143,7 @@ impl Manager
         self.entries.values_mut()
     }
 
-    pub fn add(&mut self, name: &str, volume: u32, cnid: u32, image: usize) -> Result<u64, Status>
-    {
-        self.admit(name, volume, cnid, Some(image))
-    }
-
-    pub(super) fn provision(&mut self, name: &str, volume: u32, cnid: u32) -> Result<u64, Status>
-    {
-        self.admit(name, volume, cnid, None)
-    }
-
-    pub(super) fn bind_image(&mut self, id: u64, image: usize) -> Result<(), Status>
+    pub(crate) fn bind_image(&mut self, id: u64, image: usize) -> Result<(), Status>
     {
         if !self.ledger(id)?.accepting()
         {
@@ -168,8 +158,7 @@ impl Manager
         Ok(())
     }
 
-    fn admit(&mut self, name: &str, volume: u32, cnid: u32, image: Option<usize>)
-             -> Result<u64, Status>
+    pub(crate) fn provision(&mut self, name: &str, volume: u32, cnid: u32) -> Result<u64, Status>
     {
         let mut info = ProcessInfo { volume,
                                      cnid,
@@ -192,7 +181,7 @@ impl Manager
         self.entries
             .insert(ledger,
                     Process { info,
-                              image,
+                              image: None,
                               stamp: 0,
                               cleanup })
             .map_err(|error| {

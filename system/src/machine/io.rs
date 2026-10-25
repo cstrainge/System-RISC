@@ -60,7 +60,7 @@ fn run_masked<F: FnOnce() -> R, R>(function: F) -> R
     struct Call<F, R>
     {
         function:  MaybeUninit<F>,
-        resources: Option<crate::kernel::ResourceSelection>,
+        resources: crate::kernel::ResourceSelection,
         result:    MaybeUninit<R>
     }
     unsafe extern "C" fn invoke<F: FnOnce() -> R, R>(pointer: *mut ())
@@ -80,11 +80,11 @@ fn run_masked<F: FnOnce() -> R, R>(function: F) -> R
         // MaybeUninit prevents a second destructor after this move. The caller
         // and every borrow captured by F stay alive until the switch returns.
         let function = unsafe { call.function.assume_init_read() };
-        let result = crate::context::with_bootstrap_resources(call.resources, function);
+        let result = crate::context::with_bootstrap_resources(Some(call.resources), function);
         call.result.write(result);
     }
     let mut call = Call { function:  MaybeUninit::new(function),
-                          resources: crate::context::selected_resources(),
+                          resources: crate::kernel::current_resource_selection(),
                           result:    MaybeUninit::uninit() };
     // Exclusive entry is guaranteed by the interrupt-masked native trap boundary.
     unsafe {

@@ -61,6 +61,23 @@ fn run(malformed: bool)
                    8);
     }
     assert!(!serial.contains("PROCESS_FAIL"), "canonical assertion failed:\n{serial}");
+    let finder = serial.lines()
+                       .find_map(|line| line.strip_prefix("BOOT_FINDER_DOMAIN app="))
+                       .expect("bootstrap did not provision Finder before its image");
+    assert_ne!(finder, "0", "Finder bootstrap needs a genuine lifetime domain");
+    let provisioned = serial.find(&format!("BOOT_FINDER_DOMAIN app={finder}\n")).unwrap();
+    let scheduled = serial.find(&format!("PROCESS_THREAD app={finder} ")).unwrap();
+    let registered =
+        serial.find(&format!("PROCESS_REGISTERED app={finder} name=Finder\n")).unwrap();
+    let resources_released =
+        serial.find("BOOT_RESOURCE_SCOPE_RELEASED\n")
+              .expect("bootstrap source selection remained on the abandoned boot stack");
+    let entry = serial.find("DESKTOP_READY: public Process Manager acceptance\n").unwrap();
+    assert!(provisioned < scheduled
+            && scheduled < registered
+            && registered < resources_released
+            && resources_released < entry,
+            "Finder bootstrap ownership/scope order is invalid: {serial}");
     let command = report["launch"].as_array().unwrap();
     assert!(command.windows(2).any(|args| args[0] == "-smp" && args[1] == "1"),
             "preemption must be demonstrated on one hart");

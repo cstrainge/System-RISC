@@ -33,7 +33,6 @@ struct Thread
     frame:      usize,
     live:       bool,
     retired:    bool,
-    image:      usize,
     switches:   u64,
     waiting:    Option<Wait>,
     woken:      u8
@@ -72,11 +71,6 @@ pub fn current_context() -> &'static ThreadContext
         return crate::context::boot_context();
     }
     CONTEXTS.get(CURRENT.load(Ordering::Relaxed)).unwrap_or(crate::context::boot_context())
-}
-pub fn image() -> usize
-{
-    let index = CURRENT.load(Ordering::Relaxed);
-    SCHEDULER.lock().threads.get(index).and_then(Option::as_ref).map_or(0, |t| t.image)
 }
 pub fn io_enter() -> bool
 {
@@ -140,7 +134,7 @@ pub fn spawn(owner: crate::toolbox::handles::OwnerRef, loaded: crate::kernel::Lo
     let id = scheduler.identities.insert(slot).map_err(|_| mac_abi::NO_MEMORY)?;
     let thread = u64::from(id);
     let app = owner.owner().incarnation();
-    if let Err(error) = CONTEXTS[slot].assign(owner, thread)
+    if let Err(error) = CONTEXTS[slot].assign(owner, thread, image)
     {
         scheduler.identities.remove(id);
         return Err(error);
@@ -151,7 +145,6 @@ pub fn spawn(owner: crate::toolbox::handles::OwnerRef, loaded: crate::kernel::Lo
                                             frame: frame as usize,
                                             live: true,
                                             retired: false,
-                                            image,
                                             switches: 0,
                                             waiting: None,
                                             woken: 0 });
@@ -199,7 +192,6 @@ pub fn start() -> !
                                    frame:      idle_frame as usize,
                                    live:       true,
                                    retired:    false,
-                                   image:      0,
                                    switches:   0,
                                    waiting:    None,
                                    woken:      0 });
@@ -514,6 +506,6 @@ pub fn image_for(app: u64) -> Option<usize>
     s.threads.iter().enumerate().find_map(|(index, thread)| {
                                     thread.as_ref()
                                           .filter(|_| CONTEXTS[index].identity().app.0 == app)
-                                          .map(|t| t.image)
+                                          .and_then(|_| CONTEXTS[index].image())
                                 })
 }
