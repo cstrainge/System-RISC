@@ -1743,3 +1743,28 @@ report/recovery checks pass, as do compiled boundaries, formatting and public
 API documentation. Process fixtures now respect the checked display reservation
 and compare original menu geometry relative to public desktop bounds. These are
 current flat-reservation checks, not image-alias or paging acceptance.
+
+### Provisional process owners precede ordinary image admission
+
+The ordinary launcher finishes its potentially deferred resource-fork read,
+then provisions the genuine child domain before loading or binding an image.
+A missing image is represented explicitly in the process record and its cleanup
+resource binding. Failure at image preparation uses the same owner walk as later
+launch failures; its resource scope contains System resources only and restores
+the launching thread's previous selection afterward. It never substitutes the
+launcher's application image for a child that has not admitted one.
+
+This establishes the subject ledger required by image-alias admission without
+creating duplicate domains during deferred I/O replay. It does not yet register
+source-image aliases or change Finder's bootstrap admission ordering, fixed
+image/thread capacities, accounting or paging. A provisional domain remains
+inspectable until its normal ledger retirement barrier completes.
+
+Qualification passes 494 host cases (67 native gates excluded), the optimized
+installation, both real process campaigns and the native app UI, aggregate SDK,
+cursor, boot, panic-recovery and host-volume campaigns. Canonical SDK cases make
+32 repeated missing/malformed-relocation launch attempts in each process campaign,
+checking typed errors and their messages, no child publication, preserved caller
+identity and restored resource selection. Rust also checks each provisional
+domain's actual retirement after its common-walk marker and absence of any child
+thread. Boundaries, formatting and public API documentation pass.

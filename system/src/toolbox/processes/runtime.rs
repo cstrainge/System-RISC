@@ -349,10 +349,15 @@ impl Desktop
         }
     }
 
-    fn application_icon(index: usize) -> mac_abi::menus::MenuIcon
+    fn application_icon(index: Option<usize>) -> mac_abi::menus::MenuIcon
     {
-        let scope = mac_abi::resources::LOADED_IMAGE_BASE + index as i16;
         let fallback = mac_abi::menus::MenuIcon::new(0, -3996);
+        let Some(index) = index
+        else
+        {
+            return fallback;
+        };
+        let scope = mac_abi::resources::LOADED_IMAGE_BASE + index as i16;
         crate::kernel::with_image(index, |image| {
             if let Ok(id) = crate::toolbox::quickdraw::icons_service::file_id(&image.resources,
                                                                               image.creator,
@@ -598,11 +603,19 @@ impl Desktop
         self.locals.try_reserve(1).map_err(|_| NO_MEMORY)?;
         let crate::toolbox::files::application::Loaded { catalog,
                                                          resources } = loaded;
-        let loaded = crate::kernel::load_application(call.volume, call.cnid, catalog.creator,
-                                                     catalog.file_type, resources)?;
-        let image = loaded.image();
-        let id = self.processes.add(catalog.name(), call.volume, call.cnid, image)?;
-        let local = match Saved::try_new(self.processes.ledger(id)?, self.mdef)
+        // Storage reads finish before provisioning: a deferred I/O replay must
+        // not create another child. Image admission now has a genuine subject
+        // domain ready for its registered aliases and future account charges.
+        let id = self.processes.provision(catalog.name(), call.volume, call.cnid)?;
+        let prepared = (|| {
+            let authority = self.processes.ledger(id)?;
+            let loaded = crate::kernel::load_application(call.volume, call.cnid, catalog.creator,
+                                                         catalog.file_type, resources)?;
+            self.processes.bind_image(id, loaded.image())?;
+            let local = Saved::try_new(authority.clone(), self.mdef)?;
+            Ok::<_, Status>((loaded, local, authority))
+        })();
+        let (loaded, local, authority) = match prepared
         {
             Ok(local) => local,
             Err(error) =>
@@ -613,7 +626,6 @@ impl Desktop
         };
         // RAM-only pin admission closes launch-vs-transfer races. No storage
         // operation or provider callback runs under this desktop guard.
-        let authority = self.processes.ledger(id)?;
         let pinned = crate::kernel::with_files(|files| {
                          files.pin_executable(&authority, call.volume, call.cnid)
                      }).map_err(crate::state::AccessError::status)
@@ -651,6 +663,8 @@ impl Desktop
         ledger.stop_admission();
         let checkpoint = self.processes.cleanup_checkpoint(owner)?;
         let binding = self.processes.resource_binding(owner)?;
+        serial!("PROCESS_LAUNCH_ABORT app={owner} resource_scope={}",
+                if binding.image().is_some() { "application" } else { "system-only" });
         match crate::kernel::with_process_resources(&binding, || {
                   checkpoint.run(&ledger, || self.walk_owner(&ledger, false))
               })

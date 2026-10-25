@@ -319,6 +319,34 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
     }
     system.log("FORMAT_ERROR_STATUS_PASS budget=no-memory corrupt=corrupt-data \
                 missing=not-found translation=translation-required retry=passed\n")?;
+    // Valid resource forks reach native image admission after child-domain
+    // provisioning. Repeated typed refusals must use the common death walk,
+    // without borrowing our resource chain or leaving a runnable child.
+    for (name, expected, explanation) in
+        [("Applications/Missing Code", mac_toolbox::Error::NotFound, "not found"),
+         ("Applications/Malformed Code", mac_toolbox::Error::BadArgument, "invalid argument")]
+    {
+        let file = system.files().lookup(volume, Cnid::ROOT, name)?;
+        for _ in 0..16
+        {
+            let error =
+                processes.launch(volume, file.id).expect_err("invalid native code launched");
+            require(error == expected, "provisional launch lost its typed loader refusal")?;
+            let mut message = crate::LogBuffer::new();
+            {
+                use core::fmt::Write;
+                let _ = write!(message, "{error}");
+            }
+            require(message.text().contains(explanation),
+                    "native loader refusal has no useful explanation")?;
+            require(processes.count()? == 1, "refused image admission published a child process")?;
+            require(processes.current()?.id == me.id,
+                    "launch refusal changed the current process")?;
+            resource(system, "process-observer")?;
+        }
+    }
+    system.log("PROCESS_PROVISIONAL_CLEANUP_PASS cases=32 resource-context=restored \
+                retry=passed\n")?;
     system.log("PROCESS_INVALID_LAUNCH_PASS\n")?;
     architecture_context::probe(0, 0x1111_1111_1111_1111, false).map_err(Failure::Architecture)?;
     system.log("RVA23_PROBE_BASELINE_PASS\n")?;

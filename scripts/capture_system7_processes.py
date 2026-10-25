@@ -50,7 +50,7 @@ def capture(output, frontend='headless', vector_bits=None, malformed_standard_fi
     fs.mkdir('/Applications', exist_ok=True)
     for package, _ in children:
         fs.import_macbinary(package, '/Applications')
-    for name in ['Budget App', 'Corrupt App']:
+    for name in ['Budget App', 'Corrupt App', 'Missing Code', 'Malformed Code']:
         fs.import_macbinary(output / 'package' / (name + '.bin'), '/Applications')
     fs.mkdir('/Copies')
     fs.import_macbinary(children[0][0], '/Copies')

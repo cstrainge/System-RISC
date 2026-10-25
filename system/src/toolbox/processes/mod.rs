@@ -31,7 +31,7 @@ pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
 pub struct Process
 {
     pub info:  ProcessInfo,
-    pub image: usize,
+    pub image: Option<usize>,
     pub stamp: u64,
     cleanup:   crate::toolbox::handles::cleanup::Checkpoint
 }
@@ -42,7 +42,7 @@ pub struct Process
 pub(crate) struct ResourceBinding
 {
     owner: crate::toolbox::handles::OwnerRef,
-    image: usize
+    image: Option<usize>
 }
 impl ResourceBinding
 {
@@ -51,7 +51,7 @@ impl ResourceBinding
         self.owner.owner().incarnation()
     }
 
-    pub(crate) fn image(&self) -> usize
+    pub(crate) fn image(&self) -> Option<usize>
     {
         self.image
     }
@@ -70,7 +70,9 @@ impl crate::toolbox::inspection::Subject for Process
 
     fn authority(&self) -> u64
     {
-        crate::kernel::with_image(self.image, |image| image.authority).unwrap_or(0)
+        self.image
+            .and_then(|image| crate::kernel::with_image(image, |image| image.authority))
+            .unwrap_or(0)
     }
 }
 pub struct Manager
@@ -142,6 +144,32 @@ impl Manager
     }
 
     pub fn add(&mut self, name: &str, volume: u32, cnid: u32, image: usize) -> Result<u64, Status>
+    {
+        self.admit(name, volume, cnid, Some(image))
+    }
+
+    pub(super) fn provision(&mut self, name: &str, volume: u32, cnid: u32) -> Result<u64, Status>
+    {
+        self.admit(name, volume, cnid, None)
+    }
+
+    pub(super) fn bind_image(&mut self, id: u64, image: usize) -> Result<(), Status>
+    {
+        if !self.ledger(id)?.accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let process = self.get_mut(id)?;
+        if process.image.is_some()
+        {
+            return Err(BAD_ABI);
+        }
+        process.image = Some(image);
+        Ok(())
+    }
+
+    fn admit(&mut self, name: &str, volume: u32, cnid: u32, image: Option<usize>)
+             -> Result<u64, Status>
     {
         let mut info = ProcessInfo { volume,
                                      cnid,

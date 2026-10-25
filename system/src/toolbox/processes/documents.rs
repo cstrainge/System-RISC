@@ -203,7 +203,7 @@ fn activate_existing(d: &mut crate::toolbox::runtime::Desktop, owner: u64, handl
         d.processes
          .iter()
          .find(|process| process.info.volume == launch.volume && process.info.cnid == launch.cnid)
-         .map(|process| process.image);
+         .and_then(|process| process.image);
     let Some(image) = image
     else
     {
@@ -321,7 +321,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                                 process.info.volume == call.application_volume
                                 && process.info.cnid == call.application_cnid
                             })
-                            .map(|process| process.image))
+                            .and_then(|process| process.image))
                     })?
                 };
                 let types = if let Some(types) = cached.and_then(|index| {

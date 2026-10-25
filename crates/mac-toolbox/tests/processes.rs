@@ -67,6 +67,7 @@ fn run(malformed: bool)
     for marker in
         ["TRAPS_READY: resident ecall dispatcher ABI=1",
          "PROCESS_INVALID_LAUNCH_PASS",
+         "PROCESS_PROVISIONAL_CLEANUP_PASS cases=32 resource-context=restored retry=passed",
          "FORMAT_ERROR_STATUS_PASS budget=no-memory corrupt=corrupt-data missing=not-found \
           translation=translation-required retry=passed",
          "PROCESS_PASCAL_PASS cases=5",
@@ -83,6 +84,34 @@ fn run(malformed: bool)
           appmenu=passed"]
     {
         assert!(serial.contains(marker), "missing {marker}:\n{serial}");
+    }
+    let aborted: Vec<_> = serial.lines()
+                                .filter_map(|line| {
+                                    let tail = line.strip_prefix("PROCESS_LAUNCH_ABORT app=")?;
+                                    tail.strip_suffix(" resource_scope=system-only")
+                                })
+                                .collect();
+    assert_eq!(aborted.len(),
+               32,
+               "each native loader refusal must enter the common walk: {serial}");
+    for app in aborted
+    {
+        assert!(!serial.lines()
+                       .any(|line| line.starts_with(&format!("PROCESS_THREAD app={app} "))),
+                "refused image admission published a thread: {serial}");
+        let stopped =
+            serial.lines()
+                  .position(|line| {
+                      line == format!("PROCESS_LAUNCH_ABORT app={app} resource_scope=system-only")
+                  })
+                  .unwrap();
+        let retired = serial.lines()
+                            .position(|line| line == format!("PROCESS_EXIT app={app}"))
+                            .unwrap_or_else(|| {
+                                panic!("provisional domain {app} did not pass its ledger \
+                                        retirement barrier: {serial}")
+                            });
+        assert!(stopped < retired, "provisional domain retired before cleanup: {serial}");
     }
     let start = serial.find("PROCESS_SPIN_STARTED\n").expect("spinner never started");
     let progress =

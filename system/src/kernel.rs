@@ -325,7 +325,7 @@ pub(crate) fn heap_available() -> usize
 pub(crate) struct ResourceSelection
 {
     owner: u64,
-    image: usize
+    image: Option<usize>
 }
 pub(crate) fn with_resource_owner<R>(app: u64, call: impl FnOnce() -> R) -> Result<R, Status>
 {
@@ -333,7 +333,7 @@ pub(crate) fn with_resource_owner<R>(app: u64, call: impl FnOnce() -> R) -> Resu
     let index = match selected.filter(|selection| selection.owner == app)
     {
         Some(selection) => selection.image,
-        None => crate::machine::scheduler::image_for(app).ok_or(NOT_FOUND)?
+        None => Some(crate::machine::scheduler::image_for(app).ok_or(NOT_FOUND)?)
     };
     with_resource_binding(app, index, call)
 }
@@ -348,9 +348,13 @@ pub(crate) fn with_process_resources<R>(binding: &crate::toolbox::processes::Res
     with_resource_binding(binding.owner(), binding.image(), call)
 }
 
-fn with_resource_binding<R>(app: u64, index: usize, call: impl FnOnce() -> R) -> Result<R, Status>
+fn with_resource_binding<R>(app: u64, index: Option<usize>, call: impl FnOnce() -> R)
+                            -> Result<R, Status>
 {
-    with_image(index, |_| ()).ok_or(NOT_FOUND)?;
+    if let Some(index) = index
+    {
+        with_image(index, |_| ()).ok_or(NOT_FOUND)?;
+    }
     crate::context::with_selected_resources(ResourceSelection { owner: app,
                                                                 image: index },
                                             call).map_err(|error| {
@@ -370,12 +374,18 @@ pub(crate) fn with_resources<R>(call: impl for<'a> FnOnce(crate::toolbox::resour
         Some(selection) => (selection.image, selection.owner),
         None =>
         {
-            (crate::machine::scheduler::image(),
+            (Some(crate::machine::scheduler::image()),
              crate::context::current_thread_context().identity().app.0)
         }
     };
     let images = ImageCatalog(&IMAGES);
-    let application = &IMAGES.get(index)?.get()?.resources;
+    // A provisional process has not admitted an image. Its common cleanup walk
+    // resolves System resources only, never the launcher's application chain.
+    let application = match index
+    {
+        Some(index) => &IMAGES.get(index)?.get()?.resources[..],
+        None => &[]
+    };
     Some(call(crate::toolbox::resources::manager::Manager::new(&files.system,
                                                                application,
                                                                fonts()?.resources()).with_images(&images, origin)))
