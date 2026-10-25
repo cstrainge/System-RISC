@@ -62,11 +62,21 @@ pub fn with_pending_watch_probe<R>(handle: u32, run: impl FnOnce() -> R)
 /// Invoke the same resident cleanup operation that native app exit invokes.
 pub fn close_owner(owner: u64) -> usize
 {
-    super::SESSION.with(|session| {
-                      session.borrow_mut()
-                             .as_mut()
-                             .expect("live file service session")
-                             .files
-                             .close_all(owner)
-                  })
+    let ledger = super::inspection::caller_ledger(owner).expect("trusted fixture owner");
+    let summary = ledger.summary();
+    let fork_count =
+        (0..summary.kinds).map(|at| ledger.pool_at(summary.revision, at).unwrap())
+                          .filter(|pool| pool.kind == mac_object_table::domain::KindCode(*b"FFRK"))
+                          .map(|pool| pool.live)
+                          .sum::<usize>();
+    let other = super::SESSION.with(|session| {
+                                  session.borrow_mut()
+                                         .as_mut()
+                                         .expect("live file service session")
+                                         .files
+                                         .close_all(owner)
+                              });
+    let walked = super::inspection::walk_registered(ledger.owner().incarnation(), false, false);
+    assert!(walked.failures.is_empty(), "{}", walked.failures.join("; "));
+    fork_count + other
 }

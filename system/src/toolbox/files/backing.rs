@@ -42,7 +42,7 @@ impl Manager
             return Err(BAD_ARGUMENT);
         }
         // This mark is private to the source lease, never a public app mark.
-        file.position = offset;
+        file.position.store(offset, core::sync::atomic::Ordering::Relaxed);
         self.begin_provider_file_read(0, handle, length)
     }
 

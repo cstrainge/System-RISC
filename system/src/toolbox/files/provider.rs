@@ -491,10 +491,16 @@ mod tests
         let (_, other) = manager.reserve_provider_file(9, volume, 16, DATA_FORK).unwrap();
         manager.publish_provider_file(other, &open_reply(9, 0)).unwrap();
         manager.begin_provider_file_read(7, handle, 4).unwrap();
-        assert_eq!(manager.close_all(7), 1);
-        assert_eq!(manager.close_all(7), 0);
+        assert_eq!(manager.fixture_close_forks(7), 1);
+        assert_eq!(manager.fixture_close_forks(7), 0);
+        assert_eq!(manager.file_provider(7, handle), Err(NOT_FOUND));
         assert_eq!(manager.next_orphaned_file().unwrap(), None);
         assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+        assert_eq!(manager.prepare_power(), Err(SERVICE_BUSY));
+        let ledger = manager.handles.fixture_owner(7);
+        assert_eq!(ledger.summary().pending,
+                   1,
+                   "fork stays charged through read/Close ACK after empty value backing is freed");
         // A cancelled waiter must not advance the shared mark with undelivered
         // bytes. The actual result still releases the read before Close runs.
         assert_eq!(manager.finish_provider_file_read(handle, 0, 4, None), Ok((0, 9)));
@@ -502,11 +508,64 @@ mod tests
         assert_eq!(manager.next_orphaned_file().unwrap(), None);
         assert_eq!(manager.file_provider(9, other), Ok(Some(77)));
         manager.retire_provider_file(handle).unwrap();
+        assert_eq!(ledger.summary().pending, 0, "Close ACK completes both registered lifetimes");
         assert_eq!(manager.file_provider(7, handle), Err(NOT_FOUND));
         manager.begin_provider_file_close(9, other).unwrap();
         manager.retire_provider_file(other).unwrap();
         manager.begin_provider_unmount(volume).unwrap();
     }
+    #[test]
+    fn fork_ack_while_dispatch_is_quarantined_retains_protection_and_retries_once()
+    {
+        for closing in [false, true]
+        {
+            let mut manager = Manager::default();
+            let volume = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
+            manager.publish_provider_mount(volume, &descriptor()).unwrap();
+            let (_, handle) = manager.reserve_provider_file(7, volume, 16, DATA_FORK).unwrap();
+            manager.publish_provider_file(handle, &open_reply(9, 0)).unwrap();
+            if closing
+            {
+                manager.begin_provider_file_close(7, handle).unwrap();
+            }
+            else
+            {
+                manager.begin_provider_file_read(7, handle, 4).unwrap();
+            }
+            let (walk, failures) = manager.fixture_walk_forks(7, true, false);
+            assert_eq!(walk.quarantined, 2);
+            assert!(failures.iter().all(|error| error.contains("FFRK") || error.contains("FFST")),
+                    "{failures:?}");
+            assert_eq!(manager.file_provider(7, handle), Err(NOT_FOUND));
+            assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+            assert_eq!(manager.prepare_power(), Err(SERVICE_BUSY));
+            if closing
+            {
+                manager.retire_provider_file(handle).unwrap();
+            }
+            else
+            {
+                assert_eq!(manager.finish_provider_file_read(handle, 0, 4, None), Ok((0, 9)));
+            }
+            let (_, failures) = manager.fixture_walk_forks(7, false, true);
+            assert!(failures.is_empty(), "{failures:?}");
+            if closing
+            {
+                assert_eq!(manager.next_orphaned_file().unwrap(),
+                           None,
+                           "terminal Close must not run twice");
+            }
+            else
+            {
+                assert_eq!(manager.next_orphaned_file().unwrap(), Some((handle, 77, volume)));
+                manager.retire_provider_file(handle).unwrap();
+            }
+            assert_eq!(manager.handles.fixture_owner(7).summary().pending, 0);
+            assert_eq!(manager.file_provider(7, handle), Err(NOT_FOUND));
+            manager.begin_provider_unmount(volume).unwrap();
+        }
+    }
+
     #[test]
     fn provider_reads_pin_mount_generation_until_actual_completion()
     {

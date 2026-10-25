@@ -15,11 +15,26 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static PUMPING: AtomicBool = AtomicBool::new(false);
 static PARKED: Spinlock<[Option<Box<State>>; Kind::FileTransfers.capacity()]> =
     Spinlock::new([const { None }; Kind::FileTransfers.capacity()]);
-// Application identities are u32 generation-tagged IDs. A coordinator's I/O
-// owner is disjoint and cannot be supplied by any public request record.
+// A coordinator's private I/O authorization cannot be supplied by app records.
+// It is a live transaction tag, not a process/domain identity.
 fn internal_owner(handle: u32) -> u64
 {
     (1u64 << 63) | u64::from(handle)
+}
+
+/// Transitional coordinator authorization, not a domain identity. Resolve the
+/// full live transfer generation before using this private tag. Its I/O keeps
+/// System-backed lifetimes until transfers themselves join the owner walk.
+pub(in crate::toolbox::files) fn owns_coordinator(manager: &crate::toolbox::files::Manager,
+                                                  owner: u64)
+                                                  -> bool
+{
+    let Ok(handle) = u32::try_from(owner ^ (1u64 << 63))
+    else
+    {
+        return false;
+    };
+    internal_owner(handle) == owner && manager.transfers.get(handle).is_some()
 }
 
 pub(in crate::toolbox::files) struct Entry

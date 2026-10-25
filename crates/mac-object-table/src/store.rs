@@ -120,6 +120,17 @@ impl<G: InvocationGate> Drop for Storage<G>
     }
 }
 
+/// Read authority for an already-issued operation's completion. Minted only
+/// from a live object; cannot be constructed from a caller's ID or ResourceKey.
+/// This does not acknowledge cleanup or pin pages by itself. The retained store
+/// or removal guard remains responsible for the real completion barrier.
+#[derive(Clone, Copy)]
+pub struct CompletionKey
+{
+    id:  u64,
+    key: ResourceKey
+}
+
 /// A registered semantic kind's storage. Identity is issued by the shared
 /// boot-wide issuer, never by an individual manager. An ID resolves to its full
 /// owner/kind/slot/generation key and is validated on every use. Native tokens
@@ -364,6 +375,28 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub fn key(&self, id: u64) -> Option<ResourceKey>
     {
         self.locate(id).map(|(_, key)| key)
+    }
+
+    pub fn completion_key(&self, id: u64) -> Option<CompletionKey>
+    {
+        Some(CompletionKey { id,
+                             key: self.key(id)? })
+    }
+
+    /// An authenticated late completion may inspect its retained immutable
+    /// payload even while the ordinary ID is invalid or quarantined. A key from
+    /// another store/owner/registration, or a completed/reused slot, cannot alias.
+    /// No mutable payload, ticket or owner lock escapes this read.
+    pub fn completing(&self, completion: &CompletionKey) -> Option<&T>
+    {
+        let key = completion.key;
+        if key.kind() != self.kind
+        {
+            return None;
+        }
+        let at = self.owner_index(key.owner()).ok()?;
+        let entry = self.owners[at].slots.get(key.slot())?.as_ref()?;
+        (entry.key == key && entry.id == completion.id).then_some(&entry.value)
     }
 
     /// Begin ordinary manager disposal without moving its retained payload.

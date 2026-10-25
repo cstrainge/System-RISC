@@ -155,6 +155,10 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                    cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::dialogs::specification(false),crate::toolbox::dialogs::ReleaseAlerts).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::dialogs::specification(true),crate::toolbox::dialogs::ReleaseStorage).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::files::forks::lifetime::specification(false),
+                                   crate::toolbox::files::forks::lifetime::ReleaseForks).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::files::forks::lifetime::specification(true),
+                                   crate::toolbox::files::forks::lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
                                use crate::toolbox::drag::lifetime::{Registration, ReleaseKind};
                                registry.register(&owner, crate::toolbox::files::watch::lifetime::specification(false),
                                    crate::toolbox::files::watch::lifetime::ReleaseWatches).map_err(KindAccessError::Registry)?;
@@ -267,4 +271,45 @@ pub(crate) fn file_watch_kinds() -> Result<(KindLease, KindLease), mac_abi::Stat
 {
     registry(|registry| Ok((registry.get(KindCode(*b"FWCH"))?, registry.get(KindCode(*b"FWST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn file_fork_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"FFRK"))?,registry.get(KindCode(*b"FFST"))?)))
+        .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
+}
+
+pub(crate) fn projection_status(error: mac_object_table::projected::Error) -> mac_abi::Status
+{
+    use mac_abi::*;
+    use mac_object_table::domain::PoolError;
+    match error
+    {
+        mac_object_table::projected::Error::ProjectionExhausted => NO_MEMORY,
+        mac_object_table::projected::Error::Pool(error) =>
+        {
+            match error
+            {
+                PoolError::Storage { .. }
+                | PoolError::IdentityExhausted
+                | PoolError::RegistrationUsesExhausted { .. }
+                | PoolError::GrowthRequired { .. }
+                | PoolError::GrowthLimit { .. }
+                | PoolError::Exhausted { .. } => NO_MEMORY,
+                PoolError::Stopping { .. } | PoolError::RegistrationUnavailable { .. } =>
+                {
+                    SERVICE_BUSY
+                }
+                PoolError::ForeignOwner { .. } => ACCESS_DENIED,
+                PoolError::Stale { .. } => NOT_FOUND,
+                PoolError::InvalidBoundReason
+                | PoolError::ValueStorageAttached { .. }
+                | PoolError::UnregisteredKind { .. }
+                | PoolError::SystemIndexAlreadyIssued
+                | PoolError::DuplicateKind { .. }
+                | PoolError::InvalidGrowth => BAD_ARGUMENT
+            }
+        }
+    }
 }

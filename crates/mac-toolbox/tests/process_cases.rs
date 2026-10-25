@@ -797,6 +797,10 @@ pub fn worker(system: &System<'_>) -> Result<()>
                                                   "Registered worker alert")?;
             let watch_volume = system.files().volume_at(0)?.id;
             let leaked_watch = system.files().watch_directory(watch_volume, Cnid::ROOT)?;
+            let process_file = system.processes().current()?;
+            let leaked_fork = system.files().open(process_file.volume,
+                                                   process_file.cnid,
+                                                   mac_toolbox::files::Fork::Resource)?;
             let membership = system.inspection()
                                    .snapshot(mac_toolbox::inspection::Scope::Own)
                                    .map_err(|e| Failure::Service(e.cause.status()))?;
@@ -824,7 +828,9 @@ pub fn worker(system: &System<'_>) -> Result<()>
                             (*b"DRCV", 3),
                             (*b"DRVS", 1),
                             (*b"FWCH", 1),
-                            (*b"FWST", 1)];
+                            (*b"FWST", 1),
+                            (*b"FFRK", 1),
+                            (*b"FFST", 1)];
             require(ledger.len() == expected.len() as u64,
                     "worker exit pool census missing a registered kind")?;
             for index in 0..ledger.len()
@@ -857,6 +863,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
             core::mem::forget(scroll_box);
             core::mem::forget(leaked_world);
             core::mem::forget(leaked_watch);
+            core::mem::forget(leaked_fork);
             core::mem::forget(leaked_editor);
             core::mem::forget(leaked_alert);
             core::mem::forget(leaked_menu);

@@ -861,6 +861,27 @@ impl crate::toolbox::files::watch::lifetime::WatchHost for Desktop
     }
 }
 
+impl crate::toolbox::files::forks::lifetime::ForkHost for Desktop
+{
+    fn release_file_fork(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                         storage: bool)
+                         -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        match crate::kernel::with_files_owned(ticket, |ticket, files| {
+                  crate::toolbox::files::forks::lifetime::ForkHost::release_file_fork(files,
+                                                                                      ticket,
+                                                                                      storage)
+              })
+        {
+            Ok(result) => result,
+            Err((error, ticket)) =>
+            {
+                Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(ticket, error))
+            }
+        }
+    }
+}
+
 impl crate::toolbox::menus::lifetime::MenuHost for Desktop
 {
     fn release_menu(&mut self, ticket: mac_object_table::domain::ReleasedResource)

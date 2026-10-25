@@ -33,38 +33,6 @@ impl Drop for ProbeLease
 }
 
 type Retiring = projected::Removed<Watch, InvocationGate>;
-fn projection_status(error: projected::Error) -> Status
-{
-    use mac_object_table::domain::PoolError;
-    match error
-    {
-        projected::Error::ProjectionExhausted => NO_MEMORY,
-        projected::Error::Pool(error) =>
-        {
-            match error
-            {
-                PoolError::Storage { .. }
-                | PoolError::IdentityExhausted
-                | PoolError::RegistrationUsesExhausted { .. }
-                | PoolError::GrowthRequired { .. }
-                | PoolError::GrowthLimit { .. }
-                | PoolError::Exhausted { .. } => NO_MEMORY,
-                PoolError::Stopping { .. } | PoolError::RegistrationUnavailable { .. } =>
-                {
-                    SERVICE_BUSY
-                }
-                PoolError::ForeignOwner { .. } => ACCESS_DENIED,
-                PoolError::Stale { .. } => NOT_FOUND,
-                PoolError::InvalidBoundReason
-                | PoolError::ValueStorageAttached { .. }
-                | PoolError::UnregisteredKind { .. }
-                | PoolError::SystemIndexAlreadyIssued
-                | PoolError::DuplicateKind { .. }
-                | PoolError::InvalidGrowth => BAD_ARGUMENT
-            }
-        }
-    }
-}
 pub(crate) struct Caller
 {
     pub owner: OwnerRef,
@@ -88,7 +56,7 @@ impl Watches
         if self.objects.is_none()
         {
             self.objects = Some(projected::Store::new(Kind::FileWatches, kinds.0, kinds.1)
-                .map_err(projection_status)?);
+                .map_err(crate::toolbox::handles::projection_status)?);
         }
         Ok(())
     }
@@ -100,7 +68,7 @@ impl Watches
         // Reserve cleanup capacity before publication, never while the owner
         // walk is retaining a provider probe's already-invalidated payload.
         self.retiring.try_reserve(live + 1).map_err(|_| NO_MEMORY)?;
-        objects.insert(owner, watch).map_err(projection_status)
+        objects.insert(owner, watch).map_err(crate::toolbox::handles::projection_status)
     }
 
     fn get_mut(&mut self, id: u32) -> Option<&mut Watch>

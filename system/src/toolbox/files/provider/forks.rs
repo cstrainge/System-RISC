@@ -10,36 +10,59 @@ enum Phase
     Ready,
     Reading,
     Closing,
-    Quarantined
+    Quarantined,
+    Closed
 }
 pub(in crate::toolbox::files) struct Open
 {
-    kind:                                   u32,
-    length:                                 u64,
-    phase:                                  Phase,
-    pub(in crate::toolbox::files) orphaned: bool
+    kind:  u32,
+    state: spinning_top::Spinlock<State>
+}
+struct State
+{
+    length:   u64,
+    phase:    Phase,
+    orphaned: bool
 }
 impl Open
 {
     pub(in crate::toolbox::files) fn ready_length(&self) -> Result<u64, Status>
     {
-        match self.phase
+        let state = self.state.lock();
+        match state.phase
         {
-            Phase::Ready if !self.orphaned => Ok(self.length),
+            Phase::Ready if !state.orphaned => Ok(state.length),
             Phase::Quarantined => Err(ROLLBACK_FAILED),
             _ => Err(SERVICE_BUSY)
         }
     }
 
-    pub(in crate::toolbox::files) fn abandon(&mut self)
+    pub(in crate::toolbox::files) fn orphaned(&self) -> bool
     {
-        self.orphaned = true;
-        if self.phase == Phase::Quarantined
+        self.state.lock().orphaned
+    }
+
+    pub(in crate::toolbox::files) fn abandon(&self)
+    {
+        let mut state = self.state.lock();
+        state.orphaned = true;
+        if state.phase == Phase::Quarantined
         {
-            // One final cleanup attempt on app exit, not a per-tick retry loop.
-            self.phase = Phase::Ready;
+            state.phase = Phase::Ready;
         }
+        drop(state);
         signal_cleanup();
+    }
+
+    pub(in crate::toolbox::files) fn closed(&self) -> bool
+    {
+        self.state.lock().phase == Phase::Closed
+    }
+
+    fn cleanup_ready(&self) -> bool
+    {
+        let state = self.state.lock();
+        state.orphaned && state.phase == Phase::Ready
     }
 }
 fn signal_cleanup()
@@ -71,9 +94,9 @@ impl Manager
         }
     }
 
-    fn provider_file(&mut self, id: u32) -> Result<(&mut OpenFile, u32), Status>
+    fn provider_file(&self, id: u32) -> Result<(&OpenFile, u32), Status>
     {
-        let file = self.handles.get_mut(id).ok_or(NOT_FOUND)?;
+        let file = self.handles.completing(id).ok_or(NOT_FOUND)?;
         if !matches!(file.fork, FileFork::Provider(_))
         {
             return Err(BAD_ARGUMENT);
@@ -86,10 +109,22 @@ impl Manager
         Ok((file, provider))
     }
 
-    pub(in crate::toolbox::files) fn reserve_provider_file(&mut self, owner: u64, volume: u32,
-                                                           node: u32, kind: u32)
-                                                           -> Result<(u32, u32), Status>
+    pub(in crate::toolbox::files) fn reserve_provider_file_for(&mut self, owner: u64,
+                                                               authority: &crate::toolbox::handles::OwnerRef,
+                                                               volume: u32, node: u32, kind: u32)
+                                                               -> Result<(u32, u32), Status>
     {
+        #[cfg(target_arch = "riscv64")]
+        {
+            if owner != 0
+               && owner != authority.owner().incarnation()
+               && !(authority.owner().kind() == mac_object_table::domain::DomainKind::System
+                    && super::runtime::transfer::owns_coordinator(self, owner))
+            {
+                return Err(ACCESS_DENIED);
+            }
+            self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
+        }
         self.validate_transfer_read(owner, volume, node)?;
         if node < ROOT_ID || !matches!(kind, DATA_FORK | RESOURCE_FORK)
         {
@@ -109,17 +144,35 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         let handle = self.handles
-                         .insert(OpenFile { owner,
+                         .insert(authority, OpenFile { owner,
                                             volume,
                                             id: node,
-                                            position: 0,
+                                            position: core::sync::atomic::AtomicU64::new(0),
+                                            authority: authority.clone(),
                                             resource_index: None,
                                             fork: FileFork::Provider(Open { kind,
-                                                                            length: 0,
-                                                                            phase: Phase::Opening,
-                                                                            orphaned: false }) })
-                         .map_err(|_| NO_MEMORY)?;
+                                                                            state: spinning_top::Spinlock::new(State { length: 0, phase: Phase::Opening, orphaned: false }) }) })
+                         ?;
         Ok((provider, handle))
+    }
+
+    #[cfg(any(test, target_arch = "riscv64"))]
+    pub(in crate::toolbox::files) fn reserve_provider_file(&mut self, owner: u64, volume: u32,
+                                                           node: u32, kind: u32)
+                                                           -> Result<(u32, u32), Status>
+    {
+        #[cfg(test)]
+        let authority = self.handles.fixture_owner(owner);
+        #[cfg(all(not(test), target_arch = "riscv64"))]
+        let authority = if owner == 0
+        {
+            crate::toolbox::handles::system_owner()?
+        }
+        else
+        {
+            return Err(ACCESS_DENIED);
+        };
+        self.reserve_provider_file_for(owner, &authority, volume, node, kind)
     }
 
     pub(in crate::toolbox::files) fn publish_provider_file(&mut self, id: u32, bytes: &[u8])
@@ -127,19 +180,20 @@ impl Manager
     {
         let bytes: &[u8; 16] = bytes.try_into().map_err(|_| BAD_ABI)?;
         let (file, _) = self.provider_file(id)?;
-        let FileFork::Provider(fork) = &mut file.fork
+        let FileFork::Provider(fork) = &file.fork
         else
         {
             return Err(BAD_ABI);
         };
-        if fork.phase != Phase::Opening || fork.orphaned
+        let mut state = fork.state.lock();
+        if state.phase != Phase::Opening || state.orphaned
         {
             return Err(SERVICE_BUSY);
         }
         let at = if fork.kind == DATA_FORK { 0 } else { 8 };
-        fork.length = u64::from_le_bytes(bytes[at..at + 8].try_into().map_err(|_| BAD_ABI)?);
-        fork.phase = Phase::Ready;
-        Ok(fork.length)
+        state.length = u64::from_le_bytes(bytes[at..at + 8].try_into().map_err(|_| BAD_ABI)?);
+        state.phase = Phase::Ready;
+        Ok(state.length)
     }
 
     pub(in crate::toolbox::files) fn begin_provider_file_read(
@@ -151,20 +205,23 @@ impl Manager
         {
             return Err(ACCESS_DENIED);
         }
-        let FileFork::Provider(fork) = &mut file.fork
+        let FileFork::Provider(fork) = &file.fork
         else
         {
             return Err(BAD_ABI);
         };
         let length = fork.ready_length()?;
-        let remaining = length.checked_sub(file.position).ok_or(BAD_ABI)?;
+        let mut state = fork.state.lock();
+        let remaining = length.checked_sub(file.position
+                                               .load(core::sync::atomic::Ordering::Relaxed))
+                              .ok_or(BAD_ABI)?;
         let count = remaining.min(capacity.min(fs::MAX_TRANSFER) as u64);
-        fork.phase = Phase::Reading;
+        state.phase = Phase::Reading;
         Ok((provider,
             fs::Arguments { volume: file.volume,
                             token: id,
                             flags: fork.kind,
-                            offset: file.position,
+                            offset: file.position.load(core::sync::atomic::Ordering::Relaxed),
                             length: count,
                             ..Default::default() }))
     }
@@ -175,30 +232,40 @@ impl Manager
                                                                -> Result<(u64, u64), Status>
     {
         let (file, _) = self.provider_file(id)?;
-        let FileFork::Provider(fork) = &mut file.fork
+        let FileFork::Provider(fork) = &file.fork
         else
         {
             return Err(BAD_ABI);
         };
-        if fork.phase != Phase::Reading || file.position != offset
+        let mut state = fork.state.lock();
+        if state.phase != Phase::Reading
+           || file.position.load(core::sync::atomic::Ordering::Relaxed) != offset
         {
             return Err(BAD_ABI);
         }
         // Restore tracking even on provider errors or abandoned callers.
-        fork.phase = Phase::Ready;
-        if fork.orphaned
+        state.phase = Phase::Ready;
+        if state.orphaned
         {
             signal_cleanup();
         }
         if let Some(delivered) = delivered
         {
-            if delivered as u64 > count || count > fork.length.saturating_sub(offset)
+            if delivered as u64 > count || count > state.length.saturating_sub(offset)
             {
                 return Err(BAD_ABI);
             }
-            file.position = offset.checked_add(delivered as u64).ok_or(BAD_ABI)?;
+            file.position.store(offset.checked_add(delivered as u64).ok_or(BAD_ABI)?,
+                                core::sync::atomic::Ordering::Relaxed);
         }
-        Ok((file.position, fork.length))
+        let result = (file.position.load(core::sync::atomic::Ordering::Relaxed), state.length);
+        drop(state);
+        #[cfg(target_arch = "riscv64")]
+        if file.owner_stopping()
+        {
+            crate::toolbox::processes::retirement::resources_released();
+        }
+        Ok(result)
     }
 
     pub(in crate::toolbox::files) fn begin_provider_file_close(&mut self, owner: u64, id: u32)
@@ -209,16 +276,17 @@ impl Manager
         {
             return Err(ACCESS_DENIED);
         }
-        let FileFork::Provider(fork) = &mut file.fork
+        let FileFork::Provider(fork) = &file.fork
         else
         {
             return Err(BAD_ABI);
         };
-        if !matches!(fork.phase, Phase::Ready | Phase::Quarantined)
+        let mut state = fork.state.lock();
+        if !matches!(state.phase, Phase::Ready | Phase::Quarantined)
         {
             return Err(SERVICE_BUSY);
         }
-        fork.phase = Phase::Closing;
+        state.phase = Phase::Closing;
         Ok((provider, file.volume))
     }
 
@@ -226,17 +294,18 @@ impl Manager
                                                            -> Result<u32, Status>
     {
         let (file, _) = self.provider_file(id)?;
-        let FileFork::Provider(fork) = &mut file.fork
+        let FileFork::Provider(fork) = &file.fork
         else
         {
             return Err(BAD_ABI);
         };
-        if !matches!(fork.phase, Phase::Opening | Phase::Ready)
+        let mut state = fork.state.lock();
+        if !matches!(state.phase, Phase::Opening | Phase::Ready)
         {
             return Err(SERVICE_BUSY);
         }
-        fork.orphaned = true;
-        fork.phase = Phase::Closing;
+        state.orphaned = true;
+        state.phase = Phase::Closing;
         Ok(file.volume)
     }
 
@@ -244,12 +313,13 @@ impl Manager
                                                               -> Result<(), Status>
     {
         let (file, _) = self.provider_file(id)?;
-        let FileFork::Provider(fork) = &mut file.fork
+        let FileFork::Provider(fork) = &file.fork
         else
         {
             return Err(BAD_ABI);
         };
-        fork.phase = Phase::Quarantined;
+        let mut state = fork.state.lock();
+        state.phase = Phase::Quarantined;
         Ok(())
     }
 
@@ -262,10 +332,13 @@ impl Manager
         {
             return Err(BAD_ABI);
         };
-        if !matches!(fork.phase, Phase::Opening | Phase::Closing)
+        let mut state = fork.state.lock();
+        if !matches!(state.phase, Phase::Opening | Phase::Closing)
         {
             return Err(SERVICE_BUSY);
         }
+        state.phase = Phase::Closed;
+        drop(state);
         self.handles.remove(id).ok_or(NOT_FOUND)?;
         Ok(())
     }
@@ -274,19 +347,19 @@ impl Manager
         &mut self)
         -> Result<Option<(u32, u32, u32)>, Status>
     {
-        let id = self.handles.iter().find_map(|(id, file)| matches!(&file.fork, FileFork::Provider(fork) if fork.orphaned && fork.phase == Phase::Ready).then_some(id));
+        let id = self.handles.iter().find_map(|(id, file)| matches!(&file.fork, FileFork::Provider(fork) if fork.cleanup_ready()).then_some(id));
         let Some(id) = id
         else
         {
             return Ok(None);
         };
         let (file, provider) = self.provider_file(id)?;
-        let FileFork::Provider(fork) = &mut file.fork
+        let FileFork::Provider(fork) = &file.fork
         else
         {
             return Err(BAD_ABI);
         };
-        fork.phase = Phase::Closing;
+        fork.state.lock().phase = Phase::Closing;
         Ok(Some((id, provider, file.volume)))
     }
 }

@@ -379,7 +379,10 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             {
                 let call = read_request!(files::FileCall);
                 if matches!(call.operation,
-                            files::WATCH_DIRECTORY | files::POLL_WATCH | files::DISPOSE_WATCH)
+                            files::OPEN
+                            | files::WATCH_DIRECTORY
+                            | files::POLL_WATCH
+                            | files::DISPOSE_WATCH)
                 {
                     // Capture the actual ledger before firmware I/O selects the
                     // bootstrap stack. Neither identity nor authority is on wire.

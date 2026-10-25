@@ -490,3 +490,90 @@ fn reconstructed_file_manager_rejects_old_volume_fork_and_write_ids_through_both
         });
     }
 }
+
+#[test]
+fn fork_ledger_walk_invalidates_both_forks_and_preserves_other_app_marks()
+{
+    use mac_system::testing::inspection as fixture;
+    with_system(|system| {
+        let volume = system.files().volume_at(0).unwrap().id;
+        let item =
+            system.files().lookup(volume, mac_toolbox::Cnid(ROOT_ID), "Folder/Café").unwrap();
+        let dead = fixture::add("Fork owner", 0);
+        let survivor = with_owner(9001, || {
+                           system.files().open(volume, item.id, mac_toolbox::files::Fork::Data)
+                       }).unwrap();
+        let data = open(system, dead);
+        let mut resource = FileCall { operation: OPEN,
+                                      volume: volume.0,
+                                      cnid: item.id.0,
+                                      fork: RESOURCE_FORK,
+                                      ..Default::default() };
+        with_owner(dead, || system.client().file(&mut resource, "", &mut [])).unwrap();
+        let ids = [data, resource.handle];
+        with_owner(dead, || {
+            assert_eq!(watch_pool(system, *b"FFRK").live, 2);
+            assert_eq!(watch_pool(system, *b"FFST").live, 1);
+        });
+        let walked = fixture::walk_registered(dead, false, false);
+        assert!(walked.failures.is_empty(), "{:?}", walked.failures);
+        assert_eq!(walked.report.invalidated, 3);
+        with_owner(dead, || {
+            for id in ids
+            {
+                for operation in [READ, TELL, SEEK, CLOSE]
+                {
+                    let mut call = FileCall { operation,
+                                              handle: id,
+                                              ..Default::default() };
+                    let error = system.client().file(&mut call, "", &mut []).unwrap_err();
+                    assert_eq!(error, Error::NotFound);
+                    assert!(error.to_string().contains("found"));
+                }
+            }
+            assert_eq!(watch_pool(system, *b"FFRK").pending, 0);
+            assert_eq!(watch_pool(system, *b"FFST").pending, 0);
+        });
+        assert_eq!(with_owner(9001, || survivor.position()), Ok(0));
+        fixture::try_retire(dead).unwrap();
+        with_owner(9001, || drop(survivor));
+    });
+}
+
+#[test]
+fn refused_fork_release_retains_payloads_until_typed_cleanup_retry()
+{
+    use mac_system::testing::inspection as fixture;
+    with_system(|system| {
+        let volume = system.files().volume_at(0).unwrap().id;
+        let item =
+            system.files().lookup(volume, mac_toolbox::Cnid(ROOT_ID), "Folder/Café").unwrap();
+        let owner = fixture::add("Quarantined fork owner", 0);
+        let mark = open(system, owner);
+        let failed = fixture::walk_registered(owner, true, false);
+        assert_eq!(failed.report.quarantined, 2);
+        assert!(!failed.failures.is_empty());
+        assert!(failed.failures
+                      .iter()
+                      .all(|message| message.contains("FFRK") || message.contains("FFST")),
+                "{:?}",
+                failed.failures);
+        let refusal = fixture::try_retire(owner).unwrap_err();
+        assert!(refusal.to_string().contains("pending") || refusal.to_string().contains("live"));
+        let mut stale = FileCall { operation: TELL,
+                                   handle: mark,
+                                   ..Default::default() };
+        assert_eq!(with_owner(owner, || system.client().file(&mut stale, "", &mut [])),
+                   Err(Error::NotFound));
+        let retry = fixture::walk_registered(owner, false, true);
+        assert!(retry.failures.is_empty(), "{:?}", retry.failures);
+        with_owner(owner, || {
+            assert_eq!(watch_pool(system, *b"FFRK").pending, 0);
+            assert_eq!(watch_pool(system, *b"FFST").pending, 0);
+        });
+        fixture::try_retire(owner).unwrap();
+        let replacement =
+            system.files().open(volume, item.id, mac_toolbox::files::Fork::Data).unwrap();
+        assert_eq!(replacement.position(), Ok(0));
+    });
+}

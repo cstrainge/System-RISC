@@ -270,6 +270,18 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
     {
         // Complete local reads in the same handoff used for routing. Introducing
         // providers must not add a second Files guard/stack switch to disk reads.
+        let authority = if opening
+        {
+            match crate::context::current_owner()
+            {
+                Ok(owner) => Some(owner),
+                Err(status) => return Some(status as i64)
+            }
+        }
+        else
+        {
+            None
+        };
         let routed = crate::kernel::with_files(|manager| {
             let provider = if fork_io
             {
@@ -284,8 +296,21 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
                 Ok(Some(_)) => None,
                 Ok(None) =>
                 {
-                    Some(manager.request_owned(owner, call, name, output)
-                                .map_or_else(|status| status, |()| OK))
+                    Some(if let Some(authority) = &authority
+                         {
+                             manager.open_for(owner, authority, call.volume, call.cnid, call.fork)
+                                    .map(|(handle, length)| {
+                                        call.handle = handle;
+                                        call.length = length;
+                                        call.position = 0;
+                                    })
+                                    .err()
+                                    .unwrap_or(OK)
+                         }
+                         else
+                         {
+                             manager.request_owned(owner, call, name, output).err().unwrap_or(OK)
+                         })
                 }
                 Err(error) => Some(error)
             }
@@ -525,6 +550,25 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
     {
         unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
     };
+    if call.operation == files::OPEN
+    {
+        let Some(caller) = watch
+        else
+        {
+            return ACCESS_DENIED as i64;
+        };
+        return match manager.open_for(owner, &caller.owner, call.volume, call.cnid, call.fork)
+        {
+            Ok((handle, length)) =>
+            {
+                call.handle = handle;
+                call.length = length;
+                call.position = 0;
+                OK as i64
+            }
+            Err(status) => status as i64
+        };
+    }
     if matches!(call.operation, files::WATCH_DIRECTORY | files::POLL_WATCH | files::DISPOSE_WATCH)
     {
         let Some(caller) = watch

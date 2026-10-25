@@ -260,6 +260,7 @@ ratification after measurement; no magic emergency buffer sizes are chosen now.
 | M-D08 | Port/copy definition protocol vs current raw surface/DefinitionCall ABI | Introduce host-owned port operations and bounded copies/managed buffers; remove raw app pointer access before privilege gate |
 | M-D09 | Synchronous participants vs earlier queued/deadline participant designs | **Ratified, Chloe 2026-10-23.** Synchronous participants stand; the earlier queued/deadline rule is superseded. Observers remain queued on their own execution context |
 | M-D10 | Registered payload dispatch alone did not release empty per-owner value-array/cache backing | Closed for migrated stores: CSTA/SBST register backing lifetimes; the last child completes a deferred backing release, including after quarantine retry. The explicit control pruning hook is removed. Other manager saved-state slots and EXIT cleanup remain stage-2/3 migration work |
+| M-D12 | Transfer coordinators still authorize child I/O with a private transaction tag, rather than a registered per-owner lifetime | Interim migration only: validate that tag against the full live transfer generation, and keep its internal forks System-backed through existing rollback; ordinary application forks use the app ledger. Transfer registration must replace this tag/ownership exception before the complete owner-walk/accounting gate |
 | M-D11 | Hard-bound capacity reasons are currently resident `&'static str` values, while module-sourced policies and empty pool history must survive provider unload | Required before module registration admission: retain kernel-owned bounded reason data in pool history. Never cast module text to a static reference, leak a per-registration string, or leave history pointing into unloaded code. Current resident literals are valid; this is module-phase migration work |
 
 Chloe accepted M-D01, M-D03, M-D06, M-D07 and M-D08 as migration work as
@@ -1033,3 +1034,39 @@ storage reuse and stale-window rejection, rather than decoding opaque ID bits.
 These checks do not certify image unloading or arbitrary privileged unwind:
 failed replay is fault-injected at the cache boundary, and definition panic
 continues to report its authenticated resource identity and shut down loudly.
+
+
+## Open forks join registered file lifetimes
+
+FFRK and FFST register open-fork payloads and per-owner backing with the same
+File Manager release dispatcher as explicit close. Both data and resource forks
+retain the existing 32-bit projection and boot-wide generation history. Native
+and Pascal entry paths capture the genuine owner authority before firmware I/O
+switches to bootstrap context; resident background coordinators resolve their
+trusted subject before taking the Files guard. A scalar alone cannot admit an
+application's fork. System-owned loader/source marks use the System ledger. Transitional transfer
+coordinators validate their full live transfer generation before using System-
+backed internal fork lifetimes; this existing rollback scope remains M-D12
+migration debt until transfers join registered ownership.
+
+The common owner walk invalidates a fork before dispatch. Block-backed marks
+release immediately. A provider mark keeps its unique removal guard, projection
+slot, owner authority and catalog/volume protection until outstanding reads and
+Close acknowledge. Opaque facility-issued completion keys retain read authority for already-issued
+operations, including when cleanup was quarantined before dispatch. They cannot
+be constructed from a wire ID, do not revive it, and do not acknowledge cleanup.
+An early terminal Close is recorded and the real cleanup ticket still owns final
+destruction on retry. Only resident completion paths can reach that retained state;
+ordinary native/classic calls reject its old ID. Completion schedules the existing
+retirement checkpoint, so Saved state cannot disappear while a fork is pending.
+Cleanup retention capacity is reserved before publication; refusal preserves its
+unique ticket for quarantine/retry instead of panicking. Pending fork cleanup
+also refuses normal power requests.
+
+The fork-specific loop is removed from the transitional file EXIT helper.
+Remaining file writes, streams, groups, transfers, document/executable aliases,
+volume/module lifetimes and full provider-failure recovery still require their
+own registered integration. This slice does not complete stage 2 or stage 3,
+remove the existing file projection capacity, activate paging, or make application
+std available. Reactor Room displays the real FFRK/FFST pool counts; individual
+file identity details remain part of the public enumeration work.

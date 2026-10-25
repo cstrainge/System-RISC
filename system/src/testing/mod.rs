@@ -125,6 +125,14 @@ impl Default for Session
                           crate::toolbox::files::watch::lifetime::specification(true),
                           crate::toolbox::files::watch::lifetime::ReleaseStorage)
                 .unwrap();
+        registry.register(&registrar,
+                          crate::toolbox::files::forks::lifetime::specification(false),
+                          crate::toolbox::files::forks::lifetime::ReleaseForks)
+                .unwrap();
+        registry.register(&registrar,
+                          crate::toolbox::files::forks::lifetime::specification(true),
+                          crate::toolbox::files::forks::lifetime::ReleaseStorage)
+                .unwrap();
         use crate::toolbox::drag::lifetime::{Registration, ReleaseKind};
         for kind in [Registration::Sessions,
                      Registration::SessionStorage,
@@ -390,7 +398,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
         {
             let watch_operation = if size == size_of::<mac_abi::files::FileCall>() {
                 match unsafe { request::<mac_abi::files::FileCall>(pointer, size) } {
-                    Ok(call) if matches!(call.operation, mac_abi::files::WATCH_DIRECTORY | mac_abi::files::POLL_WATCH | mac_abi::files::DISPOSE_WATCH) => Some(call.operation),
+                    Ok(call) if matches!(call.operation, mac_abi::files::OPEN | mac_abi::files::WATCH_DIRECTORY | mac_abi::files::POLL_WATCH | mac_abi::files::DISPOSE_WATCH) => Some(call.operation),
                     Ok(_) => None,
                     Err(status) => return status as i64
                 }
@@ -403,6 +411,11 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
             SESSION.with(|slot| {
                        let mut session = slot.borrow_mut();
                        let session = session.as_mut().expect("session");
+                       if watch_operation == Some(mac_abi::files::OPEN) {
+                           if let Err(status) = session.files.prepare_forks((
+                               session.registry.get(crate::toolbox::handles::KindCode(*b"FFRK")).unwrap(),
+                               session.registry.get(crate::toolbox::handles::KindCode(*b"FFST")).unwrap())) { return status as i64; }
+                       }
                        let watch = authority.map(|owner| crate::toolbox::files::watch::Caller {
                            owner,
                            kinds: if watch_operation == Some(mac_abi::files::WATCH_DIRECTORY) {
@@ -1022,5 +1035,16 @@ impl crate::toolbox::files::watch::lifetime::WatchHost for Session
     {
         crate::toolbox::files::watch::lifetime::WatchHost::release_file_watch(&mut self.files,
                                                                               ticket, storage)
+    }
+}
+
+impl crate::toolbox::files::forks::lifetime::ForkHost for Session
+{
+    fn release_file_fork(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                         storage: bool)
+                         -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        crate::toolbox::files::forks::lifetime::ForkHost::release_file_fork(&mut self.files,
+                                                                            ticket, storage)
     }
 }

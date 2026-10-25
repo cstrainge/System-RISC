@@ -229,7 +229,19 @@ fn immediate_file(owner: u64, call: &mut FileCall, text: &str, capacity: usize) 
         }
         else
         {
-            files(|m| m.request_owned(owner, call, text, &mut bytes))?;
+            if call.operation == OPEN
+            {
+                let authority = crate::toolbox::files::fork_authority(owner)?;
+                let (handle, length) =
+                    files(|m| m.open_for(owner, &authority, call.volume, call.cnid, call.fork))?;
+                call.handle = handle;
+                call.length = length;
+                call.position = 0;
+            }
+            else
+            {
+                files(|m| m.request_owned(owner, call, text, &mut bytes))?;
+            }
         }
         if call.transferred > bytes.len()
         {

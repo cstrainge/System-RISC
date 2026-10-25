@@ -6,6 +6,7 @@ mod resource;
 pub(crate) mod application;
 use alloc::{string::String, vec::Vec};
 
+pub(crate) mod forks;
 mod scan;
 mod properties;
 pub(crate) mod watch;
@@ -56,6 +57,31 @@ pub(crate) fn abandon_document_io(owner: u64, thread: u64, volume: u32, cnid: u3
                                   -> bool
 {
     provider::runtime::abandon_document_io(owner, thread, volume, cnid, application)
+}
+
+/// Resolve a resident coordinator's trusted subject before any firmware stack
+/// handoff. Request payloads never supply this identity or authority.
+#[cfg(target_arch = "riscv64")]
+pub(super) fn fork_authority(owner: u64) -> Result<crate::toolbox::handles::OwnerRef, Status>
+{
+    if owner == 0
+    {
+        return crate::toolbox::handles::system_owner();
+    }
+    let current = crate::context::current_owner()?;
+    if current.owner().incarnation() == owner
+    {
+        return Ok(current);
+    }
+    if crate::kernel::with_files(|files| {
+           provider::runtime::transfer::owns_coordinator(files, owner)
+       }).map_err(|error| error.status())?
+    {
+        return crate::toolbox::handles::system_owner();
+    }
+    crate::kernel::with_desktop(|desktop| desktop.processes.ledger(owner)).map_err(|error| {
+                                                                              error.status()
+                                                                          })?
 }
 
 pub const MAX_DISKS: u32 = 32;
@@ -235,9 +261,17 @@ struct OpenFile
     id:             u32,
     volume:         u32,
     fork:           FileFork,
-    position:       u64,
+    position:       core::sync::atomic::AtomicU64,
+    authority:      crate::toolbox::handles::OwnerRef,
     #[cfg_attr(not(any(target_arch = "riscv64", feature = "test-support")), allow(dead_code))]
     resource_index: Option<mac_formats::resource::index::Index>
+}
+impl OpenFile
+{
+    fn owner_stopping(&self) -> bool
+    {
+        !self.authority.accepting()
+    }
 }
 enum FileFork
 {
@@ -257,7 +291,7 @@ impl FileFork
 
     fn orphaned(&self) -> bool
     {
-        matches!(self, Self::Provider(fork) if fork.orphaned)
+        matches!(self, Self::Provider(fork) if fork.orphaned())
     }
 }
 struct ExecutablePin
@@ -273,7 +307,7 @@ pub struct Manager
     executables:          Vec<ExecutablePin>,
     document_pins:        Vec<(u32, u32, u32)>,
     volumes:              Table<Mounted>,
-    handles:              Table<OpenFile>,
+    handles:              forks::Marks,
     writes:               Table<write::Pending>,
     streams:              Table<streams::Stream>,
     groups:               Table<groups::Group>,
@@ -292,7 +326,7 @@ impl Default for Manager
                volumes:
                    Table::new(Kind::Volumes),
                handles:
-                   Table::new(Kind::Files),
+                   forks::Marks::new(),
                writes:
                    Table::new(Kind::FileWrites),
                streams:
@@ -313,12 +347,21 @@ impl Default for Manager
 }
 impl Manager
 {
+    pub(crate) fn prepare_forks(&mut self,
+                                kinds: (crate::toolbox::handles::KindLease,
+                                 crate::toolbox::handles::KindLease))
+                                -> Result<(), Status>
+    {
+        self.handles.prepare(kinds)
+    }
+
     /// Power triggers run in the same non-preemptible service invocation as
     /// this barrier. Refuse unfinished publication/rollback before flushing;
     /// provider commits already acknowledge their own durability barriers.
     pub(crate) fn prepare_power(&mut self) -> Result<(), Status>
     {
-        if self.writes.iter().next().is_some()
+        if self.handles.cleanup_pending()
+           || self.writes.iter().next().is_some()
            || self.streams.iter().next().is_some()
            || self.groups.iter().next().is_some()
         {
@@ -738,8 +781,21 @@ impl Manager
         Ok(file)
     }
 
-    fn open(&mut self, owner: u64, volume: u32, id: u32, kind: u32) -> Result<(u32, u64), Status>
+    fn open_for(&mut self, owner: u64, authority: &crate::toolbox::handles::OwnerRef, volume: u32,
+                id: u32, kind: u32)
+                -> Result<(u32, u64), Status>
     {
+        #[cfg(target_arch = "riscv64")]
+        {
+            if owner != 0
+               && owner != authority.owner().incarnation()
+               && !(authority.owner().kind() == mac_object_table::domain::DomainKind::System
+                    && provider::runtime::transfer::owns_coordinator(self, owner))
+            {
+                return Err(ACCESS_DENIED);
+            }
+            self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
+        }
         self.validate_transfer_read(owner, volume, id)?;
         if self.streams.iter().any(|(_, mark)| mark.volume == volume && mark.expected == id)
         {
@@ -757,15 +813,38 @@ impl Manager
                        _ => return Err(BAD_ARGUMENT)
                    }.ok_or(NOT_SUPPORTED)?;
         let length = fork.length;
-        let handle = self.handles
-                         .insert(OpenFile { owner,
-                                            id,
-                                            volume,
-                                            fork: FileFork::Block(fork),
-                                            position: 0,
-                                            resource_index: None })
-                         .map_err(|_| NO_MEMORY)?;
+        let handle = self.handles.insert(authority,
+                                          OpenFile { owner,
+                                                     id,
+                                                     volume,
+                                                     fork: FileFork::Block(fork),
+                                                     position:
+                                                         core::sync::atomic::AtomicU64::new(0),
+                                                     authority: authority.clone(),
+                                                     resource_index: None })?;
         Ok((handle, length))
+    }
+
+    fn open(&mut self, owner: u64, volume: u32, id: u32, kind: u32) -> Result<(u32, u64), Status>
+    {
+        #[cfg(test)]
+        let authority = self.handles.fixture_owner(owner);
+        #[cfg(all(not(test), target_arch = "riscv64"))]
+        let authority = if owner == 0
+        {
+            crate::toolbox::handles::system_owner()?
+        }
+        else
+        {
+            return Err(ACCESS_DENIED);
+        };
+        #[cfg(all(not(test), not(target_arch = "riscv64")))]
+        {
+            let _ = (owner, volume, id, kind);
+            return Err(ACCESS_DENIED);
+        }
+        #[cfg(any(test, target_arch = "riscv64"))]
+        self.open_for(owner, &authority, volume, id, kind)
     }
 
     fn mutation(&mut self, call: &mut FileCall, name: &str, output: &mut [u8])
@@ -1046,8 +1125,8 @@ impl Manager
         self.request_owned(0, call, name, output)
     }
 
-    /// Close every fork owned by an exiting application, preserving all other
-    /// marks. Slot generations survive cleanup so old IDs cannot alias reuse.
+    /// Transitional cleanup for file kinds still awaiting ledger migration.
+    /// Open forks and watches are exclusively released by their registered walk.
     pub fn close_all(&mut self, owner: u64) -> usize
     {
         self.executables.retain(|pin| pin.owner != owner);
@@ -1083,28 +1162,6 @@ impl Manager
             };
             // Native groups have no side effects until their atomic step.
             self.groups.remove(id);
-            count += 1;
-        }
-        loop
-        {
-            let id =
-                self.handles.iter().find_map(|(id, file)| {
-                                       (file.owner == owner && !file.fork.orphaned()).then_some(id)
-                                   });
-            let Some(id) = id
-            else
-            {
-                break;
-            };
-            if let Some(OpenFile { fork: FileFork::Provider(fork),
-                                   .. }) = self.handles.get_mut(id)
-            {
-                fork.abandon();
-            }
-            else
-            {
-                self.handles.remove(id);
-            }
             count += 1;
         }
         loop
@@ -1250,14 +1307,17 @@ impl Manager
                 {
                     return Err(NOT_SUPPORTED);
                 };
-                let (volume, position, mut fork) = (file.volume, file.position, fork.clone());
+                let (volume, position, mut fork) =
+                    (file.volume,
+                     file.position.load(core::sync::atomic::Ordering::Relaxed),
+                     fork.clone());
                 let length = self.with_volume(volume, |v| io(v.read(&mut fork, position, output)))?;
                 let file = self.slot(owner, call.handle)?;
                 let fork_length = fork.length;
                 file.fork = FileFork::Block(fork);
-                file.position += length as u64;
+                file.position.fetch_add(length as u64, core::sync::atomic::Ordering::Relaxed);
                 call.transferred = length;
-                call.position = file.position;
+                call.position = file.position.load(core::sync::atomic::Ordering::Relaxed);
                 call.length = fork_length;
             }
             SEEK =>
@@ -1267,7 +1327,7 @@ impl Manager
                 let base = match call.whence
                 {
                     SEEK_START => 0,
-                    SEEK_CURRENT => file.position,
+                    SEEK_CURRENT => file.position.load(core::sync::atomic::Ordering::Relaxed),
                     SEEK_END => length,
                     _ => return Err(BAD_ARGUMENT)
                 };
@@ -1276,14 +1336,14 @@ impl Manager
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                file.position = position;
+                file.position.store(position, core::sync::atomic::Ordering::Relaxed);
                 call.position = position;
                 call.length = length;
             }
             TELL =>
             {
                 let file = self.slot(owner, call.handle)?;
-                call.position = file.position;
+                call.position = file.position.load(core::sync::atomic::Ordering::Relaxed);
                 call.length = file.fork.length()?;
             }
             CLOSE =>

@@ -147,8 +147,10 @@ fn prepare(owner: u64, call: &FileCall, capacity: usize)
     {
         OPEN =>
         {
+            let authority = crate::toolbox::files::fork_authority(owner)?;
             let (provider, handle) = files(|manager| {
-                manager.reserve_provider_file(owner, call.volume, call.cnid, call.fork)
+                manager.reserve_provider_file_for(owner, &authority, call.volume, call.cnid,
+                                                  call.fork)
             })?;
             Ok((provider,
                 Action::Open { handle },

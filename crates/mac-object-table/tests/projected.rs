@@ -90,7 +90,14 @@ fn invalidation_precedes_cleanup_and_backing_waits_for_the_linear_guard()
     let ticket = ledger.invalidate_next().unwrap();
     assert_eq!(ticket.key().kind(), KindCode(*b"TEST"));
     assert!(store.get(id).is_none());
+    assert_eq!(store.releasing(&ticket).map(String::as_str), Some("retained"));
+    let other_owner = owner(DomainKind::Process);
+    let foreign_id = store.insert(&other_owner, String::from("foreign")).unwrap();
+    let foreign_ticket = other_owner.invalidate_next().unwrap();
+    assert_eq!(store.releasing(&foreign_ticket).map(String::as_str), Some("foreign"));
     let guard = store.release(ticket).unwrap();
+    drop(store.release(foreign_ticket).unwrap());
+    assert!(store.get(foreign_id).is_none());
     assert_eq!(&**guard, "retained");
     let storage = ledger.invalidate_next().unwrap();
     store.release_storage(storage).unwrap();
@@ -204,4 +211,36 @@ fn file_wire_namespaces_preserve_history_through_registered_store_reconstruction
         assert!(recreated.get(foreign).is_none());
         assert_eq!(second.get(foreign), Some(&2));
     }
+}
+
+#[test]
+fn opaque_completion_keys_survive_quarantine_but_never_revalidate_wire_ids()
+{
+    let registrar = owner(DomainKind::Module);
+    let mut registry = Registry::new();
+    let (payload, backing) = kinds(&mut registry, &registrar);
+    let ledger = owner(DomainKind::Process);
+    let another = owner(DomainKind::Process);
+    let mut store = Store::new(Kind::Files, payload.clone(), backing.clone()).unwrap();
+    let mut foreign = Store::new(Kind::Files, payload, backing).unwrap();
+    let id = store.insert(&ledger, String::from("pending read")).unwrap();
+    let key = store.completion_key(id).unwrap();
+    let other = foreign.insert(&another, String::from("other")).unwrap();
+    let other_key = foreign.completion_key(other).unwrap();
+    assert!(store.completing(&other_key).is_none());
+    assert!(foreign.completing(&key).is_none());
+    let ticket = ledger.invalidate_next().unwrap();
+    ledger.quarantine(ticket).unwrap();
+    assert!(store.get(id).is_none());
+    assert!(store.completion_key(id).is_none(), "cannot mint authority after invalidation");
+    assert_eq!(store.completing(&key).map(String::as_str), Some("pending read"));
+    let ticket = ledger.resume_quarantined().unwrap();
+    let held = store.release(ticket).unwrap();
+    assert!(store.completing(&key).is_none(), "removal guard now owns payload exclusively");
+    drop(held);
+    let replacement = store.insert(&ledger, String::from("new")).unwrap();
+    assert_eq!(replacement & 0xffff, id & 0xffff);
+    assert_ne!(replacement, id);
+    assert!(store.completing(&key).is_none());
+    assert_eq!(store.get(replacement).map(String::as_str), Some("new"));
 }

@@ -61,6 +61,15 @@ impl Projection
         G::run(|| operation(&mut self.entries.lock()))
     }
 }
+/// Opaque completion authority, minted before invalidation. It never validates
+/// an ordinary treaty ID and does not acknowledge an external operation.
+#[derive(Clone, Copy)]
+pub struct CompletionKey
+{
+    native: store::CompletionKey,
+    wire:   u32
+}
+
 pub struct Store<T, G: InvocationGate>
 {
     projection: Arc<Projection>,
@@ -134,12 +143,32 @@ impl<T, G: InvocationGate> Store<T, G>
         self.values.values_mut().map(|entry| &mut entry.value)
     }
 
+    pub fn completion_key(&self, wire: u32) -> Option<CompletionKey>
+    {
+        let native = self.projection.access::<G, _>(|index| index.get(wire).copied())?;
+        Some(CompletionKey { native: self.values.completion_key(native)?,
+                             wire })
+    }
+
+    pub fn completing(&self, key: &CompletionKey) -> Option<&T>
+    {
+        let entry = self.values.completing(&key.native)?;
+        (entry.wire == key.wire).then_some(&entry.value)
+    }
+
     pub fn remove(&mut self, wire: u32) -> Option<Removed<T, G>>
     {
         let native = self.projection.access::<G, _>(|index| index.get(wire).copied())?;
         let record = self.values.remove(native)?;
         Some(Removed { record:     Some(record),
                        projection: self.projection.clone() })
+    }
+
+    /// Inspect only through the unique invalidation capability. This does not
+    /// revive an ordinary ID or expose mutable/extractable payload storage.
+    pub fn releasing(&self, ticket: &ReleasedResource) -> Option<&T>
+    {
+        self.values.releasing(ticket).map(|entry| &entry.value)
     }
 
     pub fn release(&mut self, ticket: ReleasedResource) -> Result<Removed<T, G>, CompletionError>

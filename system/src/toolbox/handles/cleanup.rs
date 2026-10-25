@@ -7,6 +7,10 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 pub(crate) enum Cause
 {
     Facility(PoolError),
+    FileForkRetirementStorage
+    {
+        pending: usize
+    },
     DragEffectStorage
     {
         pending:   usize,
@@ -30,6 +34,12 @@ impl core::fmt::Display for Cause
         match self
         {
             Self::Facility(error) => error.fmt(f),
+            Self::FileForkRetirementStorage { pending } =>
+            {
+                write!(f,
+                       "File Manager cannot retain another provider fork with {pending} pending \
+                        closes; payload, provider token and cleanup ticket remain owned for retry")
+            }
             Self::DragEffectStorage { pending,
                                       requested } =>
             {
@@ -49,8 +59,8 @@ impl core::fmt::Display for Cause
             Self::FileManagerUnavailable(error) =>
             {
                 write!(f,
-                       "File Manager cleanup could not enter its resident state ({error:?}); \
-                        watch payload, backing and cleanup ticket remain retained for retry")
+                       "File Manager cleanup could not enter its resident state ({error:?}); file \
+                        payload, backing and cleanup ticket remain retained for retry")
             }
             Self::WindowDefinitionDisposal { window,
                                              procedure,
@@ -76,6 +86,12 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    pub(crate) fn fork_retirement_storage(ticket: ReleasedResource, pending: usize) -> Self
+    {
+        Self { ticket,
+               cause: Cause::FileForkRetirementStorage { pending } }
+    }
+
     pub(crate) fn drag_effect_storage(ticket: ReleasedResource, pending: usize) -> Self
     {
         Self { ticket,
