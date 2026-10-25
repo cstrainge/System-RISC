@@ -1,5 +1,6 @@
 //! Real host side effects behind split native module callbacks. Host-only
 //! coverage: this deliberately does not claim resident/guest mount acceptance.
+mod common;
 use std::{path::PathBuf,
           sync::{Arc, Mutex,
                  atomic::{AtomicU64, Ordering}}};
@@ -91,7 +92,7 @@ struct Harness
     trace:    Arc<Mutex<Vec<Trace>>>,
     requests: Table<()>,
     volumes:  Table<()>,
-    writes:   Table<()>,
+    writes:   common::Tokens,
     files:    Table<()>
 }
 impl Harness
@@ -115,7 +116,7 @@ impl Harness
                trace,
                requests: Table::new(Kind::DriverRequests),
                volumes: Table::new(Kind::Volumes),
-               writes: Table::new(Kind::FileWrites),
+               writes: common::Tokens::new(),
                files: Table::new(Kind::Files) }
     }
 
@@ -194,7 +195,7 @@ impl Harness
         volume
     }
 
-    fn begin(&mut self, volume: u32, name: &str, data: usize, resource: usize) -> (u32, u32)
+    fn begin(&mut self, volume: u32, name: &str, data: usize, resource: usize) -> (u64, u32)
     {
         let token = self.writes.insert(()).unwrap();
         let out = self.execute(Operation::BeginCreate,
@@ -265,14 +266,14 @@ fn fresh_callback_buffers_round_trip_both_forks_and_quiesce_releases_mounts()
     h.execute(Operation::Open,
               Arguments { volume,
                           node,
-                          token: open,
+                          token: u64::from(open),
                           ..Default::default() })
      .unwrap();
     for (flags, expected) in [(fs::DATA_FORK, &b"hello"[..]), (fs::RESOURCE_FORK, &b"rsrc"[..])]
     {
         assert_eq!(h.execute(Operation::Read,
                              Arguments { volume,
-                                         token: open,
+                                         token: u64::from(open),
                                          flags,
                                          length: 20,
                                          ..Default::default() })
@@ -282,7 +283,7 @@ fn fresh_callback_buffers_round_trip_both_forks_and_quiesce_releases_mounts()
     assert_eq!(h.service.quiesce(), Err(Error(mac_abi::SERVICE_BUSY)));
     h.execute(Operation::Close,
               Arguments { volume,
-                          token: open,
+                          token: u64::from(open),
                           ..Default::default() })
      .unwrap();
     h.execute(Operation::Unmount,
@@ -416,4 +417,5 @@ fn invalid_start_capacity_and_read_only_mutations_fail_before_host_side_effects(
                           ..Default::default() })
      .unwrap();
     h.service.quiesce().unwrap();
+    h.writes.remove(token);
 }

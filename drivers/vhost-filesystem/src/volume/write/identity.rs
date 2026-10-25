@@ -6,7 +6,7 @@ use forks::annotation::{self, Annotation};
 use super::*;
 impl<R: Rpc> Filesystem<R>
 {
-    pub(super) async fn bind_file_publication(&mut self, token: u32) -> Result<()>
+    pub(super) async fn bind_file_publication(&mut self, token: u64) -> Result<()>
     {
         let pending = self.writes.get(token).ok_or(Cause::NotFound)?;
         if pending.identity_bound

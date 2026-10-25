@@ -101,7 +101,7 @@ impl Desktop
         Ok(())
     }
 
-    pub(crate) fn notify_file_transfer(&mut self, owner: u64, handle: u32) -> Result<(), Status>
+    pub(crate) fn notify_file_transfer(&mut self, owner: u64, handle: u64) -> Result<(), Status>
     {
         let event = Event { kind: EventKind::OsEvent,
                             message: mac_abi::events::FILE_TRANSFER_CHANGED,

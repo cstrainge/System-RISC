@@ -59,7 +59,7 @@ fn close(mut flight: Flight, mut state: Box<State>, outcome: Result<Box<Loaded>,
                                                                      submit_args(flight.provider,
                                  Operation::Close,
                                  Arguments { volume,
-                                             token: state.handle,
+                                             token: u64::from(state.handle),
                                              ..Default::default() })
                                                                  });
     match result
@@ -86,7 +86,7 @@ fn read(provider: u32, state: &State) -> Result<OwnedJob, Status>
     submit_args(provider,
                 Operation::Read,
                 Arguments { volume: state.volume,
-                            token: state.handle,
+                            token: u64::from(state.handle),
                             flags: RESOURCE_FORK,
                             offset,
                             length: count as u64,
@@ -143,7 +143,7 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
                                       Operation::Open,
                                       Arguments { volume: state.volume,
                                                   node: catalog.id,
-                                                  token: state.handle,
+                                                  token: u64::from(state.handle),
                                                   ..Default::default() })?;
                 state.stage = Stage::Open;
                 Ok(Some(job))

@@ -69,7 +69,7 @@ pub(super) struct Group
 }
 impl<R: Rpc> Filesystem<R>
 {
-    pub(crate) fn has_group(&self, volume: u32, token: u32) -> bool
+    pub(crate) fn has_group(&self, volume: u32, token: u64) -> bool
     {
         self.groups.get(token).is_some_and(|group| group.volume == volume)
     }
@@ -83,7 +83,7 @@ impl<R: Rpc> Filesystem<R>
                                   })
     }
 
-    pub async fn begin_icon_moves(&mut self, volume: u32, token: u32, rows: IconMoves<'_>,
+    pub async fn begin_icon_moves(&mut self, volume: u32, token: u64, rows: IconMoves<'_>,
                                   when: u64)
                                   -> Result<[u32; 4]>
     {
@@ -339,7 +339,7 @@ impl<R: Rpc> Filesystem<R>
         }
     }
 
-    async fn group_move(&mut self, token: u32, group: &mut Group, index: usize, undo: bool)
+    async fn group_move(&mut self, token: u64, group: &mut Group, index: usize, undo: bool)
                         -> Result<()>
     {
         let row = &group.rows[index];
@@ -364,7 +364,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    async fn group_metadata(&mut self, token: u32, group: &mut Group, index: usize, undo: bool)
+    async fn group_metadata(&mut self, token: u64, group: &mut Group, index: usize, undo: bool)
                             -> Result<()>
     {
         let row = &group.rows[index];
@@ -390,7 +390,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    async fn group_drain(&mut self, token: u32, group: &mut Group, index: usize) -> Result<()>
+    async fn group_drain(&mut self, token: u64, group: &mut Group, index: usize) -> Result<()>
     {
         if matches!(group.pending, Pending::None)
         {
@@ -411,7 +411,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    async fn group_stamp(&mut self, token: u32, group: &mut Group, index: usize, undo: bool)
+    async fn group_stamp(&mut self, token: u64, group: &mut Group, index: usize, undo: bool)
                          -> Result<()>
     {
         let stamp = &group.stamps[index];
@@ -448,7 +448,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    pub async fn step_icon_moves(&mut self, volume: u32, token: u32, cancel: bool)
+    pub async fn step_icon_moves(&mut self, volume: u32, token: u64, cancel: bool)
                                  -> Result<[u32; 4]>
     {
         self.owner = volume;

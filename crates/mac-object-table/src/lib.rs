@@ -15,7 +15,6 @@ use core::sync::atomic::{AtomicU16, Ordering};
 // All tables share boot-wide generation histories: reconstructed managers and
 // concurrent instances cannot issue the same wire ID. Memory's contract stays unchanged.
 static FILE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
-static FILE_WRITE_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static VOLUME_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static MEMORY_GENERATIONS: [AtomicU16; 512] = [const { AtomicU16::new(0) }; 512];
 static MODULE_GENERATIONS: [AtomicU16; 32] = [const { AtomicU16::new(0) }; 32];
@@ -28,9 +27,6 @@ static HOST_TRANSACTION_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0
 static HOST_SESSION_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
 
 static DEVICE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
-static FILE_STREAM_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
-static FILE_TRANSFER_GENERATIONS: [AtomicU16; 4] = [const { AtomicU16::new(0) }; 4];
-static FILE_GROUP_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static THREAD_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static JOB_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DMA_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
@@ -57,7 +53,6 @@ pub enum Kind
 {
     Memory,
     Files,
-    FileWrites,
     Volumes,
     Modules,
     DriverInterfaces,
@@ -74,10 +69,7 @@ pub enum Kind
     HostNodes,
     FileWatches,
     Drags,
-    DragReceivers,
-    FileStreams,
-    FileGroups,
-    FileTransfers
+    DragReceivers
 }
 impl Kind
 {
@@ -85,9 +77,6 @@ impl Kind
     {
         match self
         {
-            Self::FileTransfers => 4,
-            Self::FileGroups => 8,
-            Self::FileStreams => 8,
             Self::Drags => 32,
             Self::DragReceivers => 64,
             Self::FileWatches => 64,
@@ -106,8 +95,7 @@ impl Kind
             Self::DriverRequests => 256,
             Self::Volumes => 128,
             Self::Memory => 512,
-            Self::Files => 64,
-            Self::FileWrites => 8
+            Self::Files => 64
         }
     }
 
@@ -115,18 +103,6 @@ impl Kind
     {
         match self
         {
-            Self::FileTransfers =>
-            {
-                Self::FileGroups.first_slot() + Self::FileGroups.capacity() as u32
-            }
-            Self::FileGroups =>
-            {
-                Self::FileStreams.first_slot() + Self::FileStreams.capacity() as u32
-            }
-            Self::FileStreams =>
-            {
-                Self::DragReceivers.first_slot() + Self::DragReceivers.capacity() as u32
-            }
             Self::Drags => Self::FileWatches.first_slot() + Self::FileWatches.capacity() as u32,
             Self::DragReceivers => Self::Drags.first_slot() + Self::Drags.capacity() as u32,
             Self::FileWatches => Self::HostNodes.first_slot() + Self::HostNodes.capacity() as u32,
@@ -164,10 +140,9 @@ impl Kind
             {
                 Self::DriverInterfaces.first_slot() + Self::DriverInterfaces.capacity() as u32
             }
-            Self::Volumes => Self::FileWrites.first_slot() + Self::FileWrites.capacity() as u32,
+            Self::Volumes => Self::Files.first_slot() + Self::Files.capacity() as u32,
             Self::Memory => 1,
-            Self::Files => Self::Memory.capacity() as u32 + 1,
-            Self::FileWrites => Self::Files.first_slot() + Self::Files.capacity() as u32
+            Self::Files => Self::Memory.capacity() as u32 + 1
         }
     }
 
@@ -187,11 +162,7 @@ impl Kind
         {
             Self::Memory => &MEMORY_GENERATIONS[index],
             Self::Files => &FILE_GENERATIONS[index],
-            Self::FileWrites => &FILE_WRITE_GENERATIONS[index],
             Self::Volumes => &VOLUME_GENERATIONS[index],
-            Self::FileTransfers => &FILE_TRANSFER_GENERATIONS[index],
-            Self::FileGroups => &FILE_GROUP_GENERATIONS[index],
-            Self::FileStreams => &FILE_STREAM_GENERATIONS[index],
             Self::Drags => &DRAG_GENERATIONS[index],
             Self::DragReceivers => &DRAG_RECEIVER_GENERATIONS[index],
             Self::FileWatches => &FILE_WATCH_GENERATIONS[index],

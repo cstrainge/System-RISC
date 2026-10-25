@@ -2012,8 +2012,7 @@ mod completion_tests
                                               source:   Source::Resident },
                               Cleanup)
                     .unwrap();
-        let mut store =
-            crate::projected::Store::new(crate::Kind::FileGroups, lease, storage).unwrap();
+        let mut store = crate::projected::Store::new(crate::Kind::Files, lease, storage).unwrap();
         let drops = Arc::new(AtomicUsize::new(0));
         let old = store.insert(&owner, Payload(drops.clone())).unwrap();
         let ticket = owner.invalidate_next().unwrap();

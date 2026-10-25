@@ -533,7 +533,8 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         self.ids.remove(&entry.id);
         let usage = ManuallyDrop::into_inner(entry.registration_use);
         let removed =
-            Removed { value:      Some(entry.value),
+            Removed { id:         entry.id,
+                      value:      Some(entry.value),
                       root:       entry.root,
                       completion:
                           entry.reserve
@@ -804,10 +805,19 @@ impl<T, G: InvocationGate, S> Drop for Store<T, G, S>
 /// ```
 pub struct Removed<T, G: InvocationGate>
 {
+    id:         u64,
     value:      Option<T>,
     root:       Option<crate::scope::Owner<G>>,
     completion: Completion<G>,
     _claim:     Arc<Claim<G>>
+}
+impl<T, G: InvocationGate> Removed<T, G>
+{
+    /// Ordinary identity metadata; removal has already invalidated it.
+    pub fn id(&self) -> u64
+    {
+        self.id
+    }
 }
 impl<T, G: InvocationGate> Deref for Removed<T, G>
 {

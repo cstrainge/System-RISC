@@ -10,7 +10,7 @@ pub(super) struct Bridge
     pub cnid:      u32,
     pub when:      u64
 }
-pub(crate) fn pending(thread: u64, handle: u32) -> Result<bool, Status>
+pub(crate) fn pending(thread: u64, handle: u64) -> Result<bool, Status>
 {
     files(|m| {
         let entry = m.transfers.completing(handle).ok_or(NOT_FOUND)?;
@@ -21,7 +21,7 @@ pub(crate) fn pending(thread: u64, handle: u32) -> Result<bool, Status>
         Ok(!entry.record.lock().closed)
     })
 }
-pub(crate) fn abandon_waiter(thread: u64, handle: u32)
+pub(crate) fn abandon_waiter(thread: u64, handle: u64)
 {
     let _ = files(|m| {
         let matching =
@@ -42,9 +42,12 @@ pub(crate) fn abandon_waiter(thread: u64, handle: u32)
         Ok(())
     });
 }
-fn defer(handle: u32) -> Status
+fn defer(handle: u64) -> Status
 {
-    crate::context::current_thread_context().traps.defer(handle).err().unwrap_or(SERVICE_BUSY)
+    crate::context::current_thread_context().traps
+                                            .defer(crate::context::DeferredIo::FileTransfer(handle))
+                                            .err()
+                                            .unwrap_or(SERVICE_BUSY)
 }
 use crate::toolbox::files::application::catalog;
 pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status

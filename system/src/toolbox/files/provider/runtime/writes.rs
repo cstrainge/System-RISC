@@ -16,7 +16,7 @@ enum Stage
 pub(super) struct State
 {
     plan:        Option<Plan>,
-    handle:      u32,
+    handle:      u64,
     volume:      u32,
     stage:       Stage,
     written:     usize,
@@ -28,11 +28,11 @@ pub(in crate::toolbox::files::provider) fn request_write_cleanup()
 {
     WRITE_CLEANUP.store(true, Ordering::Release);
 }
-fn retire(handle: u32) -> Result<(), Status>
+fn retire(handle: u64) -> Result<(), Status>
 {
     files(|manager| manager.retire_provider_write(handle))
 }
-fn quarantine(handle: u32)
+fn quarantine(handle: u64)
 {
     let _ = files(|manager| manager.quarantine_provider_write(handle));
 }
@@ -170,7 +170,7 @@ fn write_next(flight: Flight, mut state: State) -> Progress
         queued(flight, state, Operation::WriteChunk, job)
     }
 }
-pub(super) fn acknowledge_abort(handle: u32, bytes: &[u8]) -> Result<Option<CatalogInfo>, Status>
+pub(super) fn acknowledge_abort(handle: u64, bytes: &[u8]) -> Result<Option<CatalogInfo>, Status>
 {
     if files(|m| m.write_is_removal(handle))?
     {
@@ -343,7 +343,7 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
         Stage::Finish | Stage::Abort => unreachable!()
     }
 }
-fn key(operation: u32, handle: u32, volume: u32) -> Key
+fn key(operation: u32, handle: u64, volume: u32) -> Key
 {
     Key { record: Record::Write,
           operation,
@@ -543,19 +543,10 @@ pub(super) fn pump_cleanup()
         return;
     }
     let mut flights = FLIGHTS.lock();
-    if flights.len() == MAX_FLIGHTS
+    if reserve_flight_storage(&mut flights).is_err()
     {
         WRITE_CLEANUP.store(true, Ordering::Release);
         return;
-    }
-    if flights.capacity() < MAX_FLIGHTS
-    {
-        let additional = MAX_FLIGHTS - flights.len();
-        if flights.try_reserve_exact(additional).is_err()
-        {
-            WRITE_CLEANUP.store(true, Ordering::Release);
-            return;
-        }
     }
     drop(flights);
     let (handle, provider, volume, owner) = match files(|manager| Ok(manager.next_orphaned_write()))

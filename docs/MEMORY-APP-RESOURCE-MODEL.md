@@ -1392,8 +1392,8 @@ close clock could wrap. Scope closure never synthesizes device completion.
 The high-level transfer tag/System-lifetime exception is removed. Lower driver
 request/job/device/module ledger migration, full invocation/account attribution,
 remaining shared aliases and the complete launch/recovery campaign still gate
-completion of the model. Native-only fixed file-protocol projections remain for
-the next capacity migration; the classic treaty remains supported. This slice
+completion of the model. The later native file-identity migration removes
+native-only fixed file-protocol projections; the classic treaty remains supported. This slice
 does not enable byte budgets, physical reclamation, MMU, multihart or std.
 
 Qualification: 264 scoped host cases pass (one separate System gate), including
@@ -1408,3 +1408,43 @@ final packaged hashes remain unchanged. The host lifetime transport controls
 root completion; native assertions exercise actual provider I/O separately.
 Arbitrary privileged-fault recovery and the remaining model stages are not
 claimed by these checks.
+
+
+### Native file-operation identities
+
+Staged data writes, streamed writes, icon groups and transfer coordinators use
+full-width shared-facility native IDs and grow-until-memory policy. Their former
+8/8/8/4 projection namespaces, generation arrays and bit-range dispatch are
+removed. Genuine classic open-file refnums keep the same projection and
+validation. One File Manager lifetime algorithm selects native or treaty storage;
+all tickets, quarantine and retained completion authority still belong to the
+shared registered facility.
+
+The SDK guards, trap records, provider request codec, both filesystem drivers,
+transfer events and scheduler wake identity preserve the whole native token.
+Deferred wakes are a native enum distinguishing driver jobs and transfers, never
+a guess based on ID bits. A transfer owns its preflighted continuation lease
+through guard refusal; no cleanup allocation, fixed emergency array or slot-index
+identity is required. Per-owner storage remains one registered backing per kind.
+
+Provider flight queue preflight follows the actual lower OwnedJob capability
+bound, including suspended flights, rather than guessing a total from thread and
+file-object limits. This is storage for already bounded driver jobs, not a new
+file-object quota. The lower driver job/request/device/module migration remains
+open and must replace that dependency when its capability storage grows.
+
+The native operation migration does not enable byte charging, heap budgets,
+physical reclamation, paging, multihart or userspace std. The remaining aliases,
+process/thread/image capacity, invocation/driver ownership and launch/recovery
+gates still precede the page/MMU and allocator stages.
+
+Qualification: 366 scoped host cases pass, including the separately gated
+real-image catalog/both-forks read. Canonical SDK cases hold twenty simultaneous
+writes, streamed writes and icon groups, observe acknowledged storage reuse via
+the authoritative ledger, and reject stale, foreign and cross-kind identities.
+Nine native checks pass: real provider writes/copy/exit/rollback/retry, both
+endpoint disconnections, two process campaigns, aggregate userspace conformance,
+bounded Finder updates, original cursors, Reactor Room and multi-version StuffIt
+read/copy/corruption/nested-archive coverage. Native userspace also holds twenty
+full-width writers and proves reuse, stale refusal and complete disposal. These
+checks cover this migration rather than complete classic compatibility.

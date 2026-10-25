@@ -444,7 +444,7 @@ mod tests
         assert_eq!(manager.begin_provider_file_read(9, handle, 4), Err(ACCESS_DENIED));
         let (_, args) = manager.begin_provider_file_read(7, handle, usize::MAX).unwrap();
         assert_eq!((args.volume, args.token, args.flags, args.offset, args.length),
-                   (volume, handle, DATA_FORK, 0, fs::MAX_TRANSFER as u64));
+                   (volume, u64::from(handle), DATA_FORK, 0, fs::MAX_TRANSFER as u64));
         assert_eq!(manager.begin_provider_file_close(7, handle), Err(SERVICE_BUSY));
         assert_eq!(manager.retire_provider_file(handle), Err(SERVICE_BUSY));
         assert_eq!(manager.finish_provider_file_read(handle,
@@ -739,7 +739,7 @@ mod tests
                    "stopped domains cannot publish another writer");
         manager.write_request(9, &mut begin, "Next", &[]).unwrap();
         assert_ne!(begin.handle, handle);
-        assert_eq!(begin.handle & 0xffff, handle & 0xffff);
+        assert!(begin.handle > u64::from(u32::MAX) && handle > u64::from(u32::MAX));
         assert_eq!(manager.fixture_close_objects(9), 1); // RAM-only staging needs no provider ACK.
         assert_eq!(manager.begin_provider_unmount(volume), Ok(77));
     }

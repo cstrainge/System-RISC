@@ -416,7 +416,7 @@ impl Manager
     /// A transaction reserves this revision before its first side effect. One
     /// sorted parent set visits the bounded watch table once, without allocation
     /// or a fallible counter increment after publication.
-    pub(super) fn notify_group_at(&mut self, volume: u32, group: u32, revision: u64)
+    pub(super) fn notify_group_at(&mut self, volume: u32, group: u64, revision: u64)
     {
         let held = self.transfer_holds_notices(volume);
         let Some(mark) = self.groups.completing(group)

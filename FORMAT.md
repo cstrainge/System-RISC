@@ -1528,9 +1528,14 @@ linear removal guards and is ordinary deferral, not a failed cleanup. Releasing
 a public ID is never acknowledgement that its file is unpinned. Declaration
 I/O completion wakes the cleanup pass; physical input does not rescan it.
 
-Size-distinct `FileTransferCall` records use the File trap (472 bytes on RV64,
-including four reserved zero u32 words). File record sizes are compile-time
-checked for uniqueness; `DataWriteCall` remains 464 bytes. The shared transfer
+Size-distinct `FileTransferCall` records use the File trap, including four
+reserved zero u32 words. File record sizes are compile-time checked for
+uniqueness. `FileTransferCall`, `DataWriteCall`, `ForkWriteCall` and
+`IconGroupCall` carry full native u64 object identities; genuine classic fork
+references retain their documented 32-bit treaty. Transfer notices carry that
+full identity in the event payload. Native-only write/stream/group/transfer
+projection namespaces are removed; their registered object pools grow until
+memory refusal. The shared transfer
 ID owns bounded planning, hidden staging, two-fork copying/readback verification,
 source quarantine, grouped root publication and reverse-order undo. Copy, Move
 and per-source-volume Trash share the coordinator. Cancellation and the

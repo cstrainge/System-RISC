@@ -92,7 +92,7 @@ pub const ABANDON_ICON_GROUP: u32 = 3;
 pub struct IconGroupCall
 {
     pub operation: u32,
-    pub handle:    u32,
+    pub handle:    u64,
     pub volume:    u32,
     pub phase:     u32,
     pub when:      u64,
@@ -442,7 +442,7 @@ pub const READ_FORK_WRITE: u32 = 5;
 pub struct ForkWriteCall
 {
     pub operation:       u32,
-    pub handle:          u32,
+    pub handle:          u64,
     pub volume:          u32,
     pub parent:          u32,
     pub expected_cnid:   u32,
@@ -479,7 +479,7 @@ pub struct ForkWriteCall
 pub struct DataWriteCall
 {
     pub operation:     u32,
-    pub handle:        u32,
+    pub handle:        u64,
     pub volume:        u32,
     pub parent:        u32,
     pub expected_cnid: u32,
@@ -532,7 +532,7 @@ pub struct FileTransferSource
 pub struct FileTransferCall
 {
     pub operation:          u32,
-    pub handle:             u32,
+    pub handle:             u64,
     pub mode:               u32,
     pub destination_volume: u32,
     pub destination_parent: u32,

@@ -22,12 +22,12 @@ const MAX_OPEN: usize = 64;
 
 /// This is an index of identities supplied by the resident or persistent catalog,
 /// never an ID issuer. Insertion is fallible and lookup does no catalog I/O.
-struct Index<T>
+struct Index<T, K = u32>
 {
-    entries: Vec<(u32, T)>,
+    entries: Vec<(K, T)>,
     limit:   usize
 }
-impl<T> Index<T>
+impl<T, K: Copy + Ord + Default> Index<T, K>
 {
     const fn new(limit: usize) -> Self
     {
@@ -35,19 +35,19 @@ impl<T> Index<T>
                limit }
     }
 
-    fn get(&self, id: u32) -> Option<&T>
+    fn get(&self, id: K) -> Option<&T>
     {
         self.entries.binary_search_by_key(&id, |item| item.0).ok().map(|at| &self.entries[at].1)
     }
 
-    fn get_mut(&mut self, id: u32) -> Option<&mut T>
+    fn get_mut(&mut self, id: K) -> Option<&mut T>
     {
         self.entries.binary_search_by_key(&id, |item| item.0).ok().map(|at| &mut self.entries[at].1)
     }
 
-    fn reserve(&mut self, id: u32) -> Result<()>
+    fn reserve(&mut self, id: K) -> Result<()>
     {
-        if id == 0
+        if id == K::default()
         {
             return Err(Cause::Invalid.into());
         }
@@ -62,9 +62,9 @@ impl<T> Index<T>
         self.entries.try_reserve(1).map_err(|_| Cause::NoMemory.into())
     }
 
-    fn insert(&mut self, id: u32, value: T) -> Result<()>
+    fn insert(&mut self, id: K, value: T) -> Result<()>
     {
-        if id == 0
+        if id == K::default()
         {
             return Err(Cause::Invalid.into());
         }
@@ -80,7 +80,7 @@ impl<T> Index<T>
         Ok(())
     }
 
-    fn remove(&mut self, id: u32) -> Option<T>
+    fn remove(&mut self, id: K) -> Option<T>
     {
         self.entries
             .binary_search_by_key(&id, |item| item.0)
@@ -202,9 +202,9 @@ pub struct Filesystem<R: Rpc>
     session:       u32,
     exports:       u32,
     mounts:        Index<Mount>,
-    files:         Index<Open>,
-    writes:        Index<write::Pending>,
-    groups:        Index<groups::Group>,
+    files:         Index<Open, u64>,
+    writes:        Index<write::Pending, u64>,
+    groups:        Index<groups::Group, u64>,
     batch_lock:    Option<(u32, u32)>
 }
 impl<R: Rpc> Filesystem<R>
@@ -233,7 +233,7 @@ impl<R: Rpc> Filesystem<R>
         && self.groups.entries.is_empty()
     }
 
-    pub(crate) fn has_write(&self, volume: u32, token: u32) -> bool
+    pub(crate) fn has_write(&self, volume: u32, token: u64) -> bool
     {
         self.writes.get(token).is_some_and(|pending| pending.volume == volume)
     }
@@ -243,7 +243,7 @@ impl<R: Rpc> Filesystem<R>
         self.mounts.get(volume).is_some()
     }
 
-    pub(crate) fn write_node(&self, volume: u32, token: u32) -> Option<u32>
+    pub(crate) fn write_node(&self, volume: u32, token: u64) -> Option<u32>
     {
         self.writes.get(token).filter(|pending| pending.volume == volume).map(|p| p.node_id())
     }
@@ -546,7 +546,7 @@ impl<R: Rpc> Filesystem<R>
         self.mounts.get(volume).unwrap().nodes.get(node).ok_or_else(|| Cause::NotFound.into())
     }
 
-    pub async fn open(&mut self, volume: u32, node: u32, token: u32) -> Result<Layout>
+    pub async fn open(&mut self, volume: u32, node: u32, token: u64) -> Result<Layout>
     {
         self.owner = volume;
         if token == 0 || self.files.get(token).is_some()
@@ -616,7 +616,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(layout)
     }
 
-    pub async fn read(&mut self, volume: u32, token: u32, kind: Fork, offset: u64, capacity: usize)
+    pub async fn read(&mut self, volume: u32, token: u64, kind: Fork, offset: u64, capacity: usize)
                       -> Result<Vec<u8>>
     {
         self.owner = volume;
@@ -678,7 +678,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(output)
     }
 
-    pub async fn close_file(&mut self, volume: u32, token: u32) -> Result<()>
+    pub async fn close_file(&mut self, volume: u32, token: u64) -> Result<()>
     {
         self.owner = volume;
         let handle = self.files

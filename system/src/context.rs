@@ -33,6 +33,28 @@ pub fn bootstrap_thread() -> ThreadId
     if hart == 0 { BOOT_THREAD } else { ThreadId(0) }
 }
 
+/// Scheduler wake identity is typed; a full native transfer ID is never
+/// guessed from the bit range of a different manager's projected job ID.
+#[cfg(any(target_arch = "riscv64", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeferredIo
+{
+    DriverJob(u32),
+    FileTransfer(u64)
+}
+#[cfg(any(target_arch = "riscv64", test))]
+impl DeferredIo
+{
+    fn valid(self) -> bool
+    {
+        match self
+        {
+            Self::DriverJob(id) => id != 0,
+            Self::FileTransfer(id) => id != 0
+        }
+    }
+}
+
 /// Accounting belongs to an OS thread and survives hart migration with it.
 /// Independent app calls must never increment each other's nesting counters.
 #[cfg(any(target_arch = "riscv64", test))]
@@ -41,7 +63,7 @@ pub struct ThreadTrapState
     depth:    core::sync::atomic::AtomicUsize,
     #[cfg(target_arch = "riscv64")]
     reported: core::sync::atomic::AtomicBool,
-    deferred: core::sync::atomic::AtomicU32
+    deferred: spinning_top::Spinlock<Option<DeferredIo>>
 }
 #[cfg(any(target_arch = "riscv64", test))]
 impl ThreadTrapState
@@ -51,7 +73,7 @@ impl ThreadTrapState
         Self { depth:                                    core::sync::atomic::AtomicUsize::new(0),
                #[cfg(target_arch = "riscv64")]
                reported:                                 core::sync::atomic::AtomicBool::new(false),
-               deferred:                                 core::sync::atomic::AtomicU32::new(0) }
+               deferred:                                 spinning_top::Spinlock::new(None) }
     }
 
     pub fn enter(&self) -> TrapScope<'_>
@@ -61,10 +83,10 @@ impl ThreadTrapState
                     depth }
     }
 
-    pub fn defer(&self, job: u32) -> Result<(), mac_abi::Status>
+    pub fn defer(&self, job: DeferredIo) -> Result<(), mac_abi::Status>
     {
         use core::sync::atomic::Ordering::Relaxed;
-        if job == 0
+        if !job.valid()
         {
             return Err(mac_abi::BAD_ARGUMENT);
         }
@@ -72,16 +94,22 @@ impl ThreadTrapState
         {
             return Err(mac_abi::WRONG_THREAD);
         }
-        self.deferred
-            .compare_exchange(0, job, Relaxed, Relaxed)
-            .map(|_| ())
-            .map_err(|_| mac_abi::SERVICE_BUSY)
+        use mac_object_table::shared::InvocationGate as _;
+        crate::toolbox::handles::InvocationGate::run(|| {
+            let mut deferred = self.deferred.lock();
+            if deferred.is_some()
+            {
+                return Err(mac_abi::SERVICE_BUSY);
+            }
+            *deferred = Some(job);
+            Ok(())
+        })
     }
 
-    pub fn take_deferred(&self) -> Option<u32>
+    pub fn take_deferred(&self) -> Option<DeferredIo>
     {
-        let job = self.deferred.swap(0, core::sync::atomic::Ordering::Relaxed);
-        (job != 0).then_some(job)
+        use mac_object_table::shared::InvocationGate as _;
+        crate::toolbox::handles::InvocationGate::run(|| self.deferred.lock().take())
     }
 
     #[cfg(target_arch = "riscv64")]
@@ -219,20 +247,25 @@ mod tests
     fn deferred_io_is_exclusive_to_an_outer_service_and_consumed_once()
     {
         let state = ThreadTrapState::new();
-        assert_eq!(state.defer(17), Err(mac_abi::WRONG_THREAD));
+        assert_eq!(state.defer(DeferredIo::DriverJob(17)), Err(mac_abi::WRONG_THREAD));
         let outer = state.enter();
         assert_eq!(outer.depth, 1);
-        assert_eq!(state.defer(0), Err(mac_abi::BAD_ARGUMENT));
+        assert_eq!(state.defer(DeferredIo::DriverJob(0)), Err(mac_abi::BAD_ARGUMENT));
         {
             let _nested = state.enter();
-            assert_eq!(state.defer(17), Err(mac_abi::WRONG_THREAD));
+            assert_eq!(state.defer(DeferredIo::DriverJob(17)), Err(mac_abi::WRONG_THREAD));
         }
-        state.defer(17).unwrap();
-        assert_eq!(state.defer(18), Err(mac_abi::SERVICE_BUSY));
-        assert_eq!(state.take_deferred(), Some(17));
+        state.defer(DeferredIo::DriverJob(17)).unwrap();
+        assert_eq!(state.defer(DeferredIo::DriverJob(18)), Err(mac_abi::SERVICE_BUSY));
+        assert_eq!(state.take_deferred(), Some(DeferredIo::DriverJob(17)));
         assert_eq!(state.take_deferred(), None);
+        let wide = DeferredIo::FileTransfer(u64::MAX - 17);
+        state.defer(wide).unwrap();
+        assert_eq!(state.defer(DeferredIo::DriverJob(17)), Err(mac_abi::SERVICE_BUSY));
+        assert_eq!(state.take_deferred(), Some(wide));
+        assert_ne!(DeferredIo::FileTransfer(17), DeferredIo::DriverJob(17));
         drop(outer);
-        assert_eq!(state.defer(19), Err(mac_abi::WRONG_THREAD));
+        assert_eq!(state.defer(DeferredIo::DriverJob(19)), Err(mac_abi::WRONG_THREAD));
     }
 }
 

@@ -62,7 +62,7 @@ pub(in crate::toolbox::files) struct Plan
 {
     pub provider:    u32,
     pub volume:      u32,
-    pub handle:      u32,
+    pub handle:      u64,
     pub parent:      u32,
     pub expected:    u32,
     pub file_type:   [u8; 4],
@@ -78,7 +78,7 @@ impl Manager
     pub(in crate::toolbox::files) fn reserve_provider_metadata_authorized(
         &mut self, owner: super::super::subject::Access<'_>,
         authority: &super::super::subject::Authority, call: &FileCall)
-        -> Result<(u32, u32), Status>
+        -> Result<(u32, u64), Status>
     {
         self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FDWR"))?;
         #[cfg(target_arch = "riscv64")]
@@ -142,7 +142,7 @@ impl Manager
         Ok((provider, handle))
     }
 
-    pub(in crate::toolbox::files) fn confirm_provider_metadata(&mut self, handle: u32,
+    pub(in crate::toolbox::files) fn confirm_provider_metadata(&mut self, handle: u64,
                                                                bytes: &[u8], name: &str)
                                                                -> Result<CatalogInfo, Status>
     {
@@ -268,7 +268,7 @@ impl Manager
 
     pub(in crate::toolbox::files) fn write_provider<'a>(&self,
                                                         owner: impl Into<super::super::subject::Access<'a>>,
-                                                        handle: u32)
+                                                        handle: u64)
                                                         -> Result<Option<u32>, Status>
     {
         let mark = self.writes.get_for(owner.into(), handle)?;
@@ -277,7 +277,7 @@ impl Manager
 
     pub(in crate::toolbox::files) fn prepare_provider_write<'a>(&mut self,
                                                                 owner:impl Into<super::super::subject::Access<'a>>,
-                                                                handle: u32)
+                                                                handle: u64)
                                                                 -> Result<Plan, Status>
     {
         let owner = owner.into();
@@ -316,7 +316,7 @@ impl Manager
                   finder_info: [0; 32] })
     }
 
-    pub(in crate::toolbox::files) fn confirm_provider_write(&mut self, handle: u32, bytes: &[u8])
+    pub(in crate::toolbox::files) fn confirm_provider_write(&mut self, handle: u64, bytes: &[u8])
                                                             -> Result<(), Status>
     {
         let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
@@ -355,7 +355,7 @@ impl Manager
         Ok(())
     }
 
-    pub(in crate::toolbox::files) fn select_provider_target(&mut self, handle: u32, bytes: &[u8])
+    pub(in crate::toolbox::files) fn select_provider_target(&mut self, handle: u64, bytes: &[u8])
                                                             -> Result<(), Status>
     {
         let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
@@ -386,7 +386,7 @@ impl Manager
         Ok(())
     }
 
-    pub(in crate::toolbox::files) fn publish_provider_write(&mut self, handle: u32,
+    pub(in crate::toolbox::files) fn publish_provider_write(&mut self, handle: u64,
                                                             receipt: fs::WriteReceipt<'_>)
                                                             -> Result<CatalogInfo, Status>
     {
@@ -429,14 +429,14 @@ impl Manager
         Ok(entry)
     }
 
-    pub(in crate::toolbox::files) fn write_is_removal(&self, handle: u32) -> Result<bool, Status>
+    pub(in crate::toolbox::files) fn write_is_removal(&self, handle: u64) -> Result<bool, Status>
     {
         let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
         Ok(mark.provider.as_ref().ok_or(BAD_ARGUMENT)?.progress.lock().metadata == Some(REMOVE))
     }
 
     pub(in crate::toolbox::files) fn publish_provider_removal(
-        &mut self, handle: u32, receipt: fs::RemovalReceipt<'_>)
+        &mut self, handle: u64, receipt: fs::RemovalReceipt<'_>)
         -> Result<Option<CatalogInfo>, Status>
     {
         let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
@@ -471,7 +471,7 @@ impl Manager
         Ok(Some(entry))
     }
 
-    pub(in crate::toolbox::files) fn retire_provider_write(&mut self, handle: u32)
+    pub(in crate::toolbox::files) fn retire_provider_write(&mut self, handle: u64)
                                                            -> Result<(), Status>
     {
         let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
@@ -483,7 +483,7 @@ impl Manager
         Ok(())
     }
 
-    pub(in crate::toolbox::files) fn quarantine_provider_write(&mut self, handle: u32)
+    pub(in crate::toolbox::files) fn quarantine_provider_write(&mut self, handle: u64)
                                                                -> Result<(), Status>
     {
         let state = self.writes
@@ -496,7 +496,7 @@ impl Manager
         Ok(())
     }
 
-    pub(in crate::toolbox::files) fn cleanup_provider_write(&mut self, owner: u64, handle: u32)
+    pub(in crate::toolbox::files) fn cleanup_provider_write(&mut self, owner: u64, handle: u64)
                                                             -> Result<(u32, u32), Status>
     {
         self.write_provider(owner, handle)?.ok_or(BAD_ARGUMENT)?;
@@ -513,7 +513,7 @@ impl Manager
 
     pub(in crate::toolbox::files) fn next_orphaned_write(
         &mut self)
-        -> Option<(u32, u32, u32, super::super::subject::Subject)>
+        -> Option<(u64, u32, u32, super::super::subject::Subject)>
     {
         let (handle, mark) =
             self.writes.iter().find(|(_, mark)| {
@@ -528,7 +528,7 @@ impl Manager
         Some((handle, state.provider, mark.volume, mark.authority.flight_subject(mark.owner)))
     }
 
-    fn finish_write_mark(&mut self, handle: u32) -> Result<(), Status>
+    fn finish_write_mark(&mut self, handle: u64) -> Result<(), Status>
     {
         let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
         let state = mark.provider.as_ref().ok_or(BAD_ARGUMENT)?;

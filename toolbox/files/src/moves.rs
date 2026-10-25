@@ -42,7 +42,7 @@ pub enum MoveProgress
 pub struct IconMoveGroup<'a>
 {
     client:   Client<'a>,
-    handle:   u32,
+    handle:   u64,
     progress: MoveProgress,
     finished: bool
 }

@@ -439,12 +439,13 @@ fn reconstructed_file_manager_rejects_old_volume_fork_and_write_ids_through_both
             else
             {
                 let (old_volume, old_fork, old_write) = old.unwrap();
-                for (stale, fresh) in
-                    [(old_volume, volume), (old_fork, handle), (old_write, write.handle)]
+                for (stale, fresh) in [(old_volume, volume), (old_fork, handle)]
                 {
                     assert_eq!(stale & 0xffff, fresh & 0xffff, "same treaty slot reused");
                     assert_ne!(stale, fresh, "reconstruction must preserve generation history");
                 }
+                assert!(old_write > u64::from(u32::MAX) && write.handle > u64::from(u32::MAX));
+                assert_ne!(old_write, write.handle);
                 for operation in [VOLUME_INFO, TELL, CLOSE]
                 {
                     let mut call = FileCall { operation,
@@ -723,5 +724,62 @@ fn scoped_fork_outlives_child_first_owner_walk_and_closes_only_after_its_real_ro
             assert!(fixture::walk_registered(other, false, false).failures.is_empty());
             fixture::try_retire(other).unwrap();
         });
+    });
+}
+
+#[test]
+fn native_data_writes_grow_past_eight_and_keep_slot_reuse_and_owner_checks()
+{
+    writable_disk(|system| {
+        let volume = system.files().volume_at(0).unwrap().id;
+        let mut held = Vec::new();
+        for at in 0..20
+        {
+            let mut call = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                           volume: volume.0,
+                                           parent: ROOT_ID,
+                                           length: 0,
+                                           ..Default::default() };
+            system.client().data_write(&mut call, &format!("Draft {at}"), &[]).unwrap();
+            assert!(call.handle > u64::from(u32::MAX));
+            held.push(call.handle);
+        }
+        let initial = watch_pool(system, *b"FDWR");
+        assert_eq!(initial.live, 20);
+        assert_eq!(initial.capacity, mac_toolbox::inspection::CapacityPolicy::GrowableUntilMemory);
+        let stale = held.remove(0);
+        let mut call = DataWriteCall { operation: ABORT_DATA_WRITE,
+                                       handle: stale,
+                                       ..Default::default() };
+        let error =
+            with_owner(2002, || system.client().data_write(&mut call, "", &[])).unwrap_err();
+        assert_eq!(error, Error::AccessDenied);
+        assert!(error.to_string().contains("protected"));
+        system.client().data_write(&mut call, "", &[]).unwrap();
+        let mut fresh = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                        volume: volume.0,
+                                        parent: ROOT_ID,
+                                        length: 0,
+                                        ..Default::default() };
+        system.client().data_write(&mut fresh, "Replacement draft", &[]).unwrap();
+        assert_ne!(fresh.handle, stale);
+        assert_eq!(watch_pool(system, *b"FDWR").slots,
+                   initial.slots,
+                   "replacement must reuse acknowledged storage");
+        let error = system.client().data_write(&mut call, "", &[]).unwrap_err();
+        assert_eq!(error, Error::NotFound);
+        assert!(error.to_string().contains("found"));
+        for handle in held.into_iter().chain([fresh.handle])
+        {
+            system.client()
+                  .data_write(&mut DataWriteCall { operation: ABORT_DATA_WRITE,
+                                                   handle,
+                                                   ..Default::default() },
+                              "",
+                              &[])
+                  .unwrap();
+        }
+        let pool = watch_pool(system, *b"FDWR");
+        assert_eq!((pool.live, pool.pending), (0, 0));
     });
 }

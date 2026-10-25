@@ -95,6 +95,7 @@ fn check_legacy_resources(system: &System<'_>, gate: mac_toolbox::abi::TrapGate)
 }
 pub fn check(system: &System<'_>, gate: mac_toolbox::abi::TrapGate) -> Result<(), Error>
 {
+    check_native_writes(system)?;
     let files = system.files();
     // System, not this fixture or Finder, mounts device exports before starting
     // userspace. Repeated explicit requests must find those same live volumes.
@@ -510,7 +511,9 @@ fn check_writes(system: &System<'_>, volume: VolumeId, forked: mac_toolbox::Cnid
                           parent: ROOT_ID.0,
                           ..Default::default() };
     system.client().data_write(&mut raw, "Never published", &[])?;
-    require(raw.handle != stale && raw.handle & 0xffff == stale & 0xffff)?;
+    require(raw.handle != stale
+            && raw.handle > u64::from(u32::MAX)
+            && stale > u64::from(u32::MAX))?;
     for operation in [APPEND_DATA_WRITE, COMMIT_DATA_WRITE, ABORT_DATA_WRITE]
     {
         require(system.client().data_write(&mut DataWriteCall { operation,
@@ -1250,4 +1253,80 @@ fn check_object_properties(system: &System<'_>, volume: VolumeId) -> Result<(), 
     require(files.catalog(volume, folder.id)?.modified == metadata.modified)?;
     files.remove(volume, folder.id)?;
     system.log("FILE_PROPERTIES_PASS atomic=passed no-change=passed locked=passed retry=passed\n")
+}
+
+fn check_native_writes(system: &System<'_>) -> Result<(), Error>
+{
+    use mac_toolbox::{abi::files::*,
+                      inspection::{CapacityPolicy, Scope}};
+    let volume = system.files().volume_at(0)?.id;
+    let mut ids = [0u64; 20];
+    for (at, id) in ids.iter_mut().enumerate()
+    {
+        let name = [b'W', b'i', b'd', b'e', b' ', b'0' + (at / 10) as u8, b'0' + (at % 10) as u8];
+        let mut call = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                       volume: volume.0,
+                                       parent: ROOT_ID,
+                                       length: 0,
+                                       ..Default::default() };
+        system.client().data_write(&mut call,
+                                    core::str::from_utf8(&name).map_err(|_| Error::BadAbi)?,
+                                    &[])?;
+        require(call.handle > u64::from(u32::MAX))?;
+        *id = call.handle;
+    }
+    let pool = || -> Result<mac_toolbox::inspection::Pool, Error> {
+        let ledger = system.inspection()
+                           .snapshot(Scope::Own)
+                           .map_err(|failure| failure.cause)?
+                           .ledger(0)
+                           .map_err(|failure| failure.cause)?;
+        for at in 0..ledger.len()
+        {
+            let row = ledger.at(at).map_err(|failure| failure.cause)?;
+            if row.kind == *b"FDWR"
+            {
+                return Ok(row);
+            }
+        }
+        Err(Error::BadAbi)
+    };
+    let original = pool()?;
+    require(original.live == 20 && original.capacity == CapacityPolicy::GrowableUntilMemory)?;
+    let stale = ids[0];
+    system.client().data_write(&mut DataWriteCall { operation: ABORT_DATA_WRITE,
+                                                     handle: stale,
+                                                     ..Default::default() },
+                                "",
+                                &[])?;
+    let mut fresh = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                    volume: volume.0,
+                                    parent: ROOT_ID,
+                                    length: 0,
+                                    ..Default::default() };
+    system.client().data_write(&mut fresh, "Wide replacement", &[])?;
+    ids[0] = fresh.handle;
+    require(fresh.handle != stale && pool()?.slots == original.slots)?;
+    let error = system.client()
+                      .data_write(&mut DataWriteCall { operation: ABORT_DATA_WRITE,
+                                                       handle: stale,
+                                                       ..Default::default() },
+                                  "",
+                                  &[])
+                      .err()
+                      .ok_or(Error::BadAbi)?;
+    require(error == Error::NotFound)?;
+    crate::diagnostics::error(system, "HOST_FS_NATIVE_STALE_WRITE", error);
+    for handle in ids
+    {
+        system.client().data_write(&mut DataWriteCall { operation: ABORT_DATA_WRITE,
+                                                         handle,
+                                                         ..Default::default() },
+                                    "",
+                                    &[])?;
+    }
+    let remaining = pool()?;
+    require(remaining.live == 0 && remaining.pending == 0)?;
+    system.log("HOST_FS_NATIVE_WRITE_GROWTH_PASS count=20 width=64 reuse=passed cleanup=passed\n")?;
+    Ok(())
 }

@@ -36,7 +36,7 @@ impl<R: Rpc> Filesystem<R>
 {
     /// Stage a field-selective edit. `false` means an exact no-change, with no
     /// host I/O or transaction to finish. IDs come from the resident writer table.
-    pub async fn begin_metadata(&mut self, volume: u32, node: u32, token: u32,
+    pub async fn begin_metadata(&mut self, volume: u32, node: u32, token: u64,
                                 patch: MetadataPatch<'_>, when: u64)
                                 -> Result<bool>
     {

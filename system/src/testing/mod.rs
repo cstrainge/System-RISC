@@ -11,6 +11,7 @@ pub mod power;
 mod worlds;
 mod textedit;
 use core::cell::RefCell;
+use std::vec::Vec;
 
 use mac_abi::{traps::*, *};
 
@@ -932,6 +933,15 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
                          run: impl FnOnce(&SystemServices) -> R)
                          -> std::io::Result<(R, DiskActivity)>
 {
+    with_file_disks(&[path], read_only, faults, run).map(|(value, mut activity)| {
+                                                        (value, activity.remove(0))
+                                                    })
+}
+/// Scope multiple actual writable images through the same storage callbacks.
+pub fn with_file_disks<R>(paths: &[&std::path::Path], read_only: bool, faults: DiskFaults,
+                          run: impl FnOnce(&SystemServices) -> R)
+                          -> std::io::Result<(R, Vec<DiskActivity>)>
+{
     use std::io::{Read, Seek, SeekFrom, Write};
     struct Disk
     {
@@ -941,13 +951,15 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
         faults:    DiskFaults,
         activity:  DiskActivity
     }
+    struct Disks(Vec<Disk>);
     unsafe extern "C" fn info(context: *mut (), index: u32, output: *mut DiskInfo) -> Status
     {
-        if index != 0
+        let disks = unsafe { &*context.cast::<Disks>() };
+        let Some(d) = disks.0.get(index as usize)
+        else
         {
             return NOT_FOUND;
-        }
-        let d = unsafe { &*context.cast::<Disk>() };
+        };
         unsafe {
             *output = DiskInfo { sector_count: d.sectors,
                                  read_only: u32::from(d.read_only),
@@ -958,8 +970,13 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
     unsafe extern "C" fn read(context: *mut (), index: u32, sector: u64, output: *mut u8)
                               -> Status
     {
-        let d = unsafe { &mut *context.cast::<Disk>() };
-        if index != 0 || sector >= d.sectors
+        let disks = unsafe { &mut *context.cast::<Disks>() };
+        let Some(d) = disks.0.get_mut(index as usize)
+        else
+        {
+            return NOT_FOUND;
+        };
+        if sector >= d.sectors
         {
             return BAD_ARGUMENT;
         }
@@ -973,12 +990,17 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
     unsafe extern "C" fn write(context: *mut (), index: u32, sector: u64, input: *const u8)
                                -> Status
     {
-        let d = unsafe { &mut *context.cast::<Disk>() };
+        let disks = unsafe { &mut *context.cast::<Disks>() };
+        let Some(d) = disks.0.get_mut(index as usize)
+        else
+        {
+            return NOT_FOUND;
+        };
         if d.read_only
         {
             return READ_ONLY;
         }
-        if index != 0 || sector >= d.sectors
+        if sector >= d.sectors
         {
             return BAD_ARGUMENT;
         }
@@ -1004,11 +1026,12 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
     }
     unsafe extern "C" fn flush(context: *mut (), index: u32) -> Status
     {
-        if index != 0
+        let disks = unsafe { &mut *context.cast::<Disks>() };
+        let Some(d) = disks.0.get_mut(index as usize)
+        else
         {
             return NOT_FOUND;
-        }
-        let d = unsafe { &mut *context.cast::<Disk>() };
+        };
         let attempt = d.activity.flushes;
         d.activity.flushes += 1;
         if d.faults.flush_at.is_some_and(|n| attempt == n || (d.faults.persistent && attempt >= n))
@@ -1017,13 +1040,17 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
         }
         d.file.sync_all().map_or(IO_ERROR, |_| OK)
     }
-    let file = std::fs::OpenOptions::new().read(true).write(!read_only).open(path)?;
-    let sectors = file.metadata()?.len() / 512;
-    let mut disk = Disk { file,
-                          sectors,
-                          read_only,
-                          faults,
-                          activity: Default::default() };
+    let mut disk = Disks(Vec::new());
+    for path in paths
+    {
+        let file = std::fs::OpenOptions::new().read(true).write(!read_only).open(path)?;
+        let sectors = file.metadata()?.len() / 512;
+        disk.0.push(Disk { file,
+                           sectors,
+                           read_only,
+                           faults,
+                           activity: Default::default() });
+    }
     let boot = BootInfo { header:                  Header::for_type::<BootInfo>(),
                           ram_base:                0,
                           ram_size:                0,
@@ -1048,7 +1075,7 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
         SESSION.with(|slot| slot.borrow_mut().as_mut().unwrap().files = manager);
         run(services)
     });
-    Ok((result, disk.activity))
+    Ok((result, disk.0.into_iter().map(|disk| disk.activity).collect()))
 }
 
 pub mod files;

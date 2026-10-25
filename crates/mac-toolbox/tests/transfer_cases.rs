@@ -8,7 +8,13 @@ fn require(value: bool) -> ToolboxResult<()>
 }
 fn tick(system: &System<'_>) -> ToolboxResult<()>
 {
-    system.events().wait_event(EventMask::ALL, 1).map(|_| ())
+    let event = system.events().wait_event(EventMask::ALL, 1)?;
+    if let Event::FileTransferChanged { transfer,
+                                        .. } = event
+    {
+        require(transfer.0 > u64::from(u32::MAX))?;
+    }
+    Ok(())
 }
 pub fn finish(system: &System<'_>, owner: &mut FileTransfer<'_>)
               -> core::result::Result<TransferProgress, TransferFailure>
@@ -392,7 +398,9 @@ fn check_abandoned(system: &System<'_>, native: VolumeId, host: VolumeId, target
             require(files.lookup(host, target, source.name()) == Err(Error::NotFound))?;
             bytes(system, &source)?;
             let mut retry = files.begin_transfer(spec, &[reference(&source)])?;
-            require(retry.id() != stale && retry.id().0 & 0xffff == stale.0 & 0xffff)?;
+            require(retry.id() != stale
+                    && retry.id().0 > u64::from(u32::MAX)
+                    && stale.0 > u64::from(u32::MAX))?;
             require(system.client().file_transfer(&mut call, &[]) == Err(Error::NotFound))?;
             let progress = finish(system, &mut retry).map_err(|failure| failure.cause)?;
             require(progress.phase == TransferPhase::Committed)?;
@@ -483,7 +491,9 @@ fn check_ids(system: &System<'_>, native: VolumeId, host: VolumeId, target: Cnid
     // fails normally. The old generation must never observe that replacement.
     finish(system, &mut old).map_err(|failure| failure.cause)?;
     let mut replacement = system.files().begin_transfer(spec, &[reference(data)])?;
-    require(replacement.id() != stale && replacement.id().0 & 0xffff == stale.0 & 0xffff)?;
+    require(replacement.id() != stale
+            && stale.0 > u64::from(u32::MAX)
+            && replacement.id().0 > u64::from(u32::MAX))?;
     let mut call = FileTransferCall { operation: STEP_TRANSFER,
                                       handle: stale.0,
                                       ..Default::default() };
@@ -497,7 +507,7 @@ fn check_ids(system: &System<'_>, native: VolumeId, host: VolumeId, target: Cnid
                                 ..Default::default() };
     system.client().file(&mut opened, "", &mut [])?;
     let mut foreign = FileTransferCall { operation: STEP_TRANSFER,
-                                         handle: opened.handle,
+                                         handle: u64::from(opened.handle),
                                          ..Default::default() };
     require(system.client().file_transfer(&mut foreign, &[]) == Err(Error::NotFound))?;
     system.client().file(&mut FileCall { operation: CLOSE,

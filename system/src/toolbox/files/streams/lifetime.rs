@@ -3,7 +3,7 @@
 use mac_object_table::{domain::ReleasedResource,
                        registry::{Release, Source, Specification}};
 
-use crate::toolbox::handles::{CapacityPolicy, Kind, KindCode, cleanup::Failure};
+use crate::toolbox::handles::{CapacityPolicy, KindCode, cleanup::Failure};
 
 pub(crate) fn specification(storage: bool) -> Specification<'static>
 {
@@ -17,24 +17,16 @@ pub(crate) fn specification(storage: bool) -> Specification<'static>
                         "Streamed fork writes"
                     },
                     provider: "System File Manager",
-                    capacity: CapacityPolicy::HardBound { slots:  if storage
-                                                          {
-                                                              1
-                                                          }
-                                                          else
-                                                          {
-                                                              Kind::FileStreams.capacity()
-                                                          },
-                                                          reason: if storage
-                                                          {
-                                                              "One streamed-write backing per \
-                                                               domain"
-                                                          }
-                                                          else
-                                                          {
-                                                              "Existing 32-bit streamed-write \
-                                                               projection namespace"
-                                                          } },
+                    capacity: if storage
+                    {
+                        CapacityPolicy::HardBound { slots:  1,
+                                                    reason: "One native file-object backing per \
+                                                             domain" }
+                    }
+                    else
+                    {
+                        CapacityPolicy::GrowableUntilMemory
+                    },
                     source:   Source::Resident }
 }
 pub(crate) trait StreamHost

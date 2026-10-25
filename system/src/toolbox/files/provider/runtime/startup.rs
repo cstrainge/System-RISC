@@ -86,7 +86,7 @@ pub(crate) fn mount_startup_exports() -> Result<(), Status>
         Err(error) => return Err(error)
     };
     // No callbacks or jobs exist until their cleanup storage is reserved.
-    FLIGHTS.lock().try_reserve(1).map_err(|_| NO_MEMORY)?;
+    reserve_flight_storage(&mut FLIGHTS.lock())?;
     let job = submit(provider, Operation::Exports, 0, 0)?;
     let Reply::Count(count) = complete(provider, Step::Count, job)?
     else

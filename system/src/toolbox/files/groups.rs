@@ -33,8 +33,9 @@ pub(super) struct State
 }
 impl super::objects::Payload for Group
 {
+    type Storage = crate::toolbox::files::objects::storage::Native<Self>;
+
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FIGR");
-    const WIRE: Kind = Kind::FileGroups;
 
     fn cleanup_pending(&self) -> bool
     {
@@ -92,7 +93,7 @@ pub(super) fn idle_cleanup()
 impl Manager
 {
     pub(super) fn group_provider<'a>(&self, owner: impl Into<super::subject::Access<'a>>,
-                                     handle: u32)
+                                     handle: u64)
                                      -> Result<Option<u32>, Status>
     {
         Ok(self.groups.get_for(owner.into(), handle)?.provider)
@@ -304,7 +305,7 @@ impl Manager
         Ok(())
     }
 
-    pub(super) fn ready_group(&mut self, handle: u32, progress: Progress) -> Result<(), Status>
+    pub(super) fn ready_group(&mut self, handle: u64, progress: Progress) -> Result<(), Status>
     {
         let group = self.groups.completing(handle).ok_or(NOT_FOUND)?;
         let mut state = group.state.lock();
@@ -335,13 +336,13 @@ impl Manager
         Ok(())
     }
 
-    pub(super) fn retire_group(&mut self, handle: u32) -> Result<(), Status>
+    pub(super) fn retire_group(&mut self, handle: u64) -> Result<(), Status>
     {
         self.groups.completing(handle).ok_or(NOT_FOUND)?.state.lock().closed = true;
         self.groups.remove(handle).ok_or(NOT_FOUND)
     }
 
-    pub(super) fn quarantine_group(&mut self, handle: u32)
+    pub(super) fn quarantine_group(&mut self, handle: u64)
     {
         let Some(group) = self.groups.completing(handle)
         else

@@ -632,7 +632,7 @@ fn dispatch_job(mut dispatch: super::jobs::Dispatch)
                                                 job,
                                                 .. }) = completed
     {
-        crate::machine::scheduler::wake_io(thread, job);
+        crate::machine::scheduler::wake_io(thread, crate::context::DeferredIo::DriverJob(job));
     }
 }
 
@@ -644,7 +644,7 @@ fn defer_current_job(id: u32) -> Result<(), Status>
 {
     let context = crate::context::current_thread_context();
     job_pending(context.identity().thread.0, id)?;
-    context.traps.defer(id)
+    context.traps.defer(crate::context::DeferredIo::DriverJob(id))
 }
 
 
@@ -720,7 +720,8 @@ impl OwnedJob
         };
         if let Some(thread) = waiter
         {
-            crate::machine::scheduler::wake_io(thread, self.id);
+            crate::machine::scheduler::wake_io(thread,
+                                               crate::context::DeferredIo::DriverJob(self.id));
         }
         Ok(())
     }

@@ -8,7 +8,7 @@ pub struct Create<'a>
 {
     pub volume:          u32,
     pub parent:          u32,
-    pub token:           u32,
+    pub token:           u64,
     pub properties:      mac_filesystem_interface::FileProperties<'a>,
     pub data_length:     u64,
     pub resource_length: u64,
@@ -18,7 +18,7 @@ pub struct Replace<'a>
 {
     pub volume:             u32,
     pub node:               u32,
-    pub token:              u32,
+    pub token:              u64,
     pub data_length:        u64,
     pub resource_length:    u64,
     pub when:               u64,
@@ -86,7 +86,7 @@ impl<R: Rpc> Filesystem<R>
                                   })
     }
 
-    pub(crate) fn pending_node(&self, volume: u32, token: u32) -> Result<&Node>
+    pub(crate) fn pending_node(&self, volume: u32, token: u64) -> Result<&Node>
     {
         let pending =
             self.writes.get(token).filter(|p| p.volume == volume).ok_or(Cause::NotFound)?;
@@ -563,7 +563,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    pub async fn read_write(&mut self, volume: u32, token: u32, kind: Fork, offset: u64,
+    pub async fn read_write(&mut self, volume: u32, token: u64, kind: Fork, offset: u64,
                             capacity: usize)
                             -> Result<Vec<u8>>
     {
@@ -618,7 +618,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(output)
     }
 
-    async fn copy_resource(&mut self, volume: u32, token: u32, source: forks::ForkLayout)
+    async fn copy_resource(&mut self, volume: u32, token: u64, source: forks::ForkLayout)
                            -> Result<()>
     {
         let pending = self.writes
@@ -653,7 +653,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    pub async fn write_chunk(&mut self, volume: u32, token: u32, kind: Fork, bytes: &[u8])
+    pub async fn write_chunk(&mut self, volume: u32, token: u64, kind: Fork, bytes: &[u8])
                              -> Result<()>
     {
         const {
@@ -688,7 +688,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    async fn write_one(&mut self, volume: u32, token: u32, kind: Fork, bytes: &[u8]) -> Result<()>
+    async fn write_one(&mut self, volume: u32, token: u64, kind: Fork, bytes: &[u8]) -> Result<()>
     {
         self.owner = volume;
         let pending = self.writes
@@ -723,7 +723,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    pub(super) async fn update_volume_after_publication(&mut self, token: u32) -> Result<()>
+    pub(super) async fn update_volume_after_publication(&mut self, token: u64) -> Result<()>
     {
         let pending = self.writes.get(token).ok_or(Cause::NotFound)?;
         if pending.volume_updated
@@ -739,7 +739,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    pub(super) async fn update_parent_after_create(&mut self, token: u32) -> Result<()>
+    pub(super) async fn update_parent_after_create(&mut self, token: u64) -> Result<()>
     {
         let pending = self.writes.get(token).unwrap();
         if pending.parent_updated
@@ -832,7 +832,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    pub(super) async fn cleanup_write(&mut self, token: u32) -> Result<()>
+    pub(super) async fn cleanup_write(&mut self, token: u64) -> Result<()>
     {
         for which in 0..4
         {
@@ -881,7 +881,7 @@ impl<R: Rpc> Filesystem<R>
 
     /// A completed host commit retires its stage. Retrying after a later cleanup
     /// error never republishes the file or repeats a catalog mutation.
-    pub async fn finish_write(&mut self, volume: u32, token: u32) -> Result<u32>
+    pub async fn finish_write(&mut self, volume: u32, token: u64) -> Result<u32>
     {
         self.owner = volume;
         let pending = self.writes
@@ -1059,7 +1059,7 @@ impl<R: Rpc> Filesystem<R>
 
     /// Return whether cancellation observed a publication, so callers do not
     /// incorrectly report that an already committed mutation was undone.
-    pub async fn abort_write(&mut self, volume: u32, token: u32) -> Result<bool>
+    pub async fn abort_write(&mut self, volume: u32, token: u64) -> Result<bool>
     {
         self.owner = volume;
         if self.writes.get(token).filter(|p| p.volume == volume).is_some_and(|p| p.removing)

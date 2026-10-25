@@ -1948,7 +1948,7 @@ fn shared_file_dialog_and_writer_ids_reject_reused_and_foreign_slots()
                                        length: 1,
                                        ..Default::default() };
                with_owner(owner, || client.data_write(&mut write, "JSON", &[])).unwrap();
-               assert_eq!(old & 0xffff, write.handle & 0xffff);
+               assert!(old > u64::from(u32::MAX) && write.handle > u64::from(u32::MAX));
                assert_ne!(old, write.handle);
                let mut stale = DataWriteCall { operation: APPEND_DATA_WRITE,
                                                handle: old,
@@ -1986,6 +1986,17 @@ fn shared_file_dialog_and_writer_ids_reject_reused_and_foreign_slots()
                assert_eq!((pool.live, pool.slots),
                           (1, 1),
                           "replacement must reuse the sole dialog slot");
+               let writer_pool = with_owner(owner, || {
+                   (0..pools.len()).map(|index| pools.at(index).unwrap())
+                                   .find(|pool| pool.kind == *b"FDWR")
+                                   .unwrap()
+               });
+               assert_eq!((writer_pool.live,
+                           writer_pool.slots,
+                           writer_pool.births,
+                           writer_pool.deaths),
+                          (1, 1, 2, 1),
+                          "replacement must reuse the sole acknowledged writer slot");
                assert!(first > u64::from(u32::MAX) && call.handle > u64::from(u32::MAX));
                assert_ne!(first, call.handle);
                let mut stale = sf::StandardFileCall { operation: sf::POLL,
@@ -1996,8 +2007,10 @@ fn shared_file_dialog_and_writer_ids_reject_reused_and_foreign_slots()
                stale.handle = u64::from(write.handle);
                assert_eq!(with_owner(owner, || client.standard_file(&mut stale)),
                           Err(Error::NotFound));
+               assert!(u32::try_from(write.handle).is_err(),
+                       "native writer cannot be projected by truncation");
                let mut foreign = FileCall { operation: TELL,
-                                            handle: write.handle,
+                                            handle: call.volume,
                                             ..Default::default() };
                assert_eq!(with_owner(owner, || client.file(&mut foreign, "", &mut [])),
                           Err(Error::NotFound));
@@ -2158,7 +2171,8 @@ fn legacy_standard_file_pascal_names_and_writer_share_native_validation()
             w.operation = BEGIN_DATA_WRITE;
             w.expected_cnid = w.entry.id;
             assert_eq!(with_owner(11, || call(&mut w)), 0);
-            assert_eq!(w.handle & 0xffff, first & 0xffff);
+            assert!(w.handle > u64::from(u32::MAX) && first > u64::from(u32::MAX));
+            assert_ne!(w.handle, first);
             let mut old = DataWriteCall { operation: ABORT_DATA_WRITE,
                                           handle: first,
                                           ..Default::default() };

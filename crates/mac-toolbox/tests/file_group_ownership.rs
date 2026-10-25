@@ -8,30 +8,42 @@ use mac_abi::files::*;
 use mac_system::testing::{files::with_owner, inspection as fixture};
 use mac_toolbox::{Error, System};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
-fn disk(run: impl FnOnce(&System<'_>))
+fn disks(count: usize, run: impl FnOnce(&System<'_>))
 {
-    struct Disk(PathBuf);
-    impl Drop for Disk
+    struct Disks(Vec<PathBuf>);
+    impl Drop for Disks
     {
         fn drop(&mut self)
         {
-            let _ = fs::remove_file(&self.0);
+            for path in &self.0
+            {
+                let _ = fs::remove_file(path);
+            }
         }
     }
-    let disk = Disk(std::env::temp_dir().join(format!("group-ledger-{}-{}.hfsb",
-                                                      std::process::id(),
-                                                      NEXT.fetch_add(1, Ordering::Relaxed))));
-    let mut image = hfs_b::Image::create(&disk.0, 16 * 1024 * 1024).unwrap();
-    let partition = image.partition();
-    mac_hfs_b::format(&mut image,partition,mac_hfs_b::FormatOptions {
-        name:"Groups",created:mac_hfs_b::time::Timestamp(4_600_000_000_000_000),uuid:[40;16]
-    },Default::default()).unwrap();
-    drop(image);
-    mac_system::testing::with_file_disk(&disk.0, false, Default::default(), |services| {
+    let mut disks = Disks(Vec::new());
+    for at in 0..count
+    {
+        let path = std::env::temp_dir().join(format!("groups-{}-{}-{at}.hfsb",
+                                                     std::process::id(),
+                                                     NEXT.fetch_add(1, Ordering::Relaxed)));
+        disks.0.push(path.clone());
+        let mut image = hfs_b::Image::create(&path, 16 * 1024 * 1024).unwrap();
+        let partition = image.partition();
+        mac_hfs_b::format(&mut image,partition,mac_hfs_b::FormatOptions {
+            name:"Groups",created:mac_hfs_b::time::Timestamp(4_600_000_000_000_000),uuid:[at as u8;16]
+        },Default::default()).unwrap();
+    }
+    let paths: Vec<_> = disks.0.iter().map(PathBuf::as_path).collect();
+    mac_system::testing::with_file_disks(&paths, false, Default::default(), |services| {
         run(&unsafe { System::from_raw(services) }.unwrap());
     }).unwrap();
 }
-fn begin(system: &System<'_>, item: mac_toolbox::files::CatalogInfo) -> u32
+fn disk(run: impl FnOnce(&System<'_>))
+{
+    disks(1, run);
+}
+fn begin(system: &System<'_>, item: mac_toolbox::files::CatalogInfo) -> u64
 {
     let mut call = IconGroupCall { operation: BEGIN_ICON_GROUP,
                                    volume: item.volume.0,
@@ -47,7 +59,7 @@ fn begin(system: &System<'_>, item: mac_toolbox::files::CatalogInfo) -> u32
     system.client().icon_group(&mut call, &[row]).unwrap();
     call.handle
 }
-fn invoke(system: &System<'_>, handle: u32, operation: u32) -> Result<IconGroupCall, Error>
+fn invoke(system: &System<'_>, handle: u64, operation: u32) -> Result<IconGroupCall, Error>
 {
     let mut call = IconGroupCall { operation,
                                    handle,
@@ -72,7 +84,18 @@ fn native_group_abandonment_rejects_foreign_and_reused_ids_without_touching_icon
         invoke(system, first, ABANDON_ICON_GROUP).unwrap();
         assert_eq!(files.catalog(volume, item.id).unwrap(), item, "abandonment moved an icon");
         let replacement = begin(system, item);
-        assert_eq!(first & 0xffff, replacement & 0xffff);
+        assert!(first > u64::from(u32::MAX) && replacement > u64::from(u32::MAX));
+        let ledger = system.inspection()
+                           .snapshot(mac_toolbox::inspection::Scope::Own)
+                           .unwrap()
+                           .ledger(0)
+                           .unwrap();
+        let group = (0..ledger.len()).map(|at| ledger.at(at).unwrap())
+                                     .find(|row| row.kind == *b"FIGR")
+                                     .unwrap();
+        assert_eq!((group.slots, group.births, group.deaths),
+                   (1, 2, 1),
+                   "replacement must reuse freed storage");
         assert_ne!(first, replacement);
         for operation in [STEP_ICON_GROUP, CANCEL_ICON_GROUP, ABANDON_ICON_GROUP]
         {
@@ -147,5 +170,55 @@ fn sdk_group_drop_aborts_without_publishing_and_the_next_guard_can_commit()
         assert_eq!(files.catalog(volume, item.id).unwrap().saved_icon_location(),
                    Some(mac_toolbox::Point { h: 140,
                                              v: 90 }));
+    });
+}
+
+#[test]
+fn native_groups_grow_past_eight_and_cross_kind_ids_are_refused()
+{
+    disks(20, |system| {
+        let files = system.files();
+        let mut held = Vec::new();
+        for at in 0..20
+        {
+            let volume = files.volume_at(at).unwrap().id;
+            let item = files.new_folder(volume, mac_toolbox::Cnid(ROOT_ID), "Icon").unwrap();
+            let id = begin(system, item);
+            assert!(id > u64::from(u32::MAX));
+            held.push((item, id));
+        }
+        let (item, stale) = held.remove(0);
+        invoke(system, stale, ABANDON_ICON_GROUP).unwrap();
+        let replacement = begin(system, item);
+        let ledger = system.inspection()
+                           .snapshot(mac_toolbox::inspection::Scope::Own)
+                           .unwrap()
+                           .ledger(0)
+                           .unwrap();
+        let group = (0..ledger.len()).map(|at| ledger.at(at).unwrap())
+                                     .find(|row| row.kind == *b"FIGR")
+                                     .unwrap();
+        assert_eq!(group.live, 20);
+        assert!((20..40).contains(&group.slots));
+        assert_eq!(group.capacity, mac_toolbox::inspection::CapacityPolicy::GrowableUntilMemory);
+        let error = invoke(system, stale, STEP_ICON_GROUP).err().unwrap();
+        assert_eq!(error, Error::NotFound);
+        assert!(error.to_string().contains("found"));
+        let error = system.client()
+                          .fork_write(&mut ForkWriteCall { operation: ABORT_FORK_WRITE,
+                                                           handle: replacement,
+                                                           ..Default::default() },
+                                      "",
+                                      "",
+                                      &[],
+                                      &mut [])
+                          .unwrap_err();
+        assert_eq!(error, Error::NotFound);
+        assert!(error.to_string().contains("found"));
+        for (_, id) in held.into_iter().chain([(item, replacement)])
+        {
+            invoke(system, id, CANCEL_ICON_GROUP).unwrap();
+        }
+        assert_eq!(files.catalog(item.volume, item.id).unwrap(), item);
     });
 }

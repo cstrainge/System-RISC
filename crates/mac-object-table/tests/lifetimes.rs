@@ -23,7 +23,6 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
 {
     let kinds = [Kind::Memory,
                  Kind::Files,
-                 Kind::FileWrites,
                  Kind::Volumes,
                  Kind::Modules,
                  Kind::DriverInterfaces,
@@ -41,9 +40,7 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
                  Kind::FileWatches,
                  Kind::Drags,
                  Kind::DragReceivers,
-                 Kind::FileStreams,
-                 Kind::FileGroups,
-                 Kind::FileTransfers];
+                 Kind::DragReceivers];
     let mut tables: Vec<_> = kinds.into_iter().map(Table::new).collect();
     let ids: Vec<_> = tables.iter_mut().map(|t| t.insert(1).unwrap()).collect();
     for (row, table) in tables.iter().enumerate()
@@ -136,7 +133,7 @@ fn memory_projections_reject_foreign_owners_and_recreated_tables()
 #[test]
 fn file_manager_ids_reject_foreign_instances_and_reconstructed_storage()
 {
-    for kind in [Kind::Files, Kind::FileWrites, Kind::Volumes]
+    for kind in [Kind::Files, Kind::Volumes]
     {
         let mut first = Table::new(kind);
         let mut foreign = Table::new(kind);

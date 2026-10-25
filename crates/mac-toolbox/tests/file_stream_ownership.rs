@@ -45,7 +45,7 @@ fn begin(system: &System<'_>, name: &str) -> ForkWriteCall
     system.client().fork_write(&mut call, name, "", &[], &mut []).unwrap();
     call
 }
-fn invoke(system: &System<'_>, handle: u32, operation: u32) -> Result<(), Error>
+fn invoke(system: &System<'_>, handle: u64, operation: u32) -> Result<(), Error>
 {
     let mut call = ForkWriteCall { operation,
                                    handle,
@@ -79,7 +79,8 @@ fn abandon_invalidates_before_rollback_and_reused_slots_reject_the_old_generatio
             assert!(error.to_string().contains("found"));
         }
         let mut other = begin(system, "Survivor");
-        assert_ne!(first.handle & 0xffff, other.handle & 0xffff, "unacknowledged slot was reused");
+        assert!(first.handle > u64::from(u32::MAX) && other.handle > u64::from(u32::MAX));
+        assert_eq!((pool(system).slots, pool(system).pending), (2, 1), "pending slot was reused");
         for _ in 0..100
         {
             pump_stream_cleanup();
@@ -90,7 +91,8 @@ fn abandon_invalidates_before_rollback_and_reused_slots_reject_the_old_generatio
         }
         assert_eq!(pool(system).pending, 0);
         let fresh = begin(system, "Replacement");
-        assert_eq!(first.handle & 0xffff, fresh.handle & 0xffff);
+        assert_eq!(pool(system).slots, 2, "replacement must reuse acknowledged storage");
+        assert_eq!(pool(system).births, 3);
         assert_ne!(first.handle, fresh.handle);
         assert_eq!(invoke(system, first.handle, ABORT_FORK_WRITE), Err(Error::NotFound));
         other.operation = APPEND_FORK_WRITE;
@@ -222,5 +224,51 @@ fn sdk_writer_drop_schedules_real_rollback_and_allows_the_name_to_be_used_again(
         let mut bytes = [0; 3];
         assert_eq!(fork.read(&mut bytes).unwrap(), 3);
         assert_eq!(&bytes, b"new");
+    });
+}
+
+#[test]
+fn native_streams_grow_past_the_old_eight_object_projection()
+{
+    disk(|system| {
+        let mut held = Vec::new();
+        for at in 0..20
+        {
+            held.push(begin(system, &format!("Stream {at}")));
+            assert!(held.last().unwrap().handle > u64::from(u32::MAX));
+        }
+        assert_eq!(pool(system).live, 20);
+        assert_eq!(pool(system).capacity,
+                   mac_toolbox::inspection::CapacityPolicy::GrowableUntilMemory);
+        let storage_slots = pool(system).slots;
+        let stale = held.remove(0).handle;
+        invoke(system, stale, ABANDON_FORK_WRITE).unwrap();
+        for _ in 0..100
+        {
+            pump_stream_cleanup();
+            if pool(system).pending == 0
+            {
+                break;
+            }
+        }
+        let replacement = begin(system, "Stream replacement");
+        assert_ne!(replacement.handle, stale);
+        assert_eq!(pool(system).slots, storage_slots, "freed slot was not reused");
+        let error = invoke(system, stale, ABORT_FORK_WRITE).unwrap_err();
+        assert_eq!(error, Error::NotFound);
+        assert!(error.to_string().contains("found"));
+        for call in held.into_iter().chain([replacement])
+        {
+            invoke(system, call.handle, ABANDON_FORK_WRITE).unwrap();
+        }
+        for _ in 0..100
+        {
+            pump_stream_cleanup();
+            if pool(system).pending == 0
+            {
+                break;
+            }
+        }
+        assert_eq!((pool(system).live, pool(system).pending), (0, 0));
     });
 }

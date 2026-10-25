@@ -3,7 +3,7 @@
 use super::*;
 pub(super) struct State
 {
-    handle:      u32,
+    handle:      u64,
     operation:   u32,
     fork:        u32,
     count:       usize,
@@ -12,7 +12,7 @@ pub(super) struct State
     may_publish: bool,
     error:       Status
 }
-fn reply(handle: u32, completed: bool, entry: CatalogInfo, bytes: Vec<u8>)
+fn reply(handle: u64, completed: bool, entry: CatalogInfo, bytes: Vec<u8>)
          -> Result<Reply, Status>
 {
     Ok(Reply::Stream { handle,
@@ -20,11 +20,11 @@ fn reply(handle: u32, completed: bool, entry: CatalogInfo, bytes: Vec<u8>)
                        entry,
                        bytes })
 }
-fn retire(handle: u32) -> Result<(), Status>
+fn retire(handle: u64) -> Result<(), Status>
 {
     files(|manager| manager.retire_remote_stream(handle))
 }
-fn quarantine(handle: u32)
+fn quarantine(handle: u64)
 {
     let _ = files(|manager| {
         manager.quarantine_remote_stream(handle);
@@ -367,17 +367,9 @@ pub(super) fn pump_cleanup()
     // Reserve operation-list storage before acquiring or changing ownership.
     {
         let mut flights = FLIGHTS.lock();
-        if flights.len() >= MAX_FLIGHTS
+        if reserve_flight_storage(&mut flights).is_err()
         {
             return;
-        }
-        if flights.capacity() < MAX_FLIGHTS
-        {
-            let additional = MAX_FLIGHTS - flights.len();
-            if flights.try_reserve_exact(additional).is_err()
-            {
-                return;
-            }
         }
     }
     let prepared = files(|m| {

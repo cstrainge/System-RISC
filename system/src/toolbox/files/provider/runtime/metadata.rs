@@ -10,7 +10,7 @@ enum Stage
 }
 pub(super) struct State
 {
-    handle:      u32,
+    handle:      u64,
     volume:      u32,
     stage:       Stage,
     may_publish: bool,
@@ -21,11 +21,11 @@ pub(crate) fn pending() -> bool
     let thread = crate::context::current_thread().0;
     FLIGHTS.lock().iter().any(|f| f.thread == thread && f.key.record == Record::Metadata)
 }
-fn retire(handle: u32) -> Result<(), Status>
+fn retire(handle: u64) -> Result<(), Status>
 {
     files(|m| m.retire_provider_write(handle))
 }
-fn quarantine(handle: u32)
+fn quarantine(handle: u64)
 {
     let _ = files(|m| m.quarantine_provider_write(handle));
 }

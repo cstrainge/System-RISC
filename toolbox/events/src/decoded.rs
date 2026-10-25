@@ -270,8 +270,7 @@ impl<'a> From<raw::Event> for Event<'a>
             }
             raw::EventKind::OsEvent if event.message == raw::FILE_TRANSFER_CHANGED =>
             {
-                Self::FileTransferChanged { transfer: mac_traps::FileTransferId(event.payload
-                                                                                as u32),
+                Self::FileTransferChanged { transfer: mac_traps::FileTransferId(event.payload),
                                             input }
             }
             raw::EventKind::OsEvent if event.message == raw::WINDOW_GEOMETRY_CHANGED =>

@@ -59,8 +59,9 @@ pub(super) struct Progress
 }
 impl super::objects::Payload for Stream
 {
+    type Storage = crate::toolbox::files::objects::storage::Native<Self>;
+
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FSWR");
-    const WIRE: Kind = Kind::FileStreams;
 
     fn cleanup_pending(&self) -> bool
     {
@@ -109,7 +110,7 @@ pub(super) struct Remote
 }
 impl Manager
 {
-    fn stream_protection(&self, volume: u32, except: u32) -> Result<Vec<u32>, Status>
+    fn stream_protection(&self, volume: u32, except: u64) -> Result<Vec<u32>, Status>
     {
         let mut protected = Vec::new();
         protected.try_reserve_exact(self.handles.len() + self.writes.len() + self.streams.len())

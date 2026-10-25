@@ -140,11 +140,31 @@ fn retained_updates(system: &System<'_>) -> Result<(), Error>
     // Validation must not suppress subsequent damage or accept a reused ID.
     system.windows().invalidate(id, Rect::new(8, 8, 30, 30))?;
     require(system.events().peek_positioned(EventMask::UPDATE)?.is_some())?;
+    let slots = || -> Result<u64, Error> {
+        let ledger = system.inspection()
+                           .snapshot(mac_toolbox::inspection::Scope::Own)
+                           .map_err(|failure| failure.cause)?
+                           .ledger(0)
+                           .map_err(|failure| failure.cause)?;
+        for at in 0..ledger.len()
+        {
+            let pool = ledger.at(at).map_err(|failure| failure.cause)?;
+            if pool.kind == *b"WIND"
+            {
+                return Ok(pool.slots);
+            }
+        }
+        Err(Error::BadAbi)
+    };
+    let before = slots()?;
     window.close()?;
     let next =
         system.windows()
               .create_owned(WindowSpec::new(Rect::new(50, 50, 250, 180), "Replacement updates"))?;
-    require(next.id() != id && (next.id().0 & 0xffff) == (id.0 & 0xffff))?;
+    require(next.id() != id
+            && next.id().0 > u64::from(u32::MAX)
+            && id.0 > u64::from(u32::MAX)
+            && slots()? == before)?;
     require(system.windows().validate(id) == Err(Error::NotFound))?;
     require(system.windows().set_standard_bounds(id, Some(Rect::new(80, 80, 300, 220)))
             == Err(Error::NotFound))?;

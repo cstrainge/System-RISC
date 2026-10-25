@@ -218,7 +218,7 @@ impl Manager
         state.phase = Phase::Reading;
         Ok((provider,
             fs::Arguments { volume: file.volume,
-                            token: id,
+                            token: u64::from(id),
                             flags: fork.kind,
                             offset: file.position.load(core::sync::atomic::Ordering::Relaxed),
                             length: count,

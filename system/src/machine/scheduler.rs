@@ -44,7 +44,7 @@ enum Wait
     },
     Io
     {
-        job: u32
+        job: crate::context::DeferredIo
     }
 }
 struct Scheduler
@@ -301,7 +301,7 @@ fn wake_with_priority(app: u64, priority: u8)
 /// replay keeps the original PC/registers, and borrows fresh buffers on wake.
 /// Checking completion while holding the scheduler guard closes completion-
 /// before-park races; the job pump releases its queue guard before waking us.
-pub fn wait_io(job: u32) -> Result<bool, mac_abi::Status>
+pub fn wait_io(job: crate::context::DeferredIo) -> Result<bool, mac_abi::Status>
 {
     let index = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();
@@ -310,13 +310,16 @@ pub fn wait_io(job: u32) -> Result<bool, mac_abi::Status>
                           .and_then(Option::as_mut)
                           .filter(|thread| thread.live)
                           .ok_or(mac_abi::WRONG_THREAD)?;
-    let pending = if crate::toolbox::handles::Kind::FileTransfers.contains_wire_id(job)
+    let pending = match job
     {
-        crate::toolbox::files::transfer_io_pending(u64::from(thread.id), job)?
-    }
-    else
-    {
-        crate::drivers::job_pending(u64::from(thread.id), job)?
+        crate::context::DeferredIo::FileTransfer(handle) =>
+        {
+            crate::toolbox::files::transfer_io_pending(u64::from(thread.id), handle)?
+        }
+        crate::context::DeferredIo::DriverJob(handle) =>
+        {
+            crate::drivers::job_pending(u64::from(thread.id), handle)?
+        }
     };
     if !pending
     {
@@ -327,7 +330,7 @@ pub fn wait_io(job: u32) -> Result<bool, mac_abi::Status>
     Ok(true)
 }
 
-pub fn wake_io(identity: u64, job: u32)
+pub fn wake_io(identity: u64, job: crate::context::DeferredIo)
 {
     let Ok(id) = u32::try_from(identity)
     else

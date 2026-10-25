@@ -40,12 +40,12 @@ pub(crate) use provider::runtime::{abandon_thread as abandon_provider_thread,
 /// Owned transfer compatibility calls use the same trap replay boundary as
 /// driver jobs, with IDs classified by the central namespace registry.
 #[cfg(target_arch = "riscv64")]
-pub(crate) fn transfer_io_pending(thread: u64, handle: u32) -> Result<bool, Status>
+pub(crate) fn transfer_io_pending(thread: u64, handle: u64) -> Result<bool, Status>
 {
     provider::runtime::transfer::bridge::pending(thread, handle)
 }
 #[cfg(target_arch = "riscv64")]
-pub(crate) fn abandon_transfer_waiter(thread: u64, handle: u32)
+pub(crate) fn abandon_transfer_waiter(thread: u64, handle: u64)
 {
     provider::runtime::transfer::bridge::abandon_waiter(thread, handle)
 }

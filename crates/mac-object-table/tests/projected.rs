@@ -187,7 +187,7 @@ fn cleanup_guard_outlives_its_manager_without_losing_the_pending_barrier()
 #[test]
 fn file_wire_namespaces_preserve_history_through_registered_store_reconstruction()
 {
-    for kind in [Kind::Files, Kind::FileWrites, Kind::Volumes]
+    for kind in [Kind::Files, Kind::Volumes]
     {
         let registrar = owner(DomainKind::Module);
         let mut registry = Registry::new();

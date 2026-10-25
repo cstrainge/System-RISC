@@ -17,7 +17,7 @@ const MAX_ACTIVE: usize = 32;
 struct Open
 {
     volume: u32,
-    token:  u32,
+    token:  u64,
     node:   u32,
     stream: Option<(u32, Stream)>
 }
@@ -194,7 +194,7 @@ struct Mounting
 struct Reading
 {
     volume:  u32,
-    token:   u32,
+    token:   u64,
     kind:    u32,
     source:  u32,
     offset:  u64,
@@ -301,7 +301,7 @@ struct Active
     ticket:    u32,
     operation: u32,
     volume:    u32,
-    token:     u32,
+    token:     u64,
     task:      Task,
     cancel:    bool
 }

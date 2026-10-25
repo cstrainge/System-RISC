@@ -10,7 +10,7 @@ pub(super) struct Rename
 impl<R: Rpc> Filesystem<R>
 {
     pub async fn begin_rename(&mut self, volume: u32, id: u32, parent: u32, name: &str,
-                              token: u32, when: u64)
+                              token: u64, when: u64)
                               -> Result<bool>
     {
         self.owner = volume;
@@ -206,7 +206,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(true)
     }
 
-    async fn publish_rename_cache(&mut self, volume: u32, token: u32) -> Result<()>
+    async fn publish_rename_cache(&mut self, volume: u32, token: u64) -> Result<()>
     {
         let p = self.writes.get(token).ok_or(Cause::NotFound)?;
         let r = p.rename.as_ref().ok_or(Cause::Invalid)?;
@@ -250,7 +250,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    pub(super) async fn finish_rename(&mut self, volume: u32, token: u32) -> Result<u32>
+    pub(super) async fn finish_rename(&mut self, volume: u32, token: u64) -> Result<u32>
     {
         let p = self.writes.get(token).filter(|p| p.volume == volume).ok_or(Cause::NotFound)?;
         let stage = p.stage;
@@ -280,7 +280,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(self.writes.remove(token).unwrap().cnid)
     }
 
-    pub(super) async fn abort_rename(&mut self, volume: u32, token: u32) -> Result<bool>
+    pub(super) async fn abort_rename(&mut self, volume: u32, token: u64) -> Result<bool>
     {
         let p = self.writes.get(token).filter(|p| p.volume == volume).ok_or(Cause::NotFound)?;
         if !p.published

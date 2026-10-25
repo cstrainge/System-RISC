@@ -5,18 +5,18 @@ use fs::{IconMovePhase as Phase, IconMoveProgress as GroupProgress};
 use super::*;
 pub(super) struct State
 {
-    handle:      u32,
+    handle:      u64,
     volume:      u32,
     operation:   u32,
     draining:    bool,
     error:       Status,
     may_publish: bool
 }
-fn retire(handle: u32) -> Result<(), Status>
+fn retire(handle: u64) -> Result<(), Status>
 {
     files(|m| m.retire_group(handle))
 }
-fn quarantine(handle: u32)
+fn quarantine(handle: u64)
 {
     let _ = files(|m| {
         m.quarantine_group(handle);
@@ -321,17 +321,9 @@ pub(super) fn pump_cleanup()
 
     {
         let mut flights = FLIGHTS.lock();
-        if flights.len() >= MAX_FLIGHTS
+        if reserve_flight_storage(&mut flights).is_err()
         {
             return;
-        }
-        if flights.capacity() < MAX_FLIGHTS
-        {
-            let additional = MAX_FLIGHTS - flights.len();
-            if flights.try_reserve_exact(additional).is_err()
-            {
-                return;
-            }
         }
     }
     let prepared = files(|m| {

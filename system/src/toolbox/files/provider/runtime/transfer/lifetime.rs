@@ -3,30 +3,23 @@
 use mac_object_table::{domain::ReleasedResource,
                        registry::{Release, Source, Specification}};
 
-use crate::toolbox::handles::{CapacityPolicy, Kind, KindCode, cleanup::Failure};
+use crate::toolbox::handles::{CapacityPolicy, KindCode, cleanup::Failure};
 
 pub(crate) fn specification(storage: bool) -> Specification<'static>
 {
     Specification { kind:     KindCode(if storage { *b"FTXS" } else { *b"FTXN" }),
                     label:    if storage { "Transfer backing" } else { "File transfers" },
                     provider: "System File Manager",
-                    capacity: CapacityPolicy::HardBound { slots:  if storage
-                                                          {
-                                                              1
-                                                          }
-                                                          else
-                                                          {
-                                                              Kind::FileTransfers.capacity()
-                                                          },
-                                                          reason: if storage
-                                                          {
-                                                              "One transfer backing per domain"
-                                                          }
-                                                          else
-                                                          {
-                                                              "Existing 32-bit transfer projection \
-                                                               namespace"
-                                                          } },
+                    capacity: if storage
+                    {
+                        CapacityPolicy::HardBound { slots:  1,
+                                                    reason: "One native file-object backing per \
+                                                             domain" }
+                    }
+                    else
+                    {
+                        CapacityPolicy::GrowableUntilMemory
+                    },
                     source:   Source::Resident }
 }
 pub(crate) trait TransferHost

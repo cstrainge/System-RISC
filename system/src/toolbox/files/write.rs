@@ -6,8 +6,9 @@ use super::*;
 pub(crate) mod lifetime;
 impl super::objects::Payload for Pending
 {
+    type Storage = crate::toolbox::files::objects::storage::Native<Self>;
+
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FDWR");
-    const WIRE: Kind = Kind::FileWrites;
 
     fn cleanup_pending(&self) -> bool
     {

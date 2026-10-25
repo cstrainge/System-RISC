@@ -54,7 +54,7 @@ pub enum ForkAbort
 pub struct ForkWriter<'a>
 {
     client:  Client<'a>,
-    handle:  u32,
+    handle:  u64,
     lengths: [u64; 2],
     written: [u64; 2]
 }

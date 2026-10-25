@@ -1,8 +1,10 @@
 //! Resident ownership of recursive transfers. Requests only borrow caller
 //! memory during admission. Every subsequent I/O and undo receipt is owned.
 #![forbid(unsafe_code)]
+use alloc::sync::Arc;
+
 use super::*;
-use crate::toolbox::handles::{Kind, OwnerRef};
+use crate::toolbox::handles::OwnerRef;
 pub(crate) mod lifetime;
 mod model;
 mod plan;
@@ -14,16 +16,36 @@ use model::*;
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static PUMPING: AtomicBool = AtomicBool::new(false);
-static PARKED: Spinlock<[Option<Box<State>>; Kind::FileTransfers.capacity()]> =
-    Spinlock::new([const { None }; Kind::FileTransfers.capacity()]);
+// One preflighted continuation slot per registered transfer; slot indices
+// are bookkeeping only and never escape as object identities.
+struct Parked
+{
+    handle: u64,
+    state:  Option<Box<State>>
+}
+static PARKED: Spinlock<Vec<Arc<Spinlock<Parked>>>> = Spinlock::new(Vec::new());
 pub(in crate::toolbox::files) struct Entry
 {
-    bridge:    Option<bridge::Bridge>,
-    mutating:  bool,
-    owner:     u64,
-    authority: OwnerRef,
-    scope:     super::super::super::subject::Lease,
-    record:    Spinlock<Record>
+    continuation: Arc<Spinlock<Parked>>,
+    bridge:       Option<bridge::Bridge>,
+    mutating:     bool,
+    owner:        u64,
+    authority:    OwnerRef,
+    scope:        super::super::super::subject::Lease,
+    record:       Spinlock<Record>
+}
+impl Drop for Entry
+{
+    fn drop(&mut self)
+    {
+        let removed = {
+            let mut parked = PARKED.lock();
+            parked.iter()
+                  .position(|row| Arc::ptr_eq(row, &self.continuation))
+                  .map(|at| parked.swap_remove(at))
+        };
+        drop(removed);
+    }
 }
 struct Record
 {
@@ -45,7 +67,7 @@ impl Entry
         !record.closed && record.volumes.contains(&volume)
     }
 
-    pub(in crate::toolbox::files) fn protects_read(&self, _handle: u32,
+    pub(in crate::toolbox::files) fn protects_read(&self, _handle: u64,
                                                    owner: crate::toolbox::files::subject::Access<'_>,
                                                    volume: u32, id: u32)
                                                    -> bool
@@ -62,7 +84,7 @@ impl Entry
         self.mutating && self.uses(volume)
     }
 
-    pub(in crate::toolbox::files) fn permits(&self, _handle: u32,
+    pub(in crate::toolbox::files) fn permits(&self, _handle: u64,
                                              owner: crate::toolbox::files::subject::Access<'_>)
                                              -> bool
     {
@@ -72,8 +94,9 @@ impl Entry
 }
 impl crate::toolbox::files::objects::Payload for Entry
 {
+    type Storage = crate::toolbox::files::objects::storage::Native<Self>;
+
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FTXN");
-    const WIRE: Kind = Kind::FileTransfers;
 
     fn cleanup_pending(&self) -> bool
     {
@@ -160,6 +183,8 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
     }
     volumes.sort_unstable();
     volumes.dedup();
+    let continuation = Arc::try_new(Spinlock::new(Parked { handle: 0,
+                                                           state:  None })).map_err(|_| NO_MEMORY)?;
     let handle = files(|m| {
         m.transfers.prepare(kinds)?;
         for &volume in &volumes
@@ -174,10 +199,14 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
             }
         }
         m.transfers.reserve().map_err(|_| NO_MEMORY)?;
+        PARKED.lock().try_reserve(1).map_err(|_| NO_MEMORY)?;
         let handle =
             m.transfers.insert_root(reservation, |handle| {
                             state.handle = handle;
-                            Entry { mutating: bridge.is_none_or(|key| {
+                            continuation.lock().handle = handle;
+                            PARKED.lock().push(continuation.clone());
+                            Entry { continuation,
+                                    mutating: bridge.is_none_or(|key| {
                                                         key.operation != TRASH_USAGE
                                                     }),
                                     bridge,
@@ -204,7 +233,7 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
     Ok(())
 }
 
-fn retire(manager: &mut crate::toolbox::files::Manager, handle: u32) -> Result<(), Status>
+fn retire(manager: &mut crate::toolbox::files::Manager, handle: u64) -> Result<(), Status>
 {
     let entry = manager.transfers.completing(handle).ok_or(NOT_FOUND)?;
     if !entry.record.lock().closed
@@ -274,21 +303,30 @@ pub(super) fn pump()
         }
     }
     let _pump = Pump;
-    for slot in 0..Kind::FileTransfers.capacity()
+    let mut cursor = 0;
+    loop
     {
-        let parked = PARKED.lock()[slot].take();
+        let continuation = {
+            let parked = PARKED.lock();
+            let Some(row) = parked.get(cursor)
+            else
+            {
+                break;
+            };
+            cursor += 1;
+            row.clone()
+        };
+        let (handle, parked) = {
+            let mut row = continuation.lock();
+            (row.handle, row.state.take())
+        };
         let taken = if let Some(state) = parked
         {
-            Ok(Some((state.handle, state)))
+            Ok(Some((handle, state)))
         }
         else
         {
             files(|m| {
-                let Some(handle) = m.transfers.iter().nth(slot).map(|(id, _)| id)
-                else
-                {
-                    return Ok(None);
-                };
                 let entry = m.transfers.completing(handle).ok_or(NOT_FOUND)?;
                 let mut record = entry.record.lock();
                 if record.closed && !record.notice_due
@@ -389,11 +427,12 @@ pub(super) fn pump()
         });
         if let Ok((_, Some(thread))) = &restored
         {
-            crate::machine::scheduler::wake_io(*thread, handle);
+            crate::machine::scheduler::wake_io(*thread,
+                                               crate::context::DeferredIo::FileTransfer(handle));
         }
         if let Some(state) = owned
         {
-            PARKED.lock()[slot] = Some(state);
+            continuation.lock().state = Some(state);
         }
         if let Ok((Some(owner), _)) = restored
         {

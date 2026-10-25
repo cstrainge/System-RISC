@@ -40,7 +40,7 @@ fn cleanup(mut flight: Flight, handle: u32, error: Status) -> Progress
                                                                         submit_args(flight.provider,
                               Operation::Close,
                               Arguments { volume,
-                                          token: handle,
+                                          token: u64::from(handle),
                                           ..Default::default() })
                                                                     });
     match job
@@ -157,7 +157,7 @@ fn prepare(owner: crate::toolbox::files::subject::Access<'_>, call: &FileCall, c
                 Operation::Open,
                 Arguments { volume: call.volume,
                             node: call.cnid,
-                            token: handle,
+                            token: u64::from(handle),
                             ..Default::default() }))
         }
         READ =>
@@ -179,7 +179,7 @@ fn prepare(owner: crate::toolbox::files::subject::Access<'_>, call: &FileCall, c
                 Action::Close { handle: call.handle },
                 Operation::Close,
                 Arguments { volume,
-                            token: call.handle,
+                            token: u64::from(call.handle),
                             ..Default::default() }))
         }
         _ => Err(BAD_ARGUMENT)
@@ -274,19 +274,10 @@ pub(super) fn pump_cleanup()
         return;
     }
     let mut flights = FLIGHTS.lock();
-    if flights.len() == MAX_FLIGHTS
+    if reserve_flight_storage(&mut flights).is_err()
     {
         FORK_CLEANUP.store(true, Ordering::Release);
         return;
-    }
-    if flights.capacity() < MAX_FLIGHTS
-    {
-        let additional = MAX_FLIGHTS - flights.len();
-        if flights.try_reserve_exact(additional).is_err()
-        {
-            FORK_CLEANUP.store(true, Ordering::Release);
-            return;
-        }
     }
     drop(flights);
     let next = files(|manager| manager.next_orphaned_file());
@@ -306,7 +297,7 @@ pub(super) fn pump_cleanup()
     match submit_args(provider,
                       Operation::Close,
                       Arguments { volume,
-                                  token: handle,
+                                  token: u64::from(handle),
                                   ..Default::default() })
     {
         Ok(job) =>
@@ -316,7 +307,7 @@ pub(super) fn pump_cleanup()
                             volume,
                             cnid: 0,
                             index: 0,
-                            handle,
+                            handle: u64::from(handle),
                             fork: 0,
                             capacity: 0,
                             cursor: DirectoryScanCursor::default(),

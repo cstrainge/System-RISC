@@ -198,7 +198,7 @@ impl Harness
         self.execute(Operation::Open,
                      Arguments { volume,
                                  node,
-                                 token,
+                                 token: u64::from(token),
                                  ..Default::default() })
             .unwrap();
         token
@@ -209,7 +209,7 @@ impl Harness
     {
         self.execute(Operation::Read,
                      Arguments { volume,
-                                 token,
+                                 token: u64::from(token),
                                  flags,
                                  offset,
                                  length,
@@ -282,7 +282,7 @@ fn positional_reads_cross_chunks_seek_back_and_verify_crc_on_exact_end()
                Err(Error(mac_abi::SERVICE_BUSY)));
     h.execute(Operation::Close,
               Arguments { volume,
-                          token,
+                          token: u64::from(token),
                           ..Default::default() })
      .unwrap();
     h.execute(Operation::Unmount,
@@ -375,7 +375,7 @@ fn cancellation_drains_the_live_lower_ticket_before_releasing_state()
     let token = h.open(volume, 18);
     let ticket = h.requests.insert(()).unwrap();
     let input = Harness::bytes(Arguments { volume,
-                                           token,
+                                           token: u64::from(token),
                                            length: 100,
                                            ..Default::default() });
     for i in 0..30
@@ -406,7 +406,7 @@ fn malformed_polls_and_small_buffers_preserve_the_exact_live_operation()
     let token = h.open(volume, 19);
     let ticket = h.requests.insert(()).unwrap();
     let input = Harness::bytes(Arguments { volume,
-                                           token,
+                                           token: u64::from(token),
                                            length: 21,
                                            ..Default::default() });
     assert_eq!(h.step(ticket, Operation::Read, Phase::Start, &input, &mut [0; 20]),
@@ -464,7 +464,7 @@ fn stuffit5_reads_both_arsenic_forks_and_reports_verified_crc_failures()
     assert_eq!(h.read(volume, token, 1, 0, 14).unwrap(), b"Resource fork\r");
     h.execute(Operation::Close,
               Arguments { volume,
-                          token,
+                          token: u64::from(token),
                           ..Default::default() })
      .unwrap();
     h.execute(Operation::Unmount,
@@ -482,7 +482,7 @@ fn cancelling_arsenic_cpu_work_discards_provisional_state_and_allows_immediate_r
     let token = h.open(volume, 16);
     let ticket = h.requests.insert(()).unwrap();
     let input = Harness::bytes(Arguments { volume,
-                                           token,
+                                           token: u64::from(token),
                                            length: 34384,
                                            ..Default::default() });
     let mut cpu_steps = 0;
@@ -558,7 +558,7 @@ fn method13_deferred_reads_seek_and_recover_from_bad_fork_checksums()
         assert_eq!(&resource[414..], &[0, 0x90]);
         h.execute(Operation::Close,
                   Arguments { volume,
-                              token,
+                              token: u64::from(token),
                               ..Default::default() })
          .unwrap();
         h.execute(Operation::Unmount,
@@ -579,7 +579,7 @@ fn cancelling_method13_input_releases_the_lower_request_before_retry()
     let token = h.open(volume, 16);
     let ticket = h.requests.insert(()).unwrap();
     let input = Harness::bytes(Arguments { volume,
-                                           token,
+                                           token: u64::from(token),
                                            offset: 99000,
                                            length: 969,
                                            ..Default::default() });
@@ -614,7 +614,7 @@ fn independent_requests_progress_while_another_read_waits_and_one_decoder_stays_
     let cafe = h.open(volume, 19);
     let ticket = h.requests.insert(()).unwrap();
     let input = Harness::bytes(Arguments { volume,
-                                           token: pattern,
+                                           token: u64::from(pattern),
                                            length: 8192,
                                            ..Default::default() });
     let mut out = vec![0; fs::MAX_REPLY];
@@ -640,7 +640,7 @@ fn independent_requests_progress_while_another_read_waits_and_one_decoder_stays_
     assert_eq!(Metadata::decode(&metadata).unwrap().name, "Café");
     assert_eq!(h.execute(Operation::Close,
                          Arguments { volume,
-                                     token: pattern,
+                                     token: u64::from(pattern),
                                      ..Default::default() }),
                Err(Error(mac_abi::SERVICE_BUSY)));
     assert_eq!(h.read(volume, pattern, 0, 0, 1), Err(Error(mac_abi::SERVICE_BUSY)));

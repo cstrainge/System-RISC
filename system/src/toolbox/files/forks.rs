@@ -8,8 +8,10 @@ use crate::toolbox::handles::OwnerRef;
 pub(crate) mod lifetime;
 impl super::objects::Payload for OpenFile
 {
+    type Storage = crate::toolbox::files::objects::storage::Treaty<Self>;
+
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FFRK");
-    const WIRE: Kind = Kind::Files;
+    const WIRE: Option<Kind> = Some(Kind::Files);
 
     fn cleanup_pending(&self) -> bool
     {

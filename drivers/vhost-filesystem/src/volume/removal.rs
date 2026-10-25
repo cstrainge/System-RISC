@@ -3,12 +3,12 @@
 use super::*;
 impl<R: Rpc> Filesystem<R>
 {
-    pub(crate) fn removing(&self, volume: u32, token: u32) -> Result<bool>
+    pub(crate) fn removing(&self, volume: u32, token: u64) -> Result<bool>
     {
         Ok(self.writes.get(token).filter(|p| p.volume == volume).ok_or(Cause::NotFound)?.removing)
     }
 
-    pub async fn begin_remove(&mut self, volume: u32, id: u32, token: u32, when: u64)
+    pub async fn begin_remove(&mut self, volume: u32, id: u32, token: u64, when: u64)
                               -> Result<()>
     {
         self.owner = volume;
@@ -170,7 +170,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(())
     }
 
-    pub(super) async fn finish_remove(&mut self, volume: u32, token: u32) -> Result<u32>
+    pub(super) async fn finish_remove(&mut self, volume: u32, token: u64) -> Result<u32>
     {
         let p = self.writes
                     .get(token)
@@ -220,7 +220,7 @@ impl<R: Rpc> Filesystem<R>
         Ok(id)
     }
 
-    pub(super) async fn abort_remove(&mut self, volume: u32, token: u32) -> Result<bool>
+    pub(super) async fn abort_remove(&mut self, volume: u32, token: u64) -> Result<bool>
     {
         let p = self.writes
                     .get(token)

@@ -32,12 +32,11 @@ pub(crate) use resources::request as request_resource;
 pub(in crate::toolbox::files) use writes::request as request_write;
 pub(in crate::toolbox::files::provider) use writes::request_write_cleanup;
 
-const MAX_WAITERS: usize = crate::toolbox::handles::Kind::Threads.capacity();
-const MAX_FLIGHTS: usize = MAX_WAITERS
-                           + super::super::MAX_OPEN_FILES
-                           + crate::toolbox::handles::Kind::FileWrites.capacity()
-                           + crate::toolbox::handles::Kind::FileStreams.capacity()
-                           + crate::toolbox::handles::Kind::FileGroups.capacity();
+fn reserve_flight_storage(flights: &mut Vec<Flight>) -> Result<(), Status>
+{
+    let bound = crate::toolbox::handles::Kind::DriverJobs.capacity();
+    flights.try_reserve_exact(bound.saturating_sub(flights.len())).map_err(|_| NO_MEMORY)
+}
 static FLIGHTS: Spinlock<Vec<Flight>> = Spinlock::new(Vec::new());
 static REAP: AtomicBool = AtomicBool::new(false);
 static FORK_CLEANUP: AtomicBool = AtomicBool::new(false);
@@ -66,7 +65,7 @@ struct Key
     volume:    u32,
     index:     u32,
     cnid:      u32,
-    handle:    u32,
+    handle:    u64,
     fork:      u32,
     capacity:  usize,
     cursor:    DirectoryScanCursor,
@@ -194,13 +193,13 @@ enum Reply
     NoHandler,
     Group
     {
-        handle:   u32,
+        handle:   u64,
         progress: fs::IconMoveProgress
     },
     Application(Box<super::super::application::Loaded>),
     Stream
     {
-        handle:    u32,
+        handle:    u64,
         completed: bool,
         entry:     CatalogInfo,
         bytes:     Vec<u8>
@@ -681,15 +680,7 @@ fn claim(owner: u64, thread: u64, key: Key, name: &str) -> Result<Option<Flight>
         }
         return Ok(Some(flights.swap_remove(at)));
     }
-    if flights.len() == MAX_FLIGHTS
-    {
-        return Err(NO_MEMORY);
-    }
-    if flights.capacity() < MAX_FLIGHTS
-    {
-        let additional = MAX_FLIGHTS - flights.len();
-        flights.try_reserve_exact(additional).map_err(|_| NO_MEMORY)?;
-    }
+    reserve_flight_storage(&mut flights)?;
     Ok(None)
 }
 pub(crate) fn request_scan(owner: u64, call: &mut FileScanCall) -> Status
@@ -774,7 +765,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
                     volume:    call.volume,
                     index:     call.index,
                     cnid:      call.cnid,
-                    handle:    call.handle,
+                    handle:    u64::from(call.handle),
                     fork:      call.fork,
                     capacity:  output.len(),
                     cursor:    DirectoryScanCursor::default(),

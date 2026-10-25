@@ -271,7 +271,7 @@ pub(super) enum GroupPurpose
 }
 pub(super) struct Group
 {
-    pub handle:  u32,
+    pub handle:  u64,
     pub purpose: GroupPurpose,
     pub roots:   Vec<usize>,
     pub rows:    Vec<IconMove>,
@@ -280,7 +280,7 @@ pub(super) struct Group
 pub(super) struct State
 {
     pub scope:             crate::toolbox::files::subject::Lease,
-    pub handle:            u32,
+    pub handle:            u64,
     pub io:                Option<Flight>,
     pub reply:             Option<Result<Reply, Status>>,
     pub tag:               Option<Tag>,
@@ -312,7 +312,7 @@ pub(super) struct State
     pub chunk:             Vec<u8>,
     pub chunk_goal:        usize,
     pub reader:            u32,
-    pub writer:            u32,
+    pub writer:            u64,
     pub group:             Option<Group>,
     pub put_away:          bool,
     pub fast_move:         bool,

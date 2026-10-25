@@ -71,7 +71,7 @@ impl Manager
         };
         Ok((provider,
             mac_filesystem_interface::Arguments { volume,
-                                                  token: handle,
+                                                  token: u64::from(handle),
                                                   ..Default::default() }))
     }
 

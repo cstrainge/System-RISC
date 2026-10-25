@@ -39,8 +39,11 @@ fn requests_preserve_64_bit_offsets_and_reject_stale_or_noncanonical_envelopes()
     }
     assert_eq!(Arguments::decode(&bytes[..n + 1]), Err(Error::Length));
     bytes[60] = 1;
-    assert_eq!(Arguments::decode(&bytes[..n]), Err(Error::Invalid));
+    assert_eq!(Arguments::decode(&bytes[..n]).unwrap().token, value.token | (1 << 32));
     bytes[60] = 0;
+    bytes[2] = 63;
+    assert_eq!(Arguments::decode(&bytes[..n]), Err(Error::Invalid));
+    bytes[2] = fs::HEADER_BYTES as u8;
     bytes[0] = 0;
     assert_eq!(Arguments::decode(&bytes[..n]), Err(Error::Version));
     let too_big = [0; fs::MAX_TRANSFER + 1];

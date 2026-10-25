@@ -1,14 +1,16 @@
 //! Registered file-object storage and retained completion authority. Payload
 //! adapters own cleanup semantics; IDs and release tickets stay in the facility.
 #![forbid(unsafe_code)]
-use mac_object_table::{domain::{CompletionError, ReleasedResource},
-                       projected};
+use mac_object_table::domain::{CompletionError, ReleasedResource};
 
 use super::*;
-use crate::toolbox::handles::{InvocationGate, KindLease, OwnerRef};
-pub(super) trait Payload
+use crate::toolbox::handles::{KindLease, OwnerRef};
+pub(super) mod storage;
+use storage::{Backend, Guard, Id, Key};
+pub(super) trait Payload: Sized
 {
-    const WIRE: Kind;
+    type Storage: Backend<Self>;
+    const WIRE: Option<Kind> = None;
     const KIND: crate::toolbox::handles::KindCode;
     fn cleanup_pending(&self) -> bool;
     fn begin_cleanup(&self);
@@ -23,12 +25,12 @@ pub(super) trait Payload
         self.scope().is_some_and(|scope| scope.admitting().is_ok())
     }
 }
-struct Retiring<T>
+struct Retiring<T: Payload>
 {
-    mark:          projected::Removed<T, InvocationGate>,
+    mark:          Guard<T>,
     waiting_scope: bool
 }
-impl<T> core::ops::Deref for Retiring<T>
+impl<T: Payload> core::ops::Deref for Retiring<T>
 {
     type Target = T;
 
@@ -37,11 +39,11 @@ impl<T> core::ops::Deref for Retiring<T>
         &self.mark
     }
 }
-impl<T> Retiring<T>
+impl<T: Payload> Retiring<T>
 {
-    fn wire(&self) -> u32
+    fn id(&self) -> Id<T>
     {
-        self.mark.wire()
+        T::Storage::id(&self.mark)
     }
 }
 
@@ -70,9 +72,9 @@ impl ScopeChanges
 
 pub(super) struct Objects<T: Payload>
 {
-    objects:            Option<projected::Store<T, InvocationGate>>,
+    objects:            Option<T::Storage>,
     retiring:           Vec<Retiring<T>>,
-    completions:        Vec<(u32, projected::CompletionKey)>,
+    completions:        Vec<(Id<T>, Key<T>)>,
     #[cfg(test)]
     pub(super) fixture: Option<(crate::toolbox::handles::Registry<Manager>, Vec<(u64, OwnerRef)>)>
 }
@@ -95,19 +97,18 @@ impl<T: Payload> Objects<T>
         }
         if self.objects.is_none()
         {
-            self.objects = Some(projected::Store::new(T::WIRE, kinds.0, kinds.1)
-                .map_err(crate::toolbox::handles::projection_status)?);
+            self.objects = Some(T::Storage::new(kinds)?);
         }
         Ok(())
     }
 
-    pub(super) fn insert(&mut self, owner: &OwnerRef, file: T) -> Result<u32, Status>
+    pub(super) fn insert(&mut self, owner: &OwnerRef, file: T) -> Result<Id<T>, Status>
     {
         self.admit(|objects| objects.insert(owner, file))
     }
 
     pub(super) fn insert_authorized(&mut self, authority: &super::subject::Authority, file: T)
-                                    -> Result<u32, Status>
+                                    -> Result<Id<T>, Status>
     {
         self.admit(|objects| {
                 match authority
@@ -115,23 +116,21 @@ impl<T: Payload> Objects<T>
                     super::subject::Authority::Client(owner) => objects.insert(owner, file),
                     super::subject::Authority::Operation(scope) =>
                     {
-                        objects.insert_in_scope(scope, file)
+                        objects.insert_scoped(scope, file)
                     }
                 }
             })
     }
 
     pub(super) fn insert_root(&mut self, reservation: super::subject::Root,
-                              make: impl FnOnce(u32) -> T)
-                              -> Result<u32, Status>
+                              make: impl FnOnce(Id<T>) -> T)
+                              -> Result<Id<T>, Status>
     {
         self.admit(|objects| objects.insert_root(reservation, make))
     }
 
-    fn admit(&mut self,
-             create: impl FnOnce(&mut projected::Store<T, InvocationGate>)
-                    -> Result<u32, projected::Error>)
-             -> Result<u32, Status>
+    fn admit(&mut self, create: impl FnOnce(&mut T::Storage) -> Result<Id<T>, Status>)
+             -> Result<Id<T>, Status>
     {
         // Completion entries include live, pending and retired payloads. Their
         // count bounds all later removals without a full object-value scan.
@@ -141,13 +140,8 @@ impl<T: Payload> Objects<T>
             .map_err(|_| NO_MEMORY)?;
         self.completions.try_reserve(1).map_err(|_| NO_MEMORY)?;
         let objects = self.objects.as_mut().ok_or(NOT_SUPPORTED)?;
-        let wire = create(objects).map_err(|error| {
-                                      #[cfg(target_arch = "riscv64")]
-                                      serial!("FILE_OBJECT_ADMISSION_REFUSED: kind={} {error}",
-                                              T::KIND);
-                                      crate::toolbox::handles::projection_status(error)
-                                  })?;
-        let Some(key) = objects.completion_key(wire)
+        let wire = create(objects)?;
+        let Some(key) = objects.key(wire)
         else
         {
             // The owner walk may have won invalidation after publication; its
@@ -159,12 +153,12 @@ impl<T: Payload> Objects<T>
         Ok(wire)
     }
 
-    pub(super) fn get(&self, id: u32) -> Option<&T>
+    pub(super) fn get(&self, id: Id<T>) -> Option<&T>
     {
         self.objects.as_ref()?.get(id)
     }
 
-    pub(super) fn get_for(&self, access: super::subject::Access<'_>, id: u32)
+    pub(super) fn get_for(&self, access: super::subject::Access<'_>, id: Id<T>)
                           -> Result<&T, Status>
     {
         let object = match access
@@ -179,14 +173,14 @@ impl<T: Payload> Objects<T>
         Ok(object)
     }
 
-    pub(super) fn get_mut(&mut self, id: u32) -> Option<&mut T>
+    pub(super) fn get_mut(&mut self, id: Id<T>) -> Option<&mut T>
     {
         self.objects.as_mut()?.get_mut(id)
     }
 
     /// Resident completions alone use this path. The full wire generation
     /// stays reserved by the guard, so completion cannot hit a replacement.
-    pub(super) fn completing(&self, id: u32) -> Option<&T>
+    pub(super) fn completing(&self, id: Id<T>) -> Option<&T>
     {
         self.get(id)
             .or_else(|| {
@@ -194,10 +188,10 @@ impl<T: Payload> Objects<T>
                     .as_ref()?
                     .completing(&self.completions.iter().find(|(wire, _)| *wire == id)?.1)
             })
-            .or_else(|| self.retiring.iter().find(|mark| mark.wire() == id).map(|mark| &**mark))
+            .or_else(|| self.retiring.iter().find(|mark| mark.id() == id).map(|mark| &**mark))
     }
 
-    pub(super) fn iter(&self) -> impl Iterator<Item = (u32, &T)>
+    pub(super) fn iter(&self) -> impl Iterator<Item = (Id<T>, &T)>
     {
         // Mutation/unmount protection includes invalidated payloads whose
         // dispatcher was refused as well as guards awaiting external ACK.
@@ -208,7 +202,7 @@ impl<T: Payload> Objects<T>
                                                   .or_else(|| {
                                                       self.retiring
                                                           .iter()
-                                                          .find(|mark| mark.wire() == *wire)
+                                                          .find(|mark| mark.id() == *wire)
                                                           .map(|mark| &**mark)
                                                   })?;
                                    Some((*wire, file))
@@ -226,7 +220,7 @@ impl<T: Payload> Objects<T>
         self.iter().count()
     }
 
-    fn forget_completion(&mut self, id: u32)
+    fn forget_completion(&mut self, id: Id<T>)
     {
         if let Some(at) = self.completions.iter().position(|(wire, _)| *wire == id)
         {
@@ -242,7 +236,7 @@ impl<T: Payload> Objects<T>
 
     /// Explicit nonblocking disposal invalidates before scheduling storage
     /// cleanup. Reserve first: refusal leaves the ordinary object untouched.
-    pub(super) fn abandon(&mut self, id: u32) -> Result<(), Status>
+    pub(super) fn abandon(&mut self, id: Id<T>) -> Result<(), Status>
     {
         let pending = self.get(id).ok_or(NOT_FOUND)?.cleanup_pending();
         if pending
@@ -264,9 +258,9 @@ impl<T: Payload> Objects<T>
         Ok(())
     }
 
-    pub(super) fn remove(&mut self, id: u32) -> Option<()>
+    pub(super) fn remove(&mut self, id: Id<T>) -> Option<()>
     {
-        if let Some(index) = self.retiring.iter().position(|mark| mark.wire() == id)
+        if let Some(index) = self.retiring.iter().position(|mark| mark.id() == id)
         {
             let owner_stopping = self.retiring[index].owner_stopping();
             drop(self.retiring.swap_remove(index));
@@ -318,7 +312,7 @@ impl<T: Payload> Objects<T>
                 if !self.retiring[at].cleanup_pending()
                 {
                     let mark = self.retiring.swap_remove(at);
-                    let wire = mark.wire();
+                    let wire = mark.id();
                     let stopping = mark.owner_stopping();
                     drop(mark);
                     self.forget_completion(wire);
@@ -369,7 +363,7 @@ impl<T: Payload> Objects<T>
         }
         else
         {
-            let wire = mark.wire();
+            let wire = T::Storage::id(&mark);
             drop(mark);
             self.forget_completion(wire);
         }

@@ -44,9 +44,15 @@ Every request has a 64-byte header followed by at most 64 KiB of payload:
 | Offset | Field |
 | --- | --- |
 | 0, 2 | u16 schema 1, u16 header size 64 |
-| 4, 8, 12, 16, 20 | u32 volume, node, token, parent, flags |
+| 4, 8, 12, 16, 20 | u32 volume, node, token low word, parent, flags |
 | 24, 32, 40, 48 | u64 offset, length, auxiliary, when |
-| 56, 60 | u32 payload length, reserved zero |
+| 56, 60 | u32 payload length, token high word |
+
+The opaque resident token is `(high << 32) | low`; all 64 bits cross the
+provider boundary unchanged. Original open-fork refnums occupy the low word;
+native write/stream/icon-group operations use full native identities. A provider
+indexes tokens supplied by System and never issues replacements for them. Host
+transport file/directory capabilities remain their separate u32 contract.
 
 Operation is the broker operation number. Unused arguments must be zero:
 

@@ -140,7 +140,7 @@ pub struct Arguments<'a>
 {
     pub volume:    u32,
     pub node:      u32,
-    pub token:     u32,
+    pub token:     u64,
     pub parent:    u32,
     pub flags:     u32,
     pub offset:    u64,
@@ -164,7 +164,7 @@ impl<'a> Arguments<'a>
         put16(out, 2, HEADER_BYTES as u16);
         for (at, value) in [(4, self.volume),
                             (8, self.node),
-                            (12, self.token),
+                            (12, self.token as u32),
                             (16, self.parent),
                             (20, self.flags)]
         {
@@ -176,6 +176,7 @@ impl<'a> Arguments<'a>
             put64(out, at, value)
         }
         put32(out, 56, self.payload.len() as u32);
+        put32(out, 60, (self.token >> 32) as u32);
         out[HEADER_BYTES..].copy_from_slice(self.payload);
         Ok(count)
     }
@@ -190,7 +191,7 @@ impl<'a> Arguments<'a>
         {
             return Err(Error::Version);
         }
-        if get16(bytes, 2) as usize != HEADER_BYTES || get32(bytes, 60) != 0
+        if get16(bytes, 2) as usize != HEADER_BYTES
         {
             return Err(Error::Invalid);
         }
@@ -200,7 +201,7 @@ impl<'a> Arguments<'a>
         }
         Ok(Self { volume:    get32(bytes, 4),
                   node:      get32(bytes, 8),
-                  token:     get32(bytes, 12),
+                  token:     u64::from(get32(bytes, 12)) | (u64::from(get32(bytes, 60)) << 32),
                   parent:    get32(bytes, 16),
                   flags:     get32(bytes, 20),
                   offset:    get64(bytes, 24),
@@ -255,4 +256,37 @@ pub(crate) fn put32(b: &mut [u8], at: usize, v: u32)
 pub(crate) fn put64(b: &mut [u8], at: usize, v: u64)
 {
     b[at..at + 8].copy_from_slice(&v.to_le_bytes())
+}
+
+#[cfg(test)]
+mod token_tests
+{
+    use super::*;
+    #[test]
+    fn opaque_tokens_round_trip_every_bit_and_keep_equal_low_words_distinct()
+    {
+        let mut buffer = [0; HEADER_BYTES + 4];
+        for token in [0, 17, u64::from(u32::MAX) + 18, u64::MAX]
+        {
+            let args = Arguments { volume: 5,
+                                   node: 9,
+                                   token,
+                                   parent: 11,
+                                   flags: 1,
+                                   offset: 13,
+                                   length: 19,
+                                   auxiliary: 23,
+                                   when: 29,
+                                   payload: b"test" };
+            let n = args.encode(&mut buffer).unwrap();
+            let got = Arguments::decode(&buffer[..n]).unwrap();
+            assert_eq!((got.token, got.volume, got.node, got.parent), (token, 5, 9, 11));
+            assert_eq!((got.flags, got.offset, got.length, got.auxiliary, got.when),
+                       (1, 13, 19, 23, 29));
+            assert_eq!(got.payload, b"test");
+        }
+        assert_eq!(Arguments::decode(&buffer[..HEADER_BYTES - 1]).err(), Some(Error::Length));
+        buffer[2] = 0;
+        assert_eq!(Arguments::decode(&buffer).err(), Some(Error::Invalid));
+    }
 }

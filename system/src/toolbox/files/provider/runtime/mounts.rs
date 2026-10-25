@@ -288,7 +288,7 @@ pub(super) fn advance(flight: Flight, result: Result<Vec<u8>, Status>, never_sen
                               Operation::Open,
                               Arguments { volume: ctx.key.volume,
                                           node: ctx.key.cnid,
-                                          token: handle,
+                                          token: u64::from(handle),
                                           ..Default::default() })
             {
                 Ok(job) =>

@@ -23,7 +23,7 @@ identity!(ThreadId, u64);
 identity!(MenuId, i16);
 identity!(MenuHandle, u64);
 identity!(FileHandle, u32);
-identity!(FileWriteHandle, u32);
+identity!(FileWriteHandle, u64);
 identity!(ResourceFileHandle, u32);
 identity!(MemoryHandleId, u32);
 identity!(DialogId, u64);
@@ -331,7 +331,7 @@ pub enum SurfaceOperation
 }
 
 identity!(DocumentBatchId, u64);
-identity!(FileTransferId, u32);
+identity!(FileTransferId, u64);
 /// A frozen source reference for a resident file transfer. The resident checks
 /// its volume generation, identity and expected parent before any mutation.
 #[repr(transparent)]

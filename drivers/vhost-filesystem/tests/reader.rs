@@ -1,3 +1,4 @@
+mod common;
 use std::{future::Future,
           path::PathBuf,
           pin::pin,
@@ -177,26 +178,28 @@ fn actual_host_containers_support_nested_unicode_lookup_both_forks_and_stale_ope
                "cached lookup re-enumerated a folder");
     let mut files = Table::new(ObjectKind::Files);
     let first = files.insert(()).unwrap();
-    let layout = run(filesystem.open(volume, cnid, first)).unwrap();
+    let layout = run(filesystem.open(volume, cnid, u64::from(first))).unwrap();
     assert_eq!(layout.data.length, data.len() as u64);
     assert_eq!(layout.resources.length, resource.len() as u64);
-    assert_eq!(run(filesystem.read(volume, first, Fork::Data, 4095, 5000)).unwrap(),
+    assert_eq!(run(filesystem.read(volume, u64::from(first), Fork::Data, 4095, 5000)).unwrap(),
                data[4095..9095]);
-    assert_eq!(run(filesystem.read(volume, first, Fork::Resource, 0, 65536)).unwrap(), resource);
+    assert_eq!(run(filesystem.read(volume, u64::from(first), Fork::Resource, 0, 65536)).unwrap(),
+               resource);
     assert_eq!(run(filesystem.unmount(volume)).unwrap_err().cause, Cause::Busy);
-    run(filesystem.close_file(volume, first)).unwrap();
+    run(filesystem.close_file(volume, u64::from(first))).unwrap();
     files.remove(first);
     let next = files.insert(()).unwrap();
     assert_eq!(first & 0xffff, next & 0xffff);
     assert_ne!(first, next);
-    run(filesystem.open(volume, cnid, next)).unwrap();
-    assert_eq!(run(filesystem.read(volume, first, Fork::Data, 0, 1)).unwrap_err().cause,
+    run(filesystem.open(volume, cnid, u64::from(next))).unwrap();
+    assert_eq!(run(filesystem.read(volume, u64::from(first), Fork::Data, 0, 1)).unwrap_err().cause,
                Cause::NotFound);
-    assert_eq!(run(filesystem.close_file(volume, first)).unwrap_err().cause, Cause::NotFound);
-    assert_eq!(run(filesystem.read(volume.wrapping_add(1), next, Fork::Data, 0, 1)).unwrap_err()
+    assert_eq!(run(filesystem.close_file(volume, u64::from(first))).unwrap_err().cause,
+               Cause::NotFound);
+    assert_eq!(run(filesystem.read(volume.wrapping_add(1), u64::from(next), Fork::Data, 0, 1)).unwrap_err()
                                                                                    .cause,
                Cause::NotFound);
-    run(filesystem.close_file(volume, next)).unwrap();
+    run(filesystem.close_file(volume, u64::from(next))).unwrap();
     run(filesystem.unmount(volume)).unwrap();
     assert_eq!(filesystem.info(volume).unwrap_err().cause, Cause::NotFound);
 }
@@ -218,19 +221,20 @@ fn corrupt_container_fork_is_rejected_while_plain_host_data_is_not_a_container()
     run(filesystem.lookup(id, dir, "café")).unwrap();
     let mut files = Table::new(ObjectKind::Files);
     let token = files.insert(()).unwrap();
-    run(filesystem.open(id, cnid, token)).unwrap();
-    assert_eq!(run(filesystem.read(id, token, Fork::Data, 0, 64)).unwrap_err().cause,
+    run(filesystem.open(id, cnid, u64::from(token))).unwrap();
+    assert_eq!(run(filesystem.read(id, u64::from(token), Fork::Data, 0, 64)).unwrap_err().cause,
                Cause::Format(mac_fork_file::Error::Corrupt));
-    run(filesystem.close_file(id, token)).unwrap();
+    run(filesystem.close_file(id, u64::from(token))).unwrap();
     run(filesystem.unmount(id)).unwrap();
     std::fs::write(temp.0.join("unwrapped.txt"), b"ordinary host data").unwrap();
     run(filesystem.mount(id, 0)).unwrap();
     run(filesystem.scan(id, 2)).unwrap();
     let plain = run(filesystem.lookup(id, 2, "unwrapped.txt")).unwrap().metadata.catalog_id;
-    run(filesystem.open(id, plain, token)).unwrap();
-    assert_eq!(run(filesystem.read(id, token, Fork::Data, 0, 64)).unwrap(), b"ordinary host data");
-    assert!(run(filesystem.read(id, token, Fork::Resource, 0, 64)).unwrap().is_empty());
-    run(filesystem.close_file(id, token)).unwrap();
+    run(filesystem.open(id, plain, u64::from(token))).unwrap();
+    assert_eq!(run(filesystem.read(id, u64::from(token), Fork::Data, 0, 64)).unwrap(),
+               b"ordinary host data");
+    assert!(run(filesystem.read(id, u64::from(token), Fork::Resource, 0, 64)).unwrap().is_empty());
+    run(filesystem.close_file(id, u64::from(token))).unwrap();
     assert_eq!(std::fs::read(temp.0.join("unwrapped.txt")).unwrap(), b"ordinary host data");
     run(filesystem.unmount(id)).unwrap();
 }
@@ -257,10 +261,11 @@ fn raw_host_folders_and_files_are_readable_without_records_on_writable_and_reado
         assert!(file.metadata.modified > 3_800_000_000_000_000);
         let mut files = Table::new(ObjectKind::Files);
         let token = files.insert(()).unwrap();
-        run(fs.open(volume, file.metadata.catalog_id, token)).unwrap();
-        assert_eq!(run(fs.read(volume, token, Fork::Data, 6, 17)).unwrap(), b"file, no metadata");
-        assert!(run(fs.read(volume, token, Fork::Resource, 0, 100)).unwrap().is_empty());
-        run(fs.close_file(volume, token)).unwrap();
+        run(fs.open(volume, file.metadata.catalog_id, u64::from(token))).unwrap();
+        assert_eq!(run(fs.read(volume, u64::from(token), Fork::Data, 6, 17)).unwrap(),
+                   b"file, no metadata");
+        assert!(run(fs.read(volume, u64::from(token), Fork::Resource, 0, 100)).unwrap().is_empty());
+        run(fs.close_file(volume, u64::from(token))).unwrap();
         // A refresh and rename preserve identity; replacement cannot alias it.
         std::fs::rename(temp.0.join("Test/Plain.txt"), temp.0.join("Test/Renamed.txt")).unwrap();
         run(fs.refresh(volume)).unwrap();
@@ -274,7 +279,8 @@ fn raw_host_folders_and_files_are_readable_without_records_on_writable_and_reado
         run(fs.lookup(volume, 2, "Test")).unwrap();
         let replacement = run(fs.lookup(volume, again, "Renamed.txt")).unwrap().metadata.catalog_id;
         assert_ne!(replacement, file.metadata.catalog_id);
-        assert_eq!(run(fs.open(volume, file.metadata.catalog_id, token)).unwrap_err().cause,
+        assert_eq!(run(fs.open(volume, file.metadata.catalog_id, u64::from(token))).unwrap_err()
+                                                                                   .cause,
                    Cause::NotFound);
         run(fs.unmount(volume)).unwrap();
         assert!(!temp.0.join("Test/.system-risc-directory").exists());
@@ -306,7 +312,7 @@ fn native_writer_creates_both_forks_replaces_atomically_and_keeps_unrelated_dire
     run(filesystem.mount(volume, 0)).unwrap();
     let parent = run(filesystem.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
     run(filesystem.scan(volume, parent)).unwrap();
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let data = vec![0x53; 9001];
     let resource = vec![0xa7; 4097];
@@ -364,10 +370,11 @@ fn native_writer_creates_both_forks_replaces_atomically_and_keeps_unrelated_dire
     assert_eq!(physical.resolve("/Tools/New Script").unwrap().metadata.catalog_id, id);
     let mut opens = Table::new(ObjectKind::Files);
     let open = opens.insert(()).unwrap();
-    run(filesystem.open(volume, id, open)).unwrap();
-    assert_eq!(run(filesystem.read(volume, open, Fork::Data, 0, 30)).unwrap(), b"new");
-    assert_eq!(run(filesystem.read(volume, open, Fork::Resource, 0, 30)).unwrap(), b"rs");
-    run(filesystem.close_file(volume, open)).unwrap();
+    run(filesystem.open(volume, id, u64::from(open))).unwrap();
+    assert_eq!(run(filesystem.read(volume, u64::from(open), Fork::Data, 0, 30)).unwrap(), b"new");
+    assert_eq!(run(filesystem.read(volume, u64::from(open), Fork::Resource, 0, 30)).unwrap(),
+               b"rs");
+    run(filesystem.close_file(volume, u64::from(open))).unwrap();
     run(filesystem.unmount(volume)).unwrap();
     assert_eq!(physical.check().unwrap(), 4);
 }
@@ -384,7 +391,7 @@ fn aborted_create_removes_stage_preserves_catalog_and_never_reuses_reserved_iden
     let parent = run(filesystem.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
     let root_modified = filesystem.info(volume).unwrap().metadata.modified;
     let parent_modified = filesystem.cached_node(volume, parent).unwrap().metadata.modified;
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let first = writes.insert(()).unwrap();
     let reserved = run(filesystem.begin_create(Create { volume,
                                                         parent,
@@ -438,7 +445,7 @@ fn failed_flush_retries_durability_without_rewriting_the_acknowledged_header()
     let volume = volumes.insert(()).unwrap();
     run(fs.mount(volume, 0)).unwrap();
     let parent = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let id = run(fs.begin_create(Create { volume,
                                           parent,
@@ -486,7 +493,7 @@ fn cleanup_failure_after_publication_keeps_actual_result_and_does_not_repeat_com
     let volume = volumes.insert(()).unwrap();
     run(fs.mount(volume, 0)).unwrap();
     let parent = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let id = run(fs.begin_create(Create { volume,
                                           parent,
@@ -530,7 +537,7 @@ fn abort_after_publication_reports_actual_metadata_without_a_second_commit()
     let a = A { volume,
                 ..Default::default() };
     serve(&mut fs, O::Mount, a).unwrap();
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let a = A { token,
                 ..a };
@@ -579,7 +586,7 @@ fn casefold_collisions_invalid_names_and_read_only_writes_do_not_reserve_catalog
     run(fs.mount(volume, 0)).unwrap();
     let initial = physical.root().unwrap().metadata.next_catalog_id;
     let parent = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     for name in ["CAFÉ", "cafe\u{301}"]
     {
@@ -634,7 +641,7 @@ fn external_changes_report_stale_then_refresh_preserves_existing_fork_leases()
     run(fs.scan(volume, parent)).unwrap();
     let mut opens = Table::new(ObjectKind::Files);
     let token = opens.insert(()).unwrap();
-    run(fs.open(volume, cnid, token)).unwrap();
+    run(fs.open(volume, cnid, u64::from(token))).unwrap();
     physical.create("/Tools",
                     "From Host",
                     Kind::File,
@@ -646,8 +653,8 @@ fn external_changes_report_stale_then_refresh_preserves_existing_fork_leases()
     run(fs.refresh(volume)).unwrap();
     let parent = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
     assert_eq!(run(fs.lookup(volume, parent, "FROM HOST")).unwrap().metadata.name, "From Host");
-    assert_eq!(run(fs.read(volume, token, Fork::Data, 0, 31)).unwrap(), data[..31]);
-    run(fs.close_file(volume, token)).unwrap();
+    assert_eq!(run(fs.read(volume, u64::from(token), Fork::Data, 0, 31)).unwrap(), data[..31]);
+    run(fs.close_file(volume, u64::from(token))).unwrap();
     run(fs.unmount(volume)).unwrap();
 }
 
@@ -710,7 +717,7 @@ fn data_only_replacement_preserves_resources_and_aborts_partial_copy_failures()
     let args = A { volume,
                    ..Default::default() };
     serve(&mut filesystem, O::Mount, args).unwrap();
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let when = 3_875_171_696_123_456;
     let data = vec![0x73; 9003];
@@ -750,7 +757,7 @@ fn data_only_replacement_preserves_resources_and_aborts_partial_copy_failures()
     serve(&mut filesystem,
           O::Open,
           A { node,
-              token: reader,
+              token: u64::from(reader),
               ..args }).unwrap();
     assert_eq!(serve(&mut filesystem,
                      O::FinishWrite,
@@ -760,13 +767,13 @@ fn data_only_replacement_preserves_resources_and_aborts_partial_copy_failures()
                Cause::Busy);
     assert_eq!(serve(&mut filesystem,
                      O::Read,
-                     A { token: reader,
+                     A { token: u64::from(reader),
                          length: fs::MAX_TRANSFER as u64,
                          ..args }).unwrap(),
                original);
     serve(&mut filesystem,
           O::Close,
-          A { token: reader,
+          A { token: u64::from(reader),
               ..args }).unwrap();
     serve(&mut filesystem,
           O::FinishWrite,
@@ -781,24 +788,24 @@ fn data_only_replacement_preserves_resources_and_aborts_partial_copy_failures()
     serve(&mut filesystem,
           O::Open,
           A { node,
-              token: reader,
+              token: u64::from(reader),
               ..args }).unwrap();
     assert_eq!(serve(&mut filesystem,
                      O::Read,
-                     A { token: reader,
+                     A { token: u64::from(reader),
                          length: fs::MAX_TRANSFER as u64,
                          ..args }).unwrap(),
                data);
     assert_eq!(serve(&mut filesystem,
                      O::Read,
-                     A { token: reader,
+                     A { token: u64::from(reader),
                          flags: fs::RESOURCE_FORK,
                          length: fs::MAX_TRANSFER as u64,
                          ..args }).unwrap(),
                resources);
     serve(&mut filesystem,
           O::Close,
-          A { token: reader,
+          A { token: u64::from(reader),
               ..args }).unwrap();
     writes.remove(token);
     let token = writes.insert(()).unwrap();
@@ -853,7 +860,7 @@ fn filesystem_creation_preserves_properties_and_normalizes_before_the_byte_limit
     let mut payload = vec![0; 2048];
     let count = props.encode(&mut payload).unwrap();
     payload.truncate(count);
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let when = props.modified + 999;
     let id = serve(&mut filesystem,
@@ -1005,7 +1012,7 @@ fn filesystem_class_exchanges_metadata_and_both_forks_through_owned_byte_request
     assert_eq!(file.resource_length, resources.len() as u64);
     let mut files = Table::new(ObjectKind::Files);
     let token = files.insert(()).unwrap();
-    let open = A { token,
+    let open = A { token: u64::from(token),
                    ..args };
     serve(&mut filesystem,
           O::Open,
@@ -1027,7 +1034,7 @@ fn filesystem_class_exchanges_metadata_and_both_forks_through_owned_byte_request
                          ..open }).unwrap_err()
                                   .cause,
                Cause::NotFound);
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let write = A { token,
                     ..args };
@@ -1092,7 +1099,7 @@ fn filesystem_class_rejects_invalid_requests_and_read_only_mutations_without_hos
                                   .cause,
                Cause::Invalid);
     assert_eq!(filesystem.transport().calls.len(), before, "invalid wire fields reached host I/O");
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let before = Volume::open(&temp.0).unwrap().root().unwrap().metadata;
     assert_eq!(serve(&mut filesystem,
@@ -1195,7 +1202,7 @@ fn directory_creation_publishes_metadata_atomically_and_supports_nested_writes()
     let volume = ids.insert(()).unwrap();
     run(fs.mount(volume, 0)).unwrap();
     let parent = run(fs.lookup(volume, 2, "Host Folder")).unwrap().metadata.catalog_id;
-    let mut marks = Table::new(ObjectKind::FileWrites);
+    let mut marks = common::Tokens::new();
     let mark = marks.insert(()).unwrap();
     let folder=run(fs.begin_directory(Create {volume,parent,token:mark,
         properties:mac_filesystem_interface::FileProperties::fresh("Café",4_000_000_000_000_000),
@@ -1242,7 +1249,7 @@ fn directory_change_probe_is_metadata_only_scoped_and_preserves_open_snapshots()
     run(fs.scan(volume, folder)).unwrap();
     let mut files = Table::new(ObjectKind::Files);
     let mark = files.insert(()).unwrap();
-    run(fs.open(volume, cnid, mark)).unwrap();
+    run(fs.open(volume, cnid, u64::from(mark))).unwrap();
     fs.transport().calls.clear();
     assert!(!run(fs.check_directory(volume, folder)).unwrap().0);
     assert_eq!(fs.transport().calls, [Operation::Stat]);
@@ -1252,7 +1259,7 @@ fn directory_change_probe_is_metadata_only_scoped_and_preserves_open_snapshots()
     assert!(run(fs.check_directory(volume, folder)).unwrap().0);
     assert_eq!(fs.transport().calls, [Operation::Stat], "probe must never enumerate");
     assert!(fs.cached_node(volume, 2).is_ok(), "unrelated parent cache must survive");
-    assert_eq!(run(fs.read(volume, mark, Fork::Data, 0, 32)).unwrap(), &data[..32]);
+    assert_eq!(run(fs.read(volume, u64::from(mark), Fork::Data, 0, 32)).unwrap(), &data[..32]);
     assert_eq!(run(fs.lookup(volume, folder, "Arrived.txt")).unwrap().layout.data.length, 7);
     assert!(!run(fs.check_directory(volume, folder)).unwrap().0);
     // Editing a child's data leaves the directory mtime unchanged. The host's
@@ -1260,7 +1267,7 @@ fn directory_change_probe_is_metadata_only_scoped_and_preserves_open_snapshots()
     std::fs::write(temp.0.join(physical).join("Arrived.txt"), b"updated").unwrap();
     assert!(run(fs.check_directory(volume, folder)).unwrap().0);
     assert_eq!(run(fs.lookup(volume, folder, "Arrived.txt")).unwrap().layout.data.length, 7);
-    run(fs.close_file(volume, mark)).unwrap();
+    run(fs.close_file(volume, u64::from(mark))).unwrap();
     run(fs.unmount(volume)).unwrap();
 }
 
@@ -1280,7 +1287,7 @@ fn native_host_renames_preserve_identity_forks_and_nested_writes_across_remount(
     run(fs.refresh(volume)).unwrap();
     assert_eq!(run(fs.lookup(volume, 2, "Renamed Tools")).unwrap().metadata.catalog_id, folder);
     assert_eq!(run(fs.lookup(volume, folder, "New name")).unwrap().metadata.catalog_id, file);
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let mark = writes.insert(()).unwrap();
     run(fs.begin_create(Create { volume, parent: folder, token: mark,
         properties: mac_filesystem_interface::FileProperties::fresh("Readable Child", 4_000_000_000_000_000),
@@ -1296,10 +1303,11 @@ fn native_host_renames_preserve_identity_forks_and_nested_writes_across_remount(
     assert_eq!(run(fs.lookup(volume, folder, "NEW NAME")).unwrap().metadata.catalog_id, file);
     let mut opens = Table::new(ObjectKind::Files);
     let open = opens.insert(()).unwrap();
-    run(fs.open(volume, file, open)).unwrap();
-    assert_eq!(run(fs.read(volume, open, Fork::Data, 0, data.len())).unwrap(), data);
-    assert_eq!(run(fs.read(volume, open, Fork::Resource, 0, resources.len())).unwrap(), resources);
-    run(fs.close_file(volume, open)).unwrap();
+    run(fs.open(volume, file, u64::from(open))).unwrap();
+    assert_eq!(run(fs.read(volume, u64::from(open), Fork::Data, 0, data.len())).unwrap(), data);
+    assert_eq!(run(fs.read(volume, u64::from(open), Fork::Resource, 0, resources.len())).unwrap(),
+               resources);
+    run(fs.close_file(volume, u64::from(open))).unwrap();
     run(fs.unmount(volume)).unwrap();
     assert_eq!(Volume::open(&temp.0).unwrap()
                                     .resolve("/Renamed Tools/New name")
@@ -1324,16 +1332,17 @@ fn plain_open_binds_catalog_metadata_to_the_exact_snapshot_revision()
     let mut files = Table::new(ObjectKind::Files);
     let token = files.insert(()).unwrap();
     fs.transport().modify_before_description = Some(path);
-    let failure = run(fs.open(volume, id, token)).unwrap_err();
+    let failure = run(fs.open(volume, id, u64::from(token))).unwrap_err();
     assert_eq!(failure.cause, Cause::Stale);
     assert!(!fs.is_open(volume, id), "failed open retained a live fork");
-    assert_eq!(run(fs.read(volume, token, Fork::Data, 0, 3)).unwrap_err().cause, Cause::NotFound);
+    assert_eq!(run(fs.read(volume, u64::from(token), Fork::Data, 0, 3)).unwrap_err().cause,
+               Cause::NotFound);
     run(fs.cleanup_orphans()).unwrap();
     run(fs.refresh(volume)).unwrap();
     assert_eq!(run(fs.lookup(volume, 2, "plain")).unwrap().metadata.catalog_id, id);
-    run(fs.open(volume, id, token)).unwrap();
-    assert_eq!(run(fs.read(volume, token, Fork::Data, 0, 3)).unwrap(), b"new");
-    run(fs.close_file(volume, token)).unwrap();
+    run(fs.open(volume, id, u64::from(token))).unwrap();
+    assert_eq!(run(fs.read(volume, u64::from(token), Fork::Data, 0, 3)).unwrap(), b"new");
+    run(fs.close_file(volume, u64::from(token))).unwrap();
     run(fs.unmount(volume)).unwrap();
 }
 
@@ -1351,7 +1360,7 @@ fn small_metadata_edits_preserve_plain_host_bytes_and_identity_across_rename_and
     run(fs.mount(volume, 0)).unwrap();
     let original = run(fs.lookup(volume, 2, "plain.txt")).unwrap().metadata.clone();
     let metadata_when = fs.info(volume).unwrap().metadata.modified;
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let mut patch = MetadataPatch { comment: Some("native café 🦀"),
                                     ..Default::default() };
@@ -1417,7 +1426,7 @@ fn publishing_a_recursive_tree_keeps_destination_and_descendant_revision_caches_
     let mut volumes = Table::new(ObjectKind::Volumes);
     let volume = volumes.insert(()).unwrap();
     run(fs.mount(volume, 0)).unwrap();
-    let mut marks = Table::new(ObjectKind::FileWrites);
+    let mut marks = common::Tokens::new();
     let token = marks.insert(()).unwrap();
     let mkdir = |fs: &mut Filesystem<Host>, parent, name| {
         let id = run(fs.begin_directory(Create { volume,
@@ -1490,7 +1499,7 @@ fn root_view_state_and_explicit_date_restoration_keep_exact_metadata_receipts()
     let volume = volumes.insert(()).unwrap();
     run(fs.mount(volume, 0)).unwrap();
     let original = fs.info(volume).unwrap().metadata.clone();
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let when = original.modified + 1_000_000;
     let mut view = MetadataPatch::default();
@@ -1536,7 +1545,7 @@ fn wrapped_file_metadata_never_reads_or_rewrites_forks_and_direct_folder_records
     let folder = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
     run(fs.lookup(volume, folder, "Café")).unwrap();
     let metadata_when = fs.info(volume).unwrap().metadata.modified;
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     fs.transport().trace.clear();
     assert!(run(fs.begin_metadata(volume,
@@ -1598,7 +1607,7 @@ fn metadata_failure_and_cleanup_retry_preserve_actual_publication_and_source_sna
     run(fs.mount(volume, 0)).unwrap();
     let node = run(fs.lookup(volume, 2, "raw")).unwrap().metadata.catalog_id;
     let when = fs.info(volume).unwrap().metadata.modified;
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let patch = MetadataPatch { comment: Some("committed"),
                                 ..Default::default() };
@@ -1611,7 +1620,7 @@ fn metadata_failure_and_cleanup_retry_preserve_actual_publication_and_source_sna
     assert!(run(fs.begin_metadata(volume, node, token, patch, when)).unwrap());
     let mut marks = Table::new(ObjectKind::Files);
     let mark = marks.insert(()).unwrap();
-    run(fs.open(volume, node, mark)).unwrap();
+    run(fs.open(volume, node, u64::from(mark))).unwrap();
     fs.transport().fail_next = Some(Operation::Close);
     assert_eq!(run(fs.finish_write(volume, token)).unwrap_err().cause,
                Cause::Host(mac_host_protocol::status::IO));
@@ -1619,8 +1628,8 @@ fn metadata_failure_and_cleanup_retry_preserve_actual_publication_and_source_sna
     let commits = fs.transport().commits.len();
     run(fs.finish_write(volume, token)).unwrap();
     assert_eq!(fs.transport().commits.len(), commits, "cleanup replay republished metadata");
-    assert_eq!(run(fs.read(volume, mark, Fork::Data, 0, 9)).unwrap(), b"unchanged");
-    run(fs.close_file(volume, mark)).unwrap();
+    assert_eq!(run(fs.read(volume, u64::from(mark), Fork::Data, 0, 9)).unwrap(), b"unchanged");
+    run(fs.close_file(volume, u64::from(mark))).unwrap();
     assert_eq!(std::fs::read(temp.0.join("raw")).unwrap(), b"unchanged");
     run(fs.unmount(volume)).unwrap();
 }
@@ -1733,7 +1742,7 @@ fn removal_releases_owned_receipts_rejects_nonempty_folders_and_preserves_cancel
     let volume = volumes.insert(()).unwrap();
     run(fs.mount(volume, 0)).unwrap();
     let folder = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
-    let mut writes = Table::new(ObjectKind::FileWrites);
+    let mut writes = common::Tokens::new();
     let token = writes.insert(()).unwrap();
     let when = fs.info(volume).unwrap().metadata.modified + 100;
     let error = run(fs.begin_remove(volume, folder, token, when)).unwrap_err();

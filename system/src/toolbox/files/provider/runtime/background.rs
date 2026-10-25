@@ -68,7 +68,7 @@ pub(super) fn file(owner: crate::toolbox::files::subject::Access<'_>, call: &mut
     let mut key = key(call.operation, call.volume);
     key.cnid = call.cnid;
     key.index = call.index;
-    key.handle = call.handle;
+    key.handle = u64::from(call.handle);
     key.fork = call.fork;
     key.capacity = capacity;
     key.when = call.position;
@@ -341,7 +341,7 @@ pub(super) fn stream(owner: crate::toolbox::files::subject::Access<'_>, call: &m
             key.record = Record::Stream;
             key.cnid = call.expected_cnid;
             key.index = call.parent;
-            key.handle = call.handle;
+            key.handle = u64::from(call.handle);
             key.fork = call.fork;
             key.capacity = call.count.max(capacity);
             key.when = call.when;
@@ -415,7 +415,7 @@ pub(super) fn group(owner: crate::toolbox::files::subject::Access<'_>, call: &mu
             let mut key = key(call.operation, call.volume);
             key.record = Record::Group;
             key.index = call.count;
-            key.handle = call.handle;
+            key.handle = u64::from(call.handle);
             key.when = call.when;
             pending(groups::begin(owner, 0, key, call, rows))
         }

@@ -5,7 +5,7 @@ impl Manager
 {
     pub(in crate::toolbox::files) fn stream_provider<'a>(&self,
                                                          owner:impl Into<super::super::subject::Access<'a>>,
-                                                         handle: u32)
+                                                         handle: u64)
                                                          -> Result<Option<u32>, Status>
     {
         let mark = self.streams.get_for(owner.into(), handle)?;
@@ -15,7 +15,7 @@ impl Manager
     pub(in crate::toolbox::files) fn reserve_remote_stream_authorized(
         &mut self, owner: super::super::subject::Access<'_>,
         authority: &super::super::subject::Authority, call: &ForkWriteCall, name: &str)
-        -> Result<(u32, u32), Status>
+        -> Result<(u32, u64), Status>
     {
         self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FSWR"))?;
         #[cfg(target_arch = "riscv64")]
@@ -79,7 +79,7 @@ impl Manager
         Ok((provider, handle))
     }
 
-    pub(in crate::toolbox::files) fn remote_stream_begin(&mut self, handle: u32, bytes: &[u8],
+    pub(in crate::toolbox::files) fn remote_stream_begin(&mut self, handle: u64, bytes: &[u8],
                                                          properties: fs::FileProperties<'_>)
                                                          -> Result<(), Status>
     {
@@ -175,7 +175,7 @@ impl Manager
                             ..Default::default() }))
     }
 
-    pub(in crate::toolbox::files) fn remote_stream_ready(&mut self, handle: u32, fork: u32,
+    pub(in crate::toolbox::files) fn remote_stream_ready(&mut self, handle: u64, fork: u32,
                                                          count: usize)
                                                          -> Result<(), Status>
     {
@@ -188,7 +188,7 @@ impl Manager
         Ok(())
     }
 
-    pub(in crate::toolbox::files) fn publish_remote_stream(&mut self, handle: u32,
+    pub(in crate::toolbox::files) fn publish_remote_stream(&mut self, handle: u64,
                                                            receipt: fs::WriteReceipt<'_>)
                                                            -> Result<CatalogInfo, Status>
     {
@@ -231,7 +231,7 @@ impl Manager
         Ok(entry)
     }
 
-    pub(in crate::toolbox::files) fn retire_remote_stream(&mut self, handle: u32)
+    pub(in crate::toolbox::files) fn retire_remote_stream(&mut self, handle: u64)
                                                           -> Result<(), Status>
     {
         let mark = self.streams.completing(handle).ok_or(NOT_FOUND)?;
@@ -246,7 +246,7 @@ impl Manager
         Ok(())
     }
 
-    pub(in crate::toolbox::files) fn quarantine_remote_stream(&mut self, handle: u32)
+    pub(in crate::toolbox::files) fn quarantine_remote_stream(&mut self, handle: u64)
     {
         if let Some(mark) = self.streams.completing(handle)
         {
