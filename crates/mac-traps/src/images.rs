@@ -36,6 +36,7 @@ impl Client<'_>
         reply(self.invoke(traps::IMAGE, &mut call), &call).map(|_| ())
     }
 
+    /// Validate the borrowed destination shape; System owns surface/decode budgets.
     pub fn png_pixels(self, data: &[u8], pixels: &mut [u32], width: usize, height: usize,
                       destination: Rect, clip: Rect)
                       -> images::Result<()>
@@ -45,7 +46,6 @@ impl Client<'_>
            || width > i16::MAX as usize
            || height > i16::MAX as usize
            || width.checked_mul(height) != Some(pixels.len())
-           || pixels.len() > 640 * 480
         {
             return Err(ImageError { status: BAD_ARGUMENT,
                                     kind:   INVALID_DESTINATION });

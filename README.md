@@ -541,6 +541,12 @@ platform geometry. Window limits, pointer mapping, desktop placement and display
 buffers use the configured size; original Macintosh reference images retain
 those references' recorded sizes.
 
+Caller-owned control, scroll-box and PNG destination surfaces validate their
+dimensions and exact slice length in the SDK. Their pixel work limit belongs to
+System and follows the checked platform geometry; the SDK does not duplicate a
+640×480 ceiling. PNG source decode budgets remain separate from the destination
+surface dimensions.
+
 Graphical launches enable OpenGL at 2× zoom. The software-scaled frontend can
 hold up virtual-disk progress at this viewport size; GPU presentation keeps
 storage and the display responsive. Native Windows GTK and Linux GTK launches

@@ -980,6 +980,7 @@ impl Client<'_>
     }
 
     /// Draw a control into caller-owned storage for this synchronous service call.
+    /// Check storage geometry here; the resident service owns its work limit.
     pub fn control_pixels(self, call: &mut mac_abi::controls::ControlCall, pixels: &mut [u32],
                           width: usize, height: usize)
                           -> Result<()>
@@ -990,7 +991,6 @@ impl Client<'_>
            || width > i16::MAX as usize
            || height > i16::MAX as usize
            || width.checked_mul(height) != Some(pixels.len())
-           || pixels.len() > 640 * 480
         {
             return Err(Error::BadArgument);
         }
@@ -1079,6 +1079,7 @@ impl Client<'_>
         status(self.invoke(SCROLL_BOX, call))
     }
 
+    /// Caller-owned storage is geometry-checked here; System enforces work limits.
     pub fn scroll_box_pixels(self, call: &mut mac_abi::scrollbox::Call, pixels: &mut [u32],
                              width: usize, height: usize)
                              -> Result<()>
@@ -1089,7 +1090,6 @@ impl Client<'_>
            || width > i16::MAX as usize
            || height > i16::MAX as usize
            || width.checked_mul(height) != Some(pixels.len())
-           || pixels.len() > 640 * 480
         {
             return Err(Error::BadArgument);
         }
