@@ -2,7 +2,7 @@
 pub mod devices;
 pub mod file_sources;
 pub mod jobs;
-mod registry;
+pub(crate) mod registry;
 pub use registry::*;
 #[cfg(target_arch = "riscv64")]
 mod runtime;

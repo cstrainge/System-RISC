@@ -178,11 +178,24 @@ impl Default for Session
              registry.get(crate::toolbox::handles::KindCode(*b"DRST")).unwrap()),
             (registry.get(crate::toolbox::handles::KindCode(*b"DRCV")).unwrap(),
              registry.get(crate::toolbox::handles::KindCode(*b"DRVS")).unwrap())).unwrap();
+        let interface_kind =
+            registry.register(&registrar,
+                              crate::drivers::registry::interfaces::specification(false),
+                              crate::drivers::registry::interfaces::ReleaseInterfaces(false))
+                    .unwrap();
+        let interface_storage =
+            registry.register(&registrar,
+                              crate::drivers::registry::interfaces::specification(true),
+                              crate::drivers::registry::interfaces::ReleaseInterfaces(true))
+                    .unwrap();
+        let modules = crate::drivers::Registry::new(mac_module::Target::RVA23U64,
+                                                    registrar.clone(),
+                                                    (interface_kind, interface_storage)).unwrap();
         Self { worlds: crate::toolbox::quickdraw::worlds::Worlds::new((worlds, world_storage)).unwrap(),
                registry,
                menus: RefCell::new(std::vec::Vec::new()),
                inspection: inspection::Domains::new(),
-               modules: crate::drivers::Registry::new(mac_module::Target::RVA23U64),
+               modules,
                scopes,
                drag,
                drag_notices: std::vec::Vec::new(),
@@ -1460,5 +1473,13 @@ impl crate::toolbox::files::pins::PinHost for Session
                         -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
         crate::toolbox::files::pins::PinHost::release_file_pin(&mut self.files, ticket, kind)
+    }
+}
+
+impl crate::toolbox::handles::cleanup::context::Context for Session
+{
+    fn driver_registry(&mut self) -> Option<&mut crate::drivers::Registry>
+    {
+        Some(&mut self.modules)
     }
 }

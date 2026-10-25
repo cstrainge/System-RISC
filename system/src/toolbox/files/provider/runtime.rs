@@ -142,7 +142,7 @@ struct Flight
     thread:    u64,
     owner:     super::super::subject::Subject,
     key:       Key,
-    provider:  u32,
+    provider:  u64,
     step:      Step,
     job:       OwnedJob,
     abandoned: bool,
@@ -243,7 +243,7 @@ fn files<T>(call: impl FnOnce(&mut super::Manager) -> Result<T, Status>) -> Resu
 {
     crate::kernel::with_files(call).map_err(crate::state::AccessError::status)?
 }
-fn submit(provider: u32, op: Operation, volume: u32, source: u64) -> Result<OwnedJob, Status>
+fn submit(provider: u64, op: Operation, volume: u32, source: u64) -> Result<OwnedJob, Status>
 {
     submit_args(provider,
                 op,
@@ -251,7 +251,7 @@ fn submit(provider: u32, op: Operation, volume: u32, source: u64) -> Result<Owne
                             auxiliary: source,
                             ..Default::default() })
 }
-pub(in crate::toolbox::files) fn submit_args(provider: u32, op: Operation, args: Arguments<'_>)
+pub(in crate::toolbox::files) fn submit_args(provider: u64, op: Operation, args: Arguments<'_>)
                                              -> Result<OwnedJob, Status>
 {
     let mut bytes = Vec::new();

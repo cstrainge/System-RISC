@@ -102,7 +102,7 @@ impl lifetime::StreamHost for Manager
 }
 pub(super) struct Remote
 {
-    pub provider:  u32,
+    pub provider:  u64,
     pub running:   bool,
     pub confirmed: Option<CatalogInfo>,
     pub lengths:   [u64; 2],

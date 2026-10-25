@@ -14,12 +14,41 @@ struct Menu
     id:    u64,
     state: Box<MenuDefinitionState>
 }
+#[derive(Clone, Copy)]
+struct Layout
+{
+    title: Rect,
+    popup: Rect,
+    rows:  [Rect; MAX_ITEMS]
+}
+impl Layout
+{
+    fn read(state: &MenuDefinitionState) -> Self
+    {
+        Self { title: state.title_bounds,
+               popup: state.popup_bounds,
+               rows:  core::array::from_fn(|i| state.items[i].bounds) }
+    }
+
+    fn apply(&self, state: &mut MenuDefinitionState)
+    {
+        state.title_bounds = self.title;
+        state.popup_bounds = self.popup;
+        for (item, bounds) in state.items.iter_mut().zip(self.rows)
+        {
+            item.bounds = bounds;
+        }
+    }
+}
+
 struct Bar
 {
     order:       Vec<u64>,
     tracking:    bool,
     active:      Option<u64>,
-    highlighted: i16
+    highlighted: i16,
+    scratch:     Box<MenuDefinitionState>,
+    reflow:      Vec<(u64, Layout)>
 }
 impl Bar
 {
@@ -31,7 +60,19 @@ impl Bar
             kind: crate::toolbox::handles::KindCode(*b"MNST"), used: 0,
             requested_slots: 1, limit: Some(1) }
                              })?;
+        let scratch = new_state().map_err(|_| {
+                                     PoolError::Storage { owner,
+                                               kind: crate::toolbox::handles::KindCode(*b"MNST"),
+                                               used: 0,
+                                               requested_slots: 1,
+                                               limit: Some(1) }
+                                 })?;
+        let mut reflow = Vec::new();
+        reflow.try_reserve(1).map_err(|_| PoolError::Storage { owner,
+            kind: crate::toolbox::handles::KindCode(*b"MNST"), used: 0, requested_slots: 1, limit: Some(1) })?;
         Ok(Self { order,
+                  scratch,
+                  reflow,
                   tracking: false,
                   active: None,
                   highlighted: 0 })
@@ -103,19 +144,18 @@ impl Manager
                                          })
     }
 
-    fn call(&self, state: &mut MenuDefinitionState, message: i16, param: i64,
-            surface: *mut Surface)
-            -> i64
+    fn measure(&self, state: &mut MenuDefinitionState) -> Result<(), Status>
     {
-        invoke(self.entry, self.gate, state, message, param, surface)
+        Self::measure_with(self.entry, self.gate, state)
     }
 
-    fn measure(&self, state: &mut MenuDefinitionState) -> Result<(), Status>
+    fn measure_with(entry: DefinitionEntry, gate: TrapGate, state: &mut MenuDefinitionState)
+                    -> Result<(), Status>
     {
         let mut pixel = [0u32];
         let mut canvas = Canvas::new(&mut pixel, 1, 1);
         let mut surface = Surface::from_canvas(&mut canvas);
-        let status = self.call(state, MEASURE, 0, &mut surface);
+        let status = invoke(entry, gate, state, MEASURE, 0, &mut surface);
         if status < 0 { Err(i32::try_from(status).unwrap_or(BAD_ABI)) } else { Ok(()) }
     }
 
@@ -154,32 +194,46 @@ impl Manager
             {
                 let id = call.handle;
                 self.objects.get(id).ok_or(NOT_FOUND)?;
-                let bar = self.bar().ok_or(NOT_FOUND)?;
-                let index = bar.order.iter().position(|other| *other == id).ok_or(NOT_FOUND)?;
-                // All reflow allocations and MDEF calls precede invalidation.
-                // A refusal leaves the old menu and bar intact and usable.
-                let mut replacements = Vec::new();
-                replacements.try_reserve(bar.order.len() - index - 1).map_err(|_| NO_MEMORY)?;
-                let mut left = self.objects.get(id).ok_or(NOT_FOUND)?.state.title_bounds.left;
-                for &next in &bar.order[index + 1..]
+                let entry = self.entry;
+                let gate = self.gate;
                 {
-                    let menu = self.objects.get(next).ok_or(NOT_FOUND)?;
-                    let mut state = new_state()?;
-                    state.as_mut().clone_from(menu.state.as_ref());
-                    state.title_bounds.left = left;
-                    self.measure(&mut state)?;
-                    left = state.title_bounds.right;
-                    replacements.push((next, state));
+                    let (bar, values) =
+                        self.objects.state_values(owner.owner().incarnation()).ok_or(NOT_FOUND)?;
+                    let index = bar.order.iter().position(|other| *other == id).ok_or(NOT_FOUND)?;
+                    bar.reflow.clear();
+                    let mut left = values.get(id).ok_or(NOT_FOUND)?.state.title_bounds.left;
+                    for &next in &bar.order[index + 1..]
+                    {
+                        let menu = values.get(next).ok_or(NOT_FOUND)?;
+                        bar.scratch.as_mut().clone_from(menu.state.as_ref());
+                        bar.scratch.title_bounds.left = left;
+                        Self::measure_with(entry, gate, &mut bar.scratch)?;
+                        let layout = Layout::read(&bar.scratch);
+                        // Measure owns geometry only. A definition that changes
+                        // its inputs is refused before any visible publication.
+                        Layout::read(&menu.state).apply(&mut bar.scratch);
+                        if bar.scratch.as_ref() != menu.state.as_ref()
+                        {
+                            return Err(BAD_ABI);
+                        }
+                        if bar.reflow.len() == bar.reflow.capacity()
+                        {
+                            return Err(NO_MEMORY);
+                        }
+                        left = layout.title.right;
+                        bar.reflow.push((next, layout));
+                    }
                 }
-                // Pin the registered payload across ordinary menu cleanup.
+                // All fallible definition calls precede invalidation. Scratch
+                // and geometry capacity were prepared when menus were installed.
                 let removed = self.objects.remove(id).ok_or(NOT_FOUND)?;
                 self.unpublish(id);
                 drop(removed);
-                for (id, state) in replacements
+                while let Some((next, layout)) = self.bar_mut().and_then(|bar| bar.reflow.pop())
                 {
-                    if let Some(menu) = self.objects.get_mut(id)
+                    if let Some(menu) = self.objects.get_mut(next)
                     {
-                        menu.state = state;
+                        layout.apply(&mut menu.state);
                     }
                 }
                 Ok(true)
@@ -236,6 +290,12 @@ impl Manager
                 if let Some(bar) = self.bar_mut()
                 {
                     bar.order.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                    bar.reflow
+                       .try_reserve(bar.order
+                                       .len()
+                                       .saturating_add(1)
+                                       .saturating_sub(bar.reflow.len()))
+                       .map_err(|_| NO_MEMORY)?;
                 }
                 let resource = state.menu_id;
                 // Bar::new prepares the first order slot; later growth is

@@ -4,18 +4,18 @@
 use super::*;
 impl Manager
 {
-    pub(crate) fn source_provider(&self, volume: u32) -> Result<Option<u32>, Status>
+    pub(crate) fn source_provider(&self, volume: u32) -> Result<Option<u64>, Status>
     {
         self.read_provider(volume)
     }
 
     pub(crate) fn reserve_provider_source(&mut self, volume: u32, cnid: u32)
-                                          -> Result<(u32, u32), Status>
+                                          -> Result<(u64, u32), Status>
     {
         self.reserve_provider_file(0, volume, cnid, DATA_FORK)
     }
 
-    pub(crate) fn source_mark_provider(&self, handle: u32) -> Result<Option<u32>, Status>
+    pub(crate) fn source_mark_provider(&self, handle: u32) -> Result<Option<u64>, Status>
     {
         self.file_provider(0, handle)
     }
@@ -29,7 +29,7 @@ impl Manager
 
     pub(crate) fn begin_provider_source_read(
         &mut self, handle: u32, offset: u64, length: usize)
-        -> Result<(u32, mac_filesystem_interface::Arguments<'static>), Status>
+        -> Result<(u64, mac_filesystem_interface::Arguments<'static>), Status>
     {
         let file = self.slot(0, handle)?;
         let fork_guard = file.fork.lock();
@@ -58,7 +58,7 @@ impl Manager
 
     pub(crate) fn close_provider_source(
         &mut self, handle: u32, cleanup: bool)
-        -> Result<(u32, mac_filesystem_interface::Arguments<'static>), Status>
+        -> Result<(u64, mac_filesystem_interface::Arguments<'static>), Status>
     {
         let provider = self.source_mark_provider(handle)?.ok_or(BAD_ARGUMENT)?;
         let volume = if cleanup

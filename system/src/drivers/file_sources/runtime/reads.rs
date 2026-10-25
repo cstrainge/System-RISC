@@ -20,7 +20,7 @@ struct Flight
 }
 static FLIGHTS: Spinlock<Vec<Flight>> = Spinlock::new(Vec::new());
 
-pub(super) fn submit(provider: u32, op: FileOperation, args: FileArguments<'_>, capacity: usize)
+pub(super) fn submit(provider: u64, op: FileOperation, args: FileArguments<'_>, capacity: usize)
                      -> Result<OwnedJob, Status>
 {
     let mut input = Vec::new();

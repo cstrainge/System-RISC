@@ -144,7 +144,7 @@ impl State
         self.query(name)
     }
 }
-fn read(provider: u32, state: &mut State, offset: u64, count: usize) -> Result<OwnedJob, Status>
+fn read(provider: u64, state: &mut State, offset: u64, count: usize) -> Result<OwnedJob, Status>
 {
     if offset.checked_add(count as u64).is_none_or(|end| end > state.length)
     {

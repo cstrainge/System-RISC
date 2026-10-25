@@ -340,3 +340,55 @@ fn saved_state_can_precede_objects_and_is_refused_after_owner_stop()
     assert!(error.to_string().contains("stopping; new handles are refused"));
     assert_eq!((owner.summary().live, owner.summary().pending), (0, 0));
 }
+
+#[test]
+fn split_state_and_value_borrows_preserve_owner_generation_and_backing_boundaries()
+{
+    let (registry, owner, _) = setup();
+    let foreign = OwnerRef::try_new(OwnerIndex::issue(DomainKind::Process).unwrap()).unwrap();
+    let mut store = Store::<u8, Gate, usize>::owned_state(registry.get(OBJECT).unwrap(),
+                                                          registry.get(STATE).unwrap(),
+                                                          |_| Ok(0)).unwrap();
+    let id = store.insert(&owner, 42).unwrap();
+    let other = store.insert(&foreign, 43).unwrap();
+    let first_key = store.key(id).unwrap();
+    let ticket;
+    {
+        let (state, values) = store.state_values(owner.owner().incarnation()).unwrap();
+        *state = 7;
+        assert_eq!(values.get(other), None, "owner-local view admitted another domain");
+        let pinned = values.get(id).unwrap();
+        assert_eq!(*pinned, 42);
+        ticket = owner.invalidate(first_key).unwrap();
+        assert_eq!(values.get(id), None, "new lookups must reject the revoked generation");
+        assert_eq!(*pinned, 42, "the already borrowed payload remains retained until cleanup");
+        assert_eq!(owner.summary().pending, 1);
+    }
+    drop(store.release(ticket).unwrap());
+    let fresh = store.insert(&owner, 44).unwrap();
+    let fresh_key = store.key(fresh).unwrap();
+    assert_eq!(first_key.slot(), fresh_key.slot());
+    assert_ne!(first_key.generation(), fresh_key.generation());
+    {
+        let (state, values) = store.state_values(owner.owner().incarnation()).unwrap();
+        assert_eq!(*state, 7);
+        assert_eq!(values.get(id), None);
+        assert_eq!(values.get(fresh), Some(&44));
+        assert_eq!(values.get(other), None);
+    }
+    owner.stop_admission();
+    while let Some(ticket) = owner.invalidate_next()
+    {
+        if ticket.key().kind() == STATE
+        {
+            store.release_storage(ticket).unwrap();
+        }
+        else
+        {
+            drop(store.release(ticket).unwrap());
+        }
+    }
+    assert!(store.state_values(owner.owner().incarnation()).is_none());
+    assert_eq!(owner.summary().pending, 0);
+    assert_eq!(store.state_values(foreign.owner().incarnation()).unwrap().1.get(other), Some(&43));
+}

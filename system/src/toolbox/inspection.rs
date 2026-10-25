@@ -23,7 +23,7 @@ fn reject(call: &mut Call, status: Status, message: &str) -> Status
 
 /// Registry existence is public. Inspector authority is deliberately absent:
 /// the host authenticates only that this is a live application context.
-pub(crate) fn registered_kinds<C: 'static,
+pub(crate) fn registered_kinds<C: ?Sized + 'static,
                                G: InvocationGate,
                                F: mac_object_table::registry::CleanupFailure + 'static>(
     registry: &mac_object_table::registry::Registry<C, G, F>, caller_live: bool, call: &mut Call)

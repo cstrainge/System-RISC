@@ -6,6 +6,15 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cause
 {
+    ContextUnavailable
+    {
+        required: &'static str
+    },
+    DriverInterfaceBusy
+    {
+        module:  u64,
+        pending: usize
+    },
     Facility(PoolError),
     Alias(mac_object_table::aliases::ReleaseCause),
     RetirementStorage
@@ -38,6 +47,20 @@ impl core::fmt::Display for Cause
     {
         match self
         {
+            Self::ContextUnavailable { required } =>
+            {
+                write!(f,
+                       "registered cleanup requires the {required} context; payload and unique \
+                        ticket remain retained for retry")
+            }
+            Self::DriverInterfaceBusy { module,
+                                        pending } =>
+            {
+                write!(f,
+                       "driver module {module} still has {pending} requests using this interface; \
+                        wait for actual completion or acknowledged cancellation before retrying \
+                        cleanup")
+            }
             Self::Facility(error) => error.fmt(f),
             Self::Alias(error) => error.fmt(f),
             Self::RetirementStorage { provider,
@@ -97,6 +120,20 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    pub(crate) fn context_unavailable(ticket: ReleasedResource, required: &'static str) -> Self
+    {
+        Self { ticket,
+               cause: Cause::ContextUnavailable { required } }
+    }
+
+    pub(crate) fn driver_interface_busy(ticket: ReleasedResource, module: u64, pending: usize)
+                                        -> Self
+    {
+        Self { ticket,
+               cause: Cause::DriverInterfaceBusy { module,
+                                                   pending } }
+    }
+
     pub(crate) fn document_retirement_storage(ticket: ReleasedResource, pending: usize,
                                               capacity: usize)
                                               -> Self
@@ -156,6 +193,8 @@ impl Failure
                                                         reply } }
     }
 }
+
+pub(crate) mod context;
 impl From<CompletionError> for Failure
 {
     fn from(error: CompletionError) -> Self
@@ -200,7 +239,7 @@ impl core::error::Error for Failure
 
 /// Adapt facility-only resident providers without discarding their typed cause.
 pub(crate) struct Complete<R>(pub R);
-impl<C, R: Release<C>> Release<C, Failure> for Complete<R>
+impl<C: ?Sized, R: Release<C>> Release<C, Failure> for Complete<R>
 {
     fn release(&self, context: &mut C, ticket: ReleasedResource) -> Result<(), Failure>
     {

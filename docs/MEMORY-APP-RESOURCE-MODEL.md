@@ -1538,9 +1538,10 @@ shared domain directory. The same boot-wide incarnation issuer used by processes
 provides the complete u64 identity; the former 32-slot Modules projection and its
 generation array are removed. Driver entry descriptors, dependency calls,
 provider ownership, job owner tags, device ownership and backing-file ownership
-carry that complete incarnation. Their separate interface/request/job/device/
-source object handles still use the existing facility tables until their own
-ledger migration; a wider owner token does not complete their attribution.
+carry that complete incarnation. Their separate request/job/device/source handles
+still use the existing facility tables until their own ledger migration.
+Interfaces join the ledger below; a wider owner token alone does not complete
+their attribution.
 
 Quiescence closes the module ledger's ordinary admission. Rollback can retire a
 domain only when the directory's real live/pending/completion barrier is empty;
@@ -1561,8 +1562,8 @@ both exact directory epochs, represented by the SDK's opaque MembershipRevision.
 Changing either included membership invalidates continuation. Own-process reads
 carry no module epoch, so unrelated module admission does not invalidate them.
 Rows expose a typed domain kind, real contract label and the same ledger's
-counters. Module interfaces/requests/devices remain unmigrated and are never
-invented as tracked counts. Cross-domain detail keeps the existing System policy
+counters. Requests/devices and other unmigrated objects are never invented as
+tracked counts. Published interfaces and their backing join the ledger below. Cross-domain detail keeps the existing System policy
 grant; ordinary own-domain and public registration access remain available.
 
 Reactor Room displays App/Module labels using its existing managed row cache and
@@ -1584,3 +1585,85 @@ Executable resources remain unchanged across final verification; the boot gate
 regenerates catalog timestamps and the final disk is read again. These checks
 qualify module identity and inspection, not complete driver-ledger adoption or
 module fault recovery.
+
+
+### Driver interface registrations and boot-time cleanup contexts
+
+Published module service interfaces use the shared native value store and the
+provider's genuine Module OwnerRef. Resident services use the genuine System
+OwnerRef; callback routing's module0 sentinel does not manufacture a resource
+owner. DIFC registers growable interface values; DIFS registers one retained
+backing per provider domain. The old128-slot DriverInterfaces namespace and
+its generation array are removed. Interface publication remains transactional:
+fallible growth precedes visibility, and partial commit rolls back its inserted
+values before module admission can be retried. Empty failed-publication backing
+is released on rollback.
+
+Provider references are opaque native u64 identities throughout dependency
+resolution, the driver SDK, broker callbacks, mounts, file-source continuations,
+background jobs and power selection. They never narrow into the remaining
+u32 volume/request/device treaty tokens. The broker contract's fingerprint
+records the widened function signature without incrementing development ABI1;
+all packages rebuild together and stale signatures are refused before entry.
+
+The single resident kind catalog accepts a borrowed safe cleanup context.
+Desktop-only handlers use a checked adapter over their existing implementation;
+boot-time module cleanup can use the actual driver registry without constructing
+a desktop. An unavailable required context returns the unique ticket with a
+typed refusal, so quarantine and retry remain the ordinary walk. Rust trait
+objects remain entirely inside the resident System and never cross the module
+ABI. This adds neither a second kind catalog nor a manager cleanup rollcall.
+
+A request retains the interface's validated contract and full resource key at
+admission. Poll/cancel therefore remain routable after the interface ID becomes
+invalid, with the original caller/provider checks retained. Interface cleanup
+refuses while a real request still uses that generation; the unique ticket and
+backing stay pending. Terminal completion or acknowledged cancellation ends the
+request, and cleanup retry then releases the interface and its backing. Finishing
+module quiescence also refuses a nonempty live/pending/completion-fault barrier.
+Copied contract metadata is not an unloading proof: module executable mappings
+and diagnostic metadata still remain pinned until reboot.
+
+Public inspection reads these real DIFC/DIFS pools from the actual provider
+ledger and their registered kind policies. Own-process inspection early-outs
+without acquiring the unrelated module runtime. Requests, jobs, devices, DMA,
+file-source ownership, shared dependency aliases, image lifetimes, accounted
+allocation and full four-part invocation attribution remain staged. Arbitrary
+privileged-fault containment is unproven (M-D04), a required future gate.
+
+
+### Menu cleanup prepares geometry scratch during admission
+
+The native aggregate gate exposed disposal allocating a complete boxed state for
+every following menu. Ordinary low-memory refusal left two owned menus live after
+Rust Drop. Menu backing now owns one reusable boxed measurement workspace and a
+small vector of geometry results. Installation prepares vector capacity before
+publishing the next menu; disposal performs no scratch/vector allocation. The
+scratch and vector die with their actual registered MNST backing, not with an
+untracked manager cache after its ledger acknowledgement.
+
+The shared store splits safe borrows of live owner state and a read-only view of
+that owner's existing value index. The view validates full owner/kind/generation
+on every lookup, rejects other owners, and disappears when backing is invalid.
+It neither clones an object catalog nor issues IDs or cleanup authority. Held
+Rust borrows retain payload storage while new lookups reject revoked IDs.
+
+Reflow collects only title/popup/item rectangles. Every definition measurement
+must succeed before the disposed ID is invalidated or any other menu moves.
+Measurement changes to non-geometry input are a contract refusal. A refusal
+preserves every old handle and rectangle; retry clears the staged geometry and
+uses the same prepared workspace. The full low-memory native gate remains the
+acceptance check; host fault tests separately exercise refusal after one staged
+result, unexpected input mutation, atomic preservation and successful retry.
+
+Qualification for this slice: 530 scoped host tests pass, including public SDK
+interface/backing inspection, stale and foreign references, a pending request
+holding retirement, actual completion/retry, and menu reflow refusal/retry. Ten
+native campaigns cover module admission/dependency ordering, host-volume use,
+endpoint disconnections, process cleanup, aggregate Toolbox ownership, bounded
+Finder selection, original cursor sprites, Reactor Room, external power and
+StuffIt. A focused native module rerun also rejects null and u64-misaligned
+resolver outputs without writing their canary buffer, then succeeds through the
+ordinary safe SDK. Provider output validation follows the pointer's type rather
+than a duplicated alignment constant. Lower request/job/device ownership and
+module-code reclamation are not claimed by these gates.

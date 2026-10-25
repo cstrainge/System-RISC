@@ -546,7 +546,12 @@ impl Desktop
                                 i32::try_from(reply).unwrap_or(BAD_ABI)
                             }
                             super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
-                            super::handles::cleanup::Cause::Alias(_) => SERVICE_BUSY,
+                            super::handles::cleanup::Cause::Alias(_)
+                            | super::handles::cleanup::Cause::ContextUnavailable { .. }
+                            | super::handles::cleanup::Cause::DriverInterfaceBusy { .. } =>
+                            {
+                                SERVICE_BUSY
+                            }
                             super::handles::cleanup::Cause::DragEffectStorage { .. }
                             | super::handles::cleanup::Cause::RetirementStorage { .. } => NO_MEMORY,
                             super::handles::cleanup::Cause::MemoryManagerUnavailable(error)

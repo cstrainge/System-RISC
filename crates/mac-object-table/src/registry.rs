@@ -339,11 +339,11 @@ impl CleanupFailure for CompletionError
 /// The host chooses its typed failure carrier. File I/O, driver or other
 /// manager failures retain their identity; the facility never guesses meaning
 /// from a message or squeezes every cleanup failure into a slot error.
-pub trait Release<Context, F: CleanupFailure = CompletionError>: Send + Sync
+pub trait Release<Context: ?Sized, F: CleanupFailure = CompletionError>: Send + Sync
 {
     fn release(&self, context: &mut Context, resource: ReleasedResource) -> Result<(), F>;
 }
-struct Record<Context, G: InvocationGate, F: CleanupFailure>
+struct Record<Context: ?Sized, G: InvocationGate, F: CleanupFailure>
 {
     owner:    OwnerRef<G>,
     metadata: Arc<Metadata>,
@@ -360,13 +360,14 @@ pub struct Information
     pub admitting:    bool,
     pub uses:         u64
 }
-pub struct Registry<Context, G: InvocationGate, F: CleanupFailure = CompletionError>
+pub struct Registry<Context: ?Sized, G: InvocationGate, F: CleanupFailure = CompletionError>
 {
     records:  Store<Record<Context, G, F>, G>,
     kinds:    Vec<(KindCode, u64)>,
     revision: u64
 }
-impl<Context: 'static, G: InvocationGate, F: CleanupFailure + 'static> Registry<Context, G, F>
+impl<Context: ?Sized + 'static, G: InvocationGate, F: CleanupFailure + 'static>
+    Registry<Context, G, F>
 {
     pub fn new() -> Self
     {
@@ -555,18 +556,18 @@ impl<Context: 'static, G: InvocationGate, F: CleanupFailure + 'static> Registry<
 /// Revocation is already published. Retains the provider/code pin and root
 /// pending ticket until this guard drops outside the host registry boundary.
 #[must_use = "drop the registration cleanup guard after releasing the host registry lock"]
-pub struct Unregistered<Context, G: InvocationGate, F: CleanupFailure = CompletionError>
+pub struct Unregistered<Context: ?Sized, G: InvocationGate, F: CleanupFailure = CompletionError>
 {
     _record: crate::store::Removed<Record<Context, G, F>, G>
 }
-impl<C, G: InvocationGate, F: CleanupFailure> fmt::Debug for Unregistered<C, G, F>
+impl<C: ?Sized, G: InvocationGate, F: CleanupFailure> fmt::Debug for Unregistered<C, G, F>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
     {
         f.write_str("Unregistered(pending provider release)")
     }
 }
-impl<Context: 'static, G: InvocationGate, F: CleanupFailure + 'static> Default
+impl<Context: ?Sized + 'static, G: InvocationGate, F: CleanupFailure + 'static> Default
     for Registry<Context, G, F>
 {
     fn default() -> Self
@@ -575,7 +576,7 @@ impl<Context: 'static, G: InvocationGate, F: CleanupFailure + 'static> Default
     }
 }
 
-impl<Context, G: InvocationGate, F: CleanupFailure> Drop for Registry<Context, G, F>
+impl<Context: ?Sized, G: InvocationGate, F: CleanupFailure> Drop for Registry<Context, G, F>
 {
     fn drop(&mut self)
     {
@@ -598,13 +599,13 @@ impl<Context, G: InvocationGate, F: CleanupFailure> Drop for Registry<Context, G
     }
 }
 
-pub struct Invocation<Context, G: InvocationGate, F: CleanupFailure = CompletionError>
+pub struct Invocation<Context: ?Sized, G: InvocationGate, F: CleanupFailure = CompletionError>
 {
     lease:   KindLease<G>,
     _usage:  Use,
     release: Arc<dyn Release<Context, F>>
 }
-impl<Context, G: InvocationGate, F: CleanupFailure> Invocation<Context, G, F>
+impl<Context: ?Sized, G: InvocationGate, F: CleanupFailure> Invocation<Context, G, F>
 {
     pub fn invoke(self, context: &mut Context, resource: ReleasedResource) -> Result<(), F>
     {

@@ -6,7 +6,7 @@ impl Manager
 {
     pub(in crate::toolbox::files) fn begin_provider_scan(
         &mut self, call: &FileScanCall)
-        -> Result<(u32, DirectoryScanCursor), Status>
+        -> Result<(u64, DirectoryScanCursor), Status>
     {
         if call.operation != SCAN_DIRECTORY || call.directory < ROOT_ID
         {

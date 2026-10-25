@@ -25,8 +25,8 @@ impl Header
 /// A successful entry initializes Instance; no service is public before commit.
 pub type Entry = unsafe extern "C" fn(*const Host, *mut Instance) -> i32;
 pub type Dispatch = unsafe extern "C" fn(u64, *mut Call) -> i32;
-pub type Resolve = unsafe extern "C" fn(u64, u32, u32, *mut u32) -> i32;
-pub type Broker = unsafe extern "C" fn(u64, u32, *mut Call) -> i32;
+pub type Resolve = unsafe extern "C" fn(u64, u32, u32, *mut u64) -> i32;
+pub type Broker = unsafe extern "C" fn(u64, u64, *mut Call) -> i32;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Host
@@ -80,9 +80,10 @@ pub const POLL: u32 = 2;
 pub const CANCEL: u32 = 3;
 pub const QUIESCE: u32 = 4;
 pub const PENDING: i32 = 1;
-/// Exact layout fingerprint includes all four boundary sizes and pointer width.
+/// Exact contract fingerprint includes boundary sizes, pointer width and the
+/// full-width provider-reference signature (bit 56). ABI remains unreleased v1.
 /// Generated metadata and the resident reject a mismatch before entry.
-pub const LAYOUT_ID: u64 = 64 | (48 << 8) | (24 << 24) | (56 << 40);
+pub const LAYOUT_ID: u64 = 64 | (48 << 8) | (24 << 24) | (56 << 40) | (1 << 56);
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(core::mem::size_of::<Host>() == 48);

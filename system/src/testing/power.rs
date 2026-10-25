@@ -6,7 +6,7 @@ use mac_abi::*;
 use mac_module::{Contract, Offer, PackageKind, Spec, Target};
 use mac_power_interface::Action;
 
-use crate::drivers::Registry;
+use crate::drivers::registry::fixture::Fixture;
 #[derive(Clone, Copy)]
 pub struct Device
 {
@@ -16,8 +16,8 @@ pub struct Device
 }
 pub(super) struct State
 {
-    registry:     Registry,
-    devices:      Vec<(u32, Device)>,
+    registry:     Fixture,
+    devices:      Vec<(u64, Device)>,
     triggered:    Vec<Action>,
     applications: bool
 }
@@ -25,7 +25,7 @@ impl Default for State
 {
     fn default() -> Self
     {
-        Self { registry:     Registry::new(Target::RVA23U64),
+        Self { registry:     Fixture::new(Target::RVA23U64),
                devices:      Vec::new(),
                triggered:    Vec::new(),
                applications: false }
@@ -90,7 +90,7 @@ impl State
                 if self.state.applications { Err(SERVICE_BUSY) } else { Ok(()) }
             }
 
-            fn select(&mut self, capability: u64) -> Result<Option<u32>, Status>
+            fn select(&mut self, capability: u64) -> Result<Option<u64>, Status>
             {
                 self.state
                     .registry
@@ -103,7 +103,7 @@ impl State
                 self.files.prepare_power()
             }
 
-            fn trigger(&mut self, provider: u32, action: Action) -> Result<(), Status>
+            fn trigger(&mut self, provider: u64, action: Action) -> Result<(), Status>
             {
                 let ticket = self.state
                                  .registry

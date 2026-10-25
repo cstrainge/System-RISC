@@ -675,7 +675,8 @@ impl Desktop
     fn walk_owner(&mut self, owner: &crate::toolbox::handles::OwnerRef, retry: bool)
                   -> Result<mac_object_table::walk::Report, mac_object_table::walk::Stopped>
     {
-        let resolve = |_: &Self, key: mac_object_table::domain::ResourceKey| {
+        let resolve = |_: &(dyn crate::toolbox::handles::cleanup::context::Context + 'static),
+                       key: mac_object_table::domain::ResourceKey| {
             crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
                 .and_then(|result| result.map_err(crate::toolbox::handles::KindAccessError::Registry))
         };
@@ -686,11 +687,11 @@ impl Desktop
         };
         if retry
         {
-            mac_object_table::walk::retry(self, owner, resolve, failed)
+            mac_object_table::walk::retry(self as &mut dyn crate::toolbox::handles::cleanup::context::Context, owner, resolve, failed)
         }
         else
         {
-            mac_object_table::walk::drain(self, owner, resolve, failed)
+            mac_object_table::walk::drain(self as &mut dyn crate::toolbox::handles::cleanup::context::Context, owner, resolve, failed)
         }
     }
 

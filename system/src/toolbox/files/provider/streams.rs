@@ -6,7 +6,7 @@ impl Manager
     pub(in crate::toolbox::files) fn stream_provider<'a>(&self,
                                                          owner:impl Into<super::super::subject::Access<'a>>,
                                                          handle: u64)
-                                                         -> Result<Option<u32>, Status>
+                                                         -> Result<Option<u64>, Status>
     {
         let mark = self.streams.get_for(owner.into(), handle)?;
         Ok(mark.progress.lock().remote.as_ref().map(|remote| remote.provider))
@@ -15,7 +15,7 @@ impl Manager
     pub(in crate::toolbox::files) fn reserve_remote_stream_authorized(
         &mut self, owner: super::super::subject::Access<'_>,
         authority: &super::super::subject::Authority, call: &ForkWriteCall, name: &str)
-        -> Result<(u32, u64), Status>
+        -> Result<(u64, u64), Status>
     {
         self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FSWR"))?;
         #[cfg(target_arch = "riscv64")]
@@ -111,7 +111,7 @@ impl Manager
 
     pub(in crate::toolbox::files) fn remote_stream_action<'a>(
         &mut self, owner: impl Into<super::super::subject::Access<'a>>, call: &ForkWriteCall)
-        -> Result<(u32, fs::Arguments<'static>), Status>
+        -> Result<(u64, fs::Arguments<'static>), Status>
     {
         let owner = owner.into();
         let mark = self.streams.get_for(owner, call.handle)?;

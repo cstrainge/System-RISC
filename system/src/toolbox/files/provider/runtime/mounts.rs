@@ -7,7 +7,7 @@ pub(super) enum Acquire
 {
     Catalog
     {
-        handle: u32, provider: u32
+        handle: u32, provider: u64
     },
     Open
     {
@@ -24,7 +24,7 @@ struct Context
     owner:     super::super::super::subject::Subject,
     thread:    u64,
     key:       Key,
-    provider:  u32,
+    provider:  u64,
     abandoned: bool
 }
 impl Context

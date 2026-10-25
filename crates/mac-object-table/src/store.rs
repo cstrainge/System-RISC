@@ -178,6 +178,29 @@ pub struct Store<T, G: InvocationGate, S = ()>
     storage_registration: Option<KindLease<G>>,
     make_state:           fn(DomainId) -> Result<S, PoolError>
 }
+
+/// Read-only values from one checked owner backing, borrowed alongside its
+/// mutable state. This is a view of the existing index, not a copied catalog.
+pub struct ValuesRead<'a, T, G: InvocationGate>
+{
+    kind:  KindCode,
+    owner: &'a OwnerRef<G>,
+    slots: &'a [Option<Entry<T, G>>],
+    ids:   &'a HashMap<u64, ResourceKey>
+}
+impl<'a, T, G: InvocationGate> ValuesRead<'a, T, G>
+{
+    pub fn get(&self, id: u64) -> Option<&'a T>
+    {
+        let key = *self.ids.get(&id)?;
+        if key.kind() != self.kind || key.owner() != self.owner.owner() || !self.owner.contains(key)
+        {
+            return None;
+        }
+        let entry = self.slots.get(key.slot())?.as_ref()?;
+        (entry.key == key && entry.id == id).then_some(&entry.value)
+    }
+}
 impl<T, G: InvocationGate> Store<T, G>
 {
     pub fn new(kind: KindCode, policy: CapacityPolicy) -> Self
@@ -777,6 +800,31 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         let storage = values.storage.as_ref()?;
         values.claim.owner.contains(storage.key).then_some(())?;
         values.state.as_mut()
+    }
+
+    /// Split safe borrows of live registered state and its owner's values.
+    /// No payload mutation, cleanup authority or metadata lock escapes here.
+    pub fn state_values(&mut self, incarnation: u64) -> Option<(&mut S, ValuesRead<'_, T, G>)>
+    {
+        let at =
+            self.owners
+                .binary_search_by_key(&incarnation, |values| {
+                    values.claim.owner.owner().incarnation()
+                })
+                .ok()?;
+        if !self.storage_registration.as_ref()?.live()
+        {
+            return None;
+        }
+        let values = &mut self.owners[at];
+        let storage = values.storage.as_ref()?;
+        let owner = &values.claim.owner;
+        owner.contains(storage.key).then_some(())?;
+        Some((values.state.as_mut()?,
+              ValuesRead { kind: self.kind,
+                           owner,
+                           slots: &values.slots,
+                           ids: &self.ids }))
     }
 
     /// No temporary ID vector and no allocation proportional to object count.

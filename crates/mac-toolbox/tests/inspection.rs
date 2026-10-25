@@ -528,3 +528,72 @@ fn actual_module_domains_are_full_width_public_sdk_rows_with_exact_membership_ep
         });
     });
 }
+
+#[test]
+fn provider_interfaces_are_real_module_resources_and_pending_calls_hold_cleanup_open()
+{
+    use mac_toolbox::inspection::OwnerKind;
+    with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let reader =
+            fixture::add("Driver lifetime inspector", mac_abi::inspection::INSPECT_DOMAINS);
+        with_owner(reader, || {
+            let (module, provider) =
+                fixture::publish_module_interface(*b"interface-test-1", "Pending provider");
+            assert!(provider > u64::from(u32::MAX));
+            let snapshot = system.inspection().snapshot(Scope::All).unwrap();
+            let index =
+                (0..snapshot.count).find(|&i| snapshot.at(i).unwrap().incarnation == module)
+                                   .unwrap();
+            let ledger = snapshot.ledger(index).unwrap();
+            assert_eq!(ledger.domain().kind, OwnerKind::Module);
+            assert_eq!((ledger.domain().live, ledger.domain().pending), (2, 0));
+            assert_eq!(ledger.len(), 2);
+            let pools: Vec<_> = (0..ledger.len()).map(|i| ledger.at(i).unwrap()).collect();
+            for code in [*b"DIFC", *b"DIFS"]
+            {
+                let pool = pools.iter().find(|p| p.kind == code).unwrap();
+                assert_eq!((pool.live, pool.pending), (1, 0));
+                let registration = system.inspection()
+                                         .object_kinds()
+                                         .unwrap()
+                                         .get(pool.registration.unwrap())
+                                         .unwrap();
+                assert_eq!(registration.namespace, code);
+                assert_eq!(registration.provider.as_str(), "System Module Manager");
+            }
+            let request = fixture::module_request(provider).unwrap();
+            fixture::quiesce_module(module).unwrap();
+            let refused = fixture::module_request(provider).unwrap_err();
+            assert!(refused.to_string().contains("lifecycle state"));
+            let walk = fixture::walk_module(module, false);
+            assert_eq!(walk.report.quarantined, 1);
+            assert_eq!(walk.failures.len(), 1);
+            assert!(walk.failures[0].contains("1 requests")
+                    && walk.failures[0].contains("acknowledged cancellation"),
+                    "{:?}",
+                    walk.failures);
+            let stale = fixture::module_request(provider).unwrap_err();
+            assert!(stale.to_string().contains("retired"));
+            let pending = snapshot.ledger(index).unwrap().domain();
+            assert_eq!((pending.live, pending.pending, pending.quarantined), (0, 2, 1));
+            let busy = fixture::finish_module(module).unwrap_err();
+            assert!(busy.to_string().contains("actual completion"));
+            fixture::complete_module_request(request).unwrap();
+            let awaiting_walk = fixture::finish_module(module).unwrap_err();
+            assert!(awaiting_walk.to_string().contains("still pending"));
+            let retried = fixture::walk_module(module, true);
+            assert!(retried.failures.is_empty(), "{:?}", retried.failures);
+            fixture::finish_module(module).unwrap();
+            let done = snapshot.ledger(index).unwrap().domain();
+            assert_eq!((done.live, done.pending, done.quarantined), (0, 0, 0));
+            let (fresh_module, fresh_provider) =
+                fixture::publish_module_interface(*b"interface-test-2", "Replacement provider");
+            assert_ne!(fresh_module, module);
+            assert_ne!(fresh_provider, provider);
+            assert!(fixture::module_request(provider).unwrap_err().to_string().contains("retired"));
+            let fresh_request = fixture::module_request(fresh_provider).unwrap();
+            fixture::complete_module_request(fresh_request).unwrap();
+        });
+    });
+}

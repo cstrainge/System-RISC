@@ -326,6 +326,10 @@ pub fn interrupt_cleanup(owner: u64, backing: bool) -> InterruptedCleanup
 /// not execute a guest driver; native campaigns exercise the entry separately.
 pub fn stage_module(identity: [u8; 16], name: &str) -> u64
 {
+    stage_module_with_offers(identity, name, &[])
+}
+fn stage_module_with_offers(identity: [u8; 16], name: &str, offers: &[mac_module::Offer]) -> u64
+{
     let spec = mac_module::Spec { kind: mac_module::PackageKind::Driver,
                                   kernel_abi: mac_abi::ABI_VERSION,
                                   target: mac_module::Target::RVA23U64,
@@ -337,7 +341,7 @@ pub fn stage_module(identity: [u8; 16], name: &str) -> u64
                                   name,
                                   version: "0.1.0",
                                   provenance: "inspection fixture",
-                                  offers: &[],
+                                  offers,
                                   dependencies: &[],
                                   services: &[],
                                   devices: &[] };
@@ -356,4 +360,63 @@ pub fn stage_module(identity: [u8; 16], name: &str) -> u64
 pub fn retire_module(module: u64) -> Result<(), crate::drivers::Error>
 {
     super::SESSION.with(|slot| slot.borrow_mut().as_mut().unwrap().modules.rollback(module))
+}
+
+/// Production registry publication, with only the absent hardware callback
+/// replaced by an explicit test completion. Inspection still uses public traps.
+pub fn publish_module_interface(identity: [u8; 16], name: &str) -> (u64, u64)
+{
+    let offer = mac_module::Offer { class:          mac_module::ClassId(*b"TEST"),
+                                    version:        1,
+                                    request_schema: 1,
+                                    reply_schema:   1,
+                                    max_request:    16,
+                                    max_reply:      16,
+                                    flags:          mac_module::Offer::KERNEL_ONLY,
+                                    capabilities:   0 };
+    let module = stage_module_with_offers(identity, name, &[offer]);
+    super::SESSION.with(|slot| {
+                      let mut slot = slot.borrow_mut();
+                      let registry = &mut slot.as_mut().unwrap().modules;
+                      registry.commit(module).unwrap();
+                      let provider = registry.find(offer.class, 1)
+                                             .find(|(_, i)| i.module == module)
+                                             .unwrap()
+                                             .0;
+                      (module, provider)
+                  })
+}
+pub fn module_request(provider: u64) -> Result<u32, crate::drivers::Error>
+{
+    super::SESSION.with(|slot| {
+                      slot.borrow_mut().as_mut().unwrap().modules.begin(0, provider, 1, 0, 16)
+                  })
+}
+pub fn complete_module_request(ticket: u32) -> Result<(), crate::drivers::Error>
+{
+    super::SESSION.with(|slot| {
+                      slot.borrow_mut().as_mut().unwrap().modules.complete(0, ticket, 0).map(|_| ())
+                  })
+}
+pub fn quiesce_module(module: u64) -> Result<(), crate::drivers::Error>
+{
+    super::SESSION.with(|slot| slot.borrow_mut().as_mut().unwrap().modules.quiesce(module))
+}
+pub fn finish_module(module: u64) -> Result<(), crate::drivers::Error>
+{
+    super::SESSION.with(|slot| slot.borrow_mut().as_mut().unwrap().modules.finish_quiesce(module))
+}
+pub fn walk_module(module: u64, retry: bool) -> WalkOutcome
+{
+    super::SESSION.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let session = slot.as_mut().unwrap();
+        let owner = session.modules.module_ledger(module).unwrap();
+        let resolve = |session: &super::Session, key: mac_object_table::domain::ResourceKey| session.registry.dispatch(key.kind());
+        let mut failures = std::vec::Vec::new();
+        let mut failed = |_: mac_object_table::domain::ResourceKey, error: &mac_object_table::walk::Failure<mac_object_table::registry::Error, crate::toolbox::handles::cleanup::Cause>| failures.push(std::format!("{error}"));
+        let report = if retry { mac_object_table::walk::retry(session, &owner, resolve, &mut failed) }
+            else { mac_object_table::walk::drain(session, &owner, resolve, &mut failed) }.unwrap();
+        WalkOutcome { report, failures }
+    })
 }

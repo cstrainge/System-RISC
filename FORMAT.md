@@ -815,8 +815,13 @@ is build evidence; ELF section tables/headers never enter a native resource fork
 LLVM's GNU retained-section OSABI marker is accepted by the build-time extractor.
 
 The generic C entry receives a borrowed Host descriptor and initializes Instance.
-Host exposes the full u64 boot-unique module incarnation, dependency resolution and broker invocation; it and
-the code stay pinned until reboot. Instance carries an opaque u64 state and a
+Host exposes the full u64 boot-unique module incarnation, dependency resolution
+and broker invocation; it and the code stay pinned until reboot. Resolve writes a
+u64 provider identity and Broker accepts that complete u64 value. The contract
+fingerprint includes a provider-reference signature flag in bit56 in addition to
+pointer width and structure sizes; a Host with the same size but the obsolete
+32-bit provider signature is rejected through contract admission. The development
+ABI remains1; rebuild System and every module together. Instance carries an opaque u64 state and a
 module-local executable dispatch address, validated before publication. Rust
 traits, String/Vec, allocator ownership and private struct layouts never cross
 this boundary. The SDK exposes borrowed slices to ordinary driver bodies.
@@ -837,8 +842,9 @@ class-specific cancellation/progress gates accompany the storage providers.
 ### Resident device service (VDEV, version 1)
 
 Resident class providers use the same generated interface/request capabilities
-as independently loaded modules. Their provider owner is the reserved kernel
-owner zero. A module declares resident classes in `services`, not module
+as independently loaded modules. Their callback route uses reserved module0,
+while the actual interface registration and storage belong to the genuine System
+owner ledger; zero is not an issued resource owner. A module declares resident classes in `services`, not module
 `dependencies`; resolution and every request check that declaration separately.
 Only an admitted DRVR with a matching bus key can claim physical hardware.
 
@@ -1680,3 +1686,11 @@ replacement invalidate the protocol too. Buttons parsed from DITL become managed
 CDEF controls with their own lifetimes; the default ring belongs to the button's
 four-pixel-expanded bounds. Reserved call fields and overflowing ring bounds are
 rejected before publication. This does not add an original DialogRecord layout.
+
+
+Native MDEF measurement treats title/popup/item bounds as output geometry;
+non-geometry menu fields are input. Menu disposal stages those outputs in
+prepared registered backing and commits them only after every measurement
+succeeds. A measurement that changes input is rejected as BAD_ABI without
+invalidating the menu or publishing a partial reflow. Disposal allocates no new
+measurement workspaces or geometry vectors.

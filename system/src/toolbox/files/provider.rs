@@ -22,7 +22,7 @@ pub(crate) enum Source
 }
 pub(super) struct Mounted
 {
-    pub provider:                           u32,
+    pub provider:                           u64,
     pub source:                             Source,
     pub info:                               Option<VolumeInfo>,
     pub phase:                              Phase,
@@ -154,7 +154,7 @@ impl Manager
         }
     }
 
-    pub(crate) fn reserve_provider_mount(&mut self, provider: u32, source: Source)
+    pub(crate) fn reserve_provider_mount(&mut self, provider: u64, source: Source)
                                          -> Result<u32, Status>
     {
         if provider == 0
@@ -216,7 +216,7 @@ impl Manager
         Ok(())
     }
 
-    pub(crate) fn existing_provider_mount(&self, provider: u32, source: Source)
+    pub(crate) fn existing_provider_mount(&self, provider: u64, source: Source)
                                           -> Result<Option<VolumeInfo>, Status>
     {
         for (_, mounted) in self.volumes.iter()
@@ -231,13 +231,13 @@ impl Manager
         Ok(None)
     }
 
-    pub(crate) fn provider_source(&mut self, volume: u32) -> Result<(u32, Source), Status>
+    pub(crate) fn provider_source(&mut self, volume: u32) -> Result<(u64, Source), Status>
     {
         let mount = self.provider_mount(volume)?;
         Ok((mount.provider, mount.source))
     }
 
-    pub(crate) fn begin_provider_unmount(&mut self, id: u32) -> Result<u32, Status>
+    pub(crate) fn begin_provider_unmount(&mut self, id: u32) -> Result<u64, Status>
     {
         self.check_provider_unmount(id)?;
         let mounted = self.provider_mount(id)?;
@@ -275,7 +275,7 @@ impl Manager
 
     /// Resolve only resident identities here; provider callbacks run after the
     /// File Manager guard and firmware stack handoff have both been released.
-    pub(super) fn read_provider(&self, id: u32) -> Result<Option<u32>, Status>
+    pub(super) fn read_provider(&self, id: u32) -> Result<Option<u64>, Status>
     {
         match self.volumes.get(id).ok_or(NOT_FOUND)?
         {
@@ -292,7 +292,7 @@ impl Manager
         }
     }
 
-    pub(super) fn begin_provider_read(&mut self, id: u32) -> Result<u32, Status>
+    pub(super) fn begin_provider_read(&mut self, id: u32) -> Result<u64, Status>
     {
         let provider = self.read_provider(id)?.ok_or(BAD_ARGUMENT)?;
         let mounted = self.provider_mount(id)?;

@@ -67,7 +67,7 @@ pub struct Selection
     pub command: u32
 }
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MenuItemState
 {
     pub text:        [u8; INLINE_STRING_BYTES],
@@ -107,7 +107,7 @@ impl MenuItemState
                                                            present: 0 } };
 }
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct MenuDefinitionState
 {
     pub minimum_width: i16,

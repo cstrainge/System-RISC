@@ -17,7 +17,6 @@ use core::sync::atomic::{AtomicU16, Ordering};
 static FILE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
 static VOLUME_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static MEMORY_GENERATIONS: [AtomicU16; 512] = [const { AtomicU16::new(0) }; 512];
-static DRIVER_INTERFACE_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DRIVER_REQUEST_GENERATIONS: [AtomicU16; 256] = [const { AtomicU16::new(0) }; 256];
 
 static HOST_FILE_GENERATIONS: [AtomicU16; 1024] = [const { AtomicU16::new(0) }; 1024];
@@ -53,7 +52,6 @@ pub enum Kind
     Memory,
     Files,
     Volumes,
-    DriverInterfaces,
     DriverRequests,
     HostFiles,
     HostDirectories,
@@ -88,7 +86,6 @@ impl Kind
             Self::HostDirectories => 256,
             Self::HostTransactions => 64,
             Self::HostSessions => 16,
-            Self::DriverInterfaces => 128,
             Self::DriverRequests => 256,
             Self::Volumes => 128,
             Self::Memory => 512,
@@ -131,11 +128,7 @@ impl Kind
             {
                 Self::HostTransactions.first_slot() + Self::HostTransactions.capacity() as u32
             }
-            Self::DriverInterfaces => Self::Volumes.first_slot() + Self::Volumes.capacity() as u32,
-            Self::DriverRequests =>
-            {
-                Self::DriverInterfaces.first_slot() + Self::DriverInterfaces.capacity() as u32
-            }
+            Self::DriverRequests => Self::Volumes.first_slot() + Self::Volumes.capacity() as u32,
             Self::Volumes => Self::Files.first_slot() + Self::Files.capacity() as u32,
             Self::Memory => 1,
             Self::Files => Self::Memory.capacity() as u32 + 1
@@ -172,7 +165,6 @@ impl Kind
             Self::HostDirectories => &HOST_DIRECTORY_GENERATIONS[index],
             Self::HostTransactions => &HOST_TRANSACTION_GENERATIONS[index],
             Self::HostSessions => &HOST_SESSION_GENERATIONS[index],
-            Self::DriverInterfaces => &DRIVER_INTERFACE_GENERATIONS[index],
             Self::DriverRequests => &DRIVER_REQUEST_GENERATIONS[index]
         }
     }

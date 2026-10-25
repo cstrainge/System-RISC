@@ -58,13 +58,14 @@ impl core::error::Error for Stopped
 /// pin. Invocation then receives the mutable context with every facility/host
 /// lookup lock released. Children may be released recursively; invalidation
 /// makes those entries disappear from this walk naturally.
-pub fn drain<C, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owner: &OwnerRef<G>,
-                                                         mut resolve: impl FnMut(&C,
+pub fn drain<C: ?Sized, G: InvocationGate, E, F: CleanupFailure>(context: &mut C,
+                                                                 owner: &OwnerRef<G>,
+                                                                 mut resolve: impl FnMut(&C,
                                             ResourceKey)
                                             -> Result<Invocation<C, G, F>, E>,
-                                                         mut failed: impl FnMut(ResourceKey,
+                                                                 mut failed: impl FnMut(ResourceKey,
                                                                &Failure<E, F::Cause>))
-                                                         -> Result<Report, Stopped>
+                                                                 -> Result<Report, Stopped>
 {
     owner.stop_admission();
     run(context, owner, false, &mut resolve, &mut failed)
@@ -72,27 +73,29 @@ pub fn drain<C, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owner:
 
 /// Retry each currently quarantined ticket at most once. Rotating pool/slot
 /// cursors prevent a permanently failing entry from starving its neighbours.
-pub fn retry<C, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owner: &OwnerRef<G>,
-                                                         mut resolve: impl FnMut(&C,
+pub fn retry<C: ?Sized, G: InvocationGate, E, F: CleanupFailure>(context: &mut C,
+                                                                 owner: &OwnerRef<G>,
+                                                                 mut resolve: impl FnMut(&C,
                                             ResourceKey)
                                             -> Result<Invocation<C, G, F>, E>,
-                                                         mut failed: impl FnMut(ResourceKey,
+                                                                 mut failed: impl FnMut(ResourceKey,
                                                                &Failure<E, F::Cause>))
-                                                         -> Result<Report, Stopped>
+                                                                 -> Result<Report, Stopped>
 {
     run(context, owner, true, &mut resolve, &mut failed)
 }
-fn run<C, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owner: &OwnerRef<G>,
-                                                   retry: bool,
-                                                   resolve: &mut impl FnMut(&C,
+fn run<C: ?Sized, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owner: &OwnerRef<G>,
+                                                           retry: bool,
+                                                           resolve: &mut impl FnMut(&C,
                                                               ResourceKey)
                                                               -> Result<Invocation<C,
                                                                                    G,
                                                                                    F>,
                                                                         E>,
-                                                   failed: &mut impl FnMut(ResourceKey,
-                                                              &Failure<E, F::Cause>))
-                                                   -> Result<Report, Stopped>
+                                                           failed: &mut impl FnMut(ResourceKey,
+                                                                      &Failure<E,
+                                                                               F::Cause>))
+                                                           -> Result<Report, Stopped>
 {
     let mut report = Report::default();
     // Completion refusals already own their unique tickets. Retry only their

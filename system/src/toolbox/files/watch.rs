@@ -518,7 +518,7 @@ mod background
 
     impl Manager
     {
-        fn next_probe(&mut self, now: u64) -> Result<Option<(ProbeLease, u32)>, Status>
+        fn next_probe(&mut self, now: u64) -> Result<Option<(ProbeLease, u64)>, Status>
         {
             let next = self.watches.iter().find_map(|(id,w)| {
                 if w.pending() || w.next_due > now || self.transfer_holds_notices(w.volume)

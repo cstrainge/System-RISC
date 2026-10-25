@@ -141,7 +141,7 @@ pub(super) fn advance(flight: Flight, result: Result<Vec<u8>, Status>, never_sen
     }
 }
 fn prepare(owner: crate::toolbox::files::subject::Access<'_>, call: &FileCall, capacity: usize)
-           -> Result<(u32, Action, Operation, Arguments<'static>), Status>
+           -> Result<(u64, Action, Operation, Arguments<'static>), Status>
 {
     match call.operation
     {

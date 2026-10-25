@@ -45,7 +45,7 @@ pub(super) fn file(owner: crate::toolbox::files::subject::Access<'_>, call: &mut
                    -> Progress
 {
     call.capacity = capacity;
-    let routed: Result<Option<u32>, Status> = files(|m| {
+    let routed: Result<Option<u64>, Status> = files(|m| {
         if matches!(call.operation, VOLUME_INFO | VOLUME_INDEX | VOLUME_COUNT)
         {
             return Ok(None);

@@ -13,7 +13,7 @@ enum Phase
 }
 pub(in crate::toolbox::files) struct State
 {
-    provider: u32,
+    provider: u64,
     progress: spinning_top::Spinlock<Progress>
 }
 #[derive(Clone, Copy)]
@@ -26,7 +26,7 @@ struct Progress
 }
 impl State
 {
-    fn new(provider: u32, phase: Phase, metadata: Option<u32>) -> Self
+    fn new(provider: u64, phase: Phase, metadata: Option<u32>) -> Self
     {
         Self { provider,
                progress: spinning_top::Spinlock::new(Progress { phase,
@@ -60,7 +60,7 @@ impl State
 }
 pub(in crate::toolbox::files) struct Plan
 {
-    pub provider:    u32,
+    pub provider:    u64,
     pub volume:      u32,
     pub handle:      u64,
     pub parent:      u32,
@@ -78,7 +78,7 @@ impl Manager
     pub(in crate::toolbox::files) fn reserve_provider_metadata_authorized(
         &mut self, owner: super::super::subject::Access<'_>,
         authority: &super::super::subject::Authority, call: &FileCall)
-        -> Result<(u32, u64), Status>
+        -> Result<(u64, u64), Status>
     {
         self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FDWR"))?;
         #[cfg(target_arch = "riscv64")]
@@ -209,7 +209,7 @@ impl Manager
     pub(in crate::toolbox::files) fn reserve_provider_write_for(&mut self, owner: u64,
                                                                 authority:&crate::toolbox::handles::OwnerRef,
                                                                 call: &mut DataWriteCall,
-                                                                name: &str, provider: u32)
+                                                                name: &str, provider: u64)
                                                                 -> Result<(), Status>
     {
         self.reserve_provider_write_authorized(super::super::subject::Access::Client(owner),&super::super::subject::Authority::Client(authority.clone()),call,name,provider)
@@ -219,7 +219,7 @@ impl Manager
                                                                        owner:super::super::subject::Access<'_>,
                                                                        authority:&super::super::subject::Authority,
                                                                        call: &mut DataWriteCall,
-                                                                       name: &str, provider: u32)
+                                                                       name: &str, provider: u64)
                                                                        -> Result<(), Status>
     {
         self.validate_creation(owner, authority, crate::toolbox::handles::KindCode(*b"FDWR"))?;
@@ -269,7 +269,7 @@ impl Manager
     pub(in crate::toolbox::files) fn write_provider<'a>(&self,
                                                         owner: impl Into<super::super::subject::Access<'a>>,
                                                         handle: u64)
-                                                        -> Result<Option<u32>, Status>
+                                                        -> Result<Option<u64>, Status>
     {
         let mark = self.writes.get_for(owner.into(), handle)?;
         Ok(mark.provider.as_ref().map(|state| state.provider))
@@ -497,7 +497,7 @@ impl Manager
     }
 
     pub(in crate::toolbox::files) fn cleanup_provider_write(&mut self, owner: u64, handle: u64)
-                                                            -> Result<(u32, u32), Status>
+                                                            -> Result<(u64, u32), Status>
     {
         self.write_provider(owner, handle)?.ok_or(BAD_ARGUMENT)?;
         let mark = self.writes.get_mut(handle).ok_or(NOT_FOUND)?;
@@ -513,7 +513,7 @@ impl Manager
 
     pub(in crate::toolbox::files) fn next_orphaned_write(
         &mut self)
-        -> Option<(u64, u32, u32, super::super::subject::Subject)>
+        -> Option<(u64, u64, u32, super::super::subject::Subject)>
     {
         let (handle, mark) =
             self.writes.iter().find(|(_, mark)| {

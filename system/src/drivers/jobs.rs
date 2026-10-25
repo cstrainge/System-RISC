@@ -37,7 +37,7 @@ pub enum Outcome
 pub struct Call<'a>
 {
     pub owner:     Owner,
-    pub provider:  u32,
+    pub provider:  u64,
     pub class:     ClassId,
     pub operation: u32,
     pub ticket:    &'a mut u32,
@@ -52,7 +52,7 @@ pub trait Broker
 #[derive(Debug)]
 pub struct Work
 {
-    provider:     u32,
+    provider:     u64,
     class:        ClassId,
     operation:    u32,
     input:        Vec<u8>,
@@ -62,7 +62,7 @@ pub struct Work
 }
 impl Work
 {
-    pub fn new(provider: u32, class: ClassId, operation: u32, input: Vec<u8>, output_bytes: usize)
+    pub fn new(provider: u64, class: ClassId, operation: u32, input: Vec<u8>, output_bytes: usize)
                -> Result<Self, Status>
     {
         if provider == 0

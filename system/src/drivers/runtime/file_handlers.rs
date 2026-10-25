@@ -78,7 +78,7 @@ pub(super) fn prepare(resources: &[Resource], contract: Contract<'_>) -> Result<
     }
     Ok(handlers)
 }
-pub(crate) fn file_handler_provider(file_type: [u8; 4], name: &str) -> Result<Option<u32>, Status>
+pub(crate) fn file_handler_provider(file_type: [u8; 4], name: &str) -> Result<Option<u64>, Status>
 {
     let (file_type, _) = crate::toolbox::files::types::classify(name, file_type, [0; 4]);
     RUNTIME.with(|runtime| {

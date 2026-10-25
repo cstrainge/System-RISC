@@ -80,7 +80,7 @@ fn close(mut flight: Flight, mut state: Box<State>, outcome: Result<Box<Loaded>,
         }
     }
 }
-fn read(provider: u32, state: &State) -> Result<OwnedJob, Status>
+fn read(provider: u64, state: &State) -> Result<OwnedJob, Status>
 {
     let (offset, count) = state.loader.as_ref().and_then(Loader::request).ok_or(BAD_ABI)?;
     submit_args(provider,

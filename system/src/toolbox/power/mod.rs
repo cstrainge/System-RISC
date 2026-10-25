@@ -5,10 +5,10 @@ use mac_power_interface::Action;
 
 pub(crate) trait Host
 {
-    fn select(&mut self, capability: u64) -> Result<Option<u32>, Status>;
+    fn select(&mut self, capability: u64) -> Result<Option<u64>, Status>;
     fn applications_ready(&mut self) -> Result<(), Status>;
     fn flush(&mut self) -> Result<(), Status>;
-    fn trigger(&mut self, provider: u32, action: Action) -> Result<(), Status>;
+    fn trigger(&mut self, provider: u64, action: Action) -> Result<(), Status>;
 }
 
 pub(crate) fn request(host: &mut impl Host, call: &mut PowerCall) -> Result<(), Status>
@@ -64,7 +64,7 @@ pub(crate) fn native(call: &mut PowerCall) -> Result<(), Status>
                 .map_err(|error|error.status())?
         }
 
-        fn select(&mut self, capability: u64) -> Result<Option<u32>, Status>
+        fn select(&mut self, capability: u64) -> Result<Option<u64>, Status>
         {
             match crate::drivers::find_kernel_provider(mac_power_interface::CLASS,
                                                        mac_power_interface::VERSION,
@@ -83,7 +83,7 @@ pub(crate) fn native(call: &mut PowerCall) -> Result<(), Status>
                                                                     })?
         }
 
-        fn trigger(&mut self, provider: u32, action: Action) -> Result<(), Status>
+        fn trigger(&mut self, provider: u64, action: Action) -> Result<(), Status>
         {
             let mut job = crate::drivers::submit_background_to(provider,
                                                                mac_power_interface::CLASS,

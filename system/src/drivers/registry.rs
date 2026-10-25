@@ -5,8 +5,11 @@ use alloc::vec::Vec;
 
 use mac_module::{Available, ClassId, Contract, Offer, PackageKind, Policy, Service, Target};
 
-use crate::toolbox::handles::{Kind, Table};
+use crate::toolbox::handles::{Kind, KindLease, OwnerRef, Store, Table};
 mod modules;
+pub(crate) mod interfaces;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod fixture;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error
@@ -92,7 +95,6 @@ struct Module
     dependencies:  Vec<mac_module::Dependency>,
     services:      Vec<Service>,
     devices:       Vec<mac_module::DeviceMatch>,
-    interfaces:    Vec<u32>,
     requests:      usize,
     file_handlers: Vec<mac_module::file_handlers::Rule>
 }
@@ -106,11 +108,13 @@ pub struct Interface
 pub struct Request
 {
     pub module:    u64,
-    pub interface: u32,
+    pub interface: u64,
     pub caller:    u64,
     pub class:     ClassId,
     pub operation: u32,
     pub max_reply: u32,
+    interface_key: mac_object_table::domain::ResourceKey,
+    offer:         mac_module::Offer,
     active:        bool
 }
 impl crate::toolbox::inspection::Subject for Module
@@ -133,7 +137,8 @@ impl crate::toolbox::inspection::Subject for Module
 pub struct Registry
 {
     modules:    modules::Modules<Module>,
-    interfaces: Table<Interface>,
+    interfaces: Store<Interface>,
+    system:     OwnerRef,
     requests:   Table<Request>,
     target:     Target,
     services:   Vec<Service>
@@ -152,18 +157,20 @@ impl Registry
                                                          call)
     }
 
-    pub fn new(target: Target) -> Self
+    pub(crate) fn new(target: Target, system: OwnerRef, kinds: (KindLease, KindLease))
+                      -> Result<Self>
     {
-        Self { modules: modules::Modules::new(),
-               interfaces: Table::new(Kind::DriverInterfaces),
-               requests: Table::new(Kind::DriverRequests),
-               target,
-               services: Vec::new() }
+        Ok(Self { modules: modules::Modules::new(),
+                  interfaces: Store::owned(kinds.0, kinds.1).map_err(Error::Owner)?,
+                  system,
+                  requests: Table::new(Kind::DriverRequests),
+                  target,
+                  services: Vec::new() })
     }
 
     /// Resident services use the same capability/request machinery as modules.
     /// Provider owner zero denotes the resident kernel, not an issued module ID.
-    pub fn register_service(&mut self, offer: Offer) -> Result<u32>
+    pub fn register_service(&mut self, offer: Offer) -> Result<u64>
     {
         if offer.version == 0
            || offer.request_schema == 0
@@ -196,9 +203,10 @@ impl Registry
         }
         self.services.try_reserve(1).map_err(|_| Error::Exhausted)?;
         let id = self.interfaces
-                     .insert(Interface { module: 0,
+                     .insert(&self.system,
+                             Interface { module: 0,
                                          offer })
-                     .map_err(|_| Error::Exhausted)?;
+                     .map_err(Error::Owner)?;
         self.services.push(Service { service:  offer.class,
                                      version:  offer.version,
                                      optional: false });
@@ -310,7 +318,6 @@ impl Registry
                                      dependencies,
                                      services,
                                      devices,
-                                     interfaces: Vec::new(),
                                      requests: 0,
                                      file_handlers: Vec::new() })
     }
@@ -330,24 +337,25 @@ impl Registry
         }
         let mut published = Vec::new();
         published.try_reserve(record.offers.len()).map_err(|_| Error::Exhausted)?;
+        let owner = self.modules.directory().get(module).ok_or(Error::Stale)?.ledger().clone();
         for &offer in &record.offers
         {
-            match self.interfaces.insert(Interface { module,
+            match self.interfaces.insert(&owner,
+                                         Interface { module,
                                                      offer })
             {
                 Ok(id) => published.push(id),
-                Err(_) =>
+                Err(error) =>
                 {
                     for id in published
                     {
                         self.interfaces.remove(id);
                     }
-                    return Err(Error::Exhausted);
+                    return Err(Error::Owner(error));
                 }
             }
         }
         let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
-        record.interfaces = published;
         record.state = State::Ready;
         Ok(())
     }
@@ -365,8 +373,14 @@ impl Registry
             self.modules.stop(module)?;
             return Err(Error::Busy);
         }
+        self.interfaces.remove_owner(module);
         self.modules.remove(module)?;
         Ok(())
+    }
+
+    pub(crate) fn module_ledger(&self, module: u64) -> Result<OwnerRef>
+    {
+        self.modules.directory().get(module).map(|entry| entry.ledger().clone()).ok_or(Error::Stale)
     }
 
     pub fn state(&self, module: u64) -> Result<State>
@@ -426,7 +440,7 @@ impl Registry
     }
 
     pub fn find(&self, class: ClassId, version: u32)
-                -> impl Iterator<Item = (u32, Interface)> + '_
+                -> impl Iterator<Item = (u64, Interface)> + '_
     {
         self.interfaces
             .iter()
@@ -441,7 +455,7 @@ impl Registry
 
     /// Kernel discovery distinguishes absence from a stale service contract.
     /// Never silently treat an installed incompatible provider as no hardware.
-    pub fn select(&self, class: ClassId, version: u32, capabilities: u64) -> Result<Option<u32>>
+    pub fn select(&self, class: ClassId, version: u32, capabilities: u64) -> Result<Option<u64>>
     {
         let mut mismatch = false;
         for (id, interface) in self.interfaces.iter()
@@ -464,7 +478,7 @@ impl Registry
         if mismatch { Err(Error::Contract(mac_module::Error::Version)) } else { Ok(None) }
     }
 
-    pub fn resolve(&self, caller: u64, class: ClassId, version: u32) -> Result<u32>
+    pub fn resolve(&self, caller: u64, class: ClassId, version: u32) -> Result<u64>
     {
         if caller == 0
         {
@@ -503,7 +517,7 @@ impl Registry
         Err(Error::Access)
     }
 
-    pub fn interface(&self, id: u32) -> Result<Interface>
+    pub fn interface(&self, id: u64) -> Result<Interface>
     {
         let interface = *self.interfaces.get(id).ok_or(Error::Stale)?;
         if interface.module != 0
@@ -516,7 +530,7 @@ impl Registry
 
     /// Caller 0 is resident System. Module callers are limited to dependencies
     /// declared in their own admitted contract; applications use class services.
-    pub fn begin(&mut self, caller: u64, interface: u32, operation: u32, input_len: usize,
+    pub fn begin(&mut self, caller: u64, interface: u64, operation: u32, input_len: usize,
                  output_len: usize)
                  -> Result<u32>
     {
@@ -581,6 +595,10 @@ impl Registry
                                            class: provider.offer.class,
                                            operation,
                                            max_reply: output_len as u32,
+                                           interface_key: self.interfaces
+                                                              .key(interface)
+                                                              .ok_or(Error::Stale)?,
+                                           offer: provider.offer,
                                            active: false })
                          .map_err(|_| Error::Exhausted)?;
         if provider.module != 0
@@ -621,7 +639,8 @@ impl Registry
     pub fn interface_for_request(&self, caller: u64, ticket: u32) -> Result<Interface>
     {
         let request = self.request(caller, ticket)?;
-        self.interfaces.get(request.interface).copied().ok_or(Error::Stale)
+        Ok(Interface { module: request.module,
+                       offer:  request.offer })
     }
 
     pub fn enter_request(&mut self, caller: u64, ticket: u32) -> Result<()>
@@ -694,11 +713,22 @@ impl Registry
         {
             return Err(Error::Busy);
         }
-        for id in record.interfaces.drain(..)
+        self.interfaces.remove_owner(module);
+        let owner = self.module_ledger(module)?;
+        let summary = owner.summary();
+        if summary.live != 0
         {
-            self.interfaces.remove(id);
+            return Err(Error::Domain(mac_object_table::domain::DirectoryError::LiveResources { owner: owner.owner(), live: summary.live }));
         }
-        record.state = State::Failed;
+        if summary.pending != 0
+        {
+            return Err(Error::Domain(mac_object_table::domain::DirectoryError::PendingResources { owner: owner.owner(), pending: summary.pending }));
+        }
+        if summary.completion_faults != 0
+        {
+            return Err(Error::Domain(mac_object_table::domain::DirectoryError::CompletionFaults { owner: owner.owner(), faults: summary.completion_faults }));
+        }
+        self.modules.get_mut(module).ok_or(Error::Stale)?.state = State::Failed;
         Ok(())
     }
 }
@@ -753,11 +783,62 @@ mod tests
         registry.stage(Contract::decode(bytes).unwrap(), PackageKind::Driver, *b"DRVR").unwrap()
     }
     #[test]
+    fn interface_slots_reuse_full_width_tokens_and_refuse_wrong_cleanup_context()
+    {
+        use mac_object_table::registry::CleanupFailure;
+
+        use crate::toolbox::handles::cleanup::{Cause, context::Context};
+        let bytes = metadata(*b"interface-reuse!", &[OFFER], &[]);
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
+        let module = stage(&mut registry, &bytes);
+        registry.commit(module).unwrap();
+        let id = registry.resolve(0, OFFER.class, OFFER.version).unwrap();
+        let owner = registry.module_ledger(module).unwrap();
+        let first = registry.interfaces.key(id).unwrap();
+        assert_eq!(first.owner(), owner.owner());
+        assert!(id > u64::from(u32::MAX));
+        drop(registry.interfaces.remove(id).unwrap());
+        let fresh = registry.interfaces
+                            .insert(&owner,
+                                    Interface { module,
+                                                offer: OFFER })
+                            .unwrap();
+        let second = registry.interfaces.key(fresh).unwrap();
+        assert_eq!(first.slot(), second.slot());
+        assert_ne!(first.generation(), second.generation());
+        assert_ne!(id, fresh);
+        assert_eq!(registry.interface(id), Err(Error::Stale));
+        assert!(registry.interface(fresh).is_ok());
+        struct Missing;
+        impl Context for Missing
+        {
+            fn driver_registry(&mut self) -> Option<&mut Registry>
+            {
+                None
+            }
+        }
+        let ticket = owner.invalidate(second).unwrap();
+        let dispatch = registry._kinds.dispatch(second.kind()).unwrap();
+        let error = dispatch.invoke(&mut Missing, ticket).unwrap_err();
+        assert!(error.to_string().contains("driver registry")
+                && error.to_string().contains("retained for retry"));
+        let (ticket, cause) = error.into_parts();
+        assert!(matches!(cause, Cause::ContextUnavailable { .. }));
+        assert_eq!(ticket.key(), second);
+        owner.quarantine(ticket).unwrap();
+        let ticket = owner.resume_quarantined().unwrap();
+        let dispatch = registry._kinds.dispatch(second.kind()).unwrap();
+        dispatch.invoke(&mut *registry as &mut dyn Context, ticket).unwrap();
+        assert!(registry.interface(fresh).is_err());
+        assert_eq!(owner.summary().pending, 0);
+    }
+
+    #[test]
     fn module_domain_retirement_preserves_live_and_pending_resource_authority()
     {
         use mac_object_table::domain::{CapacityPolicy, DirectoryError, DomainKind, KindCode};
         let bytes = metadata(*b"domain-test-uuid", &[], &[]);
-        let mut registry = Registry::new(Target::RVA23U64);
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
         let id = stage(&mut registry, &bytes);
         assert!(id > u64::from(u32::MAX));
         let owner = registry.modules.directory().get(id).unwrap().ledger().clone();
@@ -794,7 +875,7 @@ mod tests
         use mac_module::file_handlers::{Action, Rule};
         let bytes = metadata(*b"test-module-uuid", &[OFFER], &[]);
         let rule = Rule::new(*b"SIT!", Action::MountFilesystem, 128).unwrap();
-        let mut registry = Registry::new(Target::RVA23U64);
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
         let first = stage(&mut registry, &bytes);
         registry.install_file_handlers(first, alloc::vec![rule]).unwrap();
         assert_eq!(registry.file_handler(*b"SIT!"), None);
@@ -822,7 +903,7 @@ mod tests
     fn initialization_is_hidden_and_rollback_never_reuses_ids()
     {
         let bytes = metadata(*b"test-module-uuid", &[OFFER], &[]);
-        let mut registry = Registry::new(Target::RVA23U64);
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
         let stale = stage(&mut registry, &bytes);
         assert_eq!(registry.find(OFFER.class, 1).count(), 0);
         assert_eq!(registry.stage(Contract::decode(&bytes).unwrap(),
@@ -845,7 +926,7 @@ mod tests
     fn request_reuse_foreign_completions_and_quiesce_are_checked()
     {
         let bytes = metadata(*b"test-module-uuid", &[OFFER], &[]);
-        let mut registry = Registry::new(Target::RVA23U64);
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
         let module = stage(&mut registry, &bytes);
         registry.commit(module).unwrap();
         let (interface, _) = registry.find(OFFER.class, 1).next().unwrap();
@@ -878,7 +959,7 @@ mod tests
                                        ..OFFER }],
                              &[]);
         let other = metadata(*b"other-module-id!", &[OFFER], &[]);
-        let mut registry = Registry::new(Target::RVA23U64);
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
         let provider = stage(&mut registry, &bytes);
         let dep = mac_module::Dependency { module:   *b"test-module-uuid",
                                            class:    OFFER.class,
@@ -910,7 +991,7 @@ mod tests
     fn failed_initialization_retains_pending_dependency_ownership_until_cancellation()
     {
         let bytes = metadata(*b"test-module-uuid", &[OFFER], &[]);
-        let mut registry = Registry::new(Target::RVA23U64);
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
         let provider = stage(&mut registry, &bytes);
         registry.commit(provider).unwrap();
         let (interface, _) = registry.find(OFFER.class, 1).next().unwrap();
@@ -936,8 +1017,8 @@ mod tests
     fn separate_registries_cannot_alias_live_or_retired_driver_ids()
     {
         let bytes = metadata(*b"test-module-uuid", &[OFFER], &[]);
-        let mut first = Registry::new(Target::RVA23U64);
-        let mut second = Registry::new(Target::RVA23U64);
+        let mut first = fixture::Fixture::new(Target::RVA23U64);
+        let mut second = fixture::Fixture::new(Target::RVA23U64);
         let a = stage(&mut first, &bytes);
         let b = stage(&mut second, &bytes);
         assert_ne!(a, b);
@@ -957,7 +1038,7 @@ mod tests
     #[test]
     fn kernel_selection_distinguishes_missing_capabilities_from_stale_contracts()
     {
-        let mut registry = Registry::new(Target::RVA23U64);
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
         assert_eq!(registry.select(OFFER.class, 2, 1), Ok(None));
         let old = Offer { flags: Offer::KERNEL_ONLY,
                           capabilities: 1,
@@ -991,7 +1072,7 @@ mod tests
                                 version:  1,
                                 optional: false };
         let bytes = metadata_with_requirements(*b"consumer-module!", &[], &[], &[service], &[]);
-        let mut registry = Registry::new(Target::RVA23U64);
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
         assert!(matches!(registry.stage(Contract::decode(&bytes).unwrap(),
                                         PackageKind::Driver,
                                         *b"DRVR"),
@@ -1022,7 +1103,7 @@ mod tests
                                                 value: [3; 16],
                                                 mask:  [255; 16] };
         let bytes = metadata_with_requirements(*b"consumer-module!", &[], &[], &[], &[matcher]);
-        let mut registry = Registry::new(Target::RVA23U64);
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
         let module = stage(&mut registry, &bytes);
         assert_eq!(registry.device_allowed(module, matcher.bus, matcher.value), Ok(()));
         assert_eq!(registry.device_allowed(module, matcher.bus, [4; 16]), Err(Error::Access));

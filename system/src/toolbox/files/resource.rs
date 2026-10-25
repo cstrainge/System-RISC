@@ -19,7 +19,7 @@ pub(super) fn application_format_status(error: mac_formats::Error) -> Status
 #[cfg(target_arch = "riscv64")]
 pub(crate) struct ProviderInspection
 {
-    pub provider: u32,
+    pub provider: u64,
     pub volume:   u32,
     pub fork:     u32,
     pub offset:   u64,
@@ -58,7 +58,7 @@ impl Manager
             })
     }
 
-    pub(crate) fn resource_provider(&self, owner: u64, handle: u32) -> Result<Option<u32>, Status>
+    pub(crate) fn resource_provider(&self, owner: u64, handle: u32) -> Result<Option<u64>, Status>
     {
         self.file_provider(owner, handle)
     }

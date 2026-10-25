@@ -14,7 +14,7 @@ pub(crate) struct Closing
     source:  u32,
     backing: u32
 }
-pub(crate) fn begin_release(provider: u32, source: u32)
+pub(crate) fn begin_release(provider: u64, source: u32)
                             -> Result<Option<(Closing, crate::drivers::OwnedJob)>, Status>
 {
     let owner = crate::drivers::provider_module(provider)?;
@@ -70,7 +70,7 @@ pub(crate) fn files<T>(call: impl FnOnce(&mut crate::toolbox::files::Manager) ->
 {
     crate::kernel::with_files(call).map_err(crate::state::AccessError::status)?
 }
-pub(crate) fn find(provider: u32, volume: u32, cnid: u32) -> Result<Option<u32>, Status>
+pub(crate) fn find(provider: u64, volume: u32, cnid: u32) -> Result<Option<u32>, Status>
 {
     let owner = crate::drivers::provider_module(provider)?;
     SOURCES.lock().find(owner,
@@ -78,7 +78,7 @@ pub(crate) fn find(provider: u32, volume: u32, cnid: u32) -> Result<Option<u32>,
                                    cnid,
                                    fork: mac_abi::files::DATA_FORK })
 }
-pub(crate) fn adopt(provider: u32, volume: u32, cnid: u32, handle: u32, length: u64)
+pub(crate) fn adopt(provider: u64, volume: u32, cnid: u32, handle: u32, length: u64)
                     -> Result<u32, Status>
 {
     let owner = crate::drivers::provider_module(provider)?;
@@ -102,7 +102,7 @@ pub(crate) fn initialize() -> Result<(), Status>
                                      request)?;
     Ok(())
 }
-pub(crate) fn lease(provider: u32, volume: u32, cnid: u32) -> Result<(u32, bool), Status>
+pub(crate) fn lease(provider: u64, volume: u32, cnid: u32) -> Result<(u32, bool), Status>
 {
     let owner = crate::drivers::provider_module(provider)?;
     let identity = Identity { volume,

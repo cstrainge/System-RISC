@@ -94,7 +94,7 @@ impl Client
 pub struct Provider
 {
     client: Client,
-    handle: u32,
+    handle: u64,
     class:  ClassId
 }
 impl Provider
@@ -388,5 +388,35 @@ mod entry_tests
         assert_eq!(probe.module.load(Ordering::Relaxed),
                    0,
                    "stale descriptor reached module author initialization");
+    }
+    #[test]
+    fn dependency_resolution_and_invocation_preserve_all_provider_bits()
+    {
+        const PROVIDER: u64 = (1 << 61) | 0x123456789;
+        unsafe extern "C" fn resolve(_: u64, _: u32, _: u32, output: *mut u64) -> Status
+        {
+            unsafe {
+                output.write(PROVIDER);
+            }
+            OK
+        }
+        unsafe extern "C" fn broker(_: u64, provider: u64, call: *mut abi::Call) -> Status
+        {
+            assert_eq!(provider, PROVIDER);
+            let call = unsafe { &mut *call };
+            assert_eq!(call.class, *b"TEST");
+            call.output_len = 0;
+            OK
+        }
+        let client = Client { host: abi::Host { header:   abi::Header::of::<abi::Host>(),
+                                                module:   1 << 40,
+                                                reserved: 0,
+                                                context:  1 << 40,
+                                                call:     Some(broker),
+                                                resolve:  Some(resolve) } };
+        let provider = client.resolve(ClassId(*b"TEST"), 1).unwrap();
+        assert_eq!(provider.handle, PROVIDER);
+        assert_eq!(provider.invoke(&mut 0, Phase::Start, 1, &[], &mut []).unwrap(),
+                   Completion::Complete(0));
     }
 }

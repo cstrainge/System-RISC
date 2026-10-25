@@ -12,7 +12,7 @@ pub(super) enum HostMount
     Pending(u32, OwnedJob)
 }
 
-pub(super) fn host_mount(provider: u32, index: u32) -> Result<HostMount, Status>
+pub(super) fn host_mount(provider: u64, index: u32) -> Result<HostMount, Status>
 {
     let source = super::super::Source::Export(u64::from(index));
     if let Some(info) = files(|manager| manager.existing_provider_mount(provider, source))?
@@ -27,7 +27,7 @@ pub(super) fn host_mount(provider: u32, index: u32) -> Result<HostMount, Status>
     }
 }
 
-fn complete(provider: u32, step: Step, job: OwnedJob) -> Result<Reply, Status>
+fn complete(provider: u64, step: Step, job: OwnedJob) -> Result<Reply, Status>
 {
     // Bootstrap has no application pointer or parked userspace caller. A single
     // reserved flight slot retains cancellation/cleanup if startup times out.

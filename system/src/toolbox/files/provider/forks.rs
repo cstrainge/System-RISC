@@ -75,7 +75,7 @@ impl Manager
     pub(in crate::toolbox::files) fn file_provider<'a>(&self,
                                                        owner: impl Into<super::super::subject::Access<'a>>,
                                                        id: u32)
-                                                       -> Result<Option<u32>, Status>
+                                                       -> Result<Option<u64>, Status>
     {
         let file = self.slot_access(owner.into(), id)?;
         match &*file.fork.lock()
@@ -92,7 +92,7 @@ impl Manager
         }
     }
 
-    fn provider_file(&self, id: u32) -> Result<(&OpenFile, u32), Status>
+    fn provider_file(&self, id: u32) -> Result<(&OpenFile, u64), Status>
     {
         let file = self.handles.completing(id).ok_or(NOT_FOUND)?;
         if !matches!(&*file.fork.lock(), FileFork::Provider(_))
@@ -110,7 +110,7 @@ impl Manager
     pub(in crate::toolbox::files) fn reserve_provider_file_for(&mut self, owner: u64,
                                                                authority:&crate::toolbox::handles::OwnerRef,
                                                                volume: u32, node: u32, kind: u32)
-                                                               -> Result<(u32, u32), Status>
+                                                               -> Result<(u64, u32), Status>
     {
         self.reserve_provider_file_authorized(super::super::subject::Access::Client(owner),&super::super::subject::Authority::Client(authority.clone()),volume,node,kind)
     }
@@ -118,7 +118,7 @@ impl Manager
     pub(in crate::toolbox::files) fn reserve_provider_file_authorized(
         &mut self, access: super::super::subject::Access<'_>,
         authority: &super::super::subject::Authority, volume: u32, node: u32, kind: u32)
-        -> Result<(u32, u32), Status>
+        -> Result<(u64, u32), Status>
     {
         self.validate_creation(access, authority, crate::toolbox::handles::KindCode(*b"FFRK"))?;
         #[cfg(target_arch = "riscv64")]
@@ -157,7 +157,7 @@ impl Manager
     #[cfg(any(test, target_arch = "riscv64"))]
     pub(in crate::toolbox::files) fn reserve_provider_file(&mut self, owner: u64, volume: u32,
                                                            node: u32, kind: u32)
-                                                           -> Result<(u32, u32), Status>
+                                                           -> Result<(u64, u32), Status>
     {
         #[cfg(test)]
         let authority = self.handles.fixture_owner(owner);
@@ -196,7 +196,7 @@ impl Manager
 
     pub(in crate::toolbox::files) fn begin_provider_file_read<'a>(
         &mut self, owner: impl Into<super::super::subject::Access<'a>>, id: u32, capacity: usize)
-        -> Result<(u32, fs::Arguments<'static>), Status>
+        -> Result<(u64, fs::Arguments<'static>), Status>
     {
         let owner = owner.into();
         let (file, provider) = self.provider_file(id)?;
@@ -270,7 +270,7 @@ impl Manager
     pub(in crate::toolbox::files) fn begin_provider_file_close<'a>(&mut self,
                                                                    owner: impl Into<super::super::subject::Access<'a>>,
                                                                    id: u32)
-                                                                   -> Result<(u32, u32), Status>
+                                                                   -> Result<(u64, u32), Status>
     {
         let owner = owner.into();
         let (file, provider) = self.provider_file(id)?;
@@ -349,7 +349,7 @@ impl Manager
 
     pub(in crate::toolbox::files) fn next_orphaned_file(
         &mut self)
-        -> Result<Option<(u32, u32, u32, super::super::subject::Subject)>, Status>
+        -> Result<Option<(u32, u64, u32, super::super::subject::Subject)>, Status>
     {
         let id = self.handles.iter().find_map(|(id, file)| matches!(&*file.fork.lock(), FileFork::Provider(fork) if fork.cleanup_ready()).then_some(id));
         let Some(id) = id

@@ -18,7 +18,7 @@ pub(super) struct Group
     pub revision:  u64,
     pub rows:      spinning_top::Spinlock<Vec<IconMove>>,
     pub parents:   Vec<u32>,
-    pub provider:  Option<u32>,
+    pub provider:  Option<u64>,
     pub state:     spinning_top::Spinlock<State>
 }
 #[derive(Clone, Copy)]
@@ -94,7 +94,7 @@ impl Manager
 {
     pub(super) fn group_provider<'a>(&self, owner: impl Into<super::subject::Access<'a>>,
                                      handle: u64)
-                                     -> Result<Option<u32>, Status>
+                                     -> Result<Option<u64>, Status>
     {
         Ok(self.groups.get_for(owner.into(), handle)?.provider)
     }

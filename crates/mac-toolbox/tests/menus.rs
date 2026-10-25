@@ -478,3 +478,39 @@ fn foreign_menu_handles_cannot_cross_domains_and_the_registered_walk_releases_pa
         drop(own);
     });
 }
+
+#[test]
+fn failed_disposal_keeps_all_menu_geometry_and_handles_until_a_successful_retry()
+{
+    use mac_system::testing::menus::{MeasureFault, with_measure_fault};
+    use mac_toolbox::{Error, ResourceScope};
+    let fork = capacity_fork();
+    mac_system::testing::menus::with_resources(&fork, &fork, |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let mut first = system.menus().install_owned(ResourceScope::Application, 32000).unwrap();
+        let second = system.menus().install_owned(ResourceScope::Application, 32001).unwrap();
+        let third = system.menus().install_owned(ResourceScope::Application, 32002).unwrap();
+        let fourth = system.menus().install_owned(ResourceScope::Application, 32003).unwrap();
+        let handles = [first.handle(), second.handle(), third.handle(), fourth.handle()];
+        let layouts: Vec<_> =
+            handles.iter().map(|&h| system.menus().menu(h).layout().unwrap()).collect();
+        for (fault, expected, message) in [(MeasureFault::Refuse, Error::BadArgument, "argument"),
+                                           (MeasureFault::ChangeInput, Error::BadAbi, "contract")]
+        {
+            let error = with_measure_fault(fault, || first.dispose()).unwrap_err();
+            assert_eq!(error, expected);
+            assert!(error.to_string().contains(message), "{error}");
+            for (handle, before) in handles.iter().zip(&layouts)
+            {
+                assert_eq!(&system.menus().menu(*handle).layout().unwrap(),
+                           before,
+                           "a failed preflight published partial menu geometry");
+            }
+        }
+        first.dispose().unwrap();
+        assert_eq!(system.menus().menu(handles[0]).layout(), Err(Error::NotFound));
+        assert!(second.layout().unwrap().title.left < layouts[1].title.left);
+        assert!(third.layout().unwrap().title.left < layouts[2].title.left);
+        assert!(fourth.layout().unwrap().title.left < layouts[3].title.left);
+    });
+}

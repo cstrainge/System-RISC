@@ -50,7 +50,7 @@ pub(crate) type ResidentCallback =
     fn(ResidentCall<'_>, &mut [u8]) -> Result<ResidentCompletion, Status>;
 struct ResidentBinding
 {
-    interface: u32,
+    interface: u64,
     callback:  ResidentCallback
 }
 #[derive(Clone, Copy)]
@@ -65,6 +65,10 @@ pub(crate) fn inspect<T: crate::toolbox::inspection::Subject>(processes:&mac_obj
                                                               call: &mut mac_abi::inspection::Call)
                                                               -> Status
 {
+    if call.scope == mac_abi::inspection::SELF
+    {
+        return crate::toolbox::inspection::request(processes, caller, call);
+    }
     match RUNTIME.with(|runtime| runtime.registry.inspect(processes, caller, call))
     {
         Ok(status) => status,
@@ -84,7 +88,7 @@ pub(crate) fn inspect<T: crate::toolbox::inspection::Subject>(processes:&mac_obj
 }
 
 pub(crate) fn register_service(offer: mac_module::Offer, callback: ResidentCallback)
-                               -> Result<u32, Status>
+                               -> Result<u64, Status>
 {
     RUNTIME.with(|runtime| {
                runtime.residents.try_reserve(1).map_err(|_| NO_MEMORY)?;
@@ -102,7 +106,7 @@ pub(crate) fn device_allowed(module: u64, bus: ClassId, key: [u8; 16]) -> Result
            .map_err(crate::state::AccessError::status)?
 }
 
-pub(crate) fn provider_module(interface: u32) -> Result<u64, Status>
+pub(crate) fn provider_module(interface: u64) -> Result<u64, Status>
 {
     RUNTIME.with(|runtime| {
                let module = runtime.registry.interface(interface).map_err(status)?.module;
@@ -117,7 +121,7 @@ pub(crate) fn provider_module(interface: u32) -> Result<u64, Status>
 
 /// Class-neutral admission policy: a provider that serializes all outstanding
 /// requests cannot also serve a backing dependency of its own pending request.
-pub(crate) fn provider_serialized(interface: u32) -> Result<bool, Status>
+pub(crate) fn provider_serialized(interface: u64) -> Result<bool, Status>
 {
     RUNTIME.with(|runtime| {
                let provider = runtime.registry.interface(interface).map_err(status)?;
@@ -153,7 +157,13 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
     {
         return Err(BAD_ARGUMENT);
     }
-    RUNTIME.publish(Runtime { registry:  Registry::new(target),
+    let owner = crate::toolbox::handles::system_owner()?;
+    let kinds = crate::toolbox::handles::registry(|registry| {
+                    Ok((registry.get(crate::toolbox::handles::KindCode(*b"DIFC"))?,
+                        registry.get(crate::toolbox::handles::KindCode(*b"DIFS"))?))
+                }).map_err(|error| error.status())?
+                  .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
+    RUNTIME.publish(Runtime { registry:  Registry::new(target, owner, kinds).map_err(status)?,
                               bindings:  Vec::new(),
                               residents: Vec::new(),
                               next:      arena.start,
@@ -320,7 +330,7 @@ unsafe fn checked_call<'a>(pointer: *mut abi::Call) -> Result<&'a mut abi::Call,
     }
     Ok(call)
 }
-unsafe extern "C" fn broker(caller: u64, provider: u32, pointer: *mut abi::Call) -> Status
+unsafe extern "C" fn broker(caller: u64, provider: u64, pointer: *mut abi::Call) -> Status
 {
     // The C callback never owns or retains the caller's buffers.
     match unsafe { invoke(caller, provider, pointer) }
@@ -329,7 +339,7 @@ unsafe extern "C" fn broker(caller: u64, provider: u32, pointer: *mut abi::Call)
         Err(status) => status
     }
 }
-unsafe fn invoke(caller: u64, provider: u32, pointer: *mut abi::Call) -> Result<Status, Status>
+unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<Status, Status>
 {
     let call = unsafe { checked_call(pointer) }?;
     call.output_len = 0;
@@ -494,9 +504,9 @@ unsafe fn invoke(caller: u64, provider: u32, pointer: *mut abi::Call) -> Result<
     Ok(result)
 }
 
-unsafe extern "C" fn resolve(caller: u64, class: u32, version: u32, output: *mut u32) -> Status
+unsafe extern "C" fn resolve(caller: u64, class: u32, version: u32, output: *mut u64) -> Status
 {
-    if output.is_null() || !output.addr().is_multiple_of(core::mem::align_of::<u32>())
+    if output.is_null() || !output.is_aligned()
     {
         return BAD_ARGUMENT;
     }
@@ -516,7 +526,7 @@ unsafe extern "C" fn resolve(caller: u64, class: u32, version: u32, output: *mut
 }
 /// A kernel caller still resolves a live, declared class/version through the
 /// same registry as modules. Filesystem adapters never call a code address.
-fn resolve_kernel(class: ClassId, version: u32) -> Result<u32, Status>
+fn resolve_kernel(class: ClassId, version: u32) -> Result<u64, Status>
 {
     RUNTIME.with(|runtime| runtime.registry.resolve(0, class, version).map_err(status))
            .map_err(crate::state::AccessError::status)?
@@ -524,7 +534,7 @@ fn resolve_kernel(class: ClassId, version: u32) -> Result<u32, Status>
 
 /// Select a provider by declared capabilities, independently of driver names.
 pub(crate) fn find_kernel_provider(class: ClassId, version: u32, capabilities: u64)
-                                   -> Result<u32, Status>
+                                   -> Result<u64, Status>
 {
     RUNTIME.with(|runtime| {
                runtime.registry
@@ -809,7 +819,7 @@ pub fn submit_background_job(class: ClassId, version: u32, operation: u32, input
 }
 
 /// Submit to the exact provider incarnation retained by a resident mount.
-pub(crate) fn submit_background_to(provider: u32, class: ClassId, version: u32, operation: u32,
+pub(crate) fn submit_background_to(provider: u64, class: ClassId, version: u32, operation: u32,
                                    input: Vec<u8>, output_bytes: usize)
                                    -> Result<OwnedJob, Status>
 {

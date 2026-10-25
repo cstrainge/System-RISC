@@ -229,6 +229,7 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
         assert!(!serial.contains("SYSTEM_TRAP:"), "{serial}");
     }
     let acceptance = json!({"status":"passed","cases":cases.len(),"kernel_module_sdk":"actual DRVR entries and declared-dependency broker calls",
+        "resolver_output_validation":"null and four-byte-aligned/u64-misaligned outputs refused without writes; ordinary safe SDK resolution succeeds afterward",
         "device_admission":"matching devices; provider/dependent catalog orders; absent device and bus without entry; wildcard and exact required-dependency skips; a waiting wildcard alternative remains loadable; actual host driver pair skips cleanly without a VM host channel",
         "application_filesystem_mounts":"not covered by this gate","capture":report});
     fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
