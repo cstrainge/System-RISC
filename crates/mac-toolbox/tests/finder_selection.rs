@@ -205,3 +205,140 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
     assert!(actions.iter().all(|line| line.contains("files=0 widths=0")), "{serial}");
     fs::write(output.join("acceptance.json"),serde_json::to_vec_pretty(&serde_json::json!({"status":"passed","pixel_comparisons":comparisons,"outline_steps":4000,"pointer_file_calls":0,"pointer_text_measurements":0,"selection_actions":actions})).unwrap()).unwrap();
 }
+
+#[test]
+#[ignore = "requires current event-trace private image and physical QMP input"]
+fn physical_marquee_motion_uses_cached_items_and_frontbuffer_feedback()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let output = root.join(format!("results/system7/finder-marquee-{}", std::process::id()));
+    let mut command = Command::new("python3");
+    command.arg(root.join("System7/scripts/capture_finder_marquee.py"))
+           .arg("--output")
+           .arg(&output);
+    if std::env::var_os("SYSTEM7_FINDER_MARQUEE_WINDOWS").is_some()
+    {
+        command.arg("--windows-headless");
+    }
+    let capture = command.output().unwrap();
+    assert!(capture.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&capture.stdout),
+            String::from_utf8_lossy(&capture.stderr));
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(report["owned_vm_exited"], true);
+    let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
+    for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:", "SYSTEM_ALLOCATION_FAILED:", "FINDER_ERROR"]
+    {
+        assert!(!serial.contains(failure), "{serial}");
+    }
+    let mut profiles = Vec::new();
+    for stage in report["stages"].as_array().unwrap()
+    {
+        let empty = stage["name"] == "empty";
+        let trace = &stage["trace"];
+        assert_eq!(trace["overwritten"], 0);
+        let app = stage["state_before"]["front"].as_str().unwrap();
+        let frame_line =
+            serial.lines()
+                  .find(|line| line.starts_with(&format!("FINDER_FOLDER_LAYOUT window={app} ")))
+                  .unwrap();
+        let frame: Vec<i16> = frame_line.split(" frame=")
+                                        .nth(1)
+                                        .unwrap()
+                                        .split(' ')
+                                        .next()
+                                        .unwrap()
+                                        .split(',')
+                                        .map(|n| n.parse().unwrap())
+                                        .collect();
+        let anchor = (400 - frame[0], 220 - frame[1]);
+        let mut inputs: Vec<(u64, u64)> = Vec::new();
+        let mut published = 0;
+        let mut pending = None;
+        let mut latency = Vec::new();
+        let mut render_count = 0;
+        let mut icon_slow = Vec::new();
+        for row in trace["records"].as_array().unwrap()
+        {
+            let row: Vec<u64> =
+                row.as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+            match row[2]
+            {
+                1 if row[4] == 1 =>
+                {
+                    let point = (row[5] as i16 - frame[0], row[6] as i16 - frame[1]);
+                    let edges = [point.0.min(anchor.0),
+                                 point.1.min(anchor.1),
+                                 point.0.max(anchor.0),
+                                 point.1.max(anchor.1)];
+                    let packed =
+                        edges.into_iter()
+                             .enumerate()
+                             .fold(0u64, |p, (i, edge)| p | (u64::from(edge as u16) << (16 * i)));
+                    inputs.push((row[1], packed));
+                }
+                5 if row[4] == u64::MAX - 1 && row[7] == 1 =>
+                {
+                    let index =
+                        (published..inputs.len()).rev()
+                                                 .find(|&i| inputs[i].1 == row[6])
+                                                 .expect("content outline did not correspond to \
+                                                          decoded physical input");
+                    pending = Some(index);
+                }
+                5 if row[4] == u64::MAX =>
+                {
+                    if let Some(index) = pending.take()
+                    {
+                        latency.push((row[1] - inputs[index].0) * 100);
+                        published = index + 1;
+                    }
+                    assert!(row[5] <= 12 * (640 + 480), "marquee exceeded its perimeter budget");
+                }
+                7 => render_count += 1,
+                4 => panic!("marquee generated a synthetic window update"),
+                15 if row[4] & 0xffff == 17 => icon_slow.push(row[5] * 100),
+                _ => ()
+            }
+        }
+        assert_eq!(inputs.len(), 200);
+        assert!(latency.len() >= 100, "physical marquee stopped making sustained progress");
+        assert_eq!(published, inputs.len(), "final decoded marquee input was not painted");
+        for key in ["menu_paints", "updates"]
+        {
+            assert_eq!(stage["state_before"][key], stage["state_after"][key],
+                       "marquee changed {key}");
+        }
+        for services in trace["services"].as_object().unwrap().values()
+        {
+            assert!(services.get("file").is_none(), "marquee enumerated storage");
+        }
+        if empty
+        {
+            assert_eq!(render_count, 0, "empty marquee replayed the scene");
+            assert_eq!(fs::read(output.join(stage["back_before"].as_str().unwrap())).unwrap(),
+                       fs::read(output.join(stage["back_after"].as_str().unwrap())).unwrap(),
+                       "outline-only motion modified the retained backbuffer");
+        }
+        else
+        {
+            assert!(render_count > 0 && render_count < 100,
+                    "selection repaint was missing or unbounded");
+        }
+        latency.sort_unstable();
+        let p = |n: usize| latency[(latency.len() * n).div_ceil(100) - 1];
+        profiles.push(serde_json::json!({"name":stage["name"],"decoded":inputs.len(),
+            "published":latency.len(),"coalesced":inputs.len()-latency.len(),
+            "p50_ns":p(50),"p99_ns":p(99),"max_ns":latency.last(),
+            "renders":render_count,"icon_calls_at_least_500us":icon_slow,
+            "limits":"Physical decode to matching outline XOR, includes first move. Excludes pre-decode host latency and scanout."}));
+        if std::env::var_os("SYSTEM7_STRICT_EVENT_LATENCY").is_some()
+        {
+            assert!(latency.iter().all(|&ns| ns < 1_000_000),
+                    "physical marquee exceeded 1ms: {profiles:?}");
+        }
+    }
+    fs::write(output.join("marquee-profile.json"), serde_json::to_vec_pretty(&profiles).unwrap()).unwrap();
+}

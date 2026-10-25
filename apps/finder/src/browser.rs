@@ -24,6 +24,15 @@ pub struct Location
     pub volume: VolumeId,
     pub folder: Cnid
 }
+/// A queued click is replayed after its catalog snapshot is ready. Only a
+/// completed click may start a gesture or publish input/menu readiness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClickOutcome
+{
+    Completed,
+    Deferred
+}
+
 #[derive(Clone, Copy, Default)]
 struct FolderWindow
 {
@@ -517,6 +526,24 @@ impl Browser
                     cache::with(slot, |folder| folder.volume.unwrap())
                 };
                 let icon = entry_icon(system, &volume, &entry);
+                let paint_icon = if let Icon::Application { volume,
+                                                            cnid,
+                                                            fallback } = icon
+                {
+                    match system.quickdraw().icons().load_file(volume, cnid)
+                    {
+                        Ok(()) => icon,
+                        Err(Error::NotFound | Error::BadArgument | Error::NotSupported) =>
+                        {
+                            Icon::Resource(fallback)
+                        }
+                        Err(error) => return Err(error)
+                    }
+                }
+                else
+                {
+                    icon
+                };
                 let running = matches!(icon, Icon::Application { .. })
                               && system.processes().is_running(entry.volume, entry.id)?;
                 let trash = if let Some(trash) =
@@ -578,6 +605,7 @@ impl Browser
                     folder.items[index] =
                         cache::Item { entry,
                                       icon,
+                                      paint_icon,
                                       caption,
                                       running,
                                       can_trash,
@@ -694,6 +722,7 @@ impl Browser
                     let old = previous.items[old_index];
                     if old.entry != item.entry
                        || old.icon != item.icon
+                       || old.paint_icon != item.paint_icon
                        || old.running != item.running
                        || old.bounds != item.bounds
                        || previous.selected.contains(old_index) != window.selected.contains(index)
@@ -1418,7 +1447,7 @@ impl Browser
                 item.running
             };
             icon_view::draw_item_measured(&mut draw,
-                                          item.icon,
+                                          item.paint_icon,
                                           item.icon_bounds,
                                           item.entry.name(),
                                           item.caption,
@@ -1539,7 +1568,7 @@ impl Browser
     }
 
     pub fn click(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
-                 -> Result<(), Error>
+                 -> Result<ClickOutcome, Error>
     {
         self.press = None;
         self.marquee = None;
@@ -1557,7 +1586,7 @@ impl Browser
             // Clicking its error view must not repeat the failing I/O.
             if self.failures[slot].get().is_some()
             {
-                return Ok(());
+                return Ok(ClickOutcome::Completed);
             }
             let window = self.windows[slot].unwrap();
             self.front = window.window;
@@ -1594,7 +1623,7 @@ impl Browser
                         break;
                     }
                 }
-                return Ok(());
+                return Ok(ClickOutcome::Completed);
             }
             if !cache::with(slot, |folder| folder.ready)
             {
@@ -1605,7 +1634,7 @@ impl Browser
                 let next =
                     pending.iter_mut().find(|click| click.is_none()).ok_or(Error::NoMemory)?;
                 *next = Some((event.as_record(), position));
-                return Ok(());
+                return Ok(ClickOutcome::Deferred);
             }
             let mut hit = None;
             if p.v >= icon_view::INFO_HEIGHT
@@ -1687,12 +1716,12 @@ impl Browser
             if volume == VolumeId::NONE
             {
                 self.open(system, Location::default())?;
-                return Ok(());
+                return Ok(ClickOutcome::Completed);
             }
             let entry = system.files().catalog(volume, folder)?;
             self.open_entry(system, &entry)?;
         }
-        system.log("FINDER_CLICK_HANDLED\n")
+        Ok(ClickOutcome::Completed)
     }
 
     pub fn activate(&mut self, event: &Event)
@@ -2147,8 +2176,13 @@ impl Browser
         let _ = system;
         let front = self.front;
         let slot = self.windows.iter().position(|w| w.is_some_and(|w| w.window == front))?;
-        let index = self.windows[slot]?.selected.iter().next()?;
-        cache::with(slot, |folder| Some(folder.items[index].location()))
+        cache::with(slot, |folder| {
+            if !folder.ready
+            {
+                return folder.previous[..folder.previous_count].iter().flatten().next().copied();
+            }
+            self.windows[slot]?.selected.iter().next().map(|index| folder.items[index].location())
+        })
     }
 
     pub fn selection_count(&self) -> usize
@@ -2173,10 +2207,23 @@ impl Browser
         }
         else if let Some(slot) = self.front_slot()
         {
-            for (output, index) in self.windows[slot].unwrap().selected.iter().enumerate()
-            {
-                result[output] = cache::with(slot, |folder| Some(folder.items[index].location()));
-            }
+            cache::with(slot, |folder| {
+                // Background refresh rebuilds index-based selection, but the
+                // visibly selected file identities remain usable by Get Info.
+                // Never silently discard a command in that publication gap.
+                if !folder.ready
+                {
+                    result[..folder.previous_count].copy_from_slice(&folder.previous
+                                                                        [..folder.previous_count]);
+                }
+                else
+                {
+                    for (output, index) in self.windows[slot].unwrap().selected.iter().enumerate()
+                    {
+                        result[output] = Some(folder.items[index].location());
+                    }
+                }
+            });
         }
         result
     }

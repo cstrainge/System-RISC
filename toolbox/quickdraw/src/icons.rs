@@ -110,6 +110,17 @@ impl<'a> Icons<'a>
                                                   ..Default::default() })
     }
 
+    /// Prepare a file's decoded icon during a catalog refresh. Subsequent plots
+    /// share the immutable family; folder changes invalidate the cached source.
+    /// This does not draw, launch the file, or alter the resource search chain.
+    pub fn load_file(self, volume: VolumeId, cnid: Cnid) -> Result<()>
+    {
+        self.client.file_icon(&mut FileIconCall { operation: ICON_LOAD_FILE,
+                                                  volume: volume.0,
+                                                  cnid: cnid.0,
+                                                  ..Default::default() })
+    }
+
     /// Use the loaded driver's immutable icon family. This performs no catalog,
     /// resource-fork or decoder work while repainting an existing item.
     pub fn plot_file_default(self, target: impl Into<DrawingTarget>, file_type: TypeCode,

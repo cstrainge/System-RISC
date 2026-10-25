@@ -151,3 +151,7 @@ pub const SLOW_SERVICE: u64 = 15;
 /// Diagnostic WINDOW operation reserved for frontbuffer drag-outline deltas.
 #[cfg(target_arch = "riscv64")]
 pub(crate) const WINDOW_OUTLINE_XOR: u64 = u64::MAX;
+/// Content outline request: b=window (zero for desktop), c=four i16 edges,
+/// d=visible. Correlates physical marquee input with feedback publication.
+#[cfg(all(target_arch = "riscv64", feature = "event-trace"))]
+pub(crate) const CONTENT_OUTLINE_REQUEST: u64 = u64::MAX - 1;

@@ -64,10 +64,12 @@ window content or sweeping scene visibility. Scene damage underneath a stationar
 cursor uses the same masked blit. Monochrome inversion, color masks, clipping,
 hotspots, visibility and animation retain their original semantics.
 
-Title-bar drag outlines also live only in the frontbuffer. Only changed old/new
-edge pixels are XORed, with the cursor composited above them. Real scene damage
-reapplies just the intersecting outline pixels. File-drag outlines/highlights
-still temporarily paint and restore the canvas; grow feedback uses its WDEF
+Window/file drag outlines and selection marquees live only in the frontbuffer.
+Only changed old/new edges are XORed, with the cursor above them. Drop-target
+highlights occupy the layer below XOR feedback. Real scene damage restores only
+the intersecting feedback pixels. Window/desktop visibility clips are immutable
+snapshots cached until a target or committed geometry change, preserving
+occlusion without a per-motion visibility sweep. Grow feedback uses its WDEF
 mask. Presentation remains serialized with the compositor; this does not establish independent pointer-path
 scheduling or a strict input-latency guarantee. A failed scene replay suppresses
 cursor-only copies until a complete scene is available again.
@@ -94,3 +96,10 @@ to the changed perimeters, and verifies painting under a held outline. The
 optional `SYSTEM7_WINDOW_WINDOWS=1` transport exercises native Windows QEMU;
 `SYSTEM7_STRICT_EVENT_LATENCY=1` enforces a separate first-motion-inclusive
 one-millisecond gate. Captures retain every sample and count coalesced moves.
+
+`finder_drag.rs` also profiles physical file dragging through the public Drag
+Toolbox: all retained scene bytes must stay unchanged, cursor copies are bounded,
+XOR work stays on perimeters, and scene/menu/update counters stay fixed. It
+retains cancellation, failed-drop recovery, multi-selection, modifier policy and
+cold-boot placement assertions. `SYSTEM7_FINDER_DRAG_WINDOWS=1` selects the private
+Windows transport; the optional strict latency gate retains the first motion.

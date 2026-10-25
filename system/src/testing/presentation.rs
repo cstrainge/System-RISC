@@ -36,8 +36,8 @@ pub fn present(scene: &[u32], front: &mut [u32], width: usize, height: usize,
 #[derive(Default)]
 pub struct DragFrame
 {
-    previous_cursor:  Rect,
-    previous_outline: Option<crate::toolbox::quickdraw::presentation::WindowOutline>
+    previous_cursor:   Rect,
+    previous_feedback: crate::toolbox::quickdraw::feedback::Feedback
 }
 impl DragFrame
 {
@@ -46,13 +46,78 @@ impl DragFrame
                    cursor_changed: bool)
                    -> Option<(usize, std::vec::Vec<Rect>)>
     {
-        use crate::toolbox::quickdraw::presentation::{Overlays, PresentEvent, WindowOutline,
-                                                      present_frame};
+        use crate::toolbox::quickdraw::{feedback::{Clip, Feedback},
+                                        presentation::Outline};
+        let feedback = match outline
+        {
+            Some((pieces, dx, dy)) =>
+            {
+                Feedback::outline(Outline::new(pieces, dx, dy)?, Clip::Screen)
+            }
+            None => Feedback::default()
+        };
+        self.publish(scene, front, width, height, damage, feedback, cursor_changed)
+    }
+
+    /// Feedback geometry is trusted capture input. Object lifecycle and cursor
+    /// state still come from the public SDK and real resident services.
+    pub fn present_feedback(&mut self, scene: &[u32], front: &mut [u32], width: usize,
+                            height: usize, damage: impl IntoIterator<Item = Rect>,
+                            outline: Option<(Rect, Option<&[Rect]>)>,
+                            highlight: Option<(Rect, Option<&[Rect]>)>, cursor_changed: bool)
+                            -> Option<(usize, std::vec::Vec<Rect>)>
+    {
+        use crate::toolbox::quickdraw::{feedback::{Clip, ClippedOutline, Feedback, Highlight},
+                                        presentation::Outline};
+        let clip = |rects: Option<&[Rect]>, previous: Option<&Clip>| {
+            match rects
+            {
+                Some(rects) => Clip::rectangles(rects, previous),
+                None => Some(Clip::Screen)
+            }
+        };
         let outline = match outline
         {
-            Some((pieces, dx, dy)) => Some(WindowOutline::new(pieces, dx, dy)?),
+            Some((bounds, visible)) =>
+            {
+                Some(ClippedOutline { shape: Outline::new(&[bounds], 0, 0)?,
+                                      clip:  clip(visible,
+                                                  self.previous_feedback
+                                                      .outline
+                                                      .as_ref()
+                                                      .map(|v| &v.clip))? })
+            }
             None => None
         };
+        let highlight = match highlight
+        {
+            Some((bounds, visible)) =>
+            {
+                Some(Highlight { bounds,
+                                 clip: clip(visible,
+                                            self.previous_feedback
+                                                .highlight
+                                                .as_ref()
+                                                .map(|v| &v.clip))? })
+            }
+            None => None
+        };
+        self.publish(scene,
+                     front,
+                     width,
+                     height,
+                     damage,
+                     Feedback { outline,
+                                highlight },
+                     cursor_changed)
+    }
+
+    fn publish(&mut self, scene: &[u32], front: &mut [u32], width: usize, height: usize,
+               damage: impl IntoIterator<Item = Rect>,
+               feedback: crate::toolbox::quickdraw::feedback::Feedback, cursor_changed: bool)
+               -> Option<(usize, std::vec::Vec<Rect>)>
+    {
+        use crate::toolbox::quickdraw::presentation::{Overlays, PresentEvent, present_frame};
         super::SESSION.with(|slot| {
                           let mut slot = slot.borrow_mut();
                           let session = slot.as_mut().unwrap();
@@ -68,8 +133,9 @@ impl DragFrame
                                             Overlays { previous_cursor: self.previous_cursor,
                                                        cursor,
                                                        cursor_changed,
-                                                       previous_outline: self.previous_outline,
-                                                       outline },
+                                                       previous_feedback:
+                                                           Some(&self.previous_feedback),
+                                                       feedback: Some(&feedback) },
                                             |event| {
                                                 match event
                                                 {
@@ -84,7 +150,7 @@ impl DragFrame
                                             })?;
                           assert_eq!(changed, observed_changes);
                           self.previous_cursor = cursor.map_or(Rect::ZERO, |c| c.bounds());
-                          self.previous_outline = outline;
+                          self.previous_feedback = feedback;
                           Some((changed, copies))
                       })
     }

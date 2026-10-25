@@ -285,7 +285,15 @@ def capture(output, remap_icon=False, windows=False):
         driver.button(False)
         driver.menu(618, 44, popup_x=580)  # Hide Others.
         frame('hide-others')
+        folder_id = re.search(r'FINDER_FOLDER_OPEN .* window=(\d+) name=Applications',
+                              driver.log())[1]
+        restored_ready = f'FINDER_FOLDER_READY window={folder_id}\n'
+        restored_count = driver.log().count(restored_ready)
         driver.menu(618, 60, popup_x=580)  # Show All, foreground unchanged.
+        # Restoring hidden windows posts real application updates. Capture
+        # their completed drawing, not the still-visible tracking popup while
+        # those updates are waiting for their application threads to run.
+        driver.wait(restored_ready, restored_count)
         frame('show-all')
         # Expose a narrow editor-content strip to the right of QuickDraw. This
         # permits a real background-content click rather than a menu activation.
@@ -338,7 +346,15 @@ def capture(output, remap_icon=False, windows=False):
         driver.wait(f"PROCESS_EXIT app={driver.app_id('Text Edit')}\n")
         frame('textedit-quit')
         driver.menu(28, 60, popup_x=65)  # QuickDraw's own File > Quit.
-        driver.wait(f"PROCESS_EXIT app={driver.app_id('QuickDraw Test')}\n")
+        exit_marker = f"PROCESS_EXIT app={driver.app_id('QuickDraw Test')}\n"
+        driver.wait(exit_marker)
+        # Exit publication precedes Finder's queued icon/update work. Wait for
+        # the exposed folder's committed drawing without injecting more input;
+        # the canonical Rust assertion still checks the actual normal icon.
+        folder_id = re.findall(r'FINDER_FOLDER_OPEN .* window=(\d+) name=Applications\n',driver.log())[-1]
+        ready = f'FINDER_FOLDER_READY window={folder_id}\n'
+        before_exit = driver.log().split(exit_marker,1)[0]
+        driver.wait(ready,before_exit.count(ready))
         frame('quickdraw-quit')
         clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
         driver.click(320, 200)

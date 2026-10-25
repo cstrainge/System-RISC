@@ -10,6 +10,8 @@ mod scan;
 mod properties;
 pub(crate) mod watch;
 mod cache;
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+mod icon_cache;
 mod streams;
 mod groups;
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
@@ -266,6 +268,8 @@ struct ExecutablePin
 }
 pub struct Manager
 {
+    #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+    file_icons:           icon_cache::Cache,
     executables:          Vec<ExecutablePin>,
     document_pins:        Vec<(u32, u32, u32)>,
     volumes:              Table<Mounted>,
@@ -283,18 +287,28 @@ impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { document_pins:                             Vec::new(),
-               executables:                               Vec::new(),
-               volumes:                                   Table::new(Kind::Volumes),
-               handles:                                   Table::new(Kind::Files),
-               writes:                                    Table::new(Kind::FileWrites),
-               streams:                                   Table::new(Kind::FileStreams),
-               groups:                                    Table::new(Kind::FileGroups),
+        Self { document_pins:                                                             Vec::new(),
+               executables:                                                               Vec::new(),
+               volumes:
+                   Table::new(Kind::Volumes),
+               handles:
+                   Table::new(Kind::Files),
+               writes:
+                   Table::new(Kind::FileWrites),
+               streams:
+                   Table::new(Kind::FileStreams),
+               groups:
+                   Table::new(Kind::FileGroups),
                #[cfg(target_arch = "riscv64")]
-               transfers:                                 Table::new(Kind::FileTransfers),
-               stream_cleanup:                            false,
-               watches:                                   watch::Watches::new(),
-               rejected_volumes:                          0 }
+               transfers:
+                   Table::new(Kind::FileTransfers),
+               stream_cleanup:                                                            false,
+               watches:
+                   watch::Watches::new(),
+               rejected_volumes:                                                          0,
+               #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+               file_icons:
+                   Default::default() }
     }
 }
 fn io<T>(result: mac_hfs::Result<T>) -> Result<T, Status>

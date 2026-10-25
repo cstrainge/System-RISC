@@ -5,7 +5,7 @@ pub use drawing::{BLACK, Canvas, WHITE};
 pub use geometry::{Point, Rect};
 pub mod cursor;
 pub(crate) mod presentation;
-pub mod outline_overlay;
+pub(crate) mod feedback;
 pub mod menu_cache;
 pub mod observer;
 pub mod responsiveness;

@@ -64,13 +64,14 @@ pub struct Desktop
     last_action:                      &'static str,
     redraw:                           bool,
     content_damage:                   Vec<(SceneTarget, super::quickdraw::region::Region)>,
-    outline_damage:                   Vec<Rect>,
-    outline_under:                    Box<super::quickdraw::outline_overlay::OutlineUnder>,
-    drag_highlight_under:             Box<super::quickdraw::outline_overlay::OutlineUnder>,
+    presentation_damage:              Vec<Rect>,
+    pub(super) feedback_dirty:        bool,
+    feedback:                         super::quickdraw::feedback::Feedback,
+    outline_clip:                     super::quickdraw::feedback::VisibilityCache,
+    highlight_clip:                   super::quickdraw::feedback::VisibilityCache,
     cursor_dirty:                     bool,
     frame_incomplete:                 bool,
     cursor_bounds:                    Rect,
-    window_outline:                   Option<super::quickdraw::presentation::WindowOutline>,
     activity:                         u64,
     last_observed:                    (u64, u32, u64),
     presentations:                    u64,
@@ -250,28 +251,15 @@ impl Desktop
                              -> Result<(), Status>
     {
         let id = id.into();
-        let (edges, origin) = if id == SceneTarget::Desktop
+        let changed = if id == SceneTarget::Desktop
         {
-            (self.desktop.set_outline(next), Point::default())
+            self.desktop.set_outline(next)
         }
         else
         {
-            (self.windows.content_outline(id.window()?, next)?,
-             {
-                 let bounds = self.windows.window(id.window()?).ok_or(NOT_FOUND)?.bounds;
-                 Point { h: bounds.left,
-                         v: bounds.top }
-             })
+            self.windows.content_outline(id.window()?, next)?
         };
-        if let Some(edges) = edges
-        {
-            self.outline_damage.extend(edges.into_iter()
-                                            .filter(|rect| !rect.is_empty())
-                                            .map(|mut rect| {
-                                                rect.offset(origin.h, origin.v);
-                                                rect
-                                            }));
-        }
+        self.feedback_dirty |= changed;
         Ok(())
     }
 
@@ -338,12 +326,14 @@ impl Desktop
                   last_action: "READY",
                   redraw: true,
                   content_damage: Vec::new(),
-                  outline_damage:Vec::new(),
-                  outline_under:Box::default(), drag_highlight_under:Box::default(),
+                  presentation_damage:Vec::new(),
+                  feedback_dirty: false,
+                  feedback: Default::default(),
+                  outline_clip: Default::default(),
+                  highlight_clip: Default::default(),
                   cursor_dirty: true,
                   frame_incomplete: false,
                   cursor_bounds: Rect::ZERO,
-                  window_outline: None,
                   activity: 0,
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
                   presentations: 0,
@@ -1280,6 +1270,20 @@ impl Desktop
             }
             let next = (call.verb == 1 && !call.bounds.is_empty()).then_some(call.bounds);
             let target = SceneTarget::decode(call.target)?;
+            #[cfg(feature = "event-trace")]
+            {
+                let r = call.bounds;
+                let packed = u64::from(r.left as u16)
+                             | (u64::from(r.top as u16) << 16)
+                             | (u64::from(r.right as u16) << 32)
+                             | (u64::from(r.bottom as u16) << 48);
+                crate::trace::record(crate::trace::WINDOW,
+                                     self.owner,
+                                     crate::trace::CONTENT_OUTLINE_REQUEST,
+                                     if desktop { 0 } else { target.window()?.0 },
+                                     packed,
+                                     u64::from(next.is_some()));
+            }
             let id = target;
             if desktop && self.desktop.is_updating()
             {
@@ -2058,7 +2062,8 @@ impl Desktop
         if !self.redraw
            && !self.cursor_dirty
            && self.content_damage.is_empty()
-           && self.outline_damage.is_empty()
+           && !self.feedback_dirty
+           && self.presentation_damage.is_empty()
         {
             self.publish_observation();
             return;
@@ -2083,11 +2088,7 @@ impl Desktop
             self.revision = self.revision.wrapping_add(1);
             self.compositions = self.compositions.wrapping_add(1);
         }
-        else if !self.outline_damage.is_empty()
-        {
-            self.revision = self.revision.wrapping_add(1);
-        }
-        let mut damaged = core::mem::take(&mut self.outline_damage);
+        let mut damaged = core::mem::take(&mut self.presentation_damage);
         if self.redraw
         {
             let started = crate::trace::clock();
@@ -2327,7 +2328,7 @@ impl Desktop
                                  self.revision as u64);
         }
         self.frame_incomplete = false;
-        if full || self.cursor_dirty || !damaged.is_empty()
+        if full || self.cursor_dirty || self.feedback_dirty || !damaged.is_empty()
         {
             self.compose_cursor(full, damaged);
         }
@@ -2341,20 +2342,90 @@ impl Desktop
     {
         // A refused scene replay may have touched only the private back buffer.
         // Never leak those uncommitted pixels through a later cursor-only copy.
-        if self.frame_incomplete || !self.cursor_dirty && self.outline_damage.is_empty()
+        if self.frame_incomplete
+           || !self.cursor_dirty && !self.feedback_dirty && self.presentation_damage.is_empty()
         {
             return;
         }
         let caller = self.owner;
         self.enter(self.foreground);
-        let damage = core::mem::take(&mut self.outline_damage);
+        let damage = core::mem::take(&mut self.presentation_damage);
         self.compose_cursor(false, damage);
         self.publish_observation();
         self.enter(caller);
     }
 
+    fn prepare_feedback(&mut self, full: bool) -> super::quickdraw::feedback::Feedback
+    {
+        use super::quickdraw::{feedback::{Clip, ClippedOutline, Feedback, Highlight},
+                               presentation::Outline};
+        // A pending geometry change has not reached the retained scene yet.
+        // Keep its old visibility snapshot until composition commits it.
+        if !full && self.redraw
+        {
+            return self.feedback.clone();
+        }
+        if full
+        {
+            self.outline_clip.invalidate();
+            self.highlight_clip.invalidate();
+        }
+        if let Some(shape) = self.windows.drag_outline()
+        {
+            return Feedback::outline(shape, Clip::Screen);
+        }
+        if self.menus.is_tracking() || self.app_menu.is_tracking() || self.windows.is_tracking()
+        {
+            return Feedback::default();
+        }
+        let mut feedback = Feedback::default();
+        if let Some((window, bounds)) = self.drag.highlight()
+        {
+            let target = (window != 0).then_some(WindowId(window));
+            feedback.highlight = Some(Highlight { bounds,
+                                                  clip: self.highlight_clip
+                                                            .get(&self.windows, target) });
+        }
+        if let Some(bounds) = self.drag.feedback()
+        {
+            feedback.outline = Outline::new(&[bounds], 0, 0).map(|shape| {
+                                                                ClippedOutline { shape,
+                                                                                 clip:
+                                                                                     Clip::Screen }
+                                                            });
+        }
+        else if let Some(window) =
+            self.windows.active_window().and_then(|id| self.windows.window(id))
+        {
+            if let Some(bounds) = window.outline_rect()
+            {
+                let shape = Outline::new(&[bounds],
+                                         i32::from(window.bounds.left),
+                                         i32::from(window.bounds.top));
+                let clip = self.outline_clip.get(&self.windows, Some(window.id));
+                feedback.outline = shape.map(|shape| {
+                                            ClippedOutline { shape,
+                                                             clip }
+                                        });
+            }
+        }
+        else if self.foreground == crate::context::finder_app().0
+        {
+            if let Some(bounds) = self.desktop.outline()
+            {
+                let clip = self.outline_clip.get(&self.windows, None);
+                feedback.outline = Outline::new(&[bounds], 0, 0).map(|shape| {
+                                                                    ClippedOutline { shape,
+                                                                                     clip }
+                                                                });
+            }
+        }
+        feedback
+    }
+
     fn compose_cursor(&mut self, full: bool, mut damaged: Vec<Rect>)
     {
+        let feedback = self.prepare_feedback(full);
         let cursor_changed = self.cursor_dirty;
         let text_cursor = self.text_cursor_at_mouse().then_some(self.text_cursor);
         let cursor =
@@ -2362,81 +2433,27 @@ impl Desktop
         let text_cursor = if self.responsiveness.active() { None } else { text_cursor };
         let sprite = cursor.sprite(self.events.mouse, text_cursor);
         let bounds = sprite.map_or(Rect::ZERO, |sprite| sprite.bounds());
-        let mut canvas = Canvas::new(platform::back_buffer(), 640, 480);
-        let desktop_outline =
-            (self.foreground == crate::context::finder_app().0
-             && self.windows.active_window().is_none()).then(|| self.desktop.outline())
-                                                       .flatten();
-        let drag_outline = self.drag.feedback();
-        let drag_highlight = self.drag.highlight();
-        let outline_visible = !self.menus.is_tracking()
-                              && !self.app_menu.is_tracking()
-                              && !self.windows.is_tracking()
-                              && (drag_highlight.is_some()
-                                  || drag_outline.is_some()
-                                  || desktop_outline.is_some()
-                                  || self.windows
-                                         .active_window()
-                                         .and_then(|id| self.windows.window(id))
-                                         .is_some_and(|window| window.outline_rect().is_some()));
-        if outline_visible
-        {
-            use super::quickdraw::region::Region;
-            let damage = if full
-            {
-                Region::from_rect(Rect::new(0, 0, 640, 480))
-            }
-            else
-            {
-                Region::from_rectangles(damaged.iter().copied().chain(if cursor_changed
-                                                                      {
-                                                                          [self.cursor_bounds,
-                                                                           bounds]
-                                                                      }
-                                                                      else
-                                                                      {
-                                                                          [Rect::ZERO; 2]
-                                                                      }))
-            };
-            if let Some((window, rect)) = drag_highlight
-            {
-                self.drag_highlight_under
-                    .paint_highlight(&mut canvas, &self.windows, window, rect, &damage);
-            }
-            if let Some(outline) = drag_outline
-            {
-                self.outline_under.paint_screen(&mut canvas, outline, &damage);
-            }
-            else
-            {
-                self.outline_under.paint(&mut canvas, &self.windows, desktop_outline, &damage);
-            }
-        }
-        let window_outline = self.windows.drag_outline();
         let overlays =
             super::quickdraw::presentation::Overlays { previous_cursor: self.cursor_bounds,
                                                        cursor: sprite,
                                                        cursor_changed,
-                                                       previous_outline: self.window_outline,
-                                                       outline: window_outline };
+                                                       previous_feedback: Some(&self.feedback),
+                                                       feedback: Some(&feedback) };
+        let back = platform::back_buffer();
         if full
         {
-            platform::present_rects(canvas.pixels, [Rect::new(0, 0, 640, 480)], overlays);
+            platform::present_rects(back, [Rect::new(0, 0, 640, 480)], overlays);
         }
         else
         {
-            platform::present_rects(canvas.pixels, damaged.iter().copied(), overlays);
+            platform::present_rects(back, damaged.iter().copied(), overlays);
         }
-        self.window_outline = window_outline;
-        if outline_visible
-        {
-            self.outline_under.restore(&mut canvas);
-            self.drag_highlight_under.restore(&mut canvas);
-        }
-        if self.outline_damage.is_empty() && self.outline_damage.capacity() < damaged.capacity()
+        self.feedback = feedback;
+        self.feedback_dirty = !full && self.redraw;
+        if self.presentation_damage.capacity() < damaged.capacity()
         {
             damaged.clear();
-            self.outline_damage = damaged;
+            self.presentation_damage = damaged;
         }
         self.cursor_bounds = bounds;
         self.cursor_dirty = false;

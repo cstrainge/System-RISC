@@ -162,7 +162,7 @@ pub struct Manager
     #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
     refuse_effect_storage: bool,
     highlight:             Option<(u64, Rect)>,
-    highlight_damage:      [Option<Rect>; 2]
+    highlight_changed:     bool
 }
 impl Manager
 {
@@ -184,7 +184,7 @@ impl Manager
                   #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
                   refuse_effect_storage: false,
                   highlight: None,
-                  highlight_damage: [None; 2] })
+                  highlight_changed: false })
     }
 }
 fn admission(error: mac_object_table::projected::Error) -> Status
@@ -456,9 +456,9 @@ impl Manager
         self.highlight
     }
 
-    pub fn highlight_damage(&mut self) -> [Option<Rect>; 2]
+    pub fn take_highlight_changed(&mut self) -> bool
     {
-        core::mem::take(&mut self.highlight_damage)
+        core::mem::take(&mut self.highlight_changed)
     }
 
     fn set_highlight(&mut self, next: Option<(u64, Rect)>)
@@ -467,7 +467,7 @@ impl Manager
         {
             return;
         }
-        self.highlight_damage = [self.highlight.map(|(_, r)| r), next.map(|(_, r)| r)];
+        self.highlight_changed = true;
         self.highlight = next;
     }
 

@@ -666,3 +666,224 @@ fn invalid_window_drag_surfaces_leave_frame_and_overlay_history_unchanged()
         assert_eq!(front, scene, "failed transition changed retained overlay state");
     });
 }
+
+fn feedback_scene(scene: &[u32], width: usize, height: usize,
+                  outline: Option<(Rect, Option<&[Rect]>)>,
+                  highlight: Option<(Rect, Option<&[Rect]>)>)
+                  -> Vec<u32>
+{
+    let visible = |clips: Option<&[Rect]>, x: usize, y: usize| {
+        y >= 21
+        && clips.is_none_or(|rects| {
+                    rects.iter().any(|r| {
+                                    r.contains(Point { h: x as i16,
+                                                       v: y as i16 })
+                                })
+                })
+    };
+    let mut pixels = scene.to_vec();
+    if let Some((bounds, clips)) = highlight
+    {
+        for y in 0..height
+        {
+            for x in 0..width
+            {
+                let (xx, yy) = (x as i32, y as i32);
+                let (l, t, r, b) = (i32::from(bounds.left),
+                                    i32::from(bounds.top),
+                                    i32::from(bounds.right),
+                                    i32::from(bounds.bottom));
+                if visible(clips, x, y)
+                   && xx >= l
+                   && xx < r
+                   && yy >= t
+                   && yy < b
+                   && (xx < l + 2 || xx >= r - 2 || yy < t + 2 || yy >= b - 2)
+                {
+                    pixels[y * width + x] = 0x2222aa;
+                }
+            }
+        }
+    }
+    if let Some((bounds, clips)) = outline
+    {
+        let outlined = outlined_scene(&pixels, width, height, Some((&[bounds], 0, 0)));
+        for y in 0..height
+        {
+            for x in 0..width
+            {
+                if visible(clips, x, y)
+                {
+                    pixels[y * width + x] = outlined[y * width + x];
+                }
+            }
+        }
+    }
+    pixels
+}
+
+#[test]
+fn drag_feedback_layers_xor_at_present_with_cached_clipping_and_no_scene_writes()
+{
+    use mac_system::testing::presentation::{DragFrame, pointer};
+    corpus([], |system| {
+        let (width, height) = (96, 80);
+        let full = Rect::new(0, 0, 96, 80);
+        let scene: Vec<_> = (0..width * height).map(|i| {
+                                                   match i % 4
+                                                   {
+                                                       0 => 0xffffff,
+                                                       1 => 0x123456,
+                                                       2 => 0,
+                                                       _ => 0xa5a5a5
+                                                   }
+                                               })
+                                               .collect();
+        let original = scene.clone();
+        let clip_a = [Rect::new(0, 21, 50, 80), Rect::new(60, 40, 96, 80)];
+        let clip_b = [Rect::new(0, 21, 96, 30), Rect::new(0, 40, 96, 80)];
+        let mut front = vec![0; scene.len()];
+        let mut frame = DragFrame::default();
+        let cursor = system.quickdraw().cursors();
+        cursor.set(MonoCursor { image:   [0xffff; 16],
+                                mask:    [0; 16],
+                                hotspot: Point::default() })
+              .unwrap();
+        let point = Point { h: 22,
+                            v: 25 };
+        pointer(point);
+        frame.present_feedback(&scene, &mut front, width, height, [full], None, None, true)
+             .unwrap();
+        let a = Some((Rect::new(20, 25, 80, 70), Some(clip_a.as_slice())));
+        let b = Some((Rect::new(10, 23, 90, 75), Some(clip_b.as_slice())));
+        let cases = [(None, a),
+                     (Some((Rect::new(22, 24, 62, 58), None)), a),
+                     (Some((Rect::new(24, 25, 64, 59), None)), a),
+                     (Some((Rect::new(28, 28, 68, 62), None)), b),
+                     (Some((Rect::new(28, 28, 68, 62), Some(clip_a.as_slice()))), b),
+                     (Some((Rect::new(28, 28, 68, 62), Some(clip_b.as_slice()))), None),
+                     (Some((Rect::new(-20, 0, 10, 45), None)),
+                      Some((Rect::new(95, 79, 96, 80), None))),
+                     (None, Some((Rect::new(i16::MIN, i16::MIN, i16::MAX, i16::MAX), None))),
+                     (None, Some((Rect::new(i16::MAX, i16::MAX, i16::MAX, i16::MAX), None))),
+                     (None, None)];
+        for (outline, highlight) in cases
+        {
+            let (_, copies) = frame.present_feedback(&scene,
+                                                     &mut front,
+                                                     width,
+                                                     height,
+                                                     [],
+                                                     outline,
+                                                     highlight,
+                                                     false)
+                                   .unwrap();
+            assert!(copies.iter()
+                          .all(|r| {
+                              (r.right - r.left) as usize * (r.bottom - r.top) as usize <= 256
+                          }));
+            let expected = feedback_scene(&scene, width, height, outline, highlight);
+            assert_eq!(front,
+                       expected_frame(&expected,
+                                      width,
+                                      height,
+                                      point,
+                                      cursor.info().unwrap(),
+                                      None),
+                       "feedback composition/layering differs for {outline:?}, {highlight:?}");
+            assert_eq!(scene, original, "drag feedback wrote into retained pixels");
+            let before = front.clone();
+            let (changed, copies) = frame.present_feedback(&scene,
+                                                           &mut front,
+                                                           width,
+                                                           height,
+                                                           [],
+                                                           outline,
+                                                           highlight,
+                                                           false)
+                                         .unwrap();
+            assert_eq!(changed, 0, "unchanged feedback repeated XOR work");
+            assert!(copies.is_empty(), "unchanged feedback repeated framebuffer copies");
+            assert_eq!(front, before);
+        }
+        cursor.hide().unwrap();
+        frame.present_feedback(&scene, &mut front, width, height, [], None, None, true).unwrap();
+        assert_eq!(front, original, "cancel left an outline, target highlight or cursor behind");
+    });
+}
+
+#[test]
+fn paint_under_file_drag_feedback_is_bounded_and_invalid_clips_do_not_publish()
+{
+    use mac_system::testing::presentation::DragFrame;
+    corpus([], |system| {
+        system.quickdraw().cursors().hide().unwrap();
+        let (width, height) = (96, 80);
+        let mut scene = vec![0xffffff; width * height];
+        let mut front = scene.clone();
+        let mut frame = DragFrame::default();
+        let clips = [Rect::new(10, 21, 90, 75)];
+        let outline = Some((Rect::new(8, 25, 75, 65), Some(clips.as_slice())));
+        let highlight = Some((Rect::new(20, 24, 80, 70), None));
+        frame.present_feedback(&scene, &mut front, width, height, [], outline, highlight, false)
+             .unwrap();
+        let damage = Rect::new(15, 21, 50, 45);
+        for y in 21..45
+        {
+            for x in 15..50
+            {
+                scene[y * width + x] = 0x123456;
+            }
+        }
+        let before = front.clone();
+        let (changed, copied) = frame.present_feedback(&scene,
+                                                       &mut front,
+                                                       width,
+                                                       height,
+                                                       [damage],
+                                                       outline,
+                                                       highlight,
+                                                       false)
+                                     .unwrap();
+        assert_eq!(changed, 0, "stationary feedback was toggled on paint");
+        assert_eq!(copied, [damage], "paint under feedback expanded its damage");
+        assert_eq!(front, feedback_scene(&scene, width, height, outline, highlight));
+        for y in 0..height
+        {
+            for x in 0..width
+            {
+                if !damage.contains(Point { h: x as i16,
+                                            v: y as i16 })
+                {
+                    assert_eq!(front[y * width + x], before[y * width + x]);
+                }
+            }
+        }
+        let snapshot = front.clone();
+        let overlapping = [Rect::new(0, 21, 70, 80), Rect::new(20, 25, 90, 75)];
+        assert!(frame.present_feedback(&scene,
+                                       &mut front,
+                                       width,
+                                       height,
+                                       [],
+                                       Some((Rect::new(0, 21, 96, 80), Some(&overlapping))),
+                                       None,
+                                       false)
+                     .is_none(),
+                "capture transport accepted ambiguous overlapping clip fragments");
+        assert_eq!(front, snapshot, "invalid clip partially published");
+        let (changed, copies) = frame.present_feedback(&scene,
+                                                       &mut front,
+                                                       width,
+                                                       height,
+                                                       [],
+                                                       outline,
+                                                       highlight,
+                                                       false)
+                                     .unwrap();
+        assert_eq!(changed, 0, "invalid request damaged the previous feedback state");
+        assert!(copies.is_empty());
+        frame.present_feedback(&scene, &mut front, width, height, [], None, None, false).unwrap();
+        assert_eq!(front, scene, "erasing feedback used stale pixels after a paint");
+    });
+}

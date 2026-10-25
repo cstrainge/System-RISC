@@ -20,24 +20,8 @@ impl super::super::runtime::Desktop
     pub(super) fn drag_effects(&mut self, before: Option<Rect>)
     {
         let after = self.drag.feedback();
-        if before != after
-        {
-            for rect in before.into_iter().chain(after)
-            {
-                self.outline_damage.extend(crate::toolbox::quickdraw::geometry::outline_edges(rect)
-                    .into_iter().filter(|r| !r.is_empty()));
-            }
-        }
-        for rect in self.drag.highlight_damage().into_iter().flatten()
-        {
-            for inset in [0, 1]
-            {
-                let mut bounds = rect;
-                bounds.inset(inset, inset);
-                self.outline_damage
-                    .extend(crate::toolbox::quickdraw::geometry::outline_edges(bounds));
-            }
-        }
+        let highlight_changed = self.drag.take_highlight_changed();
+        self.feedback_dirty |= before != after || highlight_changed;
         while let Some(notice) = self.drag.next_notice()
         {
             self.post_drag_notice(notice);

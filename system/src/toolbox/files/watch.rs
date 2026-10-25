@@ -430,6 +430,8 @@ impl Manager
 
     pub(super) fn notify_directory_at(&mut self, volume: u32, directory: u32, revision: u64)
     {
+        #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+        self.file_icons.invalidate(volume, directory);
         let held = self.transfer_holds_notices(volume);
         for watch in self.watches.values_mut()
         {
@@ -459,6 +461,11 @@ impl Manager
         {
             return;
         };
+        #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+        for &parent in &mark.parents
+        {
+            self.file_icons.invalidate(volume, parent);
+        }
         for watch in self.watches.values_mut()
         {
             if watch.volume == volume && mark.parents.binary_search(&watch.directory).is_ok()

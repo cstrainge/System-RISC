@@ -368,6 +368,7 @@ pub const ICON_AT: u32 = 2;
 pub const ICON_FILE: u32 = 3;
 pub const ICON_PLOT_FILE: u32 = 4;
 pub const ICON_PLOT_FILE_DEFAULT: u32 = 5;
+pub const ICON_LOAD_FILE: u32 = 6;
 /// Draw a registered type/extension default without doing catalog or fork I/O.
 #[repr(C)]
 pub struct DefaultFileIconCall

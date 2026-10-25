@@ -86,11 +86,13 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
     let output = root.join("results/system7").join(format!("finder-drag-{}", std::process::id()));
     let _media = Media(output.clone());
-    let result = Command::new("python3").arg(root.join("System7/scripts/capture_finder_drag.py"))
-                                        .arg("--output")
-                                        .arg(&output)
-                                        .output()
-                                        .unwrap();
+    let mut command = Command::new("python3");
+    command.arg(root.join("System7/scripts/capture_finder_drag.py")).arg("--output").arg(&output);
+    if std::env::var_os("SYSTEM7_FINDER_DRAG_WINDOWS").is_some()
+    {
+        command.arg("--windows-headless");
+    }
+    let result = command.output().unwrap();
     assert!(result.status.success(),
             "{}\n{}",
             String::from_utf8_lossy(&result.stdout),
@@ -143,6 +145,85 @@ fn failed_drop_alerts_release_sessions_and_successful_group_drags_persist()
     {
         assert_eq!(report["tracking_before"][key], report["tracking_after"][key],
                    "tracking changed {key}");
+    }
+    let before = fs::read(output.join(report["tracking_back_before"].as_str().unwrap())).unwrap();
+    assert_eq!(before.len(), 640 * 480 * 4);
+    assert_eq!(before,
+               fs::read(output.join(report["tracking_back_after"].as_str().unwrap())).unwrap(),
+               "file drag feedback modified the retained scene");
+    assert_eq!(report["tracking_trace"]["overwritten"], 0, "drag trace records were lost");
+    let rows = report["tracking_trace"]["records"].as_array().unwrap();
+    let mut pending = None;
+    let mut latency = Vec::new();
+    let mut coalesced = 0;
+    let mut decoded = 0;
+    let mut xors = 0;
+    let mut xor_ns = Vec::new();
+    for row in rows
+    {
+        assert_ne!(row[2], 7, "file drag replayed a retained scene: {row}");
+        assert_ne!(row[2], 4, "held file drag generated update work: {row}");
+        if row[2] == 1 && row[4] == 1
+        {
+            decoded += 1;
+            if pending.is_some()
+            {
+                coalesced += 1;
+            }
+            pending = Some((row[1].as_u64().unwrap(),
+                            row[5].as_u64().unwrap(),
+                            row[6].as_u64().unwrap(),
+                            false));
+        }
+        else if row[2] == 5 && row[4].as_u64() == Some(u64::MAX)
+        {
+            xors += 1;
+            assert!(row[5].as_u64().unwrap() <= 12 * (640 + 480),
+                    "file drag exceeded its perimeter budget: {row}");
+            xor_ns.push(row[6].as_u64().unwrap() * 100);
+            if let Some(pending) = &mut pending
+            {
+                pending.3 = true;
+            }
+        }
+        else if row[2] == 14
+        {
+            assert!(row[5].as_u64().unwrap() <= 256, "drag copied more than cursor pixels: {row}");
+            if let Some((tick, x, y, xored)) = pending
+            {
+                let from = row[6].as_u64().unwrap();
+                let to = row[7].as_u64().unwrap();
+                if xored
+                   && from >> 32 <= x
+                   && from & 0xffff_ffff <= y
+                   && to >> 32 > x
+                   && to & 0xffff_ffff > y
+                {
+                    latency.push((row[1].as_u64().unwrap() - tick) * 100);
+                    pending = None;
+                }
+            }
+        }
+    }
+    assert!(pending.is_none(), "last file drag input never published its feedback");
+    assert!(xors >= 100 && latency.len() >= 100, "file outline did not make sustained progress");
+    assert_eq!(latency.len() + coalesced, decoded);
+    let distribution = |values: &[u64]| {
+        let mut v = values.to_vec();
+        v.sort_unstable();
+        let p = |n: usize| v[(v.len() * n).div_ceil(100) - 1];
+        serde_json::json!({"samples":v.len(),"p50_ns":p(50),"p95_ns":p(95),"p99_ns":p(99),"max_ns":v.last()})
+    };
+    let profile = serde_json::json!({"decoded":decoded,"coalesced":coalesced,"xor_updates":xors,
+        "decode_to_feedback_and_cursor":distribution(&latency),"xor":distribution(&xor_ns),
+        "limits":"Includes first decoded move; coalescing is counted. Excludes pre-decode host/polling delay and scanout. Paused snapshots are outside the stream.",
+        "strict":std::env::var_os("SYSTEM7_STRICT_EVENT_LATENCY").is_some()});
+    fs::write(output.join("drag-feedback-profile.json"),
+              serde_json::to_vec_pretty(&profile).unwrap()).unwrap();
+    if std::env::var_os("SYSTEM7_STRICT_EVENT_LATENCY").is_some()
+    {
+        assert!(latency.iter().all(|&ns| ns < 1_000_000),
+                "strict file-drag latency exceeded 1ms: {profile}");
     }
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     let finder = process_trace::finder(&serial).to_string();

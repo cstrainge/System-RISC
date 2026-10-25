@@ -110,6 +110,18 @@ Finder uses safe synchronization for its local catalog snapshots and Unicode
 grapheme boundaries for cached captions. These contain no System service code;
 all filesystem, graphics, window and event operations still use `mac-toolbox`.
 
+Folder refresh prepares decoded application icons with `Icons::load_file` before
+publishing the catalog snapshot, including snapshots whose pixels need no patch.
+File icon plotting shares those immutable families rather than rereading forks
+or decoding on selection changes. The resident cache is keyed by live volume
+identity and file ID and invalidated by the containing folder's change notice,
+including grouped mutations. It retains at most 1 MiB of decoded pixel data;
+weak index entries also reuse families pinned by retained drawings without
+duplicating their storage. Missing/malformed icon fallback is decided during
+snapshot preparation. Get Info retains selected file identities while a folder
+refresh rebuilds its index-based selection, so that publication gap cannot
+silently swallow the command.
+
 The resident right-hand application menu uses live Process Manager state. It
 switches foreground windows, ordinary menus and keyboard event ownership and
 provides Hide, Hide Others and Show All. The menu belongs to System rather than
@@ -380,9 +392,14 @@ subtraction removes common spans and shared corners before the pixel loop; it
 never runs union/neighbor tests per pixel. Common edge pixels are untouched. Indexed XOR uses the original device profile, with masks derived
 from the clean scene so erasure remains exact for every RGB value. Scene damage
 reapplies the outline only inside the copied rectangles; the cursor is above it.
-File-drag outlines/highlights still paint and restore temporary canvas pixels;
-grow tracking still uses its WDEF mask. Their present-time migration and
-independent pointer scheduling remain future work.
+File-drag outlines and selection marquees use the same frontbuffer XOR path.
+Drop-target highlights are a lower frontbuffer layer; overlapping XOR feedback
+and cursor masks preserve their stacking order. Immutable visibility snapshots
+clip local/desktop feedback below covering windows and are reused until the
+target or committed scene geometry changes. Ordinary pointer movement allocates
+no overlay storage, enumerates no visibility and copies no scene rectangles.
+Grow tracking still uses its WDEF mask. Independent pointer scheduling remains
+future work.
 The opt-in event trace records the actual framebuffer-copy rectangles, enabling
 public SDK tests to reject cursor-triggered scene replays and scroll damage
 outside the viewport/bar rather than relying only on unchanged screenshots.

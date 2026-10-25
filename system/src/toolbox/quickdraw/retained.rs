@@ -491,23 +491,14 @@ impl DesktopLayer
         self.outline
     }
 
-    pub fn set_outline(&mut self, next: Option<Rect>) -> Option<[Rect; 8]>
+    pub fn set_outline(&mut self, next: Option<Rect>) -> bool
     {
         if self.outline == next
         {
-            return None;
-        }
-        let mut edges = [Rect::ZERO; 8];
-        if let Some(old) = self.outline
-        {
-            edges[..4].copy_from_slice(&super::geometry::outline_edges(old));
-        }
-        if let Some(next) = next
-        {
-            edges[4..].copy_from_slice(&super::geometry::outline_edges(next));
+            return false;
         }
         self.outline = next;
-        Some(edges)
+        true
     }
 
     pub fn pending_outline(&self) -> Option<Option<Rect>>

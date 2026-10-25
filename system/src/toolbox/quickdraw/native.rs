@@ -479,6 +479,12 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                         return Err(BAD_ARGUMENT);
                     }
                     let manager = crate::kernel::resources().ok_or(NOT_SUPPORTED)?;
+                    if call.operation == ICON_LOAD_FILE
+                    {
+                        return crate::kernel::with_files(|files| {
+                                   super::icons_service::load_file(files, manager, call)
+                               }).map_err(|e| e.status())?;
+                    }
                     let drawing = crate::kernel::with_files(|files| {
                                       super::icons_service::Drawing::file(files, manager, call)
                                   }).map_err(|e| e.status())??;

@@ -251,6 +251,105 @@ fn custom_document_icons_are_read_without_bundle_or_executable_loading()
     assert!(activity.reads < 128, "custom lookup read executable payload: {activity:?}");
 }
 
+#[test]
+fn selection_repaints_reuse_file_icons_without_additional_disk_reads()
+{
+    let disk = Disk::new();
+    let paint = |iterations| {
+        with_file_disk(&disk.path, true, DiskFaults::default(), |services| {
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            let files = system.files();
+            let volume = files.volume_at(0).unwrap().id;
+            let file = files.lookup(volume, mac_toolbox::Cnid(2), "Black").unwrap();
+            let mut pixels = vec![0x123456; 32 * 32];
+            let mut surface = mac_abi::Surface { pixels: pixels.as_mut_ptr(),
+                                                 width:  32,
+                                                 height: 32,
+                                                 origin: Point::default(),
+                                                 clip:   Rect::new(0, 0, 32, 32) };
+            let connection =
+                unsafe { mac_traps::SurfaceConnection::new(&mut surface, services.trap) };
+            let mut port = SurfacePort::new(connection);
+            system.quickdraw().icons().load_file(volume, file.id).unwrap();
+            for i in 0..iterations
+            {
+                port.plot_file_icon(volume,
+                                    file.id,
+                                    Rect::new(0, 0, 32, 32),
+                                    IconFlags { selected: i % 2 != 0,
+                                                ..Default::default() })
+                    .unwrap();
+            }
+            assert_eq!(pixels[8], 0, "icon mask/selection must retain the source pixels");
+        }).unwrap()
+          .1
+    };
+    let cold = paint(1);
+    let repeated = paint(201);
+    assert_eq!(cold.reads, repeated.reads,
+               "selection repaints reread an unchanged folder's icon resources");
+    assert_eq!(repeated.writes, 0);
+}
+
+#[test]
+fn folder_change_invalidates_cached_icons_and_deleted_files_do_not_alias()
+{
+    let disk = Disk::new();
+    let path = disk.directory.join("changes.hfsb");
+    {
+        let mut image = hfs_b::Image::create(&path, 16 * 1024 * 1024).unwrap();
+        let partition = image.partition();
+        let when = mac_hfs_b::time::Timestamp(4_600_000_000_000_000);
+        mac_hfs_b::format(&mut image,
+                          partition,
+                          mac_hfs_b::FormatOptions { name:    "Icons",
+                                                     created: when,
+                                                     uuid:    [42; 16] },
+                          Default::default()).unwrap();
+        let mut volume =
+            mac_hfs_b::Volume::mount(&mut image, partition, Default::default()).unwrap();
+        for name in ["Black", "White"]
+        {
+            let file = macbinary::decode(&fs::read(disk.directory.join(format!("{name}.bin"))).unwrap()).unwrap();
+            hfs_b::import_macbinary_at(&mut volume, 2, &file, name, when).unwrap();
+        }
+    }
+    with_file_disk(&path, false, DiskFaults::default(), |services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let files = system.files();
+        let volume = files.volume_at(0).unwrap().id;
+        let file = files.lookup(volume, mac_toolbox::Cnid(2), "Black").unwrap();
+        let watch = files.watch_directory(volume, mac_toolbox::Cnid(2)).unwrap();
+        let mut pixels = vec![0x123456; 32 * 32];
+        let mut surface = mac_abi::Surface { pixels: pixels.as_mut_ptr(),
+                                             width:  32,
+                                             height: 32,
+                                             origin: Point::default(),
+                                             clip:   Rect::new(0, 0, 32, 32) };
+        let connection = unsafe { mac_traps::SurfaceConnection::new(&mut surface, services.trap) };
+        let mut port = SurfacePort::new(connection);
+        let bounds = Rect::new(0, 0, 32, 32);
+        port.plot_file_icon(volume, file.id, bounds, IconFlags::default()).unwrap();
+        let when = mac_toolbox::Timestamp::from_unix_seconds(1_792_326_896);
+        files.remove_at(volume, file.id, when).unwrap();
+        assert!(watch.poll().unwrap().is_some(), "deletion must publish its folder change");
+        let before = pixels.clone();
+        let error = port.plot_file_icon(volume, file.id, bounds, IconFlags::default()).unwrap_err();
+        assert_eq!(error, mac_toolbox::Error::NotFound);
+        assert!(!error.to_string().is_empty(), "missing-file error lost its diagnostic");
+        assert_eq!(pixels, before, "failed lookup painted the stale icon");
+        assert_eq!(port.plot_file_icon(mac_toolbox::VolumeId(u32::MAX),
+                                       file.id,
+                                       bounds,
+                                       IconFlags::default())
+                       .unwrap_err(),
+                   mac_toolbox::Error::NotFound);
+        let white = files.lookup(volume, mac_toolbox::Cnid(2), "White").unwrap();
+        port.plot_file_icon(volume, white.id, bounds, IconFlags::default()).unwrap();
+        assert_eq!(pixels[8], 0xffffff, "unhappy path poisoned the next icon lookup");
+    }).unwrap();
+}
+
 fn driver_icon_resources(color: bool) -> Vec<Resource>
 {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");

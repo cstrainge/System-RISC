@@ -14,7 +14,7 @@ use crate::toolbox::{events::*,
                      handles::{KindLease, OwnerRef, Store, cleanup::Failure},
                      quickdraw::{Canvas, Point, Rect, SurfaceExt,
                                  geometry::{sect_rect, union_rect},
-                                 presentation::{WindowOutline, indexed_tracking_xor},
+                                 presentation::{Outline, indexed_tracking_xor},
                                  region::{BooleanOp, Region}}};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i16)]
@@ -1074,24 +1074,15 @@ impl WindowManager
 
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn content_outline(&mut self, id: WindowId, next: Option<Rect>)
-                                  -> Result<Option<[Rect; 8]>, mac_abi::Status>
+                                  -> Result<bool, mac_abi::Status>
     {
         let window = self.window_mut(id).ok_or(mac_abi::NOT_FOUND)?;
         if window.content_outline == next
         {
-            return Ok(None);
-        }
-        let mut edges = [Rect::ZERO; 8];
-        if let Some(old) = window.content_outline
-        {
-            edges[..4].copy_from_slice(&crate::toolbox::quickdraw::geometry::outline_edges(old));
-        }
-        if let Some(next) = next
-        {
-            edges[4..].copy_from_slice(&crate::toolbox::quickdraw::geometry::outline_edges(next));
+            return Ok(false);
         }
         window.content_outline = next;
-        Ok(Some(edges))
+        Ok(true)
     }
 
     pub fn find_window(&self, point: Point) -> Hit
@@ -1148,7 +1139,7 @@ impl WindowManager
                  Some(Tracking::Grow { .. } | Tracking::Close { .. } | Tracking::Zoom { .. }))
     }
 
-    pub(crate) fn drag_outline(&self) -> Option<WindowOutline>
+    pub(crate) fn drag_outline(&self) -> Option<Outline>
     {
         let Tracking::Drag { window,
                              bounds,
@@ -1158,9 +1149,9 @@ impl WindowManager
         {
             return None;
         };
-        WindowOutline::new(self.window(window)?.structure_pieces(),
-                           i32::from(preview.left) - i32::from(bounds.left),
-                           i32::from(preview.top) - i32::from(bounds.top))
+        Outline::new(self.window(window)?.structure_pieces(),
+                     i32::from(preview.left) - i32::from(bounds.left),
+                     i32::from(preview.top) - i32::from(bounds.top))
     }
 
     /// Native desktop tracking policy. Command-drag leaves activation and z order
@@ -1915,7 +1906,7 @@ mod tests
                     }
                 }
                 let mut visits = 0;
-                WindowOutline::new(pieces, i32::from(dx), i32::from(dy)).unwrap()
+                Outline::new(pieces, i32::from(dx), i32::from(dy)).unwrap()
                     .visit(Rect::new(0,0,96,80), |x,y| {
                         assert_eq!(actual[y * 96 + x], 0xffffff, "duplicate XOR visit");
                         actual[y * 96 + x] = 0;

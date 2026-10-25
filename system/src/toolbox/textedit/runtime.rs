@@ -122,7 +122,7 @@ impl super::Desktop
                                 {
                                     canvas.set_clip(rect);
                                     canvas.invert_rect(rect);
-                                    self.outline_damage.push(rect);
+                                    self.presentation_damage.push(rect);
                                 }
                             });
             }

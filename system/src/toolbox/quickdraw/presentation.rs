@@ -2,16 +2,18 @@
 #![forbid(unsafe_code)]
 use mac_abi::{Point, Rect, quickdraw::MonoCursor};
 
-/// WDEF-derived structure union translated without changing window geometry.
+use super::feedback::Feedback;
+
+/// Rectangle-union outline translated without changing retained geometry.
 /// Visiting an outline costs its clipped perimeter, never its enclosed area.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct WindowOutline
+pub(crate) struct Outline
 {
     pieces: [Rect; 2],
     dx:     i32,
     dy:     i32
 }
-impl WindowOutline
+impl Outline
 {
     pub(crate) fn new(pieces: &[Rect], dx: i32, dy: i32) -> Option<Self>
     {
@@ -24,6 +26,26 @@ impl WindowOutline
         Some(Self { pieces: stored,
                     dx,
                     dy })
+    }
+
+    pub(super) fn contains(self, x: usize, y: usize) -> bool
+    {
+        if y < 21 || (x + y) & 1 != 1
+        {
+            return false;
+        }
+        let x = x as i64 - i64::from(self.dx);
+        let y = y as i64 - i64::from(self.dy);
+        let inside = |x, y| {
+            self.pieces.iter().any(|r| {
+                                  x >= i64::from(r.left)
+                                  && x < i64::from(r.right)
+                                  && y >= i64::from(r.top)
+                                  && y < i64::from(r.bottom)
+                              })
+        };
+        inside(x, y)
+        && (!inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1))
     }
 
     /// Reject damage wholly inside/outside the structure before building spans.
@@ -106,7 +128,8 @@ impl WindowOutline
     }
 
     #[inline(never)]
-    fn visit_difference(self, other: Option<Self>, clip: Rect, mut pixel: impl FnMut(usize, usize))
+    pub(super) fn visit_difference(self, other: Option<Self>, clip: Rect,
+                                   mut pixel: impl FnMut(usize, usize))
     {
         if clip.is_empty() || !self.intersects_perimeter(clip)
         {
@@ -252,11 +275,11 @@ pub(crate) fn indexed_tracking_xor(rgb: u32) -> u32
 #[derive(Default)]
 pub(crate) struct Overlays<'a>
 {
-    pub previous_cursor:  Rect,
-    pub cursor:           Option<CursorSprite<'a>>,
-    pub cursor_changed:   bool,
-    pub previous_outline: Option<WindowOutline>,
-    pub outline:          Option<WindowOutline>
+    pub previous_cursor:   Rect,
+    pub cursor:            Option<CursorSprite<'a>>,
+    pub cursor_changed:    bool,
+    pub previous_feedback: Option<&'a Feedback>,
+    pub feedback:          Option<&'a Feedback>
 }
 
 pub(crate) enum PresentEvent
@@ -276,15 +299,18 @@ pub(crate) fn present_frame(scene: &[u32], front: &mut [u32], width: usize, heig
                             -> Option<usize>
 {
     valid_surface(scene, front, width, height)?;
+    let empty = Feedback::default();
+    let previous = overlays.previous_feedback.unwrap_or(&empty);
+    let current = overlays.feedback.unwrap_or(&empty);
     // A stationary overlay needs no separate erase/redraw. Composite only the
     // exact scene rectangles, including their cursor/outline intersections.
-    if !overlays.cursor_changed && overlays.previous_outline == overlays.outline
+    if !overlays.cursor_changed && previous == current
     {
         for rect in damage
         {
             observe(PresentEvent::CopyStarted);
             if let Some(rect) =
-                copy_rect(scene, front, width, height, rect, overlays.outline, overlays.cursor)
+                copy_rect(scene, front, width, height, rect, current, overlays.cursor)
             {
                 observe(PresentEvent::Copied(rect));
             }
@@ -295,8 +321,7 @@ pub(crate) fn present_frame(scene: &[u32], front: &mut [u32], width: usize, heig
     for rect in damage
     {
         observe(PresentEvent::CopyStarted);
-        if let Some(rect) =
-            copy_rect(scene, front, width, height, rect, overlays.previous_outline, None)
+        if let Some(rect) = copy_rect(scene, front, width, height, rect, previous, None)
         {
             let old = overlays.previous_cursor;
             old_cursor_restored |= rect.left <= old.left
@@ -309,50 +334,25 @@ pub(crate) fn present_frame(scene: &[u32], front: &mut [u32], width: usize, heig
     if !old_cursor_restored
     {
         observe(PresentEvent::CopyStarted);
-        if let Some(rect) = copy_rect(scene, front, width, height, overlays.previous_cursor,
-                                      overlays.previous_outline, None)
+        if let Some(rect) =
+            copy_rect(scene, front, width, height, overlays.previous_cursor, previous, None)
         {
             observe(PresentEvent::Copied(rect));
         }
     }
     let mut changed = 0;
-    if overlays.previous_outline != overlays.outline
+    if previous != current
     {
         observe(PresentEvent::OutlineStarted);
         let clip = Rect::new(0, 0, width as i16, height as i16);
-        let mut last = None;
-        for (outline, other) in [(overlays.previous_outline, overlays.outline),
-                                 (overlays.outline, overlays.previous_outline)]
-        {
-            if let Some(outline) = outline
-            {
-                outline.visit_difference(other, clip, |x, y| {
-                           let at = y * width + x;
-                           let rgb = scene[at];
-                           let mask = match last
-                           {
-                               Some((color, mask)) if color == rgb => mask,
-                               _ =>
-                               {
-                                   let mask = rgb ^ indexed_tracking_xor(rgb);
-                                   last = Some((rgb, mask));
-                                   mask
-                               }
-                           };
-                           // Derive the mask from the clean scene, not from front:
-                           // indexed color conversion need not itself be involutory.
-                           front[at] ^= mask;
-                           changed += 1;
-                       });
-            }
-        }
+        changed = current.transition(previous, scene, front, width, clip);
         observe(PresentEvent::OutlineChanged(changed));
     }
     if let Some(cursor) = overlays.cursor
     {
         observe(PresentEvent::CopyStarted);
         if let Some(rect) =
-            copy_rect(scene, front, width, height, cursor.bounds(), overlays.outline, Some(cursor))
+            copy_rect(scene, front, width, height, cursor.bounds(), current, Some(cursor))
         {
             observe(PresentEvent::Copied(rect));
         }
@@ -446,14 +446,14 @@ pub(crate) fn present_rect(scene: &[u32], front: &mut [u32], width: usize, heigh
                            -> Option<Rect>
 {
     valid_surface(scene, front, width, height)?;
-    copy_rect(scene, front, width, height, rect, None, cursor)
+    copy_rect(scene, front, width, height, rect, &Feedback::default(), cursor)
 }
 
 // One shared copy/overlay path keeps the cold instruction footprint bounded;
 // cloning it into each erase/damage/cursor call site delays the first drag move.
 #[inline(never)]
 fn copy_rect(scene: &[u32], front: &mut [u32], width: usize, height: usize, rect: Rect,
-             outline: Option<WindowOutline>, cursor: Option<CursorSprite<'_>>)
+             feedback: &Feedback, cursor: Option<CursorSprite<'_>>)
              -> Option<Rect>
 {
     let rect = Rect::new(rect.left.clamp(0, width as i16),
@@ -472,13 +472,7 @@ fn copy_rect(scene: &[u32], front: &mut [u32], width: usize, height: usize, rect
         let output = &mut front[at + left..at + right];
         output.copy_from_slice(&scene[at + left..at + right]);
     }
-    if let Some(outline) = outline
-    {
-        outline.visit(rect, |x, y| {
-                   let at = y * width + x;
-                   front[at] = indexed_tracking_xor(scene[at]);
-               });
-    }
+    feedback.paint(scene, front, width, rect);
     if let Some(cursor) = cursor
     {
         let mut overlap = Rect::ZERO;

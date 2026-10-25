@@ -403,6 +403,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             }
             continue;
         }
+        let mut click_handled = false;
         match event
         {
             Event::Update { .. } =>
@@ -520,8 +521,16 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 if event.window().is_none()
                    || browser.contains(event.window().unwrap_or_default()) =>
             {
-                let _ = try_action(system, &mut alerts, browser.click(system, &event, position))?;
-                let _ = try_action(system, &mut alerts, dragging.begin(system, &mut browser))?;
+                match try_action(system, &mut alerts, browser.click(system, &event, position))?
+                {
+                    Some(browser::ClickOutcome::Completed) =>
+                    {
+                        let _ =
+                            try_action(system, &mut alerts, dragging.begin(system, &mut browser))?;
+                        click_handled = true;
+                    }
+                    Some(browser::ClickOutcome::Deferred) | None => ()
+                }
             }
             _ =>
             {}
@@ -529,6 +538,11 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         if alerts.window() == WindowId(0) && !matches!(event, Event::Idle { .. })
         {
             update_menus(system, &browser, &info)?;
+        }
+        if click_handled
+        {
+            // Selection, drag admission and menu policy are all committed.
+            system.log("FINDER_CLICK_HANDLED\n")?;
         }
     }
 }

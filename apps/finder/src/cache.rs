@@ -82,6 +82,7 @@ pub struct Item
 {
     pub entry:            CatalogInfo,
     pub icon:             Icon,
+    pub paint_icon:       Icon,
     pub caption:          Caption,
     pub icon_bounds:      Rect,
     pub bounds:           Rect,
@@ -94,6 +95,7 @@ impl Item
 {
     const EMPTY: Self = Self { entry:            CatalogInfo::EMPTY,
                                icon:             Icon::Resource(0),
+                               paint_icon:       Icon::Resource(0),
                                caption:          Caption::EMPTY,
                                icon_bounds:      Rect::ZERO,
                                bounds:           Rect::ZERO,

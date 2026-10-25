@@ -256,11 +256,22 @@ impl Manager
 
     /// Decode a file's custom icon, then its bundle's selected icon family.
     /// Executable resources are never loaded by this path.
-    pub(crate) fn file_icon(&mut self, volume: u32, cnid: u32,
-                            resident: crate::toolbox::resources::manager::Manager<'_>)
-                            -> Result<crate::toolbox::quickdraw::icons::IconFamily, Status>
+    pub(crate) fn file_icon(
+        &mut self, volume: u32, cnid: u32,
+        resident: crate::toolbox::resources::manager::Manager<'_>)
+        -> Result<alloc::sync::Arc<crate::toolbox::quickdraw::icons::IconFamily>, Status>
     {
-        self.with_volume(volume, |volume| {
+        // A cache key never validates an object. Even a hit must reject an
+        // unmounted/reused volume or a quarantined device, without storage I/O.
+        if self.mounted(volume)?.poisoned
+        {
+            return Err(ROLLBACK_FAILED);
+        }
+        if let Some(family) = self.file_icons.get(volume, cnid)
+        {
+            return Ok(family);
+        }
+        let (parent, family) = self.with_volume(volume, |volume| {
             let entry = required(io(volume.entry(cnid))?)?;
             let catalog = metadata(0, &entry);
             let mut fork = entry.resources.ok_or(NOT_FOUND)?;
@@ -272,7 +283,7 @@ impl Manager
             if catalog.finder_flags() & 0x0400 != 0
                && let Ok(custom) = read_icon(length, -16455, resident, &mut read)
             {
-                return Ok(custom);
+                return Ok((entry.parent, custom));
             }
             let metadata = crate::toolbox::resources::file::read_selected(length,
                                                                           |key| {
@@ -283,8 +294,11 @@ impl Manager
                                                                           64 * 1024,
                                                                           &mut read)?;
             let id = icons_service::file_id(&metadata, catalog.creator, catalog.file_type)?;
-            read_icon(length, id, resident, &mut read)
-        })
+            Ok((entry.parent, read_icon(length, id, resident, &mut read)?))
+        })?;
+        let family = alloc::sync::Arc::try_new(family).map_err(|_| NO_MEMORY)?;
+        self.file_icons.insert(volume, parent, cnid, family.clone())?;
+        Ok(family)
     }
 
     pub(crate) fn resource_value(&mut self, volume: u32, cnid: u32, key: ResourceKey)

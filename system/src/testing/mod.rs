@@ -593,6 +593,11 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                 } else if size == size_of::<quickdraw::FileIconCall>()
                 {
                     let call = unsafe { request::<quickdraw::FileIconCall>(pointer, size) }?;
+                    if call.operation == quickdraw::ICON_LOAD_FILE
+                    {
+                        return crate::toolbox::quickdraw::icons_service::load_file(
+                            &mut session.files, manager, call);
+                    }
                     (crate::toolbox::quickdraw::icons_service::Drawing::file(
                         &mut session.files, manager, call)?, call.surface)
                 }

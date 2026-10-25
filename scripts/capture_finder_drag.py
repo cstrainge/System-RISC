@@ -16,10 +16,11 @@ from capture_system7_applications_ui import Driver
 import capture_system7_conformance as packaging
 import capture_system7_event_trace as tracing
 import system7_vm as vm
+from system7_trace_capture import input_stream, snapshot as trace_snapshot, backbuffer_snapshot
 from hfs_b_tool import Image as NativeImage
 
 
-def capture(output):
+def capture(output, windows=False):
     output.mkdir(parents=True, exist_ok=False)
     (output / 'pid').write_text(str(os.getpid()))
     base = vm.DIST
@@ -29,7 +30,8 @@ def capture(output):
 
     def start():
         nonlocal process, endpoint, driver
-        process, endpoint = vm.launch(output / 'vm', writable=True, preserve=True)
+        options = {'frontend':'native-headless','qmp_port':4467} if windows else {}
+        process, endpoint = vm.launch(output / 'vm', writable=True, preserve=True, **options)
         driver = Driver(endpoint, output / 'vm/serial.log')
 
     def stop():
@@ -47,17 +49,7 @@ def capture(output):
         stages.append({'name': name, 'state': driver.state()})
 
     def trace(name):
-        match = re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=2', driver.log())
-        if not match:
-            raise RuntimeError('build the private image with SYSTEM7_EVENT_TRACE=1')
-        path = output / (name + '.bin')
-        vm.qmp('stop', endpoint=endpoint)
-        try:
-            vm.qmp('pmemsave', {'val': int(match[1]), 'size': int(match[2]),
-                                'filename': str(path)}, endpoint)
-        finally:
-            vm.qmp('cont', endpoint=endpoint)
-        return tracing.decode(path)
+        return trace_snapshot(endpoint,driver.serial,output,name)
 
     def release_move():
         moves = driver.log().count('FINDER_DRAG_TRANSFER_COMMITTED\n')
@@ -140,14 +132,23 @@ def capture(output):
         driver.button(True)
         driver.move(220, 160)
         time.sleep(.15)
+        back_before = backbuffer_snapshot(endpoint,driver.serial,output,'tracking-back-before')
         before_state, before_trace = driver.state(), trace('tracking-before')
-        # System moves the source outline/cursor without scene recomposition.
-        for i in range(40):
-            driver.move(220 + i % 7, 160 + i % 5)
-        driver.move(220, 160)
-        time.sleep(.1)
+        submitted=[]
+        with input_stream(endpoint) as send:
+            started=time.monotonic()
+            for i in range(200):
+                point=[221+i%12,161+i%9] if i<199 else [235,175]
+                remaining=started+i*.008-time.monotonic()
+                if remaining>0:time.sleep(remaining)
+                send([{'type':'abs','data':{'axis':'x','value':(point[0]*32767+638)//639}},
+                      {'type':'abs','data':{'axis':'y','value':(point[1]*32767+478)//479}}])
+                submitted.append({'point':point,'seconds':time.monotonic()-started})
+        driver.wait_state(lambda state:state['mouse']=='235,175')
         after_trace, after_state = trace('tracking-after'), driver.state()
+        back_after = backbuffer_snapshot(endpoint,driver.serial,output,'tracking-back-after')
         vm.qmp('screendump', {'filename': str(output / 'tracking.ppm')}, endpoint)
+        driver.move(220,160)
         release_move()
         snapshot('single-moved')
         # Add Cursor Test without collapsing QuickDraw's selection, then move
@@ -211,6 +212,9 @@ def capture(output):
             'original_before': original, 'original_after': packaging.sha(base / 'system7.qcow2'),
             'stages': stages, 'tracking_before': before_state, 'tracking_after': after_state,
             'tracking_trace': tracing.delta(before_trace, after_trace),
+            'tracking_back_before':back_before,'tracking_back_after':back_after,
+            'tracking_submitted':submitted,
+            'launch':json.loads((output/'vm/command.json').read_text()),
             'moved_window_updates_before': move_updates_before,
             'moved_window_updates_after': move_updates_after,
         }, indent=2) + '\n')
@@ -225,4 +229,6 @@ def capture(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
-    capture(parser.parse_args().output.resolve())
+    parser.add_argument('--windows-headless',action='store_true')
+    args=parser.parse_args()
+    capture(args.output.resolve(),args.windows_headless)

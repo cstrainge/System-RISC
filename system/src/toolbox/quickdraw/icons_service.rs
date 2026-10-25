@@ -46,6 +46,23 @@ pub fn family(manager: Manager<'_>, scope: i16, id: i16) -> Result<IconFamily, S
                .map(|(_, r)| r.data.as_slice())
     }).map_err(status)
 }
+
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+pub(crate) fn load_file(files: &mut crate::toolbox::files::Manager, manager: Manager<'_>,
+                        call: &FileIconCall)
+                        -> Result<(), Status>
+{
+    if call.operation != ICON_LOAD_FILE
+       || call.reserved != [0; 3]
+       || call.flags != 0
+       || call.target != Target::default()
+       || !call.surface.is_null()
+       || call.destination != Rect::ZERO
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    files.file_icon(call.volume, call.cnid, manager).map(|_| ())
+}
 pub fn query(manager: Manager<'_>, call: &mut IconCall) -> Result<(), Status>
 {
     let resources = manager.all(call.scope)?;
@@ -186,7 +203,7 @@ impl Drawing
             return Err(BAD_ARGUMENT);
         }
         let flags = IconFlags::from_transform(call.flags).map_err(status)?;
-        Ok(Self { family: files.file_icon(call.volume, call.cnid, manager)?.into(),
+        Ok(Self { family: files.file_icon(call.volume, call.cnid, manager)?,
                   destination: call.destination,
                   flags,
                   port: Port::default() })

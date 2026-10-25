@@ -88,7 +88,7 @@ fn input(at: Point, when: u32, shift: bool) -> Input
 }
 fn pointer_click(system: &System<'_>, browser: &mut Browser, event: &Event) -> Result<(), Error>
 {
-    browser.click(system, event, system.events().locate(event)?)
+    browser.click(system, event, system.events().locate(event)?).map(|_| ())
 }
 fn pointer_track(system: &System<'_>, browser: &mut Browser, event: &Event) -> Result<(), Error>
 {
@@ -557,8 +557,18 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     checkpoint(system, "refreshed")?;
     // Force the cache-invalidation interval deterministically. Pointer replay
     // must leave the browser and traverse the application's shared dispatcher.
+    let selected_before_refresh = browser.selected_locations();
     browser.folder_changed(system, lab)?;
-    click(&mut browser, 32, 44, 5000, false)?;
+    require(system,
+            browser.selected_locations() == selected_before_refresh
+            && browser.info_selection(system) == selected_before_refresh[0],
+            "background folder refresh discarded the visibly selected Get Info targets")?;
+    let waiting_down = Event::MouseDown { window: Some(lab),
+                                          input:  input(point(32, 44), 5000, false) };
+    let admitted = browser.click(system, &waiting_down, system.events().locate(&waiting_down)?)?;
+    require(system,
+            admitted == crate::browser::ClickOutcome::Deferred,
+            "queued click incorrectly published completion")?;
     let up = Event::MouseUp { window: Some(lab),
                               input:
                                   Input { at:        point(32, 44),
@@ -572,7 +582,10 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     require(system,
             matches!(down, Event::MouseDown { .. }) && down.input().when == 5000,
             "deferred press did not reach main dispatch")?;
-    browser.click(system, &down, down_position)?;
+    require(system,
+            browser.click(system, &down, down_position)?
+            == crate::browser::ClickOutcome::Completed,
+            "ready deferred click did not complete on replay")?;
     let (received_up, up_position) = browser.next_deferred_pointer().ok_or(Error::NotFound)?;
     require(system,
             received_up.as_record() == up.as_record(),

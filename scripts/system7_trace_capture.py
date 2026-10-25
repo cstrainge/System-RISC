@@ -60,3 +60,19 @@ def snapshot(endpoint, serial, output, name):
     finally:
         vm.qmp('cont', endpoint=endpoint)
     return decode(path)
+
+
+def backbuffer_snapshot(endpoint, serial, output, name):
+    """Read every retained scene byte; stop/resume remains outside timed input."""
+    marker = re.search(r'DISPLAY_BUFFERS back=(\d+) front=(\d+) bytes=(\d+)',
+                       Path(serial).read_text(errors='replace'))
+    if not marker:
+        raise RuntimeError('System did not publish framebuffer diagnostics')
+    path = Path(output) / (name + '.bin')
+    filename = vm.windows_path(path) if endpoint.get('platform') == 'windows' else str(path)
+    vm.qmp('stop', endpoint=endpoint)
+    try:
+        vm.qmp('pmemsave', {'val': int(marker[1]), 'size': int(marker[3]), 'filename': filename}, endpoint)
+    finally:
+        vm.qmp('cont', endpoint=endpoint)
+    return path.name
