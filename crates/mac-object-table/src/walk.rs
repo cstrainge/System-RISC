@@ -20,7 +20,8 @@ pub struct Report
 pub enum Failure<E, Cause = PoolError>
 {
     Resolve(E),
-    Cleanup(Cause)
+    Cleanup(Cause),
+    Completion(crate::completion::Fault)
 }
 impl<E: fmt::Display, Cause: fmt::Display> fmt::Display for Failure<E, Cause>
 {
@@ -29,7 +30,8 @@ impl<E: fmt::Display, Cause: fmt::Display> fmt::Display for Failure<E, Cause>
         match self
         {
             Self::Resolve(error) => write!(f, "cleanup provider resolution failed: {error}"),
-            Self::Cleanup(error) => write!(f, "registered cleanup refused: {error}")
+            Self::Cleanup(error) => write!(f, "registered cleanup refused: {error}"),
+            Self::Completion(error) => write!(f, "retained cleanup completion: {error}")
         }
     }
 }
@@ -93,6 +95,30 @@ fn run<C, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owner: &Owne
                                                    -> Result<Report, Stopped>
 {
     let mut report = Report::default();
+    // Completion refusals already own their unique tickets. Retry only their
+    // metadata acknowledgement, never an interrupted payload destructor.
+    for _ in 0..owner.summary().completion_faults
+    {
+        match owner.retry_completion()
+        {
+            crate::completion::Retry::Empty => break,
+            crate::completion::Retry::Complete(record) =>
+            {
+                drop(record);
+                report.released += 1;
+            }
+            crate::completion::Retry::Retained(fault)
+                if fault.cause == crate::completion::Cause::AwaitingTicket =>
+            {
+                report.deferred += 1;
+            }
+            crate::completion::Retry::Retained(fault) =>
+            {
+                report.quarantined += 1;
+                failed(fault.key, &Failure::Completion(fault));
+            }
+        }
+    }
     let attempts = if retry { owner.summary().quarantined } else { usize::MAX };
     for _ in 0..attempts
     {
@@ -103,6 +129,22 @@ fn run<C, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owner: &Owne
             break;
         };
         report.invalidated += usize::from(!retry);
+        let ticket = match owner.route_completion(ticket)
+        {
+            crate::completion::Routed::Continue(ticket) => ticket,
+            crate::completion::Routed::Complete(record) =>
+            {
+                drop(record);
+                report.released += 1;
+                continue;
+            }
+            crate::completion::Routed::Retained(fault) =>
+            {
+                report.quarantined += 1;
+                failed(fault.key, &Failure::Completion(fault));
+                continue;
+            }
+        };
         let key = ticket.key();
         let (ticket, error) = match resolve(context, key)
         {

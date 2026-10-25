@@ -204,6 +204,27 @@ impl<G: InvocationGate> OwnerRef<G>
         self.access(OwnerIndex::invalidate_next)
     }
 
+    pub(crate) fn retain_completion(&self, record: alloc::boxed::Box<crate::completion::Record>)
+    {
+        self.access(|index| index.retain_completion(record));
+    }
+
+    pub(crate) fn retry_completion(&self) -> crate::completion::Retry
+    {
+        self.access(|index| index.retry_completion())
+    }
+
+    pub(crate) fn route_completion(&self, ticket: ReleasedResource) -> crate::completion::Routed
+    {
+        self.access(|index| index.route_completion(ticket))
+    }
+
+    pub fn completion_fault_at(&self, revision: u64, at: usize)
+                               -> Result<Option<crate::completion::Fault>, LedgerReadError>
+    {
+        self.access(|index| index.completion_fault_at(revision, at))
+    }
+
     pub(crate) fn retire(&self) -> Result<(), DirectoryError>
     {
         self.access(OwnerIndex::retire)

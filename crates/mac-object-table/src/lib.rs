@@ -7,6 +7,7 @@
 extern crate alloc;
 pub mod projected;
 pub mod aliases;
+pub mod completion;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
 

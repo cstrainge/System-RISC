@@ -157,6 +157,15 @@ fn contained_destructor_panic_does_not_falsely_complete_cleanup()
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(removed))).is_err());
     assert_eq!((ledger.summary().live, ledger.summary().pending), (0, 1));
     assert!(store.get(id).is_none());
+    let revision = ledger.summary().revision;
+    assert_eq!(ledger.summary().completion_faults, 1);
+    let fault = ledger.completion_fault_at(revision, 0).unwrap().unwrap();
+    assert_eq!(fault.cause, mac_object_table::completion::Cause::Interrupted);
+    assert_eq!(fault.key.owner(), ledger.owner());
+    assert_eq!(fault.key.kind(), KIND);
+    assert!(fault.to_string().contains("M-D04"));
+    assert!(fault.to_string().contains("restart System"));
+    assert!(ledger.completion_fault_at(revision, 1).unwrap().is_none());
     drop(store);
     assert_eq!(ledger.summary().pending,
                1,

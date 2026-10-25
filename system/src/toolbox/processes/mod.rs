@@ -238,7 +238,8 @@ impl Manager
                                                {
                                                    DirectoryError::NotFound { .. } => NOT_FOUND,
                                                    DirectoryError::LiveResources { .. }
-                                                   | DirectoryError::PendingResources { .. } =>
+                                                   | DirectoryError::PendingResources { .. }
+                                                   | DirectoryError::CompletionFaults { .. } =>
                                                    {
                                                        SERVICE_BUSY
                                                    }

@@ -14,6 +14,33 @@ mac_toolbox::panic_handler!();
 const QUIT: u32 = u32::from_be_bytes(*b"quit");
 const REFRESH: u32 = u32::from_be_bytes(*b"rfrs");
 const POOL_DETAIL_ROWS: u32 = 6;
+// 24 bytes fit Monaco 9 in the minimum-width details pane. A UTF-8 cut
+// can leave at most three bytes unused, so this bounds every diagnostic.
+const FAULT_LINE_BYTES: usize = 24;
+const FAULT_DETAIL_ROWS: u32 =
+    5 + inspection::CompletionFault::MAX_DETAIL_BYTES.div_ceil(FAULT_LINE_BYTES - 3) as u32;
+fn diagnostic_line(mut text: &str, mut line: u32) -> &str
+{
+    loop
+    {
+        let mut end = text.len().min(FAULT_LINE_BYTES);
+        while !text.is_char_boundary(end)
+        {
+            end -= 1;
+        }
+        if line == 0
+        {
+            return &text[..end];
+        }
+        if text.is_empty()
+        {
+            return "";
+        }
+        text = &text[end..];
+        line -= 1;
+    }
+}
+
 const FONT: FontSelection = FontSelection { family: 3,
                                             size:   9,
                                             face:   0 };
@@ -119,7 +146,8 @@ struct Panes<'a>
     selected:       Option<Domain>,
     ledger:         Option<LedgerSnapshot<'a>>,
     selected_index: Option<u32>,
-    pool_cache:     Cell<Option<(u64, Pool, Option<ObjectKind>)>>
+    pool_cache:     Cell<Option<(u64, Pool, Option<ObjectKind>)>>,
+    fault_cache:    Cell<Option<(u64, inspection::CompletionFault)>>
 }
 fn spec(bounds: Rect, count: u32, palette: theme::Palette) -> ScrollBoxSpec
 {
@@ -209,7 +237,8 @@ impl<'a> Panes<'a>
                             selected: None,
                             ledger: None,
                             selected_index: None,
-                            pool_cache: Cell::new(None) };
+                            pool_cache: Cell::new(None),
+                            fault_cache: Cell::new(None) };
         result.populate(snapshot, result.domains.control().info()?)?;
         result.detail_rows(system)?;
         Ok(result)
@@ -244,7 +273,7 @@ impl<'a> Panes<'a>
                                                                        kinds.checked_mul(POOL_DETAIL_ROWS)
                                                                    })
                                                                    .and_then(|rows| {
-                                                                       rows.checked_add(11)
+                                                                       rows.checked_add(11)?.checked_add(u32::try_from(self.selected.map_or(0, |row|row.completion_faults)).ok()?.checked_mul(FAULT_DETAIL_ROWS)?)
                                                                    })
                                                                    .ok_or(Error::BadAbi)
     }
@@ -283,7 +312,9 @@ impl<'a> Panes<'a>
                     6 => write!(line, "Migrated kinds: {}", row.kinds),
                     7 =>
                     {
-                        write!(line, "Pending: {} / quarantined: {}", row.pending, row.quarantined)
+                        write!(line,
+                               "Faults:{} pending:{} quarantine:{}",
+                               row.completion_faults, row.pending, row.quarantined)
                     }
                     8 =>
                     {
@@ -295,6 +326,56 @@ impl<'a> Panes<'a>
                     {
                         let mut bytes = [0; 128];
                         line.write_str(label(system, index - 7, &mut bytes)?)
+                    }
+                    _ if u64::from(index - 11) >= row.kinds * u64::from(POOL_DETAIL_ROWS) =>
+                    {
+                        let offset =
+                            u64::from(index - 11) - row.kinds * u64::from(POOL_DETAIL_ROWS);
+                        let fault_index = offset / u64::from(FAULT_DETAIL_ROWS);
+                        let fault = match self.fault_cache.get()
+                        {
+                            Some((at, fault)) if at == fault_index => fault,
+                            _ =>
+                            {
+                                let fault = self.ledger
+                                                .ok_or(Error::BadAbi)?
+                                                .completion_fault_at(fault_index)
+                                                .map_err(|e| inspection_error(system, e))?;
+                                self.fault_cache.set(Some((fault_index, fault)));
+                                fault
+                            }
+                        };
+                        match offset % u64::from(FAULT_DETAIL_ROWS)
+                        {
+                            0 =>
+                            {
+                                line.write_str("Cleanup: ").map_err(|_| Error::BadArgument)?;
+                                pool_name(&mut line, fault.kind)
+                            }
+                            1 => write!(line, "Slot {}", fault.slot),
+                            2 => write!(line, "Gen. {}", fault.generation),
+                            3 =>
+                            {
+                                match fault.registration
+                                {
+                                    Some(id) => write!(line, "Provider #{id}"),
+                                    None => line.write_str("Provider: bootstrap")
+                                }
+                            }
+                            text_row =>
+                            {
+                                let row = text_row as u32 - 4;
+                                let last = FAULT_DETAIL_ROWS - 5;
+                                if row == last && fault.detail_truncated
+                                {
+                                    line.write_str("[detail truncated]")
+                                }
+                                else
+                                {
+                                    line.write_str(diagnostic_line(fault.detail.as_str(), row))
+                                }
+                            }
+                        }
                     }
                     _ =>
                     {
@@ -440,6 +521,7 @@ impl<'a> Panes<'a>
             self.selected = None;
             self.ledger = None;
             self.pool_cache.set(None);
+            self.fault_cache.set(None);
             self.selected_index = None;
             for index in 0..snapshot.count
             {
@@ -488,6 +570,7 @@ impl<'a> Panes<'a>
             self.selected = Some(row);
             self.ledger = Some(ledger);
             self.pool_cache.set(None);
+            self.fault_cache.set(None);
             self.selected_index = Some(index);
             self.set_domain_row(index, row, true)?;
             self.configure_details()?;

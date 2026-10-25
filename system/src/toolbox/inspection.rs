@@ -164,6 +164,7 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
     call.detail.fill(0);
     call.domain = Domain::default();
     call.pool = Pool::default();
+    call.fault = CompletionFault::default();
     call.count = 0;
     if call.reserved != 0 || ![SELF, ALL].contains(&call.scope)
     {
@@ -197,7 +198,7 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
             call.count = if call.scope == SELF { 1 } else { directory.len() as u64 };
             OK
         }
-        DOMAIN | LEDGER_POOL =>
+        DOMAIN | LEDGER_POOL | COMPLETION_FAULT =>
         {
             if call.revision != directory.revision()
             {
@@ -224,7 +225,7 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
                 return reject(call, NOT_SUPPORTED,
                               "this inspection source does not describe a process domain");
             }
-            if call.operation == LEDGER_POOL
+            if matches!(call.operation, LEDGER_POOL | COMPLETION_FAULT)
             {
                 if call.scope == SELF && call.subject != caller
                 {
@@ -245,6 +246,56 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
                 {
                     return reject(call, NOT_FOUND, "pool index is outside this ledger snapshot");
                 };
+                if call.operation == COMPLETION_FAULT
+                {
+                    let fault = match entry.ledger()
+                                           .completion_fault_at(call.ledger_revision, index)
+                    {
+                        Ok(Some(fault)) => fault,
+                        Ok(None) | Err(LedgerReadError::PoolNotFound { .. }) =>
+                        {
+                            return reject(call,
+                                          NOT_FOUND,
+                                          "completion fault index is outside this ledger \
+                                           snapshot");
+                        }
+                        Err(LedgerReadError::Stale { .. }) =>
+                        {
+                            return reject(call,
+                                          SCAN_STALE,
+                                          "domain ledger changed while reading completion \
+                                           faults; obtain a new ledger snapshot and retry");
+                        }
+                        Err(LedgerReadError::RevisionExhausted { .. }) =>
+                        {
+                            return reject(call,
+                                          NOT_SUPPORTED,
+                                          "domain ledger revision exhausted; restart this \
+                                           domain to obtain new snapshots");
+                        }
+                    };
+                    call.fault.owner = fault.key.owner().incarnation();
+                    call.fault.kind = fault.key.kind().0;
+                    call.fault.slot = fault.key.slot() as u64;
+                    call.fault.generation = fault.key.generation().get();
+                    call.fault.registration = fault.key.registration().unwrap_or(0);
+                    call.fault.cause = match fault.cause
+                    {
+                        mac_object_table::completion::Cause::Interrupted => COMPLETION_INTERRUPTED,
+                        mac_object_table::completion::Cause::AwaitingTicket =>
+                        {
+                            COMPLETION_AWAITING_TICKET
+                        }
+                        mac_object_table::completion::Cause::Refused(_) => COMPLETION_REFUSED
+                    };
+                    let mut detail = FaultText { bytes:     &mut call.fault.detail,
+                                                 len:       0,
+                                                 truncated: false };
+                    let _ = core::fmt::write(&mut detail, format_args!("{}", fault.cause));
+                    call.fault.detail_length = detail.len as u32;
+                    call.fault.flags = if detail.truncated { DETAIL_TRUNCATED } else { 0 };
+                    return OK;
+                }
                 let pool = match entry.ledger().pool_at(call.ledger_revision, index)
                 {
                     Ok(pool) => pool,
@@ -288,6 +339,7 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
                                    retired: pool.retired as u64,
                                    pending: pool.pending as u64,
                                    quarantined: pool.quarantined as u64,
+                                   completion_faults: pool.completion_faults as u64,
                                    slots: pool.slots as u64,
                                    births: pool.births,
                                    deaths: pool.deaths,
@@ -338,6 +390,7 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
                          retired: ledger.retired as u64,
                          pending: ledger.pending as u64,
                          quarantined: ledger.quarantined as u64,
+                         completion_faults: ledger.completion_faults as u64,
                          slots: ledger.slots as u64,
                          births: ledger.births,
                          deaths: ledger.deaths,
@@ -347,5 +400,33 @@ pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>
             OK
         }
         _ => reject(call, BAD_ARGUMENT, "unknown inspection operation")
+    }
+}
+
+/// Bounded diagnostics preserve UTF-8 and explicitly mark any omitted suffix.
+/// No allocation or payload callback occurs while serving an inspection row.
+struct FaultText<'a>
+{
+    bytes:     &'a mut [u8],
+    len:       usize,
+    truncated: bool
+}
+impl core::fmt::Write for FaultText<'_>
+{
+    fn write_str(&mut self, text: &str) -> core::fmt::Result
+    {
+        if self.truncated
+        {
+            return Ok(());
+        }
+        let mut length = text.len().min(self.bytes.len() - self.len);
+        while !text.is_char_boundary(length)
+        {
+            length -= 1;
+        }
+        self.bytes[self.len..self.len + length].copy_from_slice(&text.as_bytes()[..length]);
+        self.len += length;
+        self.truncated = length != text.len();
+        Ok(())
     }
 }

@@ -5,6 +5,12 @@ pub const LEDGER_POOL: u32 = 2;
 pub const KIND_BEGIN: u32 = 3;
 pub const KIND: u32 = 4;
 pub const KIND_ID: u32 = 5;
+pub const COMPLETION_FAULT: u32 = 6;
+pub const COMPLETION_INTERRUPTED: u32 = 1;
+pub const COMPLETION_AWAITING_TICKET: u32 = 2;
+pub const COMPLETION_REFUSED: u32 = 3;
+pub const DETAIL_TRUNCATED: u32 = 1;
+pub const FAULT_DETAIL_BYTES: usize = 384;
 pub const OWNER_SYSTEM: u32 = 0;
 pub const OWNER_PROCESS: u32 = 1;
 pub const OWNER_MODULE: u32 = 2;
@@ -91,6 +97,7 @@ pub struct Pool
     pub retired:             u64,
     pub pending:             u64,
     pub quarantined:         u64,
+    pub completion_faults:   u64,
     pub slots:               u64,
     pub births:              u64,
     pub deaths:              u64,
@@ -111,6 +118,7 @@ impl Default for Pool
                retired:             0,
                pending:             0,
                quarantined:         0,
+               completion_faults:   0,
                slots:               0,
                births:              0,
                deaths:              0,
@@ -125,41 +133,74 @@ impl Default for Pool
 #[derive(Clone, Copy, Debug)]
 pub struct Domain
 {
-    pub incarnation:     u64,
-    pub kind:            u32,
-    pub flags:           u32,
-    pub ledger_revision: u64,
-    pub kinds:           u64,
-    pub live:            u64,
-    pub retired:         u64,
-    pub pending:         u64,
-    pub quarantined:     u64,
-    pub slots:           u64,
-    pub births:          u64,
-    pub deaths:          u64,
-    pub name:            [u8; crate::INLINE_STRING_BYTES],
-    pub name_length:     u32,
-    pub reserved:        u32
+    pub incarnation:       u64,
+    pub kind:              u32,
+    pub flags:             u32,
+    pub ledger_revision:   u64,
+    pub kinds:             u64,
+    pub live:              u64,
+    pub retired:           u64,
+    pub pending:           u64,
+    pub quarantined:       u64,
+    pub completion_faults: u64,
+    pub slots:             u64,
+    pub births:            u64,
+    pub deaths:            u64,
+    pub name:              [u8; crate::INLINE_STRING_BYTES],
+    pub name_length:       u32,
+    pub reserved:          u32
 }
 impl Default for Domain
 {
     fn default() -> Self
     {
-        Self { incarnation:     0,
-               kind:            0,
-               flags:           0,
-               ledger_revision: 0,
-               kinds:           0,
-               live:            0,
-               retired:         0,
-               pending:         0,
-               quarantined:     0,
-               slots:           0,
-               births:          0,
-               deaths:          0,
-               name:            [0; crate::INLINE_STRING_BYTES],
-               name_length:     0,
-               reserved:        0 }
+        Self { incarnation:       0,
+               kind:              0,
+               flags:             0,
+               ledger_revision:   0,
+               kinds:             0,
+               live:              0,
+               retired:           0,
+               pending:           0,
+               quarantined:       0,
+               completion_faults: 0,
+               slots:             0,
+               births:            0,
+               deaths:            0,
+               name:              [0; crate::INLINE_STRING_BYTES],
+               name_length:       0,
+               reserved:          0 }
+    }
+}
+
+/// A retained cleanup capability, not a second resource or a pool count.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CompletionFault
+{
+    pub owner:         u64,
+    pub kind:          [u8; 4],
+    pub cause:         u32,
+    pub slot:          u64,
+    pub generation:    u64,
+    pub registration:  u64,
+    pub detail:        [u8; FAULT_DETAIL_BYTES],
+    pub detail_length: u32,
+    pub flags:         u32
+}
+impl Default for CompletionFault
+{
+    fn default() -> Self
+    {
+        Self { owner:         0,
+               kind:          [0; 4],
+               cause:         0,
+               slot:          0,
+               generation:    0,
+               registration:  0,
+               detail:        [0; FAULT_DETAIL_BYTES],
+               detail_length: 0,
+               flags:         0 }
     }
 }
 
@@ -179,6 +220,7 @@ pub struct Call
     pub pool:            Pool,
     pub kind:            RegisteredKind,
     pub domain:          Domain,
+    pub fault:           CompletionFault,
     pub detail:          [u8; DETAIL_BYTES],
     pub detail_length:   u32,
     pub reserved:        u32
@@ -199,6 +241,7 @@ impl Default for Call
                pool:            Pool::default(),
                kind:            RegisteredKind::default(),
                domain:          Domain::default(),
+               fault:           CompletionFault::default(),
                detail:          [0; DETAIL_BYTES],
                detail_length:   0,
                reserved:        0 }

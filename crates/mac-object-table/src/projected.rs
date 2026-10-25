@@ -61,6 +61,36 @@ impl Projection
         G::run(|| operation(&mut self.entries.lock()))
     }
 }
+// Kept in the native completion reservation until the matching ACK succeeds.
+// The retained owner ledger can then finish the treaty slot even if its store
+// or original removal guard has gone away. No allocation on the failure path.
+pub(crate) struct ProjectionRelease
+{
+    projection: Arc<Projection>,
+    wire:       u32,
+    release:    fn(&Projection, u32)
+}
+impl ProjectionRelease
+{
+    fn new<G: InvocationGate>(projection: Arc<Projection>, wire: u32) -> Self
+    {
+        fn release<G: InvocationGate>(projection: &Projection, wire: u32)
+        {
+            projection.access::<G, _>(|index| index.remove(wire));
+        }
+        Self { projection,
+               wire,
+               release: release::<G> }
+    }
+}
+impl Drop for ProjectionRelease
+{
+    fn drop(&mut self)
+    {
+        (self.release)(&self.projection, self.wire);
+    }
+}
+
 /// Opaque completion authority, minted before invalidation. It never validates
 /// an ordinary treaty ID and does not acknowledge an external operation.
 #[derive(Clone, Copy)]
@@ -95,17 +125,13 @@ impl<T, G: InvocationGate> Store<T, G>
         let wire = self.projection
                        .access::<G, _>(|index| index.insert(0))
                        .map_err(|_| Error::ProjectionExhausted)?;
-        let native = match self.values.insert(owner,
-                                              Entry { wire,
-                                                      value })
-        {
-            Ok(id) => id,
-            Err(error) =>
-            {
-                self.projection.access::<G, _>(|index| index.remove(wire));
-                return Err(Error::Pool(error));
-            }
-        };
+        let projection = ProjectionRelease::new::<G>(self.projection.clone(), wire);
+        let native = self.values
+                         .insert_projected(owner,
+                                           Entry { wire,
+                                                   value },
+                                           projection)
+                         .map_err(Error::Pool)?;
         self.projection.access::<G, _>(|index| {
                            *index.get_mut(wire).expect("exclusive provisional projection") = native;
                        });
@@ -160,8 +186,8 @@ impl<T, G: InvocationGate> Store<T, G>
     {
         let native = self.projection.access::<G, _>(|index| index.get(wire).copied())?;
         let record = self.values.remove(native)?;
-        Some(Removed { record:     Some(record),
-                       projection: self.projection.clone() })
+        Some(Removed { wire,
+                       record: Some(record) })
     }
 
     /// Inspect only through the unique invalidation capability. This does not
@@ -174,8 +200,9 @@ impl<T, G: InvocationGate> Store<T, G>
     pub fn release(&mut self, ticket: ReleasedResource) -> Result<Removed<T, G>, CompletionError>
     {
         let record = self.values.release(ticket)?;
-        Ok(Removed { record:     Some(record),
-                     projection: self.projection.clone() })
+        let wire = record.wire;
+        Ok(Removed { wire,
+                     record: Some(record) })
     }
 
     pub fn release_storage(&mut self, ticket: ReleasedResource) -> Result<(), CompletionError>
@@ -189,14 +216,14 @@ impl<T, G: InvocationGate> Store<T, G>
 /// Like the native store's guard, this deliberately permits no owned extraction.
 pub struct Removed<T, G: InvocationGate>
 {
-    record:     Option<store::Removed<Entry<T>, G>>,
-    projection: Arc<Projection>
+    wire:   u32,
+    record: Option<store::Removed<Entry<T>, G>>
 }
 impl<T, G: InvocationGate> Removed<T, G>
 {
     pub fn wire(&self) -> u32
     {
-        self.record.as_ref().expect("live projected removal guard").wire
+        self.wire
     }
 }
 impl<T, G: InvocationGate> Deref for Removed<T, G>
@@ -212,11 +239,6 @@ impl<T, G: InvocationGate> Drop for Removed<T, G>
 {
     fn drop(&mut self)
     {
-        let record = self.record.take().expect("live projected removal guard");
-        let wire = record.wire;
-        // Drop payload and acknowledge native cleanup before releasing the
-        // treaty slot. A failed destructor must never make that slot reusable.
-        drop(record);
-        self.projection.access::<G, _>(|index| index.remove(wire));
+        drop(self.record.take());
     }
 }

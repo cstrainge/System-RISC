@@ -814,23 +814,25 @@ pub struct OwnerIndex
     pools:                  Vec<DomainSlots>,
     accepting:              bool,
     revision:               u64,
-    quarantine_pool_cursor: usize
+    quarantine_pool_cursor: usize,
+    completions:            crate::completion::Queue
 }
 
 /// One locked read of the authoritative ledger; no object-value scan or allocation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LedgerSummary
 {
-    pub revision:    u64,
-    pub kinds:       usize,
-    pub live:        usize,
-    pub retired:     usize,
-    pub pending:     usize,
-    pub quarantined: usize,
-    pub slots:       usize,
-    pub births:      u64,
-    pub deaths:      u64,
-    pub accepting:   bool
+    pub revision:          u64,
+    pub kinds:             usize,
+    pub live:              usize,
+    pub retired:           usize,
+    pub pending:           usize,
+    pub quarantined:       usize,
+    pub completion_faults: usize,
+    pub slots:             usize,
+    pub births:            u64,
+    pub deaths:            u64,
+    pub accepting:         bool
 }
 
 /// An atomic view of one prepared per-domain pool, not a global kind
@@ -845,6 +847,7 @@ pub struct PoolSummary
     pub retired:             usize,
     pub pending:             usize,
     pub quarantined:         usize,
+    pub completion_faults:   usize,
     pub slots:               usize,
     pub births:              u64,
     pub deaths:              u64,
@@ -956,6 +959,10 @@ pub enum DirectoryError
     PendingResources
     {
         owner: DomainId, pending: usize
+    },
+    CompletionFaults
+    {
+        owner: DomainId, faults: usize
     }
 }
 impl fmt::Display for DirectoryError
@@ -973,6 +980,13 @@ impl fmt::Display for DirectoryError
                                   live } =>
             {
                 write!(f, "cannot retire {owner}: {live} live ledger resources remain")
+            }
+            Self::CompletionFaults { owner,
+                                     faults } =>
+            {
+                write!(f,
+                       "{owner} retains {faults} cleanup completion faults; tickets and provider \
+                        pins require recovery before domain retirement")
             }
             Self::PendingResources { owner,
                                      pending } =>
@@ -1178,6 +1192,7 @@ impl OwnerIndex
                          retired:             pool.retired_count,
                          pending:             pool.pending_count,
                          quarantined:         pool.quarantined_count,
+                         completion_faults:   self.completions.count_kind(pool.kind),
                          slots:               pool.generations.len(),
                          births:              pool.births,
                          deaths:              pool.deaths,
@@ -1188,6 +1203,7 @@ impl OwnerIndex
     {
         let mut result = LedgerSummary { revision: self.revision,
                                          kinds: self.pools.len(),
+                                         completion_faults: self.completions.len(),
                                          accepting: self.accepting,
                                          ..Default::default() };
         for pool in &self.pools
@@ -1222,7 +1238,57 @@ impl OwnerIndex
                   pools: Vec::new(),
                   accepting: true,
                   revision: 1,
-                  quarantine_pool_cursor: 0 })
+                  quarantine_pool_cursor: 0,
+                  completions: crate::completion::Queue::new() })
+    }
+
+    pub(crate) fn retain_completion(&mut self, record: alloc::boxed::Box<crate::completion::Record>)
+    {
+        self.completions.push(record);
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    pub(crate) fn retry_completion(&mut self) -> crate::completion::Retry
+    {
+        let mut queue = core::mem::replace(&mut self.completions, crate::completion::Queue::new());
+        let previous = queue.next_fault();
+        let result = queue.retry_one(self);
+        self.completions = queue;
+        if matches!(result, crate::completion::Retry::Complete(_))
+           || matches!(&result, crate::completion::Retry::Retained(fault) if Some(*fault)!=previous)
+        {
+            self.revision = self.revision.saturating_add(1);
+        }
+        result
+    }
+
+    pub(crate) fn route_completion(&mut self, ticket: ReleasedResource)
+                                   -> crate::completion::Routed
+    {
+        let mut queue = core::mem::replace(&mut self.completions, crate::completion::Queue::new());
+        let result = queue.route(self, ticket);
+        self.completions = queue;
+        if !matches!(result, crate::completion::Routed::Continue(_))
+        {
+            self.revision = self.revision.saturating_add(1);
+        }
+        result
+    }
+
+    pub fn completion_fault_at(&self, revision: u64, at: usize)
+                               -> Result<Option<crate::completion::Fault>, LedgerReadError>
+    {
+        if self.revision == u64::MAX
+        {
+            return Err(LedgerReadError::RevisionExhausted { owner: self.owner });
+        }
+        if revision != self.revision
+        {
+            return Err(LedgerReadError::Stale { owner:    self.owner,
+                                                expected: revision,
+                                                actual:   self.revision });
+        }
+        Ok(self.completions.at(at))
     }
 
     pub(crate) fn attach_values(&mut self, kind: KindCode, policy: CapacityPolicy,
@@ -1421,6 +1487,11 @@ impl OwnerIndex
 
     pub(crate) fn retire(&mut self) -> Result<(), DirectoryError>
     {
+        if self.completions.len() != 0
+        {
+            return Err(DirectoryError::CompletionFaults { owner:  self.owner,
+                                                          faults: self.completions.len() });
+        }
         let live = self.live();
         if live != 0
         {
@@ -1505,7 +1576,8 @@ mod tests
                          pools:                  Vec::new(),
                          accepting:              true,
                          revision:               1,
-                         quarantine_pool_cursor: 0 }
+                         quarantine_pool_cursor: 0,
+                         completions:            crate::completion::Queue::new() }
         };
         let low = 7;
         let high = (1u64 << 40) | low;
@@ -1725,5 +1797,209 @@ mod pool_snapshot_tests
             assert!(matches!(error, LedgerReadError::RevisionExhausted { .. }));
             assert!(error.to_string().contains("restart this domain"));
         }
+    }
+}
+
+#[cfg(test)]
+mod completion_tests
+{
+    use alloc::{string::ToString, sync::Arc};
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::{registry::{CleanupFailure, Registry, Release, Source, Specification},
+                shared::{InvocationGate, OwnerRef},
+                store::Store,
+                walk};
+    struct Gate;
+    impl InvocationGate for Gate
+    {
+        fn run<R>(operation: impl FnOnce() -> R) -> R
+        {
+            operation()
+        }
+    }
+    struct Cleanup;
+    impl Release<()> for Cleanup
+    {
+        fn release(&self, _: &mut (), ticket: ReleasedResource) -> Result<(), CompletionError>
+        {
+            Err(CompletionError::registration_mismatch(ticket))
+        }
+    }
+    struct Payload(Arc<AtomicUsize>);
+    impl Drop for Payload
+    {
+        fn drop(&mut self)
+        {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    #[test]
+    fn refused_completion_retains_unique_ticket_and_pin_then_retries_only_acknowledgement()
+    {
+        let registrar =
+            OwnerRef::<Gate>::try_new(OwnerIndex::issue(DomainKind::Module).unwrap()).unwrap();
+        let owner =
+            OwnerRef::<Gate>::try_new(OwnerIndex::issue(DomainKind::Process).unwrap()).unwrap();
+        let kind = KindCode(*b"FAIL");
+        let mut registry = Registry::<(), Gate>::new();
+        let lease = registry.register(&registrar,
+                              Specification { kind,
+                                              label: "Fault fixture",
+                                              provider: "Fixture provider",
+                                              capacity: CapacityPolicy::PerDomainQuota { slots: 1 },
+                                              source: Source::Resident },
+                              Cleanup)
+                    .unwrap();
+        let registration = lease.id();
+        let mut store = Store::registered(lease);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let id = store.insert(&owner, Payload(drops.clone())).unwrap();
+        let ticket = owner.invalidate_next().unwrap();
+        let key = ticket.key();
+        let removed = store.release(ticket).unwrap();
+        // Trusted metadata fault injection: the payload still owns the real,
+        // unique ticket. No duplicate capability or synthetic error is made.
+        owner.access(|index| index.pool_mut(kind).unwrap().registration = Some(registration + 1));
+        drop(removed);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        let state = owner.summary();
+        assert_eq!((state.live, state.pending, state.completion_faults), (0, 1, 1));
+        let fault = owner.completion_fault_at(state.revision, 0).unwrap().unwrap();
+        assert_eq!(fault.key, key);
+        assert_eq!(fault.cause, crate::completion::Cause::Refused(PoolError::Stale { key }));
+        assert!(fault.to_string().contains("ticket and provider pin remain retained for retry"));
+        assert_eq!(owner.pool_at(state.revision, 0).unwrap().completion_faults, 1);
+        assert!(matches!(registry.unregister(&registrar, kind),
+                         Err(crate::registry::Error::Busy { remaining: 1,
+                                                            .. })));
+        assert!(matches!(owner.retire(),
+                         Err(DirectoryError::CompletionFaults { faults: 1,
+                                                                .. })));
+        // Restore the trusted fault. Retry must never run the destructor again.
+        owner.access(|index| index.pool_mut(kind).unwrap().registration = Some(registration));
+        let report =
+            walk::retry(&mut (),
+                        &owner,
+                        |_, _| -> Result<crate::registry::Invocation<(), Gate>, ()> {
+                            panic!("destroyed payload must not be dispatched again")
+                        },
+                        |_, error| panic!("restored completion must succeed: {error:?}")).unwrap();
+        assert_eq!(report.released, 1);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!((owner.summary().pending, owner.summary().completion_faults), (0, 0));
+        assert!(matches!(owner.completion_fault_at(state.revision, 0),
+                         Err(LedgerReadError::Stale { .. })));
+        assert!(store.get(id).is_none());
+        drop(store);
+        drop(registry.unregister(&registrar, kind).unwrap());
+        owner.retire().unwrap();
+    }
+    #[test]
+    fn projected_completion_retry_releases_the_same_treaty_slot_only_after_native_ack()
+    {
+        let registrar =
+            OwnerRef::<Gate>::try_new(OwnerIndex::issue(DomainKind::Module).unwrap()).unwrap();
+        let owner =
+            OwnerRef::<Gate>::try_new(OwnerIndex::issue(DomainKind::Process).unwrap()).unwrap();
+        let kind = KindCode(*b"FAIL");
+        let mut registry = Registry::<(), Gate>::new();
+        let lease = registry.register(&registrar,
+                              Specification { kind,
+                                              label: "Projected fault",
+                                              provider: "Projection fixture",
+                                              capacity: CapacityPolicy::PerDomainQuota { slots: 1 },
+                                              source: Source::Resident },
+                              Cleanup)
+                    .unwrap();
+        let registration = lease.id();
+        let storage =
+            registry.register(&registrar,
+                              Specification { kind:     KindCode(*b"FAKB"),
+                                              label:    "Projection backing",
+                                              provider: "Projection fixture",
+                                              capacity: CapacityPolicy::PerDomainQuota { slots: 1 },
+                                              source:   Source::Resident },
+                              Cleanup)
+                    .unwrap();
+        let mut store =
+            crate::projected::Store::new(crate::Kind::FileGroups, lease, storage).unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let old = store.insert(&owner, Payload(drops.clone())).unwrap();
+        let ticket = owner.invalidate_next().unwrap();
+        assert_eq!(ticket.key().kind(), kind);
+        let removed = store.release(ticket).unwrap();
+        owner.access(|index| index.pool_mut(kind).unwrap().registration = Some(registration + 1));
+        drop(removed);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!((owner.summary().pending, owner.summary().completion_faults), (1, 1));
+        assert!(store.get(old).is_none());
+        assert_eq!(registry.by_id(registry.snapshot().unwrap().0, registration).unwrap().uses, 1);
+        let refused = store.insert(&owner, Payload(drops.clone())).unwrap_err();
+        assert!(matches!(refused,
+                         crate::projected::Error::Pool(PoolError::Exhausted { pending: 1,
+                                                                              .. })));
+        assert!(refused.to_string().contains("pending cleanup"));
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+        owner.access(|index| index.pool_mut(kind).unwrap().registration = Some(registration));
+        let retried = walk::retry(&mut (),
+                                  &owner,
+                                  |_, _| -> Result<crate::registry::Invocation<(), Gate>, ()> {
+                                      panic!("destroyed projection must not run again")
+                                  },
+                                  |_, error| {
+                                      panic!("restored projection acknowledgement refused: \
+                                              {error:?}")
+                                  }).unwrap();
+        assert_eq!(retried.released, 1);
+        assert_eq!((owner.summary().pending, owner.summary().completion_faults), (0, 0));
+        assert_eq!(registry.by_id(registry.snapshot().unwrap().0, registration).unwrap().uses, 0);
+        let fresh = store.insert(&owner, Payload(drops.clone())).unwrap();
+        assert_ne!(fresh, old);
+        assert_eq!(fresh & 0xffff,
+                   old & 0xffff,
+                   "retry leaked the retained treaty slot instead of releasing it");
+        assert!(store.get(old).is_none());
+        assert!(store.get(fresh).is_some());
+        drop(store.remove(fresh));
+        drop(store);
+        assert_eq!(drops.load(Ordering::Relaxed), 3);
+        assert_eq!((owner.summary().live,
+                    owner.summary().pending,
+                    owner.summary().completion_faults),
+                   (0, 0, 0));
+    }
+
+    #[test]
+    fn backing_destroyed_before_dispatcher_returns_ticket_never_acknowledges_early()
+    {
+        let owner =
+            OwnerRef::<Gate>::try_new(OwnerIndex::issue(DomainKind::Process).unwrap()).unwrap();
+        let kind = KindCode(*b"WAIT");
+        owner.add_pool(kind, CapacityPolicy::PerDomainQuota { slots: 1 }).unwrap();
+        owner.grow(kind, 1).unwrap();
+        let key = owner.allocate(kind).unwrap();
+        let mut completion =
+            crate::completion::Reserve::try_new().unwrap().live(owner.clone(), key, None);
+        let ticket = owner.invalidate(key).unwrap();
+        completion.run(|| {});
+        assert_eq!((owner.summary().pending, owner.summary().completion_faults), (1, 1));
+        assert_eq!(owner.completion_fault_at(owner.summary().revision, 0).unwrap().unwrap().cause,
+                   crate::completion::Cause::AwaitingTicket);
+        owner.quarantine(ticket).unwrap();
+        let report = walk::retry(&mut (),
+                                 &owner,
+                                 |_, _| -> Result<crate::registry::Invocation<(), Gate>, ()> {
+                                     panic!("destroyed backing has no remaining callback")
+                                 },
+                                 |_, error| {
+                                     panic!("waiting for a ticket is successful deferral: \
+                                             {error:?}")
+                                 }).unwrap();
+        assert_eq!((report.released, report.deferred), (1, 1));
+        assert_eq!((owner.summary().pending, owner.summary().completion_faults), (0, 0));
+        assert_eq!(owner.allocate(kind).unwrap().slot(), key.slot());
+        assert!(!owner.contains(key));
     }
 }

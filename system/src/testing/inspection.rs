@@ -28,7 +28,8 @@ impl crate::toolbox::inspection::Subject for Metadata
     }
 }
 pub(crate) type Domains = Directory<Metadata, Gate>;
-pub use mac_object_table::domain::DirectoryError as RetirementError;
+pub use mac_object_table::{domain::DirectoryError as RetirementError,
+                           registry::Error as ProviderError};
 pub fn add(label: &str, authority: u64) -> u64
 {
     super::SESSION.with(|session| {
@@ -234,4 +235,88 @@ pub(crate) fn caller_ledger(alias: u64)
                                         .map_err(|_| mac_abi::NO_MEMORY)?;
                       Ok(directory.get(id.incarnation()).unwrap().ledger().clone())
                   })
+}
+
+/// Host-unwind fault injection only. The production store owns publication,
+/// invalidation and the retained capability; no native unwind claim is made.
+pub struct InterruptedCleanup
+{
+    registrar:        crate::toolbox::handles::OwnerRef,
+    kind:             KindCode,
+    pub registration: u64
+}
+impl InterruptedCleanup
+{
+    pub fn try_unregister(&self) -> Result<(), mac_object_table::registry::Error>
+    {
+        let removed = super::SESSION.with(|slot| {
+                                        slot.borrow_mut()
+                                            .as_mut()
+                                            .unwrap()
+                                            .registry
+                                            .unregister(&self.registrar, self.kind)
+                                    })?;
+        drop(removed);
+        Ok(())
+    }
+}
+pub fn interrupt_cleanup(owner: u64, backing: bool) -> InterruptedCleanup
+{
+    struct Panics;
+    impl Drop for Panics
+    {
+        fn drop(&mut self)
+        {
+            panic!("fixture destructor did not return");
+        }
+    }
+    struct Cleanup;
+    impl mac_object_table::registry::Release<super::Session> for Cleanup
+    {
+        fn release(&self, _: &mut super::Session,
+                   ticket: mac_object_table::domain::ReleasedResource)
+                   -> Result<(), mac_object_table::domain::CompletionError>
+        {
+            use mac_object_table::registry::CleanupFailure;
+            Err(mac_object_table::domain::CompletionError::registration_mismatch(ticket))
+        }
+    }
+    let registrar=crate::toolbox::handles::OwnerRef::try_new(OwnerIndex::issue(DomainKind::Module).unwrap()).unwrap();
+    let (ledger,lease)=super::SESSION.with(|slot| {
+        let mut slot=slot.borrow_mut();let session=slot.as_mut().unwrap();
+        let ledger=session.inspection.get(owner).unwrap().ledger().clone();
+        let lease=session.registry.register(&registrar,mac_object_table::registry::Specification {
+            kind:KindCode(*b"FALT"),label:"Interrupted destructor",provider:"Inspection fault fixture",
+            capacity:CapacityPolicy::PerDomainQuota {slots:1},source:mac_object_table::registry::Source::Resident
+        },crate::toolbox::handles::cleanup::Complete(Cleanup)).unwrap();
+        (ledger,lease)
+    });
+    let (registration, kind) = if backing
+    {
+        let storage=super::SESSION.with(|slot|slot.borrow_mut().as_mut().unwrap().registry.register(&registrar,
+            mac_object_table::registry::Specification {kind:KindCode(*b"FABS"),label:"Interrupted backing",
+                provider:"Inspection backing fixture",capacity:CapacityPolicy::GrowableUntilMemory,
+                source:mac_object_table::registry::Source::Resident},crate::toolbox::handles::cleanup::Complete(Cleanup)).unwrap());
+        let registration = storage.id();
+        let mut store =
+            mac_object_table::store::Store::<u8, _, Panics>::owned_state(lease, storage, |_| {
+                Ok(Panics)
+            }).unwrap();
+        store.prepare(&ledger).unwrap();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(store))).is_err());
+        (registration, KindCode(*b"FABS"))
+    }
+    else
+    {
+        let registration = lease.id();
+        let mut store = mac_object_table::store::Store::registered(lease);
+        let id = store.insert(&ledger, Panics).unwrap();
+        let guard = store.remove(id).unwrap();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(guard))).is_err());
+        drop(store);
+        (registration, KindCode(*b"FALT"))
+    };
+    InterruptedCleanup { registrar,
+                         kind,
+                         registration }
 }

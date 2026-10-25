@@ -1306,3 +1306,50 @@ tested packaged image hashes remain unchanged through ABI packaging. Delayed
 document I/O is held by the trusted host scope fixture; native process exit
 exercises actual batch/pin deferral, and provider tests exercise real I/O
 separately. This is not the full child-I/O attribution or fault-containment gate.
+
+
+## Retained cleanup completion
+
+Object and per-owner backing stores reserve a cleanup record before publication.
+Payload destruction runs outside the ledger lock with that record already held.
+Successful destruction acknowledges its unique ticket and releases the registered
+provider pin. A refused acknowledgement retains the ticket, pin and typed cause
+in the authoritative owner ledger; a later cleanup checkpoint retries only that
+acknowledgement. Destructors are never retried. No failure-path allocation or
+cleanup assertion is required. Treaty projection slots are released only after
+successful native completion.
+
+If another dispatcher already owns a backing ticket, destruction retains a
+waiting record until that exact ticket returns through the walk. Waiting is
+successful deferral. An interrupted destructor retains its capability and pin,
+blocks domain retirement and provider unloading, and reports the recovery gate.
+Arbitrary privileged-fault containment is unproven (M-D04), a required future gate.
+Host unwinding exercises retention; it does not prove native privileged recovery.
+The native panic path remains a loud System failure, not a silent hang or a
+promise of arbitrary mid-call recovery.
+
+The public inspection SDK exposes completion counts and revision-checked rows
+with the full resource identity, provider registration, typed reason and bounded
+UTF-8 diagnostic with an explicit truncation flag. These records are already
+included in pending counts; they are not extra resources or fictional successful
+releases. Reactor Room reads this ordinary inspection surface. Own-domain access
+is public; cross-domain detail keeps the existing policy check. Enumeration and
+the retirement barrier read the same ledger, with no hidden inspector list.
+
+The reservations remain metadata allocations under the current allocator. Their
+future zone/page charging, paging, physical reclamation, MMU and std gates are
+unchanged; this lifetime discipline does not enable the approved heap budgets.
+
+Qualification: 259 scoped host cases pass, with one separate System gate.
+Shared-facility fault injection proves retained refused acknowledgements,
+provider pins, exact treaty-slot release on retry, stale-ID rejection and
+no repeated destruction. Canonical SDK tests inspect real object/backing
+interruption, reject foreign/stale reads and exercise an independent working
+control after the failure. Seven native cases pass: both process campaigns,
+provider workflow, aggregate Toolbox, bounded Finder selection, original-sprite
+cursors and Reactor Room. Native cleanup checks assert no retained completion
+faults during ordinary lifecycles; native privileged fault recovery is not
+injected or claimed. Native/classic ABI, boundaries, formatting and 52-library
+API generation pass. Packaged artifact hashes stay unchanged throughout final
+acceptance. This is a shared cleanup milestone, not completion of the remaining
+resource-scope, accounting, page-layer or privilege stages.

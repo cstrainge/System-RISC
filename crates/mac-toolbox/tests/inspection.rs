@@ -364,3 +364,107 @@ fn native_theme_is_a_stable_resident_role_snapshot()
         assert_eq!(first, mac_toolbox::quickdraw::theme::current(system.client()).unwrap());
     });
 }
+
+#[test]
+fn interrupted_cleanup_is_publicly_inspectable_and_cannot_retire_or_unpin_its_provider()
+{
+    use mac_toolbox::inspection::CompletionCause;
+    for backing in [false, true]
+    {
+        with_services(|services| {
+            let system = unsafe { System::from_raw(services) }.unwrap();
+            let owner = fixture::add("Interrupted cleanup", 0);
+            with_owner(owner, || {
+                let before = system.inspection().snapshot(Scope::Own).unwrap().ledger(0).unwrap();
+                assert_eq!(before.completion_fault_count(), 0);
+                let error = before.completion_fault_at(0).unwrap_err();
+                assert_eq!(error.cause, Error::NotFound);
+                assert!(error.to_string().contains("completion fault index is outside"));
+                let provider = fixture::interrupt_cleanup(owner, backing);
+                let error = before.completion_fault_at(0).unwrap_err();
+                assert_eq!(error.cause, Error::ScanStale);
+                assert!(error.to_string().contains("obtain a new ledger snapshot and retry"));
+                let snapshot = system.inspection().snapshot(Scope::Own).unwrap().ledger(0).unwrap();
+                let domain = snapshot.domain();
+                assert_eq!((domain.live, domain.pending, domain.completion_faults), (0, 1, 1));
+                assert_eq!(snapshot.completion_fault_count(), 1);
+                let fault = snapshot.completion_fault_at(0).unwrap();
+                assert_eq!((fault.owner, fault.kind, fault.slot),
+                           (owner, if backing { *b"FABS" } else { *b"FALT" }, 0));
+                assert!(fault.generation > 0);
+                assert_eq!(fault.registration, Some(provider.registration));
+                assert_eq!(fault.cause, CompletionCause::Interrupted);
+                assert!(!fault.detail_truncated);
+                for text in
+                    ["ticket and provider pin", "M-D04", "required future gate", "restart System"]
+                {
+                    assert!(fault.to_string().contains(text), "missing {text}: {fault}");
+                }
+                let pool = (0..snapshot.len()).map(|at| snapshot.at(at).unwrap())
+                                              .find(|pool| pool.kind == fault.kind)
+                                              .unwrap();
+                assert_eq!((pool.pending, pool.quarantined, pool.completion_faults), (1, 0, 1));
+                assert_eq!(pool.registration, Some(provider.registration));
+                let error = snapshot.completion_fault_at(1).unwrap_err();
+                assert_eq!(error.cause, Error::NotFound);
+                assert!(error.to_string().contains("outside this ledger snapshot"));
+                let error = fixture::try_retire(owner).unwrap_err();
+                assert!(matches!(error,
+                                 fixture::RetirementError::CompletionFaults { faults: 1,
+                                                                              .. }));
+                assert!(error.to_string().contains("tickets and provider pins require recovery"));
+                let error = provider.try_unregister().unwrap_err();
+                assert!(matches!(error,
+                                 fixture::ProviderError::Busy { remaining: 1,
+                                                                .. }));
+                assert!(error.to_string()
+                             .contains("1 resources or invocations still require cleanup"),
+                        "{error}");
+                let retry = fixture::walk_registered(owner, false, true);
+                assert_eq!((retry.report.released, retry.report.quarantined), (0, 1));
+                assert!(retry.failures[0].contains("M-D04"));
+                assert_eq!(snapshot.completion_fault_at(0).unwrap(),
+                           fault,
+                           "retry must not rerun interrupted destruction");
+                let healthy = fixture::add("Independent healthy app", 0);
+                with_owner(healthy, || {
+                    let own = system.inspection().snapshot(Scope::Own).unwrap().ledger(0).unwrap();
+                    assert_eq!((own.domain().pending, own.completion_fault_count()), (0, 0));
+                    let control =
+                        system.controls()
+                              .create_static_text(mac_toolbox::WindowId(0),
+                                                  mac_toolbox::Rect::new(0, 0, 120, 20),
+                                                  "Healthy after failure",
+                                                  Default::default(),
+                                                  mac_toolbox::controls::TextAlignment::Left)
+                              .unwrap();
+                    let id = control.id();
+                    system.controls().control(id).info().unwrap();
+                    drop(control);
+                    assert!(matches!(system.controls().control(id).info(), Err(Error::NotFound)));
+                    let error = snapshot.completion_fault_at(0).unwrap_err();
+                    assert_eq!(error.cause, Error::ScanStale); // membership changed first
+                    assert!(error.to_string().contains("process membership changed"));
+                });
+                let renewed = system.inspection().snapshot(Scope::Own).unwrap().ledger(0).unwrap();
+                with_owner(healthy, || {
+                    let error = renewed.completion_fault_at(0).unwrap_err();
+                    assert_eq!(error.cause, Error::AccessDenied);
+                    assert!(error.to_string().contains("different lifetime domain"));
+                });
+                let cleaned = fixture::walk_registered(healthy, false, false);
+                assert!(cleaned.failures.is_empty(),
+                        "independent control backing failed: {:?}",
+                        cleaned.failures);
+                fixture::try_retire(healthy).unwrap();
+                assert_eq!(system.inspection()
+                                 .object_kinds()
+                                 .unwrap()
+                                 .get(provider.registration)
+                                 .unwrap()
+                                 .uses,
+                           1);
+            });
+        });
+    }
+}

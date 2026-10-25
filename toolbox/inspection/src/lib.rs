@@ -56,6 +56,7 @@ pub struct Domain
     pub retired:            u64,
     pub pending:            u64,
     pub quarantined:        u64,
+    pub completion_faults:  u64,
     pub slots:              u64,
     pub births:             u64,
     pub deaths:             u64,
@@ -89,6 +90,7 @@ pub struct Pool
     pub retired:             u64,
     pub pending:             u64,
     pub quarantined:         u64,
+    pub completion_faults:   u64,
     pub slots:               u64,
     pub births:              u64,
     pub deaths:              u64,
@@ -310,6 +312,7 @@ impl<'a> Snapshot<'a>
                     retired:            row.retired,
                     pending:            row.pending,
                     quarantined:        row.quarantined,
+                    completion_faults:  row.completion_faults,
                     slots:              row.slots,
                     births:             row.births,
                     deaths:             row.deaths,
@@ -318,6 +321,46 @@ impl<'a> Snapshot<'a>
                         InlineText::from_reply(row.name, row.name_length).map_err(|e| {
                                                                              failure(e, &call)
                                                                          })? })
+    }
+}
+
+/// Why the System retains a cleanup ticket and its provider pin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionCause
+{
+    Interrupted,
+    AwaitingTicket,
+    Refused
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompletionFault
+{
+    pub owner:            u64,
+    pub kind:             [u8; 4],
+    pub slot:             u64,
+    pub generation:       u64,
+    pub registration:     Option<u64>,
+    pub cause:            CompletionCause,
+    pub detail:           InlineText<{ wire::FAULT_DETAIL_BYTES }>,
+    pub detail_truncated: bool
+}
+impl CompletionFault
+{
+    /// Maximum UTF-8 diagnostic payload; callers can bound a complete view
+    /// without depending on the transport record layout.
+    pub const MAX_DETAIL_BYTES: usize = wire::FAULT_DETAIL_BYTES;
+}
+impl core::fmt::Display for CompletionFault
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        write!(f,
+               "owner #{} slot {} generation {}: {}{}",
+               self.owner,
+               self.slot,
+               self.generation,
+               self.detail.as_str(),
+               if self.detail_truncated { " [detail truncated]" } else { "" })
     }
 }
 
@@ -347,6 +390,44 @@ impl LedgerSnapshot<'_>
         self.len() == 0
     }
 
+    /// Number of retained completion failures in this exact ledger revision.
+    /// These are already included in pending resources, not additional objects.
+    pub fn completion_fault_count(self) -> u64
+    {
+        self.domain.completion_faults
+    }
+
+    pub fn completion_fault_at(self, index: u64) -> Result<CompletionFault>
+    {
+        let mut call = wire::Call { operation: wire::COMPLETION_FAULT,
+                                    scope: self.membership.scope,
+                                    revision: self.membership.revision,
+                                    index: self.index,
+                                    ledger_revision: self.domain.ledger_revision,
+                                    subject: self.domain.incarnation,
+                                    pool_index: index,
+                                    ..Default::default() };
+        self.membership.client.inspection(&mut call).map_err(|e| failure(e, &call))?;
+        let row = call.fault;
+        if row.owner != self.domain.incarnation
+           || row.generation == 0
+           || row.flags & !wire::DETAIL_TRUNCATED != 0
+        {
+            return Err(failure(Error::BadAbi, &call));
+        }
+        let cause = match row.cause
+        {
+            wire::COMPLETION_INTERRUPTED => CompletionCause::Interrupted,
+            wire::COMPLETION_AWAITING_TICKET => CompletionCause::AwaitingTicket,
+            wire::COMPLETION_REFUSED => CompletionCause::Refused,
+            _ => return Err(failure(Error::BadAbi, &call))
+        };
+        Ok(CompletionFault { owner:row.owner,kind:row.kind,slot:row.slot,generation:row.generation,
+            registration:(row.registration!=0).then_some(row.registration),cause,
+            detail:InlineText::from_reply(row.detail,row.detail_length).map_err(|e|failure(e,&call))?,
+            detail_truncated:row.flags & wire::DETAIL_TRUNCATED!=0 })
+    }
+
     pub fn at(self, index: u64) -> Result<Pool>
     {
         let mut call = wire::Call { operation: wire::LEDGER_POOL,
@@ -374,6 +455,7 @@ impl LedgerSnapshot<'_>
                   retired: row.retired,
                   pending: row.pending,
                   quarantined: row.quarantined,
+                  completion_faults: row.completion_faults,
                   slots: row.slots,
                   births: row.births,
                   deaths: row.deaths,

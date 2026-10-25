@@ -809,7 +809,10 @@ impl Desktop
                 continue;
             };
             let remaining = ledger.summary();
-            if !checkpoint.settled() || remaining.quarantined != 0 || remaining.live != 0
+            if !checkpoint.settled()
+               || remaining.quarantined != 0
+               || remaining.live != 0
+               || remaining.completion_faults != 0
             {
                 let binding = match self.processes.resource_binding(owner)
                 {

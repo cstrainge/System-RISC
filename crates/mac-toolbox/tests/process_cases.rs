@@ -822,6 +822,8 @@ pub fn worker(system: &System<'_>) -> Result<()>
                                    .snapshot(mac_toolbox::inspection::Scope::Own)
                                    .map_err(|e| Failure::Service(e.cause.status()))?;
             let ledger = membership.ledger(0).map_err(|e| Failure::Service(e.cause.status()))?;
+            require(ledger.completion_fault_count() == 0,
+                    "normal worker census must have no retained cleanup completions")?;
             let expected = [(*b"WIND", 3),
                             (*b"WNST", 1),
                             (*b"CTRL", 3),
@@ -869,7 +871,8 @@ pub fn worker(system: &System<'_>) -> Result<()>
                 system.log(diagnostic.text())?;
                 require(expected.iter()
                                 .any(|&(kind, live)| kind == pool.kind && live == pool.live)
-                        && pool.pending == 0,
+                        && pool.pending == 0
+                        && pool.completion_faults == 0,
                         "worker exit pool has unexpected live or pending objects; see \
                          PROCESS_WORKER_POOL")?;
             }
