@@ -24,6 +24,7 @@ pub(super) struct Definition
     firmware_heap:               Region,
     images:                      Region,
     modules:                     Region,
+    display_scratch:             Region,
     application_relocation_base: String,
     application_primary_base:    String,
     definitions:                 Region,
@@ -42,6 +43,7 @@ pub struct Checked
     pub(super) firmware_heap:               Range<u64>,
     pub(super) images:                      Range<u64>,
     pub(super) modules:                     Range<u64>,
+    pub(super) display_scratch:             Range<u64>,
     pub(super) application_relocation_base: u64,
     pub(super) application_primary_base:    u64,
     pub(super) definitions:                 Range<u64>,
@@ -90,6 +92,7 @@ impl Definition
         let firmware_heap = region("firmware_heap", &self.firmware_heap, page)?;
         let images = region("images", &self.images, page)?;
         let modules = region("modules", &self.modules, page)?;
+        let display_scratch = region("display_scratch", &self.display_scratch, page)?;
         let tail = address("fdt_tail_bytes", &self.fdt_tail_bytes)?;
         if tail == 0 || !tail.is_multiple_of(page) || tail >= ram.end - ram.start
         {
@@ -100,6 +103,7 @@ impl Definition
         let regions = [("boot", &boot),
                        ("firmware_heap", &firmware_heap),
                        ("images", &images),
+                       ("display_scratch", &display_scratch),
                        ("modules", &modules),
                        ("FDT tail", &fdt)];
         for (index, (name, range)) in regions.iter().enumerate()
@@ -167,6 +171,7 @@ impl Definition
                      firmware_heap,
                      images,
                      modules,
+                     display_scratch,
                      application_relocation_base,
                      application_primary_base,
                      definitions,
@@ -230,6 +235,7 @@ impl Checked
                                ("FIRMWARE_HEAP", &self.firmware_heap),
                                ("IMAGES", &self.images),
                                ("MODULES", &self.modules),
+                               ("DISPLAY_SCRATCH", &self.display_scratch),
                                ("DEFINITIONS", &self.definitions)]
         {
             writeln!(out, "__platform_{name}_START = {:#x};", region.start).unwrap();
@@ -254,6 +260,9 @@ impl Checked
         let mut out = String::from("// Generated from the checked platform memory record.\n");
         for (name, value) in [("PAGE_BYTES", self.page_bytes),
                               ("MODULE_BASE", self.modules.start),
+                              ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
+                              ("DISPLAY_SCRATCH_BYTES",
+                               self.display_scratch.end - self.display_scratch.start),
                               ("MODULE_LIMIT", self.modules.end),
                               ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
                               ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
@@ -275,6 +284,9 @@ impl Checked
         let mut out = String::from("// Generated from the checked platform memory record.\n");
         for (name, value) in [("RAM_BASE", self.ram.start),
                               ("MINIMUM_RAM_BYTES", self.ram.end - self.ram.start),
+                              ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
+                              ("DISPLAY_SCRATCH_BYTES",
+                               self.display_scratch.end - self.display_scratch.start),
                               ("IMAGE_BASE", self.images.start),
                               ("IMAGE_LIMIT", self.images.end),
                               ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
@@ -287,14 +299,16 @@ impl Checked
         }
         out.push_str(application_region_source());
         writeln!(out,
-                 "pub const BOOT_RESERVED: [(u64,u64);3] = \
-                  [({:#x},{:#x}),({:#x},{:#x}),({:#x},{:#x})];",
+                 "pub const BOOT_RESERVED: [(u64,u64);4] = \
+                  [({:#x},{:#x}),({:#x},{:#x}),({:#x},{:#x}),({:#x},{:#x})];",
                  self.boot.start,
                  self.boot.end,
                  self.firmware_heap.start,
                  self.firmware_heap.end,
                  self.modules.start,
-                 self.modules.end).unwrap();
+                 self.modules.end,
+                 self.display_scratch.start,
+                 self.display_scratch.end).unwrap();
         out
     }
 }
@@ -337,6 +351,21 @@ mod tests
         bad.modules.base = "0xfffffffffffff000".into();
         assert!(bad.check().unwrap_err().to_string().contains("modules overflows"));
         let mut bad = original.clone();
+        bad.display_scratch.base = original.modules.base.clone();
+        assert!(bad.check().unwrap_err().to_string().contains("modules overlaps display_scratch"));
+        let mut bad = original.clone();
+        bad.display_scratch.base = "0x90000000".into();
+        assert!(bad.check()
+                   .unwrap_err()
+                   .to_string()
+                   .contains("display_scratch lies outside minimum RAM"));
+        let mut bad = original.clone();
+        bad.display_scratch.bytes = "0x120001".into();
+        assert!(bad.check()
+                   .unwrap_err()
+                   .to_string()
+                   .contains("display_scratch must be nonempty and page aligned"));
+        let mut bad = original.clone();
         bad.application_relocation_base = "0x87000000".into();
         assert!(bad.check()
                    .unwrap_err()
@@ -359,16 +388,20 @@ mod tests
     fn constants_linker_and_rom_packaging_use_the_same_checked_ranges()
     {
         let mut definition = definition();
-        definition.modules.bytes = "0x500000".into();
+        definition.modules.bytes = "0x400000".into();
         definition.system_heap_bytes = "0x600000".into();
         let checked = definition.check().unwrap();
         let linker = checked.linker_symbols();
         let rust = checked.system_constants();
-        assert!(linker.contains("__platform_MODULES_END = 0x87d00000;"));
-        assert!(rust.contains("MODULE_LIMIT: u64 = 0x87d00000;"));
+        assert!(linker.contains("__platform_MODULES_END = 0x87c00000;"));
+        assert!(rust.contains("MODULE_LIMIT: u64 = 0x87c00000;"));
         assert!(linker.contains("__platform_SYSTEM_HEAP_BYTES = 0x600000;"));
         assert!(rust.contains("SYSTEM_HEAP_BYTES: usize = 0x600000;"));
         assert!(checked.boot_constants().contains("IMAGE_LIMIT: u64 = 0x87000000;"));
+        assert!(linker.contains("__platform_DISPLAY_SCRATCH_START = 0x80000000;"));
+        assert!(rust.contains("DISPLAY_SCRATCH_BASE: u64 = 0x80000000;"));
+        assert!(rust.contains("DISPLAY_SCRATCH_BYTES: u64 = 0x130000;"));
+        assert!(checked.boot_constants().contains("(0x80000000,0x80130000)"));
         assert_eq!(checked.flash_base(), checked.flash.start);
         assert_eq!(checked.flash_bytes(), checked.flash.end - checked.flash.start);
     }

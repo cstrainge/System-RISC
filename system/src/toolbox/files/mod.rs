@@ -21,6 +21,8 @@ mod stream_native;
 mod provider;
 #[cfg(feature = "test-support")]
 pub(crate) use provider::Source as TestProviderSource;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use provider::runtime::transfer::lifetime as transfer_lifetime;
 pub(crate) mod types;
 #[cfg(target_arch = "riscv64")]
 mod backing;
@@ -319,7 +321,7 @@ pub struct Manager
     streams:              objects::Objects<streams::Stream>,
     groups:               objects::Objects<groups::Group>,
     #[cfg(target_arch = "riscv64")]
-    transfers:            Table<provider::runtime::transfer::Entry>,
+    transfers:            objects::Objects<provider::runtime::transfer::Entry>,
     watches:              watch::Watches,
     pub rejected_volumes: u32
 }
@@ -341,7 +343,7 @@ impl Default for Manager
                    objects::Objects::new(),
                #[cfg(target_arch = "riscv64")]
                transfers:
-                   Table::new(Kind::FileTransfers),
+                   objects::Objects::new(),
                watches:
                    watch::Watches::new(),
                rejected_volumes:                                                          0,
@@ -1169,8 +1171,6 @@ impl Manager
     pub fn close_all(&mut self, owner: u64) -> usize
     {
         self.executables.retain(|pin| pin.owner != owner);
-        #[cfg(target_arch = "riscv64")]
-        provider::runtime::transfer::abandon(self, owner);
         0
     }
 

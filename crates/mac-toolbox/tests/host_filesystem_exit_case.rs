@@ -67,6 +67,22 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             require(!progress.finished())?;
             if progress.completed_bytes != 0
             {
+                let snapshot = system.inspection()
+                                     .snapshot(mac_toolbox::inspection::Scope::Own)
+                                     .map_err(|e| e.cause)?;
+                let ledger = snapshot.ledger(0).map_err(|e| e.cause)?;
+                let mut found = false;
+                for index in 0..ledger.len()
+                {
+                    let pool = ledger.at(index).map_err(|e| e.cause)?;
+                    if pool.kind == *b"FTXN"
+                    {
+                        require(pool.live == 1 && pool.pending == 0)?;
+                        found = true;
+                    }
+                }
+                require(found)?;
+                system.log("HOST_FS_TRANSFER_LEDGER_PASS\n")?;
                 core::mem::forget(owner);
                 system.log("HOST_FS_EXIT_WORKER_READY\n")?;
                 return Ok(());

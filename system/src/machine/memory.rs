@@ -43,10 +43,20 @@ pub(crate) unsafe fn validate_boot(info: &mac_abi::BootInfo)
     {
         unsafe { core::slice::from_raw_parts(info.reservations, info.reservation_count) }
     };
-    mac_abi::boot::Memory { ram,
-                            reservations }.validate(PAGE_BYTES,
-                                                    mac_abi::BootMemoryRange { base:
-                                                                                   info.ram_base,
-                                                                               length:
-                                                                                   info.ram_size })
+    let memory = mac_abi::boot::Memory { ram,
+                                         reservations };
+    let primary = mac_abi::BootMemoryRange { base:   info.ram_base,
+                                             length: info.ram_size };
+    if info.flags & mac_abi::BOOT_GRAPHICAL != 0
+    {
+        memory.display_handoff(PAGE_BYTES,
+                               primary,
+                               info.display_scratch,
+                               mac_abi::BootMemoryRange { base:   DISPLAY_SCRATCH_BASE,
+                                                          length: DISPLAY_SCRATCH_BYTES })
+    }
+    else
+    {
+        memory.validate(PAGE_BYTES, primary)
+    }
 }

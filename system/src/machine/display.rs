@@ -12,15 +12,24 @@ static mut FRAMEBUFFER: Pixels = Pixels([0; PIXELS]);
 static mut BACKBUFFER: Pixels = Pixels([0; PIXELS]);
 // Window tracking never paints the menu bar's first 21 rows.
 const TRACKING_PIXELS: usize = WIDTH * (HEIGHT - 21);
-#[repr(C, align(4096))]
-struct TrackingPixels([u32; TRACKING_PIXELS]);
-static mut TRACKING_MASK: TrackingPixels = TrackingPixels([0; TRACKING_PIXELS]);
+// This physical scratch reservation is generated from the same checked
+// platform record as the loader arena and BootInfo reservations. It is not
+// image BSS and cannot be allocated by the later physical page pool.
+const _: () =
+    assert!(super::memory::DISPLAY_SCRATCH_BYTES >= (TRACKING_PIXELS * size_of::<u32>()) as u64);
+static TRACKING_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static TRACKING_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static TRACKING_BORROWED: AtomicBool = AtomicBool::new(false);
 
 /// Scratch belongs to the serialized compositor and cannot escape this call.
 /// A future/reentrant caller receives None instead of aliasing the active mask.
 pub fn with_tracking_mask<R>(call: impl FnOnce(Option<&mut [u32]>) -> R) -> R
 {
+    // Bootstrap still owns the shared range until our framebuffer is installed.
+    if !TRACKING_AVAILABLE.load(Ordering::Acquire)
+    {
+        return call(None);
+    }
     if TRACKING_BORROWED.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                         .is_err()
     {
@@ -35,12 +44,20 @@ pub fn with_tracking_mask<R>(call: impl FnOnce(Option<&mut [u32]>) -> R) -> R
         }
     }
     let _borrow = Borrow;
-    // The guard excludes all other borrows until the closure returns, the
-    // storage is initialized/aligned, and its lifetime cannot escape R.
-    call(Some(unsafe {
-             core::slice::from_raw_parts_mut(addr_of_mut!(TRACKING_MASK).cast::<u32>(),
-                                             TRACKING_PIXELS)
-         }))
+    let pointer = super::memory::DISPLAY_SCRATCH_BASE as *mut u32;
+    // Only this serialized device boundary accesses the dedicated RAM range.
+    // Initialize bytes before publishing a reference, once per boot; subsequent
+    // frames reuse the same pinned storage without allocation or clearing here.
+    if !TRACKING_INITIALIZED.load(Ordering::Acquire)
+    {
+        unsafe {
+            core::ptr::write_bytes(pointer, 0, TRACKING_PIXELS);
+        }
+        TRACKING_INITIALIZED.store(true, Ordering::Release);
+    }
+    // The platform checker proves page alignment, non-overlap and containment
+    // in discovered minimum RAM; the guarded slice cannot escape this call.
+    call(Some(unsafe { core::slice::from_raw_parts_mut(pointer, TRACKING_PIXELS) }))
 }
 
 pub fn back_buffer() -> &'static mut [u32]
@@ -56,6 +73,7 @@ pub fn setup_framebuffer() -> bool
     let ready = unsafe { mac_boot_screen::ramfb::configure(address, WIDTH, HEIGHT) };
     if ready
     {
+        TRACKING_AVAILABLE.store(true, Ordering::Release);
         serial!("RAMFB {}x{} addr=0x{:x}", WIDTH, HEIGHT, address);
         serial!("DISPLAY_BUFFERS back={} front={} bytes={}",
                 addr_of_mut!(BACKBUFFER) as usize,

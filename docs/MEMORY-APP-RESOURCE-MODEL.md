@@ -269,7 +269,7 @@ ratification after measurement; no magic emergency buffer sizes are chosen now.
 | M-D08 | Port/copy definition protocol vs current raw surface/DefinitionCall ABI | Introduce host-owned port operations and bounded copies/managed buffers; remove raw app pointer access before privilege gate |
 | M-D09 | Synchronous participants vs earlier queued/deadline participant designs | **Ratified, Chloe 2026-10-23.** Synchronous participants stand; the earlier queued/deadline rule is superseded. Observers remain queued on their own execution context |
 | M-D10 | Registered payload dispatch alone did not release empty per-owner value-array/cache backing | Closed for migrated stores: CSTA/SBST register backing lifetimes; the last child completes a deferred backing release, including after quarantine retry. The explicit control pruning hook is removed. Other manager saved-state slots and EXIT cleanup remain stage-2/3 migration work |
-| M-D12 | Transfer coordinators still authorize child I/O with a private transaction tag, rather than a registered per-owner lifetime | Interim migration only: validate that tag against the full live transfer generation, and keep its internal forks System-backed through existing rollback; ordinary application forks use the app ledger. Transfer registration must replace this tag/ownership exception before the complete owner-walk/accounting gate |
+| M-D12 | Transfer child I/O still uses a private transaction tag and System-backed lifetimes rather than subject aliases | Interim migration only: the registered coordinator holds its app death barrier; validate the child tag against its full retained transfer generation through cleanup. Child aliases/invocation authority must replace the tag/System-ownership exception before the complete owner-walk/accounting gate; ordinary app I/O already uses its app ledger |
 | M-D11 | Hard-bound capacity reasons are currently resident `&'static str` values, while module-sourced policies and empty pool history must survive provider unload | Required before module registration admission: retain kernel-owned bounded reason data in pool history. Never cast module text to a static reference, leak a per-registration string, or leave history pointing into unloaded code. Current resident literals are valid; this is module-phase migration work |
 
 Chloe accepted M-D01, M-D03, M-D06, M-D07 and M-D08 as migration work as
@@ -1165,3 +1165,40 @@ no-change abandonment, real guard Drop, owner-walk refusal/retry and a fresh
 group committing after cleanup. Native process workers deliberately leave an
 actual group and its backing among their 35 registered resources. Complete
 transfer/alias and I/O quiescence gates remain open, including M-D12.
+
+## Transfer coordinators hold the process I/O death barrier
+
+FTXN and FTXS register recursive transfer controllers and per-owner backing.
+Admission captures the real owner before taking File Manager or firmware state.
+Dropping the public owner invalidates its ID immediately; an internal completion
+capability retains the controller, undo receipts, child I/O state and charges
+until the actual terminal result. Cancel remains a pollable live operation.
+An invalid public ID is never used as evidence that rollback finished.
+
+Controller state is synchronized privately. The bounded pump borrows no Files,
+Desktop or controller lock over a provider callback/wait. Restoration observes
+late cancellation before the commit barrier and retains the existing bounded
+cleanup retry policy. Owner-walk disposal holds the same controller as normal
+Drop; the transfer-specific EXIT cancellation scan is removed. Blocking classic
+file operations retain their registered bridge through cancellation and replay.
+
+This is the coordinator migration, not completion of M-D12. Its private child
+I/O authorization is validated against the full retained coordinator generation;
+children still use the System-backed cleanup scope needed by the current undo
+engine. The app now remains pending through that cleanup. Subject aliases and
+account/invocation authority must replace this exception before full quiescence
+and charging are claimed. Document/image/volume/module lifetimes remain staged.
+
+The growing resident image also exhausted its existing physical reservation.
+Window grow-tracking scratch now occupies a dedicated page-aligned platform RAM
+range outside image BSS; the checked record emits its linker/Rust constants and
+BootInfo reservation. Bootstrap uses it for its framebuffer; the resident
+tracker can borrow it only after System successfully installs a different RAMFB.
+Boot resident data/stack and scratch are disjoint checked ranges. The full module
+arena, minimum RAM, app image ranges and current 8 MiB heap stay unchanged. Each
+serialized display boundary initializes bytes before publishing its reference;
+resident paints then reuse the pinned storage without allocation. BootInfo carries
+an explicit scratch loan, validated against the selected reserved range before
+heap use; a stale header or mismatched/unreserved loan is rejected with rebuild
+instructions. The development ABI remains version 1. This remains a direct identity-mapped device
+boundary until the page layer supplies its supervisor mapping.

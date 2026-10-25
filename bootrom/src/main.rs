@@ -371,7 +371,10 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                           ram_regions:             memory.ram.as_ptr(),
                           ram_region_count:        memory.ram.len(),
                           reservations:            memory.reserved.as_ptr(),
-                          reservation_count:       memory.reserved.len() };
+                          reservation_count:       memory.reserved.len(),
+                          display_scratch:
+                              mac_abi::BootMemoryRange { base:   memory::DISPLAY_SCRATCH_BASE,
+                                                         length: memory::DISPLAY_SCRATCH_BYTES } };
     let table = unsafe { entry(&info) };
     let address = table as usize as u64;
     if address < startup.descriptor.load_base

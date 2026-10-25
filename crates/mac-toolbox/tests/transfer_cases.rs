@@ -360,18 +360,44 @@ fn check_abandoned(system: &System<'_>, native: VolumeId, host: VolumeId, target
         // Drop must retain the resident ledger until undo acknowledges; no
         // second client call is needed to drive cleanup.
     }
+    use mac_toolbox::abi::files::{FileTransferCall, STEP_TRANSFER};
+    let mut call = FileTransferCall { operation: STEP_TRANSFER,
+                                      handle: stale.0,
+                                      ..Default::default() };
+    require(system.client().file_transfer(&mut call, &[]) == Err(Error::NotFound))?;
+    let snapshot =
+        system.inspection().snapshot(mac_toolbox::inspection::Scope::Own).map_err(|e| e.cause)?;
+    let ledger = snapshot.ledger(0).map_err(|e| e.cause)?;
+    let mut transfer_pool = None;
+    for at in 0..ledger.len()
+    {
+        if ledger.at(at).map_err(|e| e.cause)?.kind == *b"FTXN"
+        {
+            transfer_pool = Some(at);
+            break;
+        }
+    }
+    let transfer_pool = transfer_pool.ok_or(Error::BadAbi)?;
     for _ in 0..10000
     {
-        use mac_toolbox::abi::files::{FileTransferCall, STEP_TRANSFER};
-        let mut call = FileTransferCall { operation: STEP_TRANSFER,
-                                          handle: stale.0,
-                                          ..Default::default() };
-        if system.client().file_transfer(&mut call, &[]) == Err(Error::NotFound)
+        // Invalidating an ID is not an undo receipt. Observe the same public
+        // ledger that holds the process death barrier until actual completion.
+        let snapshot = system.inspection()
+                             .snapshot(mac_toolbox::inspection::Scope::Own)
+                             .map_err(|e| e.cause)?;
+        let pool =
+            snapshot.ledger(0).map_err(|e| e.cause)?.at(transfer_pool).map_err(|e| e.cause)?;
+        if pool.pending == 0
         {
             require(files.lookup(host, target, source.name()) == Err(Error::NotFound))?;
             bytes(system, &source)?;
-            success(system, spec, &[reference(&source)])?;
-            return system.log("FILE_TRANSFER_DROP_PASS cleanup=passed retry=passed\n");
+            let mut retry = files.begin_transfer(spec, &[reference(&source)])?;
+            require(retry.id() != stale && retry.id().0 & 0xffff == stale.0 & 0xffff)?;
+            require(system.client().file_transfer(&mut call, &[]) == Err(Error::NotFound))?;
+            let progress = finish(system, &mut retry).map_err(|failure| failure.cause)?;
+            require(progress.phase == TransferPhase::Committed)?;
+            return system.log("FILE_TRANSFER_DROP_PASS cleanup=passed retry=passed \
+                               ledger=passed\n");
         }
         tick(system)?;
     }

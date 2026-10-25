@@ -96,3 +96,35 @@ fn discovered_ram_drives_boot_info_and_small_machines_are_refused_before_heap_us
         }
     }
 }
+
+#[test]
+fn scratch_handoff_requires_the_selected_reserved_range_and_explains_stale_bootstrap_contracts()
+{
+    use mac_toolbox::abi::{BootMemoryRange,
+                           boot::{Memory, MemoryError}};
+    let stale_header =
+        mac_toolbox::abi::Header { version: mac_toolbox::abi::ABI_VERSION,
+                                   size:    (core::mem::size_of::<mac_toolbox::abi::BootInfo>()
+                                             - core::mem::size_of::<BootMemoryRange>())
+                                            as u32 };
+    assert!(!stale_header.supports::<mac_toolbox::abi::BootInfo>());
+    let scratch = BootMemoryRange { base:   0x80000000,
+                                    length: 0x130000 };
+    let ram = BootMemoryRange { base:   0x80000000,
+                                length: 128 * 1024 * 1024 };
+    let memory = Memory { ram:          &[ram],
+                          reservations: &[scratch] };
+    assert_eq!(memory.display_handoff(4096, ram, scratch, scratch), Ok(()));
+    let stale = BootMemoryRange { base: 0x87800000,
+                                  ..scratch };
+    let error = memory.display_handoff(4096, ram, stale, scratch).unwrap_err();
+    assert_eq!(error, MemoryError::PlatformMismatch);
+    assert!(error.to_string().contains("rebuild ROM and disk together"));
+    let memory = Memory { ram:          &[ram],
+                          reservations: &[BootMemoryRange { length: 0x120000,
+                                                            ..scratch }] };
+    let error = memory.display_handoff(4096, ram, scratch, scratch).unwrap_err();
+    assert_eq!(error, MemoryError::MissingReservation);
+    assert!(error.to_string().contains("not reserved"));
+    assert!(error.to_string().contains("rebuild ROM and disk together"));
+}

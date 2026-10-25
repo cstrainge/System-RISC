@@ -184,10 +184,15 @@ mod tests
         assert_eq!(memory.ram[0].length, 0x200000000);
         // Firmware's device-tree reservation is covered by the platform's
         // existing exclusion, never counted twice or treated as free bytes.
-        assert_eq!(memory.reserved.len(), 3);
+        assert_eq!(memory.reserved.len(), 4);
         assert!(memory.reserved.iter().any(|range| {
                                           range.base == BOOT_RESERVED[1].0
                                           && range.base + range.length == BOOT_RESERVED[2].1
+                                      }));
+        assert!(memory.reserved.iter().any(|range| {
+                                          range.base <= DISPLAY_SCRATCH_BASE
+                                          && range.base + range.length
+                                             >= DISPLAY_SCRATCH_BASE + DISPLAY_SCRATCH_BYTES
                                       }));
         memory.reserve(IMAGE_BASE..IMAGE_BASE + PAGE_BYTES).unwrap();
         mac_abi::boot::Memory { ram:          &memory.ram,

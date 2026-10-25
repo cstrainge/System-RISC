@@ -149,7 +149,10 @@ pub struct BootInfo
     pub ram_region_count:        usize,
     /// Disjoint page-aligned extents unavailable to the page pool.
     pub reservations:            *const BootMemoryRange,
-    pub reservation_count:       usize
+    pub reservation_count:       usize,
+    /// Graphical bootstrap lends this reserved RAM only after System has
+    /// successfully installed its own framebuffer. Non-graphical boots use zero.
+    pub display_scratch:         BootMemoryRange
 }
 
 /// Resident in System memory for the entire application lifetime.
@@ -271,7 +274,8 @@ mod tests
         assert_eq!(core::mem::size_of::<Header>(), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_base), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, log), 24);
-        assert_eq!(core::mem::size_of::<BootInfo>(), 120);
+        assert_eq!(core::mem::size_of::<BootInfo>(), 136);
+        assert_eq!(core::mem::offset_of!(BootInfo, display_scratch), 120);
         assert_eq!(core::mem::offset_of!(BootInfo, storage_context), 32);
         assert_eq!(core::mem::offset_of!(BootInfo, startup_partition_start), 80);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_regions), 88);

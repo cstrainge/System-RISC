@@ -870,7 +870,8 @@ pub fn with_disks<R>(bytes: &[&[u8]], startup_disk: u32, run: impl FnOnce(&Syste
                           ram_regions: core::ptr::null(),
                           ram_region_count: 0,
                           reservations: core::ptr::null(),
-                          reservation_count: 0 };
+                          reservation_count: 0,
+                          display_scratch: Default::default() };
     with_services(|services| {
         let storage =
             unsafe { crate::toolbox::files::BootStorage::from_boot_info(&boot) }.expect("storage");
@@ -1031,7 +1032,8 @@ pub fn with_file_disk<R>(path: &std::path::Path, read_only: bool, faults: DiskFa
                           ram_regions:             core::ptr::null(),
                           ram_region_count:        0,
                           reservations:            core::ptr::null(),
-                          reservation_count:       0 };
+                          reservation_count:       0,
+                          display_scratch:         Default::default() };
     let result = with_services(|services| {
         let storage=unsafe{crate::toolbox::files::BootStorage::from_boot_info(&boot)}.expect("file storage callbacks");
         let manager =

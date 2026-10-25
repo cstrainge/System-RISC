@@ -13,23 +13,30 @@ pub(super) struct Bridge
 pub(crate) fn pending(thread: u64, handle: u32) -> Result<bool, Status>
 {
     files(|m| {
-        let entry = m.transfers.get(handle).ok_or(NOT_FOUND)?;
+        let entry = m.transfers.completing(handle).ok_or(NOT_FOUND)?;
         if entry.bridge.is_none_or(|bridge| bridge.thread != thread)
         {
             return Err(ACCESS_DENIED);
         }
-        Ok(!entry.snapshot.terminal())
+        Ok(!entry.record.lock().closed)
     })
 }
 pub(crate) fn abandon_waiter(thread: u64, handle: u32)
 {
     let _ = files(|m| {
-        if let Some(entry) = m.transfers.get_mut(handle)
+        let matching =
+            m.transfers
+             .completing(handle)
+             .is_some_and(|entry| entry.bridge.is_some_and(|bridge| bridge.thread == thread));
+        if matching
         {
-            if entry.bridge.is_some_and(|bridge| bridge.thread == thread)
+            if m.transfers.get(handle).is_some()
             {
-                entry.cancel = true;
-                entry.abandoned = true;
+                m.transfers.abandon(handle)?;
+            }
+            else if let Some(entry) = m.transfers.completing(handle)
+            {
+                crate::toolbox::files::objects::Payload::begin_cleanup(entry);
             }
         }
         Ok(())
@@ -58,11 +65,12 @@ pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
              .iter()
              .find(|(_, entry)| entry.bridge.is_some_and(|bridge| bridge.thread == key.thread))
         {
-            if entry.owner != owner || entry.bridge != Some(key) || entry.abandoned
+            let record = entry.record.lock();
+            if entry.owner != owner || entry.bridge != Some(key) || record.abandoned
             {
                 return Err(BAD_ABI);
             }
-            Ok(Some((handle, entry.snapshot)))
+            Ok(Some((handle, record.snapshot)))
         }
         else
         {
@@ -83,7 +91,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
         if snapshot.phase != TRANSFER_COMMITTED
         {
             let _ = files(|m| {
-                m.transfers.remove(handle);
+                retire(m, handle)?;
                 Ok(())
             });
             return if snapshot.phase == TRANSFER_CANCELLED
@@ -102,7 +110,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
         if matches!(key.operation, EMPTY_TRASH | TRASH_USAGE)
         {
             return match files(|m| {
-                      m.transfers.remove(handle).ok_or(NOT_FOUND)?;
+                      retire(m, handle)?;
                       Ok(())
                   })
             {
@@ -120,7 +128,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall) -> Status
             Ok(entry) =>
             {
                 let retired = files(|m| {
-                    m.transfers.remove(handle).ok_or(NOT_FOUND)?;
+                    retire(m, handle)?;
                     Ok(())
                 });
                 match retired

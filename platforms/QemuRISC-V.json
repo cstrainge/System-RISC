@@ -16,8 +16,8 @@
       "bytes": "0x2000000"
     },
     "boot": {
-      "base": "0x80000000",
-      "bytes": "0x200000"
+      "base": "0x80130000",
+      "bytes": "0xd0000"
     },
     "firmware_heap": {
       "base": "0x87000000",
@@ -39,6 +39,10 @@
     "definitions": {
       "base": "0x82000000",
       "bytes": "0x1000000"
+    },
+    "display_scratch": {
+      "base": "0x80000000",
+      "bytes": "0x130000"
     }
   },
   "mmio_devices": [

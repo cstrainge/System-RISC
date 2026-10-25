@@ -737,7 +737,12 @@ impl State
                 {
                     return Err(SERVICE_BUSY);
                 }
-                m.transfers.get_mut(self.handle).ok_or(NOT_FOUND)?.read_protected = protected;
+                m.transfers
+                 .completing(self.handle)
+                 .ok_or(NOT_FOUND)?
+                 .record
+                 .lock()
+                 .read_protected = protected;
                 Ok(())
             })?;
         }
@@ -755,10 +760,11 @@ impl State
         }
         // Root/volume dates are restored last, after all parent-date writes.
         let volumes = files(|m| {
-            let entry = m.transfers.get(self.handle).ok_or(NOT_FOUND)?;
+            let entry = m.transfers.completing(self.handle).ok_or(NOT_FOUND)?;
+            let record = entry.record.lock();
             let mut result = Vec::new();
-            result.try_reserve_exact(entry.volumes.len()).map_err(|_| NO_MEMORY)?;
-            result.extend_from_slice(&entry.volumes);
+            result.try_reserve_exact(record.volumes.len()).map_err(|_| NO_MEMORY)?;
+            result.extend_from_slice(&record.volumes);
             Ok(result)
         })?;
         self.stamps.retain(|s| s.reference.id != ROOT_ID);

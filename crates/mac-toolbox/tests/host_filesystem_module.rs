@@ -210,6 +210,23 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
             "{serial}");
     assert!(serial.contains("FILE_TRANSFER_DROP_PASS cleanup=passed retry=passed"), "{serial}");
     assert!(serial.contains("FILE_TRANSFER_EXIT_PASS cleanup=passed retry=passed"), "{serial}");
+    assert!(serial.contains("HOST_FS_TRANSFER_LEDGER_PASS"), "{serial}");
+    let after_transfer = serial.split("HOST_FS_TRANSFER_LEDGER_PASS").nth(1).unwrap();
+    let stopped =
+        after_transfer.lines().find(|line| line.starts_with("PROCESS_STOPPED app=")).unwrap();
+    let owner = stopped.split("app=").nth(1).unwrap().split_whitespace().next().unwrap();
+    let prefix = format!("OWNER_WALK app={owner} ");
+    let walked = after_transfer.lines().find(|line| line.starts_with(&prefix)).unwrap();
+    assert!(walked.contains("live=0 pending=1 deferred=1"),
+            "transfer exit must retain the registered coordinator until real I/O completes: \
+             {walked}\n{serial}");
+    let walk_at = after_transfer.find(&prefix).unwrap();
+    let reclaimed_at =
+        after_transfer.find(&format!("PROCESS_THREAD_RECLAIMED app={owner} ")).unwrap();
+    let exited_at = after_transfer.find(&format!("PROCESS_EXIT app={owner}\n")).unwrap();
+    assert!(walk_at < reclaimed_at && reclaimed_at < exited_at,
+            "process must retain its saved state through another-stack thread reclaim and I/O \
+             retirement: {serial}");
     assert!(serial.contains("FILE_TRANSFER_TRASH_PASS recursive=passed put-away=passed \
                              empty=passed retry=passed"),
             "{serial}");

@@ -10,7 +10,9 @@ pub enum MemoryError
     Unaligned,
     Overlap,
     OutsideRam,
-    InconsistentSummary
+    InconsistentSummary,
+    PlatformMismatch,
+    MissingReservation
 }
 impl core::fmt::Display for MemoryError
 {
@@ -19,6 +21,16 @@ impl core::fmt::Display for MemoryError
         f.write_str(match self
                     {
                         Self::MissingRam => "bootstrap reports no RAM banks",
+                        Self::PlatformMismatch =>
+                        {
+                            "bootstrap display-scratch handoff disagrees with the selected \
+                             platform; rebuild ROM and disk together"
+                        }
+                        Self::MissingReservation =>
+                        {
+                            "bootstrap display-scratch handoff is not reserved; rebuild ROM and \
+                             disk together"
+                        }
                         Self::InvalidArray =>
                         {
                             "bootstrap memory array address, alignment or count is invalid"
@@ -55,6 +67,29 @@ fn end(range: BootMemoryRange, page_bytes: u64) -> Result<u64, MemoryError>
 }
 impl Memory<'_>
 {
+    /// Validate the graphical scratch loan against the build-selected range.
+    /// This validates the whole RAM/reservation account before the loan;
+    /// callers do not have a separate validation step to remember.
+    pub fn display_handoff(&self, page_bytes: u64, primary: BootMemoryRange,
+                           declared: BootMemoryRange, expected: BootMemoryRange)
+                           -> Result<(), MemoryError>
+    {
+        self.validate(page_bytes, primary)?;
+        if declared != expected
+        {
+            return Err(MemoryError::PlatformMismatch);
+        }
+        let limit = end(expected, page_bytes)?;
+        for reservation in self.reservations
+        {
+            if reservation.base <= expected.base && end(*reservation, page_bytes)? >= limit
+            {
+                return Ok(());
+            }
+        }
+        Err(MemoryError::MissingReservation)
+    }
+
     pub fn validate(&self, page_bytes: u64, primary: BootMemoryRange) -> Result<(), MemoryError>
     {
         let first = self.ram.first().ok_or(MemoryError::MissingRam)?;

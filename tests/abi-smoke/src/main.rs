@@ -81,7 +81,8 @@ extern "C" fn main() -> !
                           ram_regions:             &ram,
                           ram_region_count:        1,
                           reservations:            core::ptr::null(),
-                          reservation_count:       0 };
+                          reservation_count:       0,
+                          display_scratch:         Default::default() };
     let system_entry: SystemEntry = unsafe { core::mem::transmute(SYSTEM_ENTRY) };
     let finder_entry: ApplicationEntry = unsafe { core::mem::transmute(FINDER_ENTRY) };
     let services = unsafe { system_entry(&boot) };

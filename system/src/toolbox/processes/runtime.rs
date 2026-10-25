@@ -1021,3 +1021,24 @@ impl crate::toolbox::files::groups::lifetime::GroupHost for Desktop
         }
     }
 }
+
+impl crate::toolbox::files::transfer_lifetime::TransferHost for Desktop
+{
+    fn release_file_transfer(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                             storage: bool)
+                             -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        match crate::kernel::with_files_owned(ticket, |ticket, files| {
+                  crate::toolbox::files::transfer_lifetime::TransferHost::release_file_transfer(files,
+                                                                                         ticket,
+                                                                                         storage)
+              })
+        {
+            Ok(result) => result,
+            Err((error, ticket)) =>
+            {
+                Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(ticket, error))
+            }
+        }
+    }
+}

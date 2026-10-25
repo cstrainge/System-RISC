@@ -165,6 +165,8 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<crate::toolbox::runtime::De
                                registry.register(&owner,crate::toolbox::files::streams::lifetime::specification(true),crate::toolbox::files::streams::lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::files::groups::lifetime::specification(false),crate::toolbox::files::groups::lifetime::ReleaseGroups).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::files::groups::lifetime::specification(true),crate::toolbox::files::groups::lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::transfer_lifetime::specification(false),crate::toolbox::files::transfer_lifetime::ReleaseTransfers).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::transfer_lifetime::specification(true),crate::toolbox::files::transfer_lifetime::ReleaseStorage).map_err(KindAccessError::Registry)?;
                                use crate::toolbox::drag::lifetime::{Registration, ReleaseKind};
                                registry.register(&owner, crate::toolbox::files::watch::lifetime::specification(false),
                                    crate::toolbox::files::watch::lifetime::ReleaseWatches).map_err(KindAccessError::Registry)?;
@@ -338,5 +340,12 @@ pub(crate) fn file_stream_kinds() -> Result<(KindLease, KindLease), mac_abi::Sta
 pub(crate) fn file_group_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry|Ok((registry.get(KindCode(*b"FIGR"))?,registry.get(KindCode(*b"FIGS"))?)))
+        .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn file_transfer_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry|Ok((registry.get(KindCode(*b"FTXN"))?,registry.get(KindCode(*b"FTXS"))?)))
         .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }

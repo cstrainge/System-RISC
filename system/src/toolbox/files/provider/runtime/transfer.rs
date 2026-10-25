@@ -2,7 +2,8 @@
 //! memory during admission. Every subsequent I/O and undo receipt is owned.
 #![forbid(unsafe_code)]
 use super::*;
-use crate::toolbox::handles::Kind;
+use crate::toolbox::handles::{Kind, OwnerRef};
+pub(crate) mod lifetime;
 mod model;
 mod plan;
 mod engine;
@@ -34,15 +35,21 @@ pub(in crate::toolbox::files) fn owns_coordinator(manager: &crate::toolbox::file
     {
         return false;
     };
-    internal_owner(handle) == owner && manager.transfers.get(handle).is_some()
+    internal_owner(handle) == owner && manager.transfers.completing(handle).is_some()
 }
 
 pub(in crate::toolbox::files) struct Entry
 {
-    bridge:         Option<bridge::Bridge>,
-    mutating:       bool,
+    bridge:    Option<bridge::Bridge>,
+    mutating:  bool,
+    owner:     u64,
+    authority: OwnerRef,
+    record:    Spinlock<Record>
+}
+struct Record
+{
+    closed:         bool,
     read_protected: Vec<(u32, u32)>,
-    owner:          u64,
     volumes:        Vec<u32>,
     state:          Option<Box<State>>,
     snapshot:       Snapshot,
@@ -55,16 +62,19 @@ impl Entry
 {
     pub(in crate::toolbox::files) fn uses(&self, volume: u32) -> bool
     {
-        !self.snapshot.terminal() && self.volumes.contains(&volume)
+        let record = self.record.lock();
+        !record.closed && record.volumes.contains(&volume)
     }
 
     pub(in crate::toolbox::files) fn protects_read(&self, handle: u32, owner: u64, volume: u32,
                                                    id: u32)
                                                    -> bool
     {
-        self.uses(volume)
+        let record = self.record.lock();
+        !record.closed
+        && record.volumes.contains(&volume)
         && internal_owner(handle) != owner
-        && self.read_protected.binary_search(&(volume, id)).is_ok()
+        && record.read_protected.binary_search(&(volume, id)).is_ok()
     }
 
     pub(in crate::toolbox::files) fn holds_notices(&self, volume: u32) -> bool
@@ -76,14 +86,37 @@ impl Entry
     {
         !self.mutating || internal_owner(handle) == owner
     }
+}
+impl crate::toolbox::files::objects::Payload for Entry
+{
+    const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FTXN");
+    const WIRE: Kind = Kind::FileTransfers;
 
-    pub(in crate::toolbox::files) fn abandon(&mut self, owner: u64)
+    fn cleanup_pending(&self) -> bool
     {
-        if self.owner == owner
-        {
-            self.cancel = true;
-            self.abandoned = true;
-        }
+        !self.record.lock().closed
+    }
+
+    fn begin_cleanup(&self)
+    {
+        let mut record = self.record.lock();
+        record.cancel = true;
+        record.abandoned = true;
+        ACTIVE.store(true, Ordering::Release);
+    }
+
+    fn owner_stopping(&self) -> bool
+    {
+        !self.authority.accepting()
+    }
+}
+impl lifetime::TransferHost for crate::toolbox::files::Manager
+{
+    fn release_file_transfer(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                             storage: bool)
+                             -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        self.transfers.release(ticket, storage)
     }
 }
 
@@ -91,6 +124,8 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
            bridge: Option<bridge::Bridge>)
            -> Result<(), Status>
 {
+    let authority = super::super::super::creation_authority(owner)?;
+    let kinds = crate::toolbox::handles::file_transfer_kinds()?;
     let query = bridge.is_some_and(|key| matches!(key.operation, EMPTY_TRASH | TRASH_USAGE));
     if call.handle != 0
        || sources.is_empty()
@@ -135,6 +170,7 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
     volumes.sort_unstable();
     volumes.dedup();
     let handle = files(|m| {
+        m.transfers.prepare(kinds)?;
         for &volume in &volumes
         {
             m.volumes.get(volume).and_then(super::super::super::Mounted::info).ok_or(NOT_FOUND)?;
@@ -147,27 +183,40 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
             }
         }
         m.transfers.reserve().map_err(|_| NO_MEMORY)?;
-        let entry = Entry { read_protected: Vec::new(),
-                            mutating: bridge.is_none_or(|key| key.operation != TRASH_USAGE),
+        let entry = Entry { mutating: bridge.is_none_or(|key| key.operation != TRASH_USAGE),
                             bridge,
                             owner,
-                            volumes,
-                            state: None,
-                            snapshot: Snapshot::default(),
-                            cancel: false,
-                            abandoned: false,
-                            notice_due: false,
-                            notice_pending: false };
-        let handle = m.transfers.insert(entry).map_err(|_| NO_MEMORY)?;
-        state.handle = handle;
-        // The same reservation owns the state before the public ID escapes.
-        m.transfers.get_mut(handle).unwrap().state = Some(state);
+                            authority: authority.clone(),
+                            record: Spinlock::new(Record { closed: false,
+                                                           read_protected: Vec::new(),
+                                                           volumes,
+                                                           state: Some(state),
+                                                           snapshot: Snapshot::default(),
+                                                           cancel: false,
+                                                           abandoned: false,
+                                                           notice_due: false,
+                                                           notice_pending: false }) };
+        let handle = m.transfers.insert(&authority, entry)?;
+        // Admission is not allowed to lose an owned coordinator on failure.
+        let entry = m.transfers.get_mut(handle).ok_or(BAD_ABI)?;
+        let mut record = entry.record.lock();
+        record.state.as_mut().ok_or(BAD_ABI)?.handle = handle;
         Ok(handle)
     })?;
     call.handle = handle;
     Snapshot::default().fill(call);
     ACTIVE.store(true, Ordering::Release);
     Ok(())
+}
+
+fn retire(manager: &mut crate::toolbox::files::Manager, handle: u32) -> Result<(), Status>
+{
+    let entry = manager.transfers.completing(handle).ok_or(NOT_FOUND)?;
+    if !entry.record.lock().closed
+    {
+        return Err(SERVICE_BUSY);
+    }
+    manager.transfers.remove(handle).ok_or(NOT_FOUND)
 }
 
 pub(crate) fn request(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSource])
@@ -191,19 +240,22 @@ pub(crate) fn request(owner: u64, call: &mut FileTransferCall, sources: &[FileTr
         {
             return Err(ACCESS_DENIED);
         }
+        let mut record = entry.record.lock();
         if matches!(call.operation, CANCEL_TRANSFER | ABANDON_TRANSFER)
         {
-            entry.cancel = true;
+            record.cancel = true;
         }
+        record.notice_pending = false;
+        record.snapshot.fill(call);
+        let closed = record.closed;
+        drop(record);
         if call.operation == ABANDON_TRANSFER
         {
-            entry.abandoned = true;
+            m.transfers.abandon(call.handle)?;
         }
-        entry.notice_pending = false;
-        entry.snapshot.fill(call);
-        if entry.snapshot.terminal()
+        else if closed
         {
-            m.transfers.remove(call.handle);
+            m.transfers.remove(call.handle).ok_or(NOT_FOUND)?;
         }
         // STEP is an observation, not a nested driver pump. The idle service
         // advances bounded work independently of app polling or mouse motion.
@@ -242,21 +294,24 @@ pub(super) fn pump()
                 {
                     return Ok(None);
                 };
-                let entry = m.transfers.get_mut(handle).ok_or(NOT_FOUND)?;
-                if entry.snapshot.terminal() && !entry.notice_due
+                let entry = m.transfers.completing(handle).ok_or(NOT_FOUND)?;
+                let mut record = entry.record.lock();
+                if record.closed && !record.notice_due
                 {
-                    if entry.abandoned
+                    let abandoned = record.abandoned;
+                    drop(record);
+                    if abandoned
                     {
-                        m.transfers.remove(handle);
+                        m.transfers.remove(handle).ok_or(NOT_FOUND)?;
                     }
                     return Ok(None);
                 }
-                let Some(mut state) = entry.state.take()
+                let Some(mut state) = record.state.take()
                 else
                 {
                     return Ok(None);
                 };
-                state.cancelling |= entry.cancel && !state.committed;
+                state.cancelling |= record.cancel && !state.committed;
                 Ok(Some((handle, state)))
             })
         };
@@ -270,11 +325,12 @@ pub(super) fn pump()
         // closure borrows the owner; it moves it only after locating its mark.
         let mut owned = Some(state);
         let restored = files(|m| {
-            let entry = m.transfers.get_mut(handle).ok_or(NOT_FOUND)?;
-            let mut state = owned.take().unwrap();
+            let entry = m.transfers.completing(handle).ok_or(NOT_FOUND)?;
+            let mut record = entry.record.lock();
+            let mut state = owned.take().ok_or(BAD_ABI)?;
             if state.stage == Stage::CommitBarrier
             {
-                state.cancelling |= entry.cancel;
+                state.cancelling |= record.cancel;
                 if !state.cancelling
                 {
                     state.committed = true;
@@ -283,50 +339,53 @@ pub(super) fn pump()
                     state.stage = Stage::FinalizeProperties;
                 }
             }
-            let finished = state.terminal() && !entry.snapshot.terminal();
+            let finished = state.terminal() && !record.closed;
+            record.closed = state.terminal();
             // An unreachable destination must not freeze an untouched startup
             // volume (preferences, documents and unrelated future drags). Keep
             // quarantine leases only where a mutation may have occurred.
-            let before = entry.volumes.len();
+            let before = record.volumes.len();
             if state.undo_complete
             {
-                entry.volumes.clear();
+                record.volumes.clear();
             }
             else if state.stats.cleanup_error != OK
             {
-                entry.volumes.retain(|volume| state.mutated.binary_search(volume).is_ok());
+                record.volumes.retain(|volume| state.mutated.binary_search(volume).is_ok());
             }
-            let released = entry.volumes.len() != before;
-            entry.notice_due |= state.stats.changed(entry.snapshot);
-            entry.snapshot = state.stats;
+            let released = record.volumes.len() != before;
+            record.notice_due |= state.stats.changed(record.snapshot);
+            record.snapshot = state.stats;
             let waiter = if finished { entry.bridge.map(|bridge| bridge.thread) } else { None };
             if entry.bridge.is_some() && state.terminal()
             {
-                entry.notice_due = false;
+                record.notice_due = false;
             }
-            if state.terminal() && entry.abandoned
+            if state.terminal() && record.abandoned
             {
-                m.transfers.remove(handle);
+                drop(record);
+                m.transfers.remove(handle).ok_or(NOT_FOUND)?;
                 if finished
                 {
                     m.release_transfer_notices();
                 }
                 return Ok((None, waiter));
             }
-            entry.state = Some(state);
-            let notice = if entry.notice_due
-                            && !entry.notice_pending
-                            && !entry.abandoned
+            record.state = Some(state);
+            let notice = if record.notice_due
+                            && !record.notice_pending
+                            && !record.abandoned
                             && entry.bridge.is_none()
             {
-                entry.notice_due = false;
-                entry.notice_pending = true;
+                record.notice_due = false;
+                record.notice_pending = true;
                 Some(entry.owner)
             }
             else
             {
                 None
             };
+            drop(record);
             if finished || released
             {
                 m.release_transfer_notices();
@@ -350,14 +409,15 @@ pub(super) fn pump()
             if let Err(error) = delivered
             {
                 let _ = files(|m| {
-                    if let Some(entry) = m.transfers.get_mut(handle)
+                    if let Some(entry) = m.transfers.completing(handle)
                     {
-                        entry.notice_pending = false;
-                        entry.notice_due = true;
+                        let mut record = entry.record.lock();
+                        record.notice_pending = false;
+                        record.notice_due = true;
                         if error == NOT_FOUND
                         {
-                            entry.abandoned = true;
-                            entry.cancel = true;
+                            record.abandoned = true;
+                            record.cancel = true;
                         }
                     }
                     Ok(())
@@ -367,21 +427,13 @@ pub(super) fn pump()
     }
     // Check/store under the same guard as Begin, avoiding a lost wake.
     let _ = files(|m| {
-        if m.transfers
-            .iter()
-            .all(|(_, entry)| entry.snapshot.terminal() && !entry.notice_due && !entry.abandoned)
+        if m.transfers.iter().all(|(_, entry)| {
+                                 let record = entry.record.lock();
+                                 record.closed && !record.notice_due && !record.abandoned
+                             })
         {
             ACTIVE.store(false, Ordering::Release);
         }
         Ok(())
     });
-}
-
-pub(in crate::toolbox::files) fn abandon(manager: &mut super::super::Manager, owner: u64)
-{
-    for entry in manager.transfers.values_mut()
-    {
-        entry.abandon(owner);
-    }
-    ACTIVE.store(true, Ordering::Release);
 }
