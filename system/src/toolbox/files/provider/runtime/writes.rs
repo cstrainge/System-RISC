@@ -374,8 +374,11 @@ pub(super) fn folder_flight(owner: u64, thread: u64, key: Key, call: &FileCall, 
     input.try_reserve_exact(name.len()).map_err(|_| NO_MEMORY)?;
     input.push_str(name);
     let parent = if call.operation == TRASH_DIRECTORY { ROOT_ID } else { call.cnid };
-    let mut plan =
-        files(|m| m.reserve_provider_directory(owner, call.volume, parent, name, call.position))?;
+    let authority = crate::toolbox::files::creation_authority(owner)?;
+    let mut plan = files(|m| {
+        m.reserve_provider_directory_for(owner, &authority, call.volume, parent, name,
+                                         call.position)
+    })?;
     if call.operation == super::super::super::properties::CREATE_PRIVATE_DIRECTORY
     {
         plan.finder_info[8..10].copy_from_slice(&0x4000u16.to_be_bytes());

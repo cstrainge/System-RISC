@@ -8,11 +8,17 @@ enum Phase
     Staged,
     Running,
     Quarantined,
-    Cleanup
+    Cleanup,
+    Closed
 }
 pub(in crate::toolbox::files) struct State
 {
-    provider:  u32,
+    provider: u32,
+    progress: spinning_top::Spinlock<Progress>
+}
+#[derive(Clone, Copy)]
+struct Progress
+{
     phase:     Phase,
     orphaned:  bool,
     confirmed: Option<CatalogInfo>,
@@ -20,14 +26,36 @@ pub(in crate::toolbox::files) struct State
 }
 impl State
 {
-    pub(in crate::toolbox::files) fn staged(&self) -> bool
+    fn new(provider: u32, phase: Phase, metadata: Option<u32>) -> Self
     {
-        self.phase == Phase::Staged
+        Self { provider,
+               progress: spinning_top::Spinlock::new(Progress { phase,
+                                                                orphaned: false,
+                                                                confirmed: None,
+                                                                metadata }) }
     }
 
-    pub(in crate::toolbox::files) fn orphaned(&self) -> bool
+    pub(in crate::toolbox::files) fn staged(&self) -> bool
     {
-        self.orphaned
+        self.progress.lock().phase == Phase::Staged
+    }
+
+    pub(in crate::toolbox::files) fn needs_cleanup(&self) -> bool
+    {
+        !matches!(self.progress.lock().phase, Phase::Staged | Phase::Closed)
+    }
+
+    pub(in crate::toolbox::files) fn abandon(&self)
+    {
+        let mut progress = self.progress.lock();
+        progress.orphaned = true;
+        if progress.phase == Phase::Quarantined
+        {
+            progress.phase = Phase::Cleanup;
+        }
+        drop(progress);
+        #[cfg(target_arch = "riscv64")]
+        super::runtime::request_write_cleanup();
     }
 }
 pub(in crate::toolbox::files) struct Plan
@@ -47,10 +75,14 @@ pub(in crate::toolbox::files) struct Plan
 }
 impl Manager
 {
-    pub(in crate::toolbox::files) fn reserve_provider_metadata(&mut self, owner: u64,
-                                                               call: &FileCall)
-                                                               -> Result<(u32, u32), Status>
+    pub(in crate::toolbox::files) fn reserve_provider_metadata_for(&mut self, owner: u64,
+                                                                   authority:&crate::toolbox::handles::OwnerRef,
+                                                                   call: &FileCall)
+                                                                   -> Result<(u32, u32), Status>
     {
+        self.validate_file_authority(owner, authority)?;
+        #[cfg(target_arch = "riscv64")]
+        self.prepare_writes(crate::toolbox::handles::file_write_kinds()?)?;
         self.validate_transfer_mutation(owner, call.volume)?;
         if call.operation == REMOVE && self.file_pinned(call.volume, call.cnid)
         {
@@ -81,33 +113,31 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        let handle =
-            self.writes
-                .insert(Pending { owner,
-                                  volume: call.volume,
-                                  parent: if call.operation == MOVE_INTO
-                                  {
-                                      call.index
-                                  }
-                                  else
-                                  {
-                                      0
-                                  },
-                                  expected_cnid: call.cnid,
-                                  file_type: [0; 4],
-                                  creator: [0; 4],
-                                  when: call.position,
-                                  name: Vec::new(),
-                                  comparison: Vec::new(),
-                                  length: 0,
-                                  data: Vec::new(),
-                                  directory: false,
-                                  provider: Some(State { provider,
-                                                         phase: Phase::Running,
-                                                         orphaned: false,
-                                                         confirmed: None,
-                                                         metadata: Some(call.operation) }) })
-                .map_err(|_| NO_MEMORY)?;
+        let handle = self.writes.insert(authority,
+                                         Pending { authority: authority.clone(),
+                                                   owner,
+                                                   volume: call.volume,
+                                                   parent: if call.operation == MOVE_INTO
+                                                   {
+                                                       call.index
+                                                   }
+                                                   else
+                                                   {
+                                                       0
+                                                   },
+                                                   expected_cnid: call.cnid,
+                                                   file_type: [0; 4],
+                                                   creator: [0; 4],
+                                                   when: call.position,
+                                                   name: Vec::new(),
+                                                   comparison: Vec::new(),
+                                                   length: 0,
+                                                   data: Vec::new(),
+                                                   directory: false,
+                                                   provider:
+                                                       Some(State::new(provider,
+                                                                       Phase::Running,
+                                                                       Some(call.operation))) })?;
         Ok((provider, handle))
     }
 
@@ -115,10 +145,11 @@ impl Manager
                                                                bytes: &[u8], name: &str)
                                                                -> Result<CatalogInfo, Status>
     {
-        let mark = self.writes.get_mut(handle).ok_or(NOT_FOUND)?;
+        let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
         let entry = catalog(mark.volume, bytes, Some(mark.expected_cnid), None)?;
-        let state = mark.provider.as_mut().ok_or(BAD_ARGUMENT)?;
-        let operation = state.metadata.ok_or(BAD_ARGUMENT)?;
+        let state = mark.provider.as_ref().ok_or(BAD_ARGUMENT)?;
+        let mut progress = state.progress.lock();
+        let operation = progress.metadata.ok_or(BAD_ARGUMENT)?;
         if matches!(operation, SET_LOCKED | SET_STATIONERY) && entry.is_directory()
         {
             return Err(BAD_ARGUMENT);
@@ -141,16 +172,19 @@ impl Manager
         {
             return Err(BAD_ABI);
         }
-        mark.parent = entry.parent;
-        state.confirmed = Some(entry);
+        progress.confirmed = Some(entry);
         Ok(entry)
     }
 
-    pub(in crate::toolbox::files) fn reserve_provider_directory(&mut self, owner: u64,
-                                                                volume: u32, parent: u32,
-                                                                name: &str, when: u64)
-                                                                -> Result<Plan, Status>
+    pub(in crate::toolbox::files) fn reserve_provider_directory_for(&mut self, owner: u64,
+                                                                    authority:&crate::toolbox::handles::OwnerRef,
+                                                                    volume: u32, parent: u32,
+                                                                    name: &str, when: u64)
+                                                                    -> Result<Plan, Status>
     {
+        self.validate_file_authority(owner, authority)?;
+        #[cfg(target_arch = "riscv64")]
+        self.prepare_writes(crate::toolbox::handles::file_write_kinds()?)?;
         self.validate_transfer_mutation(owner, volume)?;
         self.validate_provider_mutation(volume)?;
         let provider = self.read_provider(volume)?.ok_or(BAD_ARGUMENT)?;
@@ -158,7 +192,7 @@ impl Manager
                                        parent,
                                        when,
                                        ..Default::default() };
-        self.reserve_provider_write(owner, &mut call, name, provider)?;
+        self.reserve_provider_write_for(owner, authority, &mut call, name, provider)?;
         self.writes.get_mut(call.handle).ok_or(NOT_FOUND)?.directory = true;
         match self.prepare_provider_write(owner, call.handle)
         {
@@ -171,11 +205,15 @@ impl Manager
         }
     }
 
-    pub(in crate::toolbox::files) fn reserve_provider_write(&mut self, owner: u64,
-                                                            call: &mut DataWriteCall, name: &str,
-                                                            provider: u32)
-                                                            -> Result<(), Status>
+    pub(in crate::toolbox::files) fn reserve_provider_write_for(&mut self, owner: u64,
+                                                                authority:&crate::toolbox::handles::OwnerRef,
+                                                                call: &mut DataWriteCall,
+                                                                name: &str, provider: u32)
+                                                                -> Result<(), Status>
     {
+        self.validate_file_authority(owner, authority)?;
+        #[cfg(target_arch = "riscv64")]
+        self.prepare_writes(crate::toolbox::handles::file_write_kinds()?)?;
         self.validate_transfer_mutation(owner, call.volume)?;
         if call.expected_cnid != 0 && self.file_pinned(call.volume, call.expected_cnid)
         {
@@ -195,25 +233,23 @@ impl Manager
         input.extend_from_slice(name.as_bytes());
         let mut data = Vec::new();
         data.try_reserve_exact(call.length).map_err(|_| NO_MEMORY)?;
-        call.handle = self.writes
-                          .insert(Pending { owner,
-                                            volume: call.volume,
-                                            parent,
-                                            expected_cnid: call.expected_cnid,
-                                            file_type,
-                                            creator,
-                                            when: call.when,
-                                            name: input,
-                                            comparison: Vec::new(),
-                                            length: call.length,
-                                            data,
-                                            directory: false,
-                                            provider: Some(State { provider,
-                                                                   phase: Phase::Staged,
-                                                                   orphaned: false,
-                                                                   confirmed: None,
-                                                                   metadata: None }) })
-                          .map_err(|_| NO_MEMORY)?;
+        call.handle = self.writes.insert(authority,
+                                          Pending { authority: authority.clone(),
+                                                    owner,
+                                                    volume: call.volume,
+                                                    parent,
+                                                    expected_cnid: call.expected_cnid,
+                                                    file_type,
+                                                    creator,
+                                                    when: call.when,
+                                                    name: input,
+                                                    comparison: Vec::new(),
+                                                    length: call.length,
+                                                    data,
+                                                    directory: false,
+                                                    provider: Some(State::new(provider,
+                                                                              Phase::Staged,
+                                                                              None)) })?;
         Ok(())
     }
 
@@ -249,9 +285,9 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        let mark = self.writes.get_mut(handle).unwrap();
-        let state = mark.provider.as_mut().unwrap();
-        state.phase = Phase::Running;
+        let mark = self.writes.get_mut(handle).ok_or(NOT_FOUND)?;
+        let state = mark.provider.as_ref().ok_or(BAD_ARGUMENT)?;
+        state.progress.lock().phase = Phase::Running;
         Ok(Plan { provider: state.provider,
                   volume: mark.volume,
                   handle,
@@ -269,9 +305,10 @@ impl Manager
     pub(in crate::toolbox::files) fn confirm_provider_write(&mut self, handle: u32, bytes: &[u8])
                                                             -> Result<(), Status>
     {
-        let mark = self.writes.get_mut(handle).ok_or(NOT_FOUND)?;
-        let state = mark.provider.as_mut().ok_or(BAD_ARGUMENT)?;
-        if state.phase != Phase::Running
+        let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
+        let state = mark.provider.as_ref().ok_or(BAD_ARGUMENT)?;
+        let mut progress = state.progress.lock();
+        if progress.phase != Phase::Running
         {
             return Err(SERVICE_BUSY);
         }
@@ -292,7 +329,7 @@ impl Manager
         }
         if mark.expected_cnid != 0
         {
-            let mut original = state.confirmed.ok_or(BAD_ABI)?;
+            let mut original = progress.confirmed.ok_or(BAD_ABI)?;
             original.data_length = mark.length as u64;
             original.modified = mark.when;
             if original != entry
@@ -300,14 +337,14 @@ impl Manager
                 return Err(BAD_ABI);
             }
         }
-        state.confirmed = Some(entry);
+        progress.confirmed = Some(entry);
         Ok(())
     }
 
     pub(in crate::toolbox::files) fn select_provider_target(&mut self, handle: u32, bytes: &[u8])
                                                             -> Result<(), Status>
     {
-        let mark = self.writes.get_mut(handle).ok_or(NOT_FOUND)?;
+        let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
         let entry = catalog(mark.volume, bytes, None, Some(mark.parent))?;
         if mark.expected_cnid == 0
         {
@@ -325,12 +362,13 @@ impl Manager
         {
             return Err(ACCESS_DENIED);
         }
-        let state = mark.provider.as_mut().ok_or(BAD_ARGUMENT)?;
-        if state.phase != Phase::Running
+        let state = mark.provider.as_ref().ok_or(BAD_ARGUMENT)?;
+        let mut progress = state.progress.lock();
+        if progress.phase != Phase::Running
         {
             return Err(SERVICE_BUSY);
         }
-        state.confirmed = Some(entry);
+        progress.confirmed = Some(entry);
         Ok(())
     }
 
@@ -338,20 +376,30 @@ impl Manager
                                                             receipt: fs::WriteReceipt<'_>)
                                                             -> Result<CatalogInfo, Status>
     {
-        let mark = self.writes.get(handle).ok_or(NOT_FOUND)?;
+        let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
         let state = mark.provider.as_ref().ok_or(BAD_ARGUMENT)?;
-        if state.phase != Phase::Running
+        let progress = state.progress.lock();
+        if progress.phase != Phase::Running
         {
             return Err(SERVICE_BUSY);
         }
-        let entry = catalog_metadata(mark.volume, receipt.file, None, Some(mark.parent))?;
-        let expected = state.confirmed.ok_or(BAD_ABI)?;
+        let parent = if progress.metadata.is_some()
+        {
+            progress.confirmed.ok_or(BAD_ABI)?.parent
+        }
+        else
+        {
+            mark.parent
+        };
+        let entry = catalog_metadata(mark.volume, receipt.file, None, Some(parent))?;
+        let expected = progress.confirmed.ok_or(BAD_ABI)?;
         if expected != entry
         {
             return Err(BAD_ABI);
         }
         let volume = mark.volume;
         let info = volume_info(volume, receipt.volume);
+        drop(progress);
         let mounted = self.provider_mount(volume)?;
         let prior = mounted.info.ok_or(BAD_ABI)?;
         if info.filesystem != prior.filesystem
@@ -363,28 +411,29 @@ impl Manager
         let revision = super::super::scan::next_revision()?;
         mounted.info = Some(info);
         mounted.revision = revision;
-        self.writes.remove(handle).ok_or(NOT_FOUND)?;
+        self.finish_write_mark(handle)?;
         Ok(entry)
     }
 
     pub(in crate::toolbox::files) fn write_is_removal(&self, handle: u32) -> Result<bool, Status>
     {
-        let mark = self.writes.get(handle).ok_or(NOT_FOUND)?;
-        Ok(mark.provider.as_ref().ok_or(BAD_ARGUMENT)?.metadata == Some(REMOVE))
+        let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
+        Ok(mark.provider.as_ref().ok_or(BAD_ARGUMENT)?.progress.lock().metadata == Some(REMOVE))
     }
 
     pub(in crate::toolbox::files) fn publish_provider_removal(
         &mut self, handle: u32, receipt: fs::RemovalReceipt<'_>)
         -> Result<Option<CatalogInfo>, Status>
     {
-        let mark = self.writes.get(handle).ok_or(NOT_FOUND)?;
+        let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
         let state = mark.provider.as_ref().ok_or(BAD_ARGUMENT)?;
-        if state.metadata != Some(REMOVE) || state.phase != Phase::Running
+        let progress = state.progress.lock();
+        if progress.metadata != Some(REMOVE) || progress.phase != Phase::Running
         {
             return Err(BAD_ARGUMENT);
         }
         let volume = mark.volume;
-        let entry = state.confirmed;
+        let entry = progress.confirmed;
         if !receipt.removed
         {
             return Ok(None);
@@ -392,6 +441,7 @@ impl Manager
         let entry = entry.ok_or(BAD_ABI)?;
         let info = volume_info(volume, receipt.volume);
         let revision = super::super::scan::next_revision()?;
+        drop(progress);
         let mounted = self.provider_mount(volume)?;
         let prior = mounted.info.ok_or(BAD_ABI)?;
         if info.filesystem != prior.filesystem
@@ -403,80 +453,71 @@ impl Manager
         mounted.revision = revision;
         mounted.changes = true;
         self.notify_directory(volume, entry.parent)?;
-        self.writes.remove(handle).ok_or(NOT_FOUND)?;
+        self.finish_write_mark(handle)?;
         Ok(Some(entry))
     }
 
     pub(in crate::toolbox::files) fn retire_provider_write(&mut self, handle: u32)
                                                            -> Result<(), Status>
     {
-        let mark = self.writes.get(handle).ok_or(NOT_FOUND)?;
+        let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
         if mark.provider.is_none()
         {
             return Err(BAD_ARGUMENT);
         }
-        self.writes.remove(handle).ok_or(NOT_FOUND)?;
+        self.finish_write_mark(handle)?;
         Ok(())
     }
 
     pub(in crate::toolbox::files) fn quarantine_provider_write(&mut self, handle: u32)
                                                                -> Result<(), Status>
     {
-        let state =
-            self.writes.get_mut(handle).ok_or(NOT_FOUND)?.provider.as_mut().ok_or(BAD_ARGUMENT)?;
-        state.phase = Phase::Quarantined;
+        let state = self.writes
+                        .completing(handle)
+                        .ok_or(NOT_FOUND)?
+                        .provider
+                        .as_ref()
+                        .ok_or(BAD_ARGUMENT)?;
+        state.progress.lock().phase = Phase::Quarantined;
         Ok(())
-    }
-
-    /// Staged RAM has no remote lease. An active/uncertain transaction survives
-    /// its application's exit and receives one owned cleanup attempt.
-    pub(in crate::toolbox::files) fn abandon_write(&mut self, handle: u32) -> bool
-    {
-        let mark = self.writes.get_mut(handle).unwrap();
-        let Some(state) = &mut mark.provider
-        else
-        {
-            return false;
-        };
-        if state.staged()
-        {
-            return false;
-        }
-        state.orphaned = true;
-        if state.phase == Phase::Quarantined
-        {
-            state.phase = Phase::Cleanup;
-        }
-        #[cfg(target_arch = "riscv64")]
-        super::runtime::request_write_cleanup();
-        true
     }
 
     pub(in crate::toolbox::files) fn cleanup_provider_write(&mut self, owner: u64, handle: u32)
                                                             -> Result<(u32, u32), Status>
     {
         self.write_provider(owner, handle)?.ok_or(BAD_ARGUMENT)?;
-        let mark = self.writes.get_mut(handle).unwrap();
-        let state = mark.provider.as_mut().unwrap();
-        if state.phase != Phase::Quarantined
+        let mark = self.writes.get_mut(handle).ok_or(NOT_FOUND)?;
+        let state = mark.provider.as_ref().ok_or(BAD_ARGUMENT)?;
+        let mut progress = state.progress.lock();
+        if progress.phase != Phase::Quarantined
         {
             return Err(SERVICE_BUSY);
         }
-        state.phase = Phase::Running;
+        progress.phase = Phase::Running;
         Ok((state.provider, mark.volume))
     }
 
     pub(in crate::toolbox::files) fn next_orphaned_write(&mut self) -> Option<(u32, u32, u32)>
     {
-        let (handle, mark) = self.writes.iter().find(|(_, mark)| {
-                                                    mark.provider.as_ref().is_some_and(|state| {
-                                                                              state.orphaned
-                                                                              && state.phase
-                                                                                 == Phase::Cleanup
-                                                                          })
-                                                })?;
-        let result = (handle, mark.provider.as_ref()?.provider, mark.volume);
-        self.writes.get_mut(handle)?.provider.as_mut()?.phase = Phase::Running;
-        Some(result)
+        let (handle, mark) =
+            self.writes.iter().find(|(_, mark)| {
+                                   mark.provider.as_ref().is_some_and(|state| {
+                                                             let progress = state.progress.lock();
+                                                             progress.orphaned
+                                                             && progress.phase == Phase::Cleanup
+                                                         })
+                               })?;
+        let state = mark.provider.as_ref()?;
+        state.progress.lock().phase = Phase::Running;
+        Some((handle, state.provider, mark.volume))
+    }
+
+    fn finish_write_mark(&mut self, handle: u32) -> Result<(), Status>
+    {
+        let mark = self.writes.completing(handle).ok_or(NOT_FOUND)?;
+        let state = mark.provider.as_ref().ok_or(BAD_ARGUMENT)?;
+        state.progress.lock().phase = Phase::Closed;
+        self.writes.remove(handle).ok_or(NOT_FOUND)?;
+        Ok(())
     }
 }

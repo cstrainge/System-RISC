@@ -34,7 +34,7 @@ objects. The palette comes from resident theme roles.
 Current coverage is deliberately partial: only process domains are enumerated,
 and their ledgers contain migrated controls, scroll boxes, Standard File dialogs,
 offscreen QuickDraw worlds, windows, menus, memory blocks/zones, TextEdit,
-Alerts, Drag sessions/receivers, directory watches, open forks and their
+Alerts, Drag sessions/receivers, directory watches, open forks, staged data writes and their
 backing/saved state. Pool details include readable release providers from the public kind
 registry. System/bootstrap/module domains, individual object detail,
 CPU/account/page/service data, Kill/Restart,

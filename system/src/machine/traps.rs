@@ -403,20 +403,32 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                     {
                         None
                     };
-                    Some(toolbox::files::watch::Caller { owner: authority,
-                                                         kinds })
+                    Some(toolbox::files::Caller { owner: authority,
+                                                  kinds })
                 }
                 else
                 {
                     None
                 }
             }
+            else if size == size_of::<files::DataWriteCall>()
+                      && read_request!(files::DataWriteCall).operation == files::BEGIN_DATA_WRITE
+            {
+                let authority = match crate::context::current_owner()
+                {
+                    Ok(owner) => owner,
+                    Err(status) => return status as i64
+                };
+                Some(toolbox::files::Caller { owner: authority,
+                                              kinds: None })
+            }
             else
             {
                 None
             };
-            if let Some(result) =
-                unsafe { toolbox::files::native::dispatch_async(owner, pointer, size) }
+            if let Some(result) = unsafe {
+                toolbox::files::native::dispatch_async(owner, watch.as_ref(), pointer, size)
+            }
             {
                 return result;
             }

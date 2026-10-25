@@ -3,7 +3,9 @@ use mac_abi::{files::FileCall, *};
 /// # Safety
 /// The request is a live, exclusively borrowed trap record of the declared size.
 #[cfg(target_arch = "riscv64")]
-pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -> Option<i64>
+pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, pointer: *mut (),
+                                    size: usize)
+                                    -> Option<i64>
 {
     if size == size_of::<files::FileTransferCall>()
     {
@@ -89,6 +91,18 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
                 {
                     return BAD_ARGUMENT;
                 }
+                let authority = if call.operation == files::BEGIN_DATA_WRITE
+                {
+                    match caller
+                    {
+                        Some(caller) => Some(&caller.owner),
+                        None => return ACCESS_DENIED
+                    }
+                }
+                else
+                {
+                    None
+                };
                 let routed = crate::kernel::with_files(|manager| {
                     let asynchronous = if matches!(call.operation,
                                                    files::COMMIT_DATA_WRITE
@@ -118,7 +132,16 @@ pub(crate) unsafe fn dispatch_async(owner: u64, pointer: *mut (), size: usize) -
                     }
                     else
                     {
-                        Some(manager.write_request(owner, call, name, data).err().unwrap_or(OK))
+                        Some(if let Some(authority) = authority
+                             {
+                                 manager.write_request_for(owner, authority, call, name, data)
+                                        .err()
+                                        .unwrap_or(OK)
+                             }
+                             else
+                             {
+                                 manager.write_request(owner, call, name, data).err().unwrap_or(OK)
+                             })
                     }
                 });
                 match routed
@@ -481,7 +504,7 @@ unsafe fn dispatch_scan_async(owner: u64, pointer: *mut (), size: usize) -> i64
 /// `owner` and any watch authority must be captured from trusted execution
 /// context before I/O handoff; a scalar is insufficient for watch operations.
 pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, pointer: *mut (),
-                                    size: usize, watch: Option<&super::watch::Caller>)
+                                    size: usize, watch: Option<&super::Caller>)
                                     -> i64
 {
     if size == size_of::<files::IconGroupCall>()
@@ -502,7 +525,9 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
     }
     if size == size_of::<mac_abi::files::DataWriteCall>()
     {
-        return unsafe { super::write::dispatch(manager, owner, pointer, size) };
+        return unsafe {
+            super::write::dispatch(manager, owner, watch.map(|caller| &caller.owner), pointer, size)
+        };
     }
     if size == size_of::<mac_abi::files::FileScanCall>()
     {

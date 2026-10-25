@@ -577,3 +577,68 @@ fn refused_fork_release_retains_payloads_until_typed_cleanup_retry()
         assert_eq!(replacement.position(), Ok(0));
     });
 }
+
+#[test]
+fn staged_writes_are_walked_without_disturbing_another_apps_draft()
+{
+    use mac_system::testing::inspection as fixture;
+    writable_disk(|system| {
+        let volume = system.files().volume_at(0).unwrap().id;
+        let owner = fixture::add("Draft owner", 0);
+        let mut draft = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                        volume: volume.0,
+                                        parent: ROOT_ID,
+                                        length: 3,
+                                        file_type: *b"TEXT",
+                                        creator: *b"TEST",
+                                        ..Default::default() };
+        with_owner(owner, || system.client().data_write(&mut draft, "Draft", &[])).unwrap();
+        let mut other = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                        volume: volume.0,
+                                        parent: ROOT_ID,
+                                        length: 3,
+                                        file_type: *b"TEXT",
+                                        creator: *b"TEST",
+                                        ..Default::default() };
+        with_owner(5001, || system.client().data_write(&mut other, "Other draft", &[])).unwrap();
+        with_owner(owner, || {
+            assert_eq!(watch_pool(system, *b"FDWR").live, 1);
+            assert_eq!(watch_pool(system, *b"FDST").live, 1);
+        });
+        let failed = fixture::walk_registered(owner, true, false);
+        assert_eq!(failed.report.quarantined, 2);
+        assert!(failed.failures
+                      .iter()
+                      .all(|error| error.contains("FDWR") || error.contains("FDST")),
+                "{:?}",
+                failed.failures);
+        for operation in [APPEND_DATA_WRITE, COMMIT_DATA_WRITE, ABORT_DATA_WRITE]
+        {
+            let mut call = DataWriteCall { operation,
+                                           handle: draft.handle,
+                                           ..Default::default() };
+            let error =
+                with_owner(owner, || system.client().data_write(&mut call, "", &[])).unwrap_err();
+            assert_eq!(error, Error::NotFound);
+            assert!(error.to_string().contains("found"));
+        }
+        let mut rejected = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                           volume: volume.0,
+                                           parent: ROOT_ID,
+                                           length: 0,
+                                           ..Default::default() };
+        let error = with_owner(owner, || {
+                        system.client().data_write(&mut rejected, "After death", &[])
+                    }).unwrap_err();
+        assert_eq!(error, Error::ServiceBusy);
+        assert!(error.to_string().contains("busy"));
+        let retry = fixture::walk_registered(owner, false, true);
+        assert!(retry.failures.is_empty(), "{:?}", retry.failures);
+        fixture::try_retire(owner).unwrap();
+        other.operation = APPEND_DATA_WRITE;
+        with_owner(5001, || system.client().data_write(&mut other, "", b"yes")).unwrap();
+        other.operation = ABORT_DATA_WRITE;
+        with_owner(5001, || system.client().data_write(&mut other, "", &[])).unwrap();
+        assert!(system.files().lookup(volume, mac_toolbox::Cnid(ROOT_ID), "Draft").is_err());
+    });
+}

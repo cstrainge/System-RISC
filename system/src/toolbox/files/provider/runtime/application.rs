@@ -254,7 +254,7 @@ pub(crate) fn request(owner: u64, volume: u32, cnid: u32,
                                          loader: None,
                                          reading: false,
                                          outcome: None }).map_err(|_| NO_MEMORY)?;
-    let authority = crate::toolbox::files::fork_authority(owner)?;
+    let authority = crate::toolbox::files::creation_authority(owner)?;
     let (provider, handle) =
         files(|m| m.reserve_provider_file_for(owner, &authority, volume, cnid, RESOURCE_FORK))?;
     state.handle = handle;

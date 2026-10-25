@@ -255,7 +255,9 @@ pub(super) fn begin(owner: u64, thread: u64, key: Key, call: &FileCall, text: &s
         let mut input = String::new();
         input.try_reserve_exact(text.len()).map_err(|_| NO_MEMORY)?;
         input.push_str(text);
-        let (provider, handle) = files(|m| m.reserve_provider_metadata(owner, call))?;
+        let authority = crate::toolbox::files::creation_authority(owner)?;
+        let (provider, handle) =
+            files(|m| m.reserve_provider_metadata_for(owner, &authority, call))?;
         let job = match submit_args(provider,
                                     match call.operation
                                     {

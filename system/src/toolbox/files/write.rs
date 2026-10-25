@@ -3,8 +3,42 @@
 //! forks are preserved; no direct resource fork writer is exposed.
 #![cfg_attr(not(any(target_arch = "riscv64", feature = "test-support")), allow(dead_code))]
 use super::*;
+pub(crate) mod lifetime;
+impl super::objects::Payload for Pending
+{
+    const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FDWR");
+    const WIRE: Kind = Kind::FileWrites;
+
+    fn cleanup_pending(&self) -> bool
+    {
+        self.provider.as_ref().is_some_and(provider::writes::State::needs_cleanup)
+    }
+
+    fn begin_cleanup(&self)
+    {
+        if let Some(state) = &self.provider
+        {
+            state.abandon();
+        }
+    }
+
+    fn owner_stopping(&self) -> bool
+    {
+        !self.authority.accepting()
+    }
+}
+impl lifetime::WriteHost for Manager
+{
+    fn release_file_write(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                          storage: bool)
+                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        self.writes.release(ticket, storage)
+    }
+}
 pub(super) struct Pending
 {
+    pub authority:     crate::toolbox::handles::OwnerRef,
     pub owner:         u64,
     pub volume:        u32,
     pub parent:        u32,
@@ -18,13 +52,6 @@ pub(super) struct Pending
     pub data:          Vec<u8>,
     pub provider:      Option<provider::writes::State>,
     pub directory:     bool
-}
-impl Pending
-{
-    pub(super) fn orphaned(&self) -> bool
-    {
-        self.provider.as_ref().is_some_and(|state| state.orphaned())
-    }
 }
 pub(super) fn status(error: MutationError) -> Status
 {
@@ -50,12 +77,50 @@ impl Manager
                                 data: &[u8])
                                 -> Result<(), Status>
     {
+        if call.operation == BEGIN_DATA_WRITE
+        {
+            #[cfg(test)]
+            let authority = self.fixture_write_owner(owner);
+            #[cfg(all(not(test), target_arch = "riscv64"))]
+            let authority = if owner == 0
+            {
+                crate::toolbox::handles::system_owner()?
+            }
+            else
+            {
+                return Err(ACCESS_DENIED);
+            };
+            #[cfg(all(not(test), not(target_arch = "riscv64")))]
+            return Err(ACCESS_DENIED);
+            #[cfg(any(test, target_arch = "riscv64"))]
+            return self.write_request_for(owner, &authority, call, name, data);
+        }
+        self.write_request_inner(owner, None, call, name, data)
+    }
+
+    pub(crate) fn write_request_for(&mut self, owner: u64,
+                                    authority: &crate::toolbox::handles::OwnerRef,
+                                    call: &mut DataWriteCall, name: &str, data: &[u8])
+                                    -> Result<(), Status>
+    {
+        self.validate_file_authority(owner, authority)?;
+        #[cfg(target_arch = "riscv64")]
+        self.prepare_writes(crate::toolbox::handles::file_write_kinds()?)?;
+        self.write_request_inner(owner, Some(authority), call, name, data)
+    }
+
+    fn write_request_inner(&mut self, owner: u64,
+                           authority: Option<&crate::toolbox::handles::OwnerRef>,
+                           call: &mut DataWriteCall, name: &str, data: &[u8])
+                           -> Result<(), Status>
+    {
         if call.reserved != [0; 2]
         {
             return Err(BAD_ARGUMENT);
         }
         if call.operation == BEGIN_DATA_WRITE
         {
+            let authority = authority.ok_or(ACCESS_DENIED)?;
             if call.length > MAX_DATA_WRITE
             {
                 return Err(NO_MEMORY);
@@ -68,7 +133,7 @@ impl Manager
             self.validate_provider_mutation(call.volume)?;
             if let Some(provider) = self.read_provider(call.volume)?
             {
-                return self.reserve_provider_write(owner, call, name, provider);
+                return self.reserve_provider_write_for(owner, authority, call, name, provider);
             }
             let format = match self.mounted(call.volume)?.info.filesystem
             {
@@ -98,21 +163,21 @@ impl Manager
             self.writes.reserve().map_err(|_| NO_MEMORY)?;
             let mut bytes = Vec::new();
             bytes.try_reserve_exact(call.length).map_err(|_| NO_MEMORY)?;
-            call.handle = self.writes
-                              .insert(Pending { owner,
-                                                volume: call.volume,
-                                                parent,
-                                                expected_cnid: call.expected_cnid,
-                                                file_type: call.file_type,
-                                                creator: call.creator,
-                                                when: call.when,
-                                                name,
-                                                comparison,
-                                                length: call.length,
-                                                data: bytes,
-                                                provider: None,
-                                                directory: false })
-                              .map_err(|_| NO_MEMORY)?;
+            call.handle = self.writes.insert(authority,
+                                              Pending { authority: authority.clone(),
+                                                        owner,
+                                                        volume: call.volume,
+                                                        parent,
+                                                        expected_cnid: call.expected_cnid,
+                                                        file_type: call.file_type,
+                                                        creator: call.creator,
+                                                        when: call.when,
+                                                        name,
+                                                        comparison,
+                                                        length: call.length,
+                                                        data: bytes,
+                                                        provider: None,
+                                                        directory: false })?;
             return Ok(());
         }
         let pending = self.writes.get_mut(call.handle).ok_or(NOT_FOUND)?;
@@ -150,36 +215,41 @@ impl Manager
                 {
                     return Err(NOT_SUPPORTED);
                 }
-                let pending = self.writes.remove(call.handle).ok_or(NOT_FOUND)?;
                 let mut protected = Vec::new();
-                protected.try_reserve_exact(MAX_OPEN_FILES + self.streams.len())
-                         .map_err(|_| NO_MEMORY)?;
-                for (_, file) in self.handles.iter()
-                {
-                    if file.volume == pending.volume
-                    {
-                        protected.push(file.id);
-                    }
-                }
+                let capacity =
+                    self.handles.len().checked_add(self.streams.len()).ok_or(NO_MEMORY)?;
+                protected.try_reserve_exact(capacity).map_err(|_| NO_MEMORY)?;
+                let pending = self.writes.get(call.handle).ok_or(NOT_FOUND)?;
+                let (volume_id, parent) = (pending.volume, pending.parent);
+                protected.extend(self.handles
+                                     .iter()
+                                     .filter(|(_, file)| file.volume == volume_id)
+                                     .map(|(_, file)| file.id));
                 protected.extend(self.streams
                                      .iter()
-                                     .filter(|(_, mark)| mark.volume == pending.volume)
+                                     .filter(|(_, mark)| mark.volume == volume_id)
                                      .map(|(_, mark)| mark.expected)
                                      .filter(|id| *id != 0));
-                let mounted = self.mounted(pending.volume)?;
+                // Reserve the catalog/watch revision before any side effect.
+                // A refused commit leaves the same staged bytes and handle.
+                let revision = scan::next_revision()?;
+                let Mounted::Block(mounted) = self.volumes.get_mut(volume_id).ok_or(NOT_FOUND)?
+                else
+                {
+                    return Err(NOT_SUPPORTED);
+                };
                 if mounted.poisoned
                 {
                     return Err(ROLLBACK_FAILED);
                 }
-                mounted.catalog_revision = scan::next_revision()?;
                 let mut volume = io(Volume::mount(&mut mounted.device, mounted.partition))?;
                 let result =
-                    volume.save_data(mac_filesystem::DataSave { parent:    pending.parent,
-                                                                name:      &pending.name,
-                                                                expected:  pending.expected_cnid,
+                    volume.save_data(mac_filesystem::DataSave { parent,
+                                                                name: &pending.name,
+                                                                expected: pending.expected_cnid,
                                                                 file_type: pending.file_type,
-                                                                creator:   pending.creator,
-                                                                when:      pending.when },
+                                                                creator: pending.creator,
+                                                                when: pending.when },
                                      &pending.data,
                                      &protected);
                 mounted.scanner = volume.catalog_scanner().ok();
@@ -189,8 +259,10 @@ impl Manager
                     {
                         mounted.info.free_bytes = volume.free_bytes;
                         mounted.info.modified = volume.modified;
-                        call.entry = metadata(pending.volume, &entry);
-                        self.notify_directory(pending.volume, pending.parent)?;
+                        mounted.catalog_revision = revision;
+                        call.entry = metadata(volume_id, &entry);
+                        self.writes.remove(call.handle).ok_or(NOT_FOUND)?;
+                        self.notify_directory_at(volume_id, parent, revision);
                         Ok(())
                     }
                     Err(error) =>
@@ -210,12 +282,30 @@ impl Manager
 }
 /// # Safety
 /// All declared borrowed request/name/data ranges must be valid for this call.
-pub(super) unsafe fn dispatch(manager: &mut Manager, owner: u64, pointer: *mut (), size: usize)
+pub(super) unsafe fn dispatch(manager: &mut Manager, owner: u64,
+                              authority: Option<&crate::toolbox::handles::OwnerRef>,
+                              pointer: *mut (), size: usize)
                               -> i64
 {
     unsafe {
         checked(pointer, size, |call, name, data| {
-            manager.write_request(owner, call, name, data).err().unwrap_or(OK)
+            if call.operation == BEGIN_DATA_WRITE
+            {
+                match authority
+                {
+                    Some(authority) =>
+                    {
+                        manager.write_request_for(owner, authority, call, name, data)
+                               .err()
+                               .unwrap_or(OK)
+                    }
+                    None => ACCESS_DENIED
+                }
+            }
+            else
+            {
+                manager.write_request(owner, call, name, data).err().unwrap_or(OK)
+            }
         })
     }
 }
@@ -263,4 +353,36 @@ pub(super) unsafe fn checked(pointer: *mut (), size: usize,
         unsafe { core::slice::from_raw_parts(call.data, call.data_length) }
     };
     request(call, name, data) as i64
+}
+
+#[cfg(test)]
+impl Manager
+{
+    pub(super) fn fixture_write_owner(&mut self, label: u64) -> crate::toolbox::handles::OwnerRef
+    {
+        use mac_object_table::domain::{DomainKind, OwnerIndex};
+
+        use crate::toolbox::handles::{KindCode, OwnerRef};
+        let owner = self.handles.fixture_owner(label);
+        let registry = &mut self.handles.fixture.as_mut().unwrap().0;
+        let kinds = match (registry.get(KindCode(*b"FDWR")), registry.get(KindCode(*b"FDST")))
+        {
+            (Ok(payload), Ok(storage)) => (payload, storage),
+            _ =>
+            {
+                let registrar =
+                    OwnerRef::try_new(OwnerIndex::issue(DomainKind::Module).unwrap()).unwrap();
+                (registry.register(&registrar,
+                                   lifetime::specification(false),
+                                   lifetime::ReleaseWrites)
+                         .unwrap(),
+                 registry.register(&registrar,
+                                   lifetime::specification(true),
+                                   lifetime::ReleaseStorage)
+                         .unwrap())
+            }
+        };
+        self.prepare_writes(kinds).unwrap();
+        owner
+    }
 }

@@ -547,7 +547,7 @@ impl Desktop
                             }
                             super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
                             super::handles::cleanup::Cause::DragEffectStorage { .. }
-                            | super::handles::cleanup::Cause::FileForkRetirementStorage { .. } =>
+                            | super::handles::cleanup::Cause::FileRetirementStorage { .. } =>
                             {
                                 NO_MEMORY
                             }

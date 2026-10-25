@@ -491,8 +491,8 @@ mod tests
         let (_, other) = manager.reserve_provider_file(9, volume, 16, DATA_FORK).unwrap();
         manager.publish_provider_file(other, &open_reply(9, 0)).unwrap();
         manager.begin_provider_file_read(7, handle, 4).unwrap();
-        assert_eq!(manager.fixture_close_forks(7), 1);
-        assert_eq!(manager.fixture_close_forks(7), 0);
+        assert_eq!(manager.fixture_close_objects(7), 1);
+        assert_eq!(manager.fixture_close_objects(7), 0);
         assert_eq!(manager.file_provider(7, handle), Err(NOT_FOUND));
         assert_eq!(manager.next_orphaned_file().unwrap(), None);
         assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
@@ -532,7 +532,7 @@ mod tests
             {
                 manager.begin_provider_file_read(7, handle, 4).unwrap();
             }
-            let (walk, failures) = manager.fixture_walk_forks(7, true, false);
+            let (walk, failures) = manager.fixture_walk_files(7, true, false);
             assert_eq!(walk.quarantined, 2);
             assert!(failures.iter().all(|error| error.contains("FFRK") || error.contains("FFST")),
                     "{failures:?}");
@@ -547,7 +547,7 @@ mod tests
             {
                 assert_eq!(manager.finish_provider_file_read(handle, 0, 4, None), Ok((0, 9)));
             }
-            let (_, failures) = manager.fixture_walk_forks(7, false, true);
+            let (_, failures) = manager.fixture_walk_files(7, false, true);
             assert!(failures.is_empty(), "{failures:?}");
             if closing
             {
@@ -686,8 +686,8 @@ mod tests
         // potentially published remote transaction along with its app stack.
         manager.quarantine_provider_write(handle).unwrap();
         assert_eq!(manager.cleanup_provider_write(8, handle), Err(ACCESS_DENIED));
-        assert_eq!(manager.close_all(7), 1);
-        assert_eq!(manager.close_all(7), 0);
+        assert_eq!(manager.fixture_close_objects(7), 1);
+        assert_eq!(manager.fixture_close_objects(7), 0);
         assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
         assert_eq!(manager.next_orphaned_write(), Some((handle, 77, volume)));
         assert_eq!(manager.next_orphaned_write(), None);
@@ -711,12 +711,71 @@ mod tests
                    Err(SCAN_STALE));
         assert_eq!(manager.write_provider(7, handle), Err(NOT_FOUND));
         begin.handle = 0;
-        manager.write_request(7, &mut begin, "Next", &[]).unwrap();
+        assert_eq!(manager.write_request(7, &mut begin, "Next", &[]),
+                   Err(SERVICE_BUSY),
+                   "stopped domains cannot publish another writer");
+        manager.write_request(9, &mut begin, "Next", &[]).unwrap();
         assert_ne!(begin.handle, handle);
         assert_eq!(begin.handle & 0xffff, handle & 0xffff);
-        assert_eq!(manager.close_all(7), 1); // RAM-only staging needs no provider ACK.
+        assert_eq!(manager.fixture_close_objects(9), 1); // RAM-only staging needs no provider ACK.
         assert_eq!(manager.begin_provider_unmount(volume), Ok(77));
     }
+    #[test]
+    fn write_completion_during_quarantined_dispatch_keeps_the_real_cleanup_barrier()
+    {
+        for terminal_first in [false, true]
+        {
+            let mut manager = Manager::default();
+            let volume = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
+            manager.publish_provider_mount(volume, &descriptor()).unwrap();
+            let mut begin = DataWriteCall { operation: BEGIN_DATA_WRITE,
+                                            volume,
+                                            parent: ROOT_ID,
+                                            length: 3,
+                                            ..Default::default() };
+            manager.write_request(7, &mut begin, "Pending draft", &[]).unwrap();
+            let handle = begin.handle;
+            let mut append = DataWriteCall { operation: APPEND_DATA_WRITE,
+                                             handle,
+                                             ..Default::default() };
+            manager.write_request(7, &mut append, "", b"abc").unwrap();
+            let plan = manager.prepare_provider_write(7, handle).unwrap();
+            assert_eq!(plan.data, b"abc");
+            let (walk, failures) = manager.fixture_walk_files(7, true, false);
+            assert_eq!(walk.quarantined, 2);
+            assert!(failures.iter()
+                            .all(|failure| failure.contains("FDWR") || failure.contains("FDST")),
+                    "{failures:?}");
+            assert_eq!(manager.write_provider(7, handle), Err(NOT_FOUND));
+            assert_eq!(manager.begin_provider_unmount(volume), Err(SERVICE_BUSY));
+            assert_eq!(manager.prepare_power(), Err(SERVICE_BUSY));
+            if terminal_first
+            {
+                manager.retire_provider_write(handle).unwrap();
+            }
+            else
+            {
+                manager.quarantine_provider_write(handle).unwrap();
+            }
+            let (_, failures) = manager.fixture_walk_files(7, false, true);
+            assert!(failures.is_empty(), "{failures:?}");
+            if terminal_first
+            {
+                assert_eq!(manager.next_orphaned_write(),
+                           None,
+                           "terminal ACK must not repeat Abort");
+            }
+            else
+            {
+                assert_eq!(manager.next_orphaned_write(), Some((handle, 77, volume)));
+                manager.retire_provider_write(handle).unwrap();
+            }
+            assert_eq!(manager.handles.fixture_owner(7).summary().pending, 0);
+            assert_eq!(manager.write_provider(7, handle), Err(NOT_FOUND));
+            manager.begin_provider_unmount(volume).unwrap();
+        }
+    }
+
     #[test]
     fn mount_publication_is_validated_and_ack_retirement_preserves_generations()
     {

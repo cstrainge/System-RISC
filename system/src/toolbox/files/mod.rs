@@ -6,6 +6,7 @@ mod resource;
 pub(crate) mod application;
 use alloc::{string::String, vec::Vec};
 
+mod objects;
 pub(crate) mod forks;
 mod scan;
 mod properties;
@@ -62,7 +63,7 @@ pub(crate) fn abandon_document_io(owner: u64, thread: u64, volume: u32, cnid: u3
 /// Resolve a resident coordinator's trusted subject before any firmware stack
 /// handoff. Request payloads never supply this identity or authority.
 #[cfg(target_arch = "riscv64")]
-pub(super) fn fork_authority(owner: u64) -> Result<crate::toolbox::handles::OwnerRef, Status>
+pub(super) fn creation_authority(owner: u64) -> Result<crate::toolbox::handles::OwnerRef, Status>
 {
     if owner == 0
     {
@@ -84,11 +85,17 @@ pub(super) fn fork_authority(owner: u64) -> Result<crate::toolbox::handles::Owne
                                                                           })?
 }
 
+pub(crate) struct Caller
+{
+    pub owner: OwnerRef,
+    pub kinds: Option<(KindLease, KindLease)>
+}
+
 pub const MAX_DISKS: u32 = 32;
 pub const MAX_VOLUMES: usize = crate::toolbox::handles::Kind::Volumes.capacity();
 pub const MAX_OPEN_FILES: usize = crate::toolbox::handles::Kind::Files.capacity();
-use crate::toolbox::handles::{Kind, Table};
-mod write;
+use crate::toolbox::handles::{Kind, KindLease, OwnerRef, Table};
+pub(crate) mod write;
 mod moves;
 const MAX_PATH: usize = 4096;
 
@@ -307,8 +314,8 @@ pub struct Manager
     executables:          Vec<ExecutablePin>,
     document_pins:        Vec<(u32, u32, u32)>,
     volumes:              Table<Mounted>,
-    handles:              forks::Marks,
-    writes:               Table<write::Pending>,
+    handles:              objects::Objects<OpenFile>,
+    writes:               objects::Objects<write::Pending>,
     streams:              Table<streams::Stream>,
     groups:               Table<groups::Group>,
     #[cfg(target_arch = "riscv64")]
@@ -326,9 +333,9 @@ impl Default for Manager
                volumes:
                    Table::new(Kind::Volumes),
                handles:
-                   forks::Marks::new(),
+                   objects::Objects::new(),
                writes:
-                   Table::new(Kind::FileWrites),
+                   objects::Objects::new(),
                streams:
                    Table::new(Kind::FileStreams),
                groups:
@@ -353,6 +360,14 @@ impl Manager
                                 -> Result<(), Status>
     {
         self.handles.prepare(kinds)
+    }
+
+    pub(crate) fn prepare_writes(&mut self,
+                                 kinds: (crate::toolbox::handles::KindLease,
+                                  crate::toolbox::handles::KindLease))
+                                 -> Result<(), Status>
+    {
+        self.writes.prepare(kinds)
     }
 
     /// Power triggers run in the same non-preemptible service invocation as
@@ -781,9 +796,8 @@ impl Manager
         Ok(file)
     }
 
-    fn open_for(&mut self, owner: u64, authority: &crate::toolbox::handles::OwnerRef, volume: u32,
-                id: u32, kind: u32)
-                -> Result<(u32, u64), Status>
+    fn validate_file_authority(&self, owner: u64, authority: &crate::toolbox::handles::OwnerRef)
+                               -> Result<(), Status>
     {
         #[cfg(target_arch = "riscv64")]
         {
@@ -794,8 +808,19 @@ impl Manager
             {
                 return Err(ACCESS_DENIED);
             }
-            self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
         }
+        #[cfg(not(target_arch = "riscv64"))]
+        let _ = (owner, authority);
+        Ok(())
+    }
+
+    fn open_for(&mut self, owner: u64, authority: &crate::toolbox::handles::OwnerRef, volume: u32,
+                id: u32, kind: u32)
+                -> Result<(u32, u64), Status>
+    {
+        self.validate_file_authority(owner, authority)?;
+        #[cfg(target_arch = "riscv64")]
+        self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
         self.validate_transfer_read(owner, volume, id)?;
         if self.streams.iter().any(|(_, mark)| mark.volume == volume && mark.expected == id)
         {
@@ -1162,23 +1187,6 @@ impl Manager
             };
             // Native groups have no side effects until their atomic step.
             self.groups.remove(id);
-            count += 1;
-        }
-        loop
-        {
-            let id =
-                self.writes
-                    .iter()
-                    .find_map(|(id, file)| (file.owner == owner && !file.orphaned()).then_some(id));
-            let Some(id) = id
-            else
-            {
-                break;
-            };
-            if !self.abandon_write(id)
-            {
-                self.writes.remove(id);
-            }
             count += 1;
         }
         count

@@ -114,17 +114,9 @@ impl Manager
                                                                volume: u32, node: u32, kind: u32)
                                                                -> Result<(u32, u32), Status>
     {
+        self.validate_file_authority(owner, authority)?;
         #[cfg(target_arch = "riscv64")]
-        {
-            if owner != 0
-               && owner != authority.owner().incarnation()
-               && !(authority.owner().kind() == mac_object_table::domain::DomainKind::System
-                    && super::runtime::transfer::owns_coordinator(self, owner))
-            {
-                return Err(ACCESS_DENIED);
-            }
-            self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
-        }
+        self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
         self.validate_transfer_read(owner, volume, node)?;
         if node < ROOT_ID || !matches!(kind, DATA_FORK | RESOURCE_FORK)
         {

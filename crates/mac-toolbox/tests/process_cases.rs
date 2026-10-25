@@ -801,6 +801,11 @@ pub fn worker(system: &System<'_>) -> Result<()>
             let leaked_fork = system.files().open(process_file.volume,
                                                    process_file.cnid,
                                                    mac_toolbox::files::Fork::Resource)?;
+            let mut leaked_writer=system.files().create_data(mac_toolbox::files::DataFileSpec {
+                volume:watch_volume,parent:Cnid::ROOT,name:"Worker unpublished draft",replacing:None,
+                file_type:mac_toolbox::TypeCode::new(*b"TEXT"),creator:mac_toolbox::TypeCode::new(*b"TEST")
+            },4)?;
+            leaked_writer.write_all(b"held")?;
             let membership = system.inspection()
                                    .snapshot(mac_toolbox::inspection::Scope::Own)
                                    .map_err(|e| Failure::Service(e.cause.status()))?;
@@ -830,7 +835,9 @@ pub fn worker(system: &System<'_>) -> Result<()>
                             (*b"FWCH", 1),
                             (*b"FWST", 1),
                             (*b"FFRK", 1),
-                            (*b"FFST", 1)];
+                            (*b"FFST", 1),
+                            (*b"FDWR", 1),
+                            (*b"FDST", 1)];
             require(ledger.len() == expected.len() as u64,
                     "worker exit pool census missing a registered kind")?;
             for index in 0..ledger.len()
@@ -864,6 +871,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
             core::mem::forget(leaked_world);
             core::mem::forget(leaked_watch);
             core::mem::forget(leaked_fork);
+            core::mem::forget(leaked_writer);
             core::mem::forget(leaked_editor);
             core::mem::forget(leaked_alert);
             core::mem::forget(leaked_menu);

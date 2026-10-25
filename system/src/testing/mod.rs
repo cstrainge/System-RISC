@@ -133,6 +133,14 @@ impl Default for Session
                           crate::toolbox::files::forks::lifetime::specification(true),
                           crate::toolbox::files::forks::lifetime::ReleaseStorage)
                 .unwrap();
+        registry.register(&registrar,
+                          crate::toolbox::files::write::lifetime::specification(false),
+                          crate::toolbox::files::write::lifetime::ReleaseWrites)
+                .unwrap();
+        registry.register(&registrar,
+                          crate::toolbox::files::write::lifetime::specification(true),
+                          crate::toolbox::files::write::lifetime::ReleaseStorage)
+                .unwrap();
         use crate::toolbox::drag::lifetime::{Registration, ReleaseKind};
         for kind in [Registration::Sessions,
                      Registration::SessionStorage,
@@ -403,7 +411,13 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                     Err(status) => return status as i64
                 }
             } else { None };
-            let authority = if watch_operation.is_some() {
+            let write_admission=if size==size_of::<mac_abi::files::DataWriteCall>() {
+                match unsafe {request::<mac_abi::files::DataWriteCall>(pointer,size)} {
+                    Ok(call)=>call.operation==mac_abi::files::BEGIN_DATA_WRITE,
+                    Err(status)=>return status as i64
+                }
+            } else {false};
+            let authority = if watch_operation.is_some() || write_admission {
                 match inspection::caller_ledger(files::current_owner()) {
                     Ok(owner) => Some(owner), Err(status) => return status as i64
                 }
@@ -416,7 +430,12 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                                session.registry.get(crate::toolbox::handles::KindCode(*b"FFRK")).unwrap(),
                                session.registry.get(crate::toolbox::handles::KindCode(*b"FFST")).unwrap())) { return status as i64; }
                        }
-                       let watch = authority.map(|owner| crate::toolbox::files::watch::Caller {
+                       if write_admission {
+                           if let Err(status)=session.files.prepare_writes((
+                               session.registry.get(crate::toolbox::handles::KindCode(*b"FDWR")).unwrap(),
+                               session.registry.get(crate::toolbox::handles::KindCode(*b"FDST")).unwrap())) {return status as i64;}
+                       }
+                       let watch = authority.map(|owner| crate::toolbox::files::Caller {
                            owner,
                            kinds: if watch_operation == Some(mac_abi::files::WATCH_DIRECTORY) {
                                Some((session.registry.get(crate::toolbox::handles::KindCode(*b"FWCH")).unwrap(),
@@ -1046,5 +1065,16 @@ impl crate::toolbox::files::forks::lifetime::ForkHost for Session
     {
         crate::toolbox::files::forks::lifetime::ForkHost::release_file_fork(&mut self.files,
                                                                             ticket, storage)
+    }
+}
+
+impl crate::toolbox::files::write::lifetime::WriteHost for Session
+{
+    fn release_file_write(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                          storage: bool)
+                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        crate::toolbox::files::write::lifetime::WriteHost::release_file_write(&mut self.files,
+                                                                              ticket, storage)
     }
 }

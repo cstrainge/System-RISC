@@ -33,11 +33,6 @@ impl Drop for ProbeLease
 }
 
 type Retiring = projected::Removed<Watch, InvocationGate>;
-pub(crate) struct Caller
-{
-    pub owner: OwnerRef,
-    pub kinds: Option<(KindLease, KindLease)>
-}
 pub(super) struct Watches
 {
     objects:  Option<projected::Store<Watch, InvocationGate>>,

@@ -1070,3 +1070,34 @@ own registered integration. This slice does not complete stage 2 or stage 3,
 remove the existing file projection capacity, activate paging, or make application
 std available. Reactor Room displays the real FFRK/FFST pool counts; individual
 file identity details remain part of the public enumeration work.
+
+
+## Staged data writes join registered file lifetimes
+
+FDWR and FDST register staged data-file writes, provider metadata transactions
+and their per-owner backing. The same safe file-object store now serves forks
+and writes, forwarding identity, projection history and completion authority to
+the shared facility. Payload types fix their namespace and registered kind;
+preparation rejects a mismatched kind lease. A generic file caller carries the
+genuine owner authority through native and Pascal entry before firmware handoff.
+
+RAM-only drafts release without storage side effects. Submitted/uncertain provider
+transactions keep their token, payload and catalog/volume protection through
+terminal publication or rollback acknowledgement. Late callbacks use the opaque
+completion key through quarantine. Recorded terminal state makes later release
+retry a disposal rather than a second Abort. Retention is reserved before
+publication; an admission/cleanup refusal retains typed owner/kind/capacity facts
+and the unique cleanup ticket. The old data-write EXIT loop is removed.
+
+A local commit now retains its staging record on ordinary refusal or a durable
+rollback. `DataWriter::finish(&mut self)` can therefore retry or abort the same
+handle rather than discovering that System discarded it after returning an
+error. Protected-ID storage and the catalog/watch revision are prepared before
+I/O; successful publication consumes the record and publishes that reserved
+revision once. Failed rollback still poisons the volume and is not reported as
+successful recovery.
+
+System-backed transfer coordinator scope remains the explicitly staged M-D12
+exception until transfers themselves migrate. Streamed fork writers, icon groups,
+transfers, document/image/volume/module lifetimes and full I/O quiescence remain
+unfinished; this is not full stage-2/3 cleanup or page/heap/std activation.

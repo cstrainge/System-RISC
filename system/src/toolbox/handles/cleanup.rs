@@ -7,9 +7,12 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 pub(crate) enum Cause
 {
     Facility(PoolError),
-    FileForkRetirementStorage
+    FileRetirementStorage
     {
-        pending: usize
+        owner:    mac_object_table::domain::DomainId,
+        kind:     mac_object_table::domain::KindCode,
+        pending:  usize,
+        capacity: usize
     },
     DragEffectStorage
     {
@@ -34,11 +37,15 @@ impl core::fmt::Display for Cause
         match self
         {
             Self::Facility(error) => error.fmt(f),
-            Self::FileForkRetirementStorage { pending } =>
+            Self::FileRetirementStorage { owner,
+                                          kind,
+                                          pending,
+                                          capacity } =>
             {
                 write!(f,
-                       "File Manager cannot retain another provider fork with {pending} pending \
-                        closes; payload, provider token and cleanup ticket remain owned for retry")
+                       "File Manager {kind} cleanup for {owner} cannot retain another \
+                        asynchronous object: {pending} pending, reserved capacity {capacity}; \
+                        payload, provider token and cleanup ticket remain owned for retry")
             }
             Self::DragEffectStorage { pending,
                                       requested } =>
@@ -86,10 +93,16 @@ pub(crate) struct Failure
 }
 impl Failure
 {
-    pub(crate) fn fork_retirement_storage(ticket: ReleasedResource, pending: usize) -> Self
+    pub(crate) fn file_retirement_storage(ticket: ReleasedResource, pending: usize,
+                                          capacity: usize)
+                                          -> Self
     {
+        let key = ticket.key();
         Self { ticket,
-               cause: Cause::FileForkRetirementStorage { pending } }
+               cause: Cause::FileRetirementStorage { owner: key.owner(),
+                                                     kind: key.kind(),
+                                                     pending,
+                                                     capacity } }
     }
 
     pub(crate) fn drag_effect_storage(ticket: ReleasedResource, pending: usize) -> Self

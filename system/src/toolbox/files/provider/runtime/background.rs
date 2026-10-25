@@ -231,7 +231,7 @@ fn immediate_file(owner: u64, call: &mut FileCall, text: &str, capacity: usize) 
         {
             if call.operation == OPEN
             {
-                let authority = crate::toolbox::files::fork_authority(owner)?;
+                let authority = crate::toolbox::files::creation_authority(owner)?;
                 let (handle, length) =
                     files(|m| m.open_for(owner, &authority, call.volume, call.cnid, call.fork))?;
                 call.handle = handle;

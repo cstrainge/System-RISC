@@ -64,11 +64,13 @@ pub fn close_owner(owner: u64) -> usize
 {
     let ledger = super::inspection::caller_ledger(owner).expect("trusted fixture owner");
     let summary = ledger.summary();
-    let fork_count =
-        (0..summary.kinds).map(|at| ledger.pool_at(summary.revision, at).unwrap())
-                          .filter(|pool| pool.kind == mac_object_table::domain::KindCode(*b"FFRK"))
-                          .map(|pool| pool.live)
-                          .sum::<usize>();
+    let fork_count = (0..summary.kinds).map(|at| ledger.pool_at(summary.revision, at).unwrap())
+                                       .filter(|pool| {
+                                           [mac_object_table::domain::KindCode(*b"FFRK"),
+                               mac_object_table::domain::KindCode(*b"FDWR")].contains(&pool.kind)
+                                       })
+                                       .map(|pool| pool.live)
+                                       .sum::<usize>();
     let other = super::SESSION.with(|session| {
                                   session.borrow_mut()
                                          .as_mut()

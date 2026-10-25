@@ -2341,3 +2341,66 @@ fn atomic_icon_groups_validate_every_item_before_publishing_moves_and_positions(
                icon_moves::exercise(system, volume, file, WHEN);
            });
 }
+
+#[test]
+fn refused_data_commit_keeps_staging_for_retry_or_abort()
+{
+    use mac_toolbox::{Error, TypeCode, files::DataFileSpec};
+    let fixture = Fixture::new();
+    fixture.run(false, DiskFaults::default(), |system| {
+               let files = system.files();
+               let volume = files.volume_at(0).unwrap().id;
+               let item = files.lookup(volume, ROOT_ID, "Source/Sample").unwrap();
+               let resource = fork_bytes(system, item.id.0, Fork::Resource);
+               let mut writer =
+                   files.create_data_at(DataFileSpec { volume,
+                                                       parent: item.parent,
+                                                       name: "Sample",
+                                                       replacing: Some(item.id),
+                                                       file_type: TypeCode::new(*b"TEXT"),
+                                                       creator: TypeCode::new(*b"TEST") },
+                                        4,
+                                        WHEN)
+                        .unwrap();
+               writer.write_all(b"kept").unwrap();
+               let mut reader = files.open(volume, item.id, Fork::Data).unwrap();
+               let error = writer.finish().unwrap_err();
+               assert_eq!(error, Error::ServiceBusy);
+               assert!(error.to_string().contains("busy"));
+               reader.close().unwrap();
+               assert_eq!(writer.finish().unwrap().id, item.id);
+               assert_eq!(fork_bytes(system, item.id.0, Fork::Data), b"kept");
+               assert_eq!(fork_bytes(system, item.id.0, Fork::Resource), resource);
+           });
+}
+
+#[test]
+fn data_commit_can_retry_after_a_durable_rollback()
+{
+    use mac_toolbox::{Error, TypeCode, files::DataFileSpec};
+    let fixture = Fixture::new();
+    fixture.run(false,
+                DiskFaults { flush_at: Some(0),
+                             ..Default::default() },
+                |system| {
+                    let files = system.files();
+                    let volume = files.volume_at(0).unwrap().id;
+                    let item = files.lookup(volume, ROOT_ID, "Source/Sample").unwrap();
+                    let mut writer =
+                        files.create_data_at(DataFileSpec { volume,
+                                                            parent: item.parent,
+                                                            name: "Sample",
+                                                            replacing: Some(item.id),
+                                                            file_type: TypeCode::new(*b"TEXT"),
+                                                            creator: TypeCode::new(*b"TEST") },
+                                             4,
+                                             WHEN)
+                             .unwrap();
+                    writer.write_all(b"redo").unwrap();
+                    let error = writer.finish().unwrap_err();
+                    assert_eq!(error, Error::Io);
+                    assert!(error.to_string().contains("I/O"));
+                    assert_eq!(writer.finish().unwrap().id, item.id);
+                    assert_eq!(fork_bytes(system, item.id.0, Fork::Data), b"redo");
+                });
+}
