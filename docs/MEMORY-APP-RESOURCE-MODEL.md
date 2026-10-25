@@ -1448,3 +1448,37 @@ bounded Finder updates, original cursors, Reactor Room and multi-version StuffIt
 read/copy/corruption/nested-archive coverage. Native userspace also holds twenty
 full-width writers and proves reuse, stale refusal and complete disposal. These
 checks cover this migration rather than complete classic compatibility.
+
+
+### Publication returns retained completion provenance
+
+The shared store returns an opaque publication receipt from the same owner
+transaction that installs its payload. It carries the native ID and the exact
+owner/kind/registration/slot/generation completion key. Native and treaty
+projections use that single result; they do not reconstruct completion authority
+with an ordinary live-ID lookup after publication. That lookup correctly rejects
+already invalidated objects, even when their payload remains for cleanup.
+
+File operation storage, document batches and newly interned shared targets now
+consume the receipt directly. Receipt metadata neither acknowledges lower I/O
+nor independently pins a payload or pages. Actual stored payloads and unique
+removal guards still own completion; after their release the old receipt cannot
+resolve a reused or foreign object. Document-batch retirement preflight counts
+retained completions in O(1), including pending objects, rather than enumerating
+live batches on every admission.
+
+The motivating handoff is demonstrated through a controlled host invocation
+gate after publication metadata unlock. It is a future concurrency contract,
+not evidence that native multihart scheduling is enabled: current File Manager
+access remains serialized through the interrupt-masked hart0 handoff. No new
+privileged-fault recovery claim or allocator/MMU activation follows from it.
+
+Qualification: 371 scoped host cases pass, including five publication/handoff
+cases and the actual release-image read. The host gate invalidates after the
+real publication unlock: ordinary lookup refuses while the sealed receipt still
+resolves retained data, and real completion then revokes it. Root/child scope,
+foreign-store, pending-quota and stopped-owner checks retain their typed causes.
+Nine native checks pass across provider copy/exit/disconnect/retry, process and
+document lifetimes, aggregate Toolbox, bounded Finder, cursor, Reactor Room and
+StuffIt. Native/classic ABI, architecture boundaries, formatting and 52-library
+API documentation pass; the tested packaged installation remains unchanged.

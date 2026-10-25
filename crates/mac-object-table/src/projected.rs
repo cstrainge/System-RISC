@@ -100,6 +100,33 @@ pub struct CompletionKey
     wire:   u32
 }
 
+/// Treaty identity and native completion provenance captured by the same
+/// publication. Wire bits grant no late authority after ordinary invalidation.
+#[derive(Clone, Copy)]
+pub struct Publication
+{
+    completion: CompletionKey
+}
+impl Publication
+{
+    pub fn id(self) -> u32
+    {
+        self.completion.wire
+    }
+
+    pub fn into_parts(self) -> (u32, CompletionKey)
+    {
+        (self.completion.wire, self.completion)
+    }
+
+    fn new(wire: u32, native: store::Publication) -> Self
+    {
+        let (_, native) = native.into_parts();
+        Self { completion: CompletionKey { native,
+                                           wire } }
+    }
+}
+
 pub struct Store<T, G: InvocationGate>
 {
     projection: Arc<Projection>,
@@ -115,6 +142,12 @@ impl<T, G: InvocationGate> Store<T, G>
     }
 
     pub fn insert(&mut self, owner: &OwnerRef<G>, value: T) -> Result<u32, Error>
+    {
+        self.insert_with_receipt(owner, value).map(Publication::id)
+    }
+
+    pub fn insert_with_receipt(&mut self, owner: &OwnerRef<G>, value: T)
+                               -> Result<Publication, Error>
     {
         if !owner.accepting()
         {
@@ -132,15 +165,23 @@ impl<T, G: InvocationGate> Store<T, G>
                                                    value },
                                            projection)
                          .map_err(Error::Pool)?;
-        self.projection.access::<G, _>(|index| {
-                           *index.get_mut(wire).expect("exclusive provisional projection") = native;
-                       });
-        Ok(wire)
+        self.projection
+            .access::<G, _>(|index| {
+                *index.get_mut(wire).expect("exclusive provisional projection") = native.id();
+            });
+        Ok(Publication::new(wire, native))
     }
 
     pub fn insert_root(&mut self, reservation: crate::scope::Reservation<G>,
                        make: impl FnOnce(u32) -> T)
                        -> Result<u32, Error>
+    {
+        self.insert_root_with_receipt(reservation, make).map(Publication::id)
+    }
+
+    pub fn insert_root_with_receipt(&mut self, reservation: crate::scope::Reservation<G>,
+                                    make: impl FnOnce(u32) -> T)
+                                    -> Result<Publication, Error>
     {
         let wire = self.projection
                        .access::<G, _>(|index| index.insert(0))
@@ -157,13 +198,19 @@ impl<T, G: InvocationGate> Store<T, G>
         self.projection.access::<G, _>(|index| {
                            *index.get_mut(wire).expect("exclusive unpublished root projection \
                                                         is retained until native publication") =
-                               native;
+                               native.id();
                        });
-        Ok(wire)
+        Ok(Publication::new(wire, native))
     }
 
     pub fn insert_in_scope(&mut self, scope: &crate::scope::Lease<G>, value: T)
                            -> Result<u32, Error>
+    {
+        self.insert_in_scope_with_receipt(scope, value).map(Publication::id)
+    }
+
+    pub fn insert_in_scope_with_receipt(&mut self, scope: &crate::scope::Lease<G>, value: T)
+                                        -> Result<Publication, Error>
     {
         scope.admitting().map_err(|cause| {
                               Error::Pool(PoolError::Scope { owner: scope.subject(),
@@ -185,9 +232,9 @@ impl<T, G: InvocationGate> Store<T, G>
         self.projection.access::<G, _>(|index| {
                            *index.get_mut(wire).expect("exclusive unpublished child projection \
                                                         is retained until native publication") =
-                               native;
+                               native.id();
                        });
-        Ok(wire)
+        Ok(Publication::new(wire, native))
     }
 
     pub fn get(&self, wire: u32) -> Option<&T>

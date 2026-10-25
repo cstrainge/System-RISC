@@ -129,7 +129,7 @@ impl<T: Payload> Objects<T>
         self.admit(|objects| objects.insert_root(reservation, make))
     }
 
-    fn admit(&mut self, create: impl FnOnce(&mut T::Storage) -> Result<Id<T>, Status>)
+    fn admit(&mut self, create: impl FnOnce(&mut T::Storage) -> Result<(Id<T>, Key<T>), Status>)
              -> Result<Id<T>, Status>
     {
         // Completion entries include live, pending and retired payloads. Their
@@ -140,15 +140,7 @@ impl<T: Payload> Objects<T>
             .map_err(|_| NO_MEMORY)?;
         self.completions.try_reserve(1).map_err(|_| NO_MEMORY)?;
         let objects = self.objects.as_mut().ok_or(NOT_SUPPORTED)?;
-        let wire = create(objects)?;
-        let Some(key) = objects.key(wire)
-        else
-        {
-            // The owner walk may have won invalidation after publication; its
-            // real ticket still owns cleanup through the registered store.
-            drop(objects.remove(wire));
-            return Err(SERVICE_BUSY);
-        };
+        let (wire, key) = create(objects)?;
         self.completions.push((wire, key));
         Ok(wire)
     }

@@ -15,15 +15,14 @@ pub(in crate::toolbox::files) trait Backend<T: Payload>: Sized
     type Key: Copy;
     type Guard: Deref<Target = T>;
     fn new(kinds: (KindLease, KindLease)) -> Result<Self, Status>;
-    fn insert(&mut self, owner: &OwnerRef, value: T) -> Result<Self::Id, Status>;
+    fn insert(&mut self, owner: &OwnerRef, value: T) -> Result<(Self::Id, Self::Key), Status>;
     fn insert_scoped(&mut self, scope: &super::super::subject::Lease, value: T)
-                     -> Result<Self::Id, Status>;
+                     -> Result<(Self::Id, Self::Key), Status>;
     fn insert_root(&mut self, reservation: super::super::subject::Root,
                    make: impl FnOnce(Self::Id) -> T)
-                   -> Result<Self::Id, Status>;
+                   -> Result<(Self::Id, Self::Key), Status>;
     fn get(&self, id: Self::Id) -> Option<&T>;
     fn get_mut(&mut self, id: Self::Id) -> Option<&mut T>;
-    fn key(&self, id: Self::Id) -> Option<Self::Key>;
     fn completing(&self, key: &Self::Key) -> Option<&T>;
     fn remove(&mut self, id: Self::Id) -> Option<Self::Guard>;
     fn releasing(&self, ticket: &ReleasedResource) -> Option<&T>;
@@ -54,23 +53,30 @@ impl<T: Payload> Backend<T> for Native<T>
                                              .map_err(|error| status(projected::Error::Pool(error)))
     }
 
-    fn insert(&mut self, owner: &OwnerRef, value: T) -> Result<u64, Status>
+    fn insert(&mut self, owner: &OwnerRef, value: T) -> Result<(u64, Self::Key), Status>
     {
-        self.0.insert(owner, value).map_err(|error| status(projected::Error::Pool(error)))
+        self.0
+            .insert_with_receipt(owner, |_| value)
+            .map(store::Publication::into_parts)
+            .map_err(|error| status(projected::Error::Pool(error)))
     }
 
     fn insert_scoped(&mut self, scope: &super::super::subject::Lease, value: T)
-                     -> Result<u64, Status>
+                     -> Result<(u64, Self::Key), Status>
     {
-        self.0.insert_in_scope(scope, value).map_err(|error| status(projected::Error::Pool(error)))
+        self.0
+            .insert_in_scope_with_receipt(scope, value)
+            .map(store::Publication::into_parts)
+            .map_err(|error| status(projected::Error::Pool(error)))
     }
 
     fn insert_root(&mut self, reservation: super::super::subject::Root,
                    make: impl FnOnce(u64) -> T)
-                   -> Result<u64, Status>
+                   -> Result<(u64, Self::Key), Status>
     {
         self.0
-            .insert_root_with(reservation, make)
+            .insert_root_with_receipt(reservation, make)
+            .map(store::Publication::into_parts)
             .map_err(|error| status(projected::Error::Pool(error)))
     }
 
@@ -82,11 +88,6 @@ impl<T: Payload> Backend<T> for Native<T>
     fn get_mut(&mut self, id: u64) -> Option<&mut T>
     {
         self.0.get_mut(id)
-    }
-
-    fn key(&self, id: u64) -> Option<Self::Key>
-    {
-        self.0.completion_key(id)
     }
 
     fn completing(&self, key: &Self::Key) -> Option<&T>
@@ -131,22 +132,31 @@ impl<T: Payload> Backend<T> for Treaty<T>
                                                                                  .map_err(status)
     }
 
-    fn insert(&mut self, owner: &OwnerRef, value: T) -> Result<u32, Status>
+    fn insert(&mut self, owner: &OwnerRef, value: T) -> Result<(u32, Self::Key), Status>
     {
-        self.0.insert(owner, value).map_err(status)
+        self.0
+            .insert_with_receipt(owner, value)
+            .map(projected::Publication::into_parts)
+            .map_err(status)
     }
 
     fn insert_scoped(&mut self, scope: &super::super::subject::Lease, value: T)
-                     -> Result<u32, Status>
+                     -> Result<(u32, Self::Key), Status>
     {
-        self.0.insert_in_scope(scope, value).map_err(status)
+        self.0
+            .insert_in_scope_with_receipt(scope, value)
+            .map(projected::Publication::into_parts)
+            .map_err(status)
     }
 
     fn insert_root(&mut self, reservation: super::super::subject::Root,
                    make: impl FnOnce(u32) -> T)
-                   -> Result<u32, Status>
+                   -> Result<(u32, Self::Key), Status>
     {
-        self.0.insert_root(reservation, make).map_err(status)
+        self.0
+            .insert_root_with_receipt(reservation, make)
+            .map(projected::Publication::into_parts)
+            .map_err(status)
     }
 
     fn get(&self, id: u32) -> Option<&T>
@@ -157,11 +167,6 @@ impl<T: Payload> Backend<T> for Treaty<T>
     fn get_mut(&mut self, id: u32) -> Option<&mut T>
     {
         self.0.get_mut(id)
-    }
-
-    fn key(&self, id: u32) -> Option<Self::Key>
-    {
-        self.0.completion_key(id)
     }
 
     fn completing(&self, key: &Self::Key) -> Option<&T>

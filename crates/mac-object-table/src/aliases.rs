@@ -234,26 +234,22 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         }
         let existing =
             self.objects.iter().find_map(|(id, object)| (object.value == value).then_some(id));
-        let (id, fresh) = if let Some(id) = existing
+        let (id, completion, fresh) = if let Some(id) = existing
         {
-            (id, false)
+            let completion =
+                self.objects.completion_key(id).ok_or(Error::TargetGone { alias: 0 })?;
+            (id, completion, false)
         }
         else
         {
-            (self.objects
-                 .insert(&self.system,
-                         Object { value,
-                                  references: AtomicUsize::new(0) })
-                 .map_err(Error::Pool)?,
-             true)
-        };
-        let Some(completion) = self.objects.completion_key(id)
-        else
-        {
-            // Exclusive insertion produced this key; fail closed if admission
-            // was revoked before publication. No alias has been published.
-            drop(self.objects.remove(id));
-            return Err(Error::TargetGone { alias: 0 });
+            let publication = self.objects
+                                  .insert_with_receipt(&self.system, |_| {
+                                      Object { value,
+                                               references: AtomicUsize::new(0) }
+                                  })
+                                  .map_err(Error::Pool)?;
+            let (id, completion) = publication.into_parts();
+            (id, completion, true)
         };
         let result = self.admit(owner,
                                 Target { id,

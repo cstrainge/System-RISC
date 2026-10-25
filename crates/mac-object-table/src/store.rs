@@ -138,6 +138,28 @@ pub struct CompletionKey
     key: ResourceKey
 }
 
+/// Publication returns its authenticated completion key from the same owner
+/// transaction that installs the payload. Invalidation immediately after that
+/// transaction cannot require a second ordinary live lookup. This is metadata,
+/// not an external-I/O ACK or an independent payload/page pin.
+#[derive(Clone, Copy)]
+pub struct Publication
+{
+    completion: CompletionKey
+}
+impl Publication
+{
+    pub fn id(self) -> u64
+    {
+        self.completion.id
+    }
+
+    pub fn into_parts(self) -> (u64, CompletionKey)
+    {
+        (self.completion.id, self.completion)
+    }
+}
+
 /// A registered semantic kind's storage. Identity is issued by the shared
 /// boot-wide issuer, never by an individual manager. An ID resolves to its full
 /// owner/kind/slot/generation key and is validated on every use. Native tokens
@@ -304,12 +326,20 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub fn insert_with(&mut self, owner: &OwnerRef<G>, make: impl FnOnce(u64) -> T)
                        -> Result<u64, PoolError>
     {
+        self.insert_with_receipt(owner, make).map(Publication::id)
+    }
+
+    /// Construct once outside the metadata lock, then return ordinary identity
+    /// and retained completion provenance in one publication result.
+    pub fn insert_with_receipt(&mut self, owner: &OwnerRef<G>, make: impl FnOnce(u64) -> T)
+                               -> Result<Publication, PoolError>
+    {
         self.insert_value(owner, make, None, None, None, None)
     }
 
     pub(crate) fn insert_projected(&mut self, owner: &OwnerRef<G>, value: T,
                                    projection: crate::projected::ProjectionRelease)
-                                   -> Result<u64, PoolError>
+                                   -> Result<Publication, PoolError>
     {
         self.insert_value(owner, |_| value, Some(projection), None, None, None)
     }
@@ -319,12 +349,21 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub fn insert_root(&mut self, reservation: crate::scope::Reservation<G>, value: T)
                        -> Result<u64, PoolError>
     {
-        self.insert_root_value(reservation, |_| value, None)
+        self.insert_root_with_receipt(reservation, |_| value).map(Publication::id)
     }
 
     pub fn insert_root_with(&mut self, reservation: crate::scope::Reservation<G>,
                             make: impl FnOnce(u64) -> T)
                             -> Result<u64, PoolError>
+    {
+        self.insert_root_with_receipt(reservation, make).map(Publication::id)
+    }
+
+    /// Scoped roots receive the same atomic publication receipt. The store
+    /// still owns closure; returning this key never transfers the close guard.
+    pub fn insert_root_with_receipt(&mut self, reservation: crate::scope::Reservation<G>,
+                                    make: impl FnOnce(u64) -> T)
+                                    -> Result<Publication, PoolError>
     {
         self.insert_root_value(reservation, make, None)
     }
@@ -332,7 +371,7 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub(crate) fn insert_root_value(&mut self, reservation: crate::scope::Reservation<G>,
                                     make: impl FnOnce(u64) -> T,
                                     projection: Option<crate::projected::ProjectionRelease>)
-                                    -> Result<u64, PoolError>
+                                    -> Result<Publication, PoolError>
     {
         let (owner, root, binding) = reservation.into_parts(self.kind)?;
         self.insert_value(&owner, make, projection, None, Some(root), Some(binding))
@@ -341,13 +380,21 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub fn insert_in_scope(&mut self, scope: &crate::scope::Lease<G>, value: T)
                            -> Result<u64, PoolError>
     {
+        self.insert_in_scope_with_receipt(scope, value).map(Publication::id)
+    }
+
+    /// Existing-operation child admission retains its exact scoped publication
+    /// provenance even if the owner walk wins the next metadata handoff.
+    pub fn insert_in_scope_with_receipt(&mut self, scope: &crate::scope::Lease<G>, value: T)
+                                        -> Result<Publication, PoolError>
+    {
         self.insert_scoped_value(scope, |_| value, None)
     }
 
     pub(crate) fn insert_scoped_value(&mut self, scope: &crate::scope::Lease<G>,
                                       make: impl FnOnce(u64) -> T,
                                       projection: Option<crate::projected::ProjectionRelease>)
-                                      -> Result<u64, PoolError>
+                                      -> Result<Publication, PoolError>
     {
         self.insert_value(scope.owner(), make, projection, Some(scope.state()), None, None)
     }
@@ -356,7 +403,7 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                     projection: Option<crate::projected::ProjectionRelease>,
                     scope: Option<&crate::scope::State>, root: Option<crate::scope::Owner<G>>,
                     mut binding: Option<crate::scope::Binding>)
-                    -> Result<u64, PoolError>
+                    -> Result<Publication, PoolError>
     {
         owner.access(|index| index.authorize(self.kind, scope))?;
         let mut registration_use =
@@ -391,11 +438,15 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                                                   ManuallyDrop::new(registration_use.take()) });
                              self.ids.insert(id, key);
                              self.owners[at].stored += 1;
-                             Ok(())
+                             Ok(key)
                          });
             match result
             {
-                Ok(()) => break,
+                Ok(key) =>
+                {
+                    return Ok(Publication { completion: CompletionKey { id,
+                                                                        key } });
+                }
                 Err(PoolError::GrowthRequired { storage_slots,
                                                 policy_limit,
                                                 .. }) =>
@@ -414,7 +465,6 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                 Err(error) => return Err(error)
             }
         }
-        Ok(id)
     }
 
     fn locate(&self, id: u64) -> Option<(usize, ResourceKey)>

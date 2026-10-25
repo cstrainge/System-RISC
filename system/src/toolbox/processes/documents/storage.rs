@@ -43,19 +43,16 @@ impl Batches
 
     pub(super) fn insert(&mut self, mut batch: Batch) -> Result<u64, Status>
     {
-        let live = self.objects.as_ref().map_or(0, |store| store.iter().count());
-        self.retiring.try_reserve(live + 1).map_err(|_| NO_MEMORY)?;
+        let needed = self.completions.len().saturating_add(1);
+        self.retiring
+            .try_reserve(needed.saturating_sub(self.retiring.len()))
+            .map_err(|_| NO_MEMORY)?;
         self.completions.try_reserve(1).map_err(|_| NO_MEMORY)?;
         let owner = batch.authority.clone();
         let objects = self.objects.as_mut().ok_or(NOT_SUPPORTED)?;
-        let id = objects.insert_with(&owner, |id| { batch.id = id; batch })
+        let publication = objects.insert_with_receipt(&owner, |id| { batch.id = id; batch })
             .map_err(|error| crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error)))?;
-        let Some(completion) = objects.completion_key(id)
-        else
-        {
-            drop(objects.remove(id));
-            return Err(BAD_ABI);
-        };
+        let (id, completion) = publication.into_parts();
         self.completions.push((id, completion));
         Ok(id)
     }
