@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build and boot the System7 disk desktop through its read-only flash ROM and private working disk."""
-from system7_platform import cpu_model
+from system7_platform import RAM, cpu_model
 import argparse
 import hashlib
 import json
@@ -95,7 +95,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     serial.write_text('')
     identity = str(uuid.uuid4())
     args = [executable, '-uuid', identity, '-name', 'System RISC - Finder', '-machine', 'virt', '-cpu', cpu_model(vector_bits),
-            '-m', '128M', '-smp', '1', '-bios', 'none',
+            '-m', RAM, '-smp', '1', '-bios', 'none',
             '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + host_path(state / 'bootrom.bin'),
             '-drive', 'if=none,id=startup,format=qcow2,readonly=' + ('off' if writable else 'on') + ',file=' + host_path(disk),
             '-global', 'virtio-mmio.force-legacy=false',

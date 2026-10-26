@@ -6,13 +6,14 @@ from pathlib import Path
 import subprocess
 import time
 import system7_vm as vm
+from system7_platform import RAM
 
 def capture(output, cpu):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     serial = output / 'serial.log'
     args = ['qemu-system-riscv64', '-machine', 'virt', '-cpu', cpu,
-            '-m', '128M', '-smp', '1', '-bios', 'none', '-display', 'none',
+            '-m', RAM, '-smp', '1', '-bios', 'none', '-display', 'none',
             '-monitor', 'none', '-nic', 'none', '-serial', 'file:' + str(serial),
             '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + str(vm.DIST/'bootrom.bin')]
     with (output/'qemu.log').open('wb') as log:
