@@ -835,3 +835,47 @@ fn stopped_owner_can_admit_cleanup_while_earlier_invalidated_jobs_still_own_the_
     drop(subject);
     settle(&queue, &owner, deferred);
 }
+
+#[test]
+fn callback_borrows_the_original_subject_across_start_poll_and_cancel()
+{
+    let queue = Queue::new();
+    let (owner, subject, publication) = admitted(&queue, Owner::Kernel);
+    let (_, receipt) = publication.into_parts();
+    let scope = subject.scope().clone();
+    let root = scope.root().unwrap();
+    let mut dispatch = queue.dispatch_completion(Owner::Kernel, receipt).unwrap().unwrap();
+    dispatch.invoke(&mut Script(|call: Call<'_>| {
+                        assert_eq!(call.owner,
+                                   Owner::Kernel,
+                                   "delivery policy is not subject authority");
+                        assert!(call.subject.scope().same_scope(&scope));
+                        *call.ticket = 91;
+                        Outcome::Pending
+                    }))
+            .unwrap();
+    queue.finish(dispatch).unwrap();
+    let mut dispatch = queue.dispatch_completion(Owner::Kernel, receipt).unwrap().unwrap();
+    dispatch.invoke(&mut Script(|call: Call<'_>| {
+                        assert_eq!(call.phase, Phase::Poll);
+                        assert!(call.subject.scope().same_scope(&scope));
+                        Outcome::Pending
+                    }))
+            .unwrap();
+    queue.finish(dispatch).unwrap();
+    queue.cancel_completion(Owner::Kernel, receipt).unwrap();
+    let mut dispatch = queue.dispatch_completion(Owner::Kernel, receipt).unwrap().unwrap();
+    dispatch.invoke(&mut Script(|call: Call<'_>| {
+                        assert_eq!(call.phase, Phase::Cancel);
+                        assert!(call.subject.scope().same_scope(&scope));
+                        assert!(owner.contains(root));
+                        *call.ticket = 0;
+                        Outcome::Failed(mac_abi::OPERATION_CANCELLED)
+                    }))
+            .unwrap();
+    queue.finish(dispatch).unwrap();
+    queue.take_completion(Owner::Kernel, receipt).unwrap().unwrap();
+    drop(subject);
+    assert!(!owner.contains(root));
+    assert!(scope.admitting().is_err());
+}

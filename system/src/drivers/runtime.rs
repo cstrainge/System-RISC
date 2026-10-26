@@ -586,7 +586,9 @@ impl super::jobs::Broker for NativeBroker
         // SAFETY: Call and both disjoint borrowed slices remain live only for
         // this invocation. checked_call validates the broker wire contract;
         // no registry or job-queue guard survives the callback.
-        let result = unsafe { invoke(caller, request.provider, &mut call) };
+        let result = crate::context::with_io_subject(request.subject.clone(), || {
+                         unsafe { invoke(caller, request.provider, &mut call) }
+                     }).and_then(core::convert::identity);
         *request.ticket = call.ticket;
         // Provider errors are Ok(negative_status). Err(Busy) is admission or
         // registry contention: the callback was not dispatched at this boundary.

@@ -1,7 +1,7 @@
-//! Thread-owned selection metadata, never an image/payload lifetime pin.
-//! Guards own no allocation on an abandoned stack. The scheduler's shared-
-//! facility thread identity prevents an old restore from changing a reused
-//! context. Actual image aliases/pins belong to the later image migration.
+//! Thread-owned invocation selections. Owned capabilities and copyable metadata
+//! use the same generation-checked restoration. Reset only after the old stack
+//! is quiescent; an old restore never changes a reused thread's context. Payload
+//! destruction happens outside the slot lock, including reset and restoration.
 #![forbid(unsafe_code)]
 use mac_object_table::shared::InvocationGate as _;
 use spinning_top::Spinlock;
@@ -22,11 +22,11 @@ struct State<T>
     thread:  ThreadId,
     current: Option<T>
 }
-pub(super) struct ScopedSelection<T: Copy>
+pub(super) struct ScopedSelection<T: Clone>
 {
     state: Spinlock<State<T>>
 }
-impl<T: Copy> ScopedSelection<T>
+impl<T: Clone> ScopedSelection<T>
 {
     pub(super) const fn new(thread: ThreadId) -> Self
     {
@@ -38,16 +38,17 @@ impl<T: Copy> ScopedSelection<T>
     /// scheduler has proved the old stack is quiescent. Never issues an ID.
     pub(super) fn reset(&self, thread: ThreadId)
     {
-        InvocationGate::run(|| {
+        let previous = InvocationGate::run(|| {
             let mut state = self.state.lock();
             state.thread = thread;
-            state.current = None;
+            state.current.take()
         });
+        drop(previous);
     }
 
     pub(super) fn current(&self) -> Option<T>
     {
-        InvocationGate::run(|| self.state.lock().current)
+        InvocationGate::run(|| self.state.lock().current.clone())
     }
 
     pub(super) fn with<R>(&self, value: T, operation: impl FnOnce() -> R) -> Result<R, Reclaimed>
@@ -71,11 +72,11 @@ impl<T: Copy> ScopedSelection<T>
 /// Bootstrap is one permanent logical OS thread. Its selector cannot be reset
 /// or reclaimed, so the architecture handoff needs no fallible fallback or
 /// panic on cleanup/paint callers. Reuse the same guarded restore mechanism.
-pub(super) struct PermanentSelection<T: Copy>
+pub(super) struct PermanentSelection<T: Clone>
 {
     inner: ScopedSelection<T>
 }
-impl<T: Copy> PermanentSelection<T>
+impl<T: Clone> PermanentSelection<T>
 {
     pub(super) const fn new(thread: ThreadId) -> Self
     {
@@ -101,23 +102,28 @@ impl<T: Copy> PermanentSelection<T>
         operation()
     }
 }
-struct Restore<'a, T: Copy>
+struct Restore<'a, T: Clone>
 {
     state:    &'a ScopedSelection<T>,
     thread:   ThreadId,
     previous: Option<T>
 }
-impl<T: Copy> Drop for Restore<'_, T>
+impl<T: Clone> Drop for Restore<'_, T>
 {
     fn drop(&mut self)
     {
-        InvocationGate::run(|| {
+        let displaced = InvocationGate::run(|| {
             let mut state = self.state.state.lock();
             if state.thread == self.thread
             {
-                state.current = self.previous;
+                core::mem::replace(&mut state.current, self.previous.take())
+            }
+            else
+            {
+                None
             }
         });
+        drop(displaced);
     }
 }
 #[cfg(test)]
@@ -271,5 +277,231 @@ mod handoff_tests
                  });
         assert_eq!(caller.current(), None);
         assert_eq!(bootstrap.current(), None);
+    }
+}
+
+#[cfg(test)]
+mod owned_subject_tests
+{
+    extern crate std;
+    use alloc::sync::Arc;
+
+    use mac_object_table::{domain::{DomainKind, OwnerIndex, ReleasedResource},
+                           registry::Release};
+
+    use super::*;
+    use crate::{drivers::jobs::subjects::{Operations, Subject, specification},
+                toolbox::handles::{OwnerRef, Registry, cleanup::Failure, subject::Authority}};
+
+    struct Ignore;
+    impl Release<(), Failure> for Ignore
+    {
+        fn release(&self, _: &mut (), ticket: ReleasedResource) -> Result<(), Failure>
+        {
+            Err(Failure::context_unavailable(ticket, "test must dispatch the actual I/O store"))
+        }
+    }
+    fn owner() -> OwnerRef
+    {
+        OwnerRef::try_new(OwnerIndex::issue(DomainKind::Process).unwrap()).unwrap()
+    }
+    fn fixture() -> (Registry<()>, Arc<Operations>)
+    {
+        let registrar = owner();
+        let mut registry = Registry::new();
+        let roots = registry.register(&registrar, specification(false), Ignore).unwrap();
+        let storage = registry.register(&registrar, specification(true), Ignore).unwrap();
+        (registry, Operations::new((roots, storage)).unwrap())
+    }
+    fn subject(operations: &Arc<Operations>, owner: &OwnerRef) -> Subject
+    {
+        operations.admit(&Authority::Client(owner.clone())).unwrap()
+    }
+    #[test]
+    fn nested_owned_subjects_restore_the_actual_scope_and_do_not_allocate_a_new_root()
+    {
+        let (_registry, operations) = fixture();
+        let a = owner();
+        let b = owner();
+        let first = subject(&operations, &a);
+        let second = subject(&operations, &b);
+        let selections = ScopedSelection::new(ThreadId(1));
+        let before = (a.summary().live, b.summary().live);
+        selections.with(first.clone(), || {
+                      assert!(selections.current().unwrap().scope().same_scope(first.scope()));
+                      selections.with(second.clone(), || {
+                                    assert!(selections.current()
+                                                      .unwrap()
+                                                      .scope()
+                                                      .same_scope(second.scope()));
+                                })
+                                .unwrap();
+                      assert!(selections.current().unwrap().scope().same_scope(first.scope()));
+                  })
+                  .unwrap();
+        assert!(selections.current().is_none());
+        assert_eq!(before, (a.summary().live, b.summary().live));
+    }
+    #[test]
+    fn error_and_host_unwind_release_context_pins_without_claiming_native_unwind_recovery()
+    {
+        let (_registry, operations) = fixture();
+        let owner = owner();
+        let first = subject(&operations, &owner);
+        let scope = first.scope().clone();
+        let root = scope.root().unwrap();
+        let selections = ScopedSelection::new(ThreadId(1));
+        let failed: Result<(), mac_abi::Status> =
+            selections.with(first.clone(), || Err(mac_abi::NOT_FOUND)).unwrap();
+        assert_eq!(failed, Err(mac_abi::NOT_FOUND));
+        assert!(selections.current().is_none());
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                                  selections.with(first, || {
+                                                                assert!(selections.current()
+                                                                                  .is_some());
+                                                                panic!("host subject fixture");
+                                                            })
+                                                            .unwrap();
+                                              }));
+        assert!(failed.is_err());
+        assert!(selections.current().is_none());
+        assert!(!owner.contains(root), "context retained the completed operation root");
+        assert!(!owner.pending(root));
+        assert!(scope.admitting().is_err());
+    }
+    #[test]
+    fn stopped_operation_can_finish_in_its_frame_without_reopening_client_admission()
+    {
+        let (_registry, operations) = fixture();
+        let owner = owner();
+        let first = subject(&operations, &owner);
+        let root = first.scope().root().unwrap();
+        let selections = ScopedSelection::new(ThreadId(1));
+        owner.stop_admission();
+        let ticket = owner.invalidate(root).unwrap();
+        operations.release(ticket, false).unwrap();
+        selections.with(first, || {
+                      let retained = selections.current().unwrap();
+                      retained.scope().admitting().unwrap();
+                      assert!(matches!(operations.admit(&Authority::Client(owner.clone())),
+                                       Err(mac_abi::SERVICE_BUSY)));
+                      assert!(owner.pending(root));
+                  })
+                  .unwrap();
+        assert!(!owner.pending(root));
+    }
+    #[test]
+    fn old_owned_restore_drops_its_pins_without_changing_a_reused_thread()
+    {
+        let (_registry, operations) = fixture();
+        let owner = owner();
+        let first = subject(&operations, &owner);
+        let root = first.scope().root().unwrap();
+        let second = subject(&operations, &owner);
+        let next = second.scope().clone();
+        let mut threads = mac_object_table::Table::new(mac_object_table::Kind::Threads);
+        let old = threads.insert(()).unwrap();
+        let selections = ScopedSelection::new(ThreadId(u64::from(old)));
+        selections.with(first, || {
+                      threads.remove(old).unwrap();
+                      let fresh = threads.insert(()).unwrap();
+                      assert_ne!(old, fresh);
+                      selections.reset(ThreadId(u64::from(fresh)));
+                      selections.with(second, || {
+                                    assert!(selections.current()
+                                                      .unwrap()
+                                                      .scope()
+                                                      .same_scope(&next));
+                                })
+                                .unwrap();
+                  })
+                  .unwrap();
+        assert!(selections.current().is_none());
+        assert!(!owner.contains(root));
+        assert!(!owner.pending(root));
+    }
+    #[test]
+    fn simultaneous_thread_contexts_never_borrow_another_operations_subject()
+    {
+        use std::sync::Barrier;
+        let (_registry, operations) = fixture();
+        let barrier = Arc::new(Barrier::new(2));
+        let mut workers = alloc::vec::Vec::new();
+        for _ in 0..2
+        {
+            let owner = owner();
+            let subject = subject(&operations, &owner);
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                             let scope = subject.scope().clone();
+                             let selections =
+                                 ScopedSelection::new(ThreadId(owner.owner().incarnation()));
+                             selections.with(subject, || {
+                                           barrier.wait();
+                                           assert!(selections.current()
+                                                             .unwrap()
+                                                             .scope()
+                                                             .same_scope(&scope));
+                                           barrier.wait();
+                                       })
+                                       .unwrap();
+                             assert!(selections.current().is_none());
+                             assert!(scope.admitting().is_err());
+                         }));
+        }
+        for worker in workers
+        {
+            worker.join().unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod destruction_tests
+{
+    use alloc::sync::{Arc, Weak};
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    // A destructor may reenter the context. This catches holding its lock while
+    // destroying a replaced owned capability, without relying on a timeout.
+    #[derive(Clone)]
+    struct Probe
+    {
+        slot: Weak<ScopedSelection<Probe>>,
+        seen: Arc<AtomicUsize>
+    }
+    impl Drop for Probe
+    {
+        fn drop(&mut self)
+        {
+            if let Some(slot) = self.slot.upgrade()
+            {
+                assert!(slot.state.try_lock().is_some(), "destructor ran under selection lock");
+                self.seen.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    #[test]
+    fn restoring_and_resetting_owned_frames_destroy_after_unlock()
+    {
+        let slot = Arc::new(ScopedSelection::new(ThreadId(1)));
+        let seen = Arc::new(AtomicUsize::new(0));
+        let probe = || {
+            Probe { slot: Arc::downgrade(&slot),
+                    seen: seen.clone() }
+        };
+        slot.with(probe(), || {
+                slot.with(probe(), || ()).unwrap();
+                assert_eq!(seen.load(Ordering::Relaxed), 1);
+                slot.reset(ThreadId(0));
+                assert_eq!(seen.load(Ordering::Relaxed), 2);
+                assert_eq!(slot.with(probe(), || panic!("reclaimed context executed a callback")),
+                           Err(Reclaimed));
+            })
+            .unwrap();
+        assert_eq!(seen.load(Ordering::Relaxed), 3);
+        assert!(slot.current().is_none());
     }
 }

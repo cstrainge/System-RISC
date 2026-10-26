@@ -1975,9 +1975,12 @@ client. An existing transfer inherits its real scope instead. Persistent provide
 forks, writers, streams and icon groups retain their I/O subject before publication,
 so post-exit Close/Abort does not reopen ordinary app admission or charge work to
 a guessed current thread/System owner. Follow-up provider jobs clone the original
-subject. File-source lower reads retain their admitted module subject; complete
-stacked invocation attribution remains a later requirement. Delivery policy and
-waiter identity remain separate from this allocation/lifetime authority.
+subject. A synchronous broker frame now carries that admitted subject through
+nested module calls and the bootstrap I/O stack handoff. Provider-backed source
+reads inherit the incoming operation, while the source retains its admitted
+module subject for independent close/cleanup. Delivery policy and waiter identity
+remain separate from this allocation/lifetime authority. Full execution, fault,
+resource-search and byte-accounting context remains a later requirement.
 
 The root store owns only a weak reference to the operation's retained-use state.
 An owner walk transfers the actual removal guard to that state while owned uses
@@ -2011,3 +2014,38 @@ campaigns, aggregate SDK, original cursor sprites and panic recovery pass.
 Compiled boundaries, formatting and 52-library public API generation pass.
 These checks qualify this job/subject slice; they do not close the remaining
 lower-I/O, memory/accounting, privilege or multihart gates listed above.
+
+
+## Synchronous I/O subject frames
+
+The native broker installs its queue's admitted subject in the executing OS
+thread's context for exactly the synchronous callback. Nested broker/source
+calls read that capability rather than resolving a numeric caller or charging a
+stacked read to the provider module. The bootstrap I/O stack handoff transports
+the same subject independently of its resource-selection metadata; the executor
+identity remains the actual System I/O thread.
+
+The shared selection slot now supports owned capabilities as well as copyable
+metadata. RAII restores the previous selection on every normal/error return;
+the slot's genuine thread identity prevents an old restore from modifying a
+reused context. Replacement/reset destruction runs after unlocking the slot.
+Cloning an admitted subject does not allocate another root or reopen ordinary
+client admission. Pending operations retain their own subject in owned job state;
+no stack-frame guard or borrowed buffer survives callback return.
+
+This is subject transport, not completed broker-request registration, all four
+invocation identities, byte accounting or arbitrary privileged-fault containment.
+M-D04 still applies: host unwind tests demonstrate the Rust guard, not recovery
+from arbitrary native privileged faults. Those faults remain a required future
+recovery gate. Thread-local transport does not establish multi-hart activation.
+
+Qualification for the frame transport: the scoped host suite passes 580 cases
+(67 native-only gates excluded), plus an additional destruction-under-lock
+regression and the final Start/Poll/Cancel subject assertion. All 11 context
+selection cases pass. Native provider workflow, classic archives, module
+admission, both process campaigns, aggregate SDK, cursor sprites and panic
+recovery pass; compiled boundaries and the optimized image pass. One overlapping
+provider run reached the unchanged host outcome deadline before lifecycle
+completion; its sequential retry passes. Concurrent acceptance-harness timing is
+not qualified by that retry. No deadline was increased, and the failed attempt
+remains part of the evidence.

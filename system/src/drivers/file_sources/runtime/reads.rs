@@ -87,11 +87,17 @@ fn begin(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompletion
                     return Err(error);
                 }
             };
-            let job = match submit(&plan.backing.subject,
-                                   provider,
-                                   FileOperation::Read,
-                                   file_args,
-                                   plan.length)
+            // This read belongs to the incoming operation. The source itself
+            // retains its module authority for independent close/cleanup, but
+            // must not charge a client's stacked read to that module instead.
+            let subject = crate::context::io_subject().ok_or(mac_abi::WRONG_THREAD);
+            let job = match subject.and_then(|subject| {
+                                       submit(&subject,
+                                              provider,
+                                              FileOperation::Read,
+                                              file_args,
+                                              plan.length)
+                                   })
             {
                 Ok(job) => job,
                 Err(error) =>

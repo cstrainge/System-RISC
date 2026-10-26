@@ -147,6 +147,7 @@ pub struct ThreadContext
     thread:          core::sync::atomic::AtomicU64,
     owner:           spinning_top::Spinlock<Option<ThreadOwner>>,
     resources:       selection::ScopedSelection<crate::kernel::ResourceSelection>,
+    io_subject:      selection::ScopedSelection<crate::drivers::jobs::subjects::Subject>,
     pub traps:       ThreadTrapState,
     pub definitions: DefinitionInvocations
 }
@@ -159,6 +160,7 @@ impl ThreadContext
                thread:      core::sync::atomic::AtomicU64::new(1),
                owner:       spinning_top::Spinlock::new(None),
                resources:   selection::ScopedSelection::new(BOOT_THREAD),
+               io_subject:  selection::ScopedSelection::new(BOOT_THREAD),
                traps:       ThreadTrapState::new(),
                definitions: DefinitionInvocations::new() }
     }
@@ -205,6 +207,7 @@ impl ThreadContext
                 return Err(mac_abi::SERVICE_BUSY);
             }
             self.resources.reset(ThreadId(thread));
+            self.io_subject.reset(ThreadId(thread));
             self.app.store(owner.owner().incarnation(), Relaxed);
             self.thread.store(thread, Relaxed);
             *binding = Some(ThreadOwner { owner,
@@ -219,6 +222,7 @@ impl ThreadContext
         crate::toolbox::handles::InvocationGate::run(|| {
             let owner = self.owner.lock().take();
             self.resources.reset(ThreadId(0));
+            self.io_subject.reset(ThreadId(0));
             self.app.store(0, core::sync::atomic::Ordering::Relaxed);
             self.thread.store(0, core::sync::atomic::Ordering::Relaxed);
             drop(owner);
@@ -242,6 +246,51 @@ static BOOTSTRAP_CONTEXT: ThreadContext = ThreadContext::new();
 #[cfg(target_arch = "riscv64")]
 static BOOT_RESOURCES: selection::PermanentSelection<crate::kernel::ResourceSelection> =
     selection::PermanentSelection::new(BOOT_THREAD);
+
+// An I/O subject is admitted authority, independent of the executor's app/module
+// label. Retain it only for the synchronous callback; Pending work owns its own
+// cloned capability in the job/request record, never a stack guard.
+#[cfg(target_arch = "riscv64")]
+static BOOT_IO_SUBJECT: selection::PermanentSelection<crate::drivers::jobs::subjects::Subject> =
+    selection::PermanentSelection::new(BOOT_THREAD);
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn io_subject() -> Option<crate::drivers::jobs::subjects::Subject>
+{
+    let context = current_thread_context();
+    if core::ptr::eq(context, boot_context())
+    {
+        BOOT_IO_SUBJECT.current()
+    }
+    else
+    {
+        context.io_subject.current()
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_io_subject<R>(subject: crate::drivers::jobs::subjects::Subject,
+                                 call: impl FnOnce() -> R)
+                                 -> Result<R, mac_abi::Status>
+{
+    let context = current_thread_context();
+    if core::ptr::eq(context, boot_context())
+    {
+        Ok(BOOT_IO_SUBJECT.with(Some(subject), call))
+    }
+    else
+    {
+        context.io_subject.with(subject, call).map_err(|_| mac_abi::WRONG_THREAD)
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_bootstrap_io_subject<R>(subject: Option<crate::drivers::jobs::subjects::Subject>,
+                                           call: impl FnOnce() -> R)
+                                           -> R
+{
+    BOOT_IO_SUBJECT.with(subject, call)
+}
 
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn selected_resources() -> Option<crate::kernel::ResourceSelection>

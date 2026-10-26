@@ -123,7 +123,8 @@ impl Dispatch<'_>
         };
         let input = if phase == Phase::Start { work.input.as_slice() } else { &[] };
         self.in_callback = true;
-        let outcome = broker.invoke(Call { owner: node.owner,
+        let outcome = broker.invoke(Call { subject: &node._subject,
+                                           owner: node.owner,
                                            provider: work.provider,
                                            class: work.class,
                                            operation: work.operation,

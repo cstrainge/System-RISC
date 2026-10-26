@@ -36,14 +36,15 @@ pub enum Outcome
 }
 pub struct Call<'a>
 {
-    pub owner:     Owner,
-    pub provider:  u64,
-    pub class:     ClassId,
-    pub operation: u32,
-    pub ticket:    &'a mut u32,
-    pub phase:     Phase,
-    pub input:     &'a [u8],
-    pub output:    &'a mut [u8]
+    pub(crate) subject: &'a subjects::Subject,
+    pub owner:          Owner,
+    pub provider:       u64,
+    pub class:          ClassId,
+    pub operation:      u32,
+    pub ticket:         &'a mut u32,
+    pub phase:          Phase,
+    pub input:          &'a [u8],
+    pub output:         &'a mut [u8]
 }
 pub trait Broker
 {
