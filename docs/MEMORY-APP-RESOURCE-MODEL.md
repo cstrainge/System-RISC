@@ -1998,8 +1998,8 @@ ticket routing use the same notification. This closes the gap where a final I/O
 root/backing could finish after the old manager-specific wake and leave an exited
 process waiting indefinitely. Notification cannot acknowledge I/O or run teardown.
 
-Broker requests, devices/DMA and backing-source records still require their own
-registered ownership/ACK migration. Full module invocation/accounting, physical
+Devices/DMA and backing-source records still require their own registered
+ownership/ACK migration. Full module invocation/accounting, physical
 module reclamation, dynamic process capacity, pages/MMU, page-backed heaps,
 privilege separation and multihart remain subsequent gates. These job and scope
 mechanisms do not establish arbitrary privileged-fault containment (M-D04).
@@ -2049,3 +2049,87 @@ provider run reached the unchanged host outcome deadline before lifecycle
 completion; its sequential retry passes. Concurrent acceptance-harness timing is
 not qualified by that retry. No deadline was increased, and the failed attempt
 remains part of the evidence.
+
+
+## Registered broker requests
+
+Broker requests publish `DREQ` payloads and `DRQS` per-domain backing through
+the native shared facility. They inherit the incoming admitted I/O scope;
+resident caller policy, module declarations and the executor's identity remain
+separate. A top-level module callback outside a queued operation admits its real
+module ledger once, and nested callbacks inherit that frame. The request store
+is growable until memory; it no longer has the projected 256-request ceiling.
+
+The System retains each publication receipt with the request. A continuation
+requires that receipt, the original admitted scope and the unchanged caller,
+provider, class and operation. The wire ticket only correlates the invocation.
+Ordinary IDs fail immediately on invalidation; another operation in the same
+process cannot drain a request by presenting its ticket. Wrong-subject refusal
+retains typed identity and reports that the original operation capability is
+required. Existing module-policy and owner checks remain in force.
+
+A preallocated slot retains the walk's unique cleanup ticket while lower work
+is pending. Payload and backing stay in their authoritative store until actual
+terminal acknowledgement, including acknowledged cancellation. If completion
+precedes dispatch, released metadata remains until the unique ticket arrives.
+Refused retirement retains its typed cause and ticket for the storage walk's
+retry; unchanged failures do not flood the log. Request records retain exact
+interface pins through actual cleanup. A missing provider acknowledgement leaves
+quarantine pending rather than reporting that cancellation completed.
+
+Serialized-provider occupancy is cached by the facility-issued interface ID.
+Only admission and terminal acknowledgement change it; admission does not scan
+all requests. Terminal transport acknowledgement releases serialization even
+when the ledger's cleanup ticket has not yet reached its dispatcher. Interface
+and module teardown inspect retained requests at their change boundaries.
+
+The common catalog dispatches request cleanup with either the module registry
+context or the native runtime adapter. The latter uses `TryState::with_owned`,
+returning the unique ticket and typed access refusal if it cannot enter. Neither
+queue nor registry borrows cross a foreign callback; cleanup does not allocate.
+
+Native broker Call is 64 bytes with a u64 request ticket. The SDK, device/source
+correlation, driver implementations and host companion all carry it without
+narrowing. The host packet header is 52 bytes. Current development ABI stays 1;
+contract fingerprints and explicit header-size validation require a complete
+matching rebuild. There is no older decoder. Classic external file formats and
+legacy object reference projections are unaffected.
+
+Public SDK conformance enumerates both request registrations without inspector
+privilege. Native provider tests inspect real request births in the requesting
+app ledger and require requests/scoped children to be drained after ordinary
+fork operations and process exit. Internal tests cover wrong subjects, stale and
+foreign IDs/tickets, invalidation before and after completion, retained backing,
+interface pins, serialized admission, common owner-walk retry and growth past
+300 simultaneous requests. These mechanisms do not close device/DMA/source
+ownership, native job transport capacity, full invocation/accounting, physical
+module reclamation, pages/MMU, heaps, isolation or multihart gates. M-D04's
+arbitrary privileged-fault containment remains unproven.
+
+
+Process retirement treats partial asynchronous acknowledgement as progress.
+The native reaper still runs image-origin completion, genuine quarantine retry
+and saved-manager parking. It then checks the ledger's death barrier before
+asking the directory to remove a process. Pending resources no longer cause a
+failed removal and a full per-pool diagnostic on each child completion. Actual
+cleanup failures remain typed and reported, and the shared post-ACK wake still
+drives final retirement. Canonical native provider acceptance rejects premature
+directory-retirement attempts during otherwise valid exit cleanup.
+
+
+Qualification: 680 host cases pass across the shared facility/model, System,
+public Toolbox, driver SDKs/providers and host protocol (67 native-only gates
+excluded). All 23 focused registry cases pass, including 300 simultaneous native
+request identities and the actual common owner walk. Ten native acceptance cases
+pass: provider read/write/lifecycle and cold restore, classic archives, both
+endpoint disconnects, module admission, both process campaigns, aggregate SDK,
+cursor, panic recovery and external power restart/shutdown/refusal. Optimized
+image, compiled ownership boundaries, formatting and 52-library API docs pass.
+
+The provider campaign's transport watchdog now allows 30 seconds without a new
+unique fixture milestone, with a 120-second total cap. Repeated kernel logs cannot
+extend it. This replaces the old blanket 30-second limit on the entire expanding
+correctness campaign; it is not a UI latency claim. The guest's five-second exit
+cleanup assertion and all functional/ownership acceptance remain unchanged.
+Phase timing is retained as evidence. The power capture also uses the checked
+display width for application-menu input, matching the 800-pixel desktop.

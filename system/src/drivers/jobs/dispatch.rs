@@ -138,7 +138,7 @@ impl Dispatch<'_>
     }
 
     #[cfg(test)]
-    pub(super) fn ticket(&self) -> Option<u32>
+    pub(super) fn ticket(&self) -> Option<u64>
     {
         self.node.as_ref()?.work.as_ref().map(|work| work.ticket)
     }

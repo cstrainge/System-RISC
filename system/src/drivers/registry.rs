@@ -6,10 +6,11 @@ use alloc::vec::Vec;
 use mac_module::{Available, ClassId, Contract, Offer, PackageKind, Policy, Service, Target};
 
 pub use crate::toolbox::handles::cleanup::CheckpointError;
-use crate::toolbox::handles::{Kind, KindLease, OwnerRef, Store, Table};
+use crate::toolbox::handles::{KindLease, OwnerRef, Store};
 mod modules;
 pub(crate) mod interfaces;
 pub(crate) mod dependencies;
+pub(crate) mod requests;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod fixture;
 
@@ -23,6 +24,7 @@ pub enum Error
     Stale,
     State,
     Access,
+    RequestSubject,
     Busy,
     DependencyInUse
     {
@@ -69,6 +71,11 @@ impl core::fmt::Display for Error
             {
                 f.write_str("module caller is absent or its contract does not authorize this \
                              service")
+            }
+            Self::RequestSubject =>
+            {
+                f.write_str("request belongs to a different I/O operation; use the original \
+                             admitted operation capability for completion")
             }
             Self::Busy =>
             {
@@ -158,10 +165,12 @@ pub struct Registry
     modules:    modules::Modules<Module>,
     interfaces: Store<Interface>,
     system:     OwnerRef,
-    requests:   Table<Request>,
+    requests:   requests::Requests,
     dependencies: Store<dependencies::Binding>,
     #[cfg(any(test, feature = "test-support"))]
     fixture_catalog: Option<alloc::sync::Arc<crate::toolbox::handles::Registry<dyn crate::toolbox::handles::cleanup::context::Context>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fixture_operations: Option<alloc::sync::Arc<crate::drivers::jobs::subjects::Operations>>,
     target:     Target,
     services:   Vec<Service>
 }
@@ -179,19 +188,55 @@ impl Registry
                                                          call)
     }
 
-    pub(crate) fn new(target: Target, system: OwnerRef, kinds: [KindLease; 4]) -> Result<Self>
+    pub(crate) fn new(target: Target, system: OwnerRef, kinds: [KindLease; 6]) -> Result<Self>
     {
-        let [interfaces, interface_storage, dependencies, dependency_storage] = kinds;
+        let [interfaces,
+             interface_storage,
+             dependencies,
+             dependency_storage,
+             requests,
+             request_storage] = kinds;
         Ok(Self { modules: modules::Modules::new(),
                   interfaces: Store::owned(interfaces, interface_storage).map_err(Error::Owner)?,
                   dependencies:
                       Store::owned(dependencies, dependency_storage).map_err(Error::Owner)?,
                   #[cfg(any(test, feature = "test-support"))]
                   fixture_catalog: None,
+                  #[cfg(any(test, feature = "test-support"))]
+                  fixture_operations: None,
                   system,
-                  requests: Table::new(Kind::DriverRequests),
+                  requests: requests::Requests::new((requests, request_storage))?,
                   target,
                   services: Vec::new() })
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn release_request(
+        &mut self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
+        -> core::result::Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        self.requests.release(ticket, storage)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn fixture_subject(&self, caller: u64)
+                                  -> Result<crate::drivers::jobs::subjects::Subject>
+    {
+        let owner = if caller == 0 { self.system.clone() } else { self.module_ledger(caller)? };
+        let operations = self.fixture_operations.as_ref().ok_or(Error::State)?;
+        operations.admit(&crate::toolbox::handles::subject::Authority::Client(owner))
+                  .map_err(|status| {
+                      if status == mac_abi::NO_MEMORY { Error::Exhausted } else { Error::State }
+                  })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn begin(&mut self, caller: u64, interface: u64, operation: u32, input_len: usize,
+                        output_len: usize)
+                        -> Result<u64>
+    {
+        let subject = self.fixture_subject(caller)?;
+        self.begin_scoped(&subject, caller, interface, operation, input_len, output_len)
     }
 
     /// Resident services use the same capability/request machinery as modules.
@@ -569,9 +614,10 @@ impl Registry
 
     /// Caller 0 is resident System. Module callers are limited to dependencies
     /// declared in their own admitted contract; applications use class services.
-    pub fn begin(&mut self, caller: u64, interface: u64, operation: u32, input_len: usize,
-                 output_len: usize)
-                 -> Result<u32>
+    pub(crate) fn begin_scoped(&mut self, subject: &crate::drivers::jobs::subjects::Subject,
+                               caller: u64, interface: u64, operation: u32, input_len: usize,
+                               output_len: usize)
+                               -> Result<u64>
     {
         let provider = self.interface(interface)?;
         if input_len > provider.offer.max_request as usize
@@ -607,8 +653,7 @@ impl Registry
             }
         }
 
-        if provider.offer.flags & Offer::SERIALIZED != 0
-           && self.requests.iter().any(|(_, r)| r.interface == interface)
+        if provider.offer.flags & Offer::SERIALIZED != 0 && self.requests.busy(interface)
         {
             return Err(Error::Busy);
         }
@@ -625,19 +670,18 @@ impl Registry
                 .checked_add(1)
                 .ok_or(Error::Exhausted)?
         };
-        let ticket = self.requests
-                         .insert(Request { module: provider.module,
-                                           interface,
-                                           caller,
-                                           class: provider.offer.class,
-                                           operation,
-                                           max_reply: output_len as u32,
-                                           interface_key: self.interfaces
-                                                              .key(interface)
-                                                              .ok_or(Error::Stale)?,
-                                           offer: provider.offer,
-                                           active: false })
-                         .map_err(|_| Error::Exhausted)?;
+        let ticket = self.requests.insert(subject,
+                                           Request { module: provider.module,
+                                                     interface,
+                                                     caller,
+                                                     class: provider.offer.class,
+                                                     operation,
+                                                     max_reply: output_len as u32,
+                                                     interface_key: self.interfaces
+                                                                        .key(interface)
+                                                                        .ok_or(Error::Stale)?,
+                                                     offer: provider.offer,
+                                                     active: false })?;
         if provider.module != 0
         {
             self.modules.get_mut(provider.module).ok_or(Error::Stale)?.requests = count;
@@ -645,9 +689,10 @@ impl Registry
         Ok(ticket)
     }
 
-    pub fn request(&self, caller: u64, ticket: u32) -> Result<Request>
+    pub(crate) fn request<'a>(&self, caller: u64, access: impl Into<requests::Access<'a>>)
+                              -> Result<Request>
     {
-        let request = *self.requests.get(ticket).ok_or(Error::Stale)?;
+        let request = self.requests.get(access.into())?;
         if request.caller != caller
         {
             return Err(Error::Access);
@@ -673,40 +718,49 @@ impl Registry
         Ok(request)
     }
 
-    pub fn interface_for_request(&self, caller: u64, ticket: u32) -> Result<Interface>
+    pub(crate) fn interface_for_request<'a>(&self, caller: u64,
+                                            access: impl Into<requests::Access<'a>>)
+                                            -> Result<Interface>
     {
-        let request = self.request(caller, ticket)?;
+        let request = self.request(caller, access)?;
         Ok(Interface { module: request.module,
                        offer:  request.offer })
     }
 
-    pub fn enter_request(&mut self, caller: u64, ticket: u32) -> Result<()>
+    pub(crate) fn enter_request<'a>(&mut self, caller: u64,
+                                    access: impl Into<requests::Access<'a>>)
+                                    -> Result<()>
     {
-        let request = self.request(caller, ticket)?;
+        let access = access.into();
+        let request = self.request(caller, access)?;
         if request.active
         {
             return Err(Error::Busy);
         }
-        self.requests.get_mut(ticket).ok_or(Error::Stale)?.active = true;
-        Ok(())
+        self.requests.active(access, true)
     }
 
-    pub fn leave_request(&mut self, caller: u64, ticket: u32) -> Result<()>
+    pub(crate) fn leave_request<'a>(&mut self, caller: u64,
+                                    access: impl Into<requests::Access<'a>>)
+                                    -> Result<()>
     {
-        let request = self.request(caller, ticket)?;
+        let access = access.into();
+        let request = self.request(caller, access)?;
         if !request.active
         {
             return Err(Error::State);
         }
-        self.requests.get_mut(ticket).ok_or(Error::Stale)?.active = false;
-        Ok(())
+        self.requests.active(access, false)
     }
 
     /// Release on terminal success, failure or acknowledged cancellation only.
     /// PENDING retains the ticket; late or foreign completions cannot reuse it.
-    pub fn complete(&mut self, caller: u64, ticket: u32, output_len: usize) -> Result<Request>
+    pub(crate) fn complete<'a>(&mut self, caller: u64, access: impl Into<requests::Access<'a>>,
+                               output_len: usize)
+                               -> Result<Request>
     {
-        let request = self.request(caller, ticket)?;
+        let access = access.into();
+        let request = self.request(caller, access)?;
         if request.active
         {
             return Err(Error::Busy);
@@ -715,12 +769,24 @@ impl Registry
         {
             return Err(Error::Contract(mac_module::Error::Limit));
         }
-        if request.module != 0
+        let count = if request.module != 0
         {
-            let record = self.modules.get_mut(request.module).ok_or(Error::Stale)?;
-            record.requests = record.requests.checked_sub(1).ok_or(Error::State)?;
+            Some(self.modules
+                     .get(request.module)
+                     .ok_or(Error::Stale)?
+                     .requests
+                     .checked_sub(1)
+                     .ok_or(Error::State)?)
         }
-        self.requests.remove(ticket);
+        else
+        {
+            None
+        };
+        self.requests.finish(access)?;
+        if let Some(count) = count
+        {
+            self.modules.get_mut(request.module).ok_or(Error::Stale)?.requests = count;
+        }
         Ok(request)
     }
 

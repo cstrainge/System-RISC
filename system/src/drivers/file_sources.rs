@@ -21,7 +21,7 @@ pub struct Identity
 enum Phase
 {
     Ready,
-    Reading(u32),
+    Reading(u64),
     Closing,
     Quarantined
 }
@@ -134,7 +134,7 @@ impl<B: Clone> Sources<B>
 
     /// The ticket is issued/validated by the generic request broker. This core
     /// records it to prevent a different request from acknowledging this read.
-    pub fn begin_read(&mut self, owner: u64, source: u32, ticket: u32, offset: u64,
+    pub fn begin_read(&mut self, owner: u64, source: u32, ticket: u64, offset: u64,
                       capacity: usize)
                       -> Result<Read<B>, Status>
     {
@@ -158,7 +158,7 @@ impl<B: Clone> Sources<B>
     }
 
     /// A read error/cancellation also waits for actual backend acknowledgement.
-    pub fn finish_read(&mut self, owner: u64, source: u32, ticket: u32) -> Result<(), Status>
+    pub fn finish_read(&mut self, owner: u64, source: u32, ticket: u64) -> Result<(), Status>
     {
         if self.owned(owner, source)?.phase != Phase::Reading(ticket)
         {
@@ -170,7 +170,7 @@ impl<B: Clone> Sources<B>
 
     /// An adapter lost evidence of the lower completion. Retain the binding;
     /// an uncertain read must never make its backing mark reusable.
-    pub fn quarantine_read(&mut self, owner: u64, source: u32, ticket: u32) -> Result<(), Status>
+    pub fn quarantine_read(&mut self, owner: u64, source: u32, ticket: u64) -> Result<(), Status>
     {
         if self.owned(owner, source)?.phase != Phase::Reading(ticket)
         {

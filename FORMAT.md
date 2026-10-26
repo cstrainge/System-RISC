@@ -895,7 +895,8 @@ The generic C entry receives a borrowed Host descriptor and initializes Instance
 Host exposes the full u64 boot-unique module incarnation, dependency resolution
 and broker invocation; it and the code stay pinned until reboot. Resolve writes a
 u64 provider identity and Broker accepts that complete u64 value. The contract
-fingerprint includes a provider-reference signature flag in bit56 in addition to
+fingerprint includes a provider-reference signature flag in bit56 and a native
+64-bit request-ticket flag in bit57, in addition to
 pointer width and structure sizes; a Host with the same size but the obsolete
 32-bit provider signature is rejected through contract admission. The development
 ABI remains1; rebuild System and every module together. Instance carries an opaque u64 state and a
@@ -903,7 +904,7 @@ module-local executable dispatch address, validated before publication. Rust
 traits, String/Vec, allocator ownership and private struct layouts never cross
 this boundary. The SDK exposes borrowed slices to ordinary driver bodies.
 
-Call carries a generation-tagged resident ticket, phase, class, class operation,
+Call is 64 bytes and carries a full-width u64 native resident ticket, phase, class, class operation,
 borrowed input and exclusive output bytes. START allocates a ticket; POLL and
 CANCEL validate the same caller/provider/request incarnation. QUIESCE has no
 class or buffers. Each callback returns a terminal status/length or PENDING(1).
@@ -1179,7 +1180,7 @@ identities; IDs/revisions are not restored as another live object's identity.
 ## Host directory wire protocol (RSHOST04, version 4)
 
 `mac-host-protocol` owns the allocation-free codec and incremental reply decoder.
-The VM byte channel carries a 48-byte little-endian header followed by exactly
+The VM byte channel carries a 52-byte little-endian header followed by exactly
 `payload_length` bytes (maximum 65536). There are no native pointers, Rust enum
 layouts or implicit host paths on the wire. Unsupported versions require a
 matching rebuild; there is no older decoder.
@@ -1188,18 +1189,18 @@ matching rebuild; there is no older decoder.
 | --- | --- | --- |
 | 0 | 8 | `RSHOST04` |
 | 8 | 2 | whole protocol version, 4 |
-| 10 | 2 | header length, 48 |
+| 10 | 2 | header length, 52 |
 | 12 | 4 | payload length, at most 65536 |
-| 16 | 4 | nonzero correlation ticket, echoed unchanged in reply |
-| 20 | 2 | operation below |
-| 22 | 2 | 0 request, 1 reply; other bits invalid |
-| 24 | 4 | session capability; zero only during Hello |
-| 28 | 4 | object capability |
-| 32 | 8 | operation-specific offset |
-| 40 | 4 | operation-specific value |
-| 44 | 4 | signed status; requests must contain zero |
+| 16 | 8 | nonzero u64 correlation ticket, echoed unchanged in reply |
+| 24 | 2 | operation below |
+| 26 | 2 | 0 request, 1 reply; other bits invalid |
+| 28 | 4 | session capability; zero only during Hello |
+| 32 | 4 | object capability |
+| 36 | 8 | operation-specific offset |
+| 44 | 4 | operation-specific value |
+| 48 | 4 | signed status; requests must contain zero |
 
-The guest broker's generation-tagged request ticket supplies correlation; it
+The guest broker's complete native request ticket supplies correlation; it
 confers no object authority. The companion issues session/file/directory/iterator/
 transaction capabilities through the shared object table. Owners are validated
 separately. Disconnect discards the old session; a new transport incarnation
@@ -1298,7 +1299,7 @@ argument record followed by its exact payload:
 | 24 | variable | Payload |
 
 The broker's live request ticket supplies wire correlation; callers cannot choose
-it. POLL/CANCEL have empty inputs. A completed output is the full checked 48-byte
+it. POLL/CANCEL have empty inputs. A completed output is the full checked 52-byte
 `RSHOST04` reply header followed by its exact payload. Transport errors and host
 operation status are distinct: a completed transport can carry a failed host
 operation. Each callback transfers at most two 4 KiB fragments in each direction,

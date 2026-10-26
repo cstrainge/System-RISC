@@ -1,18 +1,21 @@
 //! Split callbacks over a real classic archive. Resident guest tests separately
 //! prove the actual module loader, lease broker and public Toolbox boundary.
+#[path = "../../../crates/mac-object-table/tests/support/native_requests.rs"]
+mod native_requests;
 use std::sync::{Arc, Mutex};
 
 use mac_driver::{ClassId, Completion, Error, Phase, Request, Result};
 use mac_filesystem_interface::{self as fs, Arguments, Metadata, Operation};
 use mac_object_table::{Kind, Table};
+use native_requests::Requests as NativeRequests;
 use stuffit_filesystem::{Sources, service::Service};
 const NESTED: &[u8] = include_bytes!("../../../crates/mac-sit/tests/fixtures/nested-v1.sit");
 const FORKS: &[u8] = include_bytes!("../../../crates/mac-sit/tests/fixtures/forks-v1.sit");
 struct Lower
 {
     sources: Table<Vec<u8>>,
-    tickets: Table<()>,
-    flights: std::collections::BTreeMap<u32, (u32, u64, usize)>,
+    tickets: NativeRequests,
+    flights: std::collections::BTreeMap<u64, (u32, u64, usize)>,
     trace:   Vec<Phase>,
     cancels: usize
 }
@@ -31,7 +34,7 @@ impl Sources for Memory
             .ok_or(Error(mac_abi::NOT_FOUND))
     }
 
-    fn read(&mut self, source: u32, offset: u64, ticket: &mut u32, phase: Phase, out: &mut [u8])
+    fn read(&mut self, source: u32, offset: u64, ticket: &mut u64, phase: Phase, out: &mut [u8])
             -> Result<Completion>
     {
         let mut state = self.0.lock().unwrap();
@@ -74,7 +77,7 @@ struct Harness
     service:  Service<Memory>,
     lower:    Memory,
     source:   u32,
-    requests: Table<()>,
+    requests: NativeRequests,
     volumes:  Table<()>,
     files:    Table<()>
 }
@@ -106,8 +109,7 @@ impl Harness
         let mut sources = Table::new(Kind::FileSources);
         let source = sources.insert(bytes.to_vec()).unwrap();
         let lower = Memory(Arc::new(Mutex::new(Lower { sources,
-                                                       tickets:
-                                                           Table::new(Kind::DriverRequests),
+                                                       tickets: NativeRequests::new(),
                                                        flights: Default::default(),
                                                        trace: Vec::new(),
                                                        cancels: 0 })));
@@ -116,7 +118,7 @@ impl Harness
         Self { service,
                lower,
                source,
-               requests: Table::new(Kind::DriverRequests),
+               requests: NativeRequests::new(),
                volumes: Table::new(Kind::Volumes),
                files: Table::new(Kind::Files) }
     }
@@ -128,7 +130,7 @@ impl Harness
         bytes
     }
 
-    fn step(&self, ticket: u32, op: Operation, phase: Phase, input: &[u8], out: &mut [u8])
+    fn step(&self, ticket: u64, op: Operation, phase: Phase, input: &[u8], out: &mut [u8])
             -> Result<Completion>
     {
         let before = self.lower.0.lock().unwrap().trace.len();
@@ -143,7 +145,7 @@ impl Harness
         result
     }
 
-    fn finish(&self, ticket: u32, op: Operation, phase: Phase, input: &[u8]) -> Result<Vec<u8>>
+    fn finish(&self, ticket: u64, op: Operation, phase: Phase, input: &[u8]) -> Result<Vec<u8>>
     {
         for i in 0..100_000
         {

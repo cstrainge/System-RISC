@@ -415,15 +415,16 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub fn insert_in_scope(&mut self, scope: &crate::scope::Lease<G>, value: T)
                            -> Result<u64, PoolError>
     {
-        self.insert_in_scope_with_receipt(scope, value).map(Publication::id)
+        self.insert_in_scope_with_receipt(scope, |_| value).map(Publication::id)
     }
 
     /// Existing-operation child admission retains its exact scoped publication
     /// provenance even if the owner walk wins the next metadata handoff.
-    pub fn insert_in_scope_with_receipt(&mut self, scope: &crate::scope::Lease<G>, value: T)
+    pub fn insert_in_scope_with_receipt(&mut self, scope: &crate::scope::Lease<G>,
+                                        make: impl FnOnce(u64) -> T)
                                         -> Result<Publication, PoolError>
     {
-        self.insert_scoped_value(scope, |_| value, None)
+        self.insert_scoped_value(scope, make, None)
     }
 
     pub(crate) fn insert_scoped_value(&mut self, scope: &crate::scope::Lease<G>,

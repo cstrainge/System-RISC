@@ -6,6 +6,8 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cause
 {
+    #[cfg(target_arch = "riscv64")]
+    RequestRegistryUnavailable(crate::state::AccessError),
     ContextUnavailable
     {
         required: &'static str
@@ -52,6 +54,13 @@ impl core::fmt::Display for Cause
     {
         match self
         {
+            #[cfg(target_arch = "riscv64")]
+            Self::RequestRegistryUnavailable(cause) =>
+            {
+                write!(f,
+                       "driver request cleanup could not enter its registry ({cause:?}); exact \
+                        ticket and pending request remain retained for retry")
+            }
             Self::ContextUnavailable { required } =>
             {
                 write!(f,
@@ -133,6 +142,15 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn request_registry_unavailable(ticket: ReleasedResource,
+                                               cause: crate::state::AccessError)
+                                               -> Self
+    {
+        Self { ticket,
+               cause: Cause::RequestRegistryUnavailable(cause) }
+    }
+
     pub(crate) fn context_unavailable(ticket: ReleasedResource, required: &'static str) -> Self
     {
         Self { ticket,

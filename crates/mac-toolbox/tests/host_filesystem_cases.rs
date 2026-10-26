@@ -676,6 +676,7 @@ fn io_roots(system: &System<'_>) -> Result<u64, Error>
 {
     inspection_read::own(system, |ledger| {
         let mut roots = 0;
+        let mut requests = false;
         for index in 0..ledger.len()
         {
             let pool = ledger.at(index).map_err(|e| e.cause)?;
@@ -684,11 +685,16 @@ fn io_roots(system: &System<'_>) -> Result<u64, Error>
                 roots = pool.live;
                 require(pool.pending == 0)?;
             }
-            if pool.kind == *b"DJOB"
+            if pool.kind == *b"DREQ"
+            {
+                requests = pool.births > 0;
+            }
+            if pool.kind == *b"DJOB" || pool.kind == *b"DREQ"
             {
                 require(pool.live == 0 && pool.pending == 0 && pool.scoped_children == 0)?;
             }
         }
+        require(requests)?;
         Ok(roots)
     })
 }

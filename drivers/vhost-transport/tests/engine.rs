@@ -93,7 +93,7 @@ impl Channel for Peer
         Ok(count)
     }
 }
-fn call<'a>(ticket: u32, phase: Phase, input: &'a [u8]) -> Request<'a>
+fn call<'a>(ticket: u64, phase: Phase, input: &'a [u8]) -> Request<'a>
 {
     Request { ticket,
               phase,

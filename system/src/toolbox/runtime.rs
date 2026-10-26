@@ -565,7 +565,8 @@ impl Desktop
                             super::handles::cleanup::Cause::DragEffectStorage { .. }
                             | super::handles::cleanup::Cause::RetirementStorage { .. } => NO_MEMORY,
                             super::handles::cleanup::Cause::MemoryManagerUnavailable(error)
-                            | super::handles::cleanup::Cause::FileManagerUnavailable(error) =>
+                            | super::handles::cleanup::Cause::FileManagerUnavailable(error)
+                            | super::handles::cleanup::Cause::RequestRegistryUnavailable(error) =>
                             {
                                 error.status()
                             }

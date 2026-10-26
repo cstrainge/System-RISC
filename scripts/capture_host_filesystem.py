@@ -158,15 +158,35 @@ def capture(output, sdk=False, disconnect=None):
             vm.DIST = dist
             process, endpoint = vm.launch(output / 'vm', writable=sdk, host_bridge=port)
             termination = 'desktop-ready'
+            fixture_progress = []
             if sdk:
                 termination = 'timeout'
-                deadline = time.monotonic() + 30
+                began = time.monotonic()
+                deadline = began + 30
+                absolute_deadline = began + 120
+                milestones = set()
+                consumed = 0
                 watch_changes = set()
                 snapshot_changes = set()
                 application_releases = {}
                 disconnected = False
-                while time.monotonic() < deadline:
+                while time.monotonic() < min(deadline, absolute_deadline):
                     text = (output / 'vm/serial.log').read_text(errors='replace')
+                    complete = text.rfind('\n') + 1
+                    for line in text[consumed:complete].splitlines():
+                        if line.startswith(('HOST_FS_STAGE ', 'FILE_TRANSFER_STAGE ',
+                                            'FILE_TRANSFER_EXIT_PASS', 'HOST_FILESYSTEM_')):
+                            fixture_progress.append({'seconds': time.monotonic() - began,
+                                                     'marker': line})
+                        # This guards a stuck transport, not the total duration
+                        # of an expanding correctness campaign. Only a new
+                        # finite fixture milestone extends the stall budget;
+                        # kernel logging/event storms cannot keep it alive.
+                        if line.startswith(('HOST_FS_STAGE ', 'FILE_TRANSFER_STAGE ',
+                                            'FILE_TRANSFER_EXIT_PASS')) and line not in milestones:
+                            milestones.add(line)
+                            deadline = time.monotonic() + 30
+                    consumed = complete
                     if disconnect and not disconnected and 'TRANSFER_DISCONNECT_READY\n' in text:
                         companion.terminate()
                         companion.wait(timeout=10)
@@ -225,6 +245,9 @@ def capture(output, sdk=False, disconnect=None):
             command = json.loads((output / 'vm/command.json').read_text())
             (output / 'capture.json').write_text(json.dumps({
                 'termination': termination, 'command': command, 'reboot': reboot,
+                'fixture_progress': fixture_progress,
+                'watchdog': {'inactivity_seconds': 30, 'absolute_seconds': 120,
+                             'progress': 'unique fixture milestones only'},
                 'serial': str(output / 'vm/serial.log'),
                 'original_before': before,
                 'original_after': {name: digest(base / name) for name in before}

@@ -112,7 +112,7 @@ pub(crate) struct Device
     pending_control: u8,
     connected:       bool,
     lost:            bool,
-    reset_ticket:    u32,
+    reset_ticket:    u64,
     live:            bool
 }
 fn fence()

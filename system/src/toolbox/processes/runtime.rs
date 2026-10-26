@@ -883,6 +883,15 @@ impl Desktop
                     continue;
                 }
             }
+            // A partial asynchronous ACK is progress, not a failed retirement.
+            // Retained uses and the common walk own their wakeups; do not ask
+            // the directory to reject the same pending barrier or enumerate
+            // every pool for a diagnostic on each child completion.
+            let remaining = ledger.summary();
+            if remaining.live != 0 || remaining.pending != 0 || remaining.completion_faults != 0
+            {
+                continue;
+            }
             if let Err(status) = self.processes.remove(owner)
             {
                 let remaining = ledger.summary();

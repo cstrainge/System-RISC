@@ -41,7 +41,7 @@ pub struct Call<'a>
     pub provider:       u64,
     pub class:          ClassId,
     pub operation:      u32,
-    pub ticket:         &'a mut u32,
+    pub ticket:         &'a mut u64,
     pub phase:          Phase,
     pub input:          &'a [u8],
     pub output:         &'a mut [u8]
@@ -58,7 +58,7 @@ pub struct Work
     operation:    u32,
     input:        Vec<u8>,
     output:       Vec<u8>,
-    ticket:       u32,
+    ticket:       u64,
     forced_error: Option<Status>
 }
 impl Work

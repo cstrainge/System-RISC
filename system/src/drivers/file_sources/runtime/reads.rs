@@ -10,7 +10,7 @@ use crate::drivers::{OwnedJob, jobs::Failure};
 struct Flight
 {
     caller: u64,
-    ticket: u32,
+    ticket: u64,
     source: u32,
     plan:   Read<Backing>,
     args:   FileArguments<'static>,

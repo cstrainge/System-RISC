@@ -12,7 +12,7 @@ pub(super) struct Fetch
     offset:    u64,
     pub bytes: Vec<u8>,
     filled:    usize,
-    ticket:    u32,
+    ticket:    u64,
     forced:    Option<Error>
 }
 impl Fetch

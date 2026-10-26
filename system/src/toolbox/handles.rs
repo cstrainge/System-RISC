@@ -181,6 +181,9 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                    registry.register(&owner, crate::drivers::registry::interfaces::specification(storage),
                                        crate::drivers::registry::interfaces::ReleaseInterfaces(storage))
                                        .map_err(KindAccessError::Registry)?;
+                                   registry.register(&owner, crate::drivers::registry::requests::specification(storage),
+                                       crate::drivers::registry::requests::ReleaseRequests(storage))
+                                       .map_err(KindAccessError::Registry)?;
                                    registry.register(&owner, crate::drivers::registry::dependencies::specification(storage),
                                        crate::drivers::registry::dependencies::ReleaseDependencies(storage))
                                        .map_err(KindAccessError::Registry)?;

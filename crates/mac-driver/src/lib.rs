@@ -38,7 +38,7 @@ pub enum Completion
 #[derive(Clone, Copy, Debug)]
 pub struct Request<'a>
 {
-    pub ticket:    u32,
+    pub ticket:    u64,
     pub phase:     Phase,
     pub class:     ClassId,
     pub operation: u32,
@@ -104,7 +104,7 @@ impl Provider
     /// call. Pending and pre-dispatch contention retain a live ticket; terminal
     /// completion clears it. Never discard a pending ticket before cancellation
     /// is acknowledged.
-    pub fn invoke(self, ticket: &mut u32, phase: Phase, operation: u32, input: &[u8],
+    pub fn invoke(self, ticket: &mut u64, phase: Phase, operation: u32, input: &[u8],
                   output: &mut [u8])
                   -> Result<Completion>
     {

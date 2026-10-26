@@ -413,13 +413,13 @@ pub fn publish_module_interface(identity: [u8; 16], name: &str) -> (u64, u64)
                       (module, provider)
                   })
 }
-pub fn module_request(provider: u64) -> Result<u32, crate::drivers::Error>
+pub fn module_request(provider: u64) -> Result<u64, crate::drivers::Error>
 {
     super::SESSION.with(|slot| {
                       slot.borrow_mut().as_mut().unwrap().modules.begin(0, provider, 1, 0, 16)
                   })
 }
-pub fn complete_module_request(ticket: u32) -> Result<(), crate::drivers::Error>
+pub fn complete_module_request(ticket: u64) -> Result<(), crate::drivers::Error>
 {
     super::SESSION.with(|slot| {
                       slot.borrow_mut().as_mut().unwrap().modules.complete(0, ticket, 0).map(|_| ())

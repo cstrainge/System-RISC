@@ -175,12 +175,12 @@ fn root_and_child_receipts_preserve_existing_cleanup_without_reopening_admission
     assert!(!owner.accepting());
     lease.admitting().unwrap();
     let (child, completion) =
-        children.insert_in_scope_with_receipt(&lease, 7).unwrap().into_parts();
+        children.insert_in_scope_with_receipt(&lease, |id| id).unwrap().into_parts();
     let ticket = owner.invalidate_next().unwrap();
     assert_eq!(ticket.key().kind(), KindCode(*b"CHLD"));
     assert_eq!(owner.parent(ticket.key()), lease.root());
     assert!(children.get(child).is_none());
-    assert_eq!(children.completing(&completion), Some(&7));
+    assert_eq!(children.completing(&completion), Some(&child));
     drop(children.release(ticket).unwrap());
     assert!(children.completing(&completion).is_none());
     let ticket = captured.borrow_mut().take().unwrap();

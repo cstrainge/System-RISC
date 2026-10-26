@@ -457,3 +457,16 @@ notifications. Futures never retain manager guards across await. UI task polling
 stays on the owning OS thread; Send/Sync object mobility does not waive
 WrongThread checks. Worker-safe I/O can later use native worker threads.
 Cancellation must distinguish confirmed cleanup from a racing committed mutation.
+
+
+Broker request state is now a registered scoped `DREQ` resource, with `DRQS`
+backing, rather than a private request table. The synchronous thread frame carries
+the admitted I/O subject across nested module calls and the bootstrap stack
+handoff. The runtime's exclusive registry borrow protects request metadata;
+no borrow crosses a callback. Continuations validate the retained publication
+receipt and the same admitted scope independently of caller policy. The common
+walk retains unique tickets through actual lower acknowledgement, and native
+cleanup uses owned state admission so a busy registry cannot discard a ticket.
+Serialized-provider occupancy changes on admission/terminal reply; polling does
+not scan all requests. This establishes neither full four-part invocation
+accounting nor arbitrary privileged-fault containment or multi-hart activation.

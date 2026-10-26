@@ -89,7 +89,7 @@ impl DeviceService
     /// START uses ticket zero. Pending retains that live ticket; POLL/CANCEL use
     /// the same ticket and no retained input buffer. Keep polling cancellation
     /// until terminal acknowledgement before reclaiming hardware-owned storage.
-    pub fn reset(self, device: u32, ticket: &mut u32, phase: Phase) -> Result<Completion>
+    pub fn reset(self, device: u32, ticket: &mut u64, phase: Phase) -> Result<Completion>
     {
         let input = device.to_le_bytes();
         self.provider.invoke(ticket,

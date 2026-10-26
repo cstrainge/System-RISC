@@ -16,7 +16,7 @@ struct Claim
     owner:       u64,
     ordinal:     u32,
     description: Description,
-    reset:       Option<u32>
+    reset:       Option<u64>
 }
 struct Dma
 {
@@ -112,7 +112,7 @@ impl<B: Bus> Devices<B>
         Ok(self.maps.get(id).ok_or(NOT_FOUND)?.mapping)
     }
 
-    pub fn reset(&mut self, owner: u64, device: u32, ticket: u32, start: bool)
+    pub fn reset(&mut self, owner: u64, device: u32, ticket: u64, start: bool)
                  -> Result<bool, Status>
     {
         if ticket == 0
@@ -156,7 +156,7 @@ impl<B: Bus> Devices<B>
         }
     }
 
-    pub fn reset_pending(&mut self, owner: u64, ticket: u32) -> Result<bool, Status>
+    pub fn reset_pending(&mut self, owner: u64, ticket: u64) -> Result<bool, Status>
     {
         let device = self.claims
                          .iter()

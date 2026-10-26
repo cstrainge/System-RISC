@@ -65,7 +65,7 @@ impl<T: Payload> Backend<T> for Native<T>
                      -> Result<(u64, Self::Key), Status>
     {
         self.0
-            .insert_in_scope_with_receipt(scope, value)
+            .insert_in_scope_with_receipt(scope, |_| value)
             .map(store::Publication::into_parts)
             .map_err(|error| status(projected::Error::Pool(error)))
     }

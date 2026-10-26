@@ -36,7 +36,7 @@ struct Binding
 pub(crate) struct ResidentCall<'a>
 {
     pub caller:    u64,
-    pub ticket:    u32,
+    pub ticket:    u64,
     pub phase:     u32,
     pub operation: u32,
     pub input:     &'a [u8]
@@ -168,7 +168,9 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
                     Ok([registry.get(crate::toolbox::handles::KindCode(*b"DIFC"))?,
                         registry.get(crate::toolbox::handles::KindCode(*b"DIFS"))?,
                         registry.get(crate::toolbox::handles::KindCode(*b"DDEP"))?,
-                        registry.get(crate::toolbox::handles::KindCode(*b"DDST"))?])
+                        registry.get(crate::toolbox::handles::KindCode(*b"DDST"))?,
+                        registry.get(crate::toolbox::handles::KindCode(*b"DREQ"))?,
+                        registry.get(crate::toolbox::handles::KindCode(*b"DRQS"))?])
                 }).map_err(|error| error.status())?
                   .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
     RUNTIME.publish(Runtime { registry:  Registry::new(target, owner, kinds).map_err(status)?,
@@ -349,6 +351,31 @@ unsafe extern "C" fn broker(caller: u64, provider: u64, pointer: *mut abi::Call)
 }
 unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<Status, Status>
 {
+    if let Some(subject) = crate::context::io_subject()
+    {
+        return unsafe { invoke_scoped(&subject, caller, provider, pointer) };
+    }
+    // A module may call its declared services during entry, outside a queued
+    // operation. Admit that real module once; nested calls inherit its frame.
+    let owner = if caller == 0
+    {
+        crate::toolbox::handles::system_owner()?
+    }
+    else
+    {
+        module_authority(caller)?
+    };
+    let subject = super::jobs::subjects::resident()?.admit(
+        &crate::toolbox::handles::subject::Authority::Client(owner))?;
+    crate::context::with_io_subject(subject.clone(), || {
+        unsafe { invoke_scoped(&subject, caller, provider, pointer) }
+    }).and_then(core::convert::identity)
+}
+unsafe fn invoke_scoped(subject: &super::jobs::subjects::Subject, caller: u64, provider: u64,
+                        pointer: *mut abi::Call)
+                        -> Result<Status, Status>
+{
+    use super::registry::requests::Access;
     let call = unsafe { checked_call(pointer) }?;
     call.output_len = 0;
     let (module, ticket, target) =
@@ -359,7 +386,11 @@ unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<
                                    }
                                    else
                                    {
-                                       runtime.registry.interface_for_request(caller, call.ticket)
+                                       runtime.registry
+                                  .interface_for_request(caller,
+                                                         Access::Continuing { subject,
+                                                                              ticket:
+                                                                                  call.ticket })
                                    }.map_err(status)?;
                    if interface.offer.class.0 != call.class
                    {
@@ -370,14 +401,18 @@ unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<
                        abi::START if call.ticket == 0 =>
                        {
                            runtime.registry
-                                  .begin(caller, provider, call.operation, call.input_len as usize,
-                                         call.output_capacity as usize)
+                                  .begin_scoped(subject, caller, provider, call.operation,
+                                                call.input_len as usize,
+                                                call.output_capacity as usize)
                                   .map_err(status)?
                        }
                        abi::POLL | abi::CANCEL =>
                        {
-                           let request =
-                               runtime.registry.request(caller, call.ticket).map_err(status)?;
+                           let request = runtime.registry
+                                                .request(caller,
+                                                         Access::Continuing { subject,
+                                                                              ticket: call.ticket })
+                                                .map_err(status)?;
                            if request.interface != provider
                               || request.class.0 != call.class
                               || request.operation != call.operation
@@ -406,7 +441,11 @@ unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<
                                                      .and_then(|b| b.instance)
                                                      .ok_or(NOT_FOUND)?)
                    };
-                   runtime.registry.enter_request(caller, ticket).map_err(status)?;
+                   runtime.registry
+                          .enter_request(caller,
+                                         Access::Continuing { subject,
+                                                              ticket })
+                          .map_err(status)?;
                    Ok((interface.module, ticket, target))
                })
                .map_err(crate::state::AccessError::status)??;
@@ -480,21 +519,32 @@ unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<
                     || call.output_len > call.output_capacity
                     || result == abi::PENDING && call.output_len != 0;
     call.ticket = ticket;
-    RUNTIME.with(|runtime| runtime.registry.leave_request(caller, ticket).map_err(status))
+    RUNTIME.with(|runtime| {
+               runtime.registry
+                      .leave_request(caller,
+                                     Access::Continuing { subject,
+                                                          ticket })
+                      .map_err(status)
+           })
            .map_err(crate::state::AccessError::status)??;
     if result == abi::PENDING && !malformed
     {
         return Ok(result);
     }
     RUNTIME.with(|runtime| {
-               let request = runtime.registry.request(caller, ticket).map_err(status)?;
+               let request = runtime.registry
+                                    .request(caller,
+                                             Access::Continuing { subject,
+                                                                  ticket })
+                                    .map_err(status)?;
                if request.module != module
                {
                    return Err(BAD_ARGUMENT);
                }
                runtime.registry
                       .complete(caller,
-                                ticket,
+                                Access::Continuing { subject,
+                                                     ticket },
                                 if malformed { 0 } else { call.output_len as usize })
                       .map_err(status)?;
                Ok(())
@@ -880,4 +930,13 @@ pub(crate) fn abandon_deferred_job(thread: u64, id: u32)
     {
         let _ = queue.detach_waiter(thread, id);
     }
+}
+
+
+pub(crate) fn release_request(ticket: mac_object_table::domain::ReleasedResource, storage: bool)
+                              -> Result<(), crate::toolbox::handles::cleanup::Failure>
+{
+    use crate::toolbox::handles::cleanup::Failure;
+    RUNTIME.with_owned(ticket, |ticket, runtime| runtime.registry.release_request(ticket, storage))
+           .map_err(|(cause, ticket)| Failure::request_registry_unavailable(ticket, cause))?
 }

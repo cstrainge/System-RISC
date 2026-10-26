@@ -74,6 +74,7 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
                     let mut scoped = 0u64;
                     let mut owned_io = 0u32;
                     let mut jobs_seen = false;
+                    let mut requests_seen = false;
                     for index in 0..ledger.len()
                     {
                         let pool = ledger.at(index).map_err(|e| e.cause)?;
@@ -84,10 +85,17 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
                                     && pool.scoped_children == pool.live + pool.pending)?;
                             owned_io += 1;
                         }
-                        if pool.kind == *b"DJOB"
+                        if pool.kind == *b"DJOB" || pool.kind == *b"DREQ"
                         {
                             require(pool.scoped_children == pool.live + pool.pending)?;
-                            jobs_seen = true;
+                            if pool.kind == *b"DJOB"
+                            {
+                                jobs_seen = true;
+                            }
+                            if pool.kind == *b"DREQ"
+                            {
+                                requests_seen = true;
+                            }
                         }
                         if pool.kind == *b"FTXN"
                         {
@@ -97,6 +105,7 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
                     }
                     require(found
                             && jobs_seen
+                            && requests_seen
                             && owned_io == 2
                             && scoped >= 2
                             && ledger.domain().scoped_children == scoped)

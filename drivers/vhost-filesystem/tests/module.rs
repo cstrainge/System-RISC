@@ -1,6 +1,8 @@
 //! Real host side effects behind split native module callbacks. Host-only
 //! coverage: this deliberately does not claim resident/guest mount acceptance.
 mod common;
+#[path = "../../../crates/mac-object-table/tests/support/native_requests.rs"]
+mod native_requests;
 use std::{path::PathBuf,
           sync::{Arc, Mutex,
                  atomic::{AtomicU64, Ordering}}};
@@ -9,6 +11,7 @@ use mac_driver::{ClassId, Completion, Error, Phase, Request};
 use mac_filesystem_interface::{self as fs, Arguments, Operation};
 use mac_host_protocol::{self as wire, Header, Operation as HostOp};
 use mac_object_table::{Kind, Table};
+use native_requests::Requests as NativeRequests;
 use risc_forks::Volume;
 use risc_host::{Export, Session};
 use vhost_filesystem::{module::Service, transport::Channel};
@@ -38,14 +41,14 @@ struct Trace
 struct Host
 {
     session:     Session,
-    ids:         Table<()>,
+    ids:         NativeRequests,
     pending:     Option<(Header, Vec<u8>)>,
     trace:       Arc<Mutex<Vec<Trace>>>,
     synchronous: bool
 }
 impl Channel for Host
 {
-    fn invoke(&mut self, ticket: &mut u32, phase: Phase, operation: u32, input: &[u8],
+    fn invoke(&mut self, ticket: &mut u64, phase: Phase, operation: u32, input: &[u8],
               output: &mut [u8])
               -> mac_driver::Result<Completion>
     {
@@ -90,7 +93,7 @@ struct Harness
     service:  Service<Host>,
     temp:     Temp,
     trace:    Arc<Mutex<Vec<Trace>>>,
-    requests: Table<()>,
+    requests: NativeRequests,
     volumes:  Table<()>,
     writes:   common::Tokens,
     files:    Table<()>
@@ -109,12 +112,12 @@ impl Harness
         let service = Service::new();
         service.initialize(Host {
             session: Session::new(Arc::new(vec![Export::open("Share", &temp.0, writable).unwrap()])).unwrap(),
-            ids: Table::new(Kind::DriverRequests), pending: None, trace: trace.clone(), synchronous
+            ids: NativeRequests::new(), pending: None, trace: trace.clone(), synchronous
         }).unwrap();
         Self { service,
                temp,
                trace,
-               requests: Table::new(Kind::DriverRequests),
+               requests: NativeRequests::new(),
                volumes: Table::new(Kind::Volumes),
                writes: common::Tokens::new(),
                files: Table::new(Kind::Files) }
@@ -127,7 +130,7 @@ impl Harness
         out
     }
 
-    fn step(&self, ticket: u32, phase: Phase, op: Operation, input: &[u8], output: &mut [u8])
+    fn step(&self, ticket: u64, phase: Phase, op: Operation, input: &[u8], output: &mut [u8])
             -> mac_driver::Result<Completion>
     {
         let before = self.trace.lock().unwrap().len();
@@ -151,7 +154,7 @@ impl Harness
         result
     }
 
-    fn finish(&self, ticket: u32, first: Phase, op: Operation, input: &[u8])
+    fn finish(&self, ticket: u64, first: Phase, op: Operation, input: &[u8])
               -> mac_driver::Result<Vec<u8>>
     {
         for i in 0..10_000
@@ -211,7 +214,7 @@ impl Harness
         (token, fs::Metadata::decode(&out).unwrap().id)
     }
 
-    fn until_host_start(&self, ticket: u32, op: Operation, input: &[u8], target: HostOp)
+    fn until_host_start(&self, ticket: u64, op: Operation, input: &[u8], target: HostOp)
     {
         for i in 0..10_000
         {

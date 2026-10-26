@@ -190,6 +190,9 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
     assert_eq!(capture["original_before"], capture["original_after"]);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert_eq!(capture["termination"], "guest-outcome", "{serial}");
+    assert!(!serial.contains("PROCESS_DOMAIN_RETIRE_REFUSED"),
+            "ordinary asynchronous cleanup must wait on its barrier, not repeatedly attempt a \
+             premature directory retirement: {serial}");
     assert!(serial.contains("HOST_FS_NATIVE_WRITE_GROWTH_PASS count=20 width=64 reuse=passed \
                              cleanup=passed\n"),
             "{serial}");
