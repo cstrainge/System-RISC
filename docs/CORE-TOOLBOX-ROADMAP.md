@@ -170,6 +170,12 @@ ceilings as an early storage gate, independently of the chosen boot filesystem.
 Status: backlog; additional harts currently park in the boot ROM. This is a
 separate platform workstream alongside the Toolbox delivery sequence.
 
+The **Multi Hart Extension** supplies replacement scheduling policy and chooses
+when to activate secondary harts. Keep the resident single-hart boot scheduler
+and minimal architecture mechanisms below a checked takeover seam. A rejected
+activation must leave boot scheduling dependable. The extension is the memory
+model's isolated scheduler capstone after its memory and isolation gates.
+
 - Give each hart its own boot/trap stacks, current-thread context, resource
   selection, timer setup and idle state. Remove single-hart assumptions from
   scheduler and synchronous I/O context selection.
@@ -436,16 +442,15 @@ normalization. Search
 uses canonical caseless matching with Unicode default folding independent of
 locale, no Turkish-i tailoring, and preservation of case in the stored NFC name.
 
-At this planning checkpoint System.rsrc is 3,084,317 bytes, while ROM startup,
-startup resource transfer, resident resource loading and APPL loading enforce
-4 MiB resource-fork ceilings. These are implementation limits, not HFS's maximum
-file size, and HFS-B does not remove them automatically. Ahead of further System
-resource growth, replace the fixed ceilings with validated, memory-budgeted
-loading and bounded/targeted reads where appropriate. Include the separate
-whole-data-file writer limit in the native write-service audit. Do not merely
-raise one constant or accept an unbounded fork-sized allocation. Require real
-boot/resource/app fixtures beyond 4 MiB while retaining malformed/budget rejection
-and UI/performance gates. The HFS-B boot gate must exercise those larger forks.
+Native RRF1 resource forks now use checked u32 payload offsets. Startup is
+qualified with a System fork over 5 MiB, and indexed/streamed SDK reads exercise
+offsets past 16 MiB. The ordinary eager application loader still has a 4 MiB
+selected-payload budget; this is separate from fork size and addressability.
+The page-backed heap stage replaces that fixed cap with checked per-domain
+allocation budgets, retaining bounded/targeted reads for large resources. Include
+the separate whole-data-file writer limit in the native write-service audit.
+Do not merely raise one constant or accept an unbounded fork-sized allocation.
+Keep malformed/budget rejection, boot and UI/performance acceptance gates.
 
 1. Freeze a byte-accurate versioned layout and test vectors before image creation:
    signature (proposed HB), volume header, allocation bitmap, catalog/extents/

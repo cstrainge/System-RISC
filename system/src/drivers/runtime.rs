@@ -599,13 +599,9 @@ impl super::jobs::Broker for NativeBroker
 }
 
 
-// These short queue critical sections run only at the interrupt-masked native
-// service/timer boundary. No callback or hardware poll holds this guard. This
-// follows the current one-hart scheduler contract; SMP must supply per-hart
-// interrupt exclusion before it enables concurrent preemption in the kernel.
-static JOBS: spinning_top::Spinlock<super::jobs::Queue> =
-    spinning_top::Spinlock::new(super::jobs::Queue::new());
-static JOBS_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+// Queue owns the audited IRQ/preemption lock boundary, including guard Drop.
+// No lock survives a foreign callback; empty pumps are one atomic flag read.
+static JOBS: super::jobs::Queue = super::jobs::Queue::new();
 
 /// Resident adapters enqueue only owned bytes. The owner comes from trusted
 /// execution context, never from the application's request payload.
@@ -613,7 +609,6 @@ fn enqueue_job(owner: super::jobs::Owner, class: ClassId, version: u32, operatio
                input: Vec<u8>, output_bytes: usize)
                -> Result<OwnedJob, Status>
 {
-    use core::sync::atomic::Ordering::Release;
     let provider = match owner
     {
         super::jobs::Owner::Module(module) =>
@@ -626,29 +621,26 @@ fn enqueue_job(owner: super::jobs::Owner, class: ClassId, version: u32, operatio
         _ => resolve_kernel(class, version)?
     };
     let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
-    let mut queue = JOBS.lock();
+    let queue = &JOBS;
     let id = queue.submit(owner, work).map_err(|error| error.status)?;
-    JOBS_READY.store(true, Release);
     Ok(OwnedJob { owner,
                   id })
 }
 
 fn take_job(owner: super::jobs::Owner, id: u32) -> Result<Option<super::jobs::Completed>, Status>
 {
-    JOBS.lock().take(owner, id)
+    JOBS.take(owner, id)
 }
 
 pub(crate) fn job_pending(thread: u64, id: u32) -> Result<bool, Status>
 {
-    JOBS.lock().pending_waiter(thread, id)
+    JOBS.pending_waiter(thread, id)
 }
 
 pub(crate) fn discard_thread_jobs(thread: u64)
 {
-    let mut queue = JOBS.lock();
+    let queue = &JOBS;
     queue.discard_owner(super::jobs::Owner::Thread(thread));
-    JOBS_READY.store(queue.has_ready(), core::sync::atomic::Ordering::Release);
-    drop(queue);
     crate::toolbox::files::abandon_provider_thread(thread);
 }
 
@@ -656,36 +648,54 @@ pub(crate) fn discard_thread_jobs(thread: u64)
 /// atomic load, with no registry lookup, allocation or device access.
 pub(crate) fn pump_jobs()
 {
-    use core::sync::atomic::Ordering::Acquire;
-    if !JOBS_READY.load(Acquire)
+    if !JOBS.has_ready()
     {
         return;
     }
-    let dispatch = { JOBS.lock().next_dispatch() };
-    let Some(dispatch) = dispatch
+    if let Some(dispatch) = JOBS.next_dispatch()
+    {
+        dispatch_job(dispatch);
+    }
     else
     {
-        return;
-    };
-    dispatch_job(dispatch);
+        deliver_job_returns();
+    }
 }
 
-fn dispatch_job(mut dispatch: super::jobs::Dispatch)
+fn wake_job(notice: super::jobs::CompletionNotice)
 {
-    use core::sync::atomic::Ordering::Release;
-    dispatch.invoke(&mut NativeBroker);
-    let completed = {
-        let mut queue = JOBS.lock();
-        let completed = queue.finish(dispatch).expect("dispatch belongs to its live job queue");
-        JOBS_READY.store(queue.has_ready(), Release);
-        completed
-    };
-    if let Some(super::jobs::CompletionNotice { waiter: Some(thread),
-                                                job,
-                                                .. }) = completed
+    if let Some(thread) = notice.waiter
     {
-        crate::machine::scheduler::wake_io(thread, crate::context::DeferredIo::DriverJob(job));
+        crate::machine::scheduler::wake_io(thread,
+                                           crate::context::DeferredIo::DriverJob(notice.job));
     }
+}
+fn deliver_job_returns()
+{
+    if let Some(notice) = JOBS.take_notice()
+    {
+        wake_job(notice);
+    }
+    if let Some(failure) = JOBS.take_return_failure()
+    {
+        serial!("DRIVER_JOB_QUARANTINED job={} owner={:?} {}", failure.job, failure.owner,
+                failure.cause);
+    }
+}
+fn dispatch_job(mut dispatch: super::jobs::Dispatch<'_>)
+{
+    if let Err(status) = dispatch.invoke(&mut NativeBroker)
+    {
+        serial!("DRIVER_JOB_INVOKE_REFUSED status={status}; dispatch returns through its owned \
+                 guard");
+    }
+    match JOBS.finish(dispatch)
+    {
+        Ok(Some(notice)) => wake_job(notice),
+        Ok(None) => (),
+        Err(dispatch) => drop(dispatch) // Its origin queue retains/restores the actual work.
+    }
+    deliver_job_returns();
 }
 
 
@@ -714,7 +724,7 @@ impl OwnedJob
     /// owned by this guard; Drop requests cancellation through the same queue.
     pub(crate) fn run_once(&mut self) -> Result<Option<super::jobs::Completed>, Status>
     {
-        let dispatch = JOBS.lock().dispatch_for(self.owner, self.id)?;
+        let dispatch = JOBS.dispatch_for(self.owner, self.id)?;
         if let Some(dispatch) = dispatch
         {
             dispatch_job(dispatch);
@@ -747,11 +757,11 @@ impl OwnedJob
         {
             return Err(WRONG_THREAD);
         }
-        JOBS.lock().attach_waiter(self.owner, self.id, thread.0)?;
+        JOBS.attach_waiter(self.owner, self.id, thread.0)?;
         let result = defer_current_job(self.id);
         if result.is_err()
         {
-            let _ = JOBS.lock().detach_waiter(thread.0, self.id);
+            let _ = JOBS.detach_waiter(thread.0, self.id);
         }
         result
     }
@@ -765,9 +775,8 @@ impl OwnedJob
             return Err(NOT_FOUND);
         }
         let waiter = {
-            let mut queue = JOBS.lock();
+            let queue = &JOBS;
             queue.cancel(self.owner, self.id)?;
-            JOBS_READY.store(queue.has_ready(), core::sync::atomic::Ordering::Release);
             queue.completed_waiter(self.owner, self.id)?
         };
         if let Some(thread) = waiter
@@ -786,9 +795,8 @@ impl Drop for OwnedJob
         {
             return;
         }
-        let mut queue = JOBS.lock();
+        let queue = &JOBS;
         let _ = queue.discard(self.owner, self.id);
-        JOBS_READY.store(queue.has_ready(), core::sync::atomic::Ordering::Release);
     }
 }
 
@@ -838,21 +846,19 @@ pub(crate) fn submit_background_to(provider: u64, class: ClassId, version: u32, 
            })
            .map_err(crate::state::AccessError::status)??;
     let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
-    let mut queue = JOBS.lock();
+    let queue = &JOBS;
     let id = queue.submit(super::jobs::Owner::Kernel, work).map_err(|error| error.status)?;
-    JOBS_READY.store(true, core::sync::atomic::Ordering::Release);
     Ok(OwnedJob { owner: super::jobs::Owner::Kernel,
                   id })
 }
 
 pub(crate) fn abandon_deferred_job(thread: u64, id: u32)
 {
-    let mut queue = JOBS.lock();
+    let queue = &JOBS;
     // A kernel-owned operation still has to observe publication and clean its
     // leases if the outer trap cannot park. Abandon only this wake attachment.
     if queue.discard(super::jobs::Owner::Thread(thread), id).is_err()
     {
         let _ = queue.detach_waiter(thread, id);
     }
-    JOBS_READY.store(queue.has_ready(), core::sync::atomic::Ordering::Release);
 }

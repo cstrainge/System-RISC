@@ -7,6 +7,15 @@ must not build their own event/promise pump or executor. The first delivery slic
 is lazy drag data; this decision does not claim that the full application runtime
 or std target already exists.
 
+Async I/O APIs are supplied by a later loadable System extension. The fixed
+core owns the minimal request, completion, cancellation, lifetime and wakeup
+mechanisms; the extension publishes its awaitable I/O services through ordinary
+versioned, ledger-owned registrations. Do not hard-code an async provider or
+executor into resident managers. The base SDK's event executor and optional
+runtime adapters remain clients of those mechanisms. Removing an extension must
+quiesce its registrations and retain outstanding requests until actual completion
+or acknowledged cancellation; a timeout never substitutes for acknowledgement.
+
 ## One service contract, independent runtimes
 
 Potentially waiting operations expose `core::future::Future` with typed results.

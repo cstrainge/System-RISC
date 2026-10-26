@@ -413,6 +413,20 @@ threads and unresponsive-provider timeout recovery remain separate work.
 
 ## Native async/await runtimes
 
+The later Async I/O extension supplies awaitable I/O APIs. Resident mechanisms
+provide safe owned requests, completions, cancellation and wakeups; extension
+policy and runtime adapters use ordinary versioned registrations. This does not
+move a Tokio dependency or a fixed async-provider list into the kernel.
+
+Scheduling policy is also replaceable. The loadable **Multi Hart Extension**
+takes over from the resident single-hart boot scheduler and decides when to
+activate additional harts. Core owns the architecture mechanisms for hart
+startup/parking, interrupts/IPIs, context switches and safe synchronization.
+Takeover is checked and atomic: rejection leaves boot scheduling usable, and no
+additional hart is released before per-hart context, memory and interrupt/lock
+safety gates pass. This remains the model's isolated scheduler capstone, not an
+SMP claim for the current kernel.
+
 Application identities use the shared facility's full u64 process-domain
 incarnation, separate from scheduled thread IDs. The owner directory retains
 each process's authoritative ledger; retiring a process requires an empty ledger

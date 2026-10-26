@@ -326,9 +326,16 @@ cumulative counters are part of the model, not a private inspection backdoor.
 Keep §13.2 stages explicit: ISA floor; facility/manager migration; owner walk and
 unified rollback; dynamic process records; live page layer; heaps/reserve/control
 zones; module domains/resource scopes/individual driver extraction/Host Clipboard;
-TE2+Text Edit; P13 privilege campaign; **scheduler extension in its own isolated
+TE2+Text Edit; P13 privilege campaign; **Multi Hart Extension scheduler takeover in its own isolated
 commit after the full model boots cleanly**. No capstone scheduler feature slips
 into a memory change.
+
+The resident scheduler remains the dependable single-hart boot implementation.
+The loadable Multi Hart Extension supplies replacement scheduling policy and
+decides when to activate additional harts; the fixed core exposes architecture
+mechanisms and enforces safe handover. Per-hart context, MMU and interrupt/lock
+proofs gate activation. Later async I/O APIs likewise belong to a loadable
+extension over the core's owned completion/cancellation/wakeup mechanisms.
 
 Each manager migrates to the same facility before its new account is live.
 The teardown algorithm has no manager-ordered phase list: stop admission and
@@ -1919,3 +1926,29 @@ Physical module code still remains resident until reboot. This slice establishes
 logical provider/interface retention; broker requests, owned jobs, devices/DMA,
 backing sources, physical code reclamation and the remaining invocation/page/heap
 gates retain their separate migration work.
+
+## Driver dispatches return through owned guards
+
+A dispatch now borrows its originating queue for the entire invocation. Rust
+rejects moving or destroying that queue while its dispatch exists. Drop returns
+uninvoked work, settles a returned callback and its wake notice, or quarantines
+an interrupted invocation with its actual owned buffers and broker ticket.
+Cancellation before an uninvoked guard drops never starts the unsent request.
+Foreign-queue refusal cannot redirect the guard's return, and double invocation
+is rejected before another callback runs. Return/quarantine needs no allocation:
+admission reserves notices and allocates the node's own retention link.
+
+The queue owns one architecture invocation-gate/lock boundary, including Drop;
+no queue guard crosses foreign code. Readiness changes update atomic flags, and
+empty/not-notified/not-failed paths exit without taking that lock. Normal
+completion keeps its immediate waiter wakeup. Native dispatch cleanup no longer
+expects a successful return. The host unwind test retains interrupted work and
+reports M-D04's unproven privileged-fault recovery gate; it does not qualify
+native recovery from an arbitrary privileged fault.
+
+Scoped host tests, the origin-lifetime compile-fail check, host-thread cancellation
+during a live callback and native provider/archive/module/process/aggregate/
+cursor/panic campaigns pass. Compiled boundaries, formatting and public docs pass.
+Job IDs still use their existing shared generation table and numeric delivery
+policy; registered job/request owner and resource-scope receipts remain the next
+lower-I/O migration. This is not completion of that stage, MMU activation or SMP.
