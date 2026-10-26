@@ -11,11 +11,11 @@ pub(super) enum Acquire
     },
     Open
     {
-        handle: u32, description: Vec<u8>
+        handle: u32, description: Vec<u8>, subject: IoSubject
     },
     Cleanup
     {
-        handle: u32, status: Status
+        handle: u32, status: Status, subject: IoSubject
     }
 }
 #[derive(Clone)]
@@ -81,7 +81,7 @@ impl Context
                  path: None }
     }
 
-    fn release(self, source: u32, volume: Option<u32>, status: Status) -> Progress
+    fn release(self, source: u64, volume: Option<u32>, status: Status) -> Progress
     {
         match backing::begin_release(self.provider, source)
         {
@@ -104,7 +104,7 @@ impl Context
         }
     }
 
-    fn mount(self, source: u32, description: &[u8]) -> Progress
+    fn mount(self, source: u64, description: &[u8]) -> Progress
     {
         let volume = match files(|manager| {
                   manager.reserve_provider_mount(self.provider, super::super::Source::File(source))
@@ -117,7 +117,7 @@ impl Context
                           self.provider,
                           Operation::Mount,
                           Arguments { volume,
-                                      auxiliary: source.into(),
+                                      auxiliary: source,
                                       payload: description,
                                       ..Default::default() })
         {
@@ -126,31 +126,31 @@ impl Context
         }
     }
 
-    fn cleanup(self, handle: u32, status: Status) -> Progress
+    fn cleanup(self, handle: u32, status: Status, subject: IoSubject) -> Progress
     {
-        let job = files(|m| m.close_provider_source(handle, true)).and_then(|(provider, args)| {
-                                                                      submit_args(&self.subject,
-                                                                                  provider,
-                                                                                  Operation::Close,
-                                                                                  args)
-                                                                  });
+        let job = files(|m| {
+            m.close_provider_source(subject.scope(), handle, true, |provider, args| {
+                 submit_args(&self.subject, provider, Operation::Close, args)
+             })
+        });
         match job
         {
             Ok(job) =>
             {
                 Progress::Pending(self.flight(Step::Source(Acquire::Cleanup { handle,
-                                                                              status }),
+                                                                              status,
+                                                                              subject }),
                                               job))
             }
             Err(_) =>
             {
-                let _ = files(|m| m.quarantine_provider_source(handle));
+                let _ = files(|m| m.quarantine_provider_source(subject.scope(), handle));
                 Progress::Done(Err(ROLLBACK_FAILED))
             }
         }
     }
 }
-pub(super) fn release(flight: Flight, source: u32, volume: Option<u32>, status: Status)
+pub(super) fn release(flight: Flight, source: u64, volume: Option<u32>, status: Status)
                       -> Progress
 {
     Context::from(&flight).release(source, volume, status)
@@ -201,15 +201,16 @@ pub(super) fn start_file(owner: u64, thread: u64, key: Key, call: &mut FileCall,
         }
         Ok(Some(source_provider)) =>
         {
-            let (actual, handle) =
-                match files(|m| m.reserve_provider_source(call.volume, call.cnid))
-                {
-                    Ok(mark) => mark,
-                    Err(error) => return error
-                };
+            let (actual, handle) = match files(|m| {
+                      m.reserve_provider_source(ctx.subject.scope(), call.volume, call.cnid)
+                  })
+            {
+                Ok(mark) => mark,
+                Err(error) => return error
+            };
             if actual != source_provider
             {
-                let _ = files(|m| m.retire_provider_source(handle));
+                let _ = files(|m| m.retire_provider_source(ctx.subject.scope(), handle));
                 return BAD_ABI;
             }
             match submit_args(&ctx.subject, source_provider,
@@ -224,7 +225,7 @@ pub(super) fn start_file(owner: u64, thread: u64, key: Key, call: &mut FileCall,
                                                     }), job)),
                 Err(error) =>
                 {
-                    Progress::Done(files(|m| m.retire_provider_source(handle)).and(Err(error)))
+                    Progress::Done(files(|m| m.retire_provider_source(ctx.subject.scope(), handle)).and(Err(error)))
                 }
             }
         }
@@ -263,14 +264,16 @@ pub(super) fn advance(flight: Flight, result: Result<Vec<u8>, Status>, never_sen
                                         }
                                         Ok(bytes)
                                     });
-            let description =
-                match description
+            let description = match description
+            {
+                Ok(bytes) => bytes,
+                Err(error) =>
                 {
-                    Ok(bytes) => bytes,
-                    Err(error) => return Progress::Done(files(|m| {
-                                                            m.retire_provider_source(handle)
-                                                        }).and(Err(error)))
-                };
+                    return Progress::Done(files(|m| {
+                                              m.retire_provider_source(ctx.subject.scope(), handle)
+                                          }).and(Err(error)));
+                }
+            };
             let selected = ctx.select(&description).and_then(|selected| {
                                                        if !selected
                                                        {
@@ -290,10 +293,35 @@ pub(super) fn advance(flight: Flight, result: Result<Vec<u8>, Status>, never_sen
                 Ok(None) => (),
                 terminal =>
                 {
-                    let retired = files(|m| m.retire_provider_source(handle));
+                    let retired = files(|m| m.retire_provider_source(ctx.subject.scope(), handle));
                     return Progress::Done(retired.and(terminal).and_then(|r| r.ok_or(BAD_ABI)));
                 }
             }
+            if let Err(error) = files(|m| m.retire_provider_source(ctx.subject.scope(), handle))
+            {
+                return Progress::Done(Err(error));
+            }
+            let subject = match backing::admit(ctx.provider)
+            {
+                Ok(subject) => subject,
+                Err(error) => return Progress::Done(Err(error))
+            };
+            if let Err(error) = backing::pin(&subject, ctx.provider, provider)
+            {
+                return Progress::Done(Err(error));
+            }
+            let handle = match files(|m| {
+                      m.reserve_provider_source(subject.scope(), ctx.key.volume, ctx.key.cnid)
+                  })
+            {
+                Ok((actual, handle)) if actual == provider => handle,
+                Ok((_, handle)) =>
+                {
+                    let _ = files(|m| m.retire_provider_source(subject.scope(), handle));
+                    return Progress::Done(Err(BAD_ABI));
+                }
+                Err(error) => return Progress::Done(Err(error))
+            };
             match submit_args(&ctx.subject,
                               provider,
                               Operation::Open,
@@ -305,53 +333,63 @@ pub(super) fn advance(flight: Flight, result: Result<Vec<u8>, Status>, never_sen
                 Ok(job) =>
                 {
                     Progress::Pending(ctx.flight(Step::Source(Acquire::Open { handle,
-                                                                              description }),
+                                                                              description,
+                                                                              subject }),
                                                  job))
                 }
-                Err(error) =>
-                {
-                    Progress::Done(files(|m| m.retire_provider_source(handle)).and(Err(error)))
-                }
+                Err(error) => Progress::Done(files(|m| {
+                                                 m.retire_provider_source(subject.scope(), handle)
+                                             }).and(Err(error)))
             }
         }
         Acquire::Open { handle,
-                        description } =>
+                        description,
+                        subject } =>
         {
             if never_sent
             {
-                return Progress::Done(files(|m| m.retire_provider_source(handle))
-                                          .and(Err(OPERATION_CANCELLED)));
+                return Progress::Done(files(|m| {
+                                          m.retire_provider_source(subject.scope(), handle)
+                                      }).and(Err(OPERATION_CANCELLED)));
             }
-            let opened =
-                result.and_then(|bytes| {
-                          if ctx.abandoned
-                          {
-                              return Err(OPERATION_CANCELLED);
-                          }
-                          let length = files(|m| m.publish_provider_source(handle, &bytes))?;
-                          if fs::Metadata::decode(&description).map_err(|_| BAD_ABI)?.data_length
-                             != length
-                          {
-                              return Err(SCAN_STALE);
-                          }
-                          backing::adopt(ctx.provider, ctx.key.volume, ctx.key.cnid, handle, length)
-                      });
+            let opened = result.and_then(|bytes| {
+                                   if ctx.abandoned
+                                   {
+                                       return Err(OPERATION_CANCELLED);
+                                   }
+                                   let length = files(|m| {
+                                       m.publish_provider_source(subject.scope(), handle, &bytes)
+                                   })?;
+                                   if fs::Metadata::decode(&description).map_err(|_| BAD_ABI)?
+                                                                        .data_length
+                                      != length
+                                   {
+                                       return Err(SCAN_STALE);
+                                   }
+                                   backing::adopt(ctx.provider,
+                                                  ctx.key.volume,
+                                                  ctx.key.cnid,
+                                                  subject.clone(),
+                                                  handle,
+                                                  length)
+                               });
             match opened
             {
                 Ok(source) => ctx.mount(source, &description),
-                Err(error) => ctx.cleanup(handle, error)
+                Err(error) => ctx.cleanup(handle, error, subject)
             }
         }
         Acquire::Cleanup { handle,
-                           status } =>
+                           status,
+                           subject } =>
         {
             if matches!(&result,Ok(bytes) if bytes.is_empty()) || matches!(result, Err(NOT_FOUND))
             {
-                Progress::Done(files(|m| m.retire_provider_source(handle)).and(Err(status)))
+                Progress::Done(files(|m| m.retire_provider_source(subject.scope(), handle)).and(Err(status)))
             }
             else
             {
-                let _ = files(|m| m.quarantine_provider_source(handle));
+                let _ = files(|m| m.quarantine_provider_source(subject.scope(), handle));
                 Progress::Done(Err(ROLLBACK_FAILED))
             }
         }

@@ -1,5 +1,5 @@
-//! Trusted positioned backing reads. The ordinary owner-zero fork mark pins the
-//! catalog identity and source volume and participates in mutation protection.
+//! Trusted positioned backing reads. Marks belong to an admitted operation
+//! scope, retaining their catalog/volume through actual backend acknowledgement.
 #![forbid(unsafe_code)]
 use super::*;
 impl Manager
@@ -9,29 +9,36 @@ impl Manager
         self.read_provider(volume)
     }
 
-    pub(crate) fn reserve_provider_source(&mut self, volume: u32, cnid: u32)
+    pub(crate) fn reserve_provider_source(&mut self, scope: &subject::Lease, volume: u32,
+                                          cnid: u32)
                                           -> Result<(u64, u32), Status>
     {
-        self.reserve_provider_file(0, volume, cnid, DATA_FORK)
+        self.reserve_provider_file_authorized(scope.into(),
+                                              &subject::Authority::Operation(scope.clone()),
+                                              volume,
+                                              cnid,
+                                              DATA_FORK)
     }
 
-    pub(crate) fn source_mark_provider(&self, handle: u32) -> Result<Option<u64>, Status>
+    pub(crate) fn source_mark_provider(&self, scope: &subject::Lease, handle: u32)
+                                       -> Result<Option<u64>, Status>
     {
-        self.file_provider(0, handle)
+        self.file_provider(scope, handle)
     }
 
-    pub(crate) fn publish_provider_source(&mut self, handle: u32, bytes: &[u8])
+    pub(crate) fn publish_provider_source(&mut self, scope: &subject::Lease, handle: u32,
+                                          bytes: &[u8])
                                           -> Result<u64, Status>
     {
-        self.slot(0, handle)?;
+        self.slot_access(scope.into(), handle)?;
         self.publish_provider_file(handle, bytes)
     }
 
     pub(crate) fn begin_provider_source_read(
-        &mut self, handle: u32, offset: u64, length: usize)
+        &mut self, scope: &subject::Lease, handle: u32, offset: u64, length: usize)
         -> Result<(u64, mac_filesystem_interface::Arguments<'static>), Status>
     {
-        let file = self.slot(0, handle)?;
+        let file = self.slot_access(scope.into(), handle)?;
         let fork_guard = file.fork.lock();
         let FileFork::Provider(fork) = &*fork_guard
         else
@@ -45,45 +52,38 @@ impl Manager
         // This mark is private to the source lease, never a public app mark.
         file.position.store(offset, core::sync::atomic::Ordering::Relaxed);
         drop(fork_guard);
-        self.begin_provider_file_read(0, handle, length)
+        self.begin_provider_file_read(scope, handle, length)
     }
 
-    pub(crate) fn finish_provider_source_read(&mut self, handle: u32, offset: u64, length: u64,
-                                              delivered: Option<usize>)
+    pub(crate) fn finish_provider_source_read(&mut self, scope: &subject::Lease, handle: u32,
+                                              offset: u64, length: u64, delivered: Option<usize>)
                                               -> Result<(), Status>
     {
-        self.slot(0, handle)?;
+        self.slot_access(scope.into(), handle)?;
         self.finish_provider_file_read(handle, offset, length, delivered).map(|_| ())
     }
 
-    pub(crate) fn close_provider_source(
-        &mut self, handle: u32, cleanup: bool)
-        -> Result<(u64, mac_filesystem_interface::Arguments<'static>), Status>
+    pub(crate) fn close_provider_source<R>(&mut self, scope: &subject::Lease, handle: u32,
+                                           cleanup: bool,
+                                           publish: impl FnOnce(u64,
+                                                  mac_filesystem_interface::Arguments<'static>)
+                                                  -> Result<R, Status>)
+                                           -> Result<R, Status>
     {
-        let provider = self.source_mark_provider(handle)?.ok_or(BAD_ARGUMENT)?;
-        let volume = if cleanup
-        {
-            self.cleanup_provider_file(handle)?
-        }
-        else
-        {
-            self.begin_provider_file_close(0, handle)?.1
-        };
-        Ok((provider,
-            mac_filesystem_interface::Arguments { volume,
-                                                  token: u64::from(handle),
-                                                  ..Default::default() }))
+        self.publish_provider_file_close(scope.into(), handle, cleanup, publish)
     }
 
-    pub(crate) fn retire_provider_source(&mut self, handle: u32) -> Result<(), Status>
+    pub(crate) fn retire_provider_source(&mut self, scope: &subject::Lease, handle: u32)
+                                         -> Result<(), Status>
     {
-        self.slot(0, handle)?;
+        self.slot_access(scope.into(), handle)?;
         self.retire_provider_file(handle)
     }
 
-    pub(crate) fn quarantine_provider_source(&mut self, handle: u32) -> Result<(), Status>
+    pub(crate) fn quarantine_provider_source(&mut self, scope: &subject::Lease, handle: u32)
+                                             -> Result<(), Status>
     {
-        self.slot(0, handle)?;
+        self.slot_access(scope.into(), handle)?;
         self.quarantine_provider_file(handle)
     }
 
@@ -125,17 +125,22 @@ impl Manager
         Ok(bytes)
     }
 
-    pub(crate) fn open_block_source(&mut self, volume: u32, cnid: u32)
+    pub(crate) fn open_block_source(&mut self, scope: &subject::Lease, volume: u32, cnid: u32)
                                     -> Result<(u32, u64), Status>
     {
         if self.read_provider(volume)?.is_some()
         {
             return Err(NOT_SUPPORTED);
         }
-        self.open(0, volume, cnid, DATA_FORK)
+        self.open_authorized(scope.into(),
+                             &subject::Authority::Operation(scope.clone()),
+                             volume,
+                             cnid,
+                             DATA_FORK)
     }
 
-    pub(crate) fn read_block_source(&mut self, handle: u32, offset: u64, output: &mut [u8])
+    pub(crate) fn read_block_source(&mut self, scope: &subject::Lease, handle: u32, offset: u64,
+                                    output: &mut [u8])
                                     -> Result<usize, Status>
     {
         if output.len() > mac_file_source_interface::MAX_TRANSFER
@@ -143,7 +148,7 @@ impl Manager
             return Err(BAD_ARGUMENT);
         }
         let (volume, mut fork) = {
-            let file = self.slot(0, handle)?;
+            let file = self.slot_access(scope.into(), handle)?;
             let FileFork::Block(fork) = &*file.fork.lock()
             else
             {
@@ -156,13 +161,14 @@ impl Manager
             (file.volume, fork.clone())
         };
         let read = self.with_volume(volume, |volume| io(volume.read(&mut fork, offset, output)))?;
-        *self.slot(0, handle)?.fork.lock() = FileFork::Block(fork);
+        *self.slot_access(scope.into(), handle)?.fork.lock() = FileFork::Block(fork);
         Ok(read)
     }
 
-    pub(crate) fn close_block_source(&mut self, handle: u32) -> Result<(), Status>
+    pub(crate) fn close_block_source(&mut self, scope: &subject::Lease, handle: u32)
+                                     -> Result<(), Status>
     {
-        let file = self.slot(0, handle)?;
+        let file = self.slot_access(scope.into(), handle)?;
         if !matches!(&*file.fork.lock(), FileFork::Block(_))
         {
             return Err(NOT_SUPPORTED);

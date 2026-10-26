@@ -19,7 +19,7 @@ impl FileSources
     }
 
     /// INFO is resident metadata only; it never performs backing I/O.
-    pub fn info(self, source: u32) -> Result<Info>
+    pub fn info(self, source: u64) -> Result<Info>
     {
         let input = Arguments { source,
                                 offset: 0,
@@ -53,7 +53,7 @@ impl FileSources
     /// Retain the ticket through Pending, including cancellation. Only START
     /// supplies input; every callback borrows a fresh output buffer. A successful
     /// read may be short at EOF and never changes a public File Manager position.
-    pub fn read(self, source: u32, offset: u64, ticket: &mut u64, phase: Phase, output: &mut [u8])
+    pub fn read(self, source: u64, offset: u64, ticket: &mut u64, phase: Phase, output: &mut [u8])
                 -> Result<Completion>
     {
         let input = if phase == Phase::Start

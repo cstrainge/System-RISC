@@ -24,6 +24,12 @@ pub trait InvocationGate
     fn released(_owner: DomainId)
     {
     }
+
+    /// A published operation's unique owner has closed its admission. Called
+    /// after metadata unlock; post only a coalesced notification, never cleanup.
+    fn scope_closed(_owner: DomainId)
+    {
+    }
 }
 
 mod sealed

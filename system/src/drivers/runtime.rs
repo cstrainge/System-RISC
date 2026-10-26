@@ -266,7 +266,21 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
     // No runtime/registry/Files/desktop guard is held during foreign code.
     serial!("MODULE_ENTER name={} id={} entry=0x{:x}", package.contract.name, module,
             entry as usize);
-    let result = unsafe { entry(host, &mut instance) };
+    // Initialization is one real module operation. Direct nested broker calls
+    // must inherit this same root across Start/Poll/Cancel; admitting a fresh
+    // root on each callback makes a genuine pending ticket look foreign.
+    // This result reaches the same rollback path even if admission or context
+    // installation fails before any foreign code executes.
+    let result = module_authority(module).and_then(|owner| {
+                                             super::jobs::subjects::resident()?.admit(
+            &crate::toolbox::handles::subject::Authority::Client(owner))
+                                         })
+                                         .and_then(|subject| {
+                                             crate::context::with_io_subject(subject, || unsafe {
+                                                 entry(host, &mut instance)
+                                             })
+                                         })
+                                         .unwrap_or_else(|status| status);
     let valid=instance.header.valid::<abi::Instance>() && instance.dispatch.is_some_and(|dispatch|{
         let address=dispatch as usize as u64;
         address & 1==0 && image::decode(&package.code.code,&package.code.descriptor).is_ok_and(|image|
@@ -708,8 +722,30 @@ pub(crate) fn discard_thread_jobs(thread: u64)
 
 /// At most one bounded callback per scheduler sample. Empty queues cost one
 /// atomic load, with no registry lookup, allocation or device access.
+static DEPENDENCIES_CHANGED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+pub(crate) fn dependencies_changed()
+{
+    DEPENDENCIES_CHANGED.store(true, core::sync::atomic::Ordering::Release);
+}
+pub(crate) fn pin_backing_provider(dependent: u64, provider: u64,
+                                   scope: &mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>)
+                                   -> Result<(), Status>
+{
+    RUNTIME.with(|runtime| {
+               runtime.registry.pin_backing_provider(dependent, provider, scope).map_err(status)
+           })
+           .map_err(crate::state::AccessError::status)?
+}
+
 pub(crate) fn pump_jobs()
 {
+    if DEPENDENCIES_CHANGED.swap(false, core::sync::atomic::Ordering::AcqRel)
+       && RUNTIME.with(|runtime| runtime.registry.reap_closed_dependencies()).is_err()
+    {
+        DEPENDENCIES_CHANGED.store(true, core::sync::atomic::Ordering::Release);
+    }
+
     if !JOBS.has_ready()
     {
         return;

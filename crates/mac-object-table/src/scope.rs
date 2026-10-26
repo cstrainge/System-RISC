@@ -185,14 +185,23 @@ impl<G: InvocationGate> Owner<G>
 
     fn close(&self)
     {
-        self.owner.access(|index| {
-                      if self.state.open.swap(false, Ordering::AcqRel)
-                         && self.state.root.lock().is_some()
-                      {
-                          index.note_scope_change();
-                          CLOSED_REVISION.fetch_add(1, Ordering::Release);
-                      }
-                  });
+        let closed = self.owner.access(|index| {
+                                   if self.state.open.swap(false, Ordering::AcqRel)
+                                      && self.state.root.lock().is_some()
+                                   {
+                                       index.note_scope_change();
+                                       CLOSED_REVISION.fetch_add(1, Ordering::Release);
+                                       true
+                                   }
+                                   else
+                                   {
+                                       false
+                                   }
+                               });
+        if closed
+        {
+            G::scope_closed(self.owner.owner());
+        }
     }
 }
 impl<G: InvocationGate> Drop for Owner<G>
@@ -226,6 +235,13 @@ impl<G: InvocationGate> Lease<G>
     pub fn subject(&self) -> DomainId
     {
         self.owner.owner()
+    }
+
+    /// Positive evidence that the unique root owner closed this scope. A stale
+    /// metadata lookup or stopped subject alone must not manufacture closure.
+    pub fn closed(&self) -> bool
+    {
+        !self.state.open.load(Ordering::Acquire)
     }
 
     pub fn subject_accepting(&self) -> bool
@@ -288,6 +304,48 @@ mod tests
             f()
         }
     }
+    #[test]
+    fn scope_close_notification_runs_once_after_the_metadata_gate_is_released()
+    {
+        use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        static INSIDE: AtomicBool = AtomicBool::new(false);
+        static CLOSED: AtomicUsize = AtomicUsize::new(0);
+        struct Notify;
+        impl InvocationGate for Notify
+        {
+            fn run<R>(operation: impl FnOnce() -> R) -> R
+            {
+                let outer = INSIDE.swap(true, Ordering::SeqCst);
+                let result = operation();
+                INSIDE.store(outer, Ordering::SeqCst);
+                result
+            }
+
+            fn scope_closed(_: DomainId)
+            {
+                assert!(!INSIDE.load(Ordering::SeqCst), "scope callback ran under metadata gate");
+                CLOSED.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let owner = OwnerRef::<Notify>::try_new(OwnerIndex::issue(crate::domain::DomainKind::Module).unwrap()).unwrap();
+        let kind = KindCode(*b"NCLO");
+        let unpublished = Reservation::try_new(&owner, kind).unwrap();
+        drop(unpublished);
+        assert_eq!(CLOSED.load(Ordering::SeqCst), 0);
+        let reservation = Reservation::try_new(&owner, kind).unwrap();
+        let lease = reservation.lease();
+        let mut roots =
+            crate::store::Store::new(kind, crate::domain::CapacityPolicy::GrowableUntilMemory);
+        let id = roots.insert_root(reservation, ()).unwrap();
+        assert!(!lease.closed());
+        drop(roots.remove(id).unwrap());
+        assert!(lease.closed());
+        assert_eq!(CLOSED.load(Ordering::SeqCst), 1);
+        drop(lease);
+        drop(roots);
+        assert_eq!(CLOSED.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn a_foreign_index_cannot_authorize_a_genuine_scope_even_with_matching_slot_numbers()
     {

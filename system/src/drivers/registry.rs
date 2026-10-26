@@ -26,6 +26,11 @@ pub enum Error
     Access,
     RequestSubject,
     Busy,
+    BackingInUse
+    {
+        provider:  u64,
+        dependent: u64
+    },
     DependencyInUse
     {
         provider:  u64,
@@ -88,6 +93,14 @@ impl core::fmt::Display for Error
                 write!(f,
                        "module {provider} still supplies a declared dependency to module \
                         {dependent}; unload the dependent module before retrying")
+            }
+            Self::BackingInUse { provider,
+                                 dependent } =>
+            {
+                write!(f,
+                       "module {provider} still supplies a backing lease to module {dependent}; \
+                        unmount the dependent source and wait for actual close acknowledgement \
+                        before retrying")
             }
             Self::Domain(error) => error.fmt(f),
             Self::Identity(error) => error.fmt(f),
@@ -807,6 +820,7 @@ impl Registry
     /// terminal cancellation before failure is finalized.
     pub fn finish_quiesce(&mut self, module: u64) -> Result<()>
     {
+        self.reap_closed_dependencies();
         let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
         if record.state != State::Quiescing
         {
@@ -818,8 +832,16 @@ impl Registry
         }
         if let Some(binding) = self.dependencies.retained_values().find(|b| b.provider == module)
         {
-            return Err(Error::DependencyInUse { provider:  module,
-                                                dependent: binding.dependent });
+            return Err(if binding.scope.is_some()
+                       {
+                           Error::BackingInUse { provider:  module,
+                                                 dependent: binding.dependent }
+                       }
+                       else
+                       {
+                           Error::DependencyInUse { provider:  module,
+                                                    dependent: binding.dependent }
+                       });
         }
         self.drain_module(module)?;
         self.modules.get_mut(module).ok_or(Error::Stale)?.state = State::Failed;
@@ -1114,6 +1136,80 @@ mod tests
         registry.finish_quiesce(provider).unwrap();
         assert_eq!(registry.state(consumer), Ok(State::Failed));
         assert_eq!(registry.request(u64::from(consumer), ticket), Err(Error::Stale));
+    }
+
+    #[test]
+    fn backing_dependency_pins_exact_provider_until_the_last_owned_operation_ends()
+    {
+        use crate::toolbox::handles::subject::Authority;
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
+        let provider = stage(&mut registry, &metadata(*b"test-module-uuid", &[OFFER], &[]));
+        registry.commit(provider).unwrap();
+        let (interface, _) = registry.find(OFFER.class, 1).next().unwrap();
+        let consumer = stage(&mut registry, &metadata(*b"consumer-module!", &[], &[]));
+        registry.commit(consumer).unwrap();
+        let owner = registry.module_ledger(consumer).unwrap();
+        let operations = registry.fixture_operations.as_ref().unwrap().clone();
+        let subject = operations.admit(&Authority::Client(owner)).unwrap();
+        let last = subject.clone();
+        registry.pin_backing_provider(consumer, interface, subject.scope()).unwrap();
+        registry.pin_backing_provider(consumer, interface, subject.scope()).unwrap();
+        assert_eq!(registry.dependencies.iter().count(),
+                   1,
+                   "same lease/provider is one registered claim");
+        // Lifetime claims do not grant undeclared resolution/call authority.
+        assert_eq!(registry.begin(consumer, interface, 1, 0, 0), Err(Error::Access));
+        registry.quiesce(provider).unwrap();
+        let error = registry.finish_quiesce(provider).unwrap_err();
+        assert_eq!(error,
+                   Error::BackingInUse { provider,
+                                         dependent: consumer });
+        assert!(error.to_string().contains("actual close acknowledgement"));
+        drop(subject);
+        registry.reap_closed_dependencies();
+        assert_eq!(registry.dependencies.iter().count(),
+                   1,
+                   "retained callback still owns the root");
+        drop(last);
+        registry.reap_closed_dependencies();
+        assert_eq!(registry.dependencies.iter().count(), 0);
+        registry.finish_quiesce(provider).unwrap();
+    }
+
+    #[test]
+    fn backing_dependency_scope_refusal_retains_the_unique_ticket_and_rejects_foreign_subjects()
+    {
+        use mac_object_table::registry::{CleanupFailure, Release};
+
+        use crate::toolbox::handles::subject::Authority;
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
+        let provider = stage(&mut registry, &metadata(*b"test-module-uuid", &[OFFER], &[]));
+        registry.commit(provider).unwrap();
+        let (interface, _) = registry.find(OFFER.class, 1).next().unwrap();
+        let consumer = stage(&mut registry, &metadata(*b"consumer-module!", &[], &[]));
+        registry.commit(consumer).unwrap();
+        let other = stage(&mut registry, &metadata(*b"unrelated-id!!!!", &[], &[]));
+        registry.commit(other).unwrap();
+        let operations = registry.fixture_operations.as_ref().unwrap().clone();
+        let owner = registry.module_ledger(consumer).unwrap();
+        let subject = operations.admit(&Authority::Client(owner.clone())).unwrap();
+        let foreign =
+            operations.admit(&Authority::Client(registry.module_ledger(other).unwrap())).unwrap();
+        assert_eq!(registry.pin_backing_provider(consumer, interface, foreign.scope()),
+                   Err(Error::Access));
+        registry.pin_backing_provider(consumer, interface, subject.scope()).unwrap();
+        let id = registry.dependencies.iter().next().unwrap().0;
+        let key = registry.dependencies.key(id).unwrap();
+        let ticket = owner.invalidate(key).unwrap();
+        let refused =
+            dependencies::ReleaseDependencies(false).release(&mut *registry, ticket).unwrap_err();
+        assert!(refused.to_string().contains("original cleanup ticket remain retained"));
+        assert!(owner.pending(key));
+        drop(subject);
+        let (ticket, _) = refused.into_parts();
+        dependencies::ReleaseDependencies(false).release(&mut *registry, ticket).unwrap();
+        assert!(!owner.pending(key));
+        drop(foreign);
     }
 
     #[test]

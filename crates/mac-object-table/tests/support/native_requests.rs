@@ -11,20 +11,25 @@ impl InvocationGate for Gate
         call()
     }
 }
-pub struct Requests
+pub struct Requests<T = ()>
 {
     owner: OwnerRef<Gate>,
-    store: Store<(), Gate>
+    store: Store<T, Gate>
 }
-impl Requests
+impl<T> Requests<T>
 {
     pub fn new() -> Self
     {
-        Self { owner: OwnerRef::try_new(OwnerIndex::issue(DomainKind::Module).unwrap()).unwrap(),
-               store: Store::new(KindCode(*b"DREQ"), CapacityPolicy::GrowableUntilMemory) }
+        Self::with_kind(KindCode(*b"DREQ"))
     }
 
-    pub fn insert(&mut self, value: ()) -> Result<u64, PoolError>
+    pub fn with_kind(kind: KindCode) -> Self
+    {
+        Self { owner: OwnerRef::try_new(OwnerIndex::issue(DomainKind::Module).unwrap()).unwrap(),
+               store: Store::new(kind, CapacityPolicy::GrowableUntilMemory) }
+    }
+
+    pub fn insert(&mut self, value: T) -> Result<u64, PoolError>
     {
         self.store.insert(&self.owner, value)
     }
@@ -35,9 +40,9 @@ impl Requests
     }
 }
 
-impl core::ops::Deref for Requests
+impl<T> core::ops::Deref for Requests<T>
 {
-    type Target = Store<(), Gate>;
+    type Target = Store<T, Gate>;
 
     fn deref(&self) -> &Self::Target
     {

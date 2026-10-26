@@ -11,21 +11,21 @@ use spinning_top::Spinlock;
 struct Mount
 {
     volume: u32,
-    source: u32,
+    source: u64,
     length: u64
 }
 #[derive(Clone, Copy)]
 struct Open
 {
     volume: u32,
-    token:  u32
+    token:  u64
 }
 struct State
 {
     sources: Option<FileSources>,
     mounts:  [Option<Mount>; 16],
     opens:   [Option<Open>; 16],
-    retired: u32
+    retired: u64
 }
 static STATE: Spinlock<State> = Spinlock::new(State { sources: None,
                                                       mounts:  [None; 16],
@@ -92,7 +92,11 @@ impl Driver for Filesystem
             {
                 return Err(Error(-2));
             }
-            let source = u32::try_from(args.auxiliary).map_err(|_| Error(-2))?;
+            let source = args.auxiliary;
+            if source <= u32::MAX as u64
+            {
+                return invalid();
+            }
             let length = sources.info(source)?.length;
             if length != 131089
             {

@@ -2215,3 +2215,64 @@ registrations. Native campaigns exercise the actual transport/power device SDK,
 old-device-layout rejection before module entry, both transport disconnects,
 provider operations, classic archives, process cleanup, cursor latency and panic
 recovery. These are the current hardware/SDK cases, not exhaustive bus support.
+
+
+### Registered backing-fork capabilities and scoped provider claims
+
+Each native filesystem module owns its independent leased-fork capabilities in
+`FSRC` with `FSSB` backing. Shared native issuance, authenticated publication
+receipts, preallocated cleanup intents and owned read/close plans replace the
+private source table. Both native and module callers use u64 source tokens;
+FORK keeps a 24-byte request with its source in bytes 0..8, and module layout bit
+59 rejects stale packages before entry. Development ABI stays 1.
+
+Backing file marks join the selected module's admitted DIOP scope before Open;
+a known-unopened Catalog placeholder is retired and reissued in that scope.
+Provider reads retain the actual incoming operation's subject, while independent
+close retains the module source subject. The existing resident File Manager
+flight remains the owner of app-initiated asynchronous close after app exit;
+common owner cleanup has a separate bounded resident actor. Neither path drops
+a pending backing or infers completion from time.
+
+The lower provider has a registered scoped DDEP claim in the source module's
+ledger. It grants lifetime only, leaving declared service resolution policy
+unchanged. Scope-active cleanup retains the unique dependency ticket. The
+unique root's positive closure, observed after metadata unlock, coalesces normal
+claim retirement without scanning dependencies on every input or app I/O root.
+File-object cleanup now uses the same positive scope-closed evidence, rather
+than treating failed admission validation as proof of closure.
+
+Read/close plans fail closed on loss and return intact on a foreign completion
+refusal. Real read ACK restores source readiness; a real close ACK retires it.
+Close admission holds the validated file mark across fallible queue publication,
+so refusal leaves it unchanged. Definite terminal close failure permits close
+retry while reads remain refused. Actual replies survive temporary local
+retirement refusal; an already-consumed job is never polled again. Uncertain
+read flights remain resident for late lower acknowledgement.
+
+Close intents and pending close continuations share a preallocated FIFO; orphan
+read returns preserve their order too. A stalled provider cannot repeatedly take
+the place of another source's cleanup. Queue publication and the empty-work
+wakeup transition use the same metadata gate, avoiding lost wakeups. Empty
+maintenance costs an atomic flag read; refusal backs off without a busy wait.
+
+Module initialization has one admitted module I/O root around foreign entry.
+Nested direct Start/Poll/Cancel calls inherit that root, so a genuine pending
+continuation is not refused as a different operation. Entry admission and
+context-installation failure still enter the same registry rollback path.
+
+This is the backing capability/ACK migration. Direct pending-module cancellation,
+complete domain recovery, physical code/frame reclaim, dynamic process capacity,
+MMU/heaps and full four-part invocation/accounting remain separate gates. No
+arbitrary privileged-fault containment or multi-hart qualification is claimed.
+
+Qualification includes nine focused source-lifetime tests, pinned close-admission
+refusal, scoped dependency and post-unlock notification cases, and the broader
+683-test host campaign. Native acceptance exercises file-backed sources and
+forced reuse, classic archives, all six host-directory scenarios, module
+admission including stale-source-layout refusal, process cleanup and malformed
+dialog rollback, public Toolbox enumeration, cursor rendering/responsiveness,
+application panic recovery, and power restart/shutdown/refusal. The direct
+initialization probe exposed and verifies the entry-root correction above.
+Private transport coordinates and host disk-space failures were corrected and
+the interrupted cases rerun; they were not counted as guest successes.

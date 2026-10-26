@@ -27,7 +27,7 @@ pub(super) trait Payload: Sized
     }
     fn scope_retains(&self) -> bool
     {
-        self.scope().is_some_and(|scope| scope.admitting().is_ok())
+        self.scope().is_some_and(|scope| !scope.closed())
     }
 }
 struct Retiring<T: Payload>

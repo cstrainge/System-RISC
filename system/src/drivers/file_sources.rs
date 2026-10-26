@@ -1,14 +1,22 @@
-//! Ownership and lifetime policy for backing-file capabilities. I/O adapters
-//! take owned plans out of their short guard, then acknowledge completion here.
-//! `B` is an opaque backing token; it is never a borrowed file or caller buffer.
+//! Private leased-fork capabilities owned by the admitted module's ledger.
+//! Completion authority is minted at publication and travels in owned plans;
+//! losing a plan quarantines the protocol rather than acknowledging its I/O.
 #![forbid(unsafe_code)]
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
+
 use mac_abi::{ACCESS_DENIED, ALREADY_EXISTS, BAD_ABI, BAD_ARGUMENT, NO_MEMORY, NOT_FOUND,
               ROLLBACK_FAILED, SERVICE_BUSY, Status};
 use mac_file_source_interface::{Info, MAX_TRANSFER};
+use mac_object_table::{domain::{PoolError, ReleasedResource},
+                       registry::CleanupFailure,
+                       shared::InvocationGate as _,
+                       store::CompletionKey};
+use spinning_top::Spinlock;
 
-use crate::toolbox::handles::{Kind, Table};
+use crate::toolbox::handles::{InvocationGate, KindLease, OwnerRef, Store, cleanup::Failure};
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod runtime;
+pub(crate) mod lifetime;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Identity
@@ -22,46 +30,159 @@ enum Phase
 {
     Ready,
     Reading(u64),
+    UncertainRead(u64),
     Closing,
-    Quarantined
+    UncertainClose,
+    FailedClose,
+    Closed
+}
+struct State(Spinlock<Phase>);
+impl State
+{
+    fn access<R>(&self, run: impl FnOnce(&mut Phase) -> R) -> R
+    {
+        InvocationGate::run(|| run(&mut self.0.lock()))
+    }
+
+    fn phase(&self) -> Phase
+    {
+        self.access(|phase| *phase)
+    }
 }
 struct Source<B>
 {
-    owner:    u64,
+    id:       u64,
     identity: Identity,
     backing:  B,
     length:   u64,
-    phase:    Phase
+    state:    Arc<State>
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+
+/// The only authority for finishing this exact read. It cannot be constructed
+/// from a source number, cloned, or replaced with a later read of a reused slot.
+/// Dropping it without actual lower ACK leaves its source quarantined.
 pub struct Read<B>
 {
     pub backing: B,
     pub offset:  u64,
-    pub length:  usize
+    pub length:  usize,
+    receipt:     CompletionKey,
+    ticket:      u64,
+    state:       Arc<State>,
+    active:      bool
+}
+impl<B> Read<B>
+{
+    pub(crate) fn ticket(&self) -> u64
+    {
+        self.ticket
+    }
+}
+impl<B> Drop for Read<B>
+{
+    fn drop(&mut self)
+    {
+        if self.active
+        {
+            self.state.access(|phase| {
+                          if *phase == Phase::Reading(self.ticket)
+                          {
+                              *phase = Phase::UncertainRead(self.ticket);
+                          }
+                      });
+        }
+    }
+}
+/// Backing and original publication authority stay owned until real Close ACK.
+/// The runtime owns this plan across asynchronous close; clients only observe it.
+pub(crate) struct Close<B>
+{
+    pub(crate) backing: B,
+    previous:           Phase,
+    receipt:            CompletionKey,
+    state:              Arc<State>,
+    active:             bool
+}
+impl<B> Drop for Close<B>
+{
+    fn drop(&mut self)
+    {
+        if self.active
+        {
+            self.state.access(|phase| {
+                          if *phase == Phase::Closing
+                          {
+                              *phase = Phase::UncertainClose;
+                          }
+                      });
+        }
+    }
+}
+/// Refusal never consumes or recreates an already admitted completion plan.
+/// Its recipient can retry in the original manager; dropping it fails closed.
+pub(crate) struct Refusal<P>
+{
+    pub(crate) cause: Status,
+    pub(crate) plan:  P
+}
+impl<P> Refusal<P>
+{
+    pub(crate) fn into_parts(self) -> (Status, P)
+    {
+        (self.cause, self.plan)
+    }
+}
+impl<P> core::fmt::Debug for Refusal<P>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        f.debug_struct("BackingCompletionRefusal")
+         .field("cause", &self.cause)
+         .finish_non_exhaustive()
+    }
+}
+impl<P> core::fmt::Display for Refusal<P>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        write!(f,
+               "backing-fork completion refused with status {}; original plan remains owned",
+               self.cause)
+    }
+}
+struct Record
+{
+    receipt:       CompletionKey,
+    pending:       Option<ReleasedResource>,
+    terminal:      bool,
+    queued:        bool,
+    failure:       Option<PoolError>,
+    last_io_error: Option<Status>
 }
 pub struct Sources<B>
 {
-    entries: Table<Source<B>>
-}
-impl<B: Clone> Default for Sources<B>
-{
-    fn default() -> Self
-    {
-        Self::new()
-    }
+    entries: Store<Source<B>>,
+    records: Vec<Record>,
+    ready:   VecDeque<CompletionKey>
 }
 impl<B: Clone> Sources<B>
 {
-    pub const fn new() -> Self
+    pub(crate) fn new(kinds: (KindLease, KindLease)) -> Result<Self, Status>
     {
-        Self { entries: Table::new(Kind::FileSources) }
+        Ok(Self { entries: Store::owned(kinds.0, kinds.1).map_err(pool_status)?,
+                  records: Vec::new(),
+                  ready:   VecDeque::new() })
     }
 
-    fn owned(&self, owner: u64, source: u32) -> Result<&Source<B>, Status>
+    fn at(&self, id: u64) -> Option<usize>
     {
-        let source = self.entries.get(source).ok_or(NOT_FOUND)?;
-        if owner == 0 || source.owner != owner
+        self.records.binary_search_by_key(&id, |record| record.receipt.id()).ok()
+    }
+
+    fn owned(&self, owner: &OwnerRef, id: u64) -> Result<&Source<B>, Status>
+    {
+        let (actual, source) = self.entries.get_with_owner(id).ok_or(NOT_FOUND)?;
+        if actual != owner.owner()
         {
             return Err(ACCESS_DENIED);
         }
@@ -70,26 +191,26 @@ impl<B: Clone> Sources<B>
 
     fn accessible(source: &Source<B>) -> Result<(), Status>
     {
-        match source.phase
+        match source.state.phase()
         {
             Phase::Ready | Phase::Reading(_) => Ok(()),
             Phase::Closing => Err(SERVICE_BUSY),
-            Phase::Quarantined => Err(ROLLBACK_FAILED)
+            Phase::UncertainRead(_) | Phase::UncertainClose | Phase::FailedClose =>
+            {
+                Err(ROLLBACK_FAILED)
+            }
+            Phase::Closed => Err(NOT_FOUND)
         }
     }
 
-    /// Capture the mounted-volume generation and persistent file/fork identity.
-    /// A renamed source retains the same capability; a copied file does not.
-    pub fn find(&self, owner: u64, identity: Identity) -> Result<Option<u32>, Status>
+    pub(crate) fn find(&self, owner: &OwnerRef, identity: Identity) -> Result<Option<u64>, Status>
     {
-        if owner == 0
-        {
-            return Err(ACCESS_DENIED);
-        }
         let Some((id, source)) =
             self.entries
                 .iter()
-                .find(|(_, source)| source.owner == owner && source.identity == identity)
+                .find(|(id, source)| {
+                    self.entries.owner(*id) == Some(owner.owner()) && source.identity == identity
+                })
         else
         {
             return Ok(None);
@@ -98,14 +219,15 @@ impl<B: Clone> Sources<B>
         Ok(Some(id))
     }
 
-    /// Call only after the adapter has an acknowledged, owned backing read
-    /// lease. On failure the adapter still owns and must release that lease.
-    pub fn publish(&mut self, owner: u64, identity: Identity, backing: B, length: u64)
-                   -> Result<u32, Status>
+    /// Publish only after an owned backing open has actually acknowledged.
+    /// Refusal leaves the adapter responsible for closing that exact backing.
+    pub(crate) fn publish(&mut self, owner: &OwnerRef, identity: Identity, backing: &B,
+                          length: u64)
+                          -> Result<u64, Status>
     {
-        if owner == 0
+        if !owner.accepting()
         {
-            return Err(ACCESS_DENIED);
+            return Err(SERVICE_BUSY);
         }
         if identity.volume == 0 || identity.cnid < 2 || identity.fork > 1
         {
@@ -115,186 +237,372 @@ impl<B: Clone> Sources<B>
         {
             return Err(ALREADY_EXISTS);
         }
-        self.entries
-            .insert(Source { owner,
-                             identity,
-                             backing,
-                             length,
-                             phase: Phase::Ready })
-            .map_err(|_| NO_MEMORY)
+        self.records.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        let needed = self.records.len().checked_add(1).ok_or(NO_MEMORY)?;
+        self.ready.try_reserve(needed.saturating_sub(self.ready.len())).map_err(|_| NO_MEMORY)?;
+        let state = Arc::try_new(State(Spinlock::new(Phase::Ready))).map_err(|_| NO_MEMORY)?;
+        let (id, receipt) = self.entries
+                                .insert_with_receipt(owner, |id| {
+                                    Source { id,
+                                             identity,
+                                             backing: backing.clone(),
+                                             length,
+                                             state }
+                                })
+                                .map_err(pool_status)?
+                                .into_parts();
+        // IDs stay opaque; this is only an ordered index of genuine receipts.
+        let at = self.records.partition_point(|record| record.receipt.id() < id);
+        self.records.insert(at,
+                            Record { receipt,
+                                     pending: None,
+                                     terminal: false,
+                                     queued: false,
+                                     failure: None,
+                                     last_io_error: None });
+        Ok(id)
     }
 
-    /// Metadata remains available during a read, without entering the backend.
-    pub fn info(&self, owner: u64, source: u32) -> Result<Info, Status>
+    pub(crate) fn info(&self, owner: &OwnerRef, id: u64) -> Result<Info, Status>
     {
-        let source = self.owned(owner, source)?;
+        let source = self.owned(owner, id)?;
         Self::accessible(source)?;
         Ok(Info { length: source.length })
     }
 
-    /// The ticket is issued/validated by the generic request broker. This core
-    /// records it to prevent a different request from acknowledging this read.
-    pub fn begin_read(&mut self, owner: u64, source: u32, ticket: u64, offset: u64,
-                      capacity: usize)
-                      -> Result<Read<B>, Status>
+    pub(crate) fn begin_read(&mut self, owner: &OwnerRef, id: u64, ticket: u64, offset: u64,
+                             capacity: usize)
+                             -> Result<Read<B>, Status>
     {
         if ticket == 0 || capacity > MAX_TRANSFER
         {
             return Err(BAD_ARGUMENT);
         }
-        let entry = self.owned(owner, source)?;
+        let entry = self.owned(owner, id)?;
         Self::accessible(entry)?;
-        if entry.phase != Phase::Ready
+        if entry.state.phase() != Phase::Ready
         {
             return Err(SERVICE_BUSY);
         }
         let length =
             entry.length.checked_sub(offset).ok_or(BAD_ARGUMENT)?.min(capacity as u64) as usize;
+        let receipt = self.records[self.at(id).ok_or(BAD_ABI)?].receipt;
         let read = Read { backing: entry.backing.clone(),
                           offset,
-                          length };
-        self.entries.get_mut(source).ok_or(NOT_FOUND)?.phase = Phase::Reading(ticket);
+                          length,
+                          receipt,
+                          ticket,
+                          state: entry.state.clone(),
+                          active: true };
+        entry.state.access(|phase| *phase = Phase::Reading(ticket));
         Ok(read)
     }
 
-    /// A read error/cancellation also waits for actual backend acknowledgement.
-    pub fn finish_read(&mut self, owner: u64, source: u32, ticket: u64) -> Result<(), Status>
+    fn read_source(&self, read: &Read<B>) -> Result<&Source<B>, Status>
     {
-        if self.owned(owner, source)?.phase != Phase::Reading(ticket)
+        let source = self.entries.completing(&read.receipt).ok_or(NOT_FOUND)?;
+        if !Arc::ptr_eq(&source.state, &read.state)
         {
-            return Err(BAD_ABI);
+            return Err(ACCESS_DENIED);
         }
-        self.entries.get_mut(source).ok_or(NOT_FOUND)?.phase = Phase::Ready;
+        match source.state.phase()
+        {
+            Phase::Reading(ticket) | Phase::UncertainRead(ticket) if ticket == read.ticket =>
+            {
+                Ok(source)
+            }
+            _ => Err(BAD_ABI)
+        }
+    }
+
+    /// Called only after actual backend acknowledgement, including errors and
+    /// cancellation. A quarantined ordinary ID is never looked up or revived.
+    pub(crate) fn finish_read(&mut self, mut read: Read<B>) -> Result<(), Refusal<Read<B>>>
+    {
+        let result = self.read_source(&read).map(|source| source.state.clone());
+        let state = match result
+        {
+            Ok(state) => state,
+            Err(cause) =>
+            {
+                return Err(Refusal { cause,
+                                     plan: read });
+            }
+        };
+        let Some(at) = self.at(read.receipt.id())
+        else
+        {
+            return Err(Refusal { cause: BAD_ABI,
+                                 plan:  read });
+        };
+        state.access(|phase| *phase = Phase::Ready);
+        read.active = false;
+        self.enqueue(at);
         Ok(())
     }
 
-    /// An adapter lost evidence of the lower completion. Retain the binding;
-    /// an uncertain read must never make its backing mark reusable.
-    pub fn quarantine_read(&mut self, owner: u64, source: u32, ticket: u64) -> Result<(), Status>
+    pub(crate) fn quarantine_read(&self, read: &Read<B>) -> Result<(), Status>
     {
-        if self.owned(owner, source)?.phase != Phase::Reading(ticket)
-        {
-            return Err(BAD_ABI);
-        }
-        self.entries.get_mut(source).ok_or(NOT_FOUND)?.phase = Phase::Quarantined;
+        self.read_source(read)?.state.access(|phase| *phase = Phase::UncertainRead(read.ticket));
         Ok(())
     }
 
-    /// Return an owned token, retaining its source identity until Close ACK.
-    pub fn begin_close(&mut self, owner: u64, source: u32) -> Result<B, Status>
+    fn closing(&self, receipt: CompletionKey) -> Result<Close<B>, Status>
     {
-        let entry = self.owned(owner, source)?;
-        Self::accessible(entry)?;
-        if entry.phase != Phase::Ready
+        let entry = self.entries.completing(&receipt).ok_or(NOT_FOUND)?;
+        let previous = entry.state.phase();
+        match previous
         {
-            return Err(SERVICE_BUSY);
+            Phase::Ready | Phase::FailedClose => (),
+            Phase::Reading(_) | Phase::Closing => return Err(SERVICE_BUSY),
+            Phase::UncertainRead(_) | Phase::UncertainClose => return Err(ROLLBACK_FAILED),
+            Phase::Closed => return Err(NOT_FOUND)
         }
-        let backing = entry.backing.clone();
-        self.entries.get_mut(source).ok_or(NOT_FOUND)?.phase = Phase::Closing;
-        Ok(backing)
+        let close = Close { backing: entry.backing.clone(),
+                            previous,
+                            receipt,
+                            state: entry.state.clone(),
+                            active: true };
+        entry.state.access(|phase| *phase = Phase::Closing);
+        Ok(close)
     }
 
-    /// Failure to establish teardown leaves a pinned, explicit failure state.
-    pub fn quarantine(&mut self, owner: u64, source: u32) -> Result<(), Status>
+    pub(crate) fn begin_close(&mut self, owner: &OwnerRef, id: u64) -> Result<Close<B>, Status>
     {
-        if self.owned(owner, source)?.phase != Phase::Closing
+        self.owned(owner, id)?;
+        self.closing(self.records[self.at(id).ok_or(BAD_ABI)?].receipt)
+    }
+
+    fn close_source(&self, close: &Close<B>) -> Result<&Source<B>, Status>
+    {
+        let entry = self.entries.completing(&close.receipt).ok_or(NOT_FOUND)?;
+        if !Arc::ptr_eq(&entry.state, &close.state)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if !matches!(entry.state.phase(), Phase::Closing | Phase::UncertainClose)
         {
             return Err(BAD_ABI);
         }
-        self.entries.get_mut(source).ok_or(NOT_FOUND)?.phase = Phase::Quarantined;
+        Ok(entry)
+    }
+
+    pub(crate) fn quarantine_close(&self, close: &Close<B>) -> Result<(), Status>
+    {
+        self.close_source(close)?.state.access(|phase| *phase = Phase::UncertainClose);
         Ok(())
     }
 
-    /// A later real Close/reset ACK may settle a quarantined record. Never use
-    /// this as timeout cleanup or evidence that a remote operation did not run.
-    pub fn finish_close(&mut self, owner: u64, source: u32) -> Result<(), Status>
+    /// The adapter first retires its actual backing mark on a real Close ACK.
+    /// A dispatcher that has not arrived still owns the source's unique ticket;
+    /// terminal state is retained until it arrives, never acknowledged by guess.
+    pub(crate) fn finish_close(&mut self, mut close: Close<B>) -> Result<(), Refusal<Close<B>>>
     {
-        if !matches!(self.owned(owner, source)?.phase, Phase::Closing | Phase::Quarantined)
+        let state = match self.close_source(&close).map(|source| source.state.clone())
         {
-            return Err(BAD_ABI);
+            Ok(state) => state,
+            Err(cause) =>
+            {
+                return Err(Refusal { cause,
+                                     plan: close });
+            }
+        };
+        let Some(at) = self.at(close.receipt.id())
+        else
+        {
+            return Err(Refusal { cause: BAD_ABI,
+                                 plan:  close });
+        };
+        state.access(|phase| *phase = Phase::Closed);
+        close.active = false;
+        self.records[at].terminal = true;
+        self.retire(at);
+        Ok(())
+    }
+
+    /// The adapter proved that no lower request was published. Restore the
+    /// prior phase, preserving a previous real close failure if one existed.
+    pub(crate) fn close_unsubmitted(&mut self, mut close: Close<B>)
+                                    -> Result<(), Refusal<Close<B>>>
+    {
+        let state = match self.close_source(&close).map(|source| source.state.clone())
+        {
+            Ok(state) => state,
+            Err(cause) =>
+            {
+                return Err(Refusal { cause,
+                                     plan: close });
+            }
+        };
+        let Some(at) = self.at(close.receipt.id())
+        else
+        {
+            return Err(Refusal { cause: BAD_ABI,
+                                 plan:  close });
+        };
+        state.access(|phase| *phase = close.previous);
+        close.active = false;
+        self.enqueue(at);
+        Ok(())
+    }
+
+    /// A real terminal error acknowledges the request, not release of its
+    /// backing lease. Reads stay refused; a subsequent close may retry safely.
+    pub(crate) fn close_failed(&mut self, mut close: Close<B>) -> Result<(), Refusal<Close<B>>>
+    {
+        let state = match self.close_source(&close).map(|source| source.state.clone())
+        {
+            Ok(state) => state,
+            Err(cause) =>
+            {
+                return Err(Refusal { cause,
+                                     plan: close });
+            }
+        };
+        let Some(at) = self.at(close.receipt.id())
+        else
+        {
+            return Err(Refusal { cause: BAD_ABI,
+                                 plan:  close });
+        };
+        state.access(|phase| *phase = Phase::FailedClose);
+        close.active = false;
+        self.enqueue(at);
+        Ok(())
+    }
+
+    fn enqueue(&mut self, at: usize)
+    {
+        if self.records[at].queued
+           || self.records[at].pending.is_none()
+           || self.records[at].terminal
+        {
+            return;
         }
-        self.entries.remove(source).ok_or(NOT_FOUND)?;
+        let receipt = self.records[at].receipt;
+        if self.entries
+               .completing(&receipt)
+               .is_some_and(|entry| matches!(entry.state.phase(), Phase::Ready | Phase::FailedClose))
+        {
+            self.records[at].queued = true;
+            self.ready.push_back(receipt);
+        }
+    }
+
+    /// The common callback queues intent; actual I/O runs after its context
+    /// borrow ends. Each queued source produces at most one owned close plan.
+    pub(crate) fn next_cleanup(&mut self) -> Result<Option<Close<B>>, Status>
+    {
+        while let Some(receipt) = self.ready.pop_front()
+        {
+            let Some(at) = self.at(receipt.id())
+            else
+            {
+                continue;
+            };
+            self.records[at].queued = false;
+            if self.records[at].terminal
+            {
+                continue;
+            }
+            return self.closing(receipt).map(Some);
+        }
+        Ok(None)
+    }
+
+    fn retire(&mut self, at: usize)
+    {
+        let record = &mut self.records[at];
+        let removed = if let Some(ticket) = record.pending.take()
+        {
+            match self.entries.release(ticket)
+            {
+                Ok(removed) => Some(removed),
+                Err(error) =>
+                {
+                    let cause = error.cause();
+                    #[cfg(target_arch = "riscv64")]
+                    if record.failure != Some(cause)
+                    {
+                        serial!("BACKING_SOURCE_RETIRE_REFUSED source={} cause={}",
+                                record.receipt.id(),
+                                cause);
+                    }
+                    record.failure = Some(cause);
+                    record.pending = Some(error.into_ticket());
+                    None
+                }
+            }
+        }
+        else
+        {
+            self.entries.remove(record.receipt.id())
+        };
+        if removed.is_some()
+        {
+            self.records.remove(at);
+        }
+        drop(removed);
+    }
+
+    pub(crate) fn release(&mut self, ticket: ReleasedResource, storage: bool)
+                          -> Result<(), Failure>
+    {
+        if storage
+        {
+            let mut at = self.records.len();
+            while at != 0
+            {
+                at -= 1;
+                if self.records[at].terminal && self.records[at].pending.is_some()
+                {
+                    self.retire(at);
+                }
+            }
+            return self.entries.release_storage(ticket).map_err(Failure::from);
+        }
+        let Some(source) = self.entries.releasing(&ticket)
+        else
+        {
+            return Err(Failure::registration_mismatch(ticket));
+        };
+        let Some(at) = self.at(source.id)
+        else
+        {
+            return Err(Failure::registration_mismatch(ticket));
+        };
+        if self.records[at].pending.is_some()
+        {
+            return Err(Failure::registration_mismatch(ticket));
+        }
+        self.records[at].pending = Some(ticket);
+        if self.records[at].terminal
+        {
+            self.retire(at);
+        }
+        else
+        {
+            self.enqueue(at);
+        }
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests
+impl<B> Drop for Sources<B>
 {
-    use super::*;
-    const FILE: Identity = Identity { volume: 66513,
-                                      cnid:   42,
-                                      fork:   0 };
-    #[test]
-    fn uncertain_read_acknowledgement_quarantines_the_source_identity()
+    fn drop(&mut self)
     {
-        let mut sources = Sources::new();
-        let source = sources.publish(7, FILE, 11, 20).unwrap();
-        sources.begin_read(7, source, 88, 0, 10).unwrap();
-        assert_eq!(sources.quarantine_read(7, source, 89), Err(BAD_ABI));
-        sources.quarantine_read(7, source, 88).unwrap();
-        assert_eq!(sources.info(7, source), Err(ROLLBACK_FAILED));
-        assert_eq!(sources.find(7, FILE), Err(ROLLBACK_FAILED));
-        assert_eq!(sources.begin_close(7, source), Err(ROLLBACK_FAILED));
-    }
-    #[test]
-    fn reads_and_teardown_retain_generations_until_acknowledged()
-    {
-        let mut sources = Sources::new();
-        let source = sources.publish(77, FILE, 123, 70_000).unwrap();
-        assert_eq!(sources.find(77, FILE), Ok(Some(source)));
-        assert_eq!(sources.publish(77, FILE, 124, 0), Err(ALREADY_EXISTS));
-        assert_eq!(sources.info(78, source), Err(ACCESS_DENIED));
-        assert_eq!(sources.begin_read(77, source, 1, 69_999, 8),
-                   Ok(Read { backing: 123,
-                             offset:  69_999,
-                             length:  1 }));
-        assert_eq!(sources.info(77, source), Ok(Info { length: 70_000 }));
-        assert_eq!(sources.begin_close(77, source), Err(SERVICE_BUSY));
-        assert_eq!(sources.begin_read(77, source, 2, 0, 1), Err(SERVICE_BUSY));
-        assert_eq!(sources.finish_read(77, source, 2), Err(BAD_ABI));
-        sources.finish_read(77, source, 1).unwrap();
-        assert_eq!(sources.begin_read(77, source, 2, 70_001, 0), Err(BAD_ARGUMENT));
-        assert_eq!(sources.begin_close(77, source), Ok(123));
-        assert_eq!(sources.info(77, source), Err(SERVICE_BUSY));
-        sources.quarantine(77, source).unwrap();
-        assert_eq!(sources.find(77, FILE), Err(ROLLBACK_FAILED));
-        assert_eq!(sources.publish(77, FILE, 125, 0), Err(ROLLBACK_FAILED));
-        sources.finish_close(77, source).unwrap();
-        let replacement = sources.publish(77, FILE, 126, 0).unwrap();
-        assert_ne!(replacement, source);
-        assert_eq!(replacement & 0xffff, source & 0xffff);
-        assert_eq!(sources.info(77, source), Err(NOT_FOUND));
-        assert_eq!(sources.finish_close(77, source), Err(NOT_FOUND));
-        assert_eq!(sources.info(77, replacement), Ok(Info { length: 0 }));
-    }
-    #[test]
-    fn foreign_tables_and_copied_files_cannot_alias_live_or_disposed_sources()
-    {
-        let mut a = Sources::new();
-        let mut b = Sources::new();
-        let one = a.publish(77, FILE, 123, 1).unwrap();
-        let other = b.publish(77, FILE, 124, 1).unwrap();
-        assert_ne!(one, other);
-        assert_eq!(a.info(77, other), Err(NOT_FOUND));
-        assert_eq!(b.info(77, one), Err(NOT_FOUND));
-        let copied = a.publish(77,
-                               Identity { cnid: 43,
-                                          ..FILE },
-                               125,
-                               1)
-                      .unwrap();
-        assert_ne!(copied, one);
-        assert_eq!(a.find(77,
-                          Identity { volume: FILE.volume + 65536,
-                                     ..FILE }),
-                   Ok(None));
-        a.begin_close(77, one).unwrap();
-        a.finish_close(77, one).unwrap();
-        drop(a);
-        let mut rebuilt = Sources::new();
-        let new = rebuilt.publish(77, FILE, 126, 1).unwrap();
-        assert_ne!(new, one);
-        assert_eq!(rebuilt.info(77, one), Err(NOT_FOUND));
+        self.entries.quarantine_live();
+        // Losing the manager is not Close ACK. Keep original received tickets
+        // just as the native store retains its uncertain payloads and backing.
+        if self.records.iter().any(|record| record.pending.is_some())
+        {
+            core::mem::forget(core::mem::take(&mut self.records));
+        }
     }
 }
+fn pool_status(error: PoolError) -> Status
+{
+    crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
+}
+#[cfg(test)]
+mod tests;

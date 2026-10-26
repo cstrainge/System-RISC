@@ -37,12 +37,12 @@ pub enum Error
     Invalid
 }
 
-/// Integers are little endian. Bytes 4..8 and 20..24 are reserved zero.
+/// Integers are little endian. Bytes 20..24 are reserved zero. Source is a native u64 capability.
 /// Only READ accepts a nonzero offset/count; each operation has exact length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Arguments
 {
-    pub source: u32,
+    pub source: u64,
     pub offset: u64,
     pub length: u32
 }
@@ -50,7 +50,7 @@ impl Arguments
 {
     pub fn validate(self, operation: Operation) -> Result<(), Error>
     {
-        if self.source == 0
+        if self.source <= u32::MAX as u64
            || self.length as usize > MAX_TRANSFER
            || self.offset.checked_add(u64::from(self.length)).is_none()
            || operation == Operation::Info && (self.offset != 0 || self.length != 0)
@@ -64,7 +64,7 @@ impl Arguments
     {
         self.validate(operation)?;
         let mut bytes = [0; ARGUMENT_BYTES];
-        bytes[..4].copy_from_slice(&self.source.to_le_bytes());
+        bytes[..8].copy_from_slice(&self.source.to_le_bytes());
         bytes[8..16].copy_from_slice(&self.offset.to_le_bytes());
         bytes[16..20].copy_from_slice(&self.length.to_le_bytes());
         Ok(bytes)
@@ -73,11 +73,11 @@ impl Arguments
     pub fn decode(operation: Operation, bytes: &[u8]) -> Result<Self, Error>
     {
         let bytes: &[u8; ARGUMENT_BYTES] = bytes.try_into().map_err(|_| Error::Length)?;
-        if bytes[4..8] != [0; 4] || bytes[20..24] != [0; 4]
+        if bytes[20..24] != [0; 4]
         {
             return Err(Error::Invalid);
         }
-        let result = Self { source: u32::from_le_bytes(bytes[..4].try_into()
+        let result = Self { source: u64::from_le_bytes(bytes[..8].try_into()
                                                                  .map_err(|_| Error::Length)?),
                             offset: u64::from_le_bytes(bytes[8..16].try_into()
                                                                    .map_err(|_| Error::Length)?),
@@ -113,15 +113,15 @@ mod tests
     #[test]
     fn positional_request_preserves_large_offsets_and_rejects_noncanonical_headers()
     {
-        let bytes = [0x23, 1, 2, 0, 0, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0];
-        let args = Arguments { source: 0x20123,
+        let bytes = [0x23, 1, 2, 0, 1, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0];
+        let args = Arguments { source: 0x1_0002_0123,
                                offset: 0x1_0000_0007,
                                length: 512 };
         assert_eq!(Arguments::decode(Operation::Read, &bytes), Ok(args));
         assert_eq!(args.encode(Operation::Read), Ok(bytes));
         assert_eq!(Arguments::decode(Operation::Info, &bytes), Err(Error::Invalid));
         assert_eq!(Arguments::decode(Operation::Read, &bytes[..23]), Err(Error::Length));
-        for at in [4, 7, 20, 23]
+        for at in [20, 23]
         {
             let mut bad = bytes;
             bad[at] = 1;

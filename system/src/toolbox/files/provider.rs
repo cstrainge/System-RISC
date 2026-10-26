@@ -18,7 +18,7 @@ pub(super) mod runtime;
 pub(crate) enum Source
 {
     Export(u64),
-    File(u32)
+    File(u64)
 }
 pub(super) struct Mounted
 {
@@ -429,6 +429,38 @@ mod tests
         manager.publish_provider_mount(next, &descriptor()).unwrap();
         call.volume = next;
         assert_eq!(manager.begin_provider_scan(&call), Err(BAD_ARGUMENT));
+    }
+    #[test]
+    fn fallible_close_admission_keeps_the_mark_pinned_and_refusal_leaves_it_readable()
+    {
+        use core::cell::Cell;
+        let mut manager = Manager::default();
+        let volume = manager.reserve_provider_mount(77, Source::Export(0)).unwrap();
+        manager.publish_provider_mount(volume, &descriptor()).unwrap();
+        let (_, handle) = manager.reserve_provider_file(7, volume, 16, DATA_FORK).unwrap();
+        manager.publish_provider_file(handle, &open_reply(40, 0)).unwrap();
+        let entered = Cell::new(0);
+        let refused = manager.publish_provider_file_close(8.into(), handle, false, |_, _| {
+                                 entered.set(entered.get() + 1);
+                                 Ok(())
+                             });
+        assert_eq!(refused, Err(ACCESS_DENIED));
+        assert_eq!(entered.get(), 0);
+        let refused =
+            manager.publish_provider_file_close(7.into(), handle, false, |provider, args| {
+                       entered.set(entered.get() + 1);
+                       assert_eq!((provider, args.volume, args.token),
+                                  (77, volume, u64::from(handle)));
+                       Err::<(), _>(NO_MEMORY)
+                   });
+        assert_eq!(refused, Err(NO_MEMORY));
+        manager.begin_provider_file_read(7, handle, 1).unwrap();
+        manager.finish_provider_file_read(handle, 0, 1, None).unwrap();
+        manager.publish_provider_file_close(7.into(), handle, false, |_, _| Ok(())).unwrap();
+        assert_eq!(manager.begin_provider_file_read(7, handle, 1), Err(SERVICE_BUSY));
+        manager.retire_provider_file(handle).unwrap();
+        assert_eq!(manager.begin_provider_file_read(7, handle, 1), Err(NOT_FOUND));
+        assert_eq!(entered.get(), 1);
     }
     #[test]
     fn provider_fork_marks_validate_owner_busy_state_lengths_and_acknowledged_reuse()

@@ -172,6 +172,9 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                }
                                for storage in [false, true]
                                {
+                                   registry.register(&owner, crate::drivers::file_sources::lifetime::specification(storage),
+                                       crate::drivers::file_sources::lifetime::ReleaseSources(storage))
+                                       .map_err(KindAccessError::Registry)?;
                                    registry.register(&owner, crate::drivers::jobs::records::specification(storage),
                                        crate::drivers::jobs::records::ReleaseJobs(storage))
                                        .map_err(KindAccessError::Registry)?;

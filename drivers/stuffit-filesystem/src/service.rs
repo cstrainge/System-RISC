@@ -47,9 +47,11 @@ impl<S: Sources> Backend<S>
                 return Err(Error(mac_abi::NO_MEMORY));
             }
             self.volumes.try_reserve(1).map_err(|_| Error(mac_abi::NO_MEMORY))?;
-            let source = u32::try_from(a.auxiliary).ok()
-                                                   .filter(|s| *s != 0)
-                                                   .ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+            let source = a.auxiliary;
+            if source <= u32::MAX as u64
+            {
+                return Err(Error(mac_abi::BAD_ARGUMENT));
+            }
             let root = Root::decode(a.payload)?;
             return Ok(Task::Mount(Mounting { volume: a.volume,
                                              source,
@@ -186,7 +188,7 @@ impl<S: Sources> Backend<S>
 struct Mounting
 {
     volume:  u32,
-    source:  u32,
+    source:  u64,
     root:    Option<Root>,
     builder: Option<IndexBuilder>,
     fetch:   Option<Fetch>
@@ -196,7 +198,7 @@ struct Reading
     volume:  u32,
     token:   u64,
     kind:    u32,
-    source:  u32,
+    source:  u64,
     offset:  u64,
     stream:  Option<Stream>,
     output:  Vec<u8>,

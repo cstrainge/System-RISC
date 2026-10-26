@@ -27,7 +27,7 @@ impl Fetch
                   forced: None })
     }
 
-    pub fn step<S: Sources>(&mut self, sources: &mut S, source: u32, cancel: bool) -> Result<bool>
+    pub fn step<S: Sources>(&mut self, sources: &mut S, source: u64, cancel: bool) -> Result<bool>
     {
         let cancelling = cancel || self.forced.is_some();
         if cancelling && self.ticket == 0
@@ -127,7 +127,7 @@ impl Stream
     /// Advance at most one source callback or one bounded decoder step. End-of-
     /// fork reads don't complete until CRC validation, even if the caller's
     /// requested output buffer ended exactly at the declared fork length.
-    pub fn step<S: Sources>(&mut self, sources: &mut S, source: u32, offset: u64,
+    pub fn step<S: Sources>(&mut self, sources: &mut S, source: u64, offset: u64,
                             output: &mut [u8], written: &mut usize, cancel: bool)
                             -> Result<bool>
     {

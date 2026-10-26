@@ -47,6 +47,7 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseInterfaces
         }
         else
         {
+            registry.reap_closed_dependencies();
             let key = ticket.key();
             let Some(interface) = registry.interfaces.releasing(&ticket)
             else
@@ -61,8 +62,16 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseInterfaces
             if let Some(binding) =
                 registry.dependencies.retained_values().find(|b| b.interface_key == key)
             {
-                return Err(Failure::driver_dependency_busy(ticket, interface.module,
-                                                           binding.dependent));
+                return Err(if binding.scope.is_some()
+                           {
+                               Failure::driver_dependency_scope_active(ticket, interface.module,
+                                                                       binding.dependent)
+                           }
+                           else
+                           {
+                               Failure::driver_dependency_busy(ticket, interface.module,
+                                                               binding.dependent)
+                           });
             }
             drop(registry.interfaces.release(ticket).map_err(Failure::from)?);
             Ok(())

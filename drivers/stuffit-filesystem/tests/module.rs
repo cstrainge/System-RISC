@@ -13,9 +13,9 @@ const NESTED: &[u8] = include_bytes!("../../../crates/mac-sit/tests/fixtures/nes
 const FORKS: &[u8] = include_bytes!("../../../crates/mac-sit/tests/fixtures/forks-v1.sit");
 struct Lower
 {
-    sources: Table<Vec<u8>>,
+    sources: NativeRequests<Vec<u8>>,
     tickets: NativeRequests,
-    flights: std::collections::BTreeMap<u64, (u32, u64, usize)>,
+    flights: std::collections::BTreeMap<u64, (u64, u64, usize)>,
     trace:   Vec<Phase>,
     cancels: usize
 }
@@ -23,7 +23,7 @@ struct Lower
 struct Memory(Arc<Mutex<Lower>>);
 impl Sources for Memory
 {
-    fn length(&self, source: u32) -> Result<u64>
+    fn length(&self, source: u64) -> Result<u64>
     {
         self.0
             .lock()
@@ -34,7 +34,7 @@ impl Sources for Memory
             .ok_or(Error(mac_abi::NOT_FOUND))
     }
 
-    fn read(&mut self, source: u32, offset: u64, ticket: &mut u64, phase: Phase, out: &mut [u8])
+    fn read(&mut self, source: u64, offset: u64, ticket: &mut u64, phase: Phase, out: &mut [u8])
             -> Result<Completion>
     {
         let mut state = self.0.lock().unwrap();
@@ -76,7 +76,7 @@ struct Harness
 {
     service:  Service<Memory>,
     lower:    Memory,
-    source:   u32,
+    source:   u64,
     requests: NativeRequests,
     volumes:  Table<()>,
     files:    Table<()>
@@ -106,7 +106,7 @@ impl Harness
 {
     fn new(bytes: &[u8]) -> Self
     {
-        let mut sources = Table::new(Kind::FileSources);
+        let mut sources = NativeRequests::with_kind(mac_object_table::domain::KindCode(*b"FSRC"));
         let source = sources.insert(bytes.to_vec()).unwrap();
         let lower = Memory(Arc::new(Mutex::new(Lower { sources,
                                                        tickets: NativeRequests::new(),

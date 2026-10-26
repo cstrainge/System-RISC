@@ -15,7 +15,9 @@ pub(super) struct Binding
     pub(super) interface:     u64,
     pub(super) interface_key: ResourceKey,
     pub(super) class:         mac_module::ClassId,
-    pub(super) version:       u32
+    pub(super) version:       u32,
+    pub(super) scope:
+        Option<mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>>
 }
 
 pub(crate) fn specification(storage: bool) -> Specification<'static>
@@ -60,6 +62,14 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseDependencies
         }
         else
         {
+            if let Some(binding) = registry.dependencies.releasing(&ticket)
+            {
+                if binding.scope.as_ref().is_some_and(|scope| !scope.closed())
+                {
+                    return Err(Failure::driver_dependency_scope_active(ticket, binding.provider,
+                                                                       binding.dependent));
+                }
+            }
             drop(registry.dependencies.release(ticket).map_err(Failure::from)?);
             Ok(())
         }
@@ -68,6 +78,49 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseDependencies
 
 impl Registry
 {
+    /// A private backing lease pins the exact lower provider incarnation. This
+    /// grants lifetime only; declared service/resolve policy stays unchanged.
+    pub(crate) fn pin_backing_provider(&mut self, dependent: u64, interface: u64,
+                                       scope: &mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>)
+                                       -> Result<()>
+    {
+        let owner = self.module_ledger(dependent)?;
+        if scope.subject() != owner.owner()
+        {
+            return Err(Error::Access);
+        }
+        let provider = self.interface(interface)?;
+        if provider.module == 0
+        {
+            return Ok(());
+        }
+        let key = self.interfaces.key(interface).ok_or(Error::Stale)?;
+        if self.dependencies.retained_values().any(|binding| {
+                                                  binding.interface_key == key
+            && binding.scope.as_ref().is_some_and(|old| old.same_scope(scope))
+                                              })
+        {
+            return Ok(());
+        }
+        let binding = Binding { dependent,
+                                provider: provider.module,
+                                interface,
+                                interface_key: key,
+                                class: provider.offer.class,
+                                version: provider.offer.version,
+                                scope: Some(scope.clone()) };
+        self.dependencies.insert_in_scope(scope, binding).map_err(Error::Owner)?;
+        Ok(())
+    }
+
+    /// Only the module-scope-close notification drives this per-change walk.
+    /// Source roots stay open through every real read/close and result guard.
+    pub(crate) fn reap_closed_dependencies(&mut self)
+    {
+        self.dependencies
+            .remove_where(|_, binding| binding.scope.as_ref().is_some_and(|scope| scope.closed()));
+    }
+
     pub(super) fn bind_dependencies(&mut self, dependent: u64) -> Result<()>
     {
         let owner = self.module_ledger(dependent)?;
@@ -100,7 +153,8 @@ impl Registry
                           interface,
                           interface_key: self.interfaces.key(interface).ok_or(Error::Stale)?,
                           class: declaration.class,
-                          version: declaration.version };
+                          version: declaration.version,
+                          scope: None };
             let id = self.dependencies.insert(&owner, binding).map_err(Error::Owner)?;
             // Admission reserved this index for every declaration before the
             // domain was published. It contains IDs, never a second payload.

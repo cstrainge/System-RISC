@@ -36,6 +36,11 @@ pub(crate) enum Cause
     },
     #[cfg(target_arch = "riscv64")]
     DeviceManagerUnavailable(crate::state::AccessError),
+    DriverDependencyScopeActive
+    {
+        provider:  u64,
+        dependent: u64
+    },
     Facility(PoolError),
     Alias(mac_object_table::aliases::ReleaseCause),
     RetirementStorage
@@ -113,6 +118,14 @@ impl core::fmt::Display for Cause
                 write!(f,
                        "device cleanup could not enter its manager ({cause:?}); claim, DMA and \
                         unique cleanup ticket remain retained for retry")
+            }
+            Self::DriverDependencyScopeActive { provider,
+                                                dependent } =>
+            {
+                write!(f,
+                       "module {dependent} still has an admitted backing operation using provider \
+                        {provider}; wait for actual close or cancellation acknowledgement; \
+                        dependency and original cleanup ticket remain retained")
             }
             Self::Facility(error) => error.fmt(f),
             Self::DriverDependencyBusy { provider,
@@ -237,6 +250,15 @@ impl Failure
         Self { ticket,
                cause: Cause::DriverDependencyBusy { provider,
                                                     dependent } }
+    }
+
+    pub(crate) fn driver_dependency_scope_active(ticket: ReleasedResource, provider: u64,
+                                                 dependent: u64)
+                                                 -> Self
+    {
+        Self { ticket,
+               cause: Cause::DriverDependencyScopeActive { provider,
+                                                           dependent } }
     }
 
     pub(crate) fn document_retirement_storage(ticket: ReleasedResource, pending: usize,

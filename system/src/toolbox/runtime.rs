@@ -559,6 +559,7 @@ impl Desktop
                             | super::handles::cleanup::Cause::ContextUnavailable { .. }
                             | super::handles::cleanup::Cause::DriverInterfaceBusy { .. }
                             | super::handles::cleanup::Cause::DriverDependencyBusy { .. }
+                            | super::handles::cleanup::Cause::DriverDependencyScopeActive { .. }
                             | super::handles::cleanup::Cause::DeviceStop { .. }
                             | super::handles::cleanup::Cause::DevicePending { .. } => SERVICE_BUSY,
                             super::handles::cleanup::Cause::DragEffectStorage { .. }

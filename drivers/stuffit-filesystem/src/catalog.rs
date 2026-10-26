@@ -47,7 +47,7 @@ struct Name
 pub(super) struct Volume
 {
     pub token:  u32,
-    pub source: u32,
+    pub source: u64,
     pub index:  Index,
     root:       Root,
     names:      Vec<Name>,
@@ -57,7 +57,7 @@ pub(super) struct Volume
 }
 impl Volume
 {
-    pub fn new(token: u32, source: u32, index: Index, root: Root) -> Result<Self>
+    pub fn new(token: u32, source: u64, index: Index, root: Root) -> Result<Self>
     {
         let count = index.nodes().len();
         let mut names = Vec::new();

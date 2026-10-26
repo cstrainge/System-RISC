@@ -15,6 +15,7 @@ import time
 from capture_system7_applications_ui import Driver
 import system7_vm as vm
 from system7_paths import build_dir, host_dir
+from system7_platform import display_size
 
 
 def running(pid):
@@ -72,7 +73,8 @@ def capture(output, windows=False, default_transfer=False, application=False):
         marker = f' name={name}\n'
         previous = driver.log().count(marker)
         clicks = driver.log().count('FINDER_CLICK_HANDLED\n')
-        driver.click(600, 96)
+        width, _ = display_size()
+        driver.click(width - 40, 96)
         driver.wait('FINDER_CLICK_HANDLED\n', clicks)
         driver.key('o', ('ctrl',))
         driver.wait(marker, previous)

@@ -399,8 +399,48 @@ fn continue_read(mut flight: Flight, operation: Operation, args: Arguments<'_>) 
         Err(error) => finish_read(args.volume, Err(error))
     }
 }
+fn release_progress(flight: &mut Flight, reply: Option<Result<Vec<u8>, Status>>)
+                    -> Option<Result<Reply, Status>>
+{
+    let Step::Release { volume,
+                        closing,
+                        status } = &mut flight.step
+    else
+    {
+        return Some(Err(BAD_ABI));
+    };
+    match crate::drivers::file_sources::runtime::finish_release(closing, reply)
+    {
+        Ok(false) => None,
+        Ok(true) => Some(volume.map_or(Ok(()), |v| files(|m| m.retire_provider_mount(v)))
+                               .and(if *status == OK
+                                    {
+                                        Ok(Reply::Unmounted)
+                                    }
+                                    else
+                                    {
+                                        Err(*status)
+                                    })),
+        Err(error) =>
+        {
+            if let Some(v) = *volume
+            {
+                let _ = files(|m| m.quarantine_provider_mount(v));
+            }
+            Some(Err(error))
+        }
+    }
+}
 fn advance(mut flight: Flight) -> Progress
 {
+    if matches!(&flight.step, Step::Release { closing, .. } if closing.has_reply())
+    {
+        return match release_progress(&mut flight, None)
+        {
+            Some(result) => Progress::Done(result),
+            None => Progress::Pending(flight)
+        };
+    }
     let (result, never_sent) = match flight.job.poll()
     {
         Ok(None) => return Progress::Pending(flight),
@@ -415,21 +455,12 @@ fn advance(mut flight: Flight) -> Progress
     {
         Step::File(_) => forks::advance(flight, result, never_sent),
         Step::Source(_) => mounts::advance(flight, result, never_sent),
-        Step::Release { volume,
-                        closing,
-                        status } =>
+        Step::Release { .. } =>
         {
-            match crate::drivers::file_sources::runtime::finish_release(closing, result)
+            match release_progress(&mut flight, Some(result))
             {
-                Ok(()) => retired(volume, status),
-                Err(error) =>
-                {
-                    if let Some(v) = volume
-                    {
-                        let _ = files(|m| m.quarantine_provider_mount(v));
-                    }
-                    Progress::Done(Err(error))
-                }
+                Some(result) => Progress::Done(result),
+                None => Progress::Pending(flight)
             }
         }
         Step::Write(_) => writes::advance(flight, result, never_sent),
@@ -1018,6 +1049,7 @@ pub(crate) fn abandon_thread(thread: u64)
 }
 pub(crate) fn pump()
 {
+    crate::drivers::file_sources::runtime::pump();
     transfer::pump();
     if super::super::groups::needs_cleanup()
     {

@@ -156,22 +156,12 @@ impl Manager
         Ok((provider, handle))
     }
 
-    #[cfg(any(test, target_arch = "riscv64"))]
+    #[cfg(test)]
     pub(in crate::toolbox::files) fn reserve_provider_file(&mut self, owner: u64, volume: u32,
                                                            node: u32, kind: u32)
                                                            -> Result<(u64, u32), Status>
     {
-        #[cfg(test)]
         let authority = self.handles.fixture_owner(owner);
-        #[cfg(all(not(test), target_arch = "riscv64"))]
-        let authority = if owner == 0
-        {
-            crate::toolbox::handles::system_owner()?
-        }
-        else
-        {
-            return Err(ACCESS_DENIED);
-        };
         self.reserve_provider_file_for(owner, &authority, volume, node, kind)
     }
 
@@ -267,6 +257,46 @@ impl Manager
             crate::toolbox::processes::retirement::resources_released();
         }
         Ok(result)
+    }
+
+    /// Validate and pin the exact mark/state across fallible queue admission.
+    /// `publish` performs resident queue bookkeeping only, never provider code.
+    /// Refusal leaves the mark unchanged; success has no fallible work left.
+    pub(in crate::toolbox::files) fn publish_provider_file_close<R>(&mut self,
+                                                                    access: super::super::subject::Access<'_>,
+                                                                    id: u32, cleanup: bool,
+                                                                    publish: impl FnOnce(u64, fs::Arguments<'static>) -> Result<R, Status>)
+                                                                    -> Result<R, Status>
+    {
+        let (file, provider) = self.provider_file(id)?;
+        if !file.authority.matches(file.owner, access)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let FileFork::Provider(fork) = &*file.fork.lock()
+        else
+        {
+            return Err(BAD_ABI);
+        };
+        let mut state = fork.state.lock();
+        if !(if cleanup
+        {
+            matches!(state.phase, Phase::Opening | Phase::Ready | Phase::Quarantined)
+        }
+        else
+        {
+            matches!(state.phase, Phase::Ready | Phase::Quarantined)
+        })
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let admitted = publish(provider,
+                               fs::Arguments { volume: file.volume,
+                                               token: u64::from(id),
+                                               ..Default::default() })?;
+        state.orphaned |= cleanup;
+        state.phase = Phase::Closing;
+        Ok(admitted)
     }
 
     pub(in crate::toolbox::files) fn begin_provider_file_close<'a>(&mut self,

@@ -1055,8 +1055,7 @@ little endian. Both operations have an exact 24-byte START argument:
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 4 | generation-tagged resident source capability |
-| 4 | 4 | reserved zero |
+| 0 | 8 | native resident source capability (u64, outside classic projection space) |
 | 8 | 8 | logical fork offset |
 | 16 | 4 | requested read length, at most 65536 |
 | 20 | 4 | reserved zero |
@@ -1067,9 +1066,38 @@ short at EOF, without changing any public file mark. Overflowing ranges and
 offsets beyond EOF fail. POLL/CANCEL carry empty input and retain the same broker
 ticket and source lease; borrowed input/output storage never survives a call.
 
-Sources and requests use the common generation facility plus separate module
-ownership checks. A source pins its backing file and volume against mutation
-and unmount. Publication follows acknowledged acquisition. Unmount/cancellation
+Sources (`FSRC`) and their backing (`FSSB`) are registered native module-owned
+leased-fork capabilities; the global file/catalog remains System-owned. Ordinary
+IDs are generation-validated independently of module ownership. Native u64
+source tokens flow through Mount auxiliary, FORK and the SDK. Module layout
+fingerprint bit 59 rejects old packages; development ABI remains 1. Both producer
+and consumer rebuild, with no older-source decoder.
+
+Read and close plans carry their original publication receipt and owned backing.
+Losing a plan quarantines its protocol state; a plain ID cannot manufacture
+completion authority. A refused completion returns its original plan. Actual
+backend ACK may settle a retained plan after owner invalidation. Cleanup queues
+intent while its registry context is borrowed, then drives one owned close
+continuation outside that borrow. Storage for those continuations is reserved
+before source publication.
+
+Backing marks belong to the selected module's admitted I/O scope, including
+positional reads and post-stop close. Provider acquisition replaces its known
+unopened Catalog placeholder before Open; it never changes a published mark's
+owner. The exact lower provider is pinned by a scoped registered dependency.
+Only the unique root's actual closure removes that claim; metadata lookup failure
+is not evidence of closure. Scope-close notifications run after metadata unlock
+and coalesce module dependency cleanup, with no scan on ordinary input events.
+
+Close queue admission pins the validated file mark across fallible allocation;
+refusal leaves it unchanged. A terminal close error permits a close-only retry,
+while reads remain refused. Temporary local retirement refusal retains the real
+terminal reply rather than polling a consumed job again. Source close is owned
+by resident File Manager/common-cleanup actors after the requesting app exits.
+
+Sources and requests retain separate module ownership checks. A source pins its
+backing file and volume against mutation and unmount. Publication follows
+acknowledged acquisition. Unmount/cancellation
 cannot recycle it before provider teardown and backing Close acknowledge;
 uncertain cleanup quarantines the binding. Block-backed and provider-backed files
 use the same source identities. Provider acquisition (Catalog/Open), positional

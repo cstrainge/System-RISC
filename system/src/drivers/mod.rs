@@ -23,7 +23,7 @@ pub(crate) fn status(error: Error) -> mac_abi::Status
         Error::Domain(mac_object_table::domain::DirectoryError::NotFound { .. }) => NOT_FOUND,
         Error::Domain(_) => SERVICE_BUSY,
         Error::Access | Error::RequestSubject => ACCESS_DENIED,
-        Error::Busy | Error::State | Error::DependencyInUse { .. } | Error::Cleanup(_) => SERVICE_BUSY,
+        Error::Busy | Error::State | Error::DependencyInUse { .. } | Error::BackingInUse { .. } | Error::Cleanup(_) => SERVICE_BUSY,
         Error::Exhausted => NO_MEMORY,
         Error::Contract(_) => BAD_ABI,
         Error::Duplicate | Error::Exclusive => BAD_ARGUMENT

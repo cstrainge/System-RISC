@@ -10,6 +10,14 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
         with_masked(operation)
     }
 
+    fn scope_closed(owner: mac_object_table::domain::DomainId)
+    {
+        if owner.kind() == mac_object_table::domain::DomainKind::Module
+        {
+            crate::drivers::dependencies_changed();
+        }
+    }
+
     fn released(owner: mac_object_table::domain::DomainId)
     {
         if owner.kind() == mac_object_table::domain::DomainKind::Process
