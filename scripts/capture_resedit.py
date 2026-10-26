@@ -10,7 +10,8 @@ import subprocess
 from pathlib import Path
 import time
 from capture_system7_applications_ui import Driver
-from extract_standard_wdef_assets import resources
+from system7_platform import display_size
+from system7_resource_map import resources
 from export_resedit_json import exports
 import system7_vm as vm
 from system7_diagnostics import capture_failure, heap_usage
@@ -107,7 +108,7 @@ def capture(output):
     try:
         driver.click(40,95,double=True);driver.wait(' name=Applications\n')
         driver.application('QuickDraw Test');driver.wait('QUICKDRAW_TEST_READY\n')
-        driver.menu(618,93,popup_x=580);driver.wait(f"PROCESS_ACTIVE app={driver.app_id('Finder')}\n")
+        driver.menu(display_size()[0]-22,93,popup_x=display_size()[0]-60);driver.wait(f"PROCESS_ACTIVE app={driver.app_id('Finder')}\n")
         frame('finder-icons')
         driver.application('Res Edit');driver.wait('RESEDIT_READY\n');frame('picker')
         open_dialog();frame('system-open')
@@ -146,10 +147,10 @@ def capture(output):
         resize((602,438),(618,450),'resize-restored')
         # The running app is still usable after its file was inspected/exported.
         active=f"PROCESS_ACTIVE app={driver.app_id('QuickDraw Test')}\n";previous=driver.log().count(active)
-        driver.menu(618,111,popup_x=580);driver.wait(active,previous)
+        driver.menu(display_size()[0]-22,111,popup_x=display_size()[0]-60);driver.wait(active,previous)
         driver.key('2');driver.wait('QD_DEMO_READY page=2 transfer\n');frame('running-app-still-usable')
         active=f"PROCESS_ACTIVE app={driver.app_id('Res Edit')}\n";previous=driver.log().count(active)
-        driver.menu(618,129,popup_x=580);driver.wait(active,previous)
+        driver.menu(display_size()[0]-22,129,popup_x=display_size()[0]-60);driver.wait(active,previous)
         driver.key('q',('ctrl',));driver.wait(f"PROCESS_EXIT app={driver.app_id('Res Edit')}\n");frame('resedit-closed')
     except Exception:
         if process.poll() is None:

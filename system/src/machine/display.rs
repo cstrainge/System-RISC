@@ -1,6 +1,6 @@
 //! QEMU virt display and clock; System owns the framebuffers.
 use core::{arch::asm,
-           ptr::{addr_of_mut, read_volatile},
+           ptr::read_volatile,
            sync::atomic::{AtomicBool, Ordering}};
 
 /// Display size in pixels, from the build-time platform record
@@ -12,9 +12,7 @@ use core::{arch::asm,
 /// not just this value.
 pub(crate) use crate::display::{HEIGHT, PIXELS, WIDTH};
 const MTIME: usize = 0x0200bff8;
-#[repr(C, align(4096))]
-struct Pixels([u32; PIXELS]);
-static mut BACKBUFFER: Pixels = Pixels([0; PIXELS]);
+static BACKBUFFER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 // Window tracking never paints the menu bar's first 21 rows.
 const TRACKING_PIXELS: usize = WIDTH * (HEIGHT - 21);
 // This physical scratch reservation is generated from the same checked
@@ -23,6 +21,9 @@ const TRACKING_PIXELS: usize = WIDTH * (HEIGHT - 21);
 const _: () =
     assert!(super::memory::DISPLAY_TRACKING_BASE + (TRACKING_PIXELS * size_of::<u32>()) as u64
             <= super::memory::DISPLAY_SCRATCH_BASE + super::memory::DISPLAY_SCRATCH_BYTES);
+const _: () = assert!(super::memory::DISPLAY_BACKBUFFER_BASE + (PIXELS * size_of::<u32>()) as u64
+                      <= super::memory::DISPLAY_SCRATCH_BASE
+                         + super::memory::DISPLAY_SCRATCH_BYTES);
 static TRACKING_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static TRACKING_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static TRACKING_BORROWED: AtomicBool = AtomicBool::new(false);
@@ -68,8 +69,18 @@ pub fn with_tracking_mask<R>(call: impl FnOnce(Option<&mut [u32]>) -> R) -> R
 
 pub fn back_buffer() -> &'static mut [u32]
 {
-    // Single hart, only the System compositor uses this buffer.
-    unsafe { core::slice::from_raw_parts_mut(addr_of_mut!(BACKBUFFER).cast::<u32>(), PIXELS) }
+    let pointer = super::memory::DISPLAY_BACKBUFFER_BASE as *mut u32;
+    // Bootstrap initializes this before applications start. Afterwards only the
+    // interrupt-masked, serialized compositor borrows the dedicated reservation.
+    // It is disjoint from the frontbuffer and guarded tracking scratch.
+    if !BACKBUFFER_INITIALIZED.load(Ordering::Acquire)
+    {
+        unsafe {
+            core::ptr::write_bytes(pointer, 0, PIXELS);
+        }
+        BACKBUFFER_INITIALIZED.store(true, Ordering::Release);
+    }
+    unsafe { core::slice::from_raw_parts_mut(pointer, PIXELS) }
 }
 pub fn setup_framebuffer() -> bool
 {
@@ -82,7 +93,7 @@ pub fn setup_framebuffer() -> bool
         TRACKING_AVAILABLE.store(true, Ordering::Release);
         serial!("RAMFB {}x{} addr=0x{:x}", WIDTH, HEIGHT, address);
         serial!("DISPLAY_BUFFERS back={} front={} bytes={}",
-                addr_of_mut!(BACKBUFFER) as usize,
+                super::memory::DISPLAY_BACKBUFFER_BASE,
                 address,
                 PIXELS * size_of::<u32>());
     }

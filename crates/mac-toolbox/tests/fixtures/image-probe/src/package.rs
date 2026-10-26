@@ -13,7 +13,7 @@ fn main()
                            .find(|r| r.kind == *b"CDEF" && r.id == -32759)
                            .expect("current System supplies the Static Text CDEF");
     resources.push(definition);
-    file.resources = mac_formats::resource::encode(&resources).expect("encode probe definition");
+    file.resources = mac_formats::resource::encode_native(&resources).expect("encode probe definition");
     std::fs::write(output.join("ImageProbe.bin"), mac_formats::macbinary::encode(&file)
         .expect("encode base probe")).expect("write base probe");
     for index in 0..16

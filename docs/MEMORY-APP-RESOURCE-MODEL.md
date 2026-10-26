@@ -65,7 +65,7 @@ a closed identity stub, not the dead pool's storage.
 The existing resident heap now has a private `ResidentHeap` wrapper using the
 same architecture gate for allocation, deallocation, initialization and free-
 space reads. This closes the preempted-heap-holder path without changing the
-current 8 MiB backend or claiming the later page-backed/accounted heap stage.
+current flat backend or claiming the later page-backed/accounted heap stage.
 Trusted event routing also requeues directly into the fixed queue, avoiding a
 temporary heap allocation on every physical-input batch.
 
@@ -189,7 +189,7 @@ The initial configurable defaults approved on 2026-10-24 are **8 GiB native
 release VM RAM, 512 MiB fixed System heap, 32 MiB protected recovery reserve,
 16 MiB per-process kernel budget and 64 MiB app committed-heap budget**. These
 are selections for the later page/heap stage, not claims that those budgets are
-active on the current 8 MiB allocator. They remain tunable and must pass the
+active on the current flat allocator. They remain tunable and must pass the
 cross-profile validator and live accounting/recovery gates before activation.
 
 Other values, including the proposed minimum/maximum ranges below, remain
@@ -1857,3 +1857,36 @@ all 17 ROM boot/rejection cases, compiled boundaries, formatting and public
 documentation (52 crates) pass. The code-resource codec consumes only the
 allocation-free ABI contract to validate its layout fingerprint; the compiled
 boundary gate still forbids service or allocator implementations in clients.
+
+The QemuRISC-V flat heap is now 10 MiB, defined in its platform record and still
+bounded by the existing System linker reservation. At 800x600 the native
+QuickDraw-plus-Res-Edit campaign exhausted the previous 8 MiB budget while
+opening a resource document; its picker left less than 100 KiB of headroom.
+The display backbuffer lives beside the frontbuffer and tracking scratch in a
+three-frame platform reservation; it no longer occupies System image BSS. One
+checked record generates their linker symbols, Rust constants and boot reservation.
+The image ceiling and Res Edit linker ceiling end before this reservation. A
+9 MiB intermediate profile still refused the full System font-view workload.
+This is an interim measured capacity adjustment, not activation of the approved
+512 MiB page-backed System heap, recovery reserve or domain charges. Res Edit's
+large document array now lives in synchronized per-instance storage with an
+owned cleanup guard, removing its separate UI-stack overflow.
+
+Native packages now use explicitly marked RRF1 resource forks with full u32
+payload offsets. Original Macintosh forks keep their classic 24-bit decoder and
+encoder; storage and copying do not reinterpret or rewrite their bytes. Both
+formats share checked index/stream parsing and independent allocation budgets.
+Res Edit's public file-format query and JSON archive field preserve the chosen
+encoding through rebuild. Host SDK acceptance reads a resource past 16 MiB;
+the native Res Edit workflow verifies exact exported/rebuilt fork bytes.
+
+Qualification: 490 scoped host cases pass, with 67 native tests excluded from
+that count. Separate guest campaigns pass for process lifecycle/rollback,
+aggregate Toolbox, Res Edit, application/cursor/boot/panic UI, writable host
+volumes, classic StuffIt and external module admission. The ABI harness and all
+17 ROM cases pass, including a valid System fork over 5 MiB. Resource/font
+provenance checks, compiled boundaries, formatting and 52-crate public docs pass.
+This container milestone does not establish original 68k execution, arbitrary
+privileged-fault containment, dynamic process capacity, page-backed heaps or MMU
+activation. Lower driver-request/device/source lifetimes remain the next model
+migration.

@@ -100,7 +100,7 @@ fn request(files: &mut crate::toolbox::files::Manager, owner: u64, call: &mut Fi
     // Failed queries retain it; closing/reusing the slot drops it with the fork.
     let cached = files.take_resource_index(owner, call.handle)?;
     if !matches!(call.operation,
-                 COUNT_TYPES | TYPE_INDEX | COUNT | GET | INFO | INDEX | NAMED | READ)
+                 FILE_FORMAT | COUNT_TYPES | TYPE_INDEX | COUNT | GET | INFO | INDEX | NAMED | READ)
     {
         if let Some(index) = cached
         {

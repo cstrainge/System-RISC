@@ -1,8 +1,14 @@
 //! Each opened resource fork owns its own browser and document window.
 use core::fmt::Write;
 
+use spinning_top::{Spinlock, SpinlockGuard};
+
 use super::*;
 const MAX_DOCUMENTS: usize = 8;
+// Relocated private BSS, not eight large browser/index values on the UI stack.
+// Admission never spins; the session owns cleanup before releasing this guard.
+static DOCUMENTS: Spinlock<[Option<Document<'static>>; MAX_DOCUMENTS]> =
+    Spinlock::new([const { None }; MAX_DOCUMENTS]);
 pub(super) struct Document<'a>
 {
     // Controls/resources must be disposed before their parent window.
@@ -32,20 +38,33 @@ impl<'a> Document<'a>
 }
 pub(super) struct Application<'a>
 {
-    documents:         [Option<Document<'a>>; MAX_DOCUMENTS],
+    documents:         SpinlockGuard<'a, [Option<Document<'a>>; MAX_DOCUMENTS]>,
     alert:             Option<dialogs::Alert<'a>>,
     documents_pending: bool
 }
+impl Application<'static>
+{
+    pub fn acquire() -> ToolboxResult<Self>
+    {
+        Ok(Self { documents:         DOCUMENTS.try_lock().ok_or(Error::ServiceBusy)?,
+                  alert:             None,
+                  documents_pending: true })
+    }
+}
+impl Drop for Application<'_>
+{
+    fn drop(&mut self)
+    {
+        self.alert = None;
+        for document in self.documents.iter_mut()
+        {
+            *document = None;
+        }
+    }
+}
 impl<'a> Application<'a>
 {
-    pub fn empty() -> Self
-    {
-        Self { documents:         core::array::from_fn(|_| None),
-               alert:             None,
-               documents_pending: true }
-    }
-
-    // Initialize the caller-owned document array without a second large value.
+    // Construct one document at a time in the session's private storage.
     #[inline(never)]
     pub fn initialize(&mut self, system: &System<'a>) -> ToolboxResult<()>
     {
@@ -74,7 +93,7 @@ impl<'a> Application<'a>
         {
             // A welcome window contains no user document and consumes no slot
             // when a document set arrives. Existing documents remain owned.
-            for slot in &mut self.documents
+            for slot in self.documents.iter_mut()
             {
                 if slot.as_ref().is_some_and(|doc| doc.browser.catalog.is_none())
                 {

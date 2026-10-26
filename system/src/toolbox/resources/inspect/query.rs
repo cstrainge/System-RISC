@@ -24,6 +24,15 @@ pub(crate) fn prepare(index: &Index, call: &mut FileResourceCall, name: &str, ca
 {
     match call.operation
     {
+        FILE_FORMAT =>
+        {
+            call.index = match index.encoding()
+            {
+                mac_formats::resource::Encoding::Classic => 0,
+                mac_formats::resource::Encoding::Native => 1
+            };
+            return Ok(Need::Done);
+        }
         COUNT_TYPES =>
         {
             call.index = index.type_count() as u32;

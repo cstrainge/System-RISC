@@ -125,7 +125,9 @@ def check(args):
         # Finder's synchronized BSS snapshots and Unicode caption boundaries
         # contain no resident manager implementation or private kernel calls.
         helpers = {
-            'resedit': ['disc-v', 'mac-code-resource', 'mac-text'],
+            # Synchronized per-instance document state avoids a large UI stack;
+            # the guard owns RAII cleanup and provides no resident services.
+            'resedit': ['disc-v', 'mac-code-resource', 'mac-text', 'spinning_top'],
             'mac-finder': ['spinning_top', 'unicode-segmentation'],
             # Versioned font/view preferences only; all storage and UI still
             # go through mac-toolbox. Neither codec implements OS services.

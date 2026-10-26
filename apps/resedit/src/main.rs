@@ -779,11 +779,11 @@ fn document_event<'a>(system: &System<'a>, document: &mut documents::Document<'a
     }
     Ok(())
 }
-fn run<'a>(system: &System<'a>) -> ToolboxResult<()>
+fn run(system: &System<'static>) -> ToolboxResult<()>
 {
     system.menus().clear()?;
     let _menu = system.menus().install_owned(resources::APPLICATION, 128)?;
-    let mut application = documents::Application::empty();
+    let mut application = documents::Application::acquire()?;
     application.initialize(system)?;
     system.log("RESEDIT_READY\n")?;
     loop
@@ -806,7 +806,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
     {
         return status;
     }
-    let system = match unsafe { System::from_raw(services) }
+    let system: System<'static> = match unsafe { System::from_raw(services) }
     {
         Ok(system) => system,
         Err(status) => return status.status()

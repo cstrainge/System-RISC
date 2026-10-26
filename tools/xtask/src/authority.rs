@@ -69,7 +69,7 @@ pub(super) fn install(workspace: &Workspace, reports: &mut [Value]) -> Result<()
                                         name:       Some(b"Application Authority".to_vec()),
                                         attributes: 0,
                                         data:       bytes });
-    file.resources = resource::encode(&resources)?;
+    file.resources = resource::encode_native(&resources)?;
     let binary = macbinary::encode(&file)?;
     let original =
         reports.iter_mut()

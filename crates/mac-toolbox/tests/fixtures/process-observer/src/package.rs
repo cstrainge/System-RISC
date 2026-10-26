@@ -18,7 +18,7 @@ fn main()
                  .data
                  .clear();
         file.resources =
-            resource::encode(&resources).expect("encode malformed-layout System resources");
+            resource::encode_native(&resources).expect("encode malformed-layout System resources");
         std::fs::write(output.join("Malformed System.bin"), macbinary::encode(&file).expect("encode private System package"))
             .expect("write malformed-layout System package");
     }
@@ -34,8 +34,8 @@ fn main()
                               name:       None,
                               attributes: 0,
                               data:       vec![0] });
-    let missing = resource::encode(&missing).expect("encode missing relocation fixture");
-    let malformed = resource::encode(&malformed).expect("encode malformed relocation fixture");
+    let missing = resource::encode_native(&missing).expect("encode missing relocation fixture");
+    let malformed = resource::encode_native(&malformed).expect("encode malformed relocation fixture");
     for (name, resources) in [("Budget App", budget),
                               ("Corrupt App", vec![0; 16]),
                               ("Missing Code", missing),

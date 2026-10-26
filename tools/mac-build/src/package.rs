@@ -103,7 +103,7 @@ pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
     {
         crate::module::finish(manifest_path, &manifest, &debug_elf, &mut compiled)?;
     }
-    let resources = resource::encode(&compiled)?;
+    let resources = resource::encode_native(&compiled)?;
     let packaged_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let source_epoch = match env::var("SOURCE_DATE_EPOCH")
     {
@@ -167,7 +167,16 @@ pub fn rebuild(manifest_path: &Path, out: &Path) -> Result<Value>
     {
         return Err(error("rebuild requires an archive manifest"));
     }
-    let resources = resource::encode(&manifest.compile_resources(manifest_path, &[], None)?)?;
+    let format = manifest.resource_format.ok_or_else(|| {
+                                              error("lossless archive requires resource_format \
+                                                     (classic or system_risc); export it again")
+                                          })?;
+    let compiled = manifest.compile_resources(manifest_path, &[], None)?;
+    let resources = match format
+    {
+        crate::manifest::ResourceFormat::Classic => resource::encode(&compiled)?,
+        crate::manifest::ResourceFormat::SystemRisc => resource::encode_native(&compiled)?
+    };
     let data = if let Some(crate::manifest::Payload::Hex { hex }) = &manifest.data_fork
     {
         if !hex.is_ascii() || !hex.len().is_multiple_of(2)

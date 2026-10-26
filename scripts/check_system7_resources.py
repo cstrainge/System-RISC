@@ -3,22 +3,9 @@
 import hashlib,json,struct
 from pathlib import Path
 from system7_paths import dist_dir, describe
-from extract_standard_wdef_assets import resources
+from system7_resource_map import resources, resource_names, resource_map
 ROOT=Path(__file__).resolve().parents[2]
 def sha(data):return hashlib.sha256(data).hexdigest()
-def resource_names(raw):
-    _,map_offset,_,_=struct.unpack_from('>4I',raw)
-    types_offset,names_offset=struct.unpack_from('>HH',raw,map_offset+24)
-    types,names=map_offset+types_offset,map_offset+names_offset
-    out={}
-    for i in range(struct.unpack_from('>H',raw,types)[0]+1):
-        kind,last,refs=struct.unpack_from('>4sHH',raw,types+2+i*8)
-        for j in range(last+1):
-            rid,name=struct.unpack_from('>hh',raw,types+refs+j*12)
-            if name>=0:
-                length=raw[names+name]
-                out[kind.decode('mac_roman'),rid]=raw[names+name+1:names+name+1+length].decode('mac_roman')
-    return out
 def main():
     visual=json.loads((ROOT/'provenance/system7-visual-resource-bundle.json').read_text())
     fonts=json.loads((ROOT/'provenance/system7-font-bundle.json').read_text())
@@ -69,6 +56,10 @@ def main():
                 elif payload['format']=='strings':
                     values=[text.encode('mac_roman') for text in payload['strings']]
                     expected=struct.pack('>H',len(values))+b''.join(bytes([len(v)])+v for v in values)
+                elif payload['format']=='open_types':
+                    types=[kind.encode('mac_roman') for kind in payload['types']]
+                    expected=(payload['signature'].encode('mac_roman')+
+                              struct.pack('>HH',0,len(types))+b''.join(types))
                 else:
                     assert payload['format']=='menu', f'unchecked app resource format {payload["format"]}'
                     expected=data
@@ -78,12 +69,16 @@ def main():
                     commands=b''.join((item.get('command','\0'*4).encode('mac_roman')
                                        if isinstance(item,dict) else bytes(4))
                                       for item in payload['items'])
-                    assert packed['MCMD',key[1]][2]==commands, f'command table changed: {name} {key}'
+                    if any(commands):
+                        assert packed['MCMD',key[1]][2]==commands, f'command table changed: {name} {key}'
+                    else:
+                        assert ('MCMD',key[1]) not in packed, f'spurious command table: {name} {key}'
                 assert data==expected, f'payload changed: {name} {key}'
                 checked.append({'type':key[0],'id':key[1],'length':len(data),'sha256':sha(data)})
             runtime=dist_dir()/(name+'.runtime.elf')
             elf=runtime.read_bytes();entry=struct.unpack_from('<Q',elf,24)[0]
-            expected_abi=(b'RVN1'+struct.pack('>HHIIQQQ',1,2,manifest['abi_version'],0,
+            expected_abi=(b'RVN1'+struct.pack('>HHIIQQQ',1,2,manifest['abi_version'],
+                                          resource_map(blob)['native_layout_fingerprint'],
                                           int(manifest['load_base'],16),int(manifest['load_limit'],16),entry))
             assert packed['NABI',0][2]==expected_abi, f'application ABI/reservation changed: {name}'
             runtime=dist_dir()/(name+'.runtime.elf')

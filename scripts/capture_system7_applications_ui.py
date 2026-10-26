@@ -19,6 +19,7 @@ import re
 import capture_system7_conformance as packaging
 import system7_vm as vm
 import system7_observer as observer
+from system7_resource_map import resource_map
 
 
 # Fresh 404px Finder folder, resource-backed Geneva names and 64px icon cells.
@@ -168,20 +169,14 @@ def icon_disk(output):
     binary = bytearray((vm.DIST / 'QuickDraw Test.bin').read_bytes())
     data_length, fork_length = struct.unpack_from('>II', binary, 83)
     fork = 128 + (data_length + 127) // 128 * 128
-    data, resource_map = struct.unpack_from('>II', binary, fork)
-    types = resource_map + struct.unpack_from('>H', binary, fork + resource_map + 24)[0]
-    for index in range(struct.unpack_from('>H', binary, fork + types)[0] + 1):
-        kind, last, refs = struct.unpack_from('>4sHH', binary, fork + types + 2 + index * 8)
-        for entry in range(last + 1):
-            reference = fork + types + refs + entry * 12
-            resource_id = struct.unpack_from('>h', binary, reference)[0]
-            if kind == b'ICN#' and resource_id == 128:
-                struct.pack_into('>h', binary, reference, 9433)
-            if kind == b'BNDL' and resource_id == 128:
-                offset = int.from_bytes(binary[reference + 5:reference + 8], 'big')
-                payload = fork + data + offset + 4
-                # Fixture metadata is pinned by the canonical Rust assertions.
-                binary[payload + 16:payload + 18] = struct.pack('>h', 9433)
+    for entry in resource_map(bytes(binary[fork:fork + fork_length]))['resources']:
+        kind, resource_id = bytes(entry['kind']), entry['id']
+        if kind == b'ICN#' and resource_id == 128:
+            struct.pack_into('>h', binary, fork + entry['reference_offset'], 9433)
+        if kind == b'BNDL' and resource_id == 128:
+            payload = fork + entry['payload_offset']
+            # Fixture metadata is pinned by the canonical Rust assertions.
+            binary[payload + 16:payload + 18] = struct.pack('>h', 9433)
     package = private / 'QuickDraw Test.bin'
     package.write_bytes(binary)
     # Retain the small map/metadata fork identity, not another executable copy.

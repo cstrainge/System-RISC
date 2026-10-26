@@ -52,6 +52,8 @@ pub const RELEASE: u32 = 8;
 pub const STRING: u32 = 10;
 pub const LOAD: u32 = 9;
 pub const FILE_VERSION: u32 = 11;
+/// FileResourceCall only: index is 0 for classic forks, 1 for native RRF1.
+pub const FILE_FORMAT: u32 = 12;
 /// Decoded vers strings. The disk resource remains a classic NumVersion and
 /// two MacRoman Pascal strings; native clients receive checked UTF8.
 #[repr(C)]

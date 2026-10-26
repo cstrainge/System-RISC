@@ -768,6 +768,7 @@ dependencies = [
  "mac-code-resource",
  "mac-text",
  "mac-toolbox",
+ "spinning_top",
 ]
 
 [[package]]
@@ -1303,6 +1304,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "hfs-b",
+ "mac-abi",
  "mac-build",
  "mac-file-types",
  "mac-formats",

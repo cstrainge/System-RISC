@@ -50,7 +50,7 @@ they do not require migration code. Report the reset or required recreation.
 ## Resource packaging and build
 
 - Package native extension code as independently linked executable resources in
-  classic resource-fork files installed in System Folder/Extensions. Declare a
+  native resource-fork files installed in System Folder/Extensions. Declare a
   native `INIT` entry and its extension calling convention explicitly; driver
   packages are installed separately in System Folder/Drivers and use the P14
   DRVR entry and mandatory DABI contract. Never cast an application or WDEF entry

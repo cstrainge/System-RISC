@@ -14,7 +14,7 @@ fn main() -> mac_build::Result<()> {
     let slot = resources.iter_mut().find(|r| r.kind == replacement.kind && r.id == replacement.id)
         .ok_or_else(|| mac_build::error("base System has no Static Text CDEF to replace"))?;
     *slot = replacement;
-    system.resources = mac_formats::resource::encode(&resources)?;
+    system.resources = mac_formats::resource::encode_native(&resources)?;
     fs::write(&args[2], mac_formats::macbinary::encode(&system)?)?;
     Ok(())
 }

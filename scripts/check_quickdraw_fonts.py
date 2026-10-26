@@ -9,7 +9,7 @@ import re
 import subprocess
 
 from PIL import Image,ImageChops
-from extract_standard_wdef_assets import resources
+from system7_resource_map import resources
 
 ROOT=Path(__file__).resolve().parents[2]
 RESULTS=ROOT/'results/system7/fonts'

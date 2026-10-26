@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use super::{Resource, ResourceRef};
+use super::{Encoding, Resource, ResourceRef};
 use crate::{Error, Result, be16, be32, slice};
 
 #[derive(Clone, Copy)]
@@ -25,6 +25,7 @@ impl Default for Budget
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Header
 {
+    pub encoding:    Encoding,
     pub data:        u64,
     pub map:         u64,
     pub data_length: u64,
@@ -34,10 +35,27 @@ impl Header
 {
     pub fn decode(bytes: &[u8], total: u64) -> Result<Self>
     {
-        let data = u64::from(be32(bytes, 0)?);
-        let map = u64::from(be32(bytes, 4)?);
+        let discriminator = be32(bytes, 0)?;
+        let encoding = if discriminator == 0
+        {
+            if slice(bytes, 4, 4)? != b"RRF1"
+            {
+                return Err(Error::Malformed("unsupported native resource-fork format; rebuild \
+                                             or recreate the file"));
+            }
+            Encoding::Native
+        }
+        else
+        {
+            Encoding::Classic
+        };
         let data_length = u64::from(be32(bytes, 8)?);
         let map_length = be32(bytes, 12)? as usize;
+        let (data, map) = match encoding
+        {
+            Encoding::Classic => (u64::from(discriminator), u64::from(be32(bytes, 4)?)),
+            Encoding::Native => (256, 256 + data_length)
+        };
         let data_end =
             data.checked_add(data_length).ok_or(Error::Malformed("resource range overflow"))?;
         let map_end = map.checked_add(map_length as u64)
@@ -50,7 +68,12 @@ impl Header
         {
             return Err(Error::Malformed("invalid or overlapping resource regions"));
         }
-        Ok(Self { data,
+        if encoding == Encoding::Native && (map_end != total || total > u64::from(u32::MAX))
+        {
+            return Err(Error::Malformed("native resource-fork length mismatch"));
+        }
+        Ok(Self { encoding,
+                  data,
                   map,
                   data_length,
                   map_length })
@@ -58,6 +81,7 @@ impl Header
 }
 pub(super) struct Location
 {
+    pub reference:  usize,
     pub kind:       [u8; 4],
     pub id:         i16,
     pub attributes: u8,
@@ -65,7 +89,8 @@ pub(super) struct Location
     pub offset:     u64
 }
 /// Parse reference/name records once for both borrowed and seekable decoders.
-pub(super) fn locations(map: &[u8], data_length: u64, limit: usize) -> Result<Vec<Location>>
+pub(super) fn locations(map: &[u8], data_length: u64, limit: usize, encoding: Encoding)
+                        -> Result<Vec<Location>>
 {
     let types = be16(map, 24)? as usize;
     let names = be16(map, 26)? as usize;
@@ -105,8 +130,14 @@ pub(super) fn locations(map: &[u8], data_length: u64, limit: usize) -> Result<Ve
         out.try_reserve_exact(number)
            .map_err(|_| Error::AllocationFailed("resource allocation failed"))?;
         let first = out.len();
-        for record in slice(map, refs, number * 12)?.as_chunks::<12>().0
+        for (ordinal, record) in
+            slice(map, refs, number * 12)?.as_chunks::<12>().0.iter().enumerate()
         {
+            if encoding == Encoding::Native && record[9..].iter().any(|&byte| byte != 0)
+            {
+                return Err(Error::Malformed("native resource reference reserved bytes are \
+                                             nonzero"));
+            }
             let name_offset = be16(record, 2)?;
             let name = if name_offset == u16::MAX
             {
@@ -120,12 +151,24 @@ pub(super) fn locations(map: &[u8], data_length: u64, limit: usize) -> Result<Ve
                 slice(map, start + 1, len)?;
                 Some(start + 1..start + 1 + len)
             };
-            let offset = u64::from(u32::from_be_bytes([0, record[5], record[6], record[7]]));
+            let offset = u64::from(match encoding
+                                   {
+                                       Encoding::Classic =>
+                                       {
+                                           u32::from_be_bytes([0, record[5], record[6], record[7]])
+                                       }
+                                       Encoding::Native =>
+                                       {
+                                           u32::from_be_bytes([record[5], record[6], record[7],
+                                                               record[8]])
+                                       }
+                                   });
             if offset.checked_add(4).is_none_or(|n| n > data_length)
             {
                 return Err(Error::Malformed("resource offset outside data region"));
             }
-            out.push(Location { kind,
+            out.push(Location { reference: refs + ordinal * 12,
+                                kind,
                                 id: be16(record, 0)? as i16,
                                 attributes: record[4],
                                 name,
@@ -162,7 +205,7 @@ pub(super) fn borrowed(bytes: &[u8]) -> Result<Vec<ResourceRef<'_>>>
 {
     let h = Header::decode(bytes, bytes.len() as u64)?;
     let map = slice(bytes, h.map as usize, h.map_length)?;
-    let locations = locations(map, h.data_length, usize::MAX)?;
+    let locations = locations(map, h.data_length, usize::MAX, h.encoding)?;
     let mut out = Vec::new();
     out.try_reserve_exact(locations.len())
        .map_err(|_| Error::AllocationFailed("resource allocation failed"))?;
@@ -201,7 +244,7 @@ pub fn read_selected(length: u64, budget: Budget, mut select: impl FnMut([u8; 4]
     }
     let mut map = buffer(h.map_length)?;
     read(h.map, &mut map)?;
-    let locations = locations(&map, h.data_length, budget.resources)?;
+    let locations = locations(&map, h.data_length, budget.resources, h.encoding)?;
     let mut out = Vec::new();
     let mut remaining = budget.payload_bytes;
     let mut remaining_names = budget.map_bytes;

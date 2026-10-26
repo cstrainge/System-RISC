@@ -5,10 +5,52 @@ The separate native disk contract is documented in
 fixes its Unicode name contract; changing those tables requires rebuilding every
 affected file/name/index representation, not changing an independent setting.
 
-The container is a classic Macintosh file. Its resource fork uses the standard
-big-endian resource header, data area, map, type/reference lists and Pascal names.
-The data fork is currently empty. Host transport uses MacBinary II with a valid
-CRC-16/XMODEM header and 128-byte fork padding. File/resource names use Mac Roman.
+Native packages retain Macintosh file metadata and first-class data/resource
+forks. Their resource fork uses the native RRF1 layout below. Original Macintosh
+forks retain their classic layout and are decoded separately from that explicit
+marker; copying an original application never rewrites its forks. Host transport
+uses MacBinary II with a valid CRC-16/XMODEM header and 128-byte fork padding.
+MacBinary file names and serialized resource names use Mac Roman.
+
+## Resource-fork containers
+
+mac-build emits RRF1 for current native packages. All fields are big endian.
+Its 16-byte header is:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | Zero discriminator (invalid as a classic data offset) |
+| 4 | 4 | Magic/version `RRF1` |
+| 8 | 4 | Data-area byte length |
+| 12 | 4 | Map byte length |
+
+Data begins at byte 256; bytes 16 through 255 are zero padding. The map begins
+immediately after the data area and ends exactly at EOF. The total fork length
+must fit u32. Unknown native versions require rebuilding/recreating the file;
+they never fall back to the classic decoder.
+
+The map's type list, Pascal/MacRoman names and 12-byte reference records retain
+classic geometry. A native reference contains ID i16 at 0, name offset u16 at 2,
+attributes u8 at 4, full u32 data-area offset at 5, and three zero reserved bytes
+at 9. Each payload still starts with a u32 length. Map/name/reference-list offsets
+remain u16; this change expands data addressing, not those separate limits.
+
+Original forks use their standard four-u32 header and 24-bit reference offset
+at bytes 5 through 7. Bytes 8 through 11 are classic handle storage and never
+contribute to that offset. Both the indexed and streaming readers consume the
+same checked format discriminator and reference parser. No format is guessed
+from resource types or payload contents. Copying and storage preserve fork bytes.
+
+Address width is independent of allocation policy. Selected reads can inspect
+a resource past 16 MiB without reading preceding payloads; payload/map/count
+budgets remain checked before allocation. The current default selected-payload
+budget remains 4 MiB until the page-backed heap policies are active.
+
+The public ResourceFile format query reports Classic or SystemRisc. Lossless
+JSON archives declare `resource_format` as `classic` or `system_risc`; rebuild
+requires that field and uses its corresponding encoder. Res Edit exports the
+actual format along with raw resource payloads, names and attributes. Normal
+build manifests use native RRF1 regardless of architecture.
 
 Native executables use an `'RV64'` resource ID 0 and a companion `'NABI'`
 resource ID 0. The unreleased format is **version 1**. ELF is a build-time input,
@@ -298,7 +340,11 @@ not overlap. Reservations are disjoint and wholly within one bank. System
 validates the complete account at entry. The ROM discovers all enabled memory
 banks and firmware reservations from the DTB; its reservation union includes
 build-defined firmware state/heap, the module arena, the FDT tail and the loaded
-System reservation (including its static heap/framebuffers). Later loader
+System reservation (including its static heap). Frontbuffer, tracking scratch
+and compositor backbuffer occupy three disjoint page-aligned frames in the
+platform display reservation; the same checked record emits their linker symbols,
+resident constants and boot reservation. They are initialized before use and do
+not consume the System image's BSS. Later loader
 allocations must join the same account when the page layer becomes live.
 
 `platforms/<name>.json` defines physical placement policy. mac-build rejects
@@ -759,7 +805,7 @@ artifacts; it is not an authentication signature.
 
 `mac-module` is the shared, allocation-free, safe Rust metadata reader/writer.
 DABI and EABI contain the same little-endian binary layout (the surrounding
-classic resource fork remains big-endian):
+resource fork remains big-endian):
 
 | Offset | Size | Meaning |
 | --- | --- | --- |

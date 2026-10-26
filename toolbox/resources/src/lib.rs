@@ -156,6 +156,14 @@ pub struct Resource<'a>
     client: Client<'a>,
     info:   ResourceInfo
 }
+
+/// The serialized fork format, independent of the architecture of its code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceForkFormat
+{
+    Classic,
+    SystemRisc
+}
 impl Resource<'_>
 {
     pub fn info(&self) -> &ResourceInfo
@@ -255,6 +263,16 @@ impl<'a> Resources<'a>
 }
 impl ResourceFile<'_>
 {
+    pub fn format(&self) -> Result<ResourceForkFormat>
+    {
+        match self.request(FILE_FORMAT, ResourceKey::default(), 0, "", 0, &mut [])?.index
+        {
+            0 => Ok(ResourceForkFormat::Classic),
+            1 => Ok(ResourceForkFormat::SystemRisc),
+            _ => Err(Error::BadAbi)
+        }
+    }
+
     fn request(&self, operation: u32, key: ResourceKey, index: u32, name: &str, offset: usize,
                output: &mut [u8])
                -> Result<FileResourceCall>

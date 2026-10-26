@@ -3,6 +3,7 @@ mod smoke;
 mod boot;
 mod docs;
 mod authority;
+mod resource_map;
 
 use std::{env,
           ffi::OsStr,
@@ -455,6 +456,10 @@ fn execute() -> Result<()>
     };
     match args.as_slice()
     {
+        [command, path] if command == "resource-map" =>
+        {
+            println!("{}", resource_map::inspect(Path::new(path))?);
+        }
         [command] if command == "build" =>
         {
             workspace.build()?;
@@ -534,6 +539,7 @@ fn execute() -> Result<()>
 fn help()
 {
     println!("  cargo xtask doc            Generate Rust library documentation in docs/api");
+    println!("  cargo xtask resource-map FILE  Inspect checked resource metadata as JSON");
     println!("System7 build tools\n\n  cargo xtask rebuild MANIFEST OUT  Rebuild a ResEdit \
               resource archive\n  cargo xtask build          Build System, Finder, applications \
               and boot ROM\n  cargo xtask image          Build a separate 500 MiB HFS-B disk and \

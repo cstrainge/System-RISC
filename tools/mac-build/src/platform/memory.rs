@@ -126,17 +126,17 @@ impl Definition
             framebuffer.checked_add(page - 1)
                        .map(|bytes| bytes / page * page)
                        .ok_or_else(|| error("platform display reservation overflows"))?;
-        let display_bytes = framebuffer_reservation.checked_mul(2).ok_or_else(|| {
-                                                                       error("platform display \
-                                                                              frontbuffer/\
-                                                                              tracking reservation \
-                                                                              overflows")
-                                                                   })?;
+        let display_bytes =
+            framebuffer_reservation.checked_mul(3).ok_or_else(|| {
+                                                       error("platform display \
+                                                              frontbuffer/tracking/backbuffer \
+                                                              reservation overflows")
+                                                   })?;
         if display_scratch.end - display_scratch.start < display_bytes
         {
             return Err(error(format!("platform display_scratch must cover the \
                                       {display_width}x{display_height} framebuffer and \
-                                      tracking raster ({display_bytes} bytes)")));
+                                      tracking raster and backbuffer ({display_bytes} bytes)")));
         }
         let tail = address("fdt_tail_bytes", &self.fdt_tail_bytes)?;
         if tail == 0 || !tail.is_multiple_of(page) || tail >= ram.end - ram.start
@@ -301,14 +301,16 @@ impl Checked
             writeln!(out, "__platform_{name}_START = {:#x};", region.start).unwrap();
             writeln!(out, "__platform_{name}_END = {:#x};", region.end).unwrap();
         }
-        for (name, value) in [("PAGE_BYTES", self.page_bytes),
-                              ("RAM_BASE", self.ram.start),
-                              ("MINIMUM_RAM_BYTES", self.ram.end - self.ram.start),
-                              ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
-                              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
-                              ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
-                              ("BOOT_STACK_BYTES", self.boot_stack_bytes),
-                              ("SYSTEM_HEAP_BYTES", self.system_heap_bytes)]
+        for (name, value) in
+            [("PAGE_BYTES", self.page_bytes),
+             ("RAM_BASE", self.ram.start),
+             ("MINIMUM_RAM_BYTES", self.ram.end - self.ram.start),
+             ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
+             ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
+             ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
+             ("BOOT_STACK_BYTES", self.boot_stack_bytes),
+             ("SYSTEM_HEAP_BYTES", self.system_heap_bytes)].into_iter()
+                                                           .chain(self.display_buffers())
         {
             writeln!(out, "__platform_{name} = {value:#x};").unwrap();
         }
@@ -318,30 +320,37 @@ impl Checked
     pub(super) fn system_constants(&self) -> String
     {
         let mut out = String::from("// Generated from the checked platform memory record.\n");
-        for (name, value) in
-            [("PAGE_BYTES", self.page_bytes),
-             ("MODULE_BASE", self.modules.start),
-             ("DISPLAY_FRONTBUFFER_BASE", self.display_scratch.start),
-             ("DISPLAY_TRACKING_BASE",
-              self.display_scratch.start
-              + (self.display_width * self.display_height * 4).div_ceil(self.page_bytes)
-                * self.page_bytes),
-             ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
-             ("DISPLAY_SCRATCH_BYTES", self.display_scratch.end - self.display_scratch.start),
-             ("MODULE_LIMIT", self.modules.end),
-             ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
-             ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
-             ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
-             ("APPLICATION_PRIMARY_LIMIT", self.definitions.start),
-             ("DEFINITION_BASE", self.definitions.start),
-             ("DEFINITION_LIMIT", self.definitions.end),
-             ("IMAGE_LIMIT", self.images.end)]
+        for (name, value) in [("PAGE_BYTES", self.page_bytes),
+                              ("MODULE_BASE", self.modules.start),
+                              ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
+                              ("DISPLAY_SCRATCH_BYTES",
+                               self.display_scratch.end - self.display_scratch.start),
+                              ("MODULE_LIMIT", self.modules.end),
+                              ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
+                              ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
+                              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
+                              ("APPLICATION_PRIMARY_LIMIT", self.definitions.start),
+                              ("DEFINITION_BASE", self.definitions.start),
+                              ("DEFINITION_LIMIT", self.definitions.end),
+                              ("IMAGE_LIMIT", self.images.end)].into_iter()
+                                                               .chain(self.display_buffers())
         {
             writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
         }
         out.push_str(application_region_source());
         writeln!(out, "pub const SYSTEM_HEAP_BYTES: usize = {:#x};",self.system_heap_bytes).unwrap();
         out
+    }
+
+    // Construction already proves that three page-aligned frames fit this
+    // reservation. Linker and resident constants consume this same record.
+    fn display_buffers(&self) -> [(&'static str, u64); 3]
+    {
+        let stride = (self.display_width * self.display_height * 4).div_ceil(self.page_bytes)
+                     * self.page_bytes;
+        [("DISPLAY_FRONTBUFFER_BASE", self.display_scratch.start),
+         ("DISPLAY_TRACKING_BASE", self.display_scratch.start + stride),
+         ("DISPLAY_BACKBUFFER_BASE", self.display_scratch.start + 2 * stride)]
     }
 
     pub(super) fn boot_constants(&self) -> String
@@ -479,15 +488,17 @@ mod tests
         assert!(rust.contains("MODULE_LIMIT: u64 = 0x87c00000;"));
         assert!(linker.contains("__platform_SYSTEM_HEAP_BYTES = 0x600000;"));
         assert!(rust.contains("SYSTEM_HEAP_BYTES: usize = 0x600000;"));
-        assert!(checked.boot_constants().contains("IMAGE_LIMIT: u64 = 0x86c56000;"));
-        assert!(linker.contains("__platform_DISPLAY_SCRATCH_START = 0x86c56000;"));
-        assert!(rust.contains("DISPLAY_SCRATCH_BASE: u64 = 0x86c56000;"));
-        assert!(rust.contains("DISPLAY_SCRATCH_BYTES: u64 = 0x3aa000;"));
-        assert!(rust.contains("DISPLAY_FRONTBUFFER_BASE: u64 = 0x86c56000;"));
-        assert!(rust.contains("DISPLAY_TRACKING_BASE: u64 = 0x86e2b000;"));
+        assert!(checked.boot_constants().contains("IMAGE_LIMIT: u64 = 0x86a81000;"));
+        assert!(linker.contains("__platform_DISPLAY_SCRATCH_START = 0x86a81000;"));
+        assert!(rust.contains("DISPLAY_SCRATCH_BASE: u64 = 0x86a81000;"));
+        assert!(rust.contains("DISPLAY_SCRATCH_BYTES: u64 = 0x57f000;"));
+        assert!(rust.contains("DISPLAY_FRONTBUFFER_BASE: u64 = 0x86a81000;"));
+        assert!(rust.contains("DISPLAY_TRACKING_BASE: u64 = 0x86c56000;"));
+        assert!(rust.contains("DISPLAY_BACKBUFFER_BASE: u64 = 0x86e2b000;"));
+        assert!(linker.contains("__platform_DISPLAY_BACKBUFFER_BASE = 0x86e2b000;"));
         assert!(checked.display_constants().contains("WIDTH: usize = 800;"));
         assert!(checked.display_constants().contains("HEIGHT: usize = 600;"));
-        assert!(checked.boot_constants().contains("(0x86c56000,0x87000000)"));
+        assert!(checked.boot_constants().contains("(0x86a81000,0x87000000)"));
         assert_eq!(checked.flash_base(), checked.flash.start);
         assert_eq!(checked.flash_bytes(), checked.flash.end - checked.flash.start);
     }

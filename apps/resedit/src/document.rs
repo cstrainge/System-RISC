@@ -107,18 +107,25 @@ pub fn export(system: &System<'_>, file: &ResourceFile<'_>, catalog: &CatalogInf
 {
     out.write_str("{\n\"archive\":true,\"name\":")?;
     json_string(out, catalog.name())?;
+    out.write_str(",\"resource_format\":")?;
+    json_string(out, match file.format()?
+    {
+        mac_toolbox::resources::ResourceForkFormat::Classic => "classic",
+        mac_toolbox::resources::ResourceForkFormat::SystemRisc => "system_risc"
+    })?;
     out.write_str(",\"file_type\":")?;
     fourcc(out, catalog.file_type.as_bytes())?;
     out.write_str(",\"creator\":")?;
     fourcc(out, catalog.creator.as_bytes())?;
     write!(out,
            ",\"file_flags\":{},\"created\":{},\"modified\":{},\"role\":\"application\",\"\
-            abi_version\":6,\"load_base\":\"0x83000000\",\"load_limit\":\"0x84000000\",\"\
+            abi_version\":{},\"load_base\":\"0x83000000\",\"load_limit\":\"0x84000000\",\"\
             description\":\"Lossless ResEdit \
             archive\",\"data_fork\":{{\"format\":\"hex\",\"hex\":\"",
            catalog.finder_flags().bits(),
            catalog.created.mac_microseconds().ok_or(mac_toolbox::Error::BadAbi)?,
-           catalog.modified.mac_microseconds().ok_or(mac_toolbox::Error::BadAbi)?)?;
+           catalog.modified.mac_microseconds().ok_or(mac_toolbox::Error::BadAbi)?,
+           mac_toolbox::abi::ABI_VERSION)?;
     let mut data = system.files().open(catalog.volume, catalog.id, Fork::Data)?;
     let mut buffer = [0; 512];
     let mut remaining = data.len()?;

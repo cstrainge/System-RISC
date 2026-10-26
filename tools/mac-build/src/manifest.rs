@@ -16,31 +16,41 @@ pub struct Manifest
     /// Lossless resource archive: preserve every supplied resource verbatim.
     /// Build manifests keep automatic NABI/RV64/vers generation.
     #[serde(default)]
-    pub archive:       bool,
+    pub archive:         bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_format: Option<ResourceFormat>,
     #[serde(default)]
-    pub data_fork:     Option<Payload>,
+    pub data_fork:       Option<Payload>,
     #[serde(default)]
-    pub file_flags:    u16,
+    pub file_flags:      u16,
     #[serde(default)]
     /// Microseconds since 1904-01-01, matching native catalog metadata.
-    pub created:       u64,
+    pub created:         u64,
     #[serde(default)]
-    pub modified:      u64,
-    pub name:          String,
+    pub modified:        u64,
+    pub name:            String,
     /// Cargo executable name, when the Macintosh filename contains spaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binary_name:   Option<String>,
-    pub file_type:     String,
-    pub creator:       String,
-    pub role:          String,
-    pub abi_version:   u32,
-    pub load_base:     String,
-    pub load_limit:    String,
+    pub binary_name:     Option<String>,
+    pub file_type:       String,
+    pub creator:         String,
+    pub role:            String,
+    pub abi_version:     u32,
+    pub load_base:       String,
+    pub load_limit:      String,
     #[serde(skip)]
-    pub cargo_version: String,
-    pub description:   String,
+    pub cargo_version:   String,
+    pub description:     String,
     #[serde(default)]
-    pub resources:     Vec<Definition>
+    pub resources:       Vec<Definition>
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceFormat
+{
+    Classic,
+    SystemRisc
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -32,11 +32,23 @@ fn tool(root: &std::path::Path, home: &std::path::Path, name: &str, args: &[&str
 #[test]
 fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
 {
+    browser_roundtrip(false);
+}
+#[test]
+fn native_file_browser_and_lossless_export_preserve_fork_encoding()
+{
+    browser_roundtrip(true);
+}
+fn browser_roundtrip(native_fork: bool)
+{
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
-    let dir = root.join(format!("results/system7/resedit-host-{}", std::process::id()));
+    let dir =
+        root.join(format!("results/system7/resedit-host-{}-{native_fork}", std::process::id()));
     fs::create_dir_all(dir.join("hfs-state")).unwrap();
     let disk = dir.join("disk.hfs");
-    fs::File::create(&disk).unwrap().set_len(8 * 1024 * 1024).unwrap();
+    fs::File::create(&disk).unwrap()
+                           .set_len(if native_fork { 48 } else { 8 } * 1024 * 1024)
+                           .unwrap();
     let mut expected = Vec::new();
     for (kind, id, name, attributes, data) in
         [(*b"CODE", i16::MIN, None, 0xff, vec![0x4e, 0x75, 0, 255]),
@@ -73,7 +85,11 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
          ([0, 0x80, 0xff, b' '], i16::MAX, Some(b"\"\\\r\n".to_vec()), 0x80, (0..=255).collect()),
          (*b"ICON", 128, None, 0, vec![255; 128]),
          (*b"cicn", 128, None, 0, vec![0; 8]),
-         (*b"DATA", 100, None, 0, vec![0xa5; 1024 * 1024 + 123])]
+         (*b"DATA",
+          100,
+          None,
+          0,
+          vec![0xa5; if native_fork { (1 << 24) + 123 } else { 1024 * 1024 + 123 }])]
     {
         expected.push(Resource { kind,
                                  id,
@@ -109,7 +125,14 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
                              created:   3_875_171_696,
                              modified:  3_875_171_699,
                              data:      (0..=255).collect(),
-                             resources: resource::encode(&expected).unwrap() };
+                             resources: if native_fork
+                                        {
+                                            resource::encode_native(&expected)
+                                        }
+                                        else
+                                        {
+                                            resource::encode(&expected)
+                                        }.unwrap() };
     let home = dir.join("hfs-state");
     tool(&root, &home, "hformat", &["-l", "ResEdit Test", disk.to_str().unwrap()]);
     tool(&root, &home, "hmount", &[disk.to_str().unwrap()]);
@@ -133,6 +156,7 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
     let (_,activity)=mac_system::testing::with_file_disk(&disk,true,Default::default(),|services| {
         let system=unsafe {System::from_raw(services)}.unwrap();let files=system.files();let catalog=files.lookup(system.files().volume_at(0).unwrap().id,mac_toolbox::Cnid(2),"Sample").unwrap();
         let a=system.resources().open_file(system.files().volume_at(0).unwrap().id,catalog.id).unwrap();let b=system.resources().open_file(system.files().volume_at(0).unwrap().id,catalog.id).unwrap();
+        assert_eq!(a.format().unwrap(), if native_fork { mac_toolbox::resources::ResourceForkFormat::SystemRisc } else { mac_toolbox::resources::ResourceForkFormat::Classic });
         assert_eq!(a.type_count().unwrap(),type_count);
         let mut actual=Vec::new();
         for t in 0..a.type_count().unwrap() {let kind=a.type_at(t).unwrap();for i in 0..a.count(kind).unwrap() {
@@ -147,8 +171,14 @@ fn file_browser_and_lossless_export_preserve_all_resources_and_both_forks()
         let mut json=String::new();document::export(&system,&a,&catalog,&mut json).unwrap();fs::write(dir.join("resources.json"),&json).unwrap();
         let manifest=mac_build::Manifest::read(&dir.join("resources.json")).unwrap();let mut rebuilt=manifest.compile_resources(&dir.join("resources.json"),b"must not replace code", None).unwrap();sort(&mut rebuilt);assert_eq!(rebuilt,expected);
         mac_build::package::rebuild(&dir.join("resources.json"),&dir.join("rebuilt")).unwrap();let output=macbinary::decode(&fs::read(dir.join("rebuilt/Sample.bin")).unwrap()).unwrap();
+        assert_eq!(output.resources, original.resources);
         assert_eq!(output.data,original.data);assert_eq!(output.file_type,original.file_type);assert_eq!(output.creator,original.creator);assert_eq!(output.flags,original.flags);assert_eq!(output.created,original.created);assert_eq!(output.modified,original.modified);let mut decoded=resource::decode(&output.resources).unwrap();sort(&mut decoded);assert_eq!(decoded,expected);
         let mut archive:serde_json::Value=serde_json::from_slice(&fs::read(dir.join("resources.json")).unwrap()).unwrap();
+        assert_eq!(archive["resource_format"], if native_fork { "system_risc" } else { "classic" });
+        let mut incomplete = archive.clone();incomplete.as_object_mut().unwrap().remove("resource_format");
+        let missing_format=dir.join("missing-format.json");fs::write(&missing_format,serde_json::to_vec(&incomplete).unwrap()).unwrap();
+        let error=mac_build::package::rebuild(&missing_format,&dir.join("refused")).unwrap_err();
+        assert!(error.to_string().contains("requires resource_format"), "{error}");
         archive["name"]=serde_json::json!("A/B\\C");let strange=dir.join("strange-name.json");fs::write(&strange,serde_json::to_vec(&archive).unwrap()).unwrap();
         let rebuilt_dir=dir.join("strange-name");let report=mac_build::package::rebuild(&strange,&rebuilt_dir).unwrap();let host_path=PathBuf::from(report["file"].as_str().unwrap());assert_eq!(host_path.parent().unwrap(),rebuilt_dir);
         let rebuilt=macbinary::decode(&fs::read(host_path).unwrap()).unwrap();assert_eq!(rebuilt.name,b"A/B\\C");assert_eq!(rebuilt.data,original.data);let mut resources=resource::decode(&rebuilt.resources).unwrap();sort(&mut resources);assert_eq!(resources,expected);
@@ -386,10 +416,15 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
     assert!(!rejected.status.success());
     assert!(!output.join("must-not-exist.json").exists());
     let original=macbinary::decode(&fs::read(mac_build::paths::dist_dir(&root).join("QuickDraw Test.bin")).unwrap()).unwrap();
+    assert_eq!(resource::encoding(&original.resources, original.resources.len() as u64).unwrap(),
+               resource::Encoding::Native,
+               "mac-build must package native applications as RRF1");
     mac_build::package::rebuild(&output.join("resources.json"), &output.join("rebuilt")).unwrap();
     let rebuilt =
         macbinary::decode(&fs::read(output.join("rebuilt/QuickDraw Test.bin")).unwrap()).unwrap();
     assert_eq!(original.data, rebuilt.data);
+    assert_eq!(original.resources, rebuilt.resources,
+               "live JSON export must retain the native fork encoding and every resource byte");
     assert_eq!(resource::decode(&original.resources).unwrap(),
                resource::decode(&rebuilt.resources).unwrap());
     assert_eq!(original.name, rebuilt.name);
@@ -419,8 +454,9 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
     for (frame_name, package, scope, id, row, top) in
         [("system-open", "Panic Test", mac_abi::resources::APPLICATION, 128, 1, 114),
          ("system-open", "QuickDraw Test", mac_abi::resources::APPLICATION, 128, 2, 114),
-         ("system-open", "Res Edit", mac_abi::resources::APPLICATION, 128, 3, 114),
-         ("system-open", "Text Edit", mac_abi::resources::APPLICATION, 128, 4, 114),
+         ("system-open", "Reactor Room", mac_abi::resources::APPLICATION, 128, 3, 114),
+         ("system-open", "Res Edit", mac_abi::resources::APPLICATION, 128, 4, 114),
+         ("system-open", "Text Edit", mac_abi::resources::APPLICATION, 128, 5, 114),
          ("system-save-as", "System", mac_abi::resources::SYSTEM, -4000, 3, 110)]
     {
         let mut expected = vec![0xffffffu32; 16 * 16];
@@ -784,7 +820,11 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                                  .unwrap();
         assert!(record.ends_with("mode=disassembly"),
                 "{kind:?} did not use native code viewer: {record}");
-        let resource = system_resources.iter().find(|r| r.kind == kind && r.id == 0).unwrap();
+        let id = record.split_whitespace()
+                       .find_map(|field| field.strip_prefix("id="))
+                       .and_then(|id| id.parse::<i16>().ok())
+                       .expect("captured resource selection must name its signed ID");
+        let resource = system_resources.iter().find(|r| r.kind == kind && r.id == id).unwrap();
         let native =
             mac_formats::code::CodeRegistry::new().prepare(resource,
                                                            0,
@@ -808,8 +848,12 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
             .collect();
         let expected: Vec<_> =
             expected.into_iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, p as u8]).collect();
-        assert_eq!(actual, expected,
-                   "{kind:?} disassembly differs from initialized executable bytes");
+        let first = actual.chunks_exact(3)
+                          .zip(expected.chunks_exact(3))
+                          .position(|(actual, expected)| actual != expected);
+        assert!(actual == expected,
+                "{kind:?} ID {id} disassembly differs from initialized executable bytes; first \
+                 differing pixel {first:?}");
     }
     fs::write(root.join("results/system7/resedit-checks.json"),serde_json::to_vec_pretty(&serde_json::json!({"passed":true,"running_app":true,"lossless_export":true,"icon_pixels":3*128*128,"radio_pixels":"CDEF0 press leave cancel select","scroll":{"samples":timings.len(),"median_ns":median_ns,"worst_ns":worst_ns,"scope":"one-row key fill plus resident commit"},"capture":report})).unwrap()).unwrap();
 }

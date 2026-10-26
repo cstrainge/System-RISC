@@ -51,14 +51,16 @@ struct Type
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entry<'a>
 {
-    pub number:     usize,
-    pub kind:       [u8; 4],
-    pub id:         i16,
-    pub attributes: u8,
-    pub name:       Option<&'a [u8]>,
-    pub offset:     u64,
-    pub data_end:   u64,
-    pub length:     Option<u32>
+    /// Position of this validated reference record within the fork.
+    pub reference_offset: u64,
+    pub number:           usize,
+    pub kind:             [u8; 4],
+    pub id:               i16,
+    pub attributes:       u8,
+    pub name:             Option<&'a [u8]>,
+    pub offset:           u64,
+    pub data_end:         u64,
+    pub length:           Option<u32>
 }
 pub struct Index
 {
@@ -77,11 +79,17 @@ fn reserve<T>(values: &mut Vec<T>, count: usize) -> Result<()>
 }
 impl Index
 {
+    pub fn encoding(&self) -> super::Encoding
+    {
+        self.layout.header.encoding
+    }
+
     /// A zero-length fork has no resources. This does not accept a malformed
     /// nonempty fork; those must pass MapLayout/decode normally.
     pub fn empty() -> Self
     {
-        Self { layout:  MapLayout { header:         Header { data:        0,
+        Self { layout:  MapLayout { header:         Header { encoding:    super::Encoding::Classic,
+                                                             data:        0,
                                                              map:         0,
                                                              data_length: 0,
                                                              map_length:  0 },
@@ -100,7 +108,8 @@ impl Index
         {
             return Err(Error::Malformed("resource map length mismatch"));
         }
-        let entries = stream::locations(&map, layout.header.data_length, layout.resource_limit)?;
+        let entries = stream::locations(&map, layout.header.data_length, layout.resource_limit,
+                                        layout.header.encoding)?;
         let mut by_type = Vec::new();
         let mut by_key = Vec::new();
         let mut lengths = Vec::new();
@@ -164,7 +173,8 @@ impl Index
     pub fn entry(&self, number: usize) -> Option<Entry<'_>>
     {
         let entry = self.entries.get(number)?;
-        Some(Entry { number,
+        Some(Entry { reference_offset: self.layout.header.map + entry.reference as u64,
+                     number,
                      kind: entry.kind,
                      id: entry.id,
                      attributes: entry.attributes,

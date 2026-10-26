@@ -168,13 +168,15 @@ fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alterat
     {
         "large-fork" =>
         {
-            // Grow actual resident payloads as well as the fork's unused tail.
+            // Grow a real payload rather than appending bytes outside RRF1's
+            // declared regions. Native maps must end exactly at EOF.
             // ROM selects executable resources; System must load this additional
             // resource within its explicit selected-payload memory budget.
             // A fixed fixture increment is not a production quota. Startup now
             // admits against available resident backing, so this test must not
             // derive its payload from the unrelated ordinary-app decode cap.
-            let extra = 64 * 1024;
+            let extra =
+                (64 * 1024).max((5 * 1024 * 1024 + 17usize).saturating_sub(file.resources.len()));
             resources.push(resource::Resource { kind:       *b"TEST",
                                                 id:         32760,
                                                 name:
@@ -208,17 +210,7 @@ fn altered_system(workspace: &Workspace, directory: &Path, image: &Path, alterat
         }
         _ => return Err(error("unknown System alteration"))
     }
-    file.resources = resource::encode(&resources)?;
-    if alteration == "large-fork"
-    {
-        // Never truncate a growing System fork while constructing padding.
-        let padded_length = file.resources
-                                .len()
-                                .checked_add(17)
-                                .ok_or_else(|| error("large-fork fixture length overflow"))?
-                                .max(5 * 1024 * 1024 + 17);
-        file.resources.resize(padded_length, 0x77);
-    }
+    file.resources = resource::encode_native(&resources)?;
     let _ = directory;
     disk::edit(image, |volume| {
         let folder = volume.blessed_folder()?.id;
