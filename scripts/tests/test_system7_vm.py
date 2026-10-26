@@ -47,7 +47,7 @@ class LauncherTests(unittest.TestCase):
                 vm.launch(state, 'cocoa')
             args = json.loads((state / 'command.json').read_text())
             self.assertEqual(args[0], 'qemu-system-riscv64')
-            self.assertEqual(args[args.index('-display') + 1], 'cocoa,zoom-to-fit=on')
+            self.assertEqual(args[args.index('-display') + 1], 'cocoa,zoom-to-fit=off,scale=2')
             self.assertNotIn('GDK_BACKEND', process.call_args.kwargs['env'])
             self.assertNotIn('WSLENV', process.call_args.kwargs['env'])
 

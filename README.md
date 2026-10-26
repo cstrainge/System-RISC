@@ -107,7 +107,9 @@ backend. Put `python`, `cargo`, `qemu-system-riscv64`, `qemu-img` and
 `llvm-objcopy` on `PATH`; Homebrew and MacPorts are optional. Rust's `llvm-tools`
 component includes a compatible `llvm-objcopy`. The launcher uses the invoking
 Python interpreter for build and saved-file preservation helpers. Cocoa handles
-native window scaling and absolute tablet input; `--frontend headless` retains
+native window scaling and absolute tablet input. The launcher requests fixed
+2× zoom using the [tracked QEMU Cocoa scale patch](scripts/qemu/README.md);
+apply it when building standalone QEMU. `--frontend headless` retains
 the same disk, host companion and QMP services without opening a window.
 
 Normal startup initializes `System7/transfer` on first use and exposes it as a

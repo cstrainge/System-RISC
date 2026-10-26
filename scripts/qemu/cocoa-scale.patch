@@ -1,0 +1,81 @@
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -101,6 +101,7 @@
+ static int left_command_key_enabled = 1;
+ static bool swap_opt_cmd;
+
++static double window_scale = 1.0;
+ static CGInterpolationQuality zoom_interpolation = kCGInterpolationNone;
+ static NSTextField *pauseLabel;
+
+@@ -627,7 +628,8 @@
+     [[self window] setContentAspectRatio:NSMakeSize(screen.width, screen.height)];
+
+     if (!([[self window] styleMask] & NSWindowStyleMaskResizable)) {
+-        [[self window] setContentSize:NSMakeSize(screen.width, screen.height)];
++        [[self window] setContentSize:NSMakeSize(screen.width * window_scale,
++                                               screen.height * window_scale)];
+         [[self window] center];
+     } else if ([[self window] styleMask] & NSWindowStyleMaskFullScreen) {
+         [[self window] setContentSize:[self fixAspectRatio:[self screenSafeAreaSize]]];
+@@ -2093,6 +2095,14 @@
+
+     COCOA_DEBUG("qemu_cocoa: cocoa_display_init\n");
+
++    if (opts->u.cocoa.has_scale) {
++        window_scale = opts->u.cocoa.scale;
++        if (!(window_scale >= 1.0 && window_scale <= 4.0)) {
++            error_report("cocoa: scale must be between 1 and 4");
++            exit(1);
++        }
++    }
++
+     // Pull this console process up to being a fully-fledged graphical
+     // app with a menubar and Dock icon
+     ProcessSerialNumber psn = { 0, kCurrentProcess };
+diff --git a/qapi/ui.json b/qapi/ui.json
+--- a/qapi/ui.json
++++ b/qapi/ui.json
+@@ -1443,6 +1443,9 @@
+ # @zoom-interpolation: Apply interpolation to smooth output when
+ #     zoom-to-fit is enabled.  Defaults to "off".  (Since 9.0)
+ #
++# @scale: Guest-to-window scale when zoom-to-fit is off.  Must be
++#     between 1 and 4.  Defaults to 1.0.  System RISC local extension.
++#
+ # Since: 7.0
+ ##
+ { 'struct': 'DisplayCocoa',
+@@ -1451,7 +1454,8 @@
+       '*full-grab': 'bool',
+       '*swap-opt-cmd': 'bool',
+       '*zoom-to-fit': 'bool',
+-      '*zoom-interpolation': 'bool'
++      '*zoom-interpolation': 'bool',
++      '*scale': 'number'
+   } }
+
+ ##
+diff --git a/qemu-options.hx b/qemu-options.hx
+--- a/qemu-options.hx
++++ b/qemu-options.hx
+@@ -2114,7 +2114,7 @@
+ #if defined(CONFIG_COCOA)
+     "-display cocoa[,full-grab=on|off][,swap-opt-cmd=on|off]\n"
+     "              [,show-cursor=on|off][,left-command-key=on|off]\n"
+-    "              [,full-screen=on|off][,zoom-to-fit=on|off]\n"
++    "              [,full-screen=on|off][,zoom-to-fit=on|off][,scale=<1..4>]\n"
+ #endif
+ #if defined(CONFIG_OPENGL)
+     "-display egl-headless[,rendernode=<file>]\n"
+@@ -2235,6 +2235,9 @@
+
+         ``zoom-to-fit=on|off`` : Expand video output to the window size,
+                                  defaults to "off"
++
++        ``scale=<1..4>`` : Guest-to-window scale with zoom-to-fit off,
++                          defaults to 1.0 (System RISC local extension).
+
+     ``egl-headless[,rendernode=<file>]``
+         Offload all OpenGL operations to a local DRI device. For any

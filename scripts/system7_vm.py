@@ -89,9 +89,10 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                else f'unix:{socket_path},server=on,wait=off')
     # GTK keeps host absolute input and the 2x guest viewport in the same space.
     # Cocoa owns native macOS window/input scaling; GTK options do not apply.
+    # Its fixed scale option is provided by scripts/qemu/cocoa-scale.patch.
     display = {'native': 'gtk,gl=on,zoom-to-fit=off,scale=2,show-menubar=off',
                'gtk': 'gtk,gl=on,zoom-to-fit=off,scale=2', 'headless': 'none',
-               'cocoa': 'cocoa,zoom-to-fit=on',
+               'cocoa': 'cocoa,zoom-to-fit=off,scale=2',
                'native-headless': 'none'}[frontend]
     serial = state / 'serial.log'
     serial.write_text('')
