@@ -371,28 +371,26 @@ fn check_abandoned(system: &System<'_>, native: VolumeId, host: VolumeId, target
                                       handle: stale.0,
                                       ..Default::default() };
     require(system.client().file_transfer(&mut call, &[]) == Err(Error::NotFound))?;
-    let snapshot =
-        system.inspection().snapshot(mac_toolbox::inspection::Scope::Own).map_err(|e| e.cause)?;
-    let ledger = snapshot.ledger(0).map_err(|e| e.cause)?;
-    let mut transfer_pool = None;
-    for at in 0..ledger.len()
-    {
-        if ledger.at(at).map_err(|e| e.cause)?.kind == *b"FTXN"
+    let transfer_pool = super::inspection_read::own(system, |ledger| {
+        let mut transfer_pool = None;
+        for at in 0..ledger.len()
         {
-            transfer_pool = Some(at);
-            break;
+            if ledger.at(at).map_err(|e| e.cause)?.kind == *b"FTXN"
+            {
+                transfer_pool = Some(at);
+                break;
+            }
         }
-    }
+        Ok(transfer_pool)
+    })?;
     let transfer_pool = transfer_pool.ok_or(Error::BadAbi)?;
     for _ in 0..10000
     {
         // Invalidating an ID is not an undo receipt. Observe the same public
         // ledger that holds the process death barrier until actual completion.
-        let snapshot = system.inspection()
-                             .snapshot(mac_toolbox::inspection::Scope::Own)
-                             .map_err(|e| e.cause)?;
-        let pool =
-            snapshot.ledger(0).map_err(|e| e.cause)?.at(transfer_pool).map_err(|e| e.cause)?;
+        let pool = super::inspection_read::own(system, |ledger| {
+            ledger.at(transfer_pool).map_err(|e| e.cause)
+        })?;
         if pool.pending == 0
         {
             require(files.lookup(host, target, source.name()) == Err(Error::NotFound))?;

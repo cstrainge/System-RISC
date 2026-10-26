@@ -38,15 +38,17 @@ pub(super) fn needs_cleanup() -> bool
 }
 pub(super) struct Stream
 {
-    pub owner:      u64,
-    pub volume:     u32,
-    pub parent:     u32,
-    pub expected:   u32,
-    pub authority:  super::subject::Authority,
-    pub when:       u64,
-    pub name:       Vec<u8>,
-    pub comparison: Vec<u8>,
-    pub progress:   spinning_top::Spinlock<Progress>
+    pub owner:             u64,
+    pub volume:            u32,
+    pub parent:            u32,
+    pub expected:          u32,
+    pub authority:         super::subject::Authority,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) io_subject: Option<crate::drivers::jobs::subjects::Subject>,
+    pub when:              u64,
+    pub name:              Vec<u8>,
+    pub comparison:        Vec<u8>,
+    pub progress:          spinning_top::Spinlock<Progress>
 }
 pub(super) struct Progress
 {
@@ -62,6 +64,12 @@ impl super::objects::Payload for Stream
     type Storage = crate::toolbox::files::objects::storage::Native<Self>;
 
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FSWR");
+
+    #[cfg(target_arch = "riscv64")]
+    fn io_subject(&self) -> Option<&crate::drivers::jobs::subjects::Subject>
+    {
+        self.io_subject.as_ref()
+    }
 
     fn cleanup_pending(&self) -> bool
     {
@@ -247,7 +255,7 @@ impl Manager
             }
             self.streams.reserve().map_err(|_| NO_MEMORY)?;
             let handle = self.streams
-                             .insert_authorized(authority, Stream { owner:owner.label(),
+                             .insert_authorized(authority, Stream { #[cfg(target_arch = "riscv64")] io_subject: None, owner:owner.label(),
                                               authority: authority.clone(),
                                               volume: call.volume,
                                               parent: call.parent,

@@ -35,7 +35,7 @@ impl Queue
             let result = operation(&mut core);
             let signal = u8::from(!core.ready.is_empty()) * READY
                          | u8::from(!core.notices.is_empty()) * NOTICE
-                         | u8::from(core.unreported != 0) * FAILURE;
+                         | u8::from(core.unreported != 0 || core.records.has_failures()) * FAILURE;
             if self.signal.load(Ordering::Relaxed) != signal
             {
                 self.signal.store(signal, Ordering::Release);
@@ -49,9 +49,104 @@ impl Queue
         self.signal.load(Ordering::Acquire) != 0
     }
 
-    pub fn submit(&self, owner: Owner, work: Work) -> Result<u32, SubmissionError>
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn submit(&self, subject: &subjects::Subject, owner: Owner, work: Work)
+                         -> Result<mac_object_table::projected::Publication, SubmissionError>
     {
-        self.access(|core| core.submit(owner, work))
+        self.access(|core| {
+                if !core.records.prepared()
+                {
+                    let kinds = crate::toolbox::handles::registry(|registry| {
+                                    Ok((registry.get(crate::toolbox::handles::KindCode(*b"DJOB"))?,
+                                        registry.get(crate::toolbox::handles::KindCode(*b"DJST"))?))
+                                }).map_err(|error| error.status())
+                                  .and_then(|result| {
+                                      result.map_err(|error| {
+                                                crate::toolbox::handles::registry_status(&error)
+                                            })
+                                  });
+                    let kinds = match kinds
+                    {
+                        Ok(kinds) => kinds,
+                        Err(status) =>
+                        {
+                            return Err(SubmissionError { status,
+                                                         work });
+                        }
+                    };
+                    if let Err(status) = core.records.prepare(kinds)
+                    {
+                        return Err(SubmissionError { status,
+                                                     work });
+                    }
+                }
+                core.submit(subject, owner, work)
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn submit(&self, owner: Owner, work: Work) -> Result<u32, SubmissionError>
+    {
+        self.access(|core| {
+                let subject = match tests::subject(core, owner)
+                {
+                    Ok(subject) => subject,
+                    Err(status) =>
+                    {
+                        return Err(SubmissionError { status,
+                                                     work });
+                    }
+                };
+                core.submit(&subject, owner, work).map(mac_object_table::projected::Publication::id)
+            })
+    }
+
+    pub(crate) fn release(&self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
+                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        self.access(|core| core.release(ticket, storage))
+    }
+
+    pub(crate) fn take_completion(&self, owner: Owner,
+                                  receipt: mac_object_table::projected::CompletionKey)
+                                  -> Result<Option<Completed>, Status>
+    {
+        self.access(|core| core.take(owner, records::Access::Completion(receipt)))
+    }
+
+    pub(crate) fn completed_waiter_completion(&self, owner: Owner,
+                                              receipt: mac_object_table::projected::CompletionKey)
+                                              -> Result<Option<u64>, Status>
+    {
+        self.access(|core| core.completed_waiter(owner, records::Access::Completion(receipt)))
+    }
+
+    pub(crate) fn cancel_completion(&self, owner: Owner,
+                                    receipt: mac_object_table::projected::CompletionKey)
+                                    -> Result<(), Status>
+    {
+        self.access(|core| core.cancel(owner, records::Access::Completion(receipt)))
+    }
+
+    pub(crate) fn discard_completion(&self, owner: Owner,
+                                     receipt: mac_object_table::projected::CompletionKey)
+                                     -> Result<(), Status>
+    {
+        self.access(|core| core.discard(owner, records::Access::Completion(receipt)))
+    }
+
+    pub(crate) fn dispatch_completion(&self, owner: Owner,
+                                      receipt: mac_object_table::projected::CompletionKey)
+                                      -> Result<Option<Dispatch<'_>>, Status>
+    {
+        self.access(|core| core.dispatch_for(owner, records::Access::Completion(receipt)))
+            .map(|node| {
+                node.map(|node| {
+                        Dispatch { queue:       self,
+                                   node:        Some(node),
+                                   in_callback: false }
+                    })
+            })
     }
 
     pub fn pending(&self, owner: Owner, id: u32) -> Result<bool, Status>
@@ -76,7 +171,7 @@ impl Queue
 
     pub fn completed_waiter(&self, owner: Owner, id: u32) -> Result<Option<u64>, Status>
     {
-        self.access(|core| core.completed_waiter(owner, id))
+        self.access(|core| core.completed_waiter(owner, id.into()))
     }
 
     pub fn next_dispatch(&self) -> Option<Dispatch<'_>>
@@ -94,14 +189,15 @@ impl Queue
 
     pub fn dispatch_for(&self, owner: Owner, id: u32) -> Result<Option<Dispatch<'_>>, Status>
     {
-        self.access(|core| core.dispatch_for(owner, id)).map(|node| {
-                                                            node.map(|node| {
-                                                                    Dispatch { queue:       self,
-                                                                               node:
-                                                                                   Some(node),
-                                                                               in_callback: false }
-                                                                })
-                                                        })
+        self.access(|core| core.dispatch_for(owner, id.into())).map(|node| {
+                                                                   node.map(|node| {
+                                                                       Dispatch { queue:       self,
+                                                                                  node:
+                                                                                      Some(node),
+                                                                                  in_callback:
+                                                                                      false }
+                                                                   })
+                                                               })
     }
 
     pub fn finish<'q>(&self, mut dispatch: Dispatch<'q>)
@@ -152,22 +248,28 @@ impl Queue
 
     pub fn take(&self, owner: Owner, id: u32) -> Result<Option<Completed>, Status>
     {
-        self.access(|core| core.take(owner, id))
+        self.access(|core| core.take(owner, id.into()))
     }
 
     pub fn cancel(&self, owner: Owner, id: u32) -> Result<(), Status>
     {
-        self.access(|core| core.cancel(owner, id))
+        self.access(|core| core.cancel(owner, id.into()))
     }
 
     pub fn discard(&self, owner: Owner, id: u32) -> Result<(), Status>
     {
-        self.access(|core| core.discard(owner, id))
+        self.access(|core| core.discard(owner, id.into()))
     }
 
     pub fn discard_owner(&self, owner: Owner)
     {
         self.access(|core| core.discard_owner(owner));
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_access<R>(&self, operation: impl FnOnce(&mut Core) -> R) -> R
+    {
+        self.access(operation)
     }
 
     #[cfg(test)]

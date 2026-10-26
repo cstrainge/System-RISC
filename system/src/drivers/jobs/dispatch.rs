@@ -9,7 +9,9 @@ pub enum ReturnCause
     Interrupted,
     MissingOrForeign,
     RejectedCompletion,
-    MissingPayload
+    MissingPayload,
+    CleanupRefused(mac_object_table::domain::PoolError),
+    CleanupStoreMissing
 }
 impl fmt::Display for ReturnCause
 {
@@ -37,6 +39,17 @@ impl fmt::Display for ReturnCause
                         {
                             "dispatch has no admitted payload; job remains quarantined rather than \
                              acknowledging completion"
+                        }
+                        Self::CleanupStoreMissing =>
+                        {
+                            "driver job cleanup storage is unavailable; exact cleanup ticket \
+                             remains retained for retry"
+                        }
+                        Self::CleanupRefused(cause) =>
+                        {
+                            return write!(f,
+                                          "driver job cleanup refused: {cause}; exact cleanup \
+                                           ticket and payload remain retained for retry");
                         }
                     })
     }

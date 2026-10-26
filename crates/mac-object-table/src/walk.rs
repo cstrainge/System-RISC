@@ -108,6 +108,7 @@ fn run<C: ?Sized, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owne
             crate::completion::Retry::Complete(record) =>
             {
                 drop(record);
+                owner.notify_retirement();
                 report.released += 1;
             }
             crate::completion::Retry::Retained(fault)
@@ -138,6 +139,7 @@ fn run<C: ?Sized, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owne
             crate::completion::Routed::Complete(record) =>
             {
                 drop(record);
+                owner.notify_retirement();
                 report.released += 1;
                 continue;
             }

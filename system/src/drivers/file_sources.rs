@@ -44,14 +44,14 @@ pub struct Sources<B>
 {
     entries: Table<Source<B>>
 }
-impl<B: Copy> Default for Sources<B>
+impl<B: Clone> Default for Sources<B>
 {
     fn default() -> Self
     {
         Self::new()
     }
 }
-impl<B: Copy> Sources<B>
+impl<B: Clone> Sources<B>
 {
     pub const fn new() -> Self
     {
@@ -150,7 +150,7 @@ impl<B: Copy> Sources<B>
         }
         let length =
             entry.length.checked_sub(offset).ok_or(BAD_ARGUMENT)?.min(capacity as u64) as usize;
-        let read = Read { backing: entry.backing,
+        let read = Read { backing: entry.backing.clone(),
                           offset,
                           length };
         self.entries.get_mut(source).ok_or(NOT_FOUND)?.phase = Phase::Reading(ticket);
@@ -189,7 +189,7 @@ impl<B: Copy> Sources<B>
         {
             return Err(SERVICE_BUSY);
         }
-        let backing = entry.backing;
+        let backing = entry.backing.clone();
         self.entries.get_mut(source).ok_or(NOT_FOUND)?.phase = Phase::Closing;
         Ok(backing)
     }

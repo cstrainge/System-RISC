@@ -2,6 +2,8 @@
 #![cfg(target_arch = "riscv64")]
 //! Canonical native mount assertions, compiled into the private userspace app.
 use mac_toolbox::{Error, System, VolumeId, files::Filesystem};
+#[path = "support/inspection_read.rs"]
+mod inspection_read;
 #[path = "transfer_cases.rs"]
 mod transfer_cases;
 pub fn check_disconnect(system: &System<'_>, source: bool) -> Result<(), Error>
@@ -668,13 +670,38 @@ fn expect_path(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid, e
     require(&text.bytes[..text.len] == expected.as_bytes())
 }
 
+// These are ordinary own-domain reads through the public SDK. No inspector
+// grant, private manager access or separate test-only accounting path.
+fn io_roots(system: &System<'_>) -> Result<u64, Error>
+{
+    inspection_read::own(system, |ledger| {
+        let mut roots = 0;
+        for index in 0..ledger.len()
+        {
+            let pool = ledger.at(index).map_err(|e| e.cause)?;
+            if pool.kind == *b"DIOP"
+            {
+                roots = pool.live;
+                require(pool.pending == 0)?;
+            }
+            if pool.kind == *b"DJOB"
+            {
+                require(pool.live == 0 && pool.pending == 0 && pool.scoped_children == 0)?;
+            }
+        }
+        Ok(roots)
+    })
+}
+
 fn check_forks(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid)
                -> Result<(), Error>
 {
     use mac_toolbox::files::{Fork, SeekFrom};
     let files = system.files();
+    let roots_before = io_roots(system)?;
     let mut data = files.open(volume, node, Fork::Data)?;
     let mut resource = files.open(volume, node, Fork::Resource)?;
+    require(io_roots(system)? == roots_before + 2)?;
     require(data.len()? == 131089 && resource.len()? == 70003)?;
     require(files.unmount(volume) == Err(Error::ServiceBusy))?;
     require(data.read(&mut [])? == 0 && data.position()? == 0)?;
@@ -703,6 +730,11 @@ fn check_forks(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid)
     require(data.seek(SeekFrom::End(1)) == Err(Error::BadArgument))?;
     data.close()?;
     resource.close()?;
+    require(io_roots(system)? == roots_before)?;
+    system.log(
+               "HOST_FS_IO_SUBJECTS_PASS owner=app roots=owned jobs=scoped
+"
+    )?;
     // Exercise generation checks through the SDK's explicit wire escape hatch.
     // Owned wrappers deliberately do not expose their raw mark identities.
     use mac_toolbox::abi::files::*;
@@ -822,13 +854,21 @@ fn check_exit_cleanup(system: &System<'_>, volume: VolumeId, gate: mac_toolbox::
 {
     let files = system.files();
     check_external_application(system, volume, "Tools/Host Exit Worker", true, gate)?;
-    for _ in 0..300
+    let start = system.events().uptime_ticks()?;
+    loop
     {
         match files.unmount(volume)
         {
             Ok(()) => return Ok(()),
             Err(Error::ServiceBusy) =>
             {
+                // An available event may return immediately. Count elapsed
+                // guest ticks, not polls, to preserve the intended five-second
+                // cleanup deadline while lower I/O acknowledges asynchronously.
+                if system.events().uptime_ticks()?.saturating_sub(start) >= 300
+                {
+                    break;
+                }
                 system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?;
             }
             Err(error) => return Err(error)

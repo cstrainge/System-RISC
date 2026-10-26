@@ -9,7 +9,12 @@ use mac_filesystem_interface::{self as fs, Arguments, Operation};
 use mac_module::ClassId;
 use spinning_top::Spinlock;
 
-use crate::drivers::{OwnedJob, jobs::Failure};
+use crate::drivers::{OwnedJob,
+                     jobs::{Failure, subjects::Subject as IoSubject}};
+fn io_subject(owner: super::super::subject::Access<'_>) -> Result<IoSubject, Status>
+{
+    crate::drivers::jobs::subjects::resident()?.admit(&owner.authority()?)
+}
 mod forks;
 mod paths;
 mod mounts;
@@ -243,15 +248,46 @@ fn files<T>(call: impl FnOnce(&mut super::Manager) -> Result<T, Status>) -> Resu
 {
     crate::kernel::with_files(call).map_err(crate::state::AccessError::status)?
 }
-fn submit(provider: u64, op: Operation, volume: u32, source: u64) -> Result<OwnedJob, Status>
+fn submit_new(owner: super::super::subject::Access<'_>, provider: u64, op: Operation,
+              args: Arguments<'_>)
+              -> Result<OwnedJob, Status>
 {
-    submit_args(provider,
+    let subject = io_subject(owner)?;
+    submit_args(&subject, provider, op, args)
+}
+enum IoObject
+{
+    Fork(u32),
+    Write(u64),
+    Stream(u64),
+    Group(u64)
+}
+fn submit_object(object: IoObject, provider: u64, op: Operation, args: Arguments<'_>)
+                 -> Result<OwnedJob, Status>
+{
+    let subject = files(|manager| {
+        match object
+        {
+            IoObject::Fork(id) => manager.handles.io_subject(id),
+            IoObject::Write(id) => manager.writes.io_subject(id),
+            IoObject::Stream(id) => manager.streams.io_subject(id),
+            IoObject::Group(id) => manager.groups.io_subject(id)
+        }
+    })?;
+    submit_args(&subject, provider, op, args)
+}
+fn submit(subject: &IoSubject, provider: u64, op: Operation, volume: u32, source: u64)
+          -> Result<OwnedJob, Status>
+{
+    submit_args(subject,
+                provider,
                 op,
                 Arguments { volume,
                             auxiliary: source,
                             ..Default::default() })
 }
-pub(in crate::toolbox::files) fn submit_args(provider: u64, op: Operation, args: Arguments<'_>)
+pub(in crate::toolbox::files) fn submit_args(subject: &IoSubject, provider: u64, op: Operation,
+                                             args: Arguments<'_>)
                                              -> Result<OwnedJob, Status>
 {
     let mut bytes = Vec::new();
@@ -286,7 +322,8 @@ pub(in crate::toolbox::files) fn submit_args(provider: u64, op: Operation, args:
         }
         _ => 0
     };
-    crate::drivers::submit_background_to(provider,
+    crate::drivers::submit_background_to(subject,
+                                         provider,
                                          ClassId(fs::CLASS),
                                          fs::VERSION,
                                          op as u32,
@@ -303,7 +340,7 @@ fn status(failure: Failure) -> Status
 }
 fn cleanup_mount(mut flight: Flight, volume: u32, error: Status) -> Progress
 {
-    match submit(flight.provider, Operation::Unmount, volume, 0)
+    match submit(flight.job.subject(), flight.provider, Operation::Unmount, volume, 0)
     {
         Ok(job) =>
         {
@@ -352,7 +389,7 @@ fn finish_read(volume: u32, result: Result<CatalogInfo, Status>) -> Progress
 }
 fn continue_read(mut flight: Flight, operation: Operation, args: Arguments<'_>) -> Progress
 {
-    match submit_args(flight.provider, operation, args)
+    match submit_args(flight.job.subject(), flight.provider, operation, args)
     {
         Ok(job) =>
         {
@@ -726,12 +763,13 @@ pub(crate) fn request_scan(owner: u64, call: &mut FileScanCall) -> Status
         Ok(prepared) => prepared,
         Err(error) => return error
     };
-    let job = match submit_args(provider,
-                                Operation::Scan,
-                                Arguments { volume: cursor.volume,
-                                            parent: cursor.directory,
-                                            offset: u64::from(cursor.index),
-                                            ..Default::default() })
+    let job = match submit_new(owner.into(),
+                               provider,
+                               Operation::Scan,
+                               Arguments { volume: cursor.volume,
+                                           parent: cursor.directory,
+                                           offset: u64::from(cursor.index),
+                                           ..Default::default() })
     {
         Ok(job) => job,
         Err(error) =>
@@ -871,7 +909,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
                          },
                          ..Default::default() })
         };
-        let job = match submit_args(provider, operation, args)
+        let job = match submit_new(owner.into(), provider, operation, args)
         {
             Ok(job) => job,
             Err(error) =>
@@ -917,7 +955,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
         HOST_EXPORT_COUNT => (Step::Count, Operation::Exports, 0, 0),
         MOUNT_HOST_EXPORT =>
         {
-            return match startup::host_mount(provider, call.index)
+            return match startup::host_mount(owner.into(), provider, call.index)
             {
                 Ok(startup::HostMount::Existing(info)) =>
                 {
@@ -941,7 +979,10 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
         UNMOUNT_VOLUME => (Step::Unmount(call.volume), Operation::Unmount, call.volume, 0),
         _ => return BAD_ARGUMENT
     };
-    let job = match submit(provider, operation, volume, source)
+    let job = match io_subject(owner.into()).and_then(|subject| {
+                                                submit(&subject, provider, operation, volume,
+                                                       source)
+                                            })
     {
         Ok(job) => job,
         Err(error) =>

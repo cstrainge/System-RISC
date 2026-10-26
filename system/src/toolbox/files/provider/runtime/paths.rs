@@ -121,7 +121,7 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
                     }
                     (Operation::Lookup, args, None, Some(entry.id))
                 };
-                let job = submit_args(flight.provider, operation, args);
+                let job = submit_args(flight.job.subject(), flight.provider, operation, args);
                 flight.step = Step::Lookup { volume,
                                              node,
                                              parent,
@@ -140,7 +140,8 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
             {
                 // Obtain/validate the final count only; ancestors were metadata
                 // queries and never enumerated their own children just for it.
-                let job = submit_args(flight.provider,
+                let job = submit_args(flight.job.subject(),
+                                      flight.provider,
                                       Operation::Catalog,
                                       Arguments { volume,
                                                   node: entry.id,
@@ -184,7 +185,8 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
             {
                 return finish_path(volume, Err(error));
             }
-            let job = submit_args(flight.provider,
+            let job = submit_args(flight.job.subject(),
+                                  flight.provider,
                                   Operation::Catalog,
                                   Arguments { volume,
                                               node: entry.parent,
@@ -248,11 +250,12 @@ pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<
                       node },
          Some(super::super::path::Builder::default()))
     };
-    let job = match submit_args(provider,
-                                Operation::Catalog,
-                                Arguments { volume,
-                                            node,
-                                            ..Default::default() })
+    let job = match submit_new(owner,
+                               provider,
+                               Operation::Catalog,
+                               Arguments { volume,
+                                           node,
+                                           ..Default::default() })
     {
         Ok(job) => job,
         Err(error) =>

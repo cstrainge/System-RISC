@@ -202,6 +202,8 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
                2,
                "{serial}");
     assert!(serial.contains("HOST_FS_EXIT_WORKER_READY"), "{serial}");
+    assert!(serial.contains("HOST_FS_IO_SUBJECTS_PASS owner=app roots=owned jobs=scoped"),
+            "{serial}");
     assert!(serial.contains("HOST_FS_METADATA_PASS native=passed legacy=passed protected=passed \
                              retry=passed"),
             "{serial}");

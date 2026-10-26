@@ -9,7 +9,7 @@ mod runtime;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use runtime::*;
 #[cfg(target_arch = "riscv64")]
-pub use runtime::{OwnedJob, submit_background_job, submit_job};
+pub use runtime::{OwnedJob, submit_job};
 
 pub(crate) fn status(error: Error) -> mac_abi::Status
 {

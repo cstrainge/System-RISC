@@ -168,6 +168,18 @@ impl Failure
                                                  capacity } }
     }
 
+    pub(crate) fn job_retirement_storage(ticket: ReleasedResource, pending: usize, capacity: usize)
+                                         -> Self
+    {
+        let key = ticket.key();
+        Self { ticket,
+               cause: Cause::RetirementStorage { provider: "System I/O Manager",
+                                                 owner: key.owner(),
+                                                 kind: key.kind(),
+                                                 pending,
+                                                 capacity } }
+    }
+
     pub(crate) fn file_retirement_storage(ticket: ReleasedResource, pending: usize,
                                           capacity: usize)
                                           -> Self

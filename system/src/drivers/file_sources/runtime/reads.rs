@@ -12,7 +12,7 @@ struct Flight
     caller: u64,
     ticket: u32,
     source: u32,
-    plan:   Read<u32>,
+    plan:   Read<Backing>,
     args:   FileArguments<'static>,
     job:    OwnedJob,
     done:   Option<Result<Vec<u8>, Status>>,
@@ -20,7 +20,8 @@ struct Flight
 }
 static FLIGHTS: Spinlock<Vec<Flight>> = Spinlock::new(Vec::new());
 
-pub(super) fn submit(provider: u64, op: FileOperation, args: FileArguments<'_>, capacity: usize)
+pub(super) fn submit(subject: &crate::drivers::jobs::subjects::Subject, provider: u64,
+                     op: FileOperation, args: FileArguments<'_>, capacity: usize)
                      -> Result<OwnedJob, Status>
 {
     let mut input = Vec::new();
@@ -28,7 +29,8 @@ pub(super) fn submit(provider: u64, op: FileOperation, args: FileArguments<'_>, 
     input.try_reserve_exact(size).map_err(|_| mac_abi::NO_MEMORY)?;
     input.resize(size, 0);
     args.encode(&mut input).map_err(|_| BAD_ARGUMENT)?;
-    crate::drivers::submit_background_to(provider,
+    crate::drivers::submit_background_to(subject,
+                                         provider,
                                          mac_module::ClassId(fs::CLASS),
                                          fs::VERSION,
                                          op as u32,
@@ -58,13 +60,15 @@ fn begin(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompletion
     let plan =
         SOURCES.lock().begin_read(call.caller, args.source, call.ticket, args.offset,
                                    args.length as usize)?;
-    let provider = files(|manager| manager.source_mark_provider(plan.backing));
+    let provider = files(|manager| manager.source_mark_provider(plan.backing.file));
     match provider
     {
         Ok(None) =>
         {
             let result = files(|manager| {
-                manager.read_block_source(plan.backing, plan.offset, &mut output[..plan.length])
+                manager.read_block_source(plan.backing.file,
+                                          plan.offset,
+                                          &mut output[..plan.length])
             });
             SOURCES.lock().finish_read(call.caller, args.source, call.ticket)?;
             result.map(ResidentCompletion::Complete)
@@ -72,7 +76,7 @@ fn begin(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompletion
         Ok(Some(_)) =>
         {
             let prepared = files(|manager| {
-                manager.begin_provider_source_read(plan.backing, plan.offset, plan.length)
+                manager.begin_provider_source_read(plan.backing.file, plan.offset, plan.length)
             });
             let (provider, file_args) = match prepared
             {
@@ -83,13 +87,17 @@ fn begin(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompletion
                     return Err(error);
                 }
             };
-            let job = match submit(provider, FileOperation::Read, file_args, plan.length)
+            let job = match submit(&plan.backing.subject,
+                                   provider,
+                                   FileOperation::Read,
+                                   file_args,
+                                   plan.length)
             {
                 Ok(job) => job,
                 Err(error) =>
                 {
                     let finished = files(|manager| {
-                        manager.finish_provider_source_read(plan.backing, file_args.offset,
+                        manager.finish_provider_source_read(plan.backing.file, file_args.offset,
                                                             file_args.length, None)
                     });
                     SOURCES.lock().finish_read(call.caller, args.source, call.ticket)?;
@@ -156,7 +164,8 @@ pub(super) fn request(call: ResidentCall<'_>, output: &mut [u8])
             Err(_) =>
             {
                 let _ = flight.job.cancel();
-                let _ = files(|manager| manager.quarantine_provider_source(flight.plan.backing));
+                let _ =
+                    files(|manager| manager.quarantine_provider_source(flight.plan.backing.file));
                 SOURCES.lock().quarantine_read(call.caller, flight.source, call.ticket)?;
                 return Err(mac_abi::ROLLBACK_FAILED);
             }
@@ -168,7 +177,7 @@ pub(super) fn request(call: ResidentCall<'_>, output: &mut [u8])
         let result = flight.done.take().unwrap();
         let delivered = if flight.cancel { None } else { result.as_ref().ok().map(Vec::len) };
         let finished = files(|manager| {
-            manager.finish_provider_source_read(flight.plan.backing, flight.args.offset,
+            manager.finish_provider_source_read(flight.plan.backing.file, flight.args.offset,
                                                 flight.args.length, delivered)
         });
         SOURCES.lock().finish_read(call.caller, flight.source, call.ticket)?;

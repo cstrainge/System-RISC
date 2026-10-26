@@ -46,7 +46,8 @@ fn failed(mut flight: Flight, mut state: State, error: Status) -> Progress
         quarantine(state.handle);
         return Progress::Done(Err(ROLLBACK_FAILED));
     }
-    match submit_args(flight.provider,
+    match submit_args(flight.job.subject(),
+                      flight.provider,
                       Operation::AbortIconMoves,
                       Arguments { volume: state.volume,
                                   token: state.handle,
@@ -256,20 +257,21 @@ pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<
             progress.running = true;
             Ok((group.provider.ok_or(BAD_ABI)?, handle, group.volume, group.when))
         })?;
-        let submitted = submit_args(provider,
-                                    operation,
-                                    Arguments { volume,
-                                                token: handle,
-                                                when: if call.operation == BEGIN_ICON_GROUP
-                                                {
-                                                    when
-                                                }
-                                                else
-                                                {
-                                                    0
-                                                },
-                                                payload: &payload,
-                                                ..Default::default() });
+        let submitted = submit_object(IoObject::Group(handle),
+                                      provider,
+                                      operation,
+                                      Arguments { volume,
+                                                  token: handle,
+                                                  when: if call.operation == BEGIN_ICON_GROUP
+                                                  {
+                                                      when
+                                                  }
+                                                  else
+                                                  {
+                                                      0
+                                                  },
+                                                  payload: &payload,
+                                                  ..Default::default() });
         let job = match submitted
         {
             Ok(job) => job,
@@ -369,11 +371,12 @@ pub(super) fn pump_cleanup()
         }
         Err(_) => return
     };
-    match submit_args(provider,
-                      Operation::AbortIconMoves,
-                      Arguments { volume,
-                                  token: handle,
-                                  ..Default::default() })
+    match submit_object(IoObject::Group(handle),
+                        provider,
+                        Operation::AbortIconMoves,
+                        Arguments { volume,
+                                    token: handle,
+                                    ..Default::default() })
     {
         Ok(job) =>
         {

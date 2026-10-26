@@ -85,7 +85,10 @@ pub(crate) fn native(call: &mut PowerCall) -> Result<(), Status>
 
         fn trigger(&mut self, provider: u64, action: Action) -> Result<(), Status>
         {
-            let mut job = crate::drivers::submit_background_to(provider,
+            let subject = crate::drivers::jobs::subjects::resident()?.admit(
+                &crate::toolbox::handles::subject::Authority::Client(crate::toolbox::handles::system_owner()?))?;
+            let mut job = crate::drivers::submit_background_to(&subject,
+                                                               provider,
                                                                mac_power_interface::CLASS,
                                                                mac_power_interface::VERSION,
                                                                action.operation(),

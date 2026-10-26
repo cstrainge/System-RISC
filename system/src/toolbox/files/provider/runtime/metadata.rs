@@ -33,7 +33,8 @@ fn failed(mut flight: Flight, mut state: State, error: Status) -> Progress
 {
     state.stage = Stage::Abort;
     state.error = error;
-    match submit_args(flight.provider,
+    match submit_args(flight.job.subject(),
+                      flight.provider,
                       Operation::AbortWrite,
                       Arguments { volume: state.volume,
                                   token: state.handle,
@@ -110,7 +111,8 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
             Ok(_) => (),
             Err(error) => return failed(flight, state, error)
         }
-        match submit_args(flight.provider,
+        match submit_args(flight.job.subject(),
+                          flight.provider,
                           Operation::FinishWrite,
                           Arguments { volume: state.volume,
                                       token: state.handle,
@@ -260,28 +262,29 @@ pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<
         let authority = owner.authority()?;
         let (provider, handle) =
             files(|m| m.reserve_provider_metadata_authorized(owner, &authority, call))?;
-        let job = match submit_args(provider,
-                                    match call.operation
-                                    {
-                                        RENAME => Operation::Rename,
-                                        REMOVE => Operation::Remove,
-                                        MOVE_INTO => Operation::Move,
-                                        _ => Operation::SetMetadata
-                                    },
-                                    Arguments { volume: call.volume,
-                                                node: call.cnid,
-                                                parent: if call.operation == MOVE_INTO
-                                                {
-                                                    call.index
-                                                }
-                                                else
-                                                {
-                                                    0
-                                                },
-                                                token: handle,
-                                                when: call.position,
-                                                payload: &bytes,
-                                                ..Default::default() })
+        let job = match submit_object(IoObject::Write(handle),
+                                      provider,
+                                      match call.operation
+                                      {
+                                          RENAME => Operation::Rename,
+                                          REMOVE => Operation::Remove,
+                                          MOVE_INTO => Operation::Move,
+                                          _ => Operation::SetMetadata
+                                      },
+                                      Arguments { volume: call.volume,
+                                                  node: call.cnid,
+                                                  parent: if call.operation == MOVE_INTO
+                                                  {
+                                                      call.index
+                                                  }
+                                                  else
+                                                  {
+                                                      0
+                                                  },
+                                                  token: handle,
+                                                  when: call.position,
+                                                  payload: &bytes,
+                                                  ..Default::default() })
         {
             Ok(job) => job,
             Err(error) =>

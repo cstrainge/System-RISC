@@ -1949,6 +1949,65 @@ native recovery from an arbitrary privileged fault.
 Scoped host tests, the origin-lifetime compile-fail check, host-thread cancellation
 during a live callback and native provider/archive/module/process/aggregate/
 cursor/panic campaigns pass. Compiled boundaries, formatting and public docs pass.
-Job IDs still use their existing shared generation table and numeric delivery
-policy; registered job/request owner and resource-scope receipts remain the next
-lower-I/O migration. This is not completion of that stage, MMU activation or SMP.
+That guard milestone retained the generation table and numeric delivery policy.
+The following migration establishes registered job subjects and receipts; broker
+requests and other lower I/O remain staged. Neither milestone activates MMU or SMP.
+
+## Owned driver I/O subjects and job receipts
+
+Queued driver jobs use registered `DJOB`/`DJST` stores in the real subject's
+resource scope. The existing 32-bit deferred-job transport is a facility
+projection, with no separate payload table or ID issuer. Publication captures a
+completion receipt before ordinary invalidation; detached callbacks and resident
+continuations retain that receipt. A stale public ID fails immediately while
+only the original receipt can reach a retained completion. Projection slots and
+unique cleanup tickets remain held until the lower ticket actually terminates.
+Pending jobs stay in their authoritative backing; extracting removal guards
+before ACK could detach that backing and reject a legitimate follow-up Abort.
+Only terminal completion takes and destroys the payload guard. Refused
+acknowledgements retain their exact ticket and typed cause, with a bounded
+change-driven report rather than repeated polling or fabricated success.
+A cancellation request, timeout or missing waiter never constitutes that ACK.
+The remaining native transport/capacity migration is a separate gate.
+
+`DIOP`/`DIOB` provide an admitted root for a resident operation on behalf of a
+client. An existing transfer inherits its real scope instead. Persistent provider
+forks, writers, streams and icon groups retain their I/O subject before publication,
+so post-exit Close/Abort does not reopen ordinary app admission or charge work to
+a guessed current thread/System owner. Follow-up provider jobs clone the original
+subject. File-source lower reads retain their admitted module subject; complete
+stacked invocation attribution remains a later requirement. Delivery policy and
+waiter identity remain separate from this allocation/lifetime authority.
+
+The root store owns only a weak reference to the operation's retained-use state.
+An owner walk transfers the actual removal guard to that state while owned uses
+remain; the final use releases the guard after its payload use ends. There is no
+strong-reference cycle, reference-count guess, cleanup allocation or invented
+completion. A dispatcher arriving after the final use still owns and settles its
+unique outstanding ticket. All accesses use the architecture invocation gate;
+foreign callbacks hold neither the queue nor registry lock. Ready entries carry
+their original receipts directly, and empty queues retain their atomic early-out.
+
+The shared facility reports actual stopped-owner completion after payload
+destruction and metadata unlock. Its native adapter posts a coalesced retirement
+wake; live-owner releases do not wake the reaper. Completion retry and delayed
+ticket routing use the same notification. This closes the gap where a final I/O
+root/backing could finish after the old manager-specific wake and leave an exited
+process waiting indefinitely. Notification cannot acknowledge I/O or run teardown.
+
+Broker requests, devices/DMA and backing-source records still require their own
+registered ownership/ACK migration. Full module invocation/accounting, physical
+module reclamation, dynamic process capacity, pages/MMU, page-backed heaps,
+privilege separation and multihart remain subsequent gates. These job and scope
+mechanisms do not establish arbitrary privileged-fault containment (M-D04).
+
+Qualification: 574 scoped host cases pass (67 native-only gates excluded),
+including 33 focused job/scope cases, foreign-ticket refusal/retry and the exact
+stopped-owner follow-up admission regression. Native provider acceptance passes
+twice, including real owned scope counts, transfer exit rollback, forgotten
+forks/writers/watches, successful final retirement and unmount/retry. Both
+endpoint-disconnect cases, classic archives, module admission, both process
+campaigns, aggregate SDK, original cursor sprites and panic recovery pass.
+Compiled boundaries, formatting and 52-library public API generation pass.
+These checks qualify this job/subject slice; they do not close the remaining
+lower-I/O, memory/accounting, privilege or multihart gates listed above.

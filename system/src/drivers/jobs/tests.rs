@@ -561,3 +561,277 @@ fn another_host_thread_can_cancel_while_a_provider_callback_owns_the_dispatch()
     assert!(q.take(OWNER, id).unwrap().unwrap().cancellation_requested);
     assert_eq!(q.owned_bytes(), 0);
 }
+
+// Only the host transport differs: all payloads, scopes, receipts and cleanup
+// guards below use the same registered stores as the resident queue.
+pub(super) struct Fixture
+{
+    _registry:  crate::toolbox::handles::Registry<()>,
+    operations: alloc::sync::Arc<super::subjects::Operations>,
+    owners:     Vec<(Owner, crate::toolbox::handles::OwnerRef)>
+}
+struct RetainTicket;
+impl mac_object_table::registry::Release<(), crate::toolbox::handles::cleanup::Failure>
+    for RetainTicket
+{
+    fn release(&self, _: &mut (), ticket: mac_object_table::domain::ReleasedResource)
+               -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        Err(crate::toolbox::handles::cleanup::Failure::context_unavailable(ticket,
+                                                                           "queue test context"))
+    }
+}
+pub(super) fn subject(core: &mut Core, owner: Owner) -> Result<super::subjects::Subject, Status>
+{
+    use mac_object_table::domain::{DomainKind, OwnerIndex};
+
+    use crate::toolbox::handles::{OwnerRef, Registry};
+    let issue = || {
+        OwnerRef::try_new(OwnerIndex::issue(DomainKind::Process).map_err(|_|NO_MEMORY)?)
+        .map_err(|_|NO_MEMORY)
+    };
+    if core.fixture.is_none()
+    {
+        let registrar = issue()?;
+        let mut registry = Registry::new();
+        let mut kind = |specification| {
+            registry.register(&registrar, specification, RetainTicket)
+                    .map_err(|error| crate::toolbox::handles::registry_status(&error))
+        };
+        let roots = (kind(super::subjects::specification(false))?,
+                     kind(super::subjects::specification(true))?);
+        let jobs = (kind(super::records::specification(false))?,
+                    kind(super::records::specification(true))?);
+        core.records.prepare(jobs)?;
+        core.fixture = Some(Fixture { _registry:  registry,
+                                      operations: super::subjects::Operations::new(roots)?,
+                                      owners:     Vec::new() });
+    }
+    let fixture = core.fixture.as_mut().ok_or(BAD_ABI)?;
+    let authority = if let Some((_, authority)) =
+        fixture.owners.iter().find(|(policy, _)| *policy == owner)
+    {
+        authority.clone()
+    }
+    else
+    {
+        fixture.owners.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        let authority = issue()?;
+        fixture.owners.push((owner, authority.clone()));
+        authority
+    };
+    fixture.operations.admit(&crate::toolbox::handles::subject::Authority::Client(authority))
+}
+
+pub(super) fn admitted(
+    queue: &Queue, policy: Owner)
+    -> (crate::toolbox::handles::OwnerRef,
+        subjects::Subject,
+        mac_object_table::projected::Publication)
+{
+    queue.test_access(|core| {
+             let subject = subject(core, policy).unwrap();
+             let owner = core.fixture
+                             .as_ref()
+                             .unwrap()
+                             .owners
+                             .iter()
+                             .find(|(kind, _)| *kind == policy)
+                             .unwrap()
+                             .1
+                             .clone();
+             let publication = core.submit(&subject, policy, work(8)).unwrap();
+             (owner, subject, publication)
+         })
+}
+pub(super) fn invalidate_jobs(queue: &Queue, owner: &crate::toolbox::handles::OwnerRef)
+                              -> Vec<mac_object_table::domain::ReleasedResource>
+{
+    use mac_object_table::registry::CleanupFailure;
+    let operations = queue.test_access(|core| core.fixture.as_ref().unwrap().operations.clone());
+    owner.stop_admission();
+    let mut deferred = Vec::new();
+    while let Some(ticket) = owner.invalidate_next()
+    {
+        let result = match &ticket.key().kind().0
+        {
+            b"DIOP" => operations.release(ticket, false),
+            b"DIOB" => operations.release(ticket, true),
+            b"DJOB" => queue.release(ticket, false),
+            b"DJST" => queue.release(ticket, true),
+            other => panic!("unexpected registered kind {other:?}")
+        };
+        if let Err(error) = result
+        {
+            assert!(!alloc::format!("{error}").is_empty());
+            deferred.push(error.into_parts().0);
+        }
+    }
+    deferred
+}
+pub(super) fn settle(queue: &Queue, owner: &crate::toolbox::handles::OwnerRef,
+                     deferred: Vec<mac_object_table::domain::ReleasedResource>)
+{
+    let operations = queue.test_access(|core| core.fixture.as_ref().unwrap().operations.clone());
+    for ticket in deferred
+    {
+        match &ticket.key().kind().0
+        {
+            b"DIOB" => operations.release(ticket, true).unwrap(),
+            b"DJST" => queue.release(ticket, true).unwrap(),
+            other => panic!("unexpected retained kind {other:?}")
+        }
+    }
+    assert_eq!((owner.summary().live, owner.summary().pending), (0, 0));
+    assert_eq!(queue.owned_bytes(), 0);
+}
+#[test]
+fn invalidated_job_rejects_ordinary_ids_but_receipt_drains_the_exact_resident_result()
+{
+    let queue = Queue::new();
+    let (owner, subject, publication) = admitted(&queue, Owner::Kernel);
+    let (id, receipt) = publication.into_parts();
+    step(&queue, |call| {
+        *call.ticket = 71;
+        Outcome::Pending
+    });
+    let root = subject.scope().root().unwrap();
+    let deferred = invalidate_jobs(&queue, &owner);
+    assert!(owner.pending(root));
+    assert_eq!(queue.pending(Owner::Kernel, id), Err(NOT_FOUND));
+    assert_eq!(queue.take(Owner::Kernel, id).unwrap_err(), NOT_FOUND);
+    assert_eq!(queue.cancel_completion(Owner::Thread(42), receipt), Err(ACCESS_DENIED));
+    step(&queue, |call| {
+        assert_eq!(call.phase, Phase::Poll, "the dead waiter must not discard a resident mutation");
+        assert_eq!(*call.ticket, 71);
+        *call.ticket = 0;
+        call.output[..4].copy_from_slice(b"done");
+        Outcome::Complete(4)
+    });
+    let done = queue.take_completion(Owner::Kernel, receipt).unwrap().unwrap();
+    assert_eq!(done.result.unwrap(), b"done");
+    assert_eq!(queue.take_completion(Owner::Kernel, receipt).unwrap_err(), NOT_FOUND);
+    drop(subject);
+    settle(&queue, &owner, deferred);
+}
+#[test]
+fn owner_walk_cancels_thread_job_and_holds_payload_until_real_lower_ack()
+{
+    let queue = Queue::new();
+    let (owner, subject, publication) = admitted(&queue, OWNER);
+    let id = publication.id();
+    step(&queue, |call| {
+        *call.ticket = 72;
+        Outcome::Pending
+    });
+    let deferred = invalidate_jobs(&queue, &owner);
+    drop(subject);
+    assert!(owner.summary().pending > 0);
+    assert!(queue.owned_bytes() > 0);
+    step(&queue, |call| {
+        assert_eq!(call.phase, Phase::Cancel);
+        assert_eq!(*call.ticket, 72);
+        Outcome::Pending
+    });
+    assert!(queue.owned_bytes() > 0, "a cancellation request is not an acknowledgement");
+    step(&queue, |call| {
+        assert_eq!(call.phase, Phase::Cancel);
+        *call.ticket = 0;
+        Outcome::Complete(0)
+    });
+    assert_eq!(queue.pending(OWNER, id), Err(NOT_FOUND));
+    settle(&queue, &owner, deferred);
+}
+#[test]
+fn completion_before_cleanup_dispatch_retains_unique_ticket_and_projection_generation()
+{
+    let queue = Queue::new();
+    let (owner, subject, publication) = admitted(&queue, Owner::Kernel);
+    let (id, receipt) = publication.into_parts();
+    step(&queue, |call| {
+        *call.ticket = 73;
+        Outcome::Pending
+    });
+    owner.stop_admission();
+    let mut tickets = Vec::new();
+    while let Some(ticket) = owner.invalidate_next()
+    {
+        tickets.push(ticket);
+    }
+    step(&queue, |call| {
+        assert_eq!(*call.ticket, 73);
+        *call.ticket = 0;
+        Outcome::Complete(0)
+    });
+    queue.take_completion(Owner::Kernel, receipt).unwrap().unwrap();
+    assert!(owner.summary().pending > 0, "a delayed unique dispatcher still owns the ticket");
+    assert_eq!(queue.take(Owner::Kernel, id).unwrap_err(), NOT_FOUND);
+    let operations = queue.test_access(|core| core.fixture.as_ref().unwrap().operations.clone());
+    let mut deferred = Vec::new();
+    use mac_object_table::registry::CleanupFailure;
+    for ticket in tickets
+    {
+        let result = match &ticket.key().kind().0
+        {
+            b"DIOP" => operations.release(ticket, false),
+            b"DIOB" => operations.release(ticket, true),
+            b"DJOB" => queue.release(ticket, false),
+            b"DJST" => queue.release(ticket, true),
+            other => panic!("unexpected kind {other:?}")
+        };
+        if let Err(error) = result
+        {
+            deferred.push(error.into_parts().0);
+        }
+    }
+    drop(subject);
+    settle(&queue, &owner, deferred);
+    let (_, next_subject, next) = admitted(&queue, Owner::Thread(77));
+    assert_ne!(next.id(), id);
+    assert_eq!(queue.take_completion(Owner::Thread(77), receipt).unwrap_err(), NOT_FOUND);
+    queue.discard(Owner::Thread(77), next.id()).unwrap();
+    drop(next_subject);
+}
+
+#[test]
+fn stopped_owner_can_admit_cleanup_while_earlier_invalidated_jobs_still_own_the_backing()
+{
+    let queue = Queue::new();
+    let (owner, subject, old) = admitted(&queue, Owner::Kernel);
+    let (_, old_receipt) = old.into_parts();
+    step(&queue, |call| {
+        *call.ticket = 91;
+        Outcome::Pending
+    });
+    let deferred = invalidate_jobs(&queue, &owner);
+    assert_eq!(queue.pending(Owner::Kernel, old.id()), Err(NOT_FOUND));
+    let cleanup = queue.test_access(|core| core.submit(&subject, Owner::Kernel, work(0))).unwrap();
+    let (_, cleanup_receipt) = cleanup.into_parts();
+    let more_deferred = invalidate_jobs(&queue, &owner);
+    assert!(more_deferred.is_empty());
+    let mut cleanup_call =
+        queue.dispatch_completion(Owner::Kernel, cleanup_receipt).unwrap().unwrap();
+    cleanup_call.invoke(&mut Script(|call: Call<'_>| {
+                            assert_eq!(call.phase, Phase::Start);
+                            Outcome::Complete(0)
+                        }))
+                .unwrap();
+    queue.finish(cleanup_call).unwrap();
+    queue.take_completion(Owner::Kernel, cleanup_receipt).unwrap().unwrap();
+    assert!(queue.owned_bytes() > 0, "the original live ticket still owns its input and output");
+    step(&queue, |call| {
+        assert_eq!(call.phase, Phase::Poll);
+        assert_eq!(*call.ticket, 91);
+        *call.ticket = 0;
+        Outcome::Complete(0)
+    });
+    queue.take_completion(Owner::Kernel, old_receipt).unwrap().unwrap();
+    // The last acknowledged old job may retire its released backing. A
+    // continuation must also be able to establish the next backing safely.
+    let next = queue.test_access(|core| core.submit(&subject, Owner::Kernel, work(0))).unwrap();
+    queue.discard_completion(Owner::Kernel, next.into_parts().1).unwrap();
+    let extra = invalidate_jobs(&queue, &owner);
+    assert!(extra.is_empty());
+    drop(subject);
+    settle(&queue, &owner, deferred);
+}

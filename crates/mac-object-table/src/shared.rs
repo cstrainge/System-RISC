@@ -17,6 +17,13 @@ use crate::domain::{CapacityPolicy, CompletionError, DirectoryError, DomainId, K
 pub trait InvocationGate
 {
     fn run<R>(operation: impl FnOnce() -> R) -> R;
+
+    /// A stopped ledger has actually completed cleanup. Called after payload
+    /// destruction and metadata unlock; the resident adapter may post a cheap,
+    /// coalesced retirement wake. This must not allocate or run cleanup itself.
+    fn released(_owner: DomainId)
+    {
+    }
 }
 
 mod sealed
@@ -164,7 +171,32 @@ impl<G: InvocationGate> OwnerRef<G>
 
     pub fn complete_release(&self, released: ReleasedResource) -> Result<(), CompletionError>
     {
-        self.access(|index| index.complete_release(released))
+        let stopped = self.access(|index| {
+                              index.complete_release(released)?;
+                              Ok(!index.accepting())
+                          })?;
+        if stopped
+        {
+            G::released(self.owner());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn complete_value_release(&self, released: ReleasedResource)
+                                         -> Result<bool, CompletionError>
+    {
+        self.access(|index| {
+                index.complete_value_release(released)?;
+                Ok(!index.accepting())
+            })
+    }
+
+    pub(crate) fn notify_retirement(&self)
+    {
+        if !self.accepting()
+        {
+            G::released(self.owner());
+        }
     }
 
     pub fn quarantine(&self, released: ReleasedResource) -> Result<(), CompletionError>

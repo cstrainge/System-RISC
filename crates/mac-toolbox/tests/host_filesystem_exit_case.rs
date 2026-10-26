@@ -1,6 +1,8 @@
 //! A real second application deliberately exits with two live provider marks.
 use mac_toolbox::{Error, System,
                   files::{Fork, ROOT_ID}};
+#[path = "support/inspection_read.rs"]
+mod inspection_read;
 fn require(value: bool) -> Result<(), Error>
 {
     if value { Ok(()) } else { Err(Error::BadAbi) }
@@ -67,32 +69,38 @@ pub fn check(system: &System<'_>) -> Result<(), Error>
             require(!progress.finished())?;
             if progress.completed_bytes != 0
             {
-                let snapshot = system.inspection()
-                                     .snapshot(mac_toolbox::inspection::Scope::Own)
-                                     .map_err(|e| e.cause)?;
-                let ledger = snapshot.ledger(0).map_err(|e| e.cause)?;
-                let mut found = false;
-                let mut scoped = 0u64;
-                let mut owned_io = 0u32;
-                for index in 0..ledger.len()
-                {
-                    let pool = ledger.at(index).map_err(|e| e.cause)?;
-                    scoped += pool.scoped_children;
-                    if [*b"FFRK", *b"FSWR"].contains(&pool.kind)
+                inspection_read::own(system, |ledger| {
+                    let mut found = false;
+                    let mut scoped = 0u64;
+                    let mut owned_io = 0u32;
+                    let mut jobs_seen = false;
+                    for index in 0..ledger.len()
                     {
-                        require(pool.live > 0 && pool.scoped_children == pool.live + pool.pending)?;
-                        owned_io += 1;
+                        let pool = ledger.at(index).map_err(|e| e.cause)?;
+                        scoped += pool.scoped_children;
+                        if [*b"FFRK", *b"FSWR"].contains(&pool.kind)
+                        {
+                            require(pool.live > 0
+                                    && pool.scoped_children == pool.live + pool.pending)?;
+                            owned_io += 1;
+                        }
+                        if pool.kind == *b"DJOB"
+                        {
+                            require(pool.scoped_children == pool.live + pool.pending)?;
+                            jobs_seen = true;
+                        }
+                        if pool.kind == *b"FTXN"
+                        {
+                            require(pool.live == 1 && pool.pending == 0)?;
+                            found = true;
+                        }
                     }
-                    if pool.kind == *b"FTXN"
-                    {
-                        require(pool.live == 1 && pool.pending == 0)?;
-                        found = true;
-                    }
-                }
-                require(found
-                        && owned_io == 2
-                        && scoped >= 2
-                        && ledger.domain().scoped_children == scoped)?;
+                    require(found
+                            && jobs_seen
+                            && owned_io == 2
+                            && scoped >= 2
+                            && ledger.domain().scoped_children == scoped)
+                })?;
                 system.log("HOST_FS_TRANSFER_SCOPES_PASS owner=app fork=owned writer=owned\n")?;
                 system.log("HOST_FS_TRANSFER_LEDGER_PASS\n")?;
                 core::mem::forget(owner);

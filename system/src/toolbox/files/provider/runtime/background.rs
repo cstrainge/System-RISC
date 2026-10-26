@@ -141,7 +141,7 @@ pub(super) fn file(owner: crate::toolbox::files::subject::Access<'_>, call: &mut
                                      ..Default::default() })
                     }
                 };
-                let job = match submit_args(provider, operation, args)
+                let job = match submit_new(owner, provider, operation, args)
                 {
                     Ok(job) => job,
                     Err(error) =>
@@ -290,12 +290,13 @@ pub(super) fn scan(owner: crate::toolbox::files::subject::Access<'_>, call: &mut
     key.cursor = call.cursor;
     let result = (|| {
         let (_, cursor) = files(|m| m.begin_provider_scan(call))?;
-        let job = match submit_args(provider,
-                                    Operation::Scan,
-                                    Arguments { volume: cursor.volume,
-                                                parent: cursor.directory,
-                                                offset: u64::from(cursor.index),
-                                                ..Default::default() })
+        let job = match submit_new(owner,
+                                   provider,
+                                   Operation::Scan,
+                                   Arguments { volume: cursor.volume,
+                                               parent: cursor.directory,
+                                               offset: u64::from(cursor.index),
+                                               ..Default::default() })
         {
             Ok(job) => job,
             Err(error) =>

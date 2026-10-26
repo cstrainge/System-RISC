@@ -175,11 +175,15 @@ impl<G: InvocationGate> Completion<G>
         {
             if let Some(ticket) = record.ticket.take()
             {
-                match self.owner.access(|index| index.complete_value_release(ticket))
+                match self.owner.complete_value_release(ticket)
                 {
-                    Ok(()) =>
+                    Ok(stopped) =>
                     {
                         drop(record);
+                        if stopped
+                        {
+                            G::released(self.owner.owner());
+                        }
                     }
                     Err(error) =>
                     {

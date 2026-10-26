@@ -891,6 +891,24 @@ impl Desktop
                         remaining.live,
                         remaining.pending,
                         remaining.quarantined);
+                #[cfg(feature = "event-trace")]
+                for at in 0..remaining.kinds
+                {
+                    let Ok(pool) = ledger.pool_at(remaining.revision, at)
+                    else
+                    {
+                        break;
+                    };
+                    if pool.live != 0 || pool.pending != 0
+                    {
+                        serial!("PROCESS_RETIRE_POOL app={owner} kind={} live={} pending={} \
+                                 scoped={}",
+                                pool.kind,
+                                pool.live,
+                                pool.pending,
+                                pool.scoped_children);
+                    }
+                }
                 continue;
             }
             // enter(previous) in EXIT saved the dying owner's actual managers

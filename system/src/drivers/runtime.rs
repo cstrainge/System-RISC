@@ -106,6 +106,12 @@ pub(crate) fn device_allowed(module: u64, bus: ClassId, key: [u8; 16]) -> Result
            .map_err(crate::state::AccessError::status)?
 }
 
+pub(crate) fn module_authority(module: u64) -> Result<crate::toolbox::handles::OwnerRef, Status>
+{
+    RUNTIME.with(|runtime| runtime.registry.module_ledger(module).map_err(status))
+           .map_err(crate::state::AccessError::status)?
+}
+
 pub(crate) fn provider_module(interface: u64) -> Result<u64, Status>
 {
     RUNTIME.with(|runtime| {
@@ -605,8 +611,8 @@ static JOBS: super::jobs::Queue = super::jobs::Queue::new();
 
 /// Resident adapters enqueue only owned bytes. The owner comes from trusted
 /// execution context, never from the application's request payload.
-fn enqueue_job(owner: super::jobs::Owner, class: ClassId, version: u32, operation: u32,
-               input: Vec<u8>, output_bytes: usize)
+fn enqueue_job(subject: super::jobs::subjects::Subject, owner: super::jobs::Owner, class: ClassId,
+               version: u32, operation: u32, input: Vec<u8>, output_bytes: usize)
                -> Result<OwnedJob, Status>
 {
     let provider = match owner
@@ -622,14 +628,18 @@ fn enqueue_job(owner: super::jobs::Owner, class: ClassId, version: u32, operatio
     };
     let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
     let queue = &JOBS;
-    let id = queue.submit(owner, work).map_err(|error| error.status)?;
+    let (id, receipt) =
+        queue.submit(&subject, owner, work).map_err(|error| error.status)?.into_parts();
     Ok(OwnedJob { owner,
-                  id })
+                  id,
+                  receipt,
+                  subject })
 }
 
-fn take_job(owner: super::jobs::Owner, id: u32) -> Result<Option<super::jobs::Completed>, Status>
+pub(crate) fn release_job(ticket: mac_object_table::domain::ReleasedResource, storage: bool)
+                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
 {
-    JOBS.take(owner, id)
+    JOBS.release(ticket, storage)
 }
 
 pub(crate) fn job_pending(thread: u64, id: u32) -> Result<bool, Status>
@@ -715,16 +725,23 @@ fn defer_current_job(id: u32) -> Result<(), Status>
 /// provider acknowledges cancellation; no borrowed application buffer is pinned.
 pub struct OwnedJob
 {
-    owner: super::jobs::Owner,
-    id:    u32
+    owner:   super::jobs::Owner,
+    id:      u32,
+    subject: super::jobs::subjects::Subject,
+    receipt: mac_object_table::projected::CompletionKey
 }
 impl OwnedJob
 {
+    pub(crate) fn subject(&self) -> &super::jobs::subjects::Subject
+    {
+        &self.subject
+    }
+
     /// Run one bounded callback of this job immediately. Pending work remains
     /// owned by this guard; Drop requests cancellation through the same queue.
     pub(crate) fn run_once(&mut self) -> Result<Option<super::jobs::Completed>, Status>
     {
-        let dispatch = JOBS.dispatch_for(self.owner, self.id)?;
+        let dispatch = JOBS.dispatch_completion(self.owner, self.receipt)?;
         if let Some(dispatch) = dispatch
         {
             dispatch_job(dispatch);
@@ -738,7 +755,7 @@ impl OwnedJob
         {
             return Err(NOT_FOUND);
         }
-        let result = take_job(self.owner, self.id)?;
+        let result = JOBS.take_completion(self.owner, self.receipt)?;
         if result.is_some()
         {
             self.id = 0;
@@ -776,8 +793,8 @@ impl OwnedJob
         }
         let waiter = {
             let queue = &JOBS;
-            queue.cancel(self.owner, self.id)?;
-            queue.completed_waiter(self.owner, self.id)?
+            queue.cancel_completion(self.owner, self.receipt)?;
+            queue.completed_waiter_completion(self.owner, self.receipt)?
         };
         if let Some(thread) = waiter
         {
@@ -796,7 +813,7 @@ impl Drop for OwnedJob
             return;
         }
         let queue = &JOBS;
-        let _ = queue.discard(self.owner, self.id);
+        let _ = queue.discard_completion(self.owner, self.receipt);
     }
 }
 
@@ -812,7 +829,10 @@ pub fn submit_job(class: ClassId, version: u32, operation: u32, input: Vec<u8>,
     {
         return Err(WRONG_THREAD);
     }
-    enqueue_job(super::jobs::Owner::Thread(thread.0),
+    let subject = super::jobs::subjects::resident()?.admit(
+        &crate::toolbox::handles::subject::Authority::Client(crate::context::current_owner()?))?;
+    enqueue_job(subject,
+                super::jobs::Owner::Thread(thread.0),
                 class,
                 version,
                 operation,
@@ -820,17 +840,10 @@ pub fn submit_job(class: ClassId, version: u32, operation: u32, input: Vec<u8>,
                 output_bytes)
 }
 
-/// Background resident services own their own result and cancellation lifetime.
-pub fn submit_background_job(class: ClassId, version: u32, operation: u32, input: Vec<u8>,
-                             output_bytes: usize)
-                             -> Result<OwnedJob, Status>
-{
-    enqueue_job(super::jobs::Owner::Kernel, class, version, operation, input, output_bytes)
-}
-
 /// Submit to the exact provider incarnation retained by a resident mount.
-pub(crate) fn submit_background_to(provider: u64, class: ClassId, version: u32, operation: u32,
-                                   input: Vec<u8>, output_bytes: usize)
+pub(crate) fn submit_background_to(subject: &super::jobs::subjects::Subject, provider: u64,
+                                   class: ClassId, version: u32, operation: u32, input: Vec<u8>,
+                                   output_bytes: usize)
                                    -> Result<OwnedJob, Status>
 {
     RUNTIME.with(|runtime| {
@@ -847,9 +860,13 @@ pub(crate) fn submit_background_to(provider: u64, class: ClassId, version: u32, 
            .map_err(crate::state::AccessError::status)??;
     let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
     let queue = &JOBS;
-    let id = queue.submit(super::jobs::Owner::Kernel, work).map_err(|error| error.status)?;
+    let (id, receipt) = queue.submit(subject, super::jobs::Owner::Kernel, work)
+                             .map_err(|error| error.status)?
+                             .into_parts();
     Ok(OwnedJob { owner: super::jobs::Owner::Kernel,
-                  id })
+                  id,
+                  receipt,
+                  subject: subject.clone() })
 }
 
 pub(crate) fn abandon_deferred_job(thread: u64, id: u32)

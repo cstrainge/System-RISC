@@ -763,11 +763,14 @@ mod background
             NEXT_CHECK.store(now.saturating_add(INTERVAL), Ordering::Release);
             return;
         };
-        let work = match provider::runtime::submit_args(provider,
+        let submitted = crate::drivers::jobs::subjects::resident()
+            .and_then(|operations| operations.admit(&crate::toolbox::handles::subject::Authority::Client(lease.state.owner.clone())))
+            .and_then(|subject| provider::runtime::submit_args(&subject, provider,
                                                         Operation::CheckDirectory,
                                                         Arguments { volume: lease.volume,
                                                                     node: lease.directory,
-                                                                    ..Default::default() })
+                                                                    ..Default::default() }));
+        let work = match submitted
         {
             Ok(job) => Work::Polling(job),
             Err(error) => Work::Complete(Err(error))

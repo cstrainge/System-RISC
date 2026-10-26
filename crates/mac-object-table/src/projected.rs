@@ -99,6 +99,13 @@ pub struct CompletionKey
     native: store::CompletionKey,
     wire:   u32
 }
+impl CompletionKey
+{
+    pub fn id(self) -> u32
+    {
+        self.wire
+    }
+}
 
 /// Treaty identity and native completion provenance captured by the same
 /// publication. Wire bits grant no late authority after ordinary invalidation.

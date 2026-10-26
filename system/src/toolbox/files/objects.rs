@@ -12,6 +12,11 @@ pub(super) trait Payload: Sized
     type Storage: Backend<Self>;
     const WIRE: Option<Kind> = None;
     const KIND: crate::toolbox::handles::KindCode;
+    #[cfg(target_arch = "riscv64")]
+    fn io_subject(&self) -> Option<&crate::drivers::jobs::subjects::Subject>
+    {
+        None
+    }
     fn cleanup_pending(&self) -> bool;
     fn begin_cleanup(&self);
     fn owner_stopping(&self) -> bool;
@@ -143,6 +148,13 @@ impl<T: Payload> Objects<T>
         let (wire, key) = create(objects)?;
         self.completions.push((wire, key));
         Ok(wire)
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(super) fn io_subject(&self, id: Id<T>)
+                             -> Result<crate::drivers::jobs::subjects::Subject, Status>
+    {
+        self.completing(id).and_then(Payload::io_subject).cloned().ok_or(NOT_FOUND)
     }
 
     pub(super) fn get(&self, id: Id<T>) -> Option<&T>
