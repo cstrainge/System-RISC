@@ -20,6 +20,11 @@ The three `capture_system7_*` scripts collect inputs, serial results and frames;
 canonical Rust tests in the aggregate Toolbox crate own new acceptance decisions.
 Older Python visual checkers remain migration work recorded in TOOLBOX-PLAN.md.
 
+`python ./scripts/system7_vm.py start` runs natively on macOS with QEMU's Cocoa
+display backend and the same interpreter for build/preservation helpers. The
+host QEMU tools must be on `PATH`; neither Homebrew nor MacPorts is required.
+Headless launches keep the Unix QMP socket and the normal host process adapter.
+
 `system7_vm.py start` also runs under native Windows Python from PowerShell.
 The launcher uses native Rust host tools and Windows QEMU, TCP QMP, nonblocking
 Windows preservation locks, and real file/directory flushes. It invokes build

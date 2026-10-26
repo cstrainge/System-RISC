@@ -88,8 +88,10 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     monitor = (f'tcp:127.0.0.1:{qmp_port},server=on,wait=off' if native
                else f'unix:{socket_path},server=on,wait=off')
     # GTK keeps host absolute input and the 2x guest viewport in the same space.
+    # Cocoa owns native macOS window/input scaling; GTK options do not apply.
     display = {'native': 'gtk,gl=on,zoom-to-fit=off,scale=2,show-menubar=off',
                'gtk': 'gtk,gl=on,zoom-to-fit=off,scale=2', 'headless': 'none',
+               'cocoa': 'cocoa,zoom-to-fit=on',
                'native-headless': 'none'}[frontend]
     serial = state / 'serial.log'
     serial.write_text('')
@@ -118,7 +120,9 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
         shutil.copyfile(source, destination)
         args.extend(['-drive',f'if=none,id=extra{index},format=raw,readonly=on,file='+host_path(destination),
                      '-device',f'virtio-blk-device,drive=extra{index},bus=virtio-mmio-bus.{index+3}'])
-    env = dict(os.environ, GDK_BACKEND='x11')
+    env = dict(os.environ)
+    if frontend == 'gtk':
+        env['GDK_BACKEND'] = 'x11'
     if native:
         settings = {'GDK_BACKEND': 'win32', 'GDK_SCALE': '1'}
         env.update(settings)
@@ -181,7 +185,10 @@ def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_
     if rebuild:
         build()
     if frontend == 'auto':
-        frontend = 'native' if os.name == 'nt' or native_executable() else 'gtk'
+        if sys.platform == 'darwin':
+            frontend = 'cocoa'
+        else:
+            frontend = 'native' if os.name == 'nt' or native_executable() else 'gtk'
     companion = None
     port = None
     initialize = None
@@ -271,7 +278,7 @@ def main():
     sub = parser.add_subparsers(dest='action', required=True)
     build_parser = sub.add_parser('build')
     launch_parser = sub.add_parser('start')
-    launch_parser.add_argument('--frontend', choices=['auto', 'native', 'native-headless', 'gtk', 'headless'], default='auto')
+    launch_parser.add_argument('--frontend', choices=['auto', 'native', 'native-headless', 'cocoa', 'gtk', 'headless'], default='auto')
     launch_parser.add_argument('--no-build', action='store_true')
     launch_parser.add_argument('--no-transfer', action='store_true',
                                help='Disable the default Transfer volume for this VM')

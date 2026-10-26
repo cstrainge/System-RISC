@@ -69,8 +69,8 @@ python3 ./scripts/system7_vm.py check
 python3 ./scripts/system7_vm.py stop
 ```
 
-The launcher opens a separate native Windows GTK window at 2× when available,
-otherwise Linux GTK. It copies the generated ROM and disk into
+The launcher opens a native Cocoa window on macOS, a native Windows GTK window
+at 2× when available, or Linux GTK. It copies the generated ROM and disk into
 `working/system7-vm`. The ROM stays read-only; the private desktop disk is
 writable and retained across starts of the same OS build. A changed base build
 replaces the previous working disk without retaining old images. Isolated test
@@ -94,6 +94,21 @@ launching. Its sibling `qemu-img.exe` supplies disk conversion. From WSL the
 same setting accepts a Windows path or its `/mnt/d/...` path. An invalid
 configured path reports an error before launch. Linux and WSL launch commands
 continue to use their existing host tools and frontend selection.
+
+On macOS, the same command runs from Terminal:
+
+```sh
+python ./scripts/system7_vm.py start
+```
+
+Use Python 3.11 or newer, nightly Rust with the
+`riscv64imac-unknown-none-elf` target, and standalone QEMU with its Cocoa display
+backend. Put `python`, `cargo`, `qemu-system-riscv64`, `qemu-img` and
+`llvm-objcopy` on `PATH`; Homebrew and MacPorts are optional. Rust's `llvm-tools`
+component includes a compatible `llvm-objcopy`. The launcher uses the invoking
+Python interpreter for build and saved-file preservation helpers. Cocoa handles
+native window scaling and absolute tablet input; `--frontend headless` retains
+the same disk, host companion and QMP services without opening a window.
 
 Normal startup initializes `System7/transfer` on first use and exposes it as a
 read/write **Transfer** volume. It is ignored by Git and survives disk rebuilds.
@@ -240,10 +255,11 @@ Prerequisites:
   was verified with the installed nightly toolchain.
 - The `riscv64imac-unknown-none-elf` Rust target. If needed, install it with
   `rustup target add riscv64imac-unknown-none-elf`.
-- `qemu-img` for `image`/`check`, and Linux `qemu-system-riscv64` for `check`.
+- `qemu-img` for `image`/`check`, and host-native `qemu-system-riscv64` for launching/checking.
 - `llvm-objcopy` for converting the boot ROM ELF into the flash image.
-- Python 3 with Pillow for desktop and original-reference pixel checks.
-- The existing workspace-local hfsutils installation for `image`/`check`.
+- Python 3.11 or newer, with Pillow for desktop and original-reference pixel checks.
+- The existing workspace-local hfsutils installation for original-reference
+  capture and comparison gates; the native image build does not require it.
   If absent, run `python3 ../scripts/install_hfsutils.py`.
   `SYSTEM7_HFSUTILS` can specify another directory containing those executables.
 
@@ -568,7 +584,8 @@ System and follows the checked platform geometry; the SDK does not duplicate a
 640×480 ceiling. PNG source decode budgets remain separate from the destination
 surface dimensions.
 
-Graphical launches enable OpenGL at 2× zoom. The software-scaled frontend can
+GTK launches enable OpenGL at 2× zoom. The software-scaled frontend can
 hold up virtual-disk progress at this viewport size; GPU presentation keeps
 storage and the display responsive. Native Windows GTK and Linux GTK launches
-are both checked; headless checks do not require a graphics context.
+are both checked; macOS uses Cocoa's native display backend. Headless checks do
+not require a graphics context.

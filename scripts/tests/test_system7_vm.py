@@ -15,6 +15,65 @@ import system7_exports
 
 
 class LauncherTests(unittest.TestCase):
+    def test_macos_start_selects_cocoa_without_windows_qemu_discovery(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder)
+            (state / 'serial.log').write_text('DESKTOP_READY\n')
+            with patch.object(vm, 'STATE', state), patch.object(vm.sys, 'platform', 'darwin'), \
+                 patch.object(vm, 'qmp', side_effect=OSError), \
+                 patch.object(vm, 'native_executable', side_effect=AssertionError('Windows discovery on Mac')), \
+                 patch.object(vm, 'launch', return_value=(Mock(pid=456), {})) as launch:
+                vm.start(rebuild=False, transfer=False)
+            self.assertEqual(launch.call_args.args, (state, 'cocoa'))
+            self.assertTrue(launch.call_args.kwargs['preserve'])
+
+    def test_cocoa_launch_uses_native_display_and_preserves_host_environment(self):
+        from unittest.mock import Mock
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state = root / 'vm'
+            dist = root / 'dist'
+            dist.mkdir()
+            for name in ['system7.qcow2', 'bootrom.bin']:
+                (dist / name).write_bytes(b'launcher fixture')
+            def spawn(*args, **kwargs):
+                (state / 'serial.log').write_text('DESKTOP_READY\n')
+                return Mock(pid=999999999, poll=lambda: None)
+            with patch.object(vm, 'DIST', dist), patch.dict(os.environ, clear=True), \
+                 patch.object(vm.subprocess, 'Popen', side_effect=spawn) as process, \
+                 patch.object(vm, 'qmp', return_value={'status': 'running'}):
+                vm.launch(state, 'cocoa')
+            args = json.loads((state / 'command.json').read_text())
+            self.assertEqual(args[0], 'qemu-system-riscv64')
+            self.assertEqual(args[args.index('-display') + 1], 'cocoa,zoom-to-fit=on')
+            self.assertNotIn('GDK_BACKEND', process.call_args.kwargs['env'])
+            self.assertNotIn('WSLENV', process.call_args.kwargs['env'])
+
+    def test_cocoa_boot_error_reports_the_cause_and_reaps_its_guest(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state = root / 'vm'
+            dist = root / 'dist'
+            dist.mkdir()
+            for name in ['system7.qcow2', 'bootrom.bin']:
+                (dist / name).write_bytes(b'launcher fixture')
+            process = Mock(pid=999999999, poll=Mock(side_effect=[None, None, 0]))
+            def spawn(args, **kwargs):
+                (state / 'serial.log').write_text('SYSTEM_STARTUP_FAILED: startup resource unavailable\n')
+                identity = args[args.index('-uuid') + 1]
+                qmp.return_value = {'UUID': identity}
+                return process
+            with patch.object(vm, 'DIST', dist), \
+                 patch.object(vm.subprocess, 'Popen', side_effect=spawn), \
+                 patch.object(vm, 'qmp') as qmp:
+                with self.assertRaisesRegex(RuntimeError, 'startup resource unavailable'):
+                    vm.launch(state, 'cocoa')
+            self.assertEqual([call.args[0] for call in qmp.call_args_list], ['query-uuid', 'quit'])
+            process.wait.assert_called_once_with(timeout=10)
+
     def test_transfer_follows_the_profile_and_is_initialized_before_launch(self):
         for normal in [False, True]:
             with self.subTest(normal=normal), tempfile.TemporaryDirectory() as folder:
@@ -65,7 +124,7 @@ class LauncherTests(unittest.TestCase):
              patch.object(hfs_b_tool.subprocess, 'run') as run:
             hfs_b_tool.tool.cache_clear()
             try:
-                expected = Path(folder) / 'host'
+                expected = Path(folder).resolve() / 'host'
                 self.assertEqual(paths.host_dir(), expected)
                 self.assertEqual(hfs_b_tool.tool(), paths.host_tool('hfs-b'))
                 command = run.call_args.args[0]
@@ -129,9 +188,10 @@ class LauncherTests(unittest.TestCase):
              patch.object(vm.subprocess, 'run') as run:
             vm.main()
             command = run.call_args.args[0]
-            self.assertEqual(command, ['cargo', 'xtask', 'image', '--build-dir', folder])
-            self.assertEqual(vm.DIST, Path(folder) / 'dist')
-            self.assertEqual(vm.STATE, Path(folder) / 'vm')
+            selected = Path(folder).resolve()
+            self.assertEqual(command, ['cargo', 'xtask', 'image', '--build-dir', str(selected)])
+            self.assertEqual(vm.DIST, selected / 'dist')
+            self.assertEqual(vm.STATE, selected / 'vm')
 
     def test_check_defaults_to_separate_media(self):
         with patch.dict(os.environ), patch.object(vm, 'DIST'), patch.object(vm, 'STATE'), \
@@ -162,7 +222,7 @@ class LauncherTests(unittest.TestCase):
              patch.object(sys, 'argv', ['system7_vm.py', 'check', '--no-build']), \
              patch.object(vm, 'check'):
             vm.main()
-            self.assertEqual(vm.DIST, Path(folder) / 'check/dist')
+            self.assertEqual(vm.DIST, Path(folder).resolve() / 'check/dist')
 
 
 if __name__ == '__main__':
