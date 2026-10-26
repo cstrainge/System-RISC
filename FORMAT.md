@@ -928,27 +928,46 @@ Only an admitted DRVR with a matching bus key can claim physical hardware.
 
 `mac-device-interface` owns this class's byte layouts; `mac-driver::devices`
 provides the Rust binding. These payloads do not alter the generic C entry ABI.
-All fields are little-endian. Description is 48 bytes: claim handle u32 (zero
-for probe), bus class four bytes, 16-byte match key, register base u64, register
-length u64, interrupt u32, flags u32. Flags are coherent DMA=1, MMIO=2,
-resident-owned=4. Mapping is 24 bytes: generation-tagged handle u32, zero u32,
-device address u64, length u64. Invalid lengths, overflow and reserved bits fail.
+All fields are little-endian. Description is 52 bytes: native claim alias u64
+(zero for probe) at 0, bus class four bytes at 8, 16-byte match key at 12,
+register base u64 at 28, register length u64 at 36, interrupt u32 at 44, flags
+u32 at 48. Flags are coherent DMA=1, MMIO=2, resident-owned=4. Mapping is
+24 bytes: native mapping ID u64 at 0, device address u64 at 8, length u64 at 16.
+Nonzero handles must be outside the classic 32-bit projection space. Invalid
+lengths, overflow and unknown flag bits fail. The module layout fingerprint
+includes the full-width device contract (bit 58); development ABI stays 1.
+Stale packages must be rebuilt, rather than decoded through a second layout.
 
 | Op | Input | Output |
 | --- | --- | --- |
-| 0 Probe | bus ordinal u32 | 48-byte description, no claim |
-| 1 Claim | bus ordinal u32 | 48-byte description with owned claim |
-| 2 Map | claim u32, zero u32, module RAM address u64, length u64 | 24-byte mapping |
-| 3 Reset | START: claim u32; POLL/CANCEL: empty | empty; Pending until stopped acknowledgement |
-| 4 Unmap | mapping u32 | empty; refused while DMA can still run |
-| 5 Release | claim u32 | empty; requires no mappings/pending reset and stopped device |
+| 0 Probe | bus ordinal u32 | 52-byte description, no claim |
+| 1 Claim | bus ordinal u32 | 52-byte description with owned claim alias |
+| 2 Map | claim u64, module RAM address u64, length u64 | 24-byte mapping |
+| 3 Reset | START: claim u64; POLL/CANCEL: empty | empty; Pending until stopped acknowledgement |
+| 4 Unmap | mapping u64 | empty; refused while DMA can still run |
+| 5 Release | claim u64 | empty; requires no mappings/pending reset and stopped device |
+| 6 Count | empty | inventory slot count u32; slots may be empty |
 
-Claims and mappings use centrally registered shared handle namespaces plus
-independent module-owner checks. A reset associates its broker-issued ticket
-with the claim; polling and cancellation use that incarnation without retaining
-input pointers. No operation spins waiting for hardware. RAM mappings are
-restricted to the caller's pinned native module reservation. The current QEMU
-virt bus uses coherent identity DMA; this is not an IOMMU/isolation claim.
+Physical targets belong to the System domain (`DVOB`/`DVOS`); modules receive
+facility-owned aliases (`DVAL`/`DVAB`), never global target IDs. DMA mappings
+(`DMAP`/`DMST`) belong to the actual module domain and retain the exact claim's
+admission receipt. All six kinds use the public registration catalog and common
+invalidate-first owner walk. An invalidated claim remains exclusive until its
+mappings and hardware stop settle, regardless of callback ordering.
+
+Reset polling/cancellation uses only the original broker-issued ticket and
+owner. Ordinary stale aliases remain invalid. Cleanup submits one successful
+reset per claim, probes once per retry, and retains the original ticket, payload
+and backing on failed writes, failed probes or absent stop acknowledgement.
+Mapping cleanup precedes last-claim reclamation by an explicit count, rather
+than reliance on pool ordering. A positive stop permits retiring a dead claim;
+a late reset callback cannot reset or bind a replacement claim. Losing the
+manager quarantines its claims, maps and System targets; destruction is never
+a hardware acknowledgement. No operation spins waiting for hardware.
+
+RAM mappings are restricted to the caller's pinned native module reservation.
+The current QEMU virt bus uses coherent identity DMA; this is not physical-page
+pinning, IOMMU isolation, module-image reclamation or multi-hart qualification.
 
 The board bus class is `VMMI`; its match key is device ID u32, vendor ID u32,
 then eight zero bytes. Probe ordinals 0..7 describe the board's eight 4 KiB

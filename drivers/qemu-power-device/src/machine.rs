@@ -10,7 +10,7 @@ use super::Hardware;
 pub struct Device
 {
     service:   DeviceService,
-    handle:    u32,
+    handle:    u64,
     registers: usize
 }
 impl Device

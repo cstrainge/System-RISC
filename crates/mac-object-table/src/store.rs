@@ -596,6 +596,32 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         self.owners[at].claim.owner.quarantine(ticket)
     }
 
+    /// Abandonment is not a protocol acknowledgement. Invalidate ordinary
+    /// identities and retain their payloads in the owner's existing quarantine.
+    /// The unique walk may later retry; dropping this store cannot free them.
+    pub fn quarantine_live(&self)
+    {
+        for values in &self.owners
+        {
+            for entry in values.slots.iter().flatten()
+            {
+                // Visit each retained slot once. Restarting ordinary iteration
+                // after each invalidation would rescan every prior dead slot.
+                let Ok(ticket) = values.claim.owner.invalidate(entry.key)
+                else
+                {
+                    continue;
+                };
+                if let Err(error) = values.claim.owner.quarantine(ticket)
+                {
+                    // An invalidated payload still owns its barrier even if a
+                    // damaged ledger cannot accept the original retry ticket.
+                    core::mem::forget(error);
+                }
+            }
+        }
+    }
+
     pub fn remove(&mut self, id: u64) -> Option<Removed<T, G>>
     {
         let (at, key) = self.locate(id)?;

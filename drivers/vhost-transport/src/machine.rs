@@ -103,8 +103,8 @@ impl Queue
 pub(crate) struct Device
 {
     service:         DeviceService,
-    claim:           u32,
-    mapping:         u32,
+    claim:           u64,
+    mapping:         u64,
     registers:       usize,
     dma:             u64,
     queues:          [Queue; 4],

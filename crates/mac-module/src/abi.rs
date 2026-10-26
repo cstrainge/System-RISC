@@ -81,9 +81,11 @@ pub const CANCEL: u32 = 3;
 pub const QUIESCE: u32 = 4;
 pub const PENDING: i32 = 1;
 /// Exact contract fingerprint includes boundary sizes, pointer width and the
-/// full-width provider-reference signature (bit 56) and request tickets (bit 57). ABI remains
-/// unreleased v1. Generated metadata and the resident reject a mismatch before entry.
-pub const LAYOUT_ID: u64 = 64 | (48 << 8) | (24 << 24) | (64 << 40) | (1 << 56) | (1 << 57);
+/// full-width provider-reference signature (bit 56) request tickets (bit 57), and device/DMA
+/// references (bit 58). ABI remains unreleased v1. Generated metadata and the resident reject a
+/// mismatch before entry.
+pub const LAYOUT_ID: u64 =
+    64 | (48 << 8) | (24 << 24) | (64 << 40) | (1 << 56) | (1 << 57) | (1 << 58);
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(core::mem::size_of::<Host>() == 48);

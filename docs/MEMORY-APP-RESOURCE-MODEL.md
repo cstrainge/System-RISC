@@ -2173,3 +2173,45 @@ Optimized image, compiled boundaries, formatting and 52-library docs pass.
 This removes the native job projection/capacity gate; device/DMA/backing-source
 ownership, complete owner-walk recovery, dynamic concurrent processes, pages/MMU,
 heaps, full invocation/accounting and isolation remain staged.
+
+
+### Registered device aliases and DMA retirement
+
+Physical device targets now live in the System ledger (`DVOB`/`DVOS`). Admitted
+modules receive native full-width aliases (`DVAL`/`DVAB`) through the shared
+alias facility, with independent original bus-match and owner checks. Native
+DMA records (`DMAP`/`DMST`) retain the exact claim's authenticated publication
+receipt. There is no per-manager ID issuer, 64-claim ceiling or 128-map ceiling.
+Probe ordinals remain inventory labels, not object authority.
+
+All six kinds use the ordinary public registry and common cleanup walk. A
+mapping counter prevents releasing a claim before its actual dependent mappings
+settle. Cleanup issues one successfully submitted reset per claim, probes once
+per retry, and retains typed refusals and the unique ticket in the existing
+quarantine when reset or acknowledgement fails. An invalidated claim remains
+exclusive; late work cannot attach to a newly issued claim. The real hardware
+stop ACK permits retiring a dead claim even if its reset waiter was lost. That
+does not acknowledge an outstanding broker request: its separate DREQ ledger
+barrier still applies. Abandoning the manager invalidates and quarantines live
+maps/aliases before store destruction; the System targets remain pinned.
+
+The VDEV SDK, resident service and both hardware drivers use u64 native IDs;
+the 52-byte description and unchanged-size 24-byte mapping are documented in
+FORMAT.md. The module layout fingerprint rejects pre-change packages before
+entry; the unreleased ABI remains 1 and all packages rebuild together.
+
+This closes registered device/map identity and positive-stop retirement policy.
+It does not claim physical DMA-page pins, reclaimable module images, autonomous
+hot-unload, IRQ-driven reset progress, arbitrary privileged-fault recovery or
+multi-hart safety. The platform bus owns hardware access; invocation/context
+and the later page/heap stages retain their explicit gates. Backing-source
+records and full teardown/Finder recovery remain in the current lifetime stage.
+
+Qualification covers forced single-slot claim/map reuse, stale and foreign IDs,
+320 simultaneous mappings, delayed/absent hardware ACK, failed reset writes and
+stop probes, arbitrary cleanup order, retained unique tickets, late reset work
+and manager abandonment. Canonical public-SDK conformance reads all six ordinary
+registrations. Native campaigns exercise the actual transport/power device SDK,
+old-device-layout rejection before module entry, both transport disconnects,
+provider operations, classic archives, process cleanup, cursor latency and panic
+recovery. These are the current hardware/SDK cases, not exhaustive bus support.

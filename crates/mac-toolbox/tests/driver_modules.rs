@@ -48,8 +48,8 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
     let mut cases = Vec::new();
     for name in ["success", "success-reversed", "no-device", "no-device-reversed", "unknown-bus",
                  "wrong-directory", "missing-contract", "duplicate-contract", "wrong-abi",
-                 "wrong-target", "wrong-layout", "obsolete-host-layout", "bad-digest",
-                 "bad-relocation"]
+                 "wrong-target", "wrong-layout", "obsolete-host-layout", "obsolete-device-layout",
+                 "bad-digest", "bad-relocation"]
     {
         let mut entries = resources.clone();
         let contract = entries.iter().position(|r| r.kind == *b"DABI").unwrap();
@@ -97,6 +97,11 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
             "obsolete-host-layout" =>
             {
                 let obsolete = 64u64 | (40 << 8) | (24 << 24) | (56 << 40);
+                entries[contract].data[120..128].copy_from_slice(&obsolete.to_le_bytes());
+            }
+            "obsolete-device-layout" =>
+            {
+                let obsolete = mac_module::abi::LAYOUT_ID & !(1u64 << 58);
                 entries[contract].data[120..128].copy_from_slice(&obsolete.to_le_bytes());
             }
             "bad-digest" =>

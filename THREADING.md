@@ -480,3 +480,14 @@ completion receipts with no fixed-size cleanup scratch array. The queue retains
 its existing IRQ/preemption gate and borrowed origin guard; foreign callbacks
 hold neither queue nor registry guards. This removes a projection/capacity limit,
 not the remaining physical DMA/source, page, accounting or isolation gates.
+
+
+Device/DMA policy now uses System-domain physical targets and native module
+aliases/maps from the same registered facility. The short exclusive device-state
+borrow covers claim counts and bus reset/probe bookkeeping; it never waits for
+hardware. Cleanup retries probe once, keeping unique tickets quarantined until
+a positive stop and actual mapping retirement. Ordinary invalidated IDs cannot
+be revived by reset continuations. Losing the manager quarantines its live uses
+without acknowledging DMA completion. This is a lifetime/ACK policy, not a proof
+of physical page pinning, reclaimable module images, IRQ-driven reset progress
+or multi-hart device synchronization.
