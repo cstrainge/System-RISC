@@ -17,6 +17,15 @@ const BUTTONS: [Rect; 6] = [Rect::new(14, 369, 55, 391),
                             Rect::new(302, 369, 421, 391),
                             Rect::new(435, 369, 566, 391)];
 const LABELS: [u32; 6] = [3, 4, 5, 6, 2, 1];
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Paint
+{
+    Full,
+    Report,
+    Warnings
+}
+const FOOTER: Rect = Rect::new(14, 350, 566, 365);
+const WARNINGS: Rect = Rect::new(14, 74, 566, 87);
 const MONACO: FontSelection = FontSelection { family: 4,
                                               size:   9,
                                               face:   0 };
@@ -77,7 +86,10 @@ impl super::Desktop
         {
             previous.thread
         };
-        self.crash.set_context(self.owner, thread);
+        if call.operation == BEGIN || previous.app == 0
+        {
+            self.crash.set_context(self.owner, thread);
+        }
         if call.operation == BEGIN
         {
             let old = self.crash.info().window;
@@ -200,12 +212,27 @@ impl super::Desktop
             0 | 1 => info.first_line != 0,
             2 | 3 => info.first_line.saturating_add(info.page_lines) < info.line_count,
             4 => info.report_bytes.saturating_add(8) <= mac_abi::scrap::MAX_BYTES,
-            5 => self.owner != crate::context::finder_app().0,
+            5 => !self.crash.restart_pending,
             _ => false
         }
     }
 
     fn draw_crash_report(&mut self) -> Result<(), Status>
+    {
+        self.paint_crash(Paint::Full)
+    }
+
+    fn draw_crash_scroll(&mut self) -> Result<(), Status>
+    {
+        self.paint_crash(Paint::Report)
+    }
+
+    fn draw_crash_warnings(&mut self) -> Result<(), Status>
+    {
+        self.paint_crash(Paint::Warnings)
+    }
+
+    fn paint_crash(&mut self, mode: Paint) -> Result<(), Status>
     {
         let info = self.crash.info();
         if info.window.0 == 0
@@ -213,62 +240,117 @@ impl super::Desktop
             return Err(NOT_FOUND);
         }
         let window = info.window.0;
+        let target = mac_abi::quickdraw::Target::window(info.window);
         let mut request = window_request(info.window);
-        checked(self.window(BEGIN_UPDATE, &mut request))?;
-        let result = (|| {
-            self.graphics(&mut GraphicsCall { operation: QD_RESET,
-                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
-                                              ..Default::default() },
-                          &[],
-                          &[])?;
-            self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
-                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
-                                              bounds: Rect::new(0, 0, 580, 404),
-                                              shape: SHAPE_RECT,
-                                              verb: VERB_ERASE,
-                                              ..Default::default() },
-                          &[],
-                          &[])?;
-            let call = IconCall { target: mac_abi::quickdraw::Target::window(WindowId(window)),
-                                  scope: resources::SYSTEM,
-                                  id: RESOURCE_ID,
-                                  destination: Rect::new(18, 14, 50, 46),
-                                  ..Default::default() };
-            let drawing =
-                crate::kernel::with_resources(|resources| {
-                    icons_service::Drawing::new(resources, &call, service::Port::default())
-                }).ok_or(NOT_SUPPORTED)??;
-            self.icon(&call, drawing)?;
-            self.crash_text(window, FontSelection::default(), 64, 29, &label(0)?)?;
-            self.crash_text(window,
-                            MONACO,
-                            64,
-                            48,
-                            &format!("{} {}   {} {}",
-                                     label(12)?,
-                                     info.app,
-                                     label(13)?,
-                                     info.thread))?;
-            let description =
-                if self.owner == crate::context::finder_app().0 { label(8)? } else { label(11)? };
-            self.crash_text(window, MONACO, 14, 72, &description)?;
-            let mut warnings = String::new();
-            warnings.try_reserve(256).map_err(|_| NO_MEMORY)?;
-            for (enabled, index) in [(info.flags & TRUNCATED != 0, 9),
-                                     (info.flags & FORMAT_FAILED != 0, 10),
-                                     (self.crash.copy_failed, 17)]
+        if mode == Paint::Full
+        {
+            checked(self.window(BEGIN_UPDATE, &mut request))?;
+        }
+        else
+        {
+            let rectangles: &[Rect] =
+                if mode == Paint::Report { &[REPORT, FOOTER] } else { &[WARNINGS] };
+            let mut bytes = [0; 16];
+            for (rect, output) in rectangles.iter().zip(bytes.chunks_exact_mut(8))
             {
-                if enabled
+                for (word, slot) in
+                    [rect.left, rect.top, rect.right, rect.bottom].iter()
+                                                                  .zip(output.chunks_exact_mut(2))
                 {
-                    if !warnings.is_empty()
-                    {
-                        warnings.push_str("   ");
-                    }
-                    warnings.push_str(&label(index)?);
+                    slot.copy_from_slice(&word.to_le_bytes());
                 }
             }
-            self.crash_text(window, MONACO, 14, 84, &warnings)?;
-            self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
+            self.graphics(&mut GraphicsCall { operation: QD_WINDOW_BEGIN_RECTS,
+                                              target,
+                                              ..Default::default() },
+                          &[],
+                          &bytes[..rectangles.len() * 8])?;
+        }
+        let result: Result<(), Status> = (|| {
+            self.graphics(&mut GraphicsCall { operation: QD_RESET,
+                                              target,
+                                              ..Default::default() },
+                          &[],
+                          &[])?;
+            let erases: &[Rect] = match mode
+            {
+                Paint::Full => &[Rect::new(0, 0, 580, 404)],
+                Paint::Report => &[REPORT, FOOTER],
+                Paint::Warnings => &[WARNINGS]
+            };
+            for bounds in erases
+            {
+                self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
+                                                  target,
+                                                  bounds: *bounds,
+                                                  shape: SHAPE_RECT,
+                                                  verb: VERB_ERASE,
+                                                  ..Default::default() },
+                              &[],
+                              &[])?;
+            }
+            if mode == Paint::Full
+            {
+                let call = IconCall { target:
+                                          mac_abi::quickdraw::Target::window(WindowId(window)),
+                                      scope: resources::SYSTEM,
+                                      id: RESOURCE_ID,
+                                      destination: Rect::new(18, 14, 50, 46),
+                                      ..Default::default() };
+                let drawing =
+                    crate::kernel::with_resources(|resources| {
+                        icons_service::Drawing::new(resources, &call, service::Port::default())
+                    }).ok_or(NOT_SUPPORTED)??;
+                self.icon(&call, drawing)?;
+                self.crash_text(window, FontSelection::default(), 64, 29, &label(0)?)?;
+                self.crash_text(window,
+                                MONACO,
+                                64,
+                                48,
+                                &format!("{} {}   {} {}",
+                                         label(12)?,
+                                         info.app,
+                                         label(13)?,
+                                         info.thread))?;
+                let description = if self.owner == crate::context::finder_app().0
+                {
+                    label(8)?
+                }
+                else
+                {
+                    label(11)?
+                };
+                self.crash_text(window, MONACO, 14, 72, &description)?;
+            }
+            if matches!(mode, Paint::Full | Paint::Warnings)
+            {
+                let mut warnings = String::new();
+                warnings.try_reserve(256).map_err(|_| NO_MEMORY)?;
+                for (enabled, index) in [(info.flags & TRUNCATED != 0, 9),
+                                         (info.flags & FORMAT_FAILED != 0, 10),
+                                         (self.crash.copy_failed, 17)]
+                {
+                    if enabled
+                    {
+                        if !warnings.is_empty()
+                        {
+                            warnings.push_str("   ");
+                        }
+                        warnings.push_str(&label(index)?);
+                    }
+                }
+                if let Some(status) = self.crash.restart_error
+                {
+                    warnings.clear();
+                    warnings.push_str(&label(if status == NO_MEMORY { 19 } else { 18 })?);
+                    use core::fmt::Write;
+                    let _ = write!(warnings, " ({status})");
+                }
+                self.crash_text(window, MONACO, 14, 84, &warnings)?;
+            }
+            if matches!(mode, Paint::Full | Paint::Report)
+            {
+                self.graphics(&mut GraphicsCall { operation: QD_SHAPE,
                                               target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               bounds: REPORT,
                                               shape: SHAPE_RECT,
@@ -276,7 +358,7 @@ impl super::Desktop
                                               ..Default::default() },
                           &[],
                           &[])?;
-            self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
+                self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
                                               target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               bounds: Rect::new(REPORT.left + 3,
                                                                 REPORT.top + 3,
@@ -285,84 +367,207 @@ impl super::Desktop
                                               ..Default::default() },
                           &[],
                           &[])?;
-            let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
-            let metrics = fonts.metrics(fonts_service::selection(MONACO))?;
-            let advance = metrics.ascent
-                                 .saturating_add(metrics.descent)
-                                 .saturating_add(metrics.leading)
-                                 .max(1);
-            for visible in 0..info.page_lines
-            {
-                let Some(line) = self.crash.line((info.first_line + visible) as usize)
-                else
+                let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
+                let metrics = fonts.metrics(fonts_service::selection(MONACO))?;
+                let advance = metrics.ascent
+                                     .saturating_add(metrics.descent)
+                                     .saturating_add(metrics.leading)
+                                     .max(1);
+                for visible in 0..info.page_lines
                 {
-                    break;
-                };
-                let mut text = String::new();
-                text.try_reserve(line.len().saturating_mul(4)).map_err(|_| NO_MEMORY)?;
-                let mut column = 0;
-                for character in line.chars()
-                {
-                    if character == '\t'
-                    {
-                        let spaces = 4 - (column % 4);
-                        for _ in 0..spaces
-                        {
-                            text.push(' ');
-                        }
-                        column += spaces;
-                    }
+                    let Some(line) = self.crash.line((info.first_line + visible) as usize)
                     else
                     {
-                        text.push(character);
-                        column += 1;
+                        break;
+                    };
+                    let mut text = String::new();
+                    text.try_reserve(line.len().saturating_mul(4)).map_err(|_| NO_MEMORY)?;
+                    let mut column = 0;
+                    for character in line.chars()
+                    {
+                        if character == '\t'
+                        {
+                            let spaces = 4 - (column % 4);
+                            for _ in 0..spaces
+                            {
+                                text.push(' ');
+                            }
+                            column += spaces;
+                        }
+                        else
+                        {
+                            text.push(character);
+                            column += 1;
+                        }
                     }
+                    self.crash_text(window,
+                                    MONACO,
+                                    REPORT.left + 4,
+                                    REPORT.top + 4 + metrics.ascent + visible as i16 * advance,
+                                    &text)?;
                 }
-                self.crash_text(window,
-                                MONACO,
-                                REPORT.left + 4,
-                                REPORT.top + 4 + metrics.ascent + visible as i16 * advance,
-                                &text)?;
-            }
-            self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
+                self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
                                               target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               bounds: Rect::new(0, 0, 580, 404),
                                               ..Default::default() },
                           &[],
                           &[])?;
-            let coverage =
-                format!("{} {}-{} {} {}   {} {}",
-                        label(14)?,
-                        if info.line_count == 0 { 0 } else { info.first_line + 1 },
-                        info.first_line.saturating_add(info.page_lines).min(info.line_count),
-                        label(15)?,
-                        info.line_count,
-                        info.report_bytes,
-                        label(16)?);
-            self.crash_text(window, MONACO, 14, 360, &coverage)?;
-            for (index, bounds) in BUTTONS.iter().enumerate()
+                let coverage =
+                    format!("{} {}-{} {} {}   {} {}",
+                            label(14)?,
+                            if info.line_count == 0 { 0 } else { info.first_line + 1 },
+                            info.first_line.saturating_add(info.page_lines).min(info.line_count),
+                            label(15)?,
+                            info.line_count,
+                            info.report_bytes,
+                            label(16)?);
+                self.crash_text(window, MONACO, 14, 360, &coverage)?;
+            }
+            if mode == Paint::Full
             {
-                let title = if index == 5 && self.owner == crate::context::finder_app().0
-                {
-                    label(7)?
-                }
-                else
-                {
-                    label(LABELS[index])?
-                };
-                let mut standard = definitions::ControlDefinitionState::new(*bounds, &title);
-                standard.enabled = u32::from(self.crash_button_enabled(index));
-                standard.highlighted =
-                    u32::from(self.crash.pressed == Some(index) && self.crash.pressed_hot);
-                checked(self.control(&mut mac_abi::controls::ControlCall {
-                    operation: mac_abi::controls::DRAW_STANDARD, window, standard,
-                    ..Default::default()
-                }))?;
+                self.crash_controls(true)?;
             }
             Ok(())
         })();
-        checked(self.window(END_UPDATE, &mut request))?;
-        result
+        if mode == Paint::Full
+        {
+            let ended = checked(self.window(END_UPDATE, &mut request));
+            result?;
+            ended?;
+        }
+        else
+        {
+            let operation =
+                if result.is_ok() { QD_WINDOW_COMMIT_MASK } else { QD_WINDOW_CANCEL_MASK };
+            let ended = self.graphics(&mut GraphicsCall { operation,
+                                                          target,
+                                                          ..Default::default() },
+                                      &[],
+                                      &[]);
+            result?;
+            ended?;
+        }
+        if mode == Paint::Report
+        {
+            self.crash_controls(false)?;
+        }
+        Ok(())
+    }
+
+    fn crash_controls(&mut self, draw: bool) -> Result<(), Status>
+    {
+        use mac_abi::controls::*;
+        let window = self.crash.info().window.0;
+        for (index, bounds) in BUTTONS.iter().enumerate()
+        {
+            let enabled = u32::from(self.crash_button_enabled(index));
+            let id = match self.crash.controls[index]
+            {
+                Some(id) =>
+                {
+                    if self.crash.control_enabled[index] != (enabled != 0)
+                    {
+                        let mut info = ControlCall { operation: INFO_OBJECT,
+                                                     id,
+                                                     ..Default::default() };
+                        self.managed_control(&mut info)?;
+                        info.standard.enabled = enabled;
+                        info.operation = CONFIGURE_OBJECT;
+                        self.managed_control(&mut info)?;
+                        self.crash.control_enabled[index] = enabled != 0;
+                    }
+                    id
+                }
+                None =>
+                {
+                    let title = label(if index == 5 && self.owner == crate::context::finder_app().0
+                                      {
+                                          7
+                                      }
+                                      else
+                                      {
+                                          LABELS[index]
+                                      })?;
+                    let mut standard =
+                        mac_abi::definitions::ControlDefinitionState::new(*bounds, &title);
+                    standard.enabled = enabled;
+                    if index == 5
+                    {
+                        standard.bounds.inset(-4, -4);
+                        standard.flags = mac_abi::definitions::DEFAULT_BUTTON;
+                    }
+                    let mut call = ControlCall { operation: CREATE_STANDARD,
+                                                 window,
+                                                 standard,
+                                                 ..Default::default() };
+                    let created = self.managed_control(&mut call);
+                    if call.id != 0
+                    {
+                        self.crash.controls[index] = Some(call.id);
+                        self.crash.control_enabled[index] = enabled != 0;
+                    }
+                    created?;
+                    call.id
+                }
+            };
+            if draw
+            {
+                self.managed_control(&mut ControlCall { operation: DRAW_OBJECT,
+                                                        id,
+                                                        ..Default::default() })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn request_finder_restart(&mut self) -> Result<(), Status>
+    {
+        if self.owner != crate::context::finder_app().0
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if self.crash.restart_pending
+        {
+            return Ok(());
+        }
+        let binding = self.processes.resource_binding(self.owner)?;
+        match crate::toolbox::processes::finder::request(binding)
+        {
+            Ok(()) =>
+            {
+                self.crash.restart_pending = true;
+                if self.crash.restart_error.take().is_some()
+                {
+                    self.draw_crash_warnings()?;
+                }
+                self.crash_controls(false)
+            }
+            Err(status) => self.finder_restart_failed(status)
+        }
+    }
+
+    pub(crate) fn finder_restart_failed(&mut self, status: Status) -> Result<(), Status>
+    {
+        self.crash.restart_pending = false;
+        self.crash.restart_error = Some(status);
+        serial!("FINDER_RESTART_FAILED app={} status={status}; report retained, retry available",
+                self.owner);
+        if self.crash.info().window.0 == 0
+        {
+            return self.show_crash_report();
+        }
+        self.draw_crash_warnings()?;
+        self.crash_controls(false)
+    }
+
+    fn cancel_crash_tracking(&mut self)
+    {
+        if let Some(index) = self.crash.tracking.take()
+           && let Some(id) = self.crash.controls[index]
+        {
+            let _ = self.managed_control(&mut mac_abi::controls::ControlCall {
+                operation: mac_abi::controls::CANCEL_TRACKING, id, ..Default::default() });
+        }
     }
 
     fn crash_button(&mut self, index: usize) -> Result<(), Status>
@@ -383,8 +588,12 @@ impl super::Desktop
                                  scrap.replace_text(self.crash.report())
                              }).map_err(|error| error.status())
                                .and_then(|result| result);
-                self.crash.copy_failed = copied.is_err();
-                self.draw_crash_report()?;
+                let failed = copied.is_err();
+                if self.crash.copy_failed != failed
+                {
+                    self.crash.copy_failed = failed;
+                    self.draw_crash_warnings()?;
+                }
                 if let Err(status) = copied
                 {
                     serial!("CRASH_REPORT_COPY_FAILED app={} status={}", self.owner, status);
@@ -397,6 +606,10 @@ impl super::Desktop
             }
             5 =>
             {
+                if self.owner == crate::context::finder_app().0
+                {
+                    return self.request_finder_restart();
+                }
                 return self.crash_request(&mut CrashCall { operation: DISMISS,
                                                            ..Default::default() },
                                           "",
@@ -404,9 +617,11 @@ impl super::Desktop
             }
             _ => return Err(BAD_ARGUMENT)
         };
-        self.crash.scroll(delta);
-        self.draw_crash_report()?;
-        self.log_crash_scroll();
+        if self.crash.scroll(delta)
+        {
+            self.draw_crash_scroll()?;
+            self.log_crash_scroll();
+        }
         Ok(())
     }
 
@@ -417,7 +632,85 @@ impl super::Desktop
                 info.first_line, info.line_count, info.page_lines);
     }
 
-    pub(super) fn crash_input(&mut self, input: Input, _when: u32) -> bool
+    fn crash_pointer(&mut self, point: Point, down: bool, when: u32) -> bool
+    {
+        use mac_abi::controls::*;
+        let window = self.crash.info().window;
+        let Some(bounds) = self.windows.window(window).map(|window| window.bounds)
+        else
+        {
+            self.cancel_crash_tracking();
+            return false;
+        };
+        let local = Point { h: point.h.saturating_sub(bounds.left),
+                            v: point.v.saturating_sub(bounds.top) };
+        if let Some(index) = self.crash.tracking
+        {
+            let Some(id) = self.crash.controls[index]
+            else
+            {
+                self.crash.tracking = None;
+                return true;
+            };
+            let mut call = ControlCall { operation: POLL_TRACKING,
+                                         id,
+                                         window: window.0,
+                                         point: local,
+                                         ticks: u64::from(when),
+                                         flags: if down { BUTTON_DOWN } else { 0 },
+                                         ..Default::default() };
+            if self.managed_control(&mut call).is_err()
+            {
+                self.cancel_crash_tracking();
+                return true;
+            }
+            if call.flags & TRACKING == 0
+            {
+                self.crash.tracking = None;
+            }
+            if call.flags & ACTION != 0
+            {
+                let _ = self.crash_button(index);
+            }
+            return true;
+        }
+        if !down
+        {
+            return false;
+        }
+        let hit = self.windows.find_window(point);
+        if hit.window != Some(window) || hit.part != WindowPart::Content
+        {
+            return false;
+        }
+        let _ = self.window(SELECT_WINDOW, &mut window_request(window));
+        for index in 0..self.crash.controls.len()
+        {
+            let Some(id) = self.crash.controls[index]
+            else
+            {
+                continue;
+            };
+            let mut call = ControlCall { operation: BEGIN_TRACKING,
+                                         id,
+                                         window: window.0,
+                                         point: local,
+                                         ticks: u64::from(when),
+                                         ..Default::default() };
+            if self.managed_control(&mut call).is_err()
+            {
+                return true;
+            }
+            if call.flags & TRACKING != 0
+            {
+                self.crash.tracking = Some(index);
+                break;
+            }
+        }
+        true
+    }
+
+    pub(super) fn crash_input(&mut self, input: Input, when: u32) -> bool
     {
         let info = self.crash.info();
         if self.owner != self.foreground
@@ -428,6 +721,7 @@ impl super::Desktop
            || self.menus.is_tracking()
            || self.windows.is_tracking()
         {
+            self.cancel_crash_tracking();
             return false;
         }
         match input
@@ -452,13 +746,17 @@ impl super::Desktop
                     0x77 => i32::MAX,
                     _ => 0
                 };
-                if delta != 0 && self.crash.scroll(delta) && self.draw_crash_report().is_ok()
+                if delta != 0 && self.crash.scroll(delta) && self.draw_crash_scroll().is_ok()
                 {
                     self.log_crash_scroll();
                 }
                 if modifiers & CMD_KEY != 0 && character.eq_ignore_ascii_case(&b'c')
                 {
                     let _ = self.crash_button(4);
+                }
+                if character == b'\r' || character == 3
+                {
+                    let _ = self.crash_button(5);
                 }
                 if modifiers & CMD_KEY != 0 && character.eq_ignore_ascii_case(&b'w')
                 {
@@ -467,65 +765,10 @@ impl super::Desktop
                 true
             }
             Input::Button { point,
-                            down } =>
+                            down } => self.crash_pointer(point, down, when),
+            Input::Move(point) if self.crash.tracking.is_some() =>
             {
-                let hit = self.windows.find_window(point);
-                if hit.window != Some(info.window) || hit.part != WindowPart::Content
-                {
-                    let was_pressed = self.crash.pressed.take().is_some();
-                    self.crash.pressed_hot = false;
-                    if was_pressed
-                    {
-                        let _ = self.draw_crash_report();
-                    }
-                    return was_pressed && !down;
-                }
-                let Some(window) = self.windows.window(info.window)
-                else
-                {
-                    return false;
-                };
-                let local = Point { h: point.h - window.bounds.left,
-                                    v: point.v - window.bounds.top };
-                let button = BUTTONS.iter().position(|bounds| bounds.contains(local));
-                if down
-                {
-                    let _ = self.window(SELECT_WINDOW, &mut window_request(info.window));
-                    self.crash.pressed = button.filter(|index| self.crash_button_enabled(*index));
-                    self.crash.pressed_hot = self.crash.pressed.is_some();
-                    let _ = self.draw_crash_report();
-                }
-                else
-                {
-                    let pressed = self.crash.pressed.take();
-                    self.crash.pressed_hot = false;
-                    if let Some(index) = pressed.filter(|index| Some(*index) == button)
-                    {
-                        let _ = self.crash_button(index);
-                    }
-                    else
-                    {
-                        let _ = self.draw_crash_report();
-                    }
-                }
-                true
-            }
-            Input::Move(point) if self.crash.pressed.is_some() =>
-            {
-                let Some(window) = self.windows.window(info.window)
-                else
-                {
-                    return false;
-                };
-                let local = Point { h: point.h - window.bounds.left,
-                                    v: point.v - window.bounds.top };
-                let hot = self.crash.pressed.is_some_and(|index| BUTTONS[index].contains(local));
-                if hot != self.crash.pressed_hot
-                {
-                    self.crash.pressed_hot = hot;
-                    let _ = self.draw_crash_report();
-                }
-                true
+                self.crash_pointer(point, true, when)
             }
             _ => false
         }

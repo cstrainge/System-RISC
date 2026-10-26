@@ -11,37 +11,98 @@ pub const PAGE_LINES: u32 = 23;
 
 pub struct Manager
 {
-    report:                 String,
-    starts:                 Vec<u32>,
-    columns:                usize,
-    column:                 usize,
-    previous_cr:            bool,
-    info:                   CrashInfo,
-    #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
-    pub(super) pressed:     Option<usize>,
-    #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
-    pub(super) pressed_hot: bool,
-    #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
-    pub(super) copy_failed: bool
+    report:                     String,
+    starts:                     Vec<u32>,
+    columns:                    usize,
+    column:                     usize,
+    previous_cr:                bool,
+    info:                       CrashInfo,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) controls:        [Option<u64>; 6],
+    #[cfg(target_arch = "riscv64")]
+    pub(super) control_enabled: [bool; 6],
+    #[cfg(target_arch = "riscv64")]
+    pub(super) tracking:        Option<usize>,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) copy_failed:     bool,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) restart_pending: bool,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) restart_error:   Option<Status>
+}
+
+/// Diagnostic data is independent of the dying application's window/control
+/// objects. A recovery controller can preserve it before stopping that owner.
+#[cfg(any(target_arch = "riscv64", test))]
+pub(crate) struct Snapshot
+{
+    report:      String,
+    starts:      Vec<u32>,
+    columns:     usize,
+    column:      usize,
+    previous_cr: bool,
+    info:        CrashInfo
 }
 impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { report:      String::new(),
-               starts:      Vec::new(),
-               columns:     DEFAULT_COLUMNS,
-               column:      0,
-               previous_cr: false,
-               info:        CrashInfo { page_lines: PAGE_LINES,
-                                        ..Default::default() },
-               pressed:     None,
-               pressed_hot: false,
-               copy_failed: false }
+        Self { report:                                          String::new(),
+               starts:                                          Vec::new(),
+               columns:                                         DEFAULT_COLUMNS,
+               column:                                          0,
+               previous_cr:                                     false,
+               info:                                            CrashInfo { page_lines:
+                                                                                PAGE_LINES,
+                                                                            ..Default::default() },
+               #[cfg(target_arch = "riscv64")]
+               controls:                                        [None; 6],
+               #[cfg(target_arch = "riscv64")]
+               control_enabled:                                 [false; 6],
+               #[cfg(target_arch = "riscv64")]
+               tracking:                                        None,
+               #[cfg(target_arch = "riscv64")]
+               copy_failed:                                     false,
+               #[cfg(target_arch = "riscv64")]
+               restart_pending:                                 false,
+               #[cfg(target_arch = "riscv64")]
+               restart_error:                                   None }
     }
 }
 impl Manager
 {
+    #[cfg(any(target_arch = "riscv64", test))]
+    pub(crate) fn snapshot(&self) -> Result<Snapshot, Status>
+    {
+        let mut report = String::new();
+        report.try_reserve_exact(self.report.len()).map_err(|_| NO_MEMORY)?;
+        report.push_str(&self.report);
+        let mut starts = Vec::new();
+        starts.try_reserve_exact(self.starts.len()).map_err(|_| NO_MEMORY)?;
+        starts.extend_from_slice(&self.starts);
+        Ok(Snapshot { report,
+                      starts,
+                      columns: self.columns,
+                      column: self.column,
+                      previous_cr: self.previous_cr,
+                      info: self.info() })
+    }
+
+    #[cfg(any(target_arch = "riscv64", test))]
+    pub(crate) fn from_snapshot(snapshot: Snapshot) -> Self
+    {
+        let mut info = snapshot.info;
+        info.window = WindowId(0);
+        info.dismissed = 0;
+        Self { report: snapshot.report,
+               starts: snapshot.starts,
+               columns: snapshot.columns,
+               column: snapshot.column,
+               previous_cr: snapshot.previous_cr,
+               info,
+               ..Default::default() }
+    }
+
     pub fn set_context(&mut self, app: u64, thread: u64)
     {
         self.info.app = app;
@@ -51,6 +112,12 @@ impl Manager
     pub fn set_window(&mut self, window: WindowId)
     {
         self.info.window = window;
+        #[cfg(target_arch = "riscv64")]
+        {
+            self.controls = [None; 6];
+            self.control_enabled = [false; 6];
+            self.tracking = None;
+        }
     }
 
     pub fn info(&self) -> CrashInfo
@@ -235,5 +302,49 @@ fn layout(starts: &mut Vec<u32>, column: &mut usize, previous_cr: &mut bool, col
             advance = if character == '\t' { 4 } else { 1 };
         }
         *column += advance;
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests
+{
+    use super::*;
+    #[test]
+    fn recovery_snapshot_preserves_complete_origin_and_layout_without_ui_ids()
+    {
+        let mut old = Manager::default();
+        old.set_context(401, 991);
+        old.request(&mut CrashCall { operation: BEGIN,
+                                     ..Default::default() },
+                    "",
+                    &mut [])
+           .unwrap();
+        let text = "Complete report café λ\r\nsecond\tline\nthird";
+        old.request(&mut CrashCall { operation: APPEND,
+                                     ..Default::default() },
+                    text,
+                    &mut [])
+           .unwrap();
+        old.set_columns(12).unwrap();
+        old.set_page_lines(2);
+        old.scroll(i32::MAX);
+        old.set_window(WindowId(345));
+        let info = old.info();
+        let snapshot = old.snapshot().unwrap();
+        old.request(&mut CrashCall { operation: BEGIN,
+                                     ..Default::default() },
+                    "",
+                    &mut [])
+           .unwrap();
+        drop(old);
+        let restored = Manager::from_snapshot(snapshot);
+        assert_eq!(restored.report(), text);
+        assert_eq!(restored.info(),
+                   CrashInfo { window: WindowId(0),
+                               dismissed: 0,
+                               ..info });
+        assert_eq!(restored.columns, 12);
+        assert_eq!(restored.column, 5);
+        assert_eq!(restored.starts.len(), info.line_count as usize);
     }
 }

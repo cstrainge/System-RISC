@@ -102,55 +102,157 @@ pub(crate) fn has_threads(app: u64) -> bool
              .enumerate()
              .any(|(index, thread)| thread.is_some() && CONTEXTS[index].identity().app.0 == app)
 }
-pub fn spawn(owner: crate::toolbox::handles::OwnerRef, loaded: crate::kernel::LoadedImage)
-             -> Result<u64, mac_abi::Status>
+/// Own every fallible stack/image preparation before publishing a thread.
+/// The plan can wait for a retiring slot without consuming its image use.
+pub(crate) struct PreparedThread
 {
-    let (image, entry, execution) = loaded.into_parts();
-    let mut scheduler = SCHEDULER.lock();
-    let slot = scheduler.threads.iter().position(|t| t.is_none()).ok_or(mac_abi::NO_MEMORY)?;
-    let context_bytes = super::traps::frame_reservation_bytes();
-    if context_bytes >= STACK_WORDS * core::mem::size_of::<u128>()
+    owner:  crate::toolbox::handles::OwnerRef,
+    loaded: crate::kernel::LoadedImage,
+    stack:  Box<[u128]>,
+    frame:  usize,
+    top:    usize
+}
+pub(crate) struct PrepareFailure
+{
+    pub(crate) status: mac_abi::Status,
+    pub(crate) loaded: crate::kernel::LoadedImage
+}
+pub(crate) struct SpawnFailure
+{
+    pub(crate) status:   mac_abi::Status,
+    pub(crate) prepared: PreparedThread
+}
+pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef, loaded: crate::kernel::LoadedImage)
+                      -> Result<PreparedThread, PrepareFailure>
+{
+    let prepared = (|| {
+        if !owner.accepting() || loaded.binding().owner() != owner.owner().incarnation()
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        let context_bytes = super::traps::frame_reservation_bytes();
+        if context_bytes >= STACK_WORDS * core::mem::size_of::<u128>()
+        {
+            serial!("PROCESS_CONTEXT_REFUSED: {} bytes of CPU state do not fit the configured {} \
+                     byte thread stack",
+                    context_bytes,
+                    STACK_WORDS * core::mem::size_of::<u128>());
+            return Err(mac_abi::NO_MEMORY);
+        }
+        let mut storage = alloc::vec::Vec::<u128>::new();
+        storage.try_reserve_exact(STACK_WORDS).map_err(|_| mac_abi::NO_MEMORY)?;
+        storage.resize(STACK_WORDS, 0);
+        let mut stack = storage.into_boxed_slice();
+        // SAFETY: the exclusive owned allocation includes the validated frame
+        // reservation and remains pinned at this address until thread reaping.
+        let top = unsafe { stack.as_mut_ptr().add(stack.len()) } as usize;
+        let frame = (top - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
+        let mut initial = TrapFrame::default();
+        initial.pc = app_start as *const () as usize;
+        initial.status = super::traps::INITIAL_STATUS;
+        initial.registers[8] = loaded.entry();
+        // gp is unused by the freestanding PC-relative executable contract.
+        unsafe {
+            frame.write(initial);
+        }
+        Ok((stack, frame as usize, top))
+    })();
+    match prepared
     {
-        serial!("PROCESS_CONTEXT_REFUSED: {} bytes of CPU state do not fit the configured {} \
-                 byte thread stack",
-                context_bytes,
-                STACK_WORDS * core::mem::size_of::<u128>());
-        return Err(mac_abi::NO_MEMORY);
+        Ok((stack, frame, top)) =>
+        {
+            Ok(PreparedThread { owner,
+                                loaded,
+                                stack,
+                                frame,
+                                top })
+        }
+        Err(status) =>
+        {
+            Err(PrepareFailure { status,
+                                 loaded })
+        }
     }
-    let mut storage = alloc::vec::Vec::<u128>::new();
-    storage.try_reserve_exact(STACK_WORDS).map_err(|_| mac_abi::NO_MEMORY)?;
-    storage.resize(STACK_WORDS, 0);
-    let mut stack = storage.into_boxed_slice();
-    let top = unsafe { stack.as_mut_ptr().add(stack.len()) } as usize;
-    let frame = (top - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
-    let mut initial = TrapFrame::default();
-    initial.pc = app_start as *const () as usize;
-    initial.status = super::traps::INITIAL_STATUS;
-    initial.registers[8] = entry;
-    // gp is not initialized by our freestanding executables; rustc uses PC-relative addressing.
-    unsafe {
-        frame.write(initial);
+}
+pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
+                             -> Result<u64, SpawnFailure>
+{
+    let mut scheduler = SCHEDULER.lock();
+    let Some(slot) = scheduler.threads.iter().position(|thread| thread.is_none())
+    else
+    {
+        return Err(SpawnFailure { status: mac_abi::NO_MEMORY,
+                                  prepared });
+    };
+    if !prepared.owner.accepting()
+    {
+        return Err(SpawnFailure { status: mac_abi::ACCESS_DENIED,
+                                  prepared });
     }
-    let id = scheduler.identities.insert(slot).map_err(|_| mac_abi::NO_MEMORY)?;
+    let id = match scheduler.identities.insert(slot)
+    {
+        Ok(id) => id,
+        Err(_) =>
+        {
+            return Err(SpawnFailure { status: mac_abi::NO_MEMORY,
+                                      prepared });
+        }
+    };
     let thread = u64::from(id);
-    let app = owner.owner().incarnation();
-    if let Err(error) = CONTEXTS[slot].assign(owner, thread, image)
+    let app = prepared.owner.owner().incarnation();
+    if let Err(status) =
+        CONTEXTS[slot].assign(prepared.owner.clone(), thread, prepared.loaded.binding())
     {
         scheduler.identities.remove(id);
-        return Err(error);
+        return Err(SpawnFailure { status,
+                                  prepared });
     }
+    // No fallible operation remains after context publication. Only now move
+    // execution authority out of the retryable preparation plan.
+    let (_, _, execution) = prepared.loaded.into_parts();
     scheduler.threads[slot] = Some(Thread { id,
-                                            _stack: stack,
+                                            _stack: prepared.stack,
                                             _execution: Some(execution),
-                                            frame: frame as usize,
-                                            live: true,
+                                            frame: prepared.frame,
+                                            live: runnable,
                                             retired: false,
                                             switches: 0,
                                             waiting: None,
                                             woken: 0 });
-    serial!("PROCESS_THREAD app={} thread={} stack=0x{:x}", app, thread, top);
+    serial!("PROCESS_THREAD app={} thread={} stack=0x{:x}", app, thread, prepared.top);
     Ok(thread)
 }
+/// Publish a prepared context only after its process metadata and saved services
+/// have been committed. A suspended recovery thread cannot execute early.
+pub(crate) fn start_prepared(thread: u64, owner: &crate::toolbox::handles::OwnerRef)
+                             -> Result<(), mac_abi::Status>
+{
+    let id = u32::try_from(thread).map_err(|_| mac_abi::NOT_FOUND)?;
+    let mut scheduler = SCHEDULER.lock();
+    let slot = *scheduler.identities.get(id).ok_or(mac_abi::NOT_FOUND)?;
+    if !owner.accepting() || CONTEXTS[slot].identity().app.0 != owner.owner().incarnation()
+    {
+        return Err(mac_abi::ACCESS_DENIED);
+    }
+    let record = scheduler.threads[slot].as_mut().ok_or(mac_abi::NOT_FOUND)?;
+    if record.retired
+    {
+        return Err(mac_abi::SERVICE_BUSY);
+    }
+    record.live = true;
+    Ok(())
+}
+pub fn spawn(owner: crate::toolbox::handles::OwnerRef, loaded: crate::kernel::LoadedImage)
+             -> Result<u64, mac_abi::Status>
+{
+    if SCHEDULER.lock().threads.iter().all(Option::is_some)
+    {
+        return Err(mac_abi::NO_MEMORY);
+    }
+    let prepared = prepare(owner, loaded).map_err(|failure| failure.status)?;
+    spawn_prepared(prepared, true).map_err(|failure| failure.status)
+}
+
 extern "C" fn app_start(entry: usize) -> !
 {
     let function: mac_abi::ApplicationEntry = unsafe { core::mem::transmute(entry) };
@@ -350,26 +452,43 @@ pub fn wake_io(identity: u64, job: crate::context::DeferredIo)
     }
 }
 
-pub fn retire_current()
+/// System-authorized termination never depends on the dying thread issuing
+/// another trap. Each real thread keeps its own job cancellation owner.
+pub(crate) fn retire_owner(owner: u64)
 {
-    let index = CURRENT.load(Ordering::Relaxed);
-    let thread = {
-        let mut scheduler = SCHEDULER.lock();
-        if let Some(thread) = scheduler.threads.get_mut(index).and_then(Option::as_mut)
-        {
-            thread.live = false;
-            thread.retired = true;
-            Some(thread.id)
-        }
+    let mut after = 0;
+    loop
+    {
+        let retired = {
+            let mut scheduler = SCHEDULER.lock();
+            let next =
+                scheduler.threads.iter().enumerate().skip(after).find_map(|(slot, thread)| {
+                                                                    thread.as_ref()
+                    .filter(|thread| !thread.retired && CONTEXTS[slot].identity().app.0 == owner)
+                    .map(|thread| (slot, thread.id))
+                                                                });
+            if let Some((slot, id)) = next
+            {
+                if let Some(thread) = scheduler.threads[slot].as_mut()
+                {
+                    thread.live = false;
+                    thread.retired = true;
+                }
+                after = slot + 1;
+                Some(id)
+            }
+            else
+            {
+                None
+            }
+        };
+        let Some(id) = retired
         else
         {
-            None
-        }
-    };
-    if let Some(thread) = thread
-    {
+            break;
+        };
         RECLAIM_PENDING.store(true, Ordering::Release);
-        crate::drivers::discard_thread_jobs(u64::from(thread));
+        crate::drivers::discard_thread_jobs(u64::from(id));
     }
 }
 
@@ -428,6 +547,7 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
         crate::toolbox::files::pump_provider_operations();
         crate::toolbox::processes::documents::pump();
         crate::toolbox::processes::retirement::pump();
+        crate::toolbox::processes::finder::pump();
     }
     let current = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();

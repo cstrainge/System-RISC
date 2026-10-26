@@ -7,6 +7,7 @@ use crate::toolbox::handles::{Directory, DirectoryError, DomainKind, OwnerIndex}
 pub mod menu;
 pub(crate) mod documents;
 pub(crate) mod retirement;
+pub(crate) mod finder;
 pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
 {
     let caller = crate::context::current_thread_context().identity().app.0;
@@ -123,7 +124,10 @@ impl Manager
     {
         // Dying/quarantined domains remain inspectable until their death
         // barrier closes, but are no longer running applications.
-        self.entries.iter().filter(|entry| entry.ledger().accepting()).map(|entry| entry.value())
+        self.entries
+            .iter()
+            .filter(|entry| entry.ledger().accepting() && entry.value().info.thread != 0)
+            .map(|entry| entry.value())
     }
 
     pub(super) fn stopping_after(&self, previous: u64) -> Option<u64>

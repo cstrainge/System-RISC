@@ -180,6 +180,18 @@ impl ApplicationMenu
         Ok(())
     }
 
+    /// The foreground saved context exists, but its prepared thread has not
+    /// been published. Remove prior-owner actions rather than retaining them.
+    pub fn suspend(&mut self)
+    {
+        self.cancel();
+        self.actions.fill(None);
+        self.state.item_count = 0;
+        self.state.title_length = 0;
+        self.state.title_icon = Default::default();
+        self.state.title_bounds = Rect::ZERO;
+    }
+
     pub fn title_bounds(&self) -> Rect
     {
         self.state.title_bounds

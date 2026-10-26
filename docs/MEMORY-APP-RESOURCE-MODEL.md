@@ -2323,3 +2323,65 @@ cursor, power and public Toolbox conformance remain verified. The optimized
 image, compiled boundaries, formatting and 52-library API documentation pass.
 Finder restart and opaque class-result reconciliation remain separate recovery
 work; no full isolation or physical-unload claim follows from these results.
+
+### System-owned Finder replacement
+
+Finder's panic report offers **Restart Finder**. The System owns the action and
+all report controls; the parked application does not have to run another handler
+or issue its own exit request. Standard managed buttons own tracking, highlighting
+and cancellation. Report scrolling commits only the report/coverage mask, while a
+copy or restart warning commits only its warning bounds and changed controls.
+
+Replacement admission prepares a genuine process owner, saved service context,
+complete diagnostic snapshot, distinct image instance and stack before stopping
+the old Finder. The immutable package source is shared by an `Arc`; executable
+loading still initializes a separate writable instance and applies its relocation
+records. Allocation refusal keeps the original owner/report alive, displays the
+cause and permits retry. No temporary process is exposed as a running app before
+its actual thread identity exists. The app menu suspends prior-owner actions
+while a foreground recovery context has no published thread. Physical pointer,
+modifier and key state survive saved-context changes; event queues remain private.
+
+Once preflight succeeds, System changes the Finder role to the new incarnation,
+stops all threads of the old owner and runs the same cleanup checkpoint/walk as
+ordinary application exit. Old saved managers and image reservations remain
+reachable through their genuine owner and completion bindings. A refusing or
+pending cleanup never frees or reuses that domain. A separate new image/owner may
+start once the old threads and stacks actually quiesce, even if old asynchronous
+resources remain quarantined. This is a replacement guarantee, not a claim that
+uncertain effects have been reconciled.
+
+The recovery controller retains a linear preparation through scheduler refusal.
+Its replacement thread stays suspended until process metadata and saved services
+are published. A post-handoff start refusal retains the same image/stack and
+restored diagnostics for Retry; it does not reissue the image or invent a thread
+receipt. Stack waiting advances on actual reclamation notifications; a displayed
+retry refusal sleeps until requested. No callback or loader executes under the
+controller's lock. Each maintenance turn performs one stage after input service.
+
+Native repeated restart and image-arena refusal/retry qualification pass. The
+latter keeps a helper's genuine wide image reservation until its normal exit;
+Retry then admits a new Finder instance. Diagnostics remain copyable and their
+body pixels unchanged through refusal. Stale window/handle IDs remain rejected
+after replacement objects are published, and another app continues receiving
+input. This implementation does not activate
+page-backed allocations, dynamic scheduler capacity, process isolation or an OOM
+emergency kit. The walk provides resource containment. Arbitrary privileged-fault
+containment is **unproven** and is a **required future gate**. Until a recovery
+contract exists and passes, the System must not claim it can safely recover from
+every mid-call module fault.
+
+The heap/reserve campaign retains a concrete additional gate: deliberately
+fragmenting the current heap caused an infallible 20 KiB repaint allocation to
+abort with about 60 KiB total free. General OOM recovery is not qualified by the
+image-admission test; the emergency reserve and fallible repaint paths must close
+that case in the heap stage.
+
+Qualification:690 scoped host cases pass (69 native-only gates excluded), and15
+native tests pass, including both Finder restart/refusal guests, the six host
+provider workflows, module admission, backing sources, original cursor sprites,
+complete application panic reports, ordinary/malformed-layout process campaigns,
+aggregate public-SDK conformance and external power restart/shutdown/refusal.
+Optimized image/structural checks, compiled boundaries, formatting and52-library
+API documentation pass. These are the covered native lifecycles; they do not
+qualify every possible pending external effect or arbitrary privileged fault.

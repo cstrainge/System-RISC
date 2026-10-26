@@ -8,6 +8,7 @@ static CHANGED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn thread_reclaimed()
 {
+    super::finder::thread_reclaimed();
     CHANGED.store(true, Ordering::Release);
 }
 

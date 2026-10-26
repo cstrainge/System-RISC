@@ -19,6 +19,22 @@ pub(crate) fn set_finder_app(app: u64)
 {
     FINDER_APP.store(app, core::sync::atomic::Ordering::Release);
 }
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn replace_finder_app(old: u64, owner: &crate::toolbox::handles::OwnerRef)
+                                 -> Result<(), mac_abi::Status>
+{
+    if owner.owner().kind() != mac_object_table::domain::DomainKind::Process || !owner.accepting()
+    {
+        return Err(mac_abi::ACCESS_DENIED);
+    }
+    FINDER_APP.compare_exchange(old,
+                                owner.owner().incarnation(),
+                                core::sync::atomic::Ordering::AcqRel,
+                                core::sync::atomic::Ordering::Acquire)
+              .map(|_| ())
+              .map_err(|_| mac_abi::SERVICE_BUSY)
+}
 #[cfg(target_arch = "riscv64")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutionContext

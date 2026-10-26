@@ -40,8 +40,143 @@ impl Saved
                   textedit: crate::toolbox::textedit::Manager::new(crate::toolbox::handles::editor_kinds()?, owner)? })
     }
 }
+
+/// A real provisional owner and saved service context, not an invented neutral
+/// process. Lost preparations stop admission and enter the ordinary reaper.
+pub(crate) struct FinderAdmission
+{
+    old:      u64,
+    owner:    crate::toolbox::handles::OwnerRef,
+    original: crate::images::Binding,
+    active:   bool
+}
+impl FinderAdmission
+{
+    pub(crate) fn old(&self) -> u64
+    {
+        self.old
+    }
+
+    pub(crate) fn owner(&self) -> &crate::toolbox::handles::OwnerRef
+    {
+        &self.owner
+    }
+
+    pub(crate) fn id(&self) -> u64
+    {
+        self.owner.owner().incarnation()
+    }
+
+    pub(crate) fn original(&self) -> crate::images::Binding
+    {
+        self.original
+    }
+
+    pub(crate) fn started(&mut self)
+    {
+        self.active = false;
+    }
+}
+impl Drop for FinderAdmission
+{
+    fn drop(&mut self)
+    {
+        if self.active
+        {
+            self.owner.stop_admission();
+            crate::toolbox::processes::retirement::resources_released();
+        }
+    }
+}
 impl Desktop
 {
+    pub(crate) fn reserve_finder(&mut self, old: u64) -> Result<FinderAdmission, Status>
+    {
+        if old != crate::context::finder_app().0
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let binding = self.processes.resource_binding(old)?;
+        let original = binding.image().ok_or(BAD_ABI)?;
+        self.locals.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        self.enter(old);
+        let snapshot = self.crash.snapshot()?;
+        let id = self.processes.provision("Finder", 0, 0)?;
+        let owner = self.processes.ledger(id)?;
+        let mut local = match Saved::try_new(owner.clone(), self.mdef)
+        {
+            Ok(local) => local,
+            Err(status) =>
+            {
+                self.retire_unstarted(id)?;
+                return Err(status);
+            }
+        };
+        local.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
+        self.locals.push(local);
+        Ok(FinderAdmission { old,
+                             owner,
+                             original,
+                             active: true })
+    }
+
+    pub(crate) fn bind_finder_image(&mut self, admission: &FinderAdmission,
+                                    image: crate::images::Binding)
+                                    -> Result<(), Status>
+    {
+        if admission.old != crate::context::finder_app().0
+        {
+            return Err(SERVICE_BUSY);
+        }
+        self.processes.bind_image(admission.id(), image)
+    }
+
+    pub(crate) fn commit_finder_handoff(&mut self, admission: &FinderAdmission)
+                                        -> Result<(), Status>
+    {
+        let old = admission.old;
+        let next = admission.id();
+        if !self.locals.iter().any(|local| local.id == next)
+           || self.processes.get(next)?.image.is_none()
+        {
+            return Err(BAD_ABI);
+        }
+        // Resolve every required owner/capability before changing the role.
+        let file = self.processes.snapshot(old)?;
+        let ledger = self.processes.ledger(old)?;
+        let checkpoint = self.processes.cleanup_checkpoint(old)?;
+        let binding = self.processes.resource_binding(old)?;
+        crate::context::replace_finder_app(old, &admission.owner)?;
+        self.stop_process(file, ledger, checkpoint, binding, Some(next));
+        serial!("FINDER_HANDOFF old={old} new={next} state=waiting-for-old-stack");
+        Ok(())
+    }
+
+    pub(crate) fn finder_started(&mut self, admission: &FinderAdmission, thread: u64)
+                                 -> Result<(), Status>
+    {
+        let id = admission.id();
+        self.processes.get_mut(id)?.info.thread = thread;
+        self.enter(id);
+        // A temporary System recovery report never leaves the healthy Finder's
+        // zero-mask waits permanently ready after it starts.
+        let window = self.crash.info().window;
+        if window.0 != 0
+        {
+            let status = self.window(CLOSE_WINDOW, &mut window_request(window));
+            if status != OK && status != NOT_FOUND
+            {
+                return Err(status);
+            }
+        }
+        self.crash = Default::default();
+        self.activate_process(id)?;
+        self.refresh_app_menu();
+        serial!("PROCESS_REGISTERED app={id} name=Finder");
+        serial!("FINDER_RECOVERED old={} new={id} thread={thread}", admission.old);
+        Ok(())
+    }
+
     pub(super) fn alerts_for_owner(&mut self, owner: u64)
                                    -> Option<&mut crate::toolbox::dialogs::Alerts>
     {
@@ -266,6 +401,9 @@ impl Desktop
         {
             return;
         };
+        // Queues are app-local; physical input is machine state. A newly
+        // prepared context must not restore its default pointer/modifier values.
+        let physical = (self.events.mouse, self.events.modifiers, self.events.keys);
         macro_rules! swap {
             ($field:ident) => {
                 core::mem::swap(&mut self.$field, &mut self.locals[old].$field);
@@ -279,6 +417,9 @@ impl Desktop
         swap!(classic_font);
         swap!(events);
         swap!(textedit);
+        self.events.mouse = physical.0;
+        self.events.modifiers = physical.1;
+        self.events.keys = physical.2;
         self.owner = id;
     }
 
@@ -439,6 +580,15 @@ impl Desktop
                                               icon:   Self::application_icon(p.image) }
                                   })
                                   .collect();
+        if self.processes.get(self.foreground).is_ok_and(|process| process.info.thread == 0)
+        {
+            // A real saved recovery context can park the dying shell before
+            // its replacement thread is published. No stale menu actions live
+            // during that short, explicitly suspended presentation.
+            self.app_menu.suspend();
+            self.redraw = true;
+            return;
+        }
         if let Err(status) = self.app_menu.refresh(&entries, self.foreground)
         {
             serial!("APPLICATION_MENU_FAILED status={}", status);
@@ -747,55 +897,72 @@ impl Desktop
                     return Err(ACCESS_DENIED);
                 }
                 let file = self.processes.snapshot(caller)?;
-                self.enter(caller);
                 let ledger = self.processes.ledger(caller)?;
-                // Never resume the dying app, even if a cleanup callback or UI
-                // transition below refuses. Its stack is reclaimed elsewhere.
-                ledger.stop_admission();
-                crate::machine::scheduler::retire_current();
-                serial!("PROCESS_STOPPED app={caller} thread={}", file.thread);
-                let before_walk = ledger.summary();
                 let checkpoint = self.processes.cleanup_checkpoint(caller)?;
-                let walk = checkpoint.run(&ledger, || self.walk_owner(&ledger, false));
-                match walk
-                {
-                    Ok(walk) =>
-                    {
-                        let remaining = ledger.summary();
-                        serial!("OWNER_WALK app={} invalidated={} released={} quarantined={} \
-                                 live={} pending={} deferred={} completed={}",
-                                caller,
-                                walk.invalidated,
-                                walk.released,
-                                walk.quarantined,
-                                remaining.live,
-                                remaining.pending,
-                                walk.deferred,
-                                remaining.deaths.saturating_sub(before_walk.deaths));
-                    }
-                    Err(error) =>
-                    {
-                        serial!("OWNER_CLEANUP_RETAINED app={caller} {error}; {checkpoint}")
-                    }
-                }
-                self.route_events();
-                let previous = self.processes.previous(caller);
-                self.enter(previous);
-                self.notify_finder_file_state(file.volume, file.cnid, false);
-                if self.foreground == caller
-                {
-                    self.activate_process(previous)?;
-                }
-                else
-                {
-                    self.refresh_app_menu();
-                }
-                // Saved managers remain alive until the thread checkpoint
-                // and the ledger's final retirement both succeed.
+                let binding = self.processes.resource_binding(caller)?;
+                self.stop_process(file, ledger, checkpoint, binding, None);
             }
             _ => return Err(NOT_SUPPORTED)
         }
         Ok(())
+    }
+
+    /// Both normal exit and shell recovery use this owner's one teardown walk.
+    /// All required capabilities are resolved before admission is stopped.
+    fn stop_process(&mut self, file: ProcessInfo, ledger: crate::toolbox::handles::OwnerRef,
+                    checkpoint: crate::toolbox::handles::cleanup::Checkpoint,
+                    binding: crate::toolbox::processes::ResourceBinding, replacement: Option<u64>)
+    {
+        let caller = file.id;
+        self.enter(caller);
+        ledger.stop_admission();
+        crate::machine::scheduler::retire_owner(caller);
+        serial!("PROCESS_STOPPED app={caller} thread={}", file.thread);
+        let before = ledger.summary();
+        let walk = crate::kernel::with_process_resources(&binding, || {
+            checkpoint.run(&ledger, || self.walk_owner(&ledger, false))
+        });
+        match walk
+        {
+            Ok(Ok(walk)) =>
+            {
+                let remaining = ledger.summary();
+                serial!("OWNER_WALK app={} invalidated={} released={} quarantined={} live={} \
+                         pending={} deferred={} completed={}",
+                        caller,
+                        walk.invalidated,
+                        walk.released,
+                        walk.quarantined,
+                        remaining.live,
+                        remaining.pending,
+                        walk.deferred,
+                        remaining.deaths.saturating_sub(before.deaths));
+            }
+            Ok(Err(error)) => serial!("OWNER_CLEANUP_RETAINED app={caller} {error}; {checkpoint}"),
+            Err(status) =>
+            {
+                serial!("OWNER_CLEANUP_RETAINED app={caller} status={status}; subject resource \
+                         context unavailable")
+            }
+        }
+        self.route_events();
+        let previous = replacement.unwrap_or_else(|| self.processes.previous(caller));
+        self.enter(previous);
+        self.notify_finder_file_state(file.volume, file.cnid, false);
+        if self.foreground == caller
+        {
+            if let Err(status) = self.activate_process(previous)
+            {
+                serial!("PROCESS_ACTIVATION_RETAINED app={previous} status={status}; saved \
+                         context remains admitted");
+            }
+        }
+        else
+        {
+            self.refresh_app_menu();
+        }
+        // Saved state and the original image remain until all real barriers close.
+        crate::toolbox::processes::retirement::resources_released();
     }
 
     pub(crate) fn evict_image_origin(&mut self, origin: u64)
@@ -1148,4 +1315,16 @@ impl crate::toolbox::files::pins::PinHost for Desktop
             }
         }
     }
+}
+
+fn window_request(id: WindowId) -> WindowRequest
+{
+    WindowRequest { id:             id.0,
+                    bounds:         Rect::ZERO,
+                    title:          [0; WINDOW_TITLE_BYTES],
+                    title_length:   0,
+                    procedure:      0,
+                    minimum_width:  0,
+                    minimum_height: 0,
+                    reserved:       0 }
 }

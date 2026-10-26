@@ -16,7 +16,7 @@ import capture_system7_conformance as packaging
 import system7_vm as vm
 
 
-def child(output, fixture, binary):
+def child(output, fixture, binary, *, package_arguments=()):
     manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
     target = vm.build_dir() / 'fixtures' / fixture
     subprocess.run(['cargo', 'build', '--manifest-path', str(manifest), '--locked',
@@ -27,7 +27,7 @@ def child(output, fixture, binary):
     extra = [str(vm.DIST / 'System.rsrc')] if fixture == 'image-probe' else []
     subprocess.run(['cargo', 'run', '--manifest-path', str(manifest), '--locked',
                     '--bin', 'package', '--target-dir', str(target), '--', str(elf),
-                    str(package), *extra], cwd=vm.ROOT, check=True)
+                    str(package), *extra, *map(str, package_arguments)], cwd=vm.ROOT, check=True)
     return package / (binary + '.bin'), elf
 
 

@@ -31,6 +31,7 @@ mod drag_runtime;
 mod textedit_runtime;
 #[path = "processes/runtime.rs"]
 mod local;
+pub(crate) use local::FinderAdmission;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {

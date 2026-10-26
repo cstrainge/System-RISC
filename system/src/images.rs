@@ -91,6 +91,13 @@ impl Read
         &self.source
     }
 
+    /// Immutable package bytes can outlive this execution instance. A restart
+    /// still receives a distinct destination and fresh writable image state.
+    pub(crate) fn shared_source(&self) -> Arc<Source>
+    {
+        self.source.clone()
+    }
+
     pub(crate) fn binding(&self) -> Binding
     {
         self.binding
@@ -150,8 +157,8 @@ impl Manager
 
     /// Caller owns a genuine child ledger before any source is admitted. All
     /// fallible metadata allocation precedes executable-memory writes.
-    pub(crate) fn load(&mut self, owner: &OwnerRef, source: Source, preferred: u64, extent: u64,
-                       relocation_base: u64, limit: u64,
+    pub(crate) fn load(&mut self, owner: &OwnerRef, source: Arc<Source>, preferred: u64,
+                       extent: u64, relocation_base: u64, limit: u64,
                        write: impl FnOnce(&[mac_formats::resource::Resource],
                               u64) -> Result<usize, Status>)
                        -> Result<Loaded, Status>
@@ -193,7 +200,6 @@ impl Manager
                 }
             }
         };
-        let source = Arc::try_new(source).map_err(|_| NO_MEMORY)?;
         let activity =
             Arc::try_new(Activity { readers:  AtomicUsize::new(0),
                                     retiring: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?;

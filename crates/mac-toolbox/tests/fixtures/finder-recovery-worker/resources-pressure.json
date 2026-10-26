@@ -1,0 +1,11 @@
+{
+  "name": "RecoveryWorker",
+  "file_type": "APPL",
+  "creator": "FREC",
+  "role": "application",
+  "abi_version": 1,
+  "load_base": "0x83000000",
+  "load_limit": "0x85d00000",
+  "description": "Public SDK Finder recovery image-arena exhaustion",
+  "resources": []
+}

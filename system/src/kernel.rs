@@ -78,6 +78,22 @@ pub(crate) fn load_application(owner: &crate::toolbox::handles::OwnerRef, creato
 fn admit_image(owner: &crate::toolbox::handles::OwnerRef, source: AppImage)
                -> Result<LoadedImage, Status>
 {
+    admit_shared_image(owner, alloc::sync::Arc::try_new(source).map_err(|_| NO_MEMORY)?)
+}
+
+pub(crate) fn copy_application(owner: &crate::toolbox::handles::OwnerRef,
+                               original: crate::images::Binding)
+                               -> Result<LoadedImage, Status>
+{
+    let source = IMAGES.with(|images| images.read(original).map(|read| read.shared_source()))
+                       .map_err(AccessError::status)??;
+    admit_shared_image(owner, source)
+}
+
+fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
+                      source: alloc::sync::Arc<AppImage>)
+                      -> Result<LoadedImage, Status>
+{
     let (preferred, _) =
         crate::loader::reservation(&source.resources).map_err(crate::loader::status)?;
     let extent =

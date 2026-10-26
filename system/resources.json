@@ -59,8 +59,8 @@
           "Up",
           "Down",
           "Bottom",
-          "Restart required",
-          "Finder stopped. Restart System RISC.",
+          "Restart Finder",
+          "Finder stopped. You can inspect the report and restart Finder.",
           "Report truncated",
           "Report formatting failed",
           "The application stopped. You can inspect or copy the complete report.",
@@ -69,7 +69,9 @@
           "Lines",
           "of",
           "bytes",
-          "Copy failed"
+          "Copy failed",
+          "Finder restart failed. Try again.",
+          "Not enough memory to restart Finder. Close another application and try again."
         ]
       }
     },

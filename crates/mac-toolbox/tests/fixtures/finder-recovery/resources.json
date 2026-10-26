@@ -1,0 +1,11 @@
+{
+  "name": "Finder",
+  "file_type": "FNDR",
+  "creator": "FREC",
+  "role": "application",
+  "abi_version": 1,
+  "load_base": "0x81000000",
+  "load_limit": "0x82000000",
+  "description": "Public SDK Finder restart acceptance",
+  "resources": []
+}
