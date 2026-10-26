@@ -15,7 +15,7 @@ impl Core
     }
 
     pub fn submit(&mut self, subject: &super::subjects::Subject, owner: Owner, work: Work)
-                  -> Result<mac_object_table::projected::Publication, SubmissionError>
+                  -> Result<mac_object_table::store::Publication, SubmissionError>
     {
         if let Err(cause) = subject.scope().admitting()
         {
@@ -33,8 +33,17 @@ impl Core
             return Err(SubmissionError { status: NO_MEMORY,
                                          work });
         };
-        if self.ready.try_reserve(MAX_JOBS.saturating_sub(self.ready.len())).is_err()
-           || self.notices.try_reserve(MAX_JOBS.saturating_sub(self.notices.len())).is_err()
+        let Some(needed) = self.records.len().checked_add(1)
+        else
+        {
+            return Err(SubmissionError { status: NO_MEMORY,
+                                         work });
+        };
+        // A detached callback may return Ready or complete after later jobs
+        // enter. Reserve for every retained record before publication, so
+        // callback return, cancellation and cleanup never allocate.
+        if self.ready.try_reserve(needed.saturating_sub(self.ready.len())).is_err()
+           || self.notices.try_reserve(needed.saturating_sub(self.notices.len())).is_err()
         {
             return Err(SubmissionError { status: NO_MEMORY,
                                          work });
@@ -121,7 +130,7 @@ impl Core
         Ok(record)
     }
 
-    pub fn pending(&mut self, owner: Owner, id: u32) -> Result<bool, Status>
+    pub fn pending(&mut self, owner: Owner, id: u64) -> Result<bool, Status>
     {
         let record = self.owned(owner, id.into())?;
         if matches!(record.state, State::Quarantined)
@@ -133,7 +142,7 @@ impl Core
 
     /// Resident-only attachment: authority remains with owner; a waiter cannot
     /// take/cancel/discard the result or replace another thread's attachment.
-    pub fn attach_waiter(&mut self, owner: Owner, id: u32, thread: u64) -> Result<(), Status>
+    pub fn attach_waiter(&mut self, owner: Owner, id: u64, thread: u64) -> Result<(), Status>
     {
         if thread <= 1
         {
@@ -155,7 +164,7 @@ impl Core
     }
 
     /// The scheduler supplies the actual generation-tagged OS thread ID.
-    pub fn pending_waiter(&self, thread: u64, id: u32) -> Result<bool, Status>
+    pub fn pending_waiter(&self, thread: u64, id: u64) -> Result<bool, Status>
     {
         let record = self.records.get_mut(id).ok_or(NOT_FOUND)?;
         if record.waiter != Some(thread)
@@ -169,7 +178,7 @@ impl Core
         Ok(!matches!(record.state, State::Finished(_)))
     }
 
-    pub fn detach_waiter(&mut self, thread: u64, id: u32) -> Result<(), Status>
+    pub fn detach_waiter(&mut self, thread: u64, id: u64) -> Result<(), Status>
     {
         let mut record = self.records.get_mut(id).ok_or(NOT_FOUND)?;
         if record.waiter != Some(thread)
@@ -422,7 +431,7 @@ impl Core
         self.records.failure()
     }
 
-    fn remove(&mut self, id: u32)
+    fn remove(&mut self, id: u64)
     {
         if let Some(mut record) = self.records.retained(id)
         {
@@ -521,22 +530,14 @@ impl Core
                 }
             }
         }
-        let mut ids = [0; MAX_JOBS];
-        let mut count = 0;
-        for (id, record) in self.records.iter()
+        // Iterate captured completion capabilities in native-ID order. Each
+        // mutation may remove its entry; the next cursor skips it without a
+        // fixed scratch array, allocation, or a new read of an ordinary ID.
+        let mut after = 0;
+        while let Some(receipt) = self.records.after(after, owner)
         {
-            if record.owner == owner
-            {
-                ids[count] = id;
-                count += 1;
-            }
-        }
-        for &id in &ids[..count]
-        {
-            if let Some(receipt) = self.records.receipt(id)
-            {
-                let _ = self.discard(owner, records::Access::Completion(receipt));
-            }
+            after = receipt.id();
+            let _ = self.discard(owner, records::Access::Completion(receipt));
         }
     }
 }

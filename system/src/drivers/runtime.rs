@@ -694,7 +694,7 @@ pub(crate) fn release_job(ticket: mac_object_table::domain::ReleasedResource, st
     JOBS.release(ticket, storage)
 }
 
-pub(crate) fn job_pending(thread: u64, id: u32) -> Result<bool, Status>
+pub(crate) fn job_pending(thread: u64, id: u64) -> Result<bool, Status>
 {
     JOBS.pending_waiter(thread, id)
 }
@@ -764,7 +764,7 @@ fn dispatch_job(mut dispatch: super::jobs::Dispatch<'_>)
 /// Ask the outer native service boundary to park and replay this call. Resident
 /// adapters return SERVICE_BUSY immediately after this succeeds. Nested drawing
 /// and definition calls cannot park while their caller may own a manager guard.
-fn defer_current_job(id: u32) -> Result<(), Status>
+fn defer_current_job(id: u64) -> Result<(), Status>
 {
     let context = crate::context::current_thread_context();
     job_pending(context.identity().thread.0, id)?;
@@ -778,9 +778,9 @@ fn defer_current_job(id: u32) -> Result<(), Status>
 pub struct OwnedJob
 {
     owner:   super::jobs::Owner,
-    id:      u32,
+    id:      u64,
     subject: super::jobs::subjects::Subject,
-    receipt: mac_object_table::projected::CompletionKey
+    receipt: mac_object_table::store::CompletionKey
 }
 impl OwnedJob
 {
@@ -921,7 +921,7 @@ pub(crate) fn submit_background_to(subject: &super::jobs::subjects::Subject, pro
                   subject: subject.clone() })
 }
 
-pub(crate) fn abandon_deferred_job(thread: u64, id: u32)
+pub(crate) fn abandon_deferred_job(thread: u64, id: u64)
 {
     let queue = &JOBS;
     // A kernel-owned operation still has to observe publication and clean its

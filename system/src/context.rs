@@ -36,12 +36,12 @@ pub fn bootstrap_thread() -> ThreadId
 }
 
 /// Scheduler wake identity is typed; a full native transfer ID is never
-/// guessed from the bit range of a different manager's projected job ID.
+/// guessed from the bit range of another manager's native ID.
 #[cfg(any(target_arch = "riscv64", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeferredIo
 {
-    DriverJob(u32),
+    DriverJob(u64),
     FileTransfer(u64)
 }
 #[cfg(any(target_arch = "riscv64", test))]

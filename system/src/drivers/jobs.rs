@@ -7,10 +7,8 @@ use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use mac_abi::{ACCESS_DENIED, BAD_ABI, BAD_ARGUMENT, NO_MEMORY, NOT_FOUND, SERVICE_BUSY, Status};
 use mac_module::ClassId;
 
-use crate::toolbox::handles::Kind;
 const MAX_PAYLOAD: usize = 1024 * 1024;
 const MAX_OWNED_BYTES: usize = 1024 * 1024;
-const MAX_JOBS: usize = Kind::DriverJobs.capacity();
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Owner
 {
@@ -115,7 +113,7 @@ pub struct CompletionNotice
 {
     pub owner:  Owner,
     pub waiter: Option<u64>,
-    pub job:    u32
+    pub job:    u64
 }
 enum State
 {
@@ -128,7 +126,7 @@ enum State
 }
 struct Record
 {
-    receipt:   Option<mac_object_table::projected::CompletionKey>,
+    receipt:   Option<mac_object_table::store::CompletionKey>,
     owner:     Owner,
     waiter:    Option<u64>,
     state:     State,
@@ -138,8 +136,8 @@ struct Record
 }
 struct Node
 {
-    id:       u32,
-    receipt:  Option<mac_object_table::projected::CompletionKey>,
+    id:       u64,
+    receipt:  Option<mac_object_table::store::CompletionKey>,
     owner:    Owner,
     work:     Option<Work>,
     cancel:   bool,
@@ -153,7 +151,7 @@ struct Node
 struct Core
 {
     records:     records::Records,
-    ready:       VecDeque<mac_object_table::projected::CompletionKey>,
+    ready:       VecDeque<mac_object_table::store::CompletionKey>,
     owned_bytes: usize,
     notices:     VecDeque<CompletionNotice>,
     quarantined: Option<Box<Node>>,

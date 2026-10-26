@@ -3,8 +3,8 @@
 use alloc::sync::Arc;
 
 use mac_object_table::{domain::ReleasedResource,
-                       projected,
-                       registry::{Source, Specification}};
+                       registry::{Source, Specification},
+                       store};
 use spinning_top::{Spinlock, SpinlockGuard};
 
 use super::*;
@@ -14,7 +14,7 @@ use crate::toolbox::handles::{CapacityPolicy, InvocationGate, KindCode, KindLeas
 type Value = Arc<Spinlock<Record>>;
 struct Pending
 {
-    wire:     u32,
+    id:       u64,
     ticket:   ReleasedResource,
     owner:    Owner,
     failure:  Option<ReturnCause>,
@@ -25,19 +25,19 @@ pub(super) type Guard<'a> = SpinlockGuard<'a, Record>;
 #[derive(Clone, Copy)]
 pub(super) enum Access
 {
-    Ordinary(u32),
-    Completion(projected::CompletionKey)
+    Ordinary(u64),
+    Completion(store::CompletionKey)
 }
-impl From<u32> for Access
+impl From<u64> for Access
 {
-    fn from(id: u32) -> Self
+    fn from(id: u64) -> Self
     {
         Self::Ordinary(id)
     }
 }
 impl Access
 {
-    pub(super) fn id(self) -> u32
+    pub(super) fn id(self) -> u64
     {
         match self
         {
@@ -66,8 +66,8 @@ pub(crate) fn specification(storage: bool) -> Specification<'static>
 }
 pub(super) struct Records
 {
-    store:      Option<projected::Store<Value, InvocationGate>>,
-    receipts:   Vec<(u32, projected::CompletionKey)>,
+    store:      Option<store::Store<Value, InvocationGate>>,
+    receipts:   Vec<(u64, store::CompletionKey)>,
     retiring:   Vec<Pending>,
     unreported: usize
 }
@@ -91,14 +91,13 @@ impl Records
     {
         if self.store.is_none()
         {
-            self.store = Some(projected::Store::new(Kind::DriverJobs, kinds.0, kinds.1)
-                .map_err(crate::toolbox::handles::projection_status)?);
+            self.store = Some(store::Store::owned(kinds.0, kinds.1).map_err(pool_status)?);
         }
         Ok(())
     }
 
     pub(super) fn insert(&mut self, subject: &subjects::Subject, value: Value)
-                         -> Result<projected::Publication, Status>
+                         -> Result<store::Publication, Status>
     {
         self.receipts.try_reserve(1).map_err(|_| NO_MEMORY)?;
         self.retiring
@@ -107,8 +106,8 @@ impl Records
         let publication = self.store
                               .as_mut()
                               .ok_or(mac_abi::NOT_SUPPORTED)?
-                              .insert_in_scope_with_receipt(subject.scope(), value)
-                              .map_err(crate::toolbox::handles::projection_status)?;
+                              .insert_in_scope_with_receipt(subject.scope(), |_| value)
+                              .map_err(pool_status)?;
         self.receipts.push(publication.into_parts());
         Ok(publication)
     }
@@ -123,31 +122,51 @@ impl Records
         Some(value.lock())
     }
 
-    pub(super) fn get_mut(&self, id: u32) -> Option<Guard<'_>>
+    pub(super) fn get_mut(&self, id: u64) -> Option<Guard<'_>>
     {
         self.lookup(Access::Ordinary(id))
     }
 
-    pub(super) fn receipt(&self, id: u32) -> Option<projected::CompletionKey>
+    pub(super) fn receipt(&self, id: u64) -> Option<store::CompletionKey>
     {
-        self.receipts.iter().find(|(wire, _)| *wire == id).map(|(_, key)| *key)
+        self.receipts.binary_search_by_key(&id, |entry| entry.0).ok().map(|at| self.receipts[at].1)
     }
 
-    pub(super) fn retained(&self, id: u32) -> Option<Guard<'_>>
+    #[cfg(test)]
+    pub(super) fn key(&self, id: u64) -> Option<mac_object_table::domain::ResourceKey>
+    {
+        self.store.as_ref()?.key(id)
+    }
+
+    pub(super) fn len(&self) -> usize
+    {
+        self.receipts.len()
+    }
+
+    pub(super) fn after(&self, after: u64, owner: Owner) -> Option<store::CompletionKey>
+    {
+        let start = self.receipts.partition_point(|(id, _)| *id <= after);
+        self.receipts[start..].iter().find_map(|(_, receipt)| {
+                                         let record = self.lookup(Access::Completion(*receipt))?;
+                                         (record.owner == owner).then_some(*receipt)
+                                     })
+    }
+
+    pub(super) fn retained(&self, id: u64) -> Option<Guard<'_>>
     {
         self.lookup(Access::Completion(self.receipt(id)?))
     }
 
-    pub(super) fn iter(&self) -> impl Iterator<Item = (u32, Guard<'_>)>
+    pub(super) fn iter(&self) -> impl Iterator<Item = (u64, Guard<'_>)>
     {
         self.receipts
             .iter()
             .filter_map(|(id, key)| self.lookup(Access::Completion(*key)).map(|value| (*id, value)))
     }
 
-    pub(super) fn remove(&mut self, id: u32)
+    pub(super) fn remove(&mut self, id: u64)
     {
-        let mark = if let Some(at) = self.retiring.iter().position(|pending| pending.wire == id)
+        let mark = if let Some(at) = self.retiring.iter().position(|pending| pending.id == id)
         {
             let pending = self.retiring.swap_remove(at);
             // The slot and its backing remained in the authoritative store
@@ -203,7 +222,10 @@ impl Records
         };
         if mark.is_some()
         {
-            self.receipts.retain(|(wire, _)| *wire != id);
+            if let Ok(at) = self.receipts.binary_search_by_key(&id, |entry| entry.0)
+            {
+                self.receipts.remove(at);
+            }
         }
         drop(mark);
     }
@@ -221,13 +243,13 @@ impl Records
         let cause = pending.failure?;
         pending.reported = true;
         self.unreported -= 1;
-        Some(ReturnFailure { job: pending.wire,
+        Some(ReturnFailure { job: pending.id,
                              owner: pending.owner,
                              cause })
     }
 
     pub(super) fn release(&mut self, ticket: ReleasedResource, storage: bool)
-                          -> Result<Option<(Owner, projected::CompletionKey)>, Failure>
+                          -> Result<Option<(Owner, store::CompletionKey)>, Failure>
     {
         let Some(store) = self.store.as_mut()
         else
@@ -256,7 +278,10 @@ impl Records
         {
             drop(data);
             let mark = store.release(ticket).map_err(Failure::from)?;
-            self.receipts.retain(|(wire, _)| *wire != mark.wire());
+            if let Ok(at) = self.receipts.binary_search_by_key(&mark.id(), |entry| entry.0)
+            {
+                self.receipts.remove(at);
+            }
             drop(mark);
             return Ok(None);
         }
@@ -275,8 +300,8 @@ impl Records
         {
             return Err(Failure::context_unavailable(ticket, "original job publication receipt"));
         };
-        let wire = receipt.id();
-        self.retiring.push(Pending { wire,
+        let id = receipt.id();
+        self.retiring.push(Pending { id,
                                      ticket,
                                      owner,
                                      failure: None,
@@ -302,3 +327,8 @@ impl
 
 #[cfg(test)]
 mod tests;
+
+fn pool_status(error: mac_object_table::domain::PoolError) -> Status
+{
+    crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
+}

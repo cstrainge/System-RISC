@@ -57,7 +57,7 @@ impl fmt::Display for ReturnCause
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReturnFailure
 {
-    pub job:   u32,
+    pub job:   u64,
     pub owner: Owner,
     pub cause: ReturnCause
 }

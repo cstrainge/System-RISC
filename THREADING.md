@@ -470,3 +470,13 @@ cleanup uses owned state admission so a busy registry cannot discard a ticket.
 Serialized-provider occupancy changes on admission/terminal reply; polling does
 not scan all requests. This establishes neither full four-part invocation
 accounting nor arbitrary privileged-fault containment or multi-hart activation.
+
+
+Native driver-job wake identities now carry the shared facility's complete u64
+job ID. The typed defer key keeps them distinct from file-transfer IDs. Admission
+reserves return/notice storage for all retained jobs before publication, including
+callbacks already detached while later jobs enter. Owner discard uses ordered
+completion receipts with no fixed-size cleanup scratch array. The queue retains
+its existing IRQ/preemption gate and borrowed origin guard; foreign callbacks
+hold neither queue nor registry guards. This removes a projection/capacity limit,
+not the remaining physical DMA/source, page, accounting or isolation gates.

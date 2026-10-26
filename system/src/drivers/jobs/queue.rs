@@ -51,7 +51,7 @@ impl Queue
 
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn submit(&self, subject: &subjects::Subject, owner: Owner, work: Work)
-                         -> Result<mac_object_table::projected::Publication, SubmissionError>
+                         -> Result<mac_object_table::store::Publication, SubmissionError>
     {
         self.access(|core| {
                 if !core.records.prepared()
@@ -85,7 +85,7 @@ impl Queue
     }
 
     #[cfg(test)]
-    pub(crate) fn submit(&self, owner: Owner, work: Work) -> Result<u32, SubmissionError>
+    pub(crate) fn submit(&self, owner: Owner, work: Work) -> Result<u64, SubmissionError>
     {
         self.access(|core| {
                 let subject = match tests::subject(core, owner)
@@ -97,7 +97,7 @@ impl Queue
                                                      work });
                     }
                 };
-                core.submit(&subject, owner, work).map(mac_object_table::projected::Publication::id)
+                core.submit(&subject, owner, work).map(mac_object_table::store::Publication::id)
             })
     }
 
@@ -108,35 +108,35 @@ impl Queue
     }
 
     pub(crate) fn take_completion(&self, owner: Owner,
-                                  receipt: mac_object_table::projected::CompletionKey)
+                                  receipt: mac_object_table::store::CompletionKey)
                                   -> Result<Option<Completed>, Status>
     {
         self.access(|core| core.take(owner, records::Access::Completion(receipt)))
     }
 
     pub(crate) fn completed_waiter_completion(&self, owner: Owner,
-                                              receipt: mac_object_table::projected::CompletionKey)
+                                              receipt: mac_object_table::store::CompletionKey)
                                               -> Result<Option<u64>, Status>
     {
         self.access(|core| core.completed_waiter(owner, records::Access::Completion(receipt)))
     }
 
     pub(crate) fn cancel_completion(&self, owner: Owner,
-                                    receipt: mac_object_table::projected::CompletionKey)
+                                    receipt: mac_object_table::store::CompletionKey)
                                     -> Result<(), Status>
     {
         self.access(|core| core.cancel(owner, records::Access::Completion(receipt)))
     }
 
     pub(crate) fn discard_completion(&self, owner: Owner,
-                                     receipt: mac_object_table::projected::CompletionKey)
+                                     receipt: mac_object_table::store::CompletionKey)
                                      -> Result<(), Status>
     {
         self.access(|core| core.discard(owner, records::Access::Completion(receipt)))
     }
 
     pub(crate) fn dispatch_completion(&self, owner: Owner,
-                                      receipt: mac_object_table::projected::CompletionKey)
+                                      receipt: mac_object_table::store::CompletionKey)
                                       -> Result<Option<Dispatch<'_>>, Status>
     {
         self.access(|core| core.dispatch_for(owner, records::Access::Completion(receipt)))
@@ -149,27 +149,27 @@ impl Queue
             })
     }
 
-    pub fn pending(&self, owner: Owner, id: u32) -> Result<bool, Status>
+    pub fn pending(&self, owner: Owner, id: u64) -> Result<bool, Status>
     {
         self.access(|core| core.pending(owner, id))
     }
 
-    pub fn attach_waiter(&self, owner: Owner, id: u32, thread: u64) -> Result<(), Status>
+    pub fn attach_waiter(&self, owner: Owner, id: u64, thread: u64) -> Result<(), Status>
     {
         self.access(|core| core.attach_waiter(owner, id, thread))
     }
 
-    pub fn pending_waiter(&self, thread: u64, id: u32) -> Result<bool, Status>
+    pub fn pending_waiter(&self, thread: u64, id: u64) -> Result<bool, Status>
     {
         self.access(|core| core.pending_waiter(thread, id))
     }
 
-    pub fn detach_waiter(&self, thread: u64, id: u32) -> Result<(), Status>
+    pub fn detach_waiter(&self, thread: u64, id: u64) -> Result<(), Status>
     {
         self.access(|core| core.detach_waiter(thread, id))
     }
 
-    pub fn completed_waiter(&self, owner: Owner, id: u32) -> Result<Option<u64>, Status>
+    pub fn completed_waiter(&self, owner: Owner, id: u64) -> Result<Option<u64>, Status>
     {
         self.access(|core| core.completed_waiter(owner, id.into()))
     }
@@ -187,7 +187,7 @@ impl Queue
                                                 })
     }
 
-    pub fn dispatch_for(&self, owner: Owner, id: u32) -> Result<Option<Dispatch<'_>>, Status>
+    pub fn dispatch_for(&self, owner: Owner, id: u64) -> Result<Option<Dispatch<'_>>, Status>
     {
         self.access(|core| core.dispatch_for(owner, id.into())).map(|node| {
                                                                    node.map(|node| {
@@ -246,17 +246,17 @@ impl Queue
         self.access(Core::failure)
     }
 
-    pub fn take(&self, owner: Owner, id: u32) -> Result<Option<Completed>, Status>
+    pub fn take(&self, owner: Owner, id: u64) -> Result<Option<Completed>, Status>
     {
         self.access(|core| core.take(owner, id.into()))
     }
 
-    pub fn cancel(&self, owner: Owner, id: u32) -> Result<(), Status>
+    pub fn cancel(&self, owner: Owner, id: u64) -> Result<(), Status>
     {
         self.access(|core| core.cancel(owner, id.into()))
     }
 
-    pub fn discard(&self, owner: Owner, id: u32) -> Result<(), Status>
+    pub fn discard(&self, owner: Owner, id: u64) -> Result<(), Status>
     {
         self.access(|core| core.discard(owner, id.into()))
     }

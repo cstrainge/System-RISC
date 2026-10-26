@@ -26,6 +26,7 @@ fn completion_owns_result_and_retires_generation_with_separate_owner_checks()
 {
     let q = Queue::new();
     let first = q.submit(OWNER, work(8)).unwrap();
+    let first_key = q.test_access(|core| core.records.key(first).unwrap());
     assert_eq!(q.take(Owner::Thread(43), first).unwrap_err(), ACCESS_DENIED);
     assert!(q.take(OWNER, first).unwrap().is_none());
     assert_eq!(step(&q, |call| {
@@ -44,7 +45,10 @@ fn completion_owns_result_and_retires_generation_with_separate_owner_checks()
                                        job:    first }));
     assert_eq!(q.take(OWNER, first).unwrap().unwrap().result.unwrap(), b"ok");
     let next = q.submit(OWNER, work(8)).unwrap();
-    assert_eq!(first & 0xffff, next & 0xffff);
+    let next_key = q.test_access(|core| core.records.key(next).unwrap());
+    assert!(first > u64::from(u32::MAX) && next > u64::from(u32::MAX));
+    assert_eq!(first_key.slot(), next_key.slot());
+    assert_ne!(first_key.generation(), next_key.generation());
     assert_ne!(first, next);
     assert_eq!(q.cancel(OWNER, first).unwrap_err(), NOT_FOUND);
     let other = Queue::new();
@@ -92,6 +96,7 @@ fn completion_before_wait_attachment_and_before_park_never_loses_readiness()
 {
     let q = Queue::new();
     let id = q.submit(Owner::Kernel, work(8)).unwrap();
+    let old_key = q.test_access(|core| core.records.key(id).unwrap());
     step(&q, |_| Outcome::Complete(0));
     q.attach_waiter(Owner::Kernel, id, 42).unwrap();
     assert!(!q.pending_waiter(42, id).unwrap());
@@ -99,7 +104,9 @@ fn completion_before_wait_attachment_and_before_park_never_loses_readiness()
     q.take(Owner::Kernel, id).unwrap().unwrap();
     assert_eq!(q.pending_waiter(42, id), Err(NOT_FOUND));
     let next = q.submit(Owner::Kernel, work(8)).unwrap();
-    assert_eq!(id & 0xffff, next & 0xffff);
+    let next_key = q.test_access(|core| core.records.key(next).unwrap());
+    assert_eq!(old_key.slot(), next_key.slot());
+    assert_ne!(old_key.generation(), next_key.generation());
     assert_ne!(id, next);
     q.attach_waiter(Owner::Kernel, next, 43).unwrap();
     assert_eq!(q.pending_waiter(42, next), Err(ACCESS_DENIED));
@@ -625,9 +632,7 @@ pub(super) fn subject(core: &mut Core, owner: Owner) -> Result<super::subjects::
 
 pub(super) fn admitted(
     queue: &Queue, policy: Owner)
-    -> (crate::toolbox::handles::OwnerRef,
-        subjects::Subject,
-        mac_object_table::projected::Publication)
+    -> (crate::toolbox::handles::OwnerRef, subjects::Subject, mac_object_table::store::Publication)
 {
     queue.test_access(|core| {
              let subject = subject(core, policy).unwrap();
@@ -743,7 +748,7 @@ fn owner_walk_cancels_thread_job_and_holds_payload_until_real_lower_ack()
     settle(&queue, &owner, deferred);
 }
 #[test]
-fn completion_before_cleanup_dispatch_retains_unique_ticket_and_projection_generation()
+fn completion_before_cleanup_dispatch_retains_unique_ticket_and_native_identity()
 {
     let queue = Queue::new();
     let (owner, subject, publication) = admitted(&queue, Owner::Kernel);
@@ -878,4 +883,99 @@ fn callback_borrows_the_original_subject_across_start_poll_and_cancel()
     drop(subject);
     assert!(!owner.contains(root));
     assert!(scope.admitting().is_err());
+}
+
+#[test]
+fn native_jobs_grow_past_projection_limit_and_owner_discard_drains_every_pending_ack()
+{
+    let queue = Queue::new();
+    let mut held = Vec::new();
+    let mut ids = Vec::new();
+    for _ in 0..160
+    {
+        ids.push(queue.submit(OWNER, Work::new(1, CLASS, 7, Vec::new(), 0).unwrap()).unwrap());
+    }
+    for _ in 0..160
+    {
+        let mut dispatch = queue.next_dispatch().unwrap();
+        dispatch.invoke(&mut Script(|call: Call<'_>| {
+                            *call.ticket = 73;
+                            Outcome::Pending
+                        }))
+                .unwrap();
+        held.push(dispatch);
+    }
+    for _ in 0..160
+    {
+        ids.push(queue.submit(OWNER, Work::new(1, CLASS, 7, Vec::new(), 0).unwrap()).unwrap());
+    }
+    assert!(ids.iter().all(|&id| id > u64::from(u32::MAX)));
+    let capacity = queue.test_access(|core| core.ready.capacity());
+    drop(held); // All actual pending invocations return into their origin queue.
+    assert_eq!(queue.test_access(|core| core.ready.capacity()), capacity);
+    queue.discard_owner(OWNER); // No fixed-size collection, no cleanup allocation.
+    let mut acknowledged = 0;
+    while let Some(mut dispatch) = queue.next_dispatch()
+    {
+        dispatch.invoke(&mut Script(|call: Call<'_>| {
+                            assert_eq!(call.phase, Phase::Cancel);
+                            assert_eq!(*call.ticket, 73);
+                            *call.ticket = 0;
+                            acknowledged += 1;
+                            Outcome::Failed(mac_abi::OPERATION_CANCELLED)
+                        }))
+                .unwrap();
+        queue.finish(dispatch).unwrap();
+    }
+    assert_eq!(acknowledged, 160, "unsent jobs must not contact the provider");
+    assert_eq!(queue.test_access(|core| core.records.len()), 0);
+    assert_eq!(queue.owned_bytes(), 0);
+    for id in ids
+    {
+        assert_eq!(queue.pending(OWNER, id), Err(NOT_FOUND));
+    }
+}
+
+#[test]
+fn native_completion_notifications_have_room_for_every_admitted_return_guard()
+{
+    let queue = Queue::new();
+    let mut ids = Vec::new();
+    let mut held = Vec::new();
+    for _ in 0..150
+    {
+        ids.push(queue.submit(OWNER, Work::new(1, CLASS, 7, Vec::new(), 0).unwrap()).unwrap());
+    }
+    for _ in 0..150
+    {
+        let mut dispatch = queue.next_dispatch().unwrap();
+        dispatch.invoke(&mut Script(|_: Call<'_>| Outcome::Complete(0))).unwrap();
+        held.push(dispatch);
+    }
+    for _ in 0..150
+    {
+        ids.push(queue.submit(OWNER, Work::new(1, CLASS, 7, Vec::new(), 0).unwrap()).unwrap());
+    }
+    let capacity = queue.test_access(|core| core.notices.capacity());
+    drop(held);
+    while let Some(mut dispatch) = queue.next_dispatch()
+    {
+        dispatch.invoke(&mut Script(|_: Call<'_>| Outcome::Complete(0))).unwrap();
+        drop(dispatch); // The RAII path must enqueue the notification itself.
+    }
+    assert_eq!(queue.test_access(|core| core.notices.capacity()), capacity);
+    let mut notices = Vec::new();
+    while let Some(notice) = queue.take_notice()
+    {
+        notices.push(notice.job);
+    }
+    notices.sort_unstable();
+    let mut expected = ids.clone();
+    expected.sort_unstable();
+    assert_eq!(notices, expected);
+    for id in ids
+    {
+        assert!(queue.take(OWNER, id).unwrap().unwrap().result.unwrap().is_empty());
+    }
+    assert_eq!(queue.test_access(|core| core.records.len()), 0);
 }

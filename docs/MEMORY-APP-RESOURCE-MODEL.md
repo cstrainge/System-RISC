@@ -1956,11 +1956,12 @@ requests and other lower I/O remain staged. Neither milestone activates MMU or S
 ## Owned driver I/O subjects and job receipts
 
 Queued driver jobs use registered `DJOB`/`DJST` stores in the real subject's
-resource scope. The existing 32-bit deferred-job transport is a facility
-projection, with no separate payload table or ID issuer. Publication captures a
+resource scope. Native u64 IDs and publication receipts travel through the queue,
+owned jobs and typed scheduler wake/defer identity; there is no projected native
+job transport or separate payload table/ID issuer. Publication captures a
 completion receipt before ordinary invalidation; detached callbacks and resident
 continuations retain that receipt. A stale public ID fails immediately while
-only the original receipt can reach a retained completion. Projection slots and
+only the original receipt can reach a retained completion. Native payloads and
 unique cleanup tickets remain held until the lower ticket actually terminates.
 Pending jobs stay in their authoritative backing; extracting removal guards
 before ACK could detach that backing and reject a legitimate follow-up Abort.
@@ -1968,7 +1969,7 @@ Only terminal completion takes and destroys the payload guard. Refused
 acknowledgements retain their exact ticket and typed cause, with a bounded
 change-driven report rather than repeated polling or fabricated success.
 A cancellation request, timeout or missing waiter never constitutes that ACK.
-The remaining native transport/capacity migration is a separate gate.
+The native queue grows until memory within its explicit owned-buffer budget.
 
 `DIOP`/`DIOB` provide an admitted root for a resident operation on behalf of a
 client. An existing transfer inherits its real scope instead. Persistent provider
@@ -2102,7 +2103,7 @@ fork operations and process exit. Internal tests cover wrong subjects, stale and
 foreign IDs/tickets, invalidation before and after completion, retained backing,
 interface pins, serialized admission, common owner-walk retry and growth past
 300 simultaneous requests. These mechanisms do not close device/DMA/source
-ownership, native job transport capacity, full invocation/accounting, physical
+ownership, full invocation/accounting, physical
 module reclamation, pages/MMU, heaps, isolation or multihart gates. M-D04's
 arbitrary privileged-fault containment remains unproven.
 
@@ -2133,3 +2134,42 @@ correctness campaign; it is not a UI latency claim. The guest's five-second exit
 cleanup assertion and all functional/ownership acceptance remain unchanged.
 Phase timing is retained as evidence. The power capture also uses the checked
 display width for application-menu input, matching the 800-pixel desktop.
+
+
+## Native job capacity and return reservations
+
+`DJOB` now uses the native shared store directly. All job identifiers, owned
+completion receipts and scheduler `DeferredIo::DriverJob` keys retain their full
+u64 identity; file-transfer and job wakeups remain distinct typed variants.
+Classic object projections retain their own original contracts. There is no
+native 32-bit job projection or 128-job slot ceiling.
+
+Admission reserves ready/completion-notice capacity for every retained job before
+publication. A callback detached earlier may return after more jobs are admitted;
+its RAII guard can restore or notify without allocating. Metadata/retirement
+reservation failure still returns the original unsent owned work. The existing
+1 MiB aggregate owned-buffer budget and per-request payload bounds remain explicit;
+page-backed per-domain byte accounting is a later gate.
+
+Thread-owner discard walks the original completion receipts in native-ID order.
+The cursor remains valid as entries are removed, uses no fixed scratch array or
+cleanup allocation, detaches dead waiters from resident-owned mutations and waits
+for actual provider cancellation acknowledgement. Ordinary IDs still fail after
+invalidation; only retained receipts drain late results. Tests force native slot
+reuse using the actual slot/generation keys rather than interpreting ID bits.
+
+Focused tests admit 320 jobs with older detached pending callbacks, then discard
+all through actual cancellation ACK. Another case returns 300 completed guards
+and verifies every exact notice/result while the deque capacities remain unchanged.
+Existing foreign-return, refusal, unwind, stopped-owner, fairness, no-change and
+scope cases continue to exercise the same queue and shared facility.
+
+
+Qualification for native jobs: 593 scoped host cases pass (67 native gates
+excluded), including all 36 focused job/scope cases, plus 10 native cases covering
+provider read/write/exit/cold restore, classic archives, both endpoint disconnects,
+module admission, lifecycle, aggregate SDK, cursor, panic and power recovery.
+Optimized image, compiled boundaries, formatting and 52-library docs pass.
+This removes the native job projection/capacity gate; device/DMA/backing-source
+ownership, complete owner-walk recovery, dynamic concurrent processes, pages/MMU,
+heaps, full invocation/accounting and isolation remain staged.
